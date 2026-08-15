@@ -363,6 +363,7 @@ ordinary update.
 | [`open_capture`](#open-capture) | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
 | [`save_findings`](#save-findings) | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
 | [`server_capabilities`](#server-capabilities) | -- | sipnab version and the optional features this binary carries |
+| [`list_tls_libraries`](#list-tls-libraries) | -- | which TLS libraries this host runs, and whether sipnab could read their plaintext without keys |
 
 ### What changed in 0.5.98
 
@@ -2579,6 +2580,58 @@ turned on — and no compile-time check can answer it. Without it an agent
 discovers the setup by calling a tool and collecting a refusal, and a refusal
 mid-investigation reads as a dead end rather than as a server it was never
 allowed to use that way.
+
+### `list_tls_libraries`
+
+Which TLS libraries processes on this host are **actually mapping**, and
+whether sipnab could attach a uprobe to read their plaintext. Ask before
+concluding that SIP over TLS cannot be read without keys — and read
+`privileged` and `probe_path` before concluding it can.
+
+No parameters. Returns:
+
+```jsonc
+{
+  "schema_version": 1,
+  "supported": true,          // false off Linux, or without the `native` feature
+  "privileged": true,         // running as root
+  "libraries": [
+    {
+      "flavour": "OpenSSL",
+      "path": "/usr/lib/aarch64-linux-gnu/libssl.so.3",
+      "inode": 21143,         // the identity; the PATH is not unique
+      "process_count": 12,
+      "symbol": "SSL_write",
+      "probe_path": "/proc/954/root/usr/lib/aarch64-linux-gnu/libssl.so.3"
+    },
+    {
+      "flavour": "wolfSSL",
+      "path": "/usr/lib/aarch64-linux-gnu/libwolfssl.so.42.2.0",
+      "inode": 17433084,
+      "process_count": 1,
+      "symbol": "wolfSSL_write",
+      "probe_path": null      // in use, but NOT capturable from here
+    }
+  ],
+  "unreachable_count": 1,
+  "summary": "1 of 2 TLS libraries could be read with `sipnab --uprobe-tls`, without any key or certificate. 1 cannot be reached from this server's mount namespace and would be missed."
+}
+```
+
+**Read `privileged` before believing an empty list.** Unprivileged,
+`/proc/<pid>/maps` is readable only for the server's own processes, so a short
+list is evidence about privilege rather than about the host. `summary` says
+which of the two situations produced the answer, so a relayed conclusion does
+not lose it.
+
+**`probe_path: null` is a finding, not a blank.** That library is carrying
+traffic sipnab cannot capture — usually a containerised process whose
+`/proc/<pid>/root` this server cannot read. It is reported rather than dropped
+because the alternative is a capture that looks complete and is not.
+
+`inode` is there because `path` is **not** unique: the same string names
+different files in different mount namespaces, and on an ordinary host with
+containers several distinct `libssl.so.3` files coexist.
 
 ### `capture_health`
 

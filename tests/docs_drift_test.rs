@@ -1836,9 +1836,12 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // the grounding of the clock rate the jitter was derived from, the
     // provenance of the delay term behind the published MOS, silence and
     // comfort noise, and the RTCP a remote endpoint asserted.
+    // Raised 32 -> 33 by `list_tls_libraries`, which answers whether SIP over
+    // TLS on this host can be read at all without keys -- and, when it cannot,
+    // whether that is a fact about the host or about this server's privilege.
     assert_eq!(
         registered.len(),
-        32,
+        33,
         "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",

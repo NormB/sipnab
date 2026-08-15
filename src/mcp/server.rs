@@ -1542,6 +1542,150 @@ pub struct CapabilitiesResponse {
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+/// One TLS library in use on this host, as an agent sees it.
+pub struct TlsLibraryEntry {
+    /// Which implementation: `OpenSSL` or `wolfSSL`.
+    pub flavour: String,
+    /// Path as the mapping process sees it.
+    pub path: String,
+    /// The mapped file's inode, which is its identity — the same path can name
+    /// different files in different mount namespaces.
+    pub inode: u64,
+    /// How many processes map it.
+    pub process_count: usize,
+    /// The write symbol sipnab would probe.
+    pub symbol: String,
+    /// A path that names this exact file from sipnab's own namespace, or
+    /// `null` when none does. `null` means this library is carrying traffic
+    /// sipnab **cannot** capture, usually because it is inside a container and
+    /// sipnab lacks the privilege to read `/proc/<pid>/root`.
+    pub probe_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// What `list_tls_libraries` answers.
+pub struct TlsLibrariesResponse {
+    /// Version of this response schema.
+    pub schema_version: u32,
+    /// True when this build and platform can attach uprobes at all.
+    pub supported: bool,
+    /// True when the server is running as root.
+    ///
+    /// Load-bearing for interpretation, not decoration: unprivileged,
+    /// `/proc/<pid>/maps` is readable only for the caller's own processes, so
+    /// a short list is evidence about privilege rather than about the host.
+    pub privileged: bool,
+    /// Every TLS library found, reachable or not.
+    pub libraries: Vec<TlsLibraryEntry>,
+    /// Libraries in use that sipnab could **not** attach to.
+    pub unreachable_count: usize,
+    /// What a capture would do, in one sentence an agent can relay.
+    pub summary: String,
+}
+
+/// Assemble the `list_tls_libraries` payload from facts already gathered.
+///
+/// **Pure, and separate from the discovery it describes, because the branch
+/// that matters cannot otherwise be tested.** An empty list means one of two
+/// opposite things — this host runs no TLS, or this server cannot see it —
+/// and which one an agent is told depends on `privileged`. On a development
+/// machine that maps TLS libraries, a test calling the live version never
+/// reaches the empty branch at all, so the wording that prevents the wrong
+/// conclusion would be asserted by nothing.
+#[must_use]
+pub fn build_tls_libraries_response(
+    supported: bool,
+    privileged: bool,
+    libraries: Vec<TlsLibraryEntry>,
+) -> TlsLibrariesResponse {
+    if !supported {
+        return TlsLibrariesResponse {
+            schema_version: 1,
+            supported: false,
+            privileged,
+            libraries: Vec::new(),
+            unreachable_count: 0,
+            summary: "Uprobe TLS capture needs Linux and a sipnab built with the \
+                      `native` feature, so this server cannot read TLS plaintext \
+                      without keys."
+                .to_string(),
+        };
+    }
+
+    let unreachable_count = libraries.iter().filter(|l| l.probe_path.is_none()).count();
+    let reachable = libraries.len() - unreachable_count;
+
+    let summary = match (libraries.is_empty(), privileged) {
+        (true, true) => "No process on this host maps OpenSSL or wolfSSL. SIP over \
+                         TLS here cannot be read by uprobe; it would need keys."
+            .to_string(),
+        // The dangerous case. Same empty list, opposite conclusion.
+        (true, false) => "No TLS library is visible, but this server is \
+                          unprivileged and can only see its own processes. Re-run \
+                          sipnab as root before concluding the host uses no TLS."
+            .to_string(),
+        (false, _) => format!(
+            "{reachable} of {} TLS librar{} could be read with `sipnab \
+             --uprobe-tls`, without any key or certificate.{}",
+            libraries.len(),
+            if libraries.len() == 1 { "y" } else { "ies" },
+            if unreachable_count > 0 {
+                format!(
+                    " {unreachable_count} cannot be reached from this server's \
+                     mount namespace and would be missed."
+                )
+            } else {
+                String::new()
+            }
+        ),
+    };
+
+    TlsLibrariesResponse {
+        schema_version: 1,
+        supported: true,
+        privileged,
+        libraries,
+        unreachable_count,
+        summary,
+    }
+}
+
+/// Discover this host's TLS libraries and describe them for an agent.
+#[must_use]
+pub fn tls_libraries_response() -> TlsLibrariesResponse {
+    #[cfg(all(target_os = "linux", feature = "native"))]
+    {
+        use crate::capture::uprobe::discover;
+
+        // Not a permission check on /proc: uid 0 is what decides whether the
+        // walk sees other users' processes AND whether a probe could be
+        // installed afterwards, and reporting it lets a caller tell "no TLS
+        // here" apart from "this server cannot see it".
+        // SAFETY: `geteuid` takes no arguments, cannot fail, and touches no
+        // memory this process owns.
+        let privileged = unsafe { libc::geteuid() } == 0;
+        let libraries = discover::discover()
+            .iter()
+            .map(|l| TlsLibraryEntry {
+                flavour: l.flavour.label().to_string(),
+                path: l.path.display().to_string(),
+                inode: l.inode,
+                process_count: l.pids.len(),
+                symbol: l.flavour.write_symbol().to_string(),
+                probe_path: l.probe_path().map(|p| p.display().to_string()),
+            })
+            .collect();
+        build_tls_libraries_response(true, privileged, libraries)
+    }
+    #[cfg(not(all(target_os = "linux", feature = "native")))]
+    {
+        build_tls_libraries_response(false, false, Vec::new())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 /// The startup flags that decide which tools do anything.
 ///
 /// Compiled features and operator choices are different questions, and this
@@ -3916,6 +4060,26 @@ impl SipnabMcp {
                 mcp_allow_save_findings: self.allow_save_findings,
             },
         };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// Which TLS libraries this host is running, and whether sipnab could
+    /// probe them.
+    #[tool(
+        name = "list_tls_libraries",
+        description = "Returns the TLS libraries processes on this host are \
+                       actually mapping (OpenSSL, wolfSSL), each with the \
+                       processes using it and whether sipnab could attach a \
+                       uprobe to read its plaintext. Call this before concluding \
+                       that SIP over TLS cannot be read without keys — and read \
+                       `reachable` and `privileged` before concluding it can: \
+                       unprivileged, this sees only the caller's own processes, \
+                       so an empty or short list may mean insufficient \
+                       privilege rather than no TLS.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn list_tls_libraries(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+        let payload = tls_libraries_response();
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
