@@ -10,6 +10,63 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.102] - 2026-08-15
+
+### Added
+
+- **eBPF TLS capture that recovers the peer (`--uprobe-backend bpf`).** The
+  default `tracefs` backend reads SIP plaintext out of a process's TLS library
+  but sees no socket, so its dialogs name a process rather than a peer. This one
+  pairs each write with its own `tcp_sendmsg` -- same thread, back to back --
+  and reports the addresses the plaintext actually went out on. No key, no
+  certificate, no restart of the daemon.
+
+  Verified live: a `REGISTER` and its `200 OK` came back as
+  `127.0.0.1:36160 -> 127.0.0.1:15061` and the reverse, each connection carrying
+  its own ephemeral port.
+
+  When the pairing does not hold -- a write the library buffered rather than
+  sent -- the message is reported with **no addresses** rather than a guessed
+  peer. Filling one in would make the honest case worthless, because nothing
+  downstream could tell them apart.
+
+  Socket offsets come from the running kernel's own BTF (BPF Type Format), so
+  the program keeps working across kernels instead of matching only the one that
+  compiled it. Off by default and outside `full`: building it needs a nightly
+  toolchain and `bpf-linker`, running it needs `CONFIG_DEBUG_INFO_BTF`, and
+  sipnab refuses it rather than quietly downgrading when either is missing.
+
+- **Uprobe TLS capture reaches the command line.** `--uprobe-tls` probes every
+  TLS library the host is running -- OpenSSL and wolfSSL coexist on an ordinary
+  machine -- rather than one an operator named. `--uprobe-list` reports what a
+  capture would probe without installing anything, and exits non-zero when
+  nothing is visible. `--uprobe-library`, `--uprobe-symbol` and
+  `--uprobe-flavour` narrow or override it; `--uprobe-backend` chooses between
+  `tracefs` and `bpf`.
+
+  Libraries are identified by inode, not path: three distinct `libssl.so.3`
+  files can share one path string on a host running containers, and probing the
+  path attaches to the host's copy while missing every container.
+
+- **`start_tls_capture` / `stop_tls_capture` MCP tools**, behind the new
+  `--mcp-allow-tls-capture`. The first tools on that surface that create kernel
+  state, which is why the opt-in is separate from `--mcp-allow-open-capture`:
+  reading a file an operator placed in a directory and attaching probes to a
+  live daemon are not the same act. `list_tls_libraries` reports what a capture
+  would see and needs no opt-in at all.
+
+### Fixed
+
+- **Uprobe reads were swallowed by the TCP reassembler.** A uprobe read is a
+  complete application write, not a segment of a byte stream, and carries no
+  sequence number -- so every message was held for neighbours that could never
+  arrive. Both uprobe backends captured packets and produced **zero SIP
+  messages**, which reads exactly like a quiet trunk.
+
+- **The MCP walkthrough's security section claimed no tool alters the
+  analysis.** `start_tls_capture` does. The section now separates what remains
+  true -- no MCP tool sends SIP -- from the one tool that creates kernel state.
+
 ## [0.5.101] - 2026-08-15
 
 ### Added
