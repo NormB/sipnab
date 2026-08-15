@@ -2215,19 +2215,39 @@ host. The packaged instance is untouched.
   provides. thor-02 has none, so this backend is unavailable there and the
   tracefs one must remain the default rather than a fallback nobody tested.
 
-  **BLOCKED on a toolchain dependency, measured 2026-08-15.** `bpf-linker`
-  0.11.0 builds against `llvm-sys 231` — **LLVM 23.1** — and refuses with
-  `could not find llvm-config in directories specified by environment`. thor-02
-  carries **LLVM 18**, and `rustc` 1.97.1 bundles 22.1.6. `--no-default-features`
-  does **not** redirect it to the bundled one; it still requires an external
-  `llvm-config`. Upstream's own build warning says installing this way is not
-  recommended.
+  **UNBLOCKED, 2026-08-15 — on a different machine, and the version pin is
+  the whole trick.** `bpf-linker` 0.11.0 wants `llvm-sys 231` (**LLVM 23.1**)
+  and refuses with `could not find llvm-config in directories specified by
+  environment`; thor-02 carries LLVM 18, and `--no-default-features` does not
+  redirect it to the one `rustc` bundles. Installing LLVM 23.1 system-wide was
+  never the answer: **`bpf-linker` 0.9.13 pins `llvm-sys ^191.0.0-rc1`, which
+  is LLVM 19**, so an older linker against an already-installed LLVM needs no
+  third-party apt repository at all.
 
-  So the aya half needs LLVM 23.1 installed system-wide, which is an
-  administrator's decision about this machine rather than a code change, and it
-  is the first thing to resolve before any of the rest is worth writing. The
-  kernel-side crate cannot be compiled until then; the userspace half of `aya`
-  is stable Rust and unaffected.
+  Both halves resolve on **`opensips-1` (carbon VM 140)** and neither resolves
+  on thor-02:
+
+  | Requirement | thor-02 | opensips-1 (carbon 140) |
+  |---|---|---|
+  | BTF (`/sys/kernel/btf/vmlinux`) | absent | **present**, 4.9 MB, `CONFIG_DEBUG_INFO_BTF=y` |
+  | Kernel | 6.8.12-rt-tegra aarch64 | 6.12.101+deb13 x86_64 |
+  | LLVM | 18 | **19**, with `llvm-19-dev` already installed |
+  | `bpf-linker` | refuses | **0.9.13 installed and verified** |
+
+  Verified rather than assumed: a minimal `aya-ebpf` kprobe built there with
+  `cargo +nightly build --target bpfel-unknown-none -Z build-std=core` and
+  produced `ELF 64-bit LSB relocatable, eBPF` carrying a `kprobe` section.
+  Only Rust was added, user-local under `~gator`; no system package changed.
+
+  Note the docker container **also** called `opensips-1`, on thor-02, is a
+  different machine and shares thor's kernel — so it has no BTF either. The
+  carbon VM is the one that matters here, and it runs a real OpenSIPS, which
+  makes it the end-to-end target as well as the build host.
+
+  Two constraints stand regardless: the BPF build stays **optional**, so a
+  contributor without nightly is never blocked and CI's pinned 1.97.1 jobs are
+  unaffected; and because thor-02 has no BTF, the tracefs reader stays the
+  **default** rather than becoming a fallback nobody tested.
 
 - [ ] **TK7 — Plaintext-from-uprobe has no honest provenance.** `SSL_read`/
   `SSL_write` yield SIP bytes with no packet behind them: no frame number, no
