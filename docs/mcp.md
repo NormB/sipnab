@@ -2577,7 +2577,7 @@ allowed to use that way.
 
 Which TLS libraries processes on this host are **actually mapping**, and
 whether sipnab could attach a uprobe to read their plaintext. Ask before
-concluding that SIP over TLS cannot be read without keys — and read
+concluding that reading SIP over TLS needs keys — and read
 `privileged` and `probe_path` before concluding it can.
 
 No parameters. Returns:
@@ -2618,8 +2618,9 @@ not lose it.
 
 **`probe_path: null` is a finding, not a blank.** That library is carrying
 traffic sipnab cannot capture — usually a containerised process whose
-`/proc/<pid>/root` this server cannot read. It is reported rather than dropped
-because the alternative is a capture that looks complete and is not.
+`/proc/<pid>/root` this server cannot read. sipnab reports it rather than
+dropping it, because the alternative is a capture that looks complete and is
+not.
 
 `inode` is there because `path` is **not** unique: the same string names
 different files in different mount namespaces, and on an ordinary host with

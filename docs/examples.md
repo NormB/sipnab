@@ -521,7 +521,7 @@ then read it as a live stream:
 sudo sipnab -N -d eth0 --keylog /run/sip.keys --keylog-watch
 ```
 
-`--keylog` accepts a FIFO and reads it as a live stream; `--keylog-fd` implies
+`--keylog` accepts a FIFO and reads it as a live stream. `--keylog-fd` implies
 `--keylog-watch`, since a descriptor from a running producer has nothing to read
 at startup and everything to read later. Pass one or the other, never both.
 
@@ -545,7 +545,7 @@ extractor from a supervisor and hand sipnab the read end.
 
 7e and 7f still need session secrets from somewhere. This recipe needs none:
 sipnab puts a kernel uprobe on the TLS library's write function and reads the
-plaintext **before it is encrypted**. No certificate, no private key, no
+plaintext **before encryption**. No certificate, no private key, no
 keylog, and nothing restarted.
 
 **Look before you probe.** This installs nothing and answers whether the
@@ -562,7 +562,7 @@ wolfSSL     17433084     1  /proc/982702/root/usr/lib/aarch64-linux-gnu/libwolfs
 OpenSSL        21143    12  /usr/lib/aarch64-linux-gnu/libssl.so.3
 ```
 
-Then capture. Every library listed is probed, not one:
+Then capture. sipnab probes every library listed, not one:
 
 ```bash
 sudo sipnab -N --uprobe-tls
@@ -583,8 +583,8 @@ sudo sipnab -N --uprobe-tls --uprobe-library /usr/lib/x86_64-linux-gnu/libssl.so
 
 **What this gives up.** A uprobe sees the bytes an application handed its TLS
 library and nothing about the socket beneath, so dialogs from this source carry
-**no addresses and port 0**. They are labelled `uprobe:<comm>/<pid>` instead —
-the process, not a peer. sipnab will not invent an address it never observed.
+**no addresses and port 0**. sipnab labels them `uprobe:<comm>/<pid>` instead —
+the process, not a peer. It never invents an address it did not observe.
 
 **Pitfalls:**
 
@@ -596,15 +596,15 @@ the process, not a peer. sipnab will not invent an address it never observed.
   file* from sipnab's namespace. sipnab handles this by matching inodes and
   probing through `/proc/<pid>/root`, which is why the listing above shows such
   paths. If you pass `--uprobe-library` by hand for a container, pass the
-  `/proc/<pid>/root/...` form or you will attach to the host's copy and capture
-  nothing.
+  `/proc/<pid>/root/...` form, or the probe attaches to the host's copy and
+  captures nothing.
 - GnuTLS is not probed. Its write function has a different signature, and
   attaching the OpenSSL probe shape to it would read the wrong register.
 - This input can never transmit. `--hep-allow-kill` has an equivalent for HEP
   input; there is deliberately no such flag here, because sipnab has no
   observed peer to answer to.
-- A write larger than 2048 bytes arrives truncated and is marked as such,
-  rather than being presented as a whole message.
+- A write larger than 2048 bytes arrives truncated, and sipnab marks it as
+  such rather than presenting a fragment as a whole message.
 
 ---
 
