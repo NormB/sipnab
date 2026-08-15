@@ -15,10 +15,45 @@ use anyhow::{Context, Result};
 use super::channel::PacketTx;
 #[cfg(feature = "hep")]
 use super::hep;
-#[cfg(target_os = "linux")]
-use super::uprobe;
 use super::{device, file, live};
 use crate::signals;
+
+/// Run the uprobe capture source, or explain why this platform cannot.
+///
+/// **The only place the uprobe platform split is written.** Kernel uprobes are
+/// a Linux facility, but `CaptureSource::Uprobe` exists on every platform so
+/// that the enum, the transmit guard and the bootstrap refusal stay uniform —
+/// which leaves exactly one function that must differ. Splitting at the call
+/// site instead would put a `cfg` on the match arm *and* on the import, and a
+/// platform decision written twice is one that drifts.
+#[cfg(target_os = "linux")]
+fn run_uprobe_capture(
+    targets: &[UprobeTarget],
+    tx: PacketTx,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+) -> Result<()> {
+    super::uprobe::reader::capture_uprobe(targets, tx, ready_tx)
+}
+
+/// Everywhere else this is unreachable — `bootstrap` refuses `--uprobe-tls`
+/// before a capture is planned — but it must still compile, and if it were
+/// ever reached it must fail loudly rather than capture nothing in silence.
+#[cfg(not(target_os = "linux"))]
+fn run_uprobe_capture(
+    targets: &[UprobeTarget],
+    _tx: PacketTx,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+) -> Result<()> {
+    let msg = format!(
+        "uprobe capture needs Linux kernel uprobes, which this platform does not \
+         have; {} target(s) were requested",
+        targets.len()
+    );
+    if let Some(tx) = ready_tx {
+        let _ = tx.send(Err(msg.clone()));
+    }
+    anyhow::bail!(msg)
+}
 
 /// One TLS library to probe, and the symbol to probe in it.
 ///
@@ -310,7 +345,7 @@ pub fn start_capture(
             let targets = targets.clone();
             thread::Builder::new()
                 .name("capture-uprobe".to_string())
-                .spawn(move || uprobe::reader::capture_uprobe(&targets, tx, ready_tx))
+                .spawn(move || run_uprobe_capture(&targets, tx, ready_tx))
                 .context("Failed to spawn uprobe capture thread")?
         }
         #[cfg(feature = "hep")]

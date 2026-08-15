@@ -127,7 +127,7 @@ capture is not getting.
 
 **`buffer_mb` is per handle.** `capture_live_group` applies
 `config.buffer_mb` to each socket it opens, and the default is 64 MiB since CT2
-(`DEFAULT_BUFFER_MB`, [`native.rs:166`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L166)). So
+(`DEFAULT_BUFFER_MB`, [`native.rs:201`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L201)). So
 `--cores 8` on a live interface asks the kernel for **512 MiB of ring**, from a
 flag that yesterday allocated nothing.
 
@@ -144,7 +144,7 @@ is what actually helps a burst. Not decidable from the code — it needs §5.
 
 ### 2.2 `--multi-device` composes badly and should stay refused
 
-`start_multi_capture` ([`native.rs:404`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L404)) already
+`start_multi_capture` ([`native.rs:439`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L439)) already
 spawns one capture thread per interface into one shared channel, with a
 coordinator thread and an aggregated readiness signal. That is the same topology
 `capture_live_fanout` builds — which is a good sign for the design and a problem
