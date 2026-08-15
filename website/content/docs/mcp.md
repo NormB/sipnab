@@ -2678,8 +2678,8 @@ one it is rather than a bare failure:
   uprobe capture cannot run beside one;
 - **a capture is still loading** — poll `capture_status` until `load.done`.
 
-**An attach failure arrives later, not here.** The probes are installed on a
-background thread, so the call returns as soon as that thread starts. Poll
+**An attach failure arrives later, not here.** A background thread installs
+the probes, so the call returns as soon as that thread starts. Poll
 [`stop_tls_capture`](#stop-tls-capture) or `capture_status` to see whether
 messages actually arrive.
 
