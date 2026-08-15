@@ -2071,6 +2071,20 @@ pub struct McpArgs {
     )]
     pub mcp_allow_open_capture: bool,
 
+    /// Let an agent install kernel uprobes and read TLS plaintext
+    /// (`start_tls_capture`, `stop_tls_capture`).
+    ///
+    /// The most consequential opt-in on this surface. It lets an agent read the
+    /// plaintext of TLS sessions belonging to processes it does not own, needs
+    /// the server to still be root, and creates kernel state that outlives a
+    /// crash. `list_tls_libraries` stays available without it, so an agent can
+    /// always report what a capture WOULD see.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-allow-tls-capture"
+    )]
+    pub mcp_allow_tls_capture: bool,
+
     /// Name this box reports as, on every answer it gives.
     ///
     /// Defaults to the system hostname. It appears in `capture_identity.node`

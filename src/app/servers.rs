@@ -380,6 +380,11 @@ pub fn start_servers(
             } else {
                 s
             };
+            let s = if cli.mcp_args.mcp_allow_tls_capture {
+                s.with_tls_capture()
+            } else {
+                s
+            };
             let s = if cli.mcp_args.mcp_allow_save_findings {
                 s.with_save_findings()
             } else {

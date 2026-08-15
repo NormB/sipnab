@@ -1839,9 +1839,11 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // Raised 32 -> 33 by `list_tls_libraries`, which answers whether SIP over
     // TLS on this host can be read at all without keys -- and, when it cannot,
     // whether that is a fact about the host or about this server's privilege.
+    // Raised 33 -> 35 by `start_tls_capture` and `stop_tls_capture`: the first
+    // tools on this surface that create KERNEL state, behind their own opt-in.
     assert_eq!(
         registered.len(),
-        33,
+        35,
         "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -2562,8 +2564,8 @@ fn no_documentation_table_repeats_a_row() {
         // against what sipnab already does, so neither is rebuilt by mistake.
         // Not doubled by a site mirror — docs/design/ is not published.
         tables,
-        544,
-        "walked {tables} tables, expected 544. More is fine — bump this. FEWER \
+        546,
+        "walked {tables} tables, expected 546. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

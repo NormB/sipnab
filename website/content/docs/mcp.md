@@ -364,6 +364,8 @@ ordinary update.
 | [`save_findings`](#save-findings) | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
 | [`server_capabilities`](#server-capabilities) | -- | sipnab version and the optional features this binary carries |
 | [`list_tls_libraries`](#list-tls-libraries) | -- | which TLS libraries this host runs, and whether sipnab could read their plaintext without keys |
+| [`start_tls_capture`](#start-tls-capture) | `flavours`, `libraries` | installs kernel uprobes and reads SIP plaintext with no key; needs `--mcp-allow-tls-capture` |
+| [`stop_tls_capture`](#stop-tls-capture) | -- | stops that capture and removes its kernel probes |
 
 ### What changed in 0.5.98
 
@@ -2633,6 +2635,84 @@ not.
 `inode` is there because `path` is **not** unique: the same string names
 different files in different mount namespaces, and on an ordinary host with
 containers several distinct `libssl.so.3` files coexist.
+
+### `start_tls_capture`
+
+Installs kernel uprobes on this host's TLS libraries and reads SIP plaintext
+from them — no key, no certificate, and no restart of the process observed.
+
+**Needs `--mcp-allow-tls-capture`.** It is off by default and separate from
+`--mcp-allow-open-capture`, because it is a different act: that one reads a
+file an operator placed in a directory, this one attaches probes to a running
+process's TLS library and reads its plaintext.
+
+Call [`list_tls_libraries`](#list-tls-libraries) first.
+
+| Parameter | Type | Default | Meaning |
+|---|---|---|---|
+| `flavours` | array of string | every one found | `openssl`, `wolfssl` |
+| `libraries` | array of string | discover | probe these paths instead of discovering |
+
+```jsonc
+// start_tls_capture { }                                  // every library found
+// start_tls_capture { "flavours": ["openssl"] }          // one flavour only
+// start_tls_capture { "libraries": ["/proc/954/root/usr/lib/libssl.so.3"] }
+{
+  "schema_version": 1,
+  "running": true,
+  "targets": ["/proc/954/root/usr/lib/libssl.so.3:SSL_write"],
+  "messages": 0,
+  "lost": null,
+  "uptime_sec": 0,
+  "error": null,
+  "summary": "Probing 1 TLS library. ..."
+}
+```
+
+**Three refusals, each before any kernel state exists**, and each says which
+one it is rather than a bare failure:
+
+- **not root** — sipnab drops privileges after opening its capture devices, so
+  a server started with `--user` cannot attach probes later;
+- **a live source is already running** — sipnab's stores have one writer, so a
+  uprobe capture cannot run beside one;
+- **a capture is still loading** — poll `capture_status` until `load.done`.
+
+**An attach failure arrives later, not here.** The probes are installed on a
+background thread, so the call returns as soon as that thread starts. Poll
+[`stop_tls_capture`](#stop-tls-capture) or `capture_status` to see whether
+messages actually arrive.
+
+### `stop_tls_capture`
+
+Stops the running capture and removes its kernel probes. Safe to call when
+nothing is running — it says so rather than failing.
+
+No parameters. Returns:
+
+```jsonc
+// stop_tls_capture { }
+{
+  "schema_version": 1,
+  "running": false,
+  "targets": ["/proc/954/root/usr/lib/libssl.so.3:SSL_write"],
+  "messages": 412,
+  "lost": 0,          // records the kernel DROPPED: messages that existed and are missing
+  "uptime_sec": 96,
+  "error": null,
+  "summary": "The TLS capture has stopped and its probes are removed."
+}
+```
+
+**Keep calling until `running` is false.** The stop is a request: the worker
+owns the probes and removes them on its way out, which is a kernel round trip
+per probe. Probes left installed cost every process that maps the library, and
+they outlive sipnab.
+
+`lost` is worth reading. It counts records the kernel dropped because the
+reader fell behind — messages that existed and are missing, which is a
+different fact from a quiet trunk and the only one you cannot discover any
+other way. The dialogs already collected stay in the store after the stop.
 
 ### `capture_health`
 
