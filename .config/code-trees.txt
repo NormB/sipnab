@@ -35,6 +35,7 @@
 LICENSES
 bench
 benches
+bpf
 contrib
 crates
 demos

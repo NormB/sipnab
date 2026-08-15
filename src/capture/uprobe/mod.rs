@@ -18,6 +18,13 @@
 //! largest message sipnab supports. The band is a bound, not a guarantee, which
 //! is why the truncation below still happens.
 
+/// Loading and attaching the BPF programs. Needs `aya` and a built object.
+#[cfg(feature = "bpf")]
+pub mod bpf;
+/// Turning one BPF record into a packet — no kernel, no `aya`, always tested.
+pub mod bpf_record;
+/// Reading struct member offsets from the running kernel's BTF.
+pub mod btf;
 /// Which TLS libraries this host is actually running.
 pub mod discover;
 pub mod elf;

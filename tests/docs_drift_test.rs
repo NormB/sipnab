@@ -40,6 +40,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // so the `--keylog-fd` example is a runnable whole. Scoped to those four
     // files: written anywhere else it would read as a sipnab flag and must
     // still fail this guard.
+    // `--features` is cargo's, not sipnab's. The CLI reference names it because
+    // the `bpf` backend needs a build that carries it, and a reader told to use
+    // `--uprobe-backend bpf` has to know what produces such a binary. Scoped to
+    // the two CLI pages: written anywhere else it would read as a sipnab flag
+    // and must still fail this guard.
+    (
+        "features",
+        &["docs/cli-reference.md", "website/content/docs/cli.md"],
+    ),
     (
         "keylogfile",
         &[
@@ -1623,8 +1632,8 @@ fn readme_feature_table_covers_every_cargo_feature() {
     }
 
     assert_eq!(
-        seen, 12,
-        "feature extraction found {seen} features, expected 12. Bump when a \
+        seen, 13,
+        "feature extraction found {seen} features, expected 13. Bump when a \
          feature is added; a drop means the parser stopped reading Cargo.toml's \
          table and the comparison below narrowed."
     );

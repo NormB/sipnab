@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# The record layout shared by sipnab and its BPF program.
+#
+# Deliberately dependency-free and `no_std`: one half of its audience is a
+# `bpfel-unknown-none` target with no allocator and a verifier that rejects
+# anything it cannot prove. Anything added here has to compile there too.
+[package]
+name = "sipnab-bpf-types"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT OR Apache-2.0"
+description = "Record layout shared between sipnab and its eBPF program"
+repository = "https://github.com/NormB/sipnab"
+publish = false
+
+[dependencies]
+# Only for the `Pod` impls below, and only on the host. The kernel half never
+# enables this: `aya` is the userspace loader and does not build for
+# bpfel-unknown-none.
+aya = { version = "0.13", optional = true }
+
+[features]
+# Marks the record types as plain-old-data so `aya` will read and write them
+# through its maps. Behind a feature because the orphan rule forces the impl to
+# live here, and this crate must stay `no_std` and dependency-free for the
+# kernel build that is its other consumer.
+pod = ["dep:aya"]
+
+[lints]
+workspace = true

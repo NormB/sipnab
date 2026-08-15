@@ -180,9 +180,64 @@ the non-SIP prefilter.
 What it cannot do is **carry state between two probes**, because there is no
 map. That gap is exactly the 5-tuple: `SSL_write` knows nothing about the
 socket beneath, and recovering the peer means hooking `tcp_sendmsg`, reading
-`struct sock`, and matching per thread across two hooks. That is TK10, it needs
-aya, and it builds on a host with BTF rather than on this one — see
-[the backlog](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md).
+`struct sock`, and matching per thread across two hooks.
+
+That is what the **BPF backend** does — `--uprobe-backend bpf`, §7a.
+[The backlog](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) records the live verification and the three
+silent failures that turned up producing it.
+
+## 7a. The BPF backend, and what it costs
+
+Two programs and one rule, in `bpf/` — a separate package with its own empty
+`[workspace]` table, excluded from sipnab's workspace so a stock `cargo build`
+never demands the nightly toolchain it needs.
+
+- a **uprobe** on the TLS write symbol parks the plaintext under its thread id;
+- a kernel probe on `tcp_sendmsg` claims it, stamps the socket's addresses on
+  it, and submits it.
+
+Paired **by thread, and only by thread**: a TLS library encrypts and sends on
+the calling thread, back to back. When that pairing does not hold — a write the
+library buffered rather than sent — the record goes out with **no addresses**
+rather than a guessed peer, and the host builds it exactly as a tracefs packet.
+Filling in a plausible peer for that case would make the honest case worthless,
+because nothing downstream could tell them apart.
+
+### The offsets come from the running kernel
+
+`aya-ebpf` at this version has no CO-RE read helpers, so offsets compiled into
+the program would be right on one kernel and silently wrong on the next. The
+host reads them from `/sys/kernel/btf/vmlinux` itself
+([`btf.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/uprobe/btf.rs)) and writes them into a map before
+either program attaches. Until then `valid` is zero and the program does not
+read a socket at all, because **zero is a legal offset**.
+
+`aya` cannot do this lookup: it parses BTF, but `Struct::members` is
+`pub(crate)`.
+
+### Two traps this cost a day to find
+
+**`include_bytes!` yields alignment 1**, and the ELF parser under `aya` casts
+the header out of the buffer rather than copying it. It rejects a byte-aligned
+buffer with `error parsing ELF data`, which reads as a corrupt object and
+sends you to the build. The same bytes load from an aligned buffer and fail
+from one offset by a single byte. sipnab copies the program into a `Vec<u64>`
+before loading it.
+
+**Hand-counted field offsets were wrong, and the tests were wrong the same
+way** — so they agreed with each other and not with the kernel. `sport` sat at
+48 while the reader looked at 64, and every captured message reported
+`0.0.0.0:0` while the suite stayed green. The host now reads the record **by field** through the
+shared `#[repr(C)]` type, and
+[`sipnab-bpf-types`](https://github.com/NormB/sipnab/blob/main/crates/sipnab-bpf-types/src/lib.rs) pins every
+offset rather than only the total size.
+
+### It is not the default
+
+It needs BTF, and the development host has none. A backend unavailable on the
+box its authors use is a backend nobody tests, so tracefs stays the default and
+an operator chooses this one by name — and sipnab refuses it, rather than
+quietly downgrading, in a build or on a kernel that cannot run it.
 
 ## 8. Testing it
 

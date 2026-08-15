@@ -96,6 +96,10 @@ exceptions:
   - SSH
   - TCP
   - TLS
+  # Kernel tracing acronyms: BPF is the technology, BTF the type
+  # information a kernel publishes about itself. Neither is a word.
+  - BPF
+  - BTF
   - TUI
   - UDP
   - WAV

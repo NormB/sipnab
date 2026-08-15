@@ -2344,6 +2344,25 @@ pub struct TlsArgs {
     )]
     pub uprobe_flavour: Vec<String>,
 
+    /// Which uprobe machinery reads the plaintext: `tracefs` or `bpf`.
+    ///
+    /// `tracefs` is the default and works on any Linux with tracefs mounted.
+    /// It sees no socket, so its dialogs name a process rather than a peer.
+    ///
+    /// `bpf` pairs each write with its `tcp_sendmsg` and so recovers the real
+    /// addresses — but needs a sipnab built with `--features bpf` and a kernel
+    /// with `CONFIG_DEBUG_INFO_BTF`. Asking for it in a build or on a kernel
+    /// without those is refused, never silently downgraded: the addresses are
+    /// the only reason to ask.
+    #[arg(
+        help_heading = "TLS / Decryption",
+        long = "uprobe-backend",
+        value_name = "NAME",
+        default_value = "tracefs",
+        value_parser = clap::builder::PossibleValuesParser::new(["tracefs", "bpf"])
+    )]
+    pub uprobe_backend: String,
+
     /// List the TLS libraries sipnab would probe, then exit.
     ///
     /// Run this first. It needs the same privileges as the capture and answers

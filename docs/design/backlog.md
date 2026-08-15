@@ -2177,7 +2177,7 @@ host. The packaged instance is untouched.
   packets and is fine. Vendoring or linking any part of it is not, and this
   entry exists partly so nobody reaches for it later.
 
-- [ ] **TK10 — An `aya` BPF backend, for the 5-tuple `TK7` cannot observe.**
+- [x] **TK10 — An `aya` BPF backend, for the 5-tuple `TK7` cannot observe.** DONE 2026-08-15, verified live.
   Approved 2026-08-15 alongside the `TK6` reversal, and scoped by the one thing
   tracefs genuinely cannot do.
 
@@ -2214,6 +2214,37 @@ host. The packaged instance is untouched.
   **Reading `struct sock` needs kernel struct offsets**, which is what BTF
   provides. thor-02 has none, so this backend is unavailable there and the
   tracefs one must remain the default rather than a fallback nobody tested.
+
+  **DONE, and verified live on `opensips-1` (carbon VM 140).** A real SIP-over-TLS
+  exchange produced six messages with **real 5-tuples**, no key and no
+  certificate:
+
+  ```
+  200 OK       127.0.0.1:15061 -> 127.0.0.1:36160  TCP  uprobe:python3/349147#0
+  REGISTER     127.0.0.1:36160 -> 127.0.0.1:15061  TCP  uprobe:python3/349147#1
+  200 OK       127.0.0.1:15061 -> 127.0.0.1:36172  TCP  uprobe:python3/349147#2
+  ```
+
+  Each request/response pair carries its **own** ephemeral port, which is the
+  evidence that the per-thread pairing binds a write to its own socket rather
+  than smearing one tuple across the capture.
+
+  Three defects found on the way, each of which produced silence rather than an
+  error:
+
+  1. **The TCP reassembler swallowed every uprobe read.** A uprobe packet is
+     reported as TCP but carries no sequence number, so the reassembler held
+     each message for neighbours that could never arrive. **Both** backends
+     captured packets and produced zero SIP messages. A uprobe read is a
+     complete application write, not a segment, and now bypasses reassembly.
+  2. **`include_bytes!` yields alignment 1**, and `object`'s ELF parser casts
+     the header out of the buffer. Same bytes: aligned loads, misaligned fails
+     with `error parsing ELF data`.
+  3. **Hand-counted field offsets were wrong and the tests repeated the
+     mistake**, so they agreed with each other and not with the kernel —
+     `sport` at 48, read from 64. Every message reported `0.0.0.0:0` with a
+     green suite. The host now reads the record by field, and every offset is
+     pinned.
 
   **UNBLOCKED, 2026-08-15 — on a different machine, and the version pin is
   the whole trick.** `bpf-linker` 0.11.0 wants `llvm-sys 231` (**LLVM 23.1**)

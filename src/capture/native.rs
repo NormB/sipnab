@@ -29,10 +29,29 @@ use crate::signals;
 #[cfg(target_os = "linux")]
 fn run_uprobe_capture(
     targets: &[UprobeTarget],
+    backend: UprobeBackend,
     tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
-    super::uprobe::reader::capture_uprobe(targets, tx, ready_tx)
+    match backend {
+        UprobeBackend::Tracefs => super::uprobe::reader::capture_uprobe(targets, tx, ready_tx),
+        #[cfg(feature = "bpf")]
+        UprobeBackend::Bpf => super::uprobe::bpf::capture_bpf(targets, tx, ready_tx),
+        // Asked for by name in a build that does not carry it. Refused rather
+        // than quietly downgraded to tracefs: the whole reason to ask for this
+        // backend is the addresses, and a silent downgrade would produce a
+        // capture with none and no indication why.
+        #[cfg(not(feature = "bpf"))]
+        UprobeBackend::Bpf => {
+            let msg = "--uprobe-backend bpf needs a sipnab built with the `bpf` \
+                       feature; this binary does not carry it"
+                .to_string();
+            if let Some(tx) = ready_tx {
+                let _ = tx.send(Err(msg.clone()));
+            }
+            anyhow::bail!(msg)
+        }
+    }
 }
 
 /// Everywhere else this is unreachable — `bootstrap` refuses `--uprobe-tls`
@@ -41,6 +60,7 @@ fn run_uprobe_capture(
 #[cfg(not(target_os = "linux"))]
 fn run_uprobe_capture(
     targets: &[UprobeTarget],
+    _backend: UprobeBackend,
     _tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
@@ -53,6 +73,24 @@ fn run_uprobe_capture(
         let _ = tx.send(Err(msg.clone()));
     }
     anyhow::bail!(msg)
+}
+
+/// Which uprobe machinery reads the plaintext.
+///
+/// Two roads to the same `Packet`, and they differ in exactly one thing: only
+/// one of them can say who the peer was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UprobeBackend {
+    /// Kernel `tracefs` probes and `perf_event_open`. **The default**, because
+    /// it needs no BTF, no nightly toolchain and no extra build step — it runs
+    /// on the development host, which the BPF backend cannot. It sees no
+    /// socket, so its dialogs name a process rather than a peer.
+    #[default]
+    Tracefs,
+    /// A real BPF program pairing each write with its `tcp_sendmsg`, which is
+    /// what recovers the 5-tuple. Needs `--features bpf` at build time and a
+    /// kernel with `CONFIG_DEBUG_INFO_BTF` at run time.
+    Bpf,
 }
 
 /// One TLS library to probe, and the symbol to probe in it.
@@ -103,6 +141,8 @@ pub enum CaptureSource {
         /// one an operator happened to name captures that one and silently
         /// misses the rest. See [`crate::capture::uprobe::discover`].
         targets: Vec<UprobeTarget>,
+        /// Which machinery reads them.
+        backend: UprobeBackend,
     },
     /// Receive packets via HEP (Homer Encapsulation Protocol).
     Hep {
@@ -341,11 +381,12 @@ pub fn start_capture(
                 .spawn(move || file::capture_files(&paths, &config, tx, ready_tx))
                 .context("Failed to spawn file reader thread")?
         }
-        CaptureSource::Uprobe { targets } => {
+        CaptureSource::Uprobe { targets, backend } => {
             let targets = targets.clone();
+            let backend = *backend;
             thread::Builder::new()
                 .name("capture-uprobe".to_string())
-                .spawn(move || run_uprobe_capture(&targets, tx, ready_tx))
+                .spawn(move || run_uprobe_capture(&targets, backend, tx, ready_tx))
                 .context("Failed to spawn uprobe capture thread")?
         }
         #[cfg(feature = "hep")]

@@ -511,7 +511,7 @@ fn linked_code_targets_exist() {
     // `docs/internals/testing.md` +1, every other internals page unchanged.
     // Raised 343 -> 346 by the uprobe capture page: three links into
     // src/capture/uprobe/ and src/capture/resolve.rs.
-    const EXPECTED_CODE_LINKS: usize = 346;
+    const EXPECTED_CODE_LINKS: usize = 348;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

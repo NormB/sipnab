@@ -40,7 +40,7 @@ fn uprobe_tls_selects_the_uprobe_capture_source() {
     let plan = sipnab::app::bootstrap::plan(&cli, &config).expect("plan");
 
     match plan.source {
-        Some(CaptureSource::Uprobe { ref targets }) => {
+        Some(CaptureSource::Uprobe { ref targets, .. }) => {
             assert_eq!(targets.len(), 1);
             assert_eq!(targets[0].library, "/usr/lib/libssl.so.3");
             assert_eq!(
@@ -66,7 +66,7 @@ fn naming_a_library_is_enough_to_select_the_source() {
     let config = sipnab::config::Config::default();
     let plan = sipnab::app::bootstrap::plan(&cli, &config).expect("plan");
     match plan.source {
-        Some(CaptureSource::Uprobe { ref targets }) => {
+        Some(CaptureSource::Uprobe { ref targets, .. }) => {
             assert_eq!(targets[0].symbol, "wolfSSL_write");
         }
         other => panic!("expected an uprobe source, got {other:?}"),
@@ -90,7 +90,7 @@ fn uprobe_library_is_repeatable_and_each_gets_its_own_symbol() {
     let config = sipnab::config::Config::default();
     let plan = sipnab::app::bootstrap::plan(&cli, &config).expect("plan");
     match plan.source {
-        Some(CaptureSource::Uprobe { ref targets }) => {
+        Some(CaptureSource::Uprobe { ref targets, .. }) => {
             let symbols: Vec<&str> = targets.iter().map(|t| t.symbol.as_str()).collect();
             assert_eq!(
                 symbols,
@@ -116,7 +116,7 @@ fn uprobe_symbol_overrides_the_inferred_one() {
     let config = sipnab::config::Config::default();
     let plan = sipnab::app::bootstrap::plan(&cli, &config).expect("plan");
     match plan.source {
-        Some(CaptureSource::Uprobe { ref targets }) => {
+        Some(CaptureSource::Uprobe { ref targets, .. }) => {
             assert_eq!(targets[0].symbol, "SSL_write_ex");
         }
         other => panic!("expected an uprobe source, got {other:?}"),
@@ -171,6 +171,49 @@ fn a_flavour_sipnab_does_not_probe_is_rejected_at_parse_time() {
     let msg = err.to_string();
     assert!(
         msg.contains("openssl") && msg.contains("wolfssl"),
+        "the error must list what IS supported: {msg}"
+    );
+}
+
+/// The backend selector, and the refusal that keeps it honest.
+#[test]
+fn the_backend_defaults_to_tracefs_and_bpf_can_be_asked_for_by_name() {
+    let cli = Cli::try_parse_from(["sipnab", "-N", "--uprobe-tls"]).expect("parse");
+    assert_eq!(
+        cli.tls_args.uprobe_backend, "tracefs",
+        "the default must be the backend that works without BTF or nightly"
+    );
+
+    let chosen = Cli::try_parse_from([
+        "sipnab",
+        "-N",
+        "--uprobe-tls",
+        "--uprobe-backend",
+        "bpf",
+        "--uprobe-library",
+        "/usr/lib/libssl.so.3",
+    ])
+    .expect("parse");
+    assert_eq!(chosen.tls_args.uprobe_backend, "bpf");
+
+    let config = sipnab::config::Config::default();
+    let plan = sipnab::app::bootstrap::plan(&chosen, &config).expect("plan");
+    match plan.source {
+        Some(CaptureSource::Uprobe { backend, .. }) => {
+            assert_eq!(backend, sipnab::capture::UprobeBackend::Bpf);
+        }
+        other => panic!("expected an uprobe source, got {other:?}"),
+    }
+}
+
+/// A backend that does not exist is refused at parse time, with the two that do.
+#[test]
+fn an_unknown_backend_is_rejected_and_names_the_real_ones() {
+    let err = Cli::try_parse_from(["sipnab", "-N", "--uprobe-tls", "--uprobe-backend", "ebpf"])
+        .expect_err("only tracefs and bpf exist");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("tracefs") && msg.contains("bpf"),
         "the error must list what IS supported: {msg}"
     );
 }

@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# The kernel half of sipnab's BPF capture backend.
+#
+# A SEPARATE package with its own empty `[workspace]` table, and excluded from
+# sipnab's workspace in the root Cargo.toml. Both halves of that are needed: it
+# builds for `bpfel-unknown-none` with a nightly toolchain and `bpf-linker`,
+# and sipnab pins stable 1.97.1. Pulling it into the workspace would make a
+# stock `cargo build` demand a toolchain most contributors do not have, which
+# is exactly what TK10 was told not to do.
+[package]
+name = "sipnab-bpf"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "eBPF programs that pair TLS plaintext with the socket it went out on"
+repository = "https://github.com/NormB/sipnab"
+publish = false
+
+# Empty on purpose: this makes the package its own workspace root rather than a
+# member of sipnab's.
+[workspace]
+
+[dependencies]
+aya-ebpf = "0.1.1"
+sipnab-bpf-types = { path = "../crates/sipnab-bpf-types" }
+
+[[bin]]
+name = "sipnab-bpf"
+path = "src/main.rs"
+
+# Debug info carries the BTF the loader needs for map and program metadata.
+# Without it the object loads but the kernel cannot verify the map types.
+[profile.release]
+debug = 2
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"

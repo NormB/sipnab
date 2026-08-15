@@ -377,6 +377,12 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     } else if cli.tls_args.uprobe_tls || !cli.tls_args.uprobe_library.is_empty() {
         Some(CaptureSource::Uprobe {
             targets: plan_uprobe_targets(cli).map_err(PlanError::arg)?,
+            backend: match cli.tls_args.uprobe_backend.as_str() {
+                "bpf" => capture::UprobeBackend::Bpf,
+                // clap's parser admits only these two, so anything else here
+                // would be a parser change rather than operator input.
+                _ => capture::UprobeBackend::Tracefs,
+            },
         })
     } else if let Some(hep_addr) = cli.hep_args.hep_listen.as_ref() {
         #[cfg(feature = "hep")]

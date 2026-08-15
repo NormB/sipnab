@@ -1,0 +1,5 @@
+# The kernel half needs nightly for `-Z build-std`; sipnab itself does not and
+# pins 1.97.1. Scoped to this directory so it cannot leak into a host build.
+[toolchain]
+channel = "nightly"
+components = ["rust-src"]

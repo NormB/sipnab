@@ -20,6 +20,11 @@ fn main() {
     // matching.
     println!("cargo::rustc-check-cfg=cfg(sipnab_tsan)");
 
+    // The eBPF capture backend's kernel half. Behind the feature so that a
+    // stock `cargo build` never reaches it: it needs a nightly toolchain and
+    // `bpf-linker`, and this crate pins stable 1.97.1.
+    build_bpf();
+
     let commit = git(&["rev-parse", "--short=8", "HEAD"]).unwrap_or_default();
     let tag = git(&["describe", "--tags", "--exact-match", "HEAD"]).unwrap_or_default();
     // "-dirty" reflects only TRACKED modifications. `--untracked-files=no` keeps
@@ -77,3 +82,98 @@ fn git(args: &[&str]) -> Option<String> {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
+
+/// Build `bpf/` for `bpfel-unknown-none` and put the object where the loader's
+/// `include_bytes!` can find it.
+///
+/// **A separate package, on purpose.** `bpf/` carries its own empty
+/// `[workspace]` table and sits in the root manifest's `exclude` list, so a
+/// host build never resolves its dependencies or its nightly toolchain file.
+/// Pulling it into the workspace would make a stock `cargo build` demand a
+/// toolchain most contributors do not have.
+#[cfg(feature = "bpf")]
+fn build_bpf() {
+    use std::process::Stdio;
+
+    println!("cargo:rerun-if-changed=bpf/src");
+    println!("cargo:rerun-if-changed=bpf/Cargo.toml");
+    println!("cargo:rerun-if-changed=crates/sipnab-bpf-types/src");
+
+    let out_dir = std::path::PathBuf::from(
+        std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR for build scripts"),
+    );
+    // Its own target directory: cargo takes a lock per target dir, and the
+    // inner build runs while the outer one holds ours.
+    let target_dir = out_dir.join("bpf-target");
+
+    // `bpfel` on a little-endian host, `bpfeb` on a big-endian one. Derived
+    // rather than assumed, because the BPF object's byte order has to match the
+    // machine that will load it.
+    let endian = std::env::var("CARGO_CFG_TARGET_ENDIAN").unwrap_or_default();
+    let prefix = match endian.as_str() {
+        "big" => "bpfeb",
+        "little" => "bpfel",
+        other => panic!("cannot build BPF for an unknown target endianness: {other:?}"),
+    };
+    let bpf_target = format!("{prefix}-unknown-none");
+    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+
+    // `--manifest-path`, NOT `--package`. The kernel crate is deliberately
+    // excluded from this workspace, so cargo cannot resolve it by name from
+    // here — `aya-build` builds that way and fails with a package-not-found
+    // that says nothing about the cause.
+    let status = Command::new("rustup")
+        .args([
+            "run",
+            "nightly",
+            "cargo",
+            "build",
+            "--manifest-path",
+            "bpf/Cargo.toml",
+            "-Z",
+            "build-std=core",
+            "--bins",
+            "--release",
+            "--target",
+            &bpf_target,
+        ])
+        .arg("--target-dir")
+        .arg(&target_dir)
+        // Debug info carries the BTF the loader needs to describe its maps.
+        .env(
+            "CARGO_ENCODED_RUSTFLAGS",
+            format!("--cfg=bpf_target_arch=\"{arch}\"\x1f-Cdebuginfo=2\x1f-Clink-arg=--btf"),
+        )
+        // The outer build's wrappers point at the stable toolchain; the inner
+        // one must use nightly's own.
+        .env_remove("RUSTC")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("CARGO")
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .expect("could not run `rustup`, which the eBPF build needs to select nightly");
+
+    assert!(
+        status.success(),
+        "building the eBPF programs failed. This needs a nightly toolchain and \
+         bpf-linker, and bpf-linker must match the LLVM installed on this host \
+         (0.9.13 pairs with LLVM 19; 0.11 wants LLVM 23.1)"
+    );
+
+    let built = target_dir
+        .join(&bpf_target)
+        .join("release")
+        .join("sipnab-bpf");
+    let dest = out_dir.join("sipnab-bpf");
+    std::fs::copy(&built, &dest).unwrap_or_else(|e| {
+        panic!(
+            "the eBPF build reported success but produced no object at {}: {e}",
+            built.display()
+        )
+    });
+}
+
+/// Without the feature there is nothing to build, and nothing to require.
+#[cfg(not(feature = "bpf"))]
+fn build_bpf() {}

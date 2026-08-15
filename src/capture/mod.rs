@@ -67,8 +67,8 @@ pub mod writer;
 mod native;
 #[cfg(feature = "native")]
 pub use native::{
-    CaptureConfig, CaptureHandle, CaptureSource, DEFAULT_BUFFER_MB, UprobeTarget, start_capture,
-    start_multi_capture, stop_and_join,
+    CaptureConfig, CaptureHandle, CaptureSource, DEFAULT_BUFFER_MB, UprobeBackend, UprobeTarget,
+    start_capture, start_multi_capture, stop_and_join,
 };
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -785,6 +785,21 @@ impl PacketProcessor {
         // Reassembly disabled (`--no-reassembly`): every packet stands alone —
         // IP fragments and TCP segments are neither reassembled nor reframed.
         if !self.reassembly {
+            return smallvec![parsed];
+        }
+
+        // A uprobe read is a complete application write, not a segment of a
+        // byte stream. It is reported as TCP because that is what the TLS
+        // session runs over, but it never traversed a sequence space: it was
+        // taken where the application handed the bytes to its TLS library, in
+        // one call, with the message boundary the application chose.
+        //
+        // Feeding it to the TCP reassembler is what silence looked like before
+        // this: the reassembler orders segments by sequence number, a uprobe
+        // packet carries `tcp_seq: None`, and every message was held for
+        // neighbours that would never arrive. Both uprobe backends captured
+        // packets and produced zero SIP messages.
+        if parsed.input_origin == parse::InputOrigin::Uprobe {
             return smallvec![parsed];
         }
 
