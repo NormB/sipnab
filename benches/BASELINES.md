@@ -19,6 +19,94 @@ CONTRIBUTING.md "Running Benchmarks").
 > Do not edit an old one: the value of a baseline is that it records what was
 > actually measured, and rewriting it destroys exactly that.
 
+## 2026-08-15 — thor-02 (aarch64, Linux 6.8.12-rt-tegra, 14 cores), rustc 1.97.1, at 0.5.101
+
+**Not comparable to the entries below.** Every earlier baseline in this file was
+taken on opensips-1 — x86\_64 Debian, rustc 1.94. This is a different
+architecture *and* a different compiler, so a smaller or larger number here is
+not a regression or an improvement against them; it is a measurement of a
+different machine. Recorded as a first aarch64 baseline, to be compared against
+future aarch64 runs and nothing else.
+
+Taken at `064a1d0b`, the tree as released for 0.5.101, with
+`cargo bench --profile profiling`. Host idle 97-99% at launch (`vmstat`), no
+other workload running. Criterion medians; 36 outlier notices across the run,
+which is ordinary for a 14-core box and is why the widest-variance rows are
+called out below rather than presented as tight.
+
+### Parser
+
+| case | median |
+|---|---|
+| sip_parser/parse_invite | 606.62 ns |
+| sip_parser/parse_200ok | 404.93 ns |
+| sip_scaling/via_headers/1 | 413.10 ns |
+| sip_scaling/via_headers/5 | 599.27 ns |
+| sip_scaling/via_headers/10 | 902.21 ns |
+| sip_scaling/via_headers/20 | 1.6659 µs |
+| sdp_parser/parse_sdp | 926.30 ns |
+| rtp_parser/parse_rtp_header | 1.7321 ns |
+| filter_dsl/parse_complex_filter | 25.041 µs |
+
+`via_headers` scales close to linearly from 5 to 20 (599 ns → 1.67 µs for 4×
+the headers), which is the property that matters: a proxy chain does not make
+parsing super-linear.
+
+### Detection and decapsulation
+
+| case | median |
+|---|---|
+| sip_detection/is_sip_message_true | 12.824 ns |
+| sip_detection/is_sip_message_false | 6.9271 ns |
+| rtp_detection/is_rtp_packet_true | 769.57 ps |
+| rtp_detection/is_rtp_packet_false | 385.19 ps |
+| packet_decap/eth_ipv4_udp_160b | 99.675 ns |
+| packet_decap/payload_slice_zero_copy | 18.321 ns |
+| packet_decap/payload_copy_to_vec | 12.250 ns |
+
+The negative case is cheaper than the positive one in both detectors, which is
+the right way round: most packets on a busy trunk are neither.
+
+`payload_copy_to_vec` measuring *faster* than `payload_slice_zero_copy`
+(12.250 ns vs 18.321 ns) is the one result here that should not be read at face
+value. At this scale both are within a few nanoseconds of measurement floor and
+allocator warmth, and the names invite exactly the wrong conclusion. Do not cite
+this pair as evidence that copying beats slicing.
+
+### Packet path and stores
+
+| case | median |
+|---|---|
+| packet_process/udp_rtp_160b | 125.88 ns |
+| packet_process/udp_sip_invite | 125.75 ns |
+| packet_process/tcp_sip_single_segment | 1.3550 µs |
+| msg_pipeline/parse_and_insert | 2.6779 µs |
+| msg_pipeline/insert_move | 1.5991 µs |
+| msg_pipeline/insert_clone | 2.3046 µs |
+| dialog_store/message_existing_dialog | 490.26 ns |
+| dialog_store/new_dialog_at_cap_10k_rotate | 4.3433 µs |
+| stream_store/rtp_existing_stream | 139.20 ns |
+| stream_store/rtcp_match_1000_streams | 207.56 ns |
+
+`rtcp_match_1000_streams` at 207 ns says the RTCP-to-stream match is not doing a
+linear scan of a thousand streams.
+
+### TUI derived state
+
+| case | median |
+|---|---|
+| tui_derived/displayed_10k_plain | 5.2868 µs |
+| tui_derived/search_frame_10k | 108.15 µs |
+| tui_derived/prepare_ladder_200 | 168.21 µs |
+| tui_derived/ladder_frame_200 | 112.37 µs |
+| tui_derived/displayed_10k_search_miss | 2.1909 ms |
+
+`displayed_10k_search_miss` is the outlier worth knowing: **2.19 ms**, roughly
+400× `displayed_10k_plain`, because a search that matches nothing must touch
+every one of ten thousand rows. At 2 ms it is still under a frame, but it is the
+row to watch if the retention cap ever rises.
+
+
 ## 2026-07-06 — opensips-1, rustc 1.96, WS5f + WS4.3c result
 
 The layout/style split (WS5f) plus the cross-tick ladder cache (WS4.3c):

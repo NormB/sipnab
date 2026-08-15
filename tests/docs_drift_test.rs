@@ -2550,13 +2550,17 @@ fn no_documentation_table_repeats_a_row() {
         // say which. ONE table, doubled by the site mirror. The two increments
         // landed in separate branches, each correctly recording +4 and +2
         // against 528; merged, both apply.
+        // Raised 535 -> 539 on 2026-08-15 by the aarch64 benchmark baseline in
+        // benches/BASELINES.md: four tables, one per section (parser,
+        // detection/decap, packet path and stores, TUI derived state). Not
+        // mirrored to the site, so four and not eight.
         // Raised 534 -> 535 on 2026-08-14 by ONE table in docs/design/backlog.md:
         // the `TK` section's comparison of what sngrep's eBPF commits changed
         // against what sipnab already does, so neither is rebuilt by mistake.
         // Not doubled by a site mirror — docs/design/ is not published.
         tables,
-        535,
-        "walked {tables} tables, expected 535. More is fine — bump this. FEWER \
+        539,
+        "walked {tables} tables, expected 539. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
