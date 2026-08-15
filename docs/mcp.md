@@ -2860,11 +2860,11 @@ it, so any number it gave would describe a moment that has passed.
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 31 carry MCP annotations, so a host
+- **Every tool declares what it does.** All 32 carry MCP annotations, so a host
   can decide what to call without asking. Twenty-seven are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the five that are
-  not. No tool sets `openWorldHint`, because sipnab answers from the loaded
-  capture and contacts no external service.
+  not. Every tool sets `openWorldHint` to `false`, because sipnab answers from
+  the loaded capture and contacts no external service.
 - **sipnab fences capture-derived free text.** See
   [Untrusted capture text](#untrusted-capture-text) below — sipnab's input is
   written by whoever sent the packets, so sipnab marks the text it hands back.
@@ -2927,9 +2927,9 @@ confirmation:
 | `save_findings` | false | **false** | Appends one agent annotation. Additive, but each call records another, so repeating it is not free. |
 | `shutdown_server` | **true** | true | Ends the run. Gated on `--mcp-allow-shutdown`. |
 
-No tool sets `openWorldHint`. sipnab answers from the capture it has loaded and
-contacts no external service, so an agent cannot use a tool here to reach the
-network.
+Every tool sets `openWorldHint` to `false`, explicitly rather than by
+omission. sipnab answers from the capture it has loaded and contacts no external
+service, so an agent cannot use a tool here to reach the network.
 
 A test walks the registered router and fails if any tool carries no
 `readOnlyHint`, or if the set of non-read-only tools stops matching that table —
