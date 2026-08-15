@@ -10,6 +10,58 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.101] - 2026-08-14
+
+### Added
+
+- **`--hep-allow` accepts a bare address.** It demanded CIDR, so
+  `--hep-allow 10.0.0.40` exited with `missing /prefix` and the listener never
+  bound — which reads as a HEP problem and is a spelling problem, in exactly the
+  situation the flag exists for. A bare address now means that host alone: `/32`
+  for IPv4, `/128` for IPv6. Which way that defaults is the point: a host route
+  is the NARROWEST reading, so a missing prefix can only ever admit less.
+  Inferring a classful network from `10.0.0.0` would silently admit sixteen
+  million addresses nobody named, which is the opposite of what an allowlist is
+  for.
+
+### Security
+
+- **The runtime container takes Debian security updates.** `util-linux` 2.41-5
+  in the pinned base carries CVE-2026-53613 and CVE-2026-53614, both fixed in
+  2.41.5-0+deb13u1. Pinning the base by digest is right for reproducibility and
+  is also why the fix never arrived; bumping the digest would not have helped,
+  as the pin was already the newest published `debian:trixie-slim`. The runtime
+  stage now upgrades before it installs, verified to produce the fixed version.
+
+- **Uprobe-sourced input can never trigger an active response.** `ParsedPacket`
+  now carries `InputOrigin` — `Wire`, `Hep` or `Uprobe` — in place of
+  `from_hep: bool`, and scanner-kill answers each on its own terms: wire traffic
+  is always eligible, HEP only with `--hep-allow-kill`, and uprobe input NEVER,
+  with no opt-in. Bytes lifted out of a process carry no socket, so a response
+  would be aimed at a guess, and an opt-in there would be an invitation to send
+  one. The old boolean could describe only two of the three cases, so making the
+  third safe would have meant labelling it HEP.
+
+### Fixed
+
+- **Two MCP annotation claims that the code contradicted.** `docs/mcp.md` said
+  "All 31" tools carry annotations where the same page said "the 32 tools" three
+  paragraphs later — it is 32, counted from the source as 27 `readOnlyHint` plus
+  5 write verbs. It also said "No tool sets `openWorldHint`" when all 32 set it
+  explicitly to `false`, which is the opposite of what a reader would find.
+
+### Internal
+
+- **Groundwork for reading SIP over TLS from a process (TK7), not yet reachable
+  by an operator.** The read path is complete and measured against a live
+  kernel — ELF symbol offsets translated through their `PT_LOAD` segment,
+  length-banded uprobes, a `perf_event_open` ring reader, record decoding at the
+  offsets the kernel publishes, and acceptance rules that truncate to the length
+  the application wrote and wipe the rest. There is no flag to switch any of it
+  on: nothing calls `install()`, and the 5-tuple recovery that would let such
+  dialogs name a peer is not built. Frame pointers minted from it refuse to
+  resolve and say why, since the bytes were never on a wire.
+
 ### Changed
 
 - **Media hints name the ports, not just the addresses.** The one-way-audio
