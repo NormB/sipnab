@@ -15,6 +15,8 @@ use anyhow::{Context, Result};
 use super::channel::PacketTx;
 #[cfg(feature = "hep")]
 use super::hep;
+#[cfg(target_os = "linux")]
+use super::uprobe;
 use super::{device, file, live};
 use crate::signals;
 
@@ -36,6 +38,17 @@ pub enum CaptureSource {
     File {
         /// Capture files, in the order they are to be read.
         paths: Vec<std::path::PathBuf>,
+    },
+    /// Read SIP plaintext out of a process's TLS library with uprobes.
+    ///
+    /// Unlike every other source this one observes no wire at all: the bytes
+    /// are taken where an application hands them to OpenSSL, so there is no
+    /// addressing and no frame. See [`crate::capture::uprobe`].
+    Uprobe {
+        /// Path of the TLS library to probe.
+        library: String,
+        /// Exported function to probe, normally `SSL_write`.
+        symbol: String,
     },
     /// Receive packets via HEP (Homer Encapsulation Protocol).
     Hep {
@@ -275,6 +288,14 @@ pub fn start_capture(
                 .context("Failed to spawn file reader thread")?
         }
         #[cfg(feature = "hep")]
+        CaptureSource::Uprobe { library, symbol } => {
+            let library = library.clone();
+            let symbol = symbol.clone();
+            thread::Builder::new()
+                .name("capture-uprobe".to_string())
+                .spawn(move || uprobe::reader::capture_uprobe(&library, &symbol, tx, ready_tx))
+                .context("Failed to spawn uprobe capture thread")?
+        }
         CaptureSource::Hep {
             bind_addr,
             allowlist,

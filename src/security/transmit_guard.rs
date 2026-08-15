@@ -75,6 +75,9 @@ impl TransmitPermit {
     /// Grant permission to transmit when `source` is live, refuse when it is a
     /// capture file.
     ///
+    /// `Uprobe` is refused for a reason neither of the others has: it carries
+    /// no addressing at all.
+    ///
     /// `Live` is the interface case the kill path was designed for. `Hep` is
     /// also real time — packets arrive over a socket as they happen — so the
     /// addresses are current and the existing, narrower HEP gate
@@ -85,7 +88,14 @@ impl TransmitPermit {
     pub fn for_source(source: &CaptureSource) -> Option<Self> {
         match source {
             CaptureSource::Live { .. } | CaptureSource::Hep { .. } => Some(Self(())),
-            CaptureSource::File { .. } => None,
+            // A file has historical addresses and uninvolved third parties.
+            // A uprobe read has NO addresses: sipnab took the bytes where an
+            // application handed them to its TLS library and never saw a
+            // socket, so there is nowhere a response could honestly go. This is
+            // the structural half of the same refusal `InputOrigin::Uprobe`
+            // makes at the packet level -- the permit cannot be built, so the
+            // kill worker cannot be spawned and its sends cannot compile.
+            CaptureSource::File { .. } | CaptureSource::Uprobe { .. } => None,
         }
     }
 }

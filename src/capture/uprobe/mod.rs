@@ -26,6 +26,9 @@ pub mod elf;
 /// combinations that carry no `libc` at all.
 #[cfg(feature = "native")]
 pub mod perf;
+/// Running the source: install, drain, convert, send. Needs `libc` via `perf`.
+#[cfg(feature = "native")]
+pub mod reader;
 pub mod record;
 
 /// Fetch sizes, in bytes, for the banded probe set.
@@ -64,6 +67,56 @@ pub fn filter_for(band: usize) -> String {
         Some(prev) => format!("len > {prev} && len <= {band}"),
         None => format!("len > 0 && len <= {band}"),
     }
+}
+
+/// SIP start-line tokens the kernel filter matches, so non-SIP writes never
+/// reach userspace.
+///
+/// Requests begin with a method token; responses begin with `SIP/2.0`. Fourteen
+/// methods plus the response form is what a filter needs to pass SIP and drop
+/// everything else.
+pub const SIP_START_TOKENS: [&str; 15] = [
+    "INVITE",
+    "ACK",
+    "BYE",
+    "CANCEL",
+    "OPTIONS",
+    "REGISTER",
+    "PRACK",
+    "SUBSCRIBE",
+    "NOTIFY",
+    "PUBLISH",
+    "INFO",
+    "REFER",
+    "MESSAGE",
+    "UPDATE",
+    "SIP/2.0",
+];
+
+/// The tracefs filter for one band: in-kernel length AND content matching.
+///
+/// **This is the filter doing the work sngrep needs a BPF program for.** These
+/// probes sit on every process that maps the library, so a filter is what makes
+/// the feature affordable rather than an optimisation — and the kernel
+/// evaluates it BEFORE recording the event, so a non-SIP write costs a glob
+/// comparison and never a ring slot or a wakeup.
+///
+/// Measured on a 6.8 kernel: a probe filtered to `s ~ "INVITE*"` delivered the
+/// `INVITE` written through `SSL_write` and **suppressed** a non-SIP write on
+/// the same connection entirely — one event, not two. The 15-token chain below
+/// is accepted by the same filter parser.
+///
+/// The string argument exists only to be matched on. Payload still arrives
+/// through the banded byte fetches, because `:string` stops at the first NUL
+/// and a SIP message is not NUL-terminated.
+#[must_use]
+pub fn kernel_filter_for(band: usize) -> String {
+    let content = SIP_START_TOKENS
+        .iter()
+        .map(|t| format!("s ~ \"{t}*\""))
+        .collect::<Vec<_>>()
+        .join(" || ");
+    format!("({}) && ({content})", filter_for(band))
 }
 
 /// Plaintext a probe delivered, reduced to what may be used.
@@ -171,7 +224,10 @@ pub fn probe_name(pid: u32, band: usize) -> String {
 #[must_use]
 pub fn install_line(name: &str, library: &str, offset: u64, band: usize) -> Option<String> {
     let (buf_reg, len_reg) = arg_registers()?;
-    let mut line = format!("p:{name} {library}:0x{offset:x}");
+    // `s` exists to be filtered on in-kernel, not to be read: `:string` stops
+    // at the first NUL and a SIP message is not NUL-terminated, so the payload
+    // still comes from the banded byte fetches below.
+    let mut line = format!("p:{name} {library}:0x{offset:x} s=+0({buf_reg}):string");
     // 64 bytes is the ceiling for ONE fetch argument, so a band above it is
     // several side by side rather than one larger read.
     let mut at = 0usize;
@@ -243,7 +299,10 @@ impl InstalledProbes {
             };
             held.append("uprobe_events", &line)?;
             held.names.push(name.clone());
-            held.write(&format!("events/uprobes/{name}/filter"), &filter_for(band))?;
+            held.write(
+                &format!("events/uprobes/{name}/filter"),
+                &kernel_filter_for(band),
+            )?;
             // Deliberately NOT written: events/uprobes/<name>/enable.
             //
             // That file switches the event on for tracefs's own text readers,
@@ -414,6 +473,50 @@ pub fn to_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The filter must bound BOTH length and content, or one of the two jobs is
+    /// not being done in the kernel.
+    #[test]
+    fn the_kernel_filter_bounds_length_and_content_together() {
+        let f = kernel_filter_for(64);
+        assert!(f.contains("len > 0 && len <= 64"), "length band: {f}");
+        assert!(f.contains("s ~ \"INVITE*\""), "SIP requests: {f}");
+        assert!(f.contains("s ~ \"SIP/2.0*\""), "SIP responses: {f}");
+        assert!(
+            f.starts_with('(') && f.contains(") && ("),
+            "the two halves must both apply, not either: {f}"
+        );
+    }
+
+    /// Every method sipnab claims to capture must be in the kernel filter, or
+    /// it is dropped before userspace ever sees it -- which reads as "that
+    /// traffic did not happen".
+    #[test]
+    fn every_sip_start_token_reaches_the_filter() {
+        let f = kernel_filter_for(2048);
+        for t in SIP_START_TOKENS {
+            assert!(f.contains(&format!("s ~ \"{t}*\"")), "{t} missing from {f}");
+        }
+        assert_eq!(
+            SIP_START_TOKENS.len(),
+            15,
+            "14 methods plus the response form"
+        );
+    }
+
+    /// The probe must fetch the string the filter matches on, or the filter
+    /// references a field that does not exist and the kernel refuses the write.
+    #[test]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    fn the_probe_fetches_the_string_its_filter_matches_on() {
+        let line = install_line("t", "/lib/libssl.so.3", 0x1000, 64).expect("known arch");
+        assert!(line.contains("s=+0("), "string arg for the filter: {line}");
+        assert!(line.contains(":string"), "typed as string: {line}");
+        assert!(
+            line.contains(":x8[64]"),
+            "payload still comes from bytes: {line}"
+        );
+    }
 
     fn delivered(bytes: &[u8]) -> Delivered {
         Delivered {

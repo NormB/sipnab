@@ -2275,7 +2275,12 @@ fn parse_packet_unstamped(packet: &Packet) -> Result<ParsedPacket, CaptureError>
         let transport = ip_protocol_to_transport(meta.ip_protocol)
             .ok_or(CaptureError::UnsupportedIpProtocol(meta.ip_protocol))?;
         return Ok(ParsedPacket {
-            frame: None,
+            // Carried, not dropped. A uprobe read's whole provenance is this
+            // pointer -- it is the only thing that says which process the
+            // bytes came out of -- and a HEP packet's pointer is equally
+            // meaningful. `frame_locator` yields None when either half is
+            // missing, which is the old behaviour for sources that set neither.
+            frame: packet.frame_locator(),
             timestamp: packet.timestamp,
             src_addr: meta.src_addr,
             dst_addr: meta.dst_addr,
@@ -2294,7 +2299,19 @@ fn parse_packet_unstamped(packet: &Packet) -> Result<ParsedPacket, CaptureError>
             // there is nothing to read and nothing honest to guess. `Some(0)`
             // here would tell an operator their HEP-fed trunk is unmarked.
             dscp: None,
-            input_origin: crate::capture::parse::InputOrigin::Hep,
+            // Pre-parsed no longer implies HEP: a uprobe read has no IP header
+            // either. The kind comes from the source name through the SAME
+            // function that recovers it for a frame pointer, so the two cannot
+            // disagree about the same string -- and a disagreement here would
+            // decide whether scanner-kill may transmit.
+            input_origin: match packet
+                .interface
+                .as_deref()
+                .map(crate::capture::packet::FrameSource::from_source_name)
+            {
+                Some(crate::capture::packet::FrameSource::Uprobe { .. }) => InputOrigin::Uprobe,
+                _ => InputOrigin::Hep,
+            },
         });
     }
 
@@ -4714,6 +4731,32 @@ mod tests {
         assert_eq!(parsed.fragment_offset, None);
         assert!(!parsed.more_fragments);
         assert_eq!(parsed.ip_protocol, 17);
+    }
+
+    /// A pre-parsed packet from a uprobe must NOT be labelled HEP. Both are
+    /// pre-parsed -- neither has an IP header -- so the branch cannot assume
+    /// HEP any more. Getting this wrong would let `--hep-allow-kill` re-enable
+    /// transmission for input that carries no address at all.
+    #[test]
+    fn parse_packet_flags_a_uprobe_source_as_uprobe_origin() {
+        let pkt = Packet::with_pre_parsed(
+            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+            b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n".to_vec(),
+            Some("uprobe:opensips/1234".to_string()),
+            super::super::packet::PreParsed {
+                src_addr: "0.0.0.0".parse().unwrap(),
+                dst_addr: "0.0.0.0".parse().unwrap(),
+                src_port: 0,
+                dst_port: 0,
+                ip_protocol: 6,
+            },
+        );
+        assert_eq!(
+            parse_packet(&pkt).unwrap().input_origin,
+            InputOrigin::Uprobe,
+            "a uprobe read must never be labelled HEP: it has no address at \
+             all, so no opt-in may make it transmit-eligible"
+        );
     }
 
     /// A pre-parsed (HEP-listener-origin) packet is flagged `Hep` so

@@ -946,6 +946,62 @@ the plaintext — the `--pcap-export-mode encrypted+dsb` case, where a third par
 must be able to verify the capture independently. `TK7` cannot serve that, since
 it never sees ciphertext. Until someone asks for that, this stays declined.
 
+### Prior art that confirms the cost, and softens one argument
+
+[`pcap-sip`](https://gitlab.com/wisteriabg/pcap-sip/) (Sergey Safarov, the
+author of sngrep PR 539) is a Rust SIP capture workspace that implements this
+exact feature with [`aya`](https://aya-rs.dev). Read 2026-08-15. It is
+**GPL-3.0-or-later** and sipnab is MIT OR Apache-2.0, so nothing there can be
+vendored, copied or derived from — this entry records what it demonstrates,
+not code to take.
+
+**It confirms the decisive cost.** `crates/pcap-sip-core/src/ebpf/offsets.rs`
+is the struct-offset table this section declines, made concrete — `ssl_session:
+0x918`, `session_master_key: 0x50`, `ssl_s3_client_random: 0x160`, one set per
+OpenSSL version — and its own doc comment records that the values come from
+ecapture's profiles. Those constants must be re-derived for every OpenSSL
+release, by someone, forever.
+
+**It weakens one of the supporting arguments, and only that one.** This entry
+leaned partly on aya being a heavy build commitment. `pcap-sip` shows a clean
+pattern: the `no_std` BPF crate is a separate package **excluded** from the host
+workspace, carrying its own empty `[workspace]` table so cargo treats it
+independently, built for `bpfel-unknown-none` by `aya-build` from the parent's
+[`build.rs`](https://github.com/NormB/sipnab/blob/main/build.rs), behind an `aya_build_skip` cfg so a host build can opt out entirely.
+That is a demonstrated route rather than a theoretical one.
+
+**Why the decline still stands.** The offset table is a consequence of the
+TARGET, not of choosing aya. `pcap-sip` reads master secrets out of `SSL`
+internals, which requires knowing that struct's layout. `TK7` reads plaintext
+from `SSL_write`, whose signature is **ABI** rather than internals, so it needs
+only ELF function symbols and no struct layout at all. Same toolkit, different
+target, and only one of them owes a table.
+
+**A correction to this section, made the same day it was written.** The
+paragraph here first claimed that in-kernel filtering was the one thing that
+would make `aya` worth its cost, since these probes see every process that maps
+the library and sngrep prefilters in kernel space for exactly that reason. That
+was wrong, and measurement rather than argument settled it: **tracefs filters do
+content matching in the kernel already.**
+
+A fetch argument typed `:string` can be glob-matched by the event filter, and
+the kernel evaluates that filter *before recording the event*. Measured on a 6.8
+kernel: a probe filtered to `s ~ "INVITE*"` delivered an `INVITE` written
+through `SSL_write` and **suppressed a non-SIP write on the same connection
+entirely** — one event, not two. A 15-term chain covering every SIP method plus
+the `SIP/2.0` response form is accepted by the same parser, and one probe can
+carry the string to filter on *alongside* the banded byte fetches that deliver
+the payload.
+
+So sipnab prefilters in kernel space today, with no BPF program, no
+`bpf-linker` and no nightly toolchain — see `kernel_filter_for` in
+[`src/capture/uprobe/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/uprobe/mod.rs). The userspace `is_interesting` check
+remains as a second line, because a band is a bound and a glob is a prefix.
+
+That removes the last argument for `aya` in this feature. `TK6` stays declined
+on the offset table, which is a property of reading `SSL` internals and is not
+addressed by any of this.
+
 ---
 
 ## Conditions, in one place
