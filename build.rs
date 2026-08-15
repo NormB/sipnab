@@ -91,7 +91,7 @@ fn git(args: &[&str]) -> Option<String> {
 /// host build never resolves its dependencies or its nightly toolchain file.
 /// Pulling it into the workspace would make a stock `cargo build` demand a
 /// toolchain most contributors do not have.
-#[cfg(feature = "bpf")]
+#[cfg(all(feature = "bpf", target_os = "linux"))]
 fn build_bpf() {
     use std::process::Stdio;
 
@@ -200,6 +200,7 @@ fn build_bpf() {
     });
 }
 
-/// Without the feature there is nothing to build, and nothing to require.
-#[cfg(not(feature = "bpf"))]
+/// Without the feature — or off Linux, where the programs could never load —
+/// there is nothing to build and nothing to require.
+#[cfg(not(all(feature = "bpf", target_os = "linux")))]
 fn build_bpf() {}
