@@ -2130,7 +2130,7 @@ self-contained second instance from the source tree's own binary and modules on
 `127.0.0.1:5063`, documented in `/home/gator/sipnab-tls-test/README` on that
 host. The packaged instance is untouched.
 
-- [x] **TK6 — DECLINED 2026-08-14, on maintenance.** Full verdict:
+- [ ] **TK6 — APPROVED 2026-08-15, reversing the 2026-08-14 decline.** Full verdict:
   [`deferred-and-declined.md`](https://github.com/NormB/sipnab/blob/main/docs/design/deferred-and-declined.md) §6. It buys only "no second tool on the SBC" and pays
   a struct-offset table per OpenSSL release for it, while `TK7` gets the same
   eBPF-shaped capability from `SSL_write`/`SSL_read`, whose signatures are ABI

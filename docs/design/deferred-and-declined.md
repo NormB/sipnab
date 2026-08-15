@@ -915,7 +915,7 @@ is a different mechanism at a fraction of the cost — see `CT11`. Full verdict:
 
 ---
 
-## 6. Native TLS **secret** extraction (`TK6`) — **declined, on maintenance**
+## 6. Native TLS **secret** extraction (`TK6`) — **REVERSED: approved 2026-08-15**
 
 Decided 2026-08-14, after `TK7`'s mechanism was measured. Note carefully what
 this declines and what it does not: it declines sipnab growing its own
@@ -1002,6 +1002,43 @@ That removes the last argument for `aya` in this feature. `TK6` stays declined
 on the offset table, which is a property of reading `SSL` internals and is not
 addressed by any of this.
 
+### Decision reversed by the owner, 2026-08-15
+
+**`TK6` is approved and being built.** The analysis above is kept in the tense
+it was written in, per this page's method — it is the reasoning that produced a
+decline, and a reversal that erased it would teach nothing. What changed is the
+decision, not the facts: the offset table is still a real, permanent cost, and
+the owner has accepted it.
+
+Three findings from the day the decline was written now shape the build rather
+than argue against it:
+
+- **The offsets cannot be copied from `pcap-sip`.** Its `offsets.rs` is
+  GPL-3.0-or-later and sipnab is MIT OR Apache-2.0. sipnab needs its own
+  derivation.
+- **There is a licence-clean source for them.** OpenSSL 3.x is **Apache-2.0**
+  (confirmed from this host's `libssl3t64` copyright), which is compatible, so
+  offsets may be derived from OpenSSL's own struct definitions.
+- **No exported symbol hands the secret over.** `SSL_SESSION_get_master_key`
+  and `SSL_get_client_random` are exported, but a uprobe cannot *call* a
+  function — it can only observe one an application already calls, and
+  applications do not call these. So a struct read is unavoidable, which is
+  exactly what makes the offsets load-bearing.
+
+**The mechanism is available today.** tracefs fetch arguments support **nested
+dereference** — `+0x50(+0x918(%x0)):x8[48]` is accepted by a 6.8 kernel — so
+`ssl->session->master_key` is readable through the same probe machinery `TK7`
+already uses. `TK6` therefore does not depend on adopting `aya`.
+
+**The guard that makes a wrong offset loud** still stands and is now a build
+requirement rather than a nice-to-have: sipnab holds the decryptor in the same
+process, so an extracted secret is **validated by attempting a decryption before
+it is accepted**. A bad offset then produces a named error instead of a capture
+that silently decrypts nothing — a check a standalone extractor cannot make,
+having no decryptor to check against.
+
+---
+
 ---
 
 ## Conditions, in one place
@@ -1017,7 +1054,7 @@ addressed by any of this.
 | §5c PF_RING | Reopens only if ntop relicenses the `libpfring` blobs compatibly with MIT-OR-Apache-2.0. Not otherwise |
 | §5d AF_XDP | Reopens only if the kernel grows a tee (`clone_redirect` in `xdp_func_proto`) **and** an egress path. Both, not either |
 | §5e XDP as a capture filter | Does not reopen. It is on the wrong side of the tap; no permission change affects that |
-| §6 Native TLS secret extraction (`TK6`) | Reopens only if sipnab needs the encrypted bytes *and* their secrets together (`--pcap-export-mode encrypted+dsb`), which `TK7` cannot serve. Not otherwise |
+| §6 Native TLS secret extraction (`TK6`) | **Reversed 2026-08-15 — approved and being built.** The offset cost is accepted; offsets derive from OpenSSL's Apache-2.0 sources, never from GPL prior art |
 
 The two feature decisions still open, §1 and §3, do not move on "someone asked
 again"; they move on the facts named above. The §5 technologies do not move on
