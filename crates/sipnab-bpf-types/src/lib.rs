@@ -132,18 +132,15 @@ pub struct SockOffsets {
     pub valid: u32,
 }
 
-/// # Safety
-///
-/// `#[repr(C)]`, every field a fixed-size integer or array of them, no padding
-/// the compiler chooses and no pointers — which is exactly what `Pod` asserts.
-/// The layout test below pins it, so a field added without thinking fails
-/// there rather than in a map read.
+// SAFETY: `#[repr(C)]`, every field a fixed-size integer or an array of them,
+// no padding the compiler chooses and no pointers — which is exactly what `Pod`
+// asserts. `every_field_sits_where_both_halves_expect_it` pins the layout, so a
+// field added without thinking fails there rather than inside a map read.
 #[cfg(feature = "pod")]
 unsafe impl aya::Pod for SockOffsets {}
 
-/// # Safety
-///
-/// As above. The 2 KiB payload array is bytes; nothing here is a reference.
+// SAFETY: as above. The 2 KiB payload is a byte array; nothing here is a
+// reference, and any byte pattern is a valid value.
 #[cfg(feature = "pod")]
 unsafe impl aya::Pod for TlsRecord {}
 

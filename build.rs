@@ -122,6 +122,32 @@ fn build_bpf() {
     // excluded from this workspace, so cargo cannot resolve it by name from
     // here — `aya-build` builds that way and fails with a package-not-found
     // that says nothing about the cause.
+    // Can this machine build it at all? `--all-features` is the pre-push clippy
+    // gate, the rustdoc gate and every contributor's habit, and it sweeps up
+    // every feature including this one. Exploding here would mean a contributor
+    // without nightly cannot build sipnab -- the exact thing TK10 was told not
+    // to do -- so a missing toolchain degrades instead.
+    let have_linker = Command::new("bpf-linker")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !have_linker {
+        println!(
+            "cargo:warning=bpf-linker not found, so the `bpf` feature is compiled \
+             WITHOUT its kernel programs. sipnab builds and every other backend \
+             works; --uprobe-backend bpf will refuse at runtime rather than \
+             capture nothing. Install it with `cargo install bpf-linker` (0.9.13 \
+             pairs with LLVM 19; 0.11 wants LLVM 23.1)."
+        );
+        // An empty object, so `include_bytes!` still resolves. The loader
+        // checks for it and refuses by name -- never a silent no-op capture.
+        std::fs::write(out_dir.join("sipnab-bpf"), b"")
+            .expect("could not write the placeholder BPF object");
+        return;
+    }
+
     let status = Command::new("rustup")
         .args([
             "run",

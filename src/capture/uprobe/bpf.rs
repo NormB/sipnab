@@ -39,9 +39,6 @@ use super::btf::Btf;
 use super::reader::Target;
 use crate::capture::channel::PacketTx;
 
-/// TLS runs over TCP; that is not in doubt even when the addresses are.
-const IP_PROTO_TCP: u8 = 6;
-
 /// The compiled kernel programs.
 ///
 /// Built from `bpf/` by [`build.rs`](https://github.com/NormB/sipnab/blob/main/build.rs)
@@ -104,6 +101,19 @@ impl BpfReader {
     /// the tracefs one without it, so falling back silently would leave an
     /// operator believing they had addresses they do not have.
     pub fn attach(targets: &[Target]) -> io::Result<Self> {
+        // Built on a machine without `bpf-linker`: the feature is compiled, the
+        // kernel programs are not. Refused by name rather than attached to
+        // nothing, because a capture attached to nothing reads exactly like a
+        // quiet trunk.
+        if PROGRAM.is_empty() {
+            return Err(io::Error::other(
+                "this binary carries the `bpf` feature but no kernel programs: it \
+                 was built on a machine without bpf-linker. Rebuild where \
+                 `cargo install bpf-linker` has run, or use --uprobe-backend \
+                 tracefs, which needs neither it nor BTF",
+            ));
+        }
+
         let offsets = Btf::from_sys_fs()
             .and_then(|btf| btf.sock_offsets())
             .map_err(|e| {

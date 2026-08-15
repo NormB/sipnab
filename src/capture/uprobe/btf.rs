@@ -427,8 +427,10 @@ mod tests {
         fn int(&mut self, name: &str, size: u32) -> u32 {
             let n = self.intern(name);
             self.types.extend_from_slice(&n.to_le_bytes());
-            self.types
-                .extend_from_slice(&((1u32 << 24) | 0).to_le_bytes());
+            // kind INT in bits 24..28, vlen 0 — spelled out so the shape of
+            // the info word stays readable next to the other builders.
+            let info = kind::INT << 24;
+            self.types.extend_from_slice(&info.to_le_bytes());
             self.types.extend_from_slice(&size.to_le_bytes());
             self.types.extend_from_slice(&0u32.to_le_bytes());
             self.next_id()
