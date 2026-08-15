@@ -1411,6 +1411,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sipnab-bpf-types",
  "smallvec",
  "tempfile",
  "thiserror 2.0.19",
@@ -1422,6 +1423,10 @@ dependencies = [
  "walkdir",
  "zeroize",
 ]
+
+[[package]]
+name = "sipnab-bpf-types"
+version = "0.1.0"
 
 [[package]]
 name = "sipnab-fuzz"
