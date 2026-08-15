@@ -502,6 +502,53 @@ automatically) and x86_64 (Debian 13, OpenSSL 3.5.6, BTF present).
 - A keylog is key material. It decrypts every session it covers, so treat the file as a secret: sipnab disables core dumps once decryption is active for the same reason.
 - Keys only appear for handshakes eCapture was running for. Start it before the calls you care about — it cannot recover a session whose handshake it missed.
 
+### 7f. Decrypt without writing the keys to disk
+
+7e leaves master secrets in a file, and that file decrypts every session it
+covers — which is why the pitfall above says to treat it as a secret. sipnab can
+take the same keylog lines over a pipe instead, so they never reach a disk at
+all.
+
+Hand sipnab the read end of a pipe with `--keylog-fd`:
+
+```bash
+sudo sh -c 'ecapture tls -m keylog --keylogfile=/dev/stdout | sipnab -N -d eth0 --keylog-fd 0'
+```
+
+Or use a named pipe, when a supervisor starts the two halves separately:
+
+Create the pipe once:
+
+```bash
+sudo mkfifo -m 600 /run/sip.keys
+```
+
+then read it as a live stream:
+
+```bash
+sudo sipnab -N -d eth0 --keylog /run/sip.keys --keylog-watch
+```
+
+`--keylog` accepts a FIFO and reads it as a live stream; `--keylog-fd` implies
+`--keylog-watch`, since a descriptor from a running producer has nothing to read
+at startup and everything to read later. Pass one or the other, never both.
+
+**sipnab cannot start the extractor for you, and that is deliberate.** It sets
+`PR_SET_NO_NEW_PRIVS` at startup and every child inherits it, so a process
+sipnab spawns can never acquire the `CAP_BPF` eCapture needs. Start the
+extractor from a supervisor and hand sipnab the read end.
+
+**Pitfalls:**
+
+- sipnab opens a FIFO named by `--keylog` **before** it drops privileges, for
+  the same reason it opens capture devices there. A path under `/run` is
+  unreachable once sipnab has dropped to an unprivileged user or entered a
+  `--chroot`.
+- An inherited descriptor needs no privilege at all, so `--keylog-fd` works
+  whatever sipnab drops to afterwards.
+- Core dumps are still disabled, exactly as for a keylog file: the secrets
+  arrive over a pipe but land in the same process memory.
+
 ---
 
 ## 8. Run sipnab as an MCP server
