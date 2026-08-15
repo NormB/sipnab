@@ -67,7 +67,7 @@ pub mod writer;
 mod native;
 #[cfg(feature = "native")]
 pub use native::{
-    CaptureConfig, CaptureHandle, CaptureSource, DEFAULT_BUFFER_MB, start_capture,
+    CaptureConfig, CaptureHandle, CaptureSource, DEFAULT_BUFFER_MB, UprobeTarget, start_capture,
     start_multi_capture, stop_and_join,
 };
 

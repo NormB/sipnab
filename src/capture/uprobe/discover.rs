@@ -239,6 +239,124 @@ pub fn discover() -> Vec<TlsLibrary> {
     discover_in(Path::new("/proc"))
 }
 
+/// One library sipnab has decided to probe, and the symbol to probe in it.
+///
+/// Distinct from [`crate::capture::UprobeTarget`] so this module stays
+/// compilable in feature combinations that carry no capture backend at all —
+/// the planning rules are ordinary string handling and are worth testing there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedTarget {
+    /// Path that names the library from sipnab's own mount namespace.
+    pub library: PathBuf,
+    /// The write symbol to resolve in it.
+    pub symbol: String,
+}
+
+/// Turn the operator's flags and what was discovered into a probe list.
+///
+/// Two routes, and the first wins. Explicit `--uprobe-library` paths bypass
+/// discovery entirely, which is what reaches a library nothing has mapped yet.
+/// Otherwise the discovered set is narrowed by flavour.
+///
+/// # Errors
+///
+/// A message for the operator when nothing would be probed, or when a named
+/// library cannot be classified and no symbol was given. **Never an empty list
+/// returned as success:** a capture attached to nothing produces exactly what a
+/// quiet trunk produces, and the difference has to be stated at startup or it
+/// will not be noticed at all.
+pub fn plan_targets(
+    explicit: &[String],
+    symbol: Option<&str>,
+    flavours: &[Flavour],
+    discovered: Vec<TlsLibrary>,
+) -> Result<Vec<PlannedTarget>, String> {
+    if !explicit.is_empty() {
+        return explicit
+            .iter()
+            .map(|path| {
+                let library = PathBuf::from(path);
+                let symbol = match symbol {
+                    Some(s) => s.to_string(),
+                    None => classify(&library)
+                        .ok_or_else(|| {
+                            format!(
+                                "cannot tell which TLS library '{path}' is from its name, so \
+                                 sipnab does not know which write symbol to probe. Name it \
+                                 with --uprobe-symbol (SSL_write for OpenSSL, wolfSSL_write \
+                                 for wolfSSL)"
+                            )
+                        })?
+                        .write_symbol()
+                        .to_string(),
+                };
+                Ok(PlannedTarget { library, symbol })
+            })
+            .collect();
+    }
+
+    let found = select(discovered, flavours);
+    if found.is_empty() {
+        return Err(
+            "no TLS library is mapped by any process sipnab can see. Either nothing \
+             on this host is using OpenSSL or wolfSSL, or sipnab is not privileged \
+             enough to read /proc/<pid>/maps — run as root, or name a library with \
+             --uprobe-library"
+                .to_string(),
+        );
+    }
+
+    let mut targets = Vec::new();
+    let mut unreachable = Vec::new();
+    for lib in found {
+        match lib.probe_path() {
+            Some(library) => targets.push(PlannedTarget {
+                library,
+                symbol: symbol.map_or_else(
+                    || lib.flavour.write_symbol().to_string(),
+                    ToString::to_string,
+                ),
+            }),
+            // Named rather than dropped: this is a library that IS carrying
+            // traffic and will NOT be captured.
+            None => unreachable.push(lib.path.display().to_string()),
+        }
+    }
+    if targets.is_empty() {
+        return Err(format!(
+            "every TLS library found is unreachable from sipnab's mount namespace \
+             ({}). The processes using them are most likely containerised and \
+             sipnab cannot read /proc/<pid>/root — run as root",
+            unreachable.join(", ")
+        ));
+    }
+    if !unreachable.is_empty() {
+        tracing::warn!(
+            "uprobe: {} TLS librar{} in use cannot be reached from sipnab's mount \
+             namespace and will NOT be captured: {}",
+            unreachable.len(),
+            if unreachable.len() == 1 { "y" } else { "ies" },
+            unreachable.join(", ")
+        );
+    }
+    Ok(targets)
+}
+
+/// Parse an operator's `--uprobe-flavour` value.
+///
+/// # Errors
+///
+/// The name, when it is not one sipnab probes.
+pub fn parse_flavour(name: &str) -> Result<Flavour, String> {
+    match name.to_ascii_lowercase().as_str() {
+        "openssl" => Ok(Flavour::OpenSsl),
+        "wolfssl" => Ok(Flavour::WolfSsl),
+        other => Err(format!(
+            "unknown TLS flavour '{other}'. sipnab probes openssl and wolfssl"
+        )),
+    }
+}
+
 /// Narrow a discovered set to the flavours an operator asked for.
 ///
 /// An empty selection means "whatever is there", which is the default: the
@@ -455,6 +573,126 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
             None,
             "refusing beats probing a file that merely has the right name"
         );
+    }
+
+    /// The default is both, because a host running both must capture both.
+    #[test]
+    fn planning_with_no_flavour_filter_probes_every_library_found() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let libs = vec![
+            reachable(&tmp, 11, "/usr/lib/libssl.so.3", Flavour::OpenSsl),
+            reachable(&tmp, 12, "/usr/lib/libwolfssl.so.42", Flavour::WolfSsl),
+        ];
+        let planned = plan_targets(&[], None, &[], libs).expect("both are reachable");
+        assert_eq!(planned.len(), 2);
+        let symbols: Vec<&str> = planned.iter().map(|t| t.symbol.as_str()).collect();
+        assert!(
+            symbols.contains(&"SSL_write") && symbols.contains(&"wolfSSL_write"),
+            "each library gets the symbol ITS flavour exports: {symbols:?}"
+        );
+    }
+
+    #[test]
+    fn planning_narrows_to_the_flavour_asked_for() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let libs = vec![
+            reachable(&tmp, 11, "/usr/lib/libssl.so.3", Flavour::OpenSsl),
+            reachable(&tmp, 12, "/usr/lib/libwolfssl.so.42", Flavour::WolfSsl),
+        ];
+        let planned = plan_targets(&[], None, &[Flavour::WolfSsl], libs).expect("one matches");
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].symbol, "wolfSSL_write");
+    }
+
+    /// An explicit path bypasses discovery, which is how an operator reaches a
+    /// library nothing has mapped yet.
+    #[test]
+    fn an_explicit_library_bypasses_discovery_and_infers_its_symbol() {
+        let planned = plan_targets(
+            &["/opt/custom/libwolfssl.so.42".to_string()],
+            None,
+            &[],
+            Vec::new(),
+        )
+        .expect("explicit paths do not need discovery");
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].symbol, "wolfSSL_write");
+    }
+
+    /// A name sipnab cannot classify is refused with the fix in the message,
+    /// rather than probed with a guessed symbol.
+    #[test]
+    fn an_unclassifiable_library_is_refused_and_says_how_to_proceed() {
+        let err = plan_targets(
+            &["/opt/vendor/libcrypto-x.so".to_string()],
+            None,
+            &[],
+            vec![],
+        )
+        .expect_err("sipnab cannot know the symbol");
+        assert!(err.contains("--uprobe-symbol"), "must say the fix: {err}");
+
+        // ...and with the symbol supplied it proceeds.
+        let ok = plan_targets(
+            &["/opt/vendor/libcrypto-x.so".to_string()],
+            Some("vendor_send"),
+            &[],
+            vec![],
+        )
+        .expect("an explicit symbol is enough");
+        assert_eq!(ok[0].symbol, "vendor_send");
+    }
+
+    /// Finding nothing must be an error at startup. A capture attached to
+    /// nothing looks exactly like a quiet trunk.
+    #[test]
+    fn discovering_nothing_is_an_error_not_an_empty_capture() {
+        let err = plan_targets(&[], None, &[], Vec::new()).expect_err("nothing to probe");
+        assert!(err.contains("--uprobe-library"), "must say the fix: {err}");
+        assert!(err.contains("root"), "the usual cause is privilege: {err}");
+    }
+
+    /// A library in use that sipnab cannot reach is named, not skipped — it is
+    /// carrying traffic that will be missing from the capture.
+    #[test]
+    fn an_unreachable_library_is_named_rather_than_silently_dropped() {
+        let lib = TlsLibrary {
+            path: PathBuf::from("/usr/lib/libssl.so.3"),
+            inode: u64::MAX,
+            flavour: Flavour::OpenSsl,
+            pids: vec![999_999],
+        };
+        let err = plan_targets(&[], None, &[], vec![lib]).expect_err("unreachable");
+        assert!(
+            err.contains("/usr/lib/libssl.so.3"),
+            "the operator must be told WHICH library is missing: {err}"
+        );
+    }
+
+    #[test]
+    fn a_flavour_name_is_parsed_or_refused() {
+        assert_eq!(parse_flavour("OpenSSL"), Ok(Flavour::OpenSsl));
+        assert_eq!(parse_flavour("wolfssl"), Ok(Flavour::WolfSsl));
+        assert!(parse_flavour("gnutls").is_err());
+    }
+
+    /// Build a `TlsLibrary` that really is reachable under a fake `/proc`.
+    fn reachable(tmp: &tempfile::TempDir, pid: u32, path: &str, flavour: Flavour) -> TlsLibrary {
+        let on_disk = tmp
+            .path()
+            .join(pid.to_string())
+            .join("root")
+            .join(path.trim_start_matches('/'));
+        std::fs::create_dir_all(on_disk.parent().unwrap()).unwrap();
+        std::fs::write(&on_disk, b"so").unwrap();
+        // `probe_path` consults the real /proc, so the test library must be
+        // reachable by its own path too.
+        TlsLibrary {
+            path: on_disk.clone(),
+            inode: inode_of(&on_disk).unwrap(),
+            flavour,
+            pids: vec![pid],
+        }
     }
 
     /// The real `/proc` on whatever machine this runs on.

@@ -281,16 +281,28 @@ fn comm_of(pid: u32) -> String {
 /// Propagates an attach failure after reporting it on `ready_tx`, so the caller
 /// exits with a named reason rather than capturing nothing in silence.
 pub fn capture_uprobe(
-    library: &str,
-    symbol: &str,
+    targets: &[crate::capture::UprobeTarget],
     tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> anyhow::Result<()> {
     let tracefs = Path::new(super::TRACEFS);
-    let mut reader = match UprobeReader::attach(tracefs, library, symbol) {
+    let attach: Vec<Target> = targets
+        .iter()
+        .map(|t| Target {
+            library: std::path::PathBuf::from(&t.library),
+            symbol: t.symbol.clone(),
+        })
+        .collect();
+    let described = attach
+        .iter()
+        .map(|t| format!("{}:{}", t.library.display(), t.symbol))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut reader = match UprobeReader::attach_many(tracefs, &attach) {
         Ok(r) => r,
         Err(e) => {
-            let msg = format!("uprobe capture on {library}:{symbol} failed: {e}");
+            let msg = format!("uprobe capture on [{described}] failed: {e}");
             if let Some(tx) = ready_tx {
                 let _ = tx.send(Err(msg.clone()));
             }
@@ -298,9 +310,11 @@ pub fn capture_uprobe(
         }
     };
     tracing::info!(
-        "uprobe capture attached to {library}:{symbol} ({} probes). Addresses are \
-         not observable from a uprobe, so dialogs from this source name the \
-         process rather than a peer.",
+        "uprobe capture attached to {} librar{} [{described}] with {} probes. \
+         Addresses are not observable from a uprobe, so dialogs from this source \
+         name the process rather than a peer.",
+        attach.len(),
+        if attach.len() == 1 { "y" } else { "ies" },
         reader.probe_names().len()
     );
     if let Some(tx) = ready_tx {

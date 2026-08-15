@@ -118,6 +118,13 @@ fn main() {
         std::process::exit(bootstrap::dump_config(&loaded));
     }
 
+    // 6b. --uprobe-list: report which TLS libraries this host is running and
+    //     exit, without installing anything in the kernel. Answers the question
+    //     that decides whether a uprobe capture is worth starting.
+    if cli.tls_args.uprobe_list {
+        std::process::exit(bootstrap::uprobe_list(&cli));
+    }
+
     // 7. Decide everything up front: source, capture config, portrange,
     //    filters, policy, run mode.
     let plan = match bootstrap::plan(&cli, &loaded.config) {

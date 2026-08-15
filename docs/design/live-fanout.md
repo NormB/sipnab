@@ -63,13 +63,13 @@ wrong at once, and one of them is a test that pins the *complement*:
   pcap reconstruction (`-I`) … Advanced features (live capture, per-message
   output ordering, security detectors, SRTP decrypt) use the single-threaded
   path regardless."*
-- `cores_ignored_warning` ([`bootstrap.rs:2145`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2145)),
+- `cores_ignored_warning` ([`bootstrap.rs:2277`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2277)),
   whose live-capture branch says *"this run captures live rather than reading a
   saved file … parallel reconstruction is offline-only — it shards a capture
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_parallel_path`
-  ([`bootstrap.rs:2845`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2845)), which asserts the warning
+  ([`bootstrap.rs:2977`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2977)), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N
@@ -107,7 +107,7 @@ that is a log line and a help-text sentence, not a second noun.
    thread either way, live".
 2. **`cores_ignored_warning` loses its live branch and keeps its
    `--multi-device` branch.** The `--multi-device` reason
-   ([`bootstrap.rs:2845`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2845)) stays true; see §2.1.
+   ([`bootstrap.rs:2977`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2977)) stays true; see §2.1.
    `cores_warning_is_the_exact_complement_of_the_parallel_path` must be rewritten
    in the same commit, not after — it is currently the gate that would catch the
    two conditions drifting, and a half-updated complement is worse than none.
@@ -127,7 +127,7 @@ capture is not getting.
 
 **`buffer_mb` is per handle.** `capture_live_group` applies
 `config.buffer_mb` to each socket it opens, and the default is 64 MiB since CT2
-(`DEFAULT_BUFFER_MB`, [`native.rs:147`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L147)). So
+(`DEFAULT_BUFFER_MB`, [`native.rs:166`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L166)). So
 `--cores 8` on a live interface asks the kernel for **512 MiB of ring**, from a
 flag that yesterday allocated nothing.
 
@@ -144,7 +144,7 @@ is what actually helps a burst. Not decidable from the code — it needs §5.
 
 ### 2.2 `--multi-device` composes badly and should stay refused
 
-`start_multi_capture` ([`native.rs:386`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L386)) already
+`start_multi_capture` ([`native.rs:404`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L404)) already
 spawns one capture thread per interface into one shared channel, with a
 coordinator thread and an aggregated readiness signal. That is the same topology
 `capture_live_fanout` builds — which is a good sign for the design and a problem
@@ -403,6 +403,6 @@ not mistake them for settled.
   catch it and fall back — the open question is whether the most common
   invocation silently gets no benefit.
 - **Is `immediate_mode` right for N sockets?** `immediate_mode_for`
-  ([`bootstrap.rs:1807`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1807)) returns true only for the
+  ([`bootstrap.rs:1939`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1939)) returns true only for the
   TUI. Whether the batched setting interacts with rollover or with N drainers is
   unexamined.

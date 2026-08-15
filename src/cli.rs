@@ -2287,6 +2287,56 @@ pub struct TlsArgs {
     /// Allow core dumps (do not call prctl to disable).
     #[arg(help_heading = "TLS / Decryption", long)]
     pub allow_coredump: bool,
+
+    /// Read SIP plaintext from the TLS libraries this host is running, using
+    /// kernel uprobes. No certificate, no key, and no restart of the process
+    /// being observed.
+    ///
+    /// Every mapped TLS library is probed, not one: a host commonly runs
+    /// OpenSSL and wolfSSL together. Narrow with --uprobe-flavour, or name
+    /// libraries yourself with --uprobe-library.
+    ///
+    /// Needs root (or CAP_SYS_ADMIN + CAP_PERFMON) and a mounted tracefs.
+    #[arg(help_heading = "TLS / Decryption", long = "uprobe-tls")]
+    pub uprobe_tls: bool,
+
+    /// Probe this library instead of discovering them. Repeatable.
+    ///
+    /// Bypasses discovery entirely, so it also reaches a library nothing has
+    /// mapped yet. For a process in a container, give the path as sipnab sees
+    /// it: /proc/<pid>/root/usr/lib/libssl.so.3.
+    #[arg(
+        help_heading = "TLS / Decryption",
+        long = "uprobe-library",
+        value_name = "PATH"
+    )]
+    pub uprobe_library: Vec<String>,
+
+    /// Write symbol to probe. Defaults to the one the library's flavour
+    /// exports: SSL_write for OpenSSL, wolfSSL_write for wolfSSL.
+    #[arg(
+        help_heading = "TLS / Decryption",
+        long = "uprobe-symbol",
+        value_name = "NAME"
+    )]
+    pub uprobe_symbol: Option<String>,
+
+    /// Probe only these flavours. Repeatable. Default is every one found.
+    #[arg(
+        help_heading = "TLS / Decryption",
+        long = "uprobe-flavour",
+        value_name = "NAME",
+        value_parser = clap::builder::PossibleValuesParser::new(["openssl", "wolfssl"])
+    )]
+    pub uprobe_flavour: Vec<String>,
+
+    /// List the TLS libraries sipnab would probe, then exit.
+    ///
+    /// Run this first. It needs the same privileges as the capture and answers
+    /// the question that decides whether the capture is worth starting: is the
+    /// process you care about actually mapping a library sipnab can read?
+    #[arg(help_heading = "TLS / Decryption", long = "uprobe-list")]
+    pub uprobe_list: bool,
 }
 
 /// `Privilege` flags.

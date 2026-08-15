@@ -20,6 +20,22 @@ use super::uprobe;
 use super::{device, file, live};
 use crate::signals;
 
+/// One TLS library to probe, and the symbol to probe in it.
+///
+/// Carries the symbol per library rather than once for the capture, because
+/// the flavours do not share a name: OpenSSL exports `SSL_write` and wolfSSL
+/// `wolfSSL_write`. They do share argument positions, which is why one probe
+/// shape serves both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UprobeTarget {
+    /// Path naming the library **from sipnab's own mount namespace** — for a
+    /// containerised process a `/proc/<pid>/root/…` path, not the one the
+    /// process itself sees.
+    pub library: String,
+    /// Exported write function to probe.
+    pub symbol: String,
+}
+
 /// Describes where packets come from.
 #[derive(Debug, Clone)]
 pub enum CaptureSource {
@@ -42,13 +58,16 @@ pub enum CaptureSource {
     /// Read SIP plaintext out of a process's TLS library with uprobes.
     ///
     /// Unlike every other source this one observes no wire at all: the bytes
-    /// are taken where an application hands them to OpenSSL, so there is no
-    /// addressing and no frame. See [`crate::capture::uprobe`].
+    /// are taken where an application hands them to its TLS library, so there
+    /// is no addressing and no frame. See [`crate::capture::uprobe`].
     Uprobe {
-        /// Path of the TLS library to probe.
-        library: String,
-        /// Exported function to probe, normally `SSL_write`.
-        symbol: String,
+        /// Every library to probe, because a host commonly runs more than one.
+        ///
+        /// A list rather than a single path: OpenSSL and wolfSSL coexist on an
+        /// ordinary host, as do several builds of one flavour, and probing the
+        /// one an operator happened to name captures that one and silently
+        /// misses the rest. See [`crate::capture::uprobe::discover`].
+        targets: Vec<UprobeTarget>,
     },
     /// Receive packets via HEP (Homer Encapsulation Protocol).
     Hep {
@@ -287,15 +306,14 @@ pub fn start_capture(
                 .spawn(move || file::capture_files(&paths, &config, tx, ready_tx))
                 .context("Failed to spawn file reader thread")?
         }
-        #[cfg(feature = "hep")]
-        CaptureSource::Uprobe { library, symbol } => {
-            let library = library.clone();
-            let symbol = symbol.clone();
+        CaptureSource::Uprobe { targets } => {
+            let targets = targets.clone();
             thread::Builder::new()
                 .name("capture-uprobe".to_string())
-                .spawn(move || uprobe::reader::capture_uprobe(&library, &symbol, tx, ready_tx))
+                .spawn(move || uprobe::reader::capture_uprobe(&targets, tx, ready_tx))
                 .context("Failed to spawn uprobe capture thread")?
         }
+        #[cfg(feature = "hep")]
         CaptureSource::Hep {
             bind_addr,
             allowlist,
