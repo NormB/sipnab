@@ -51,7 +51,24 @@ pub struct UprobeReader {
     /// Dropped FIRST.
     bands: Vec<Band>,
     /// Dropped SECOND, once nothing is consuming the tracepoints.
-    probes: InstalledProbes,
+    ///
+    /// One entry per library. A host running OpenSSL and wolfSSL together is
+    /// the ordinary case rather than the exotic one, and each needs its own
+    /// symbol, its own file offset and its own probe set.
+    probes: Vec<InstalledProbes>,
+}
+
+/// One library to probe, and the symbol to probe in it.
+#[derive(Debug, Clone)]
+pub struct Target {
+    /// Path that names the library **from sipnab's own mount namespace**.
+    ///
+    /// For a containerised process this is a `/proc/<pid>/root/…` path, not the
+    /// path the process itself sees. See
+    /// [`TlsLibrary::probe_path`](super::discover::TlsLibrary::probe_path).
+    pub library: std::path::PathBuf,
+    /// The write symbol: `SSL_write`, `wolfSSL_write`, or one an operator named.
+    pub symbol: String,
 }
 
 impl UprobeReader {
@@ -63,52 +80,96 @@ impl UprobeReader {
     /// open a ring. Every one is reported rather than downgraded: a capture
     /// that silently attached to nothing reads exactly like quiet traffic.
     pub fn attach(tracefs: &Path, library: &str, symbol: &str) -> io::Result<Self> {
-        let elf = std::fs::read(library)?;
-        let offset = super::elf::function_file_offset(&elf, symbol)
-            .map_err(|e| io::Error::other(format!("{library}: {e}")))?;
+        Self::attach_many(
+            tracefs,
+            &[Target {
+                library: std::path::PathBuf::from(library),
+                symbol: symbol.to_string(),
+            }],
+        )
+    }
 
+    /// Install probes on every target and open a ring per CPU per band.
+    ///
+    /// **A target that cannot be attached is reported, not skipped.** Quietly
+    /// dropping one would mean an operator on a mixed OpenSSL/wolfSSL host is
+    /// told the capture is running while half of it is not, and missing traffic
+    /// is indistinguishable from a quiet trunk.
+    ///
+    /// # Errors
+    ///
+    /// The first target that fails, after everything already installed has been
+    /// released by the guard.
+    pub fn attach_many(tracefs: &Path, targets: &[Target]) -> io::Result<Self> {
+        if targets.is_empty() {
+            return Err(io::Error::other(
+                "no TLS library to probe. Nothing on this host maps one, or \
+                 sipnab cannot read /proc — a capture attached to nothing reads \
+                 exactly like a quiet trunk, so this is refused rather than \
+                 started",
+            ));
+        }
         let pid = std::process::id();
-        let probes = InstalledProbes::install(tracefs, pid, library, offset)?;
-
         let cpus = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-        let mut bands = Vec::new();
-        for band in BANDS {
-            let name = probe_name(pid, band);
-            let text =
-                std::fs::read_to_string(tracefs.join(format!("events/uprobes/{name}/format")))?;
-            let layout = Arc::new(record::parse_layout(&text).ok_or_else(|| {
-                io::Error::other(format!(
-                    "the kernel published a format for {name} without the fields \
-                     sipnab reads; refusing rather than decoding at guessed offsets"
-                ))
-            })?);
-            for cpu in 0..i32::try_from(cpus).unwrap_or(1) {
-                match perf::PerfRing::open(perf::event_id(tracefs, &name)?, cpu, 8) {
-                    Ok(ring) => bands.push(Band {
-                        ring,
-                        layout: Arc::clone(&layout),
-                    }),
-                    // One CPU refusing is survivable; every CPU refusing is not,
-                    // and the emptiness check below catches that.
-                    Err(e) => tracing::debug!("uprobe: cpu {cpu} ring for {name}: {e}"),
+        let mut this = Self {
+            bands: Vec::new(),
+            probes: Vec::new(),
+        };
+
+        for (slot, target) in targets.iter().enumerate() {
+            let library = target.library.display().to_string();
+            let elf = std::fs::read(&target.library)
+                .map_err(|e| io::Error::other(format!("{library}: {e}")))?;
+            let offset = super::elf::function_file_offset(&elf, &target.symbol)
+                .map_err(|e| io::Error::other(format!("{library}: {e}")))?;
+
+            // Pushed before the rings are opened, so a failure below still
+            // releases what this iteration installed.
+            this.probes.push(InstalledProbes::install(
+                tracefs, pid, slot, &library, offset,
+            )?);
+
+            for band in BANDS {
+                let name = probe_name(pid, slot, band);
+                let text =
+                    std::fs::read_to_string(tracefs.join(format!("events/uprobes/{name}/format")))?;
+                let layout = Arc::new(record::parse_layout(&text).ok_or_else(|| {
+                    io::Error::other(format!(
+                        "the kernel published a format for {name} without the fields \
+                         sipnab reads; refusing rather than decoding at guessed offsets"
+                    ))
+                })?);
+                for cpu in 0..i32::try_from(cpus).unwrap_or(1) {
+                    match perf::PerfRing::open(perf::event_id(tracefs, &name)?, cpu, 8) {
+                        Ok(ring) => this.bands.push(Band {
+                            ring,
+                            layout: Arc::clone(&layout),
+                        }),
+                        // One CPU refusing is survivable; every CPU refusing is
+                        // not, and the emptiness check below catches that.
+                        Err(e) => tracing::debug!("uprobe: cpu {cpu} ring for {name}: {e}"),
+                    }
                 }
             }
         }
 
-        if bands.is_empty() {
+        if this.bands.is_empty() {
             return Err(io::Error::other(
                 "no perf ring could be opened for any band, so nothing would ever \
                  be read. Note the kernel refuses a tracepoint already enabled \
                  through tracefs",
             ));
         }
-        Ok(Self { bands, probes })
+        Ok(this)
     }
 
-    /// Probes currently installed, for diagnostics.
+    /// Probes currently installed, across every library.
     #[must_use]
-    pub fn probe_names(&self) -> &[String] {
-        self.probes.names()
+    pub fn probe_names(&self) -> Vec<&str> {
+        self.probes
+            .iter()
+            .flat_map(|p| p.names().iter().map(String::as_str))
+            .collect()
     }
 
     /// Records the kernel dropped because this reader fell behind.
