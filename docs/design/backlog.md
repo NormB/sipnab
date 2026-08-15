@@ -2177,6 +2177,58 @@ host. The packaged instance is untouched.
   packets and is fine. Vendoring or linking any part of it is not, and this
   entry exists partly so nobody reaches for it later.
 
+- [ ] **TK10 — An `aya` BPF backend, for the 5-tuple `TK7` cannot observe.**
+  Approved 2026-08-15 alongside the `TK6` reversal, and scoped by the one thing
+  tracefs genuinely cannot do.
+
+  **What tracefs can and cannot do, measured rather than assumed.** It fetches
+  fixed byte ranges, dereferences nested pointers
+  (`+0x50(+0x918(%x0)):x8[48]`), and glob-matches a string **in kernel space**
+  before recording an event. That covers `TK7`'s plaintext, `TK6`'s secrets and
+  the non-SIP prefilter. What it cannot do is carry **state between two
+  probes**: there is no map, so nothing can stash a value at one hook and match
+  it at another.
+
+  **That gap is exactly the 5-tuple.** A uprobe on `SSL_write` sees the bytes an
+  application handed its TLS library and nothing about the socket beneath, which
+  is why uprobe dialogs today name a process instead of a peer. sngrep solves it
+  by hooking `tcp_sendmsg`/`tcp_recvmsg`, reading the addresses out of
+  `struct sock`, and matching them to the plaintext **per thread** — and
+  per-thread correlation across two hooks needs a program and a map, which means
+  a real BPF program.
+
+  **Do:** an `aya` backend behind the same interface the tracefs reader already
+  presents, so both roads end at the same `Packet`. The pattern is demonstrated
+  by [`pcap-sip`](https://gitlab.com/wisteriabg/pcap-sip/): the `no_std` BPF
+  crate is a separate package **excluded** from the host workspace with its own
+  empty `[workspace]` table, built for `bpfel-unknown-none` by `aya-build` from
+  the parent [`build.rs`](https://github.com/NormB/sipnab/blob/main/build.rs), behind a cfg so a host build can opt out. That repo is
+  GPL-3.0-or-later: the pattern may be followed, no code may be taken.
+
+  **Cost, stated plainly:** the kernel half needs a **nightly** toolchain and
+  `bpf-linker`, in a repo that pins 1.97.1 stable. The userspace half of `aya`
+  is stable. Keep the BPF build optional so a stock `cargo build` still works
+  and CI's pinned jobs are unaffected — a contributor without nightly must not
+  be blocked from building sipnab.
+
+  **Reading `struct sock` needs kernel struct offsets**, which is what BTF
+  provides. thor-02 has none, so this backend is unavailable there and the
+  tracefs one must remain the default rather than a fallback nobody tested.
+
+  **BLOCKED on a toolchain dependency, measured 2026-08-15.** `bpf-linker`
+  0.11.0 builds against `llvm-sys 231` — **LLVM 23.1** — and refuses with
+  `could not find llvm-config in directories specified by environment`. thor-02
+  carries **LLVM 18**, and `rustc` 1.97.1 bundles 22.1.6. `--no-default-features`
+  does **not** redirect it to the bundled one; it still requires an external
+  `llvm-config`. Upstream's own build warning says installing this way is not
+  recommended.
+
+  So the aya half needs LLVM 23.1 installed system-wide, which is an
+  administrator's decision about this machine rather than a code change, and it
+  is the first thing to resolve before any of the rest is worth writing. The
+  kernel-side crate cannot be compiled until then; the userspace half of `aya`
+  is stable Rust and unaffected.
+
 - [ ] **TK7 — Plaintext-from-uprobe has no honest provenance.** `SSL_read`/
   `SSL_write` yield SIP bytes with no packet behind them: no frame number, no
   byte offset, no capture timestamp. sipnab's frame-pointer evidence is a stated
