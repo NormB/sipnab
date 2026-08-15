@@ -2304,7 +2304,7 @@ pub struct TlsArgs {
     ///
     /// Bypasses discovery entirely, so it also reaches a library nothing has
     /// mapped yet. For a process in a container, give the path as sipnab sees
-    /// it: /proc/<pid>/root/usr/lib/libssl.so.3.
+    /// it, through that process's own root: /proc/PID/root/usr/lib/libssl.so.3
     #[arg(
         help_heading = "TLS / Decryption",
         long = "uprobe-library",
