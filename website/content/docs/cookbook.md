@@ -549,6 +549,71 @@ extractor from a supervisor and hand sipnab the read end.
 - Core dumps are still disabled, exactly as for a keylog file: the secrets
   arrive over a pipe but land in the same process memory.
 
+### 7g. Read TLS with no keys at all
+
+7e and 7f still need session secrets from somewhere. This recipe needs none:
+sipnab puts a kernel uprobe on the TLS library's write function and reads the
+plaintext **before it is encrypted**. No certificate, no private key, no
+keylog, and nothing restarted.
+
+**Look before you probe.** This installs nothing and answers whether the
+capture is worth starting:
+
+```bash
+sudo sipnab --uprobe-list
+```
+
+```
+FLAVOUR        INODE  PIDS  LIBRARY
+OpenSSL     14166752     1  /proc/982690/root/usr/lib/aarch64-linux-gnu/libssl.so.3
+wolfSSL     17433084     1  /proc/982702/root/usr/lib/aarch64-linux-gnu/libwolfssl.so.42.2.0
+OpenSSL        21143    12  /usr/lib/aarch64-linux-gnu/libssl.so.3
+```
+
+Then capture. Every library listed is probed, not one:
+
+```bash
+sudo sipnab -N --uprobe-tls
+```
+
+Narrow it if only one stack is yours to read:
+
+```bash
+sudo sipnab -N --uprobe-tls --uprobe-flavour openssl
+```
+
+Or name a library yourself, which is the only way to attach to a daemon that
+has **not started yet** — discovery can only see what is already mapped:
+
+```bash
+sudo sipnab -N --uprobe-tls --uprobe-library /usr/lib/x86_64-linux-gnu/libssl.so.3
+```
+
+**What this gives up.** A uprobe sees the bytes an application handed its TLS
+library and nothing about the socket beneath, so dialogs from this source carry
+**no addresses and port 0**. They are labelled `uprobe:<comm>/<pid>` instead —
+the process, not a peer. sipnab will not invent an address it never observed.
+
+**Pitfalls:**
+
+- Needs root (or `CAP_SYS_ADMIN` + `CAP_PERFMON`) and a mounted `tracefs`.
+  Unprivileged, `/proc/<pid>/maps` is readable only for your own processes, so
+  `--uprobe-list` quietly shows a fraction of the host — run it as root before
+  concluding a daemon is not using TLS.
+- **Containers.** The path a containerised process sees names a *different
+  file* from sipnab's namespace. sipnab handles this by matching inodes and
+  probing through `/proc/<pid>/root`, which is why the listing above shows such
+  paths. If you pass `--uprobe-library` by hand for a container, pass the
+  `/proc/<pid>/root/...` form or you will attach to the host's copy and capture
+  nothing.
+- GnuTLS is not probed. Its write function has a different signature, and
+  attaching the OpenSSL probe shape to it would read the wrong register.
+- This input can never transmit. `--hep-allow-kill` has an equivalent for HEP
+  input; there is deliberately no such flag here, because sipnab has no
+  observed peer to answer to.
+- A write larger than 2048 bytes arrives truncated and is marked as such,
+  rather than being presented as a whole message.
+
 ---
 
 ## 8. Run sipnab as an MCP server

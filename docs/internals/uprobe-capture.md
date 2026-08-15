@@ -1,0 +1,220 @@
+# Uprobe TLS capture
+
+How sipnab reads SIP that never appears in plaintext on any wire, and why
+each part of it refuses rather than guesses.
+
+A uprobe is a kernel breakpoint on a userspace function. sipnab puts one on
+the write entry point of a TLS library and reads the buffer the application
+passed — plaintext, before encryption. No certificate, no private key, no
+keylog file, and no restart of the process being observed.
+
+Everything here is `tracefs` and `perf_event_open`. There is no BPF program
+and no `bpf-linker`, which is what makes it build on stable Rust and run on a
+kernel without BTF. See [§7](#7-what-tracefs-cannot-do) for the one thing that
+costs.
+
+---
+
+## 1. The shape of the problem
+
+`SSL_write(SSL *ssl, const void *buf, int num)` gets a pointer and a length.
+A uprobe fetch argument reads a **fixed** number of bytes chosen when the
+probe is installed, and the write is whatever length the application passed.
+Those two disagree constantly.
+
+The disagreement is not benign. Measured on a live OpenSIPS: a 512-byte fetch
+against a 128-byte SIP message returned the message followed by **384 bytes of
+adjacent process heap** — pointers, not zeros. On a SIP proxy that heap holds
+other calls' plaintext.
+
+So the rule the module exists to enforce is: *only the bytes the application
+actually wrote may ever leave*, and everything past that is wiped rather than
+merely ignored.
+
+```
+SSL_write(ssl, buf, num)
+        │
+        ├─ kernel uprobe fires, fetches a FIXED band from buf
+        │  and the value of num
+        │
+        ├─ in-kernel filter: len in band AND buf starts with a SIP token
+        │  (evaluated BEFORE the event is recorded — a non-SIP write
+        │   never costs a ring slot)
+        │
+        ├─ perf ring → userspace
+        │
+        ├─ accept(): truncate to num, volatile-wipe the tail
+        │
+        └─ Packet with source "uprobe:<comm>/<pid>", no addresses
+```
+
+## 2. Banded probes
+
+64 bytes is the kernel's hard ceiling for **one** fetch argument — `x8[65]` is
+refused — so a larger band is several arguments side by side. 2048 is where
+that stops being accepted, and it covers an ordinary `INVITE` with SDP.
+
+`BANDS = [64, 256, 1024, 2048]`, one probe each on the same symbol, each
+filtered to its own length range. The band bounds the overshoot: what the
+kernel delivers exceeds the true length by at most one band rather than by the
+largest message sipnab supports. It is a bound, not a guarantee, which is why
+[`accept`](../../src/capture/uprobe/mod.rs) still truncates.
+
+The wipe uses `write_volatile`. A plain loop or `fill` is a store to memory the
+compiler can prove is never read again, and it is entitled to delete it — a
+wipe the optimiser removed is a wipe that never happened.
+
+## 3. Which library, and whose
+
+`discover` reads `/proc/<pid>/maps`, not the filesystem. A library present on
+disk and a library in use are different facts, and only the second can produce
+traffic.
+
+**Identity is device and inode, never the path.** One file is reachable through
+a `libssl.so.3` symlink, its versioned real name, and a container mount, all at
+once. Two *builds* of one flavour are genuinely two targets, because their
+symbol offsets differ and an offset computed from one is wrong for the other.
+
+The container case is the one that captures nothing while looking healthy.
+Measured on the development host, three distinct files share the path
+`/usr/lib/aarch64-linux-gnu/libssl.so.3`:
+
+| inode | mapped by |
+|-------|-----------|
+| 21143 | the host |
+| 14166752 | one container |
+| 146539451 | another container |
+
+A uprobe is installed with a path resolved in **sipnab's** mount namespace, but
+that path came from the **mapping process's**. Probing the bare string attaches
+to the host copy and misses both containers. `TlsLibrary::probe_path` reaches
+through `/proc/<pid>/root/…` and accepts a candidate only when the inode
+matches, returning `None` rather than probing a file that merely has the right
+name.
+
+### Flavours
+
+| Flavour | Write symbol | Notes |
+|---------|--------------|-------|
+| OpenSSL | `SSL_write` | and the ABI-compatible forks that keep the name |
+| wolfSSL | `wolfSSL_write` | same `(ssl, buf, len)` positions, so one probe shape serves both |
+
+GnuTLS is mapped on ordinary hosts and is deliberately **not** classified:
+`gnutls_record_send` has a different signature, and probing it with the OpenSSL
+shape would read whatever the second argument register happens to hold.
+
+Classification matches a basename **prefix**, and that is what keeps the two
+apart — `libwolfssl.so.42` does not *begin* with `libssl`. A `contains` rule
+would claim it and then resolve `SSL_write` in a library that exports
+`wolfSSL_write`.
+
+## 4. Probe naming
+
+```
+sipnab_<pid>_l<slot>_b<band>
+```
+
+`uprobe_events` is a **system-wide** namespace. The pid keeps two sipnabs, or a
+sipnab beside another tracer, from colliding. The slot keeps one sipnab's own
+libraries apart: without it the second install reuses the first's names and a
+mixed-flavour host captures exactly one of them.
+
+## 5. Two orders that are load-bearing
+
+**Drop order.** The kernel refuses to remove a tracepoint that still has an
+open perf consumer. `UprobeReader` declares `bands` before `probes` because
+Rust drops fields in declaration order, so rings close first. Declared the
+other way round, a clean shutdown leaves every probe attached to a production
+library — measured, not theorised: the first end-to-end run leaked four probes
+exactly that way.
+
+**Never enable through tracefs.** `install` writes the probe and its filter and
+does *not* write `enable`. A tracepoint switched on through tracefs cannot then
+be opened by `perf_event_open`, which fails with a misleading `EINTR`. Proven
+with an equivalent C program before the cause was believed.
+
+Removal is always `-:<name>` **appended** to `uprobe_events`. Truncating that
+file removes every other tracer's probes on the host.
+
+## 6. Provenance, and why this input can never transmit
+
+A uprobe sees bytes handed to a TLS library. It sees no socket, so:
+
+- addresses are `0.0.0.0`, ports are `0` — filling in a plausible peer would
+  make every dialog a small lie;
+- the source name is `uprobe:<comm>/<pid>`, which carries the attribution;
+- the frame pointer has **no digest**, because a digest exists so a resolver
+  can prove it found the same bytes again, and these cannot be read twice;
+- [`resolve`](../../src/capture/resolve.rs) refuses such a pointer with
+  `NeverOnTheWire` *before* touching the filesystem.
+
+And the rule that follows from all of it:
+
+```rust
+pub fn kill_response_eligible(origin: InputOrigin, hep_allow_kill: bool) -> bool {
+    match origin {
+        InputOrigin::Wire => true,
+        InputOrigin::Hep => hep_allow_kill,
+        InputOrigin::Uprobe => false,  // no opt-in exists
+    }
+}
+```
+
+HEP input can be made transmit-eligible with `--hep-allow-kill`. Uprobe input
+**cannot**, and there is deliberately no flag for it. sipnab never observed the
+peer, so it has no address to answer to and would be guessing about where to
+send a response.
+
+## 7. What tracefs cannot do
+
+Measured, so the boundary is not a matter of opinion. tracefs fetches fixed
+byte ranges, dereferences nested pointers, and glob-matches strings in kernel
+space before recording an event. That covers the plaintext, the secrets, and
+the non-SIP prefilter.
+
+What it cannot do is **carry state between two probes**, because there is no
+map. That gap is exactly the 5-tuple: `SSL_write` knows nothing about the
+socket beneath, and recovering the peer means hooking `tcp_sendmsg`, reading
+`struct sock`, and matching per thread across two hooks. That is TK10, it needs
+aya, and it is blocked — see [the backlog](../design/backlog.md).
+
+## 8. Testing it
+
+The unit tests run everywhere: record decoding, band selection, filter
+construction, classification, and the planning rules are ordinary byte and
+string handling. `InstalledProbes` takes a tracefs **root**, so the install and
+drop-guard tests run against a temporary directory rather than the kernel.
+
+What cannot be faked is the kernel's own record layout, so
+`record::parse_layout` is tested against verbatim `format` output captured from
+a 6.8 kernel.
+
+Mutation-test any gate you add here. One of these tests was written believing
+the flavour list's *order* prevented misclassification; reversing the order did
+not fail it, because `strip_prefix` already separates the two. The comment was
+wrong, not the code — see
+[`discover.rs`](../../src/capture/uprobe/discover.rs).
+
+## 9. Running it by hand
+
+What would be probed, without installing anything:
+
+```sh
+sudo sipnab --uprobe-list
+```
+
+Capture, probing every TLS library discovered:
+
+```sh
+sudo sipnab -N --uprobe-tls
+```
+
+Inspect the kernel state sipnab created — it should be empty after exit:
+
+```sh
+sudo grep sipnab_ /sys/kernel/tracing/uprobe_events
+```
+
+If that last command prints anything after sipnab has exited, probes leaked.
+Remove each by appending `-:<name>` to `uprobe_events`. **Never truncate the
+file** — it is shared with every other tracer on the host.

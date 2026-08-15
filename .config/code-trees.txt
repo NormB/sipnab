@@ -27,7 +27,6 @@
 # fails until it is named here.
 #
 # One tree per line. Blank lines and `#` comments are ignored.
-
 .cargo
 .config
 .githooks
@@ -40,6 +39,7 @@ contrib
 crates
 demos
 docker
+examples
 fuzz
 harness
 man
