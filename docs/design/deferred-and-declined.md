@@ -278,10 +278,10 @@ registry has grown since, and the count is pinned by
 `mcp_tool_table_lists_every_registered_tool` rather than by this sentence.
 The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
-([`server.rs:5018`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5018)) writes a pcap, `export_audio`
-([`server.rs:5066`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5066)) writes a WAV, `list_captures`
-([`server.rs:4991`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4991)) reads a directory, and
-`shutdown_server` ([`server.rs:5531`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5531)) ends the process.
+([`server.rs:5499`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5499)) writes a pcap, `export_audio`
+([`server.rs:5547`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5547)) writes a WAV, `list_captures`
+([`server.rs:5447`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5447)) reads a directory, and
+`shutdown_server` ([`server.rs:6012`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6012)) ends the process.
 
 **None of them mutates a store.** `shutdown_server` reads `dialog_store` and
 `stream_store` for its report, optionally writes a file, and then calls
@@ -361,9 +361,9 @@ and it is not incidental — it is the tool working:
 - `DialogSummary.from_user` / `to_user`
   ([`model.rs:53-57`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L53-L57)) are copied straight off the
   From/To URIs.
-- `get_message` ([`server.rs:3124`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3124)) returns the parsed
+- `get_message` ([`server.rs:3334`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3334)) returns the parsed
   message through `message_to_json_value`, headers and body included.
-- `search_messages` ([`server.rs:3416`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3416)) returns
+- `search_messages` ([`server.rs:3626`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3626)) returns
   `snippet`, built as
   `truncate_string(&String::from_utf8_lossy(&msg.raw), MAX_BODY_BYTES)` — the
   raw bytes off the wire.
@@ -390,7 +390,7 @@ agent reads it verbatim through any of the three tools above; and with a
 write-back tool present, the text it reads can reach a verb that changes what
 the operator sees. Today the worst that text can reach is a read, a file write
 confined to `--mcp-file-root` by `resolve_in_root`
-([`server.rs:463`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L463)), or — only if armed, only on a
+([`server.rs:487`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L487)), or — only if armed, only on a
 second call, only having named the discard — a process stop. That is a
 qualitative gap, not a matter of degree.
 
@@ -672,9 +672,9 @@ nothing.
 
 **The path-confinement problem is solved.** The roadmap's other Tier 3 entry,
 `list_captures`, was filed with *"needs a path allowlist or it is an
-arbitrary-file-read"*. It shipped ([`server.rs:463`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L463))
+arbitrary-file-read"*. It shipped ([`server.rs:487`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L487))
 with `--mcp-file-root` and `resolve_in_root`
-([`server.rs:463`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L463)), which accepts a bare filename and
+([`server.rs:487`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L487)), which accepts a bare filename and
 rejects anything with a separator, a `..`, a root prefix or a drive letter before
 touching the filesystem. So an agent can already *see* the corpus, safely, and
 `open_capture` would need no new security machinery.
@@ -719,7 +719,7 @@ documents *"the tool server; cloned per HTTP session"* and
 built once at startup ([`servers.rs:224-249`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L224-L249)) with
 `name` taken from `cli.primary_input()` — which returns only the *first* `-I`
 argument ([`cli.rs:1363-1365`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1363-L1365)). So after an `open_capture`,
-`capture_status` ([`server.rs:3761`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3761)) would keep naming
+`capture_status` ([`server.rs:3971`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3971)) would keep naming
 the old file, in the calling session as well as every other one, unless the
 field moves behind a shared lock. Two agents on one HTTP server would read the
 same store and disagree about which capture it is.
@@ -795,7 +795,7 @@ decision was taken, not as it stands now:
    a `SipnabMcp` cloned per HTTP session
    ([`transport.rs:192`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L192)). Until it moves behind
    a shared lock, a swap leaves `capture_status`
-   ([`server.rs:3761`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3761)) naming the old file in the
+   ([`server.rs:3971`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3971)) naming the old file in the
    calling session and in every other one.
 2. **Capture identity must be visible on the wire.** `DialogStore::generation`
    ([`dialog_store.rs:573`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L573)) is bumped by every
@@ -809,8 +809,8 @@ decision was taken, not as it stands now:
 The opt-in machinery and the path confinement are already solved and should be
 reused rather than redesigned: the `shutdown_server` flag, off-by-default field,
 builder and first-statement refusal
-([`server.rs:5531`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5531)), and `--mcp-file-root` with
-`resolve_in_root` ([`server.rs:463`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L463)).
+([`server.rs:6012`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6012)), and `--mcp-file-root` with
+`resolve_in_root` ([`server.rs:487`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L487)).
 
 **What shipped**, against those three:
 
@@ -915,7 +915,7 @@ is a different mechanism at a fraction of the cost — see `CT11`. Full verdict:
 
 ---
 
-## 6. Native TLS **secret** extraction (`TK6`) — **declined, on maintenance**
+## 6. Native TLS **secret** extraction (`TK6`) — **REVERSED: approved 2026-08-15**
 
 Decided 2026-08-14, after `TK7`'s mechanism was measured. Note carefully what
 this declines and what it does not: it declines sipnab growing its own
@@ -946,6 +946,99 @@ the plaintext — the `--pcap-export-mode encrypted+dsb` case, where a third par
 must be able to verify the capture independently. `TK7` cannot serve that, since
 it never sees ciphertext. Until someone asks for that, this stays declined.
 
+### Prior art that confirms the cost, and softens one argument
+
+[`pcap-sip`](https://gitlab.com/wisteriabg/pcap-sip/) (Sergey Safarov, the
+author of sngrep PR 539) is a Rust SIP capture workspace that implements this
+exact feature with [`aya`](https://aya-rs.dev). Read 2026-08-15. It is
+**GPL-3.0-or-later** and sipnab is MIT OR Apache-2.0, so nothing there can be
+vendored, copied or derived from — this entry records what it demonstrates,
+not code to take.
+
+**It confirms the decisive cost.** `crates/pcap-sip-core/src/ebpf/offsets.rs`
+is the struct-offset table this section declines, made concrete — `ssl_session:
+0x918`, `session_master_key: 0x50`, `ssl_s3_client_random: 0x160`, one set per
+OpenSSL version — and its own doc comment records that the values come from
+ecapture's profiles. Those constants must be re-derived for every OpenSSL
+release, by someone, forever.
+
+**It weakens one of the supporting arguments, and only that one.** This entry
+leaned partly on aya being a heavy build commitment. `pcap-sip` shows a clean
+pattern: the `no_std` BPF crate is a separate package **excluded** from the host
+workspace, carrying its own empty `[workspace]` table so cargo treats it
+independently, built for `bpfel-unknown-none` by `aya-build` from the parent's
+[`build.rs`](https://github.com/NormB/sipnab/blob/main/build.rs), behind an `aya_build_skip` cfg so a host build can opt out entirely.
+That is a demonstrated route rather than a theoretical one.
+
+**Why the decline still stands.** The offset table is a consequence of the
+TARGET, not of choosing aya. `pcap-sip` reads master secrets out of `SSL`
+internals, which requires knowing that struct's layout. `TK7` reads plaintext
+from `SSL_write`, whose signature is **ABI** rather than internals, so it needs
+only ELF function symbols and no struct layout at all. Same toolkit, different
+target, and only one of them owes a table.
+
+**A correction to this section, made the same day it was written.** The
+paragraph here first claimed that in-kernel filtering was the one thing that
+would make `aya` worth its cost, since these probes see every process that maps
+the library and sngrep prefilters in kernel space for exactly that reason. That
+was wrong, and measurement rather than argument settled it: **tracefs filters do
+content matching in the kernel already.**
+
+A fetch argument typed `:string` can be glob-matched by the event filter, and
+the kernel evaluates that filter *before recording the event*. Measured on a 6.8
+kernel: a probe filtered to `s ~ "INVITE*"` delivered an `INVITE` written
+through `SSL_write` and **suppressed a non-SIP write on the same connection
+entirely** — one event, not two. A 15-term chain covering every SIP method plus
+the `SIP/2.0` response form is accepted by the same parser, and one probe can
+carry the string to filter on *alongside* the banded byte fetches that deliver
+the payload.
+
+So sipnab prefilters in kernel space today, with no BPF program, no
+`bpf-linker` and no nightly toolchain — see `kernel_filter_for` in
+[`src/capture/uprobe/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/uprobe/mod.rs). The userspace `is_interesting` check
+remains as a second line, because a band is a bound and a glob is a prefix.
+
+That removes the last argument for `aya` in this feature. `TK6` stays declined
+on the offset table, which is a property of reading `SSL` internals and is not
+addressed by any of this.
+
+### Decision reversed by the owner, 2026-08-15
+
+**`TK6` is approved and being built.** The analysis above is kept in the tense
+it was written in, per this page's method — it is the reasoning that produced a
+decline, and a reversal that erased it would teach nothing. What changed is the
+decision, not the facts: the offset table is still a real, permanent cost, and
+the owner has accepted it.
+
+Three findings from the day the decline was written now shape the build rather
+than argue against it:
+
+- **The offsets cannot be copied from `pcap-sip`.** Its `offsets.rs` is
+  GPL-3.0-or-later and sipnab is MIT OR Apache-2.0. sipnab needs its own
+  derivation.
+- **There is a licence-clean source for them.** OpenSSL 3.x is **Apache-2.0**
+  (confirmed from this host's `libssl3t64` copyright), which is compatible, so
+  offsets may be derived from OpenSSL's own struct definitions.
+- **No exported symbol hands the secret over.** `SSL_SESSION_get_master_key`
+  and `SSL_get_client_random` are exported, but a uprobe cannot *call* a
+  function — it can only observe one an application already calls, and
+  applications do not call these. So a struct read is unavoidable, which is
+  exactly what makes the offsets load-bearing.
+
+**The mechanism is available today.** tracefs fetch arguments support **nested
+dereference** — `+0x50(+0x918(%x0)):x8[48]` is accepted by a 6.8 kernel — so
+`ssl->session->master_key` is readable through the same probe machinery `TK7`
+already uses. `TK6` therefore does not depend on adopting `aya`.
+
+**The guard that makes a wrong offset loud** still stands and is now a build
+requirement rather than a nice-to-have: sipnab holds the decryptor in the same
+process, so an extracted secret is **validated by attempting a decryption before
+it is accepted**. A bad offset then produces a named error instead of a capture
+that silently decrypts nothing — a check a standalone extractor cannot make,
+having no decryptor to check against.
+
+---
+
 ---
 
 ## Conditions, in one place
@@ -961,7 +1054,7 @@ it never sees ciphertext. Until someone asks for that, this stays declined.
 | §5c PF_RING | Reopens only if ntop relicenses the `libpfring` blobs compatibly with MIT-OR-Apache-2.0. Not otherwise |
 | §5d AF_XDP | Reopens only if the kernel grows a tee (`clone_redirect` in `xdp_func_proto`) **and** an egress path. Both, not either |
 | §5e XDP as a capture filter | Does not reopen. It is on the wrong side of the tap; no permission change affects that |
-| §6 Native TLS secret extraction (`TK6`) | Reopens only if sipnab needs the encrypted bytes *and* their secrets together (`--pcap-export-mode encrypted+dsb`), which `TK7` cannot serve. Not otherwise |
+| §6 Native TLS secret extraction (`TK6`) | **Reversed 2026-08-15 — approved and being built.** The offset cost is accepted; offsets derive from OpenSSL's Apache-2.0 sources, never from GPL prior art |
 
 The two feature decisions still open, §1 and §3, do not move on "someone asked
 again"; they move on the facts named above. The §5 technologies do not move on

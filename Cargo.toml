@@ -1,8 +1,11 @@
 [workspace]
-members = [".", "crates/sipnab-audio", "crates/sipnab-plugin-example"]
+members = [".", "crates/sipnab-audio", "crates/sipnab-plugin-example", "crates/sipnab-bpf-types"]
 # `fuzz/` is a standalone cargo-fuzz package (its own build via `cargo fuzz`);
 # it depends on this crate by path and must NOT be pulled into the workspace.
-exclude = ["fuzz"]
+# `bpf/` is the kernel half of the BPF capture backend: a `bpfel-unknown-none`
+# package needing nightly and `bpf-linker`, where sipnab pins stable 1.97.1.
+# Excluded so a stock `cargo build` never demands that toolchain.
+exclude = ["fuzz", "bpf"]
 resolver = "2"
 
 # Single source of lint truth for all workspace crates (both crates set
@@ -41,6 +44,10 @@ categories = ["network-programming", "command-line-utilities"]
 exclude = ["website/", "demos/", "fuzz/", ".githooks/", "tests/pcap-samples/"]
 
 [dependencies]
+sipnab-bpf-types = { path = "crates/sipnab-bpf-types" }
+# Userspace half of the eBPF backend. Stable Rust; only the KERNEL half needs
+# nightly. Optional so a stock build pulls in neither.
+aya = { version = "0.13", optional = true }
 # Fast, DoS-resistant (random-seeded, AES-based) hasher for the per-packet
 # stores. Replaces the default SipHash on the hot path — every RTP packet does a
 # StreamStore key lookup — while keeping flood resistance for attacker-controlled
@@ -235,6 +242,13 @@ wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:console_error_pani
 # binary is unchanged (see docs/design/wasm-plugin-api.md, which measures the
 # cost at +1.56 MB and 15 crates before deciding anything).
 plugins = ["native", "dep:wasmi"]
+# The eBPF capture backend: the only one that can report the peer a TLS
+# session went out to. NON-DEFAULT and deliberately outside `full`, because
+# building it needs a nightly toolchain and `bpf-linker` for the kernel half,
+# where this crate pins stable 1.97.1 — and running it needs a kernel with
+# CONFIG_DEBUG_INFO_BTF. A contributor without either must still be able to
+# build sipnab, and CI's pinned jobs must be unaffected.
+bpf = ["native", "dep:aya", "sipnab-bpf-types/pod"]
 full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metrics", "plugins"]
 
 [lib]

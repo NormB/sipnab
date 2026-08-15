@@ -123,6 +123,14 @@ PAGES: list[tuple[str, str, int, str, str]] = [
         "Where sipnab's time actually goes, and how to find out on this "
         "hardware without guessing.",
     ),
+    (
+        "uprobe-capture.md",
+        "uprobe-capture.md",
+        11,
+        "Uprobe TLS Capture",
+        "Reading SIP plaintext out of a process's TLS library with kernel "
+        "uprobes, and why each step refuses rather than guesses.",
+    ),
 ]
 
 # The developer index becomes the Zola section landing page.

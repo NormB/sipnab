@@ -584,7 +584,7 @@ fn wiki_intra_docs_links_resolve() {
     // restating in a table cell which files the flag will and will not remove.
     // 385: `docs/mcp.md` +1. The tool table's new `media_diagnostics` row
     // links into the section documenting it, exactly as every other row does.
-    const EXPECTED_WIKI_LINKS: usize = 387;
+    const EXPECTED_WIKI_LINKS: usize = 396;
     // 385: `docs/mos-and-codecs.md` +1. The new "Declaring an impairment factor
     // sipnab does not have" section points at "AMR-WB — published, and
     // mode-dependent" further down the same page rather than restating why a
@@ -1036,10 +1036,11 @@ fn every_docs_page_is_linked_from_the_index() {
     // An exact pin makes a DROP the failure, which is the only direction that
     // matters here, and matches how `linked_code_targets_exist` pins its link
     // count. Adding a docs page fails this once, deliberately: bump the number.
-    // Raised 34 -> 35 by `tuning-capture.md`.
+    // Raised 34 -> 35 by `tuning-capture.md`, 37 -> 38 by
+    // `internals/uprobe-capture.md`.
     assert_eq!(
-        checked, 37,
-        "docs-page walk saw {checked} pages, expected 36. More is fine — bump \
+        checked, 38,
+        "docs-page walk saw {checked} pages, expected 38. More is fine — bump \
          this. FEWER means the walk stopped reading part of docs/ and every \
          reachability assertion above it silently narrowed."
     );

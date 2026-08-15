@@ -716,6 +716,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "get_message",
         "lint_dialog",
         "list_dialogs",
+        "list_tls_libraries",
         "media_diagnostics",
         "open_capture",
         "render_ladder",
@@ -727,6 +728,8 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "server_capabilities",
         "show_evidence",
         "shutdown_server",
+        "start_tls_capture",
+        "stop_tls_capture",
         "capture_status",
         "tail_dialogs",
         "triage_call",
@@ -734,7 +737,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
     ];
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    assert_eq!(names.len(), 32, "expected exactly 32 MCP tools");
+    assert_eq!(names.len(), 35, "expected exactly 35 MCP tools");
 
     // find_problems with default kinds (['problems']) → JSON array, no error.
     send(

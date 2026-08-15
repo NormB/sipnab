@@ -106,6 +106,12 @@ pub struct SipnabMcp {
     allow_shutdown: bool,
     /// Whether `open_capture` may replace the loaded capture.
     allow_open_capture: bool,
+    /// Whether `start_tls_capture` may install kernel uprobes.
+    ///
+    /// Separate from `allow_open_capture` because it is a different act. That
+    /// one reads a file an operator placed in a directory; this one attaches
+    /// probes to a running process's TLS library and reads its plaintext.
+    allow_tls_capture: bool,
     /// Whether `save_findings` may record an agent's annotation.
     allow_save_findings: bool,
     /// Annotations written through `save_findings`.
@@ -209,6 +215,13 @@ pub struct CaptureState {
     pub context: Option<CaptureContext>,
     /// The background load filling this capture, while one is running.
     pub load: Option<Arc<super::load::CaptureLoad>>,
+    /// The uprobe TLS capture feeding this server, while one is running.
+    ///
+    /// Held here rather than in a field of its own so that every check which
+    /// already takes the capture lock — "is a live source running", "would
+    /// stopping lose packets" — sees it without a second lock and a second
+    /// chance to disagree with itself.
+    pub tls: Option<Arc<super::tls_capture::TlsCapture>>,
 }
 
 /// Where this server's packets come from, for `capture_status`.
@@ -247,6 +260,7 @@ impl SipnabMcp {
             protected_inputs: Default::default(),
             allow_shutdown: false,
             allow_open_capture: false,
+            allow_tls_capture: false,
             allow_save_findings: false,
             findings: Arc::new(RwLock::new(crate::mcp::findings::FindingsLog::new())),
             capture: Arc::new(RwLock::new(CaptureState::default())),
@@ -431,6 +445,16 @@ impl SipnabMcp {
     /// Permit `open_capture` to replace the capture this server holds.
     pub fn with_open_capture(mut self) -> Self {
         self.allow_open_capture = true;
+        self
+    }
+
+    /// Permit `start_tls_capture` to install kernel uprobes on this host.
+    ///
+    /// Off by default, and the most consequential of these opt-ins: it lets an
+    /// agent read the plaintext of TLS sessions belonging to processes it does
+    /// not own, and it creates kernel state that outlives a crash.
+    pub fn with_tls_capture(mut self) -> Self {
+        self.allow_tls_capture = true;
         self
     }
 
@@ -1003,6 +1027,46 @@ pub struct ExportAudioParams {
     pub filename: String,
 }
 
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// What `start_tls_capture` and `stop_tls_capture` answer.
+pub struct TlsCaptureResponse {
+    /// Version of this response schema.
+    pub schema_version: u32,
+    /// Whether a uprobe capture is running now.
+    pub running: bool,
+    /// `path:symbol` for each library being probed.
+    pub targets: Vec<String>,
+    /// SIP messages this capture has delivered so far.
+    pub messages: u64,
+    /// Records the kernel dropped because the reader fell behind, once the
+    /// capture has finished. **Messages that existed and are missing** — a
+    /// different fact from a quiet trunk, and the only one an agent could not
+    /// otherwise discover.
+    pub lost: Option<u64>,
+    /// Seconds since the capture started.
+    pub uptime_sec: u64,
+    /// Why it stopped, when something went wrong.
+    pub error: Option<String>,
+    /// What the caller should understand, in one sentence it can relay.
+    pub summary: String,
+}
+
+/// Parameters for `start_tls_capture`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct StartTlsCaptureParams {
+    /// Probe only these TLS flavours: "openssl", "wolfssl". Empty means every
+    /// one found, which is the default because an ordinary host runs both.
+    #[serde(default)]
+    pub flavours: Vec<String>,
+    /// Probe these libraries instead of discovering them. Each must be a path
+    /// this server can open — for a containerised process, the
+    /// `/proc/PID/root/...` form. Empty means discover.
+    #[serde(default)]
+    pub libraries: Vec<String>,
+}
+
 /// Parameters for `open_capture`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1542,6 +1606,150 @@ pub struct CapabilitiesResponse {
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+/// One TLS library in use on this host, as an agent sees it.
+pub struct TlsLibraryEntry {
+    /// Which implementation: `OpenSSL` or `wolfSSL`.
+    pub flavour: String,
+    /// Path as the mapping process sees it.
+    pub path: String,
+    /// The mapped file's inode, which is its identity — the same path can name
+    /// different files in different mount namespaces.
+    pub inode: u64,
+    /// How many processes map it.
+    pub process_count: usize,
+    /// The write symbol sipnab would probe.
+    pub symbol: String,
+    /// A path that names this exact file from sipnab's own namespace, or
+    /// `null` when none does. `null` means this library is carrying traffic
+    /// sipnab **cannot** capture, usually because it is inside a container and
+    /// sipnab lacks the privilege to read `/proc/<pid>/root`.
+    pub probe_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// What `list_tls_libraries` answers.
+pub struct TlsLibrariesResponse {
+    /// Version of this response schema.
+    pub schema_version: u32,
+    /// True when this build and platform can attach uprobes at all.
+    pub supported: bool,
+    /// True when the server is running as root.
+    ///
+    /// Load-bearing for interpretation, not decoration: unprivileged,
+    /// `/proc/<pid>/maps` is readable only for the caller's own processes, so
+    /// a short list is evidence about privilege rather than about the host.
+    pub privileged: bool,
+    /// Every TLS library found, reachable or not.
+    pub libraries: Vec<TlsLibraryEntry>,
+    /// Libraries in use that sipnab could **not** attach to.
+    pub unreachable_count: usize,
+    /// What a capture would do, in one sentence an agent can relay.
+    pub summary: String,
+}
+
+/// Assemble the `list_tls_libraries` payload from facts already gathered.
+///
+/// **Pure, and separate from the discovery it describes, because the branch
+/// that matters cannot otherwise be tested.** An empty list means one of two
+/// opposite things — this host runs no TLS, or this server cannot see it —
+/// and which one an agent is told depends on `privileged`. On a development
+/// machine that maps TLS libraries, a test calling the live version never
+/// reaches the empty branch at all, so the wording that prevents the wrong
+/// conclusion would be asserted by nothing.
+#[must_use]
+pub fn build_tls_libraries_response(
+    supported: bool,
+    privileged: bool,
+    libraries: Vec<TlsLibraryEntry>,
+) -> TlsLibrariesResponse {
+    if !supported {
+        return TlsLibrariesResponse {
+            schema_version: 1,
+            supported: false,
+            privileged,
+            libraries: Vec::new(),
+            unreachable_count: 0,
+            summary: "Uprobe TLS capture needs Linux and a sipnab built with the \
+                      `native` feature, so this server cannot read TLS plaintext \
+                      without keys."
+                .to_string(),
+        };
+    }
+
+    let unreachable_count = libraries.iter().filter(|l| l.probe_path.is_none()).count();
+    let reachable = libraries.len() - unreachable_count;
+
+    let summary = match (libraries.is_empty(), privileged) {
+        (true, true) => "No process on this host maps OpenSSL or wolfSSL. SIP over \
+                         TLS here cannot be read by uprobe; it would need keys."
+            .to_string(),
+        // The dangerous case. Same empty list, opposite conclusion.
+        (true, false) => "No TLS library is visible, but this server is \
+                          unprivileged and can only see its own processes. Re-run \
+                          sipnab as root before concluding the host uses no TLS."
+            .to_string(),
+        (false, _) => format!(
+            "{reachable} of {} TLS librar{} could be read with `sipnab \
+             --uprobe-tls`, without any key or certificate.{}",
+            libraries.len(),
+            if libraries.len() == 1 { "y" } else { "ies" },
+            if unreachable_count > 0 {
+                format!(
+                    " {unreachable_count} cannot be reached from this server's \
+                     mount namespace and would be missed."
+                )
+            } else {
+                String::new()
+            }
+        ),
+    };
+
+    TlsLibrariesResponse {
+        schema_version: 1,
+        supported: true,
+        privileged,
+        libraries,
+        unreachable_count,
+        summary,
+    }
+}
+
+/// Discover this host's TLS libraries and describe them for an agent.
+#[must_use]
+pub fn tls_libraries_response() -> TlsLibrariesResponse {
+    #[cfg(all(target_os = "linux", feature = "native"))]
+    {
+        use crate::capture::uprobe::discover;
+
+        // Not a permission check on /proc: uid 0 is what decides whether the
+        // walk sees other users' processes AND whether a probe could be
+        // installed afterwards, and reporting it lets a caller tell "no TLS
+        // here" apart from "this server cannot see it".
+        // SAFETY: `geteuid` takes no arguments, cannot fail, and touches no
+        // memory this process owns.
+        let privileged = unsafe { libc::geteuid() } == 0;
+        let libraries = discover::discover()
+            .iter()
+            .map(|l| TlsLibraryEntry {
+                flavour: l.flavour.label().to_string(),
+                path: l.path.display().to_string(),
+                inode: l.inode,
+                process_count: l.pids.len(),
+                symbol: l.flavour.write_symbol().to_string(),
+                probe_path: l.probe_path().map(|p| p.display().to_string()),
+            })
+            .collect();
+        build_tls_libraries_response(true, privileged, libraries)
+    }
+    #[cfg(not(all(target_os = "linux", feature = "native")))]
+    {
+        build_tls_libraries_response(false, false, Vec::new())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 /// The startup flags that decide which tools do anything.
 ///
 /// Compiled features and operator choices are different questions, and this
@@ -1559,6 +1767,8 @@ pub struct RuntimeFlags {
     /// Whether `open_capture` may replace the loaded capture
     /// (`--mcp-allow-open-capture`).
     pub mcp_allow_open_capture: bool,
+    /// True when `start_tls_capture` may install kernel uprobes.
+    pub mcp_allow_tls_capture: bool,
     /// Whether `save_findings` may record an annotation
     /// (`--mcp-allow-save-findings`). The only write verb on this surface.
     pub mcp_allow_save_findings: bool,
@@ -3913,9 +4123,255 @@ impl SipnabMcp {
                 mcp_file_root: self.file_root.as_ref().map(|d| d.display().to_string()),
                 mcp_allow_shutdown: self.allow_shutdown,
                 mcp_allow_open_capture: self.allow_open_capture,
+                mcp_allow_tls_capture: self.allow_tls_capture,
                 mcp_allow_save_findings: self.allow_save_findings,
             },
         };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// Resolve `start_tls_capture` parameters into libraries to probe.
+    ///
+    /// Every refusal here happens **before** any kernel state exists, and each
+    /// carries the reason rather than a bare "no": an agent told only that a
+    /// capture failed cannot tell "this host runs no TLS" from "this server
+    /// dropped privileges and cannot see it", and those lead to opposite next
+    /// steps.
+    #[cfg(all(target_os = "linux", feature = "native"))]
+    fn plan_tls_targets(
+        &self,
+        params: &StartTlsCaptureParams,
+    ) -> Result<Vec<crate::capture::UprobeTarget>, rmcp::ErrorData> {
+        use crate::capture::uprobe::discover;
+
+        // Checked here rather than left to the attach, because the attach
+        // happens on a background thread and its failure would reach the agent
+        // as an empty capture minutes later.
+        // SAFETY: `geteuid` takes no arguments, cannot fail, and touches no
+        // memory this process owns.
+        if unsafe { libc::geteuid() } != 0 {
+            return Err(rmcp::ErrorData::invalid_params(
+                "installing a uprobe needs root, and this server is not running \
+                 as root. sipnab drops privileges after opening its capture \
+                 devices, so a server started with --user cannot attach probes \
+                 later — start it without dropping, or use --uprobe-tls on the \
+                 command line",
+                None,
+            ));
+        }
+
+        let mut flavours = Vec::new();
+        for name in &params.flavours {
+            flavours.push(
+                discover::parse_flavour(name)
+                    .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+            );
+        }
+        let planned =
+            discover::plan_targets(&params.libraries, None, &flavours, discover::discover())
+                .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?;
+
+        Ok(planned
+            .into_iter()
+            .map(|t| crate::capture::UprobeTarget {
+                library: t.library.display().to_string(),
+                symbol: t.symbol,
+            })
+            .collect())
+    }
+
+    /// Off Linux there is nothing to plan: say so instead of failing later.
+    #[cfg(not(all(target_os = "linux", feature = "native")))]
+    fn plan_tls_targets(
+        &self,
+        _params: &StartTlsCaptureParams,
+    ) -> Result<Vec<crate::capture::UprobeTarget>, rmcp::ErrorData> {
+        Err(rmcp::ErrorData::invalid_params(
+            "uprobe TLS capture needs Linux kernel uprobes and a sipnab built \
+             with the `native` feature",
+            None,
+        ))
+    }
+
+    /// Start reading TLS plaintext with kernel uprobes.
+    #[tool(
+        name = "start_tls_capture",
+        description = "Installs kernel uprobes on this host's TLS libraries and \
+                       reads SIP plaintext from them, with no key and no \
+                       certificate. Requires --mcp-allow-tls-capture, root, and \
+                       an exhausted FILE source: a uprobe capture is a live \
+                       writer, so it cannot start beside another one. Call \
+                       list_tls_libraries first to see what it would probe. \
+                       Dialogs from this source carry no addresses and port 0 \
+                       because a uprobe sees no socket.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    pub async fn start_tls_capture(
+        &self,
+        Parameters(params): Parameters<StartTlsCaptureParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if !self.allow_tls_capture {
+            return Err(rmcp::ErrorData::invalid_params(
+                "starting a TLS capture is disabled: start sipnab with \
+                 --mcp-allow-tls-capture to permit it. This is off by default \
+                 because it attaches kernel probes to a running process's TLS \
+                 library and reads its plaintext",
+                None,
+            ));
+        }
+
+        let targets = self.plan_tls_targets(&params)?;
+
+        // One writer. Checked under the same lock that will record the new
+        // capture, so nothing can start a second one in between.
+        let mut state = self.capture.write();
+        if let Some(existing) = state.tls.as_ref()
+            && !existing.finished()
+        {
+            return Err(rmcp::ErrorData::invalid_params(
+                "a TLS capture is already running on this server. Stop it with \
+                 stop_tls_capture before starting another",
+                None,
+            ));
+        }
+        if let Some(ctx) = state.context.as_ref()
+            && ctx.live
+        {
+            return Err(rmcp::ErrorData::invalid_params(
+                "this server is already reading a live interface. sipnab's \
+                 stores have one writer, so a uprobe capture cannot run beside \
+                 one",
+                None,
+            ));
+        }
+        if let Some(load) = state.load.as_ref()
+            && !load.finished()
+        {
+            return Err(rmcp::ErrorData::invalid_params(
+                "a capture is still loading. Poll capture_status until \
+                 load.done is true, then start the TLS capture",
+                None,
+            ));
+        }
+
+        let instance = state.identity.instance().to_string();
+        let capture = super::tls_capture::spawn(
+            targets,
+            &instance,
+            Arc::clone(&self.dialog_store),
+            Arc::clone(&self.stream_store),
+        )
+        .map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("could not start the TLS capture: {e}"), None)
+        })?;
+        state.tls = Some(Arc::clone(&capture));
+        drop(state);
+
+        let payload = TlsCaptureResponse {
+            schema_version: 1,
+            running: true,
+            targets: capture.targets.clone(),
+            messages: 0,
+            lost: None,
+            uptime_sec: 0,
+            error: None,
+            summary: format!(
+                "Probing {} TLS librar{}. Poll start_tls_capture's sibling \
+                 stop_tls_capture, or capture_status, to see messages arrive. \
+                 An attach failure appears there rather than here, because the \
+                 probes are installed on a background thread.",
+                capture.targets.len(),
+                if capture.targets.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
+            ),
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// Stop the running uprobe capture and remove its probes.
+    #[tool(
+        name = "stop_tls_capture",
+        description = "Stops the running uprobe TLS capture and removes its \
+                       kernel probes. Returns how many SIP messages it \
+                       delivered and how many records the kernel dropped. The \
+                       dialogs it collected stay in the store. Safe to call \
+                       when nothing is running: it says so rather than failing.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub async fn stop_tls_capture(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+        let capture = {
+            let state = self.capture.read();
+            state.tls.clone()
+        };
+        let Some(capture) = capture else {
+            let payload = TlsCaptureResponse {
+                schema_version: 1,
+                running: false,
+                targets: Vec::new(),
+                messages: 0,
+                lost: None,
+                uptime_sec: 0,
+                error: None,
+                summary: "No TLS capture is running on this server.".to_string(),
+            };
+            return Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]));
+        };
+
+        capture.request_stop();
+        // Deliberately not waited on. The worker removes its probes on the way
+        // out, and that is a kernel round trip per probe; blocking this handler
+        // would block the one runtime thread the REST API shares.
+        let outcome = capture.outcome.lock().clone();
+        let payload = TlsCaptureResponse {
+            schema_version: 1,
+            running: !capture.finished(),
+            targets: capture.targets.clone(),
+            messages: capture.messages.load(std::sync::atomic::Ordering::Relaxed),
+            lost: outcome.as_ref().map(|o| o.lost),
+            uptime_sec: capture.started.elapsed().as_secs(),
+            error: outcome.as_ref().and_then(|o| o.error.clone()),
+            summary: if capture.finished() {
+                "The TLS capture has stopped and its probes are removed.".to_string()
+            } else {
+                "Stop requested. The worker is removing its kernel probes; poll \
+                 stop_tls_capture again until running is false, because probes \
+                 left installed cost every process that maps the library."
+                    .to_string()
+            },
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// Which TLS libraries this host is running, and whether sipnab could
+    /// probe them.
+    #[tool(
+        name = "list_tls_libraries",
+        description = "Returns the TLS libraries processes on this host are \
+                       actually mapping (OpenSSL, wolfSSL), each with the \
+                       processes using it and whether sipnab could attach a \
+                       uprobe to read its plaintext. Call this before concluding \
+                       that SIP over TLS cannot be read without keys — and read \
+                       `reachable` and `privileged` before concluding it can: \
+                       unprivileged, this sees only the caller's own processes, \
+                       so an empty or short list may mean insufficient \
+                       privilege rather than no TLS.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn list_tls_libraries(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+        let payload = tls_libraries_response();
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
@@ -10221,7 +10677,7 @@ mod tests {
     ///    fails here by name. Checking only "every tool has annotations" would
     ///    pass while a tool that deletes something claimed to be read-only.
     #[test]
-    fn every_tool_is_annotated_and_the_writes_are_exactly_the_expected_five() {
+    fn every_tool_is_annotated_and_the_writes_are_exactly_the_expected_seven() {
         /// name, destructive_hint, idempotent_hint.
         ///
         /// Both hints are meaningful ONLY when `read_only_hint` is false (MCP
@@ -10230,12 +10686,21 @@ mod tests {
         /// changes what every later answer describes; `save_findings` is
         /// additive but NOT idempotent, because each call records another
         /// annotation.
+        ///
+        /// `start_tls_capture` is NOT destructive — it discards nothing and
+        /// adds dialogs to a store the caller was already reading — but it is
+        /// not idempotent either: a second call while one runs is refused
+        /// rather than folded into the first. `stop_tls_capture` IS idempotent,
+        /// deliberately, so an agent recovering from a disconnect can ask
+        /// without risking a failure it must then explain.
         const WRITES: &[(&str, bool, bool)] = &[
             ("export_audio", false, true),
             ("export_capture", false, true),
             ("open_capture", true, true),
             ("save_findings", false, false),
             ("shutdown_server", true, true),
+            ("start_tls_capture", false, false),
+            ("stop_tls_capture", false, true),
         ];
 
         let router = SipnabMcp::tool_router();
@@ -10385,7 +10850,9 @@ mod tests {
                 "export_capture",
                 "open_capture",
                 "save_findings",
-                "shutdown_server"
+                "shutdown_server",
+                "start_tls_capture",
+                "stop_tls_capture"
             ],
             "the tools a read token cannot call must be exactly the \
              non-read-only set"

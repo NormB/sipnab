@@ -200,7 +200,7 @@ Tiers:
   silently negates most of CT2's benefit on exactly the busy servers CT2
   targets, and because it makes `-B` advice misleading until fixed.
   **Done:** immediate mode is now a decision, not a constant.
-  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:1819`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1819)) is
+  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:1939`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1939)) is
   `matches!(mode, RunMode::Tui)` and is the only place that answers the
   question; `bootstrap.rs:537` assigns its result to
   `CaptureConfig::immediate_mode`, and [`src/capture/live.rs:219-220`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L219-L220) passes that
@@ -298,7 +298,7 @@ Tiers:
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:2145`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2145)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:2277`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2277)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -333,8 +333,8 @@ Tiers:
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:3664`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3664)) currently takes
-  nowhere; `security_findings` ([`src/mcp/server.rs:3664`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3664)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:3874`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3874)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:3874`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3874)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -470,8 +470,8 @@ Tiers:
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:3761`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3761),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:3761`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3761),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:3971`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3971),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:3971`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3971),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -496,7 +496,7 @@ Tiers:
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2298`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2298),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2430`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2430),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -1037,16 +1037,16 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:94`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L94)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:4818`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4818), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:5274`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5274), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1133`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1133)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1212`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1212)), which attaches `frame_ref`
     (`#[tool(` at [`src/mcp/server.rs:4528`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4528), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1140`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1140)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1212`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1212)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -1192,7 +1192,7 @@ output path.
     `SUPPRESSION_FILENAME` ([`src/sip/lint/mod.rs:70`](https://github.com/NormB/sipnab/blob/main/src/sip/lint/mod.rs#L70)),
     `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
     exist, and the MCP lint tools consume them through `resolve_suppressions`
-    ([`src/mcp/server.rs:595`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L595)), which takes an explicit filename or walks up from
+    ([`src/mcp/server.rs:619`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L619)), which takes an explicit filename or walks up from
     the capture's directory to a project root. **What is still missing is the
     suppression half of the CLI, and the evidence this line cited for that is
     now false too. Corrected 2026-08-06:** it read *"`grep -n lint src/cli.rs`
@@ -1538,7 +1538,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:5907`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5907), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:6363`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6363), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -2130,7 +2130,7 @@ self-contained second instance from the source tree's own binary and modules on
 `127.0.0.1:5063`, documented in `/home/gator/sipnab-tls-test/README` on that
 host. The packaged instance is untouched.
 
-- [x] **TK6 — DECLINED 2026-08-14, on maintenance.** Full verdict:
+- [ ] **TK6 — APPROVED 2026-08-15, reversing the 2026-08-14 decline.** Full verdict:
   [`deferred-and-declined.md`](https://github.com/NormB/sipnab/blob/main/docs/design/deferred-and-declined.md) §6. It buys only "no second tool on the SBC" and pays
   a struct-offset table per OpenSSL release for it, while `TK7` gets the same
   eBPF-shaped capability from `SSL_write`/`SSL_read`, whose signatures are ABI
@@ -2176,6 +2176,109 @@ host. The packaged instance is untouched.
   is MIT OR Apache-2.0. Interoperating over HEP is two processes exchanging
   packets and is fine. Vendoring or linking any part of it is not, and this
   entry exists partly so nobody reaches for it later.
+
+- [x] **TK10 — An `aya` BPF backend, for the 5-tuple `TK7` cannot observe.** DONE 2026-08-15, verified live.
+  Approved 2026-08-15 alongside the `TK6` reversal, and scoped by the one thing
+  tracefs genuinely cannot do.
+
+  **What tracefs can and cannot do, measured rather than assumed.** It fetches
+  fixed byte ranges, dereferences nested pointers
+  (`+0x50(+0x918(%x0)):x8[48]`), and glob-matches a string **in kernel space**
+  before recording an event. That covers `TK7`'s plaintext, `TK6`'s secrets and
+  the non-SIP prefilter. What it cannot do is carry **state between two
+  probes**: there is no map, so nothing can stash a value at one hook and match
+  it at another.
+
+  **That gap is exactly the 5-tuple.** A uprobe on `SSL_write` sees the bytes an
+  application handed its TLS library and nothing about the socket beneath, which
+  is why uprobe dialogs today name a process instead of a peer. sngrep solves it
+  by hooking `tcp_sendmsg`/`tcp_recvmsg`, reading the addresses out of
+  `struct sock`, and matching them to the plaintext **per thread** — and
+  per-thread correlation across two hooks needs a program and a map, which means
+  a real BPF program.
+
+  **Do:** an `aya` backend behind the same interface the tracefs reader already
+  presents, so both roads end at the same `Packet`. The pattern is demonstrated
+  by [`pcap-sip`](https://gitlab.com/wisteriabg/pcap-sip/): the `no_std` BPF
+  crate is a separate package **excluded** from the host workspace with its own
+  empty `[workspace]` table, built for `bpfel-unknown-none` by `aya-build` from
+  the parent [`build.rs`](https://github.com/NormB/sipnab/blob/main/build.rs), behind a cfg so a host build can opt out. That repo is
+  GPL-3.0-or-later: the pattern may be followed, no code may be taken.
+
+  **Cost, stated plainly:** the kernel half needs a **nightly** toolchain and
+  `bpf-linker`, in a repo that pins 1.97.1 stable. The userspace half of `aya`
+  is stable. Keep the BPF build optional so a stock `cargo build` still works
+  and CI's pinned jobs are unaffected — a contributor without nightly must not
+  be blocked from building sipnab.
+
+  **Reading `struct sock` needs kernel struct offsets**, which is what BTF
+  provides. thor-02 has none, so this backend is unavailable there and the
+  tracefs one must remain the default rather than a fallback nobody tested.
+
+  **DONE, and verified live on `opensips-1` (carbon VM 140).** A real SIP-over-TLS
+  exchange produced six messages with **real 5-tuples**, no key and no
+  certificate:
+
+  ```
+  200 OK       127.0.0.1:15061 -> 127.0.0.1:36160  TCP  uprobe:python3/349147#0
+  REGISTER     127.0.0.1:36160 -> 127.0.0.1:15061  TCP  uprobe:python3/349147#1
+  200 OK       127.0.0.1:15061 -> 127.0.0.1:36172  TCP  uprobe:python3/349147#2
+  ```
+
+  Each request/response pair carries its **own** ephemeral port, which is the
+  evidence that the per-thread pairing binds a write to its own socket rather
+  than smearing one tuple across the capture.
+
+  Three defects found on the way, each of which produced silence rather than an
+  error:
+
+  1. **The TCP reassembler swallowed every uprobe read.** A uprobe packet is
+     reported as TCP but carries no sequence number, so the reassembler held
+     each message for neighbours that could never arrive. **Both** backends
+     captured packets and produced zero SIP messages. A uprobe read is a
+     complete application write, not a segment, and now bypasses reassembly.
+  2. **`include_bytes!` yields alignment 1**, and `object`'s ELF parser casts
+     the header out of the buffer. Same bytes: aligned loads, misaligned fails
+     with `error parsing ELF data`.
+  3. **Hand-counted field offsets were wrong and the tests repeated the
+     mistake**, so they agreed with each other and not with the kernel —
+     `sport` at 48, read from 64. Every message reported `0.0.0.0:0` with a
+     green suite. The host now reads the record by field, and every offset is
+     pinned.
+
+  **UNBLOCKED, 2026-08-15 — on a different machine, and the version pin is
+  the whole trick.** `bpf-linker` 0.11.0 wants `llvm-sys 231` (**LLVM 23.1**)
+  and refuses with `could not find llvm-config in directories specified by
+  environment`; thor-02 carries LLVM 18, and `--no-default-features` does not
+  redirect it to the one `rustc` bundles. Installing LLVM 23.1 system-wide was
+  never the answer: **`bpf-linker` 0.9.13 pins `llvm-sys ^191.0.0-rc1`, which
+  is LLVM 19**, so an older linker against an already-installed LLVM needs no
+  third-party apt repository at all.
+
+  Both halves resolve on **`opensips-1` (carbon VM 140)** and neither resolves
+  on thor-02:
+
+  | Requirement | thor-02 | opensips-1 (carbon 140) |
+  |---|---|---|
+  | BTF (`/sys/kernel/btf/vmlinux`) | absent | **present**, 4.9 MB, `CONFIG_DEBUG_INFO_BTF=y` |
+  | Kernel | 6.8.12-rt-tegra aarch64 | 6.12.101+deb13 x86_64 |
+  | LLVM | 18 | **19**, with `llvm-19-dev` already installed |
+  | `bpf-linker` | refuses | **0.9.13 installed and verified** |
+
+  Verified rather than assumed: a minimal `aya-ebpf` kprobe built there with
+  `cargo +nightly build --target bpfel-unknown-none -Z build-std=core` and
+  produced `ELF 64-bit LSB relocatable, eBPF` carrying a `kprobe` section.
+  Only Rust was added, user-local under `~gator`; no system package changed.
+
+  Note the docker container **also** called `opensips-1`, on thor-02, is a
+  different machine and shares thor's kernel — so it has no BTF either. The
+  carbon VM is the one that matters here, and it runs a real OpenSIPS, which
+  makes it the end-to-end target as well as the build host.
+
+  Two constraints stand regardless: the BPF build stays **optional**, so a
+  contributor without nightly is never blocked and CI's pinned 1.97.1 jobs are
+  unaffected; and because thor-02 has no BTF, the tracefs reader stays the
+  **default** rather than becoming a fallback nobody tested.
 
 - [ ] **TK7 — Plaintext-from-uprobe has no honest provenance.** `SSL_read`/
   `SSL_write` yield SIP bytes with no packet behind them: no frame number, no

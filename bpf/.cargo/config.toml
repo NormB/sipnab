@@ -1,0 +1,6 @@
+# `core` is not shipped prebuilt for this target, so it is built from source.
+[build]
+target = "bpfel-unknown-none"
+
+[unstable]
+build-std = ["core"]

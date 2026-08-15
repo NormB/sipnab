@@ -18,6 +18,15 @@
 //! largest message sipnab supports. The band is a bound, not a guarantee, which
 //! is why the truncation below still happens.
 
+/// Loading and attaching the BPF programs. Needs `aya` and a built object.
+#[cfg(feature = "bpf")]
+pub mod bpf;
+/// Turning one BPF record into a packet — no kernel, no `aya`, always tested.
+pub mod bpf_record;
+/// Reading struct member offsets from the running kernel's BTF.
+pub mod btf;
+/// Which TLS libraries this host is actually running.
+pub mod discover;
 pub mod elf;
 /// Reading records through `perf_event_open`, which needs `libc`.
 ///
@@ -26,6 +35,9 @@ pub mod elf;
 /// combinations that carry no `libc` at all.
 #[cfg(feature = "native")]
 pub mod perf;
+/// Running the source: install, drain, convert, send. Needs `libc` via `perf`.
+#[cfg(feature = "native")]
+pub mod reader;
 pub mod record;
 
 /// Fetch sizes, in bytes, for the banded probe set.
@@ -64,6 +76,56 @@ pub fn filter_for(band: usize) -> String {
         Some(prev) => format!("len > {prev} && len <= {band}"),
         None => format!("len > 0 && len <= {band}"),
     }
+}
+
+/// SIP start-line tokens the kernel filter matches, so non-SIP writes never
+/// reach userspace.
+///
+/// Requests begin with a method token; responses begin with `SIP/2.0`. Fourteen
+/// methods plus the response form is what a filter needs to pass SIP and drop
+/// everything else.
+pub const SIP_START_TOKENS: [&str; 15] = [
+    "INVITE",
+    "ACK",
+    "BYE",
+    "CANCEL",
+    "OPTIONS",
+    "REGISTER",
+    "PRACK",
+    "SUBSCRIBE",
+    "NOTIFY",
+    "PUBLISH",
+    "INFO",
+    "REFER",
+    "MESSAGE",
+    "UPDATE",
+    "SIP/2.0",
+];
+
+/// The tracefs filter for one band: in-kernel length AND content matching.
+///
+/// **This is the filter doing the work sngrep needs a BPF program for.** These
+/// probes sit on every process that maps the library, so a filter is what makes
+/// the feature affordable rather than an optimisation — and the kernel
+/// evaluates it BEFORE recording the event, so a non-SIP write costs a glob
+/// comparison and never a ring slot or a wakeup.
+///
+/// Measured on a 6.8 kernel: a probe filtered to `s ~ "INVITE*"` delivered the
+/// `INVITE` written through `SSL_write` and **suppressed** a non-SIP write on
+/// the same connection entirely — one event, not two. The 15-token chain below
+/// is accepted by the same filter parser.
+///
+/// The string argument exists only to be matched on. Payload still arrives
+/// through the banded byte fetches, because `:string` stops at the first NUL
+/// and a SIP message is not NUL-terminated.
+#[must_use]
+pub fn kernel_filter_for(band: usize) -> String {
+    let content = SIP_START_TOKENS
+        .iter()
+        .map(|t| format!("s ~ \"{t}*\""))
+        .collect::<Vec<_>>()
+        .join(" || ");
+    format!("({}) && ({content})", filter_for(band))
 }
 
 /// Plaintext a probe delivered, reduced to what may be used.
@@ -154,13 +216,18 @@ pub fn arg_registers() -> Option<(&'static str, &'static str)> {
     }
 }
 
-/// The probe name sipnab uses for one band.
+/// The probe name sipnab uses for one band of one library.
 ///
 /// Carries the pid because `uprobe_events` is a **system-wide** namespace: two
 /// sipnabs on one host, or a sipnab beside another tracer, must not collide.
+///
+/// Carries `slot` because one sipnab probes **several libraries at once** — a
+/// host commonly runs OpenSSL and wolfSSL together, and may run several builds
+/// of one flavour. Without it the second install would reuse the first's names
+/// and only one library would ever be captured.
 #[must_use]
-pub fn probe_name(pid: u32, band: usize) -> String {
-    format!("sipnab_{pid}_b{band}")
+pub fn probe_name(pid: u32, slot: usize, band: usize) -> String {
+    format!("sipnab_{pid}_l{slot}_b{band}")
 }
 
 /// The line that installs one banded probe.
@@ -171,7 +238,10 @@ pub fn probe_name(pid: u32, band: usize) -> String {
 #[must_use]
 pub fn install_line(name: &str, library: &str, offset: u64, band: usize) -> Option<String> {
     let (buf_reg, len_reg) = arg_registers()?;
-    let mut line = format!("p:{name} {library}:0x{offset:x}");
+    // `s` exists to be filtered on in-kernel, not to be read: `:string` stops
+    // at the first NUL and a SIP message is not NUL-terminated, so the payload
+    // still comes from the banded byte fetches below.
+    let mut line = format!("p:{name} {library}:0x{offset:x} s=+0({buf_reg}):string");
     // 64 bytes is the ceiling for ONE fetch argument, so a band above it is
     // several side by side rather than one larger read.
     let mut at = 0usize;
@@ -226,6 +296,7 @@ impl InstalledProbes {
     pub fn install(
         root: &std::path::Path,
         pid: u32,
+        slot: usize,
         library: &str,
         offset: u64,
     ) -> std::io::Result<Self> {
@@ -234,7 +305,7 @@ impl InstalledProbes {
             root: root.to_path_buf(),
         };
         for band in BANDS {
-            let name = probe_name(pid, band);
+            let name = probe_name(pid, slot, band);
             let Some(line) = install_line(&name, library, offset, band) else {
                 return Err(std::io::Error::other(
                     "no known argument registers for this architecture, so a \
@@ -243,7 +314,10 @@ impl InstalledProbes {
             };
             held.append("uprobe_events", &line)?;
             held.names.push(name.clone());
-            held.write(&format!("events/uprobes/{name}/filter"), &filter_for(band))?;
+            held.write(
+                &format!("events/uprobes/{name}/filter"),
+                &kernel_filter_for(band),
+            )?;
             // Deliberately NOT written: events/uprobes/<name>/enable.
             //
             // That file switches the event on for tracefs's own text readers,
@@ -415,6 +489,50 @@ pub fn to_message(
 mod tests {
     use super::*;
 
+    /// The filter must bound BOTH length and content, or one of the two jobs is
+    /// not being done in the kernel.
+    #[test]
+    fn the_kernel_filter_bounds_length_and_content_together() {
+        let f = kernel_filter_for(64);
+        assert!(f.contains("len > 0 && len <= 64"), "length band: {f}");
+        assert!(f.contains("s ~ \"INVITE*\""), "SIP requests: {f}");
+        assert!(f.contains("s ~ \"SIP/2.0*\""), "SIP responses: {f}");
+        assert!(
+            f.starts_with('(') && f.contains(") && ("),
+            "the two halves must both apply, not either: {f}"
+        );
+    }
+
+    /// Every method sipnab claims to capture must be in the kernel filter, or
+    /// it is dropped before userspace ever sees it -- which reads as "that
+    /// traffic did not happen".
+    #[test]
+    fn every_sip_start_token_reaches_the_filter() {
+        let f = kernel_filter_for(2048);
+        for t in SIP_START_TOKENS {
+            assert!(f.contains(&format!("s ~ \"{t}*\"")), "{t} missing from {f}");
+        }
+        assert_eq!(
+            SIP_START_TOKENS.len(),
+            15,
+            "14 methods plus the response form"
+        );
+    }
+
+    /// The probe must fetch the string the filter matches on, or the filter
+    /// references a field that does not exist and the kernel refuses the write.
+    #[test]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    fn the_probe_fetches_the_string_its_filter_matches_on() {
+        let line = install_line("t", "/lib/libssl.so.3", 0x1000, 64).expect("known arch");
+        assert!(line.contains("s=+0("), "string arg for the filter: {line}");
+        assert!(line.contains(":string"), "typed as string: {line}");
+        assert!(
+            line.contains(":x8[64]"),
+            "payload still comes from bytes: {line}"
+        );
+    }
+
     fn delivered(bytes: &[u8]) -> Delivered {
         Delivered {
             bytes: bytes.to_vec(),
@@ -487,14 +605,27 @@ mod tests {
     }
 
     #[test]
-    fn a_probe_name_is_unique_per_process_and_band() {
-        assert_eq!(probe_name(42, 64), "sipnab_42_b64");
+    fn a_probe_name_is_unique_per_process_library_and_band() {
+        assert_eq!(probe_name(42, 0, 64), "sipnab_42_l0_b64");
         assert_ne!(
-            probe_name(42, 64),
-            probe_name(43, 64),
+            probe_name(42, 0, 64),
+            probe_name(43, 0, 64),
             "two sipnabs must not collide"
         );
-        assert_ne!(probe_name(42, 64), probe_name(42, 256), "nor two bands");
+        assert_ne!(
+            probe_name(42, 0, 64),
+            probe_name(42, 0, 256),
+            "nor two bands"
+        );
+        // A host running OpenSSL and wolfSSL is probed on both at once, and a
+        // host running three builds of one flavour on all three. Same pid,
+        // same band, different library: the name must still differ or the
+        // second install overwrites the first and captures only one of them.
+        assert_ne!(
+            probe_name(42, 0, 64),
+            probe_name(42, 1, 64),
+            "nor two libraries probed by one sipnab"
+        );
     }
 
     /// Removal must name the probe. Truncating `uprobe_events` would remove
@@ -551,12 +682,12 @@ mod tests {
         let root = dir.path();
         std::fs::write(root.join("uprobe_events"), "").unwrap();
         for band in BANDS {
-            let d = root.join(format!("events/uprobes/{}", probe_name(8, band)));
+            let d = root.join(format!("events/uprobes/{}", probe_name(8, 0, band)));
             std::fs::create_dir_all(&d).unwrap();
             std::fs::write(d.join("filter"), "").unwrap();
             std::fs::write(d.join("enable"), "").unwrap();
         }
-        let mut held = InstalledProbes::install(root, 8, "/lib/libssl.so.3", 0x1000).unwrap();
+        let mut held = InstalledProbes::install(root, 8, 0, "/lib/libssl.so.3", 0x1000).unwrap();
 
         // Stand in for the kernel refusing while a consumer is open.
         let ev = root.join("uprobe_events");
@@ -597,16 +728,16 @@ mod tests {
         let root = dir.path();
         std::fs::write(root.join("uprobe_events"), "").unwrap();
         for band in BANDS {
-            let d = root.join(format!("events/uprobes/{}", probe_name(7, band)));
+            let d = root.join(format!("events/uprobes/{}", probe_name(7, 0, band)));
             std::fs::create_dir_all(&d).unwrap();
             std::fs::write(d.join("filter"), "").unwrap();
             std::fs::write(d.join("enable"), "").unwrap();
         }
 
-        let held = InstalledProbes::install(root, 7, "/lib/libssl.so.3", 0x1000)
+        let held = InstalledProbes::install(root, 7, 0, "/lib/libssl.so.3", 0x1000)
             .expect("install into the fake tracefs");
         for band in BANDS {
-            let enable = root.join(format!("events/uprobes/{}/enable", probe_name(7, band)));
+            let enable = root.join(format!("events/uprobes/{}/enable", probe_name(7, 0, band)));
             assert_eq!(
                 std::fs::read_to_string(&enable).unwrap(),
                 "",
@@ -626,7 +757,7 @@ mod tests {
 
         let after = std::fs::read_to_string(root.join("uprobe_events")).unwrap();
         for band in BANDS {
-            let name = probe_name(7, band);
+            let name = probe_name(7, 0, band);
             assert!(
                 after.contains(&format!("-:{name}")),
                 "drop must remove {name}: {after}"
@@ -637,6 +768,63 @@ mod tests {
             "removal is an APPEND of -:name; an empty file would mean sipnab \
              truncated shared kernel state and took other tracers with it"
         );
+    }
+
+    /// A host running OpenSSL and wolfSSL together is the ordinary case. Both
+    /// probe sets must exist at once, and both must be removed.
+    #[test]
+    fn two_libraries_probed_at_once_do_not_collide_and_both_are_released() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("uprobe_events"), "").unwrap();
+        for slot in 0..2 {
+            for band in BANDS {
+                let d = root.join(format!("events/uprobes/{}", probe_name(9, slot, band)));
+                std::fs::create_dir_all(&d).unwrap();
+                std::fs::write(d.join("filter"), "").unwrap();
+                std::fs::write(d.join("enable"), "").unwrap();
+            }
+        }
+
+        let openssl =
+            InstalledProbes::install(root, 9, 0, "/lib/libssl.so.3", 0x1000).expect("openssl");
+        let wolfssl =
+            InstalledProbes::install(root, 9, 1, "/lib/libwolfssl.so.42", 0x2000).expect("wolfssl");
+
+        let installed = std::fs::read_to_string(root.join("uprobe_events")).unwrap();
+        assert_eq!(
+            installed.lines().filter(|l| l.starts_with("p:")).count(),
+            BANDS.len() * 2,
+            "one probe set per library, not one set overwritten by the other"
+        );
+        let names: std::collections::BTreeSet<String> = openssl
+            .names()
+            .iter()
+            .chain(wolfssl.names().iter())
+            .cloned()
+            .collect();
+        assert_eq!(
+            names.len(),
+            BANDS.len() * 2,
+            "every probe name distinct, or the second install silently replaces \
+             the first and only one library is ever captured"
+        );
+        assert!(
+            installed.contains("/lib/libssl.so.3:0x1000")
+                && installed.contains("/lib/libwolfssl.so.42:0x2000"),
+            "each set points at its own library and offset: {installed}"
+        );
+
+        drop(openssl);
+        drop(wolfssl);
+
+        let after = std::fs::read_to_string(root.join("uprobe_events")).unwrap();
+        for name in &names {
+            assert!(
+                after.contains(&format!("-:{name}")),
+                "drop must remove {name}"
+            );
+        }
     }
 
     /// THE rule. A short write inside a long fetch must yield the message and

@@ -175,9 +175,70 @@ fn c_str_at(b: &[u8], at: usize) -> Option<&str> {
     std::str::from_utf8(&rest[..end]).ok()
 }
 
+/// Write-side entry points sipnab knows how to probe, in preference order.
+///
+/// All three take `(handle, const void *buf, int len)`, so the SAME argument
+/// registers and the same banded fetch work for every one of them — only the
+/// name differs. That is why supporting wolfSSL costs a list entry rather than
+/// a second code path.
+///
+/// Verified on this host: `libssl.so.3` exports `SSL_write` and **no**
+/// `wolfSSL_write`; `libwolfssl.so.42` exports `wolfSSL_write` and **no**
+/// `SSL_write` — wolfSSL's OpenSSL compatibility layer does not alias it in the
+/// shipped shared object. A hardcoded `SSL_write` therefore attaches to nothing
+/// on a wolfSSL build, which is why this list exists rather than a default.
+pub const KNOWN_WRITE_SYMBOLS: [&str; 3] = ["SSL_write", "wolfSSL_write", "wolfSSL_send"];
+
+/// Find the first known write entry point this library exports.
+///
+/// Returns the symbol chosen alongside its file offset, so a caller can NAME
+/// which one it probed. An operator debugging "no SIP from my proxy" needs to
+/// know sipnab attached to `wolfSSL_write` and not `SSL_write`.
+///
+/// # Errors
+///
+/// [`ElfError::NoSuchSymbol`] naming every candidate tried, when the library
+/// exports none of them — better than reporting only the last one, which reads
+/// as though sipnab looked for one thing.
+pub fn resolve_write_symbol(elf: &[u8]) -> Result<(&'static str, u64), ElfError> {
+    for sym in KNOWN_WRITE_SYMBOLS {
+        if let Ok(off) = function_file_offset(elf, sym) {
+            return Ok((sym, off));
+        }
+    }
+    Err(ElfError::NoSuchSymbol(KNOWN_WRITE_SYMBOLS.join(" / ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// wolfSSL exports `wolfSSL_write` and no `SSL_write`, so a hardcoded
+    /// symbol attaches to nothing there. Auto-detection must find it and say
+    /// which one it picked.
+    #[test]
+    fn a_wolfssl_style_library_resolves_to_its_own_write_symbol() {
+        let elf = elf_with_symbol("wolfSSL_write", 0x12345);
+        assert_eq!(resolve_write_symbol(&elf), Ok(("wolfSSL_write", 0x2345)));
+    }
+
+    #[test]
+    fn openssl_is_preferred_when_both_are_present() {
+        let elf = elf_with_symbol("SSL_write", 0x12010);
+        assert_eq!(resolve_write_symbol(&elf), Ok(("SSL_write", 0x2010)));
+    }
+
+    /// A library exporting none of them names every candidate, so the operator
+    /// sees what was looked for rather than one arbitrary miss.
+    #[test]
+    fn a_library_with_no_known_entry_point_names_them_all() {
+        let elf = elf_with_symbol("something_else", 0x12345);
+        let err = resolve_write_symbol(&elf).expect_err("no known symbol");
+        let msg = err.to_string();
+        for sym in KNOWN_WRITE_SYMBOLS {
+            assert!(msg.contains(sym), "names {sym}: {msg}");
+        }
+    }
 
     /// Build a minimal ELF64 with two `PT_LOAD` segments whose `p_vaddr` and
     /// `p_offset` DIFFER, and one dynamic function symbol in the second.

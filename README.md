@@ -174,6 +174,7 @@ sipnab honours every sngrep keybinding. Press `F1` for the full shortcut referen
 | `metrics`  | Standalone Prometheus metrics server (raw TCP, no tokio)             | yes     |
 | `wasm`     | WebAssembly target for in-browser pcap analysis                      | no      |
 | `plugins`  | WASM plugin host (`--plugin`): sandboxed third-party dialog detections  | no      |
+| `bpf`      | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run | no      |
 | `full`     | `native` + `tui` + `tls` + `hep` + `api` + `audio` + `mcp` + `mcp-http` + `metrics` + `plugins` | no      |
 
 Build with specific features. Adding TLS decryption and HEP to the default set:

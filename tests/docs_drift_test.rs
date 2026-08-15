@@ -40,6 +40,23 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // so the `--keylog-fd` example is a runnable whole. Scoped to those four
     // files: written anywhere else it would read as a sipnab flag and must
     // still fail this guard.
+    // `--features` is cargo's, not sipnab's. The CLI reference names it because
+    // the `bpf` backend needs a build that carries it, and a reader told to use
+    // `--uprobe-backend bpf` has to know what produces such a binary. Scoped to
+    // the two CLI pages: written anywhere else it would read as a sipnab flag
+    // and must still fail this guard.
+    (
+        "features",
+        &["docs/cli-reference.md", "website/content/docs/cli.md"],
+    ),
+    // `--undefined-only` is binutils' `nm`, not sipnab's. The cookbook names it
+    // because a reader whose daemon calls `SSL_write_ex` rather than
+    // `SSL_write` needs a way to find that out before choosing
+    // `--uprobe-symbol`. Scoped to the cookbook and its mirror.
+    (
+        "undefined-only",
+        &["docs/examples.md", "website/content/docs/cookbook.md"],
+    ),
     (
         "keylogfile",
         &[
@@ -1623,8 +1640,8 @@ fn readme_feature_table_covers_every_cargo_feature() {
     }
 
     assert_eq!(
-        seen, 12,
-        "feature extraction found {seen} features, expected 12. Bump when a \
+        seen, 13,
+        "feature extraction found {seen} features, expected 13. Bump when a \
          feature is added; a drop means the parser stopped reading Cargo.toml's \
          table and the comparison below narrowed."
     );
@@ -1836,9 +1853,14 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // the grounding of the clock rate the jitter was derived from, the
     // provenance of the delay term behind the published MOS, silence and
     // comfort noise, and the RTCP a remote endpoint asserted.
+    // Raised 32 -> 33 by `list_tls_libraries`, which answers whether SIP over
+    // TLS on this host can be read at all without keys -- and, when it cannot,
+    // whether that is a fact about the host or about this server's privilege.
+    // Raised 33 -> 35 by `start_tls_capture` and `stop_tls_capture`: the first
+    // tools on this surface that create KERNEL state, behind their own opt-in.
     assert_eq!(
         registered.len(),
-        32,
+        35,
         "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -2291,8 +2313,8 @@ fn no_documentation_table_repeats_a_row() {
     // one. Also from a failing run.
     assert_eq!(
         files.len(),
-        136,
-        "found {} tracked markdown files, expected 136. More is fine — bump \
+        138,
+        "found {} tracked markdown files, expected 138. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2559,8 +2581,8 @@ fn no_documentation_table_repeats_a_row() {
         // against what sipnab already does, so neither is rebuilt by mistake.
         // Not doubled by a site mirror — docs/design/ is not published.
         tables,
-        539,
-        "walked {tables} tables, expected 539. More is fine — bump this. FEWER \
+        546,
+        "walked {tables} tables, expected 546. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

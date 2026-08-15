@@ -122,6 +122,122 @@ pub struct RunPlan {
 /// expression surfaced by the `build_capture_config` / `build_filter_expr`
 /// helpers — is returned as a `PlanError` for the caller to handle.
 ///
+/// Print the TLS libraries sipnab would probe. Returns the process exit code.
+///
+/// Worth its own flag because it answers the question that decides whether a
+/// uprobe capture is worth starting at all — is the process you care about
+/// actually mapping a library sipnab can read — and it answers it without
+/// installing anything in the kernel.
+///
+/// Finding nothing exits **1**, not 0. Under `set -e` in a health check, "no
+/// TLS library visible" must not read as success.
+#[must_use]
+pub fn uprobe_list(cli: &Cli) -> i32 {
+    #[cfg(all(target_os = "linux", feature = "native"))]
+    {
+        use crate::capture::uprobe::discover;
+
+        // Narrowed the same way the capture would be, so the listing answers
+        // "what will this command probe" rather than "what exists".
+        let mut flavours = Vec::new();
+        for name in &cli.tls_args.uprobe_flavour {
+            match discover::parse_flavour(name) {
+                Ok(f) => flavours.push(f),
+                Err(e) => {
+                    eprintln!("{e}");
+                    return 2;
+                }
+            }
+        }
+        let found = discover::select(discover::discover(), &flavours);
+        if found.is_empty() {
+            eprintln!(
+                "No TLS library is mapped by any process sipnab can see.\n\
+                 Either nothing here uses OpenSSL or wolfSSL, or sipnab cannot read\n\
+                 /proc/<pid>/maps — try again as root."
+            );
+            return 1;
+        }
+        // Padding baked into the literal rather than applied to literal
+        // arguments: the columns match the row format below by construction.
+        println!("FLAVOUR        INODE  PIDS  LIBRARY");
+        for lib in &found {
+            let reachable = lib.probe_path();
+            println!(
+                "{:<9} {:>10} {:>5}  {}",
+                lib.flavour.label(),
+                lib.inode,
+                lib.pids.len(),
+                match &reachable {
+                    Some(p) => p.display().to_string(),
+                    None => format!("{} (UNREACHABLE)", lib.path.display()),
+                }
+            );
+        }
+        let unreachable = found.iter().filter(|l| l.probe_path().is_none()).count();
+        if unreachable > 0 {
+            eprintln!(
+                "\n{unreachable} of these cannot be reached from sipnab's mount namespace \
+                 and would NOT be captured. They are most likely inside containers; run as root."
+            );
+        }
+        0
+    }
+    #[cfg(not(all(target_os = "linux", feature = "native")))]
+    {
+        let _ = cli;
+        eprintln!(
+            "--uprobe-list needs Linux kernel uprobes and a sipnab built with the \
+             `native` feature"
+        );
+        1
+    }
+}
+
+/// Resolve `--uprobe-*` flags into the libraries to probe.
+///
+/// Discovery is the default and naming a library is the override, because the
+/// question "which TLS library is this host running" has more than one answer
+/// on an ordinary machine.
+///
+/// # Errors
+///
+/// A message for the operator when nothing would be probed. Never an empty
+/// list: a capture attached to nothing is indistinguishable from a quiet trunk.
+#[cfg(all(target_os = "linux", feature = "native"))]
+fn plan_uprobe_targets(cli: &Cli) -> Result<Vec<capture::UprobeTarget>, String> {
+    use crate::capture::uprobe::discover;
+
+    let mut flavours = Vec::new();
+    for name in &cli.tls_args.uprobe_flavour {
+        flavours.push(discover::parse_flavour(name)?);
+    }
+    let planned = discover::plan_targets(
+        &cli.tls_args.uprobe_library,
+        cli.tls_args.uprobe_symbol.as_deref(),
+        &flavours,
+        discover::discover(),
+    )?;
+    Ok(planned
+        .into_iter()
+        .map(|t| capture::UprobeTarget {
+            library: t.library.display().to_string(),
+            symbol: t.symbol,
+        })
+        .collect())
+}
+
+/// Uprobe capture is a Linux kernel facility, so everywhere else says so
+/// plainly rather than failing later with a missing-path error.
+#[cfg(not(all(target_os = "linux", feature = "native")))]
+fn plan_uprobe_targets(_cli: &Cli) -> Result<Vec<capture::UprobeTarget>, String> {
+    Err(
+        "--uprobe-tls needs Linux kernel uprobes and a sipnab built with the \
+         `native` feature"
+            .to_string(),
+    )
+}
+
 /// # Arguments
 ///
 /// * `cli` — parsed command-line flags.
@@ -257,6 +373,16 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     } else if let Some(ref device) = config.capture.device {
         Some(CaptureSource::Live {
             device: device.clone(),
+        })
+    } else if cli.tls_args.uprobe_tls || !cli.tls_args.uprobe_library.is_empty() {
+        Some(CaptureSource::Uprobe {
+            targets: plan_uprobe_targets(cli).map_err(PlanError::arg)?,
+            backend: match cli.tls_args.uprobe_backend.as_str() {
+                "bpf" => capture::UprobeBackend::Bpf,
+                // clap's parser admits only these two, so anything else here
+                // would be a parser change rather than operator input.
+                _ => capture::UprobeBackend::Tracefs,
+            },
         })
     } else if let Some(hep_addr) = cli.hep_args.hep_listen.as_ref() {
         #[cfg(feature = "hep")]

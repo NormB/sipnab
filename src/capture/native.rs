@@ -18,6 +18,97 @@ use super::hep;
 use super::{device, file, live};
 use crate::signals;
 
+/// Run the uprobe capture source, or explain why this platform cannot.
+///
+/// **The only place the uprobe platform split is written.** Kernel uprobes are
+/// a Linux facility, but `CaptureSource::Uprobe` exists on every platform so
+/// that the enum, the transmit guard and the bootstrap refusal stay uniform —
+/// which leaves exactly one function that must differ. Splitting at the call
+/// site instead would put a `cfg` on the match arm *and* on the import, and a
+/// platform decision written twice is one that drifts.
+#[cfg(target_os = "linux")]
+fn run_uprobe_capture(
+    targets: &[UprobeTarget],
+    backend: UprobeBackend,
+    tx: PacketTx,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+) -> Result<()> {
+    match backend {
+        UprobeBackend::Tracefs => super::uprobe::reader::capture_uprobe(targets, tx, ready_tx),
+        #[cfg(feature = "bpf")]
+        UprobeBackend::Bpf => super::uprobe::bpf::capture_bpf(targets, tx, ready_tx),
+        // Asked for by name in a build that does not carry it. Refused rather
+        // than quietly downgraded to tracefs: the whole reason to ask for this
+        // backend is the addresses, and a silent downgrade would produce a
+        // capture with none and no indication why.
+        #[cfg(not(feature = "bpf"))]
+        UprobeBackend::Bpf => {
+            let msg = "--uprobe-backend bpf needs a sipnab built with the `bpf` \
+                       feature; this binary does not carry it"
+                .to_string();
+            if let Some(tx) = ready_tx {
+                let _ = tx.send(Err(msg.clone()));
+            }
+            anyhow::bail!(msg)
+        }
+    }
+}
+
+/// Everywhere else this is unreachable — `bootstrap` refuses `--uprobe-tls`
+/// before a capture is planned — but it must still compile, and if it were
+/// ever reached it must fail loudly rather than capture nothing in silence.
+#[cfg(not(target_os = "linux"))]
+fn run_uprobe_capture(
+    targets: &[UprobeTarget],
+    _backend: UprobeBackend,
+    _tx: PacketTx,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+) -> Result<()> {
+    let msg = format!(
+        "uprobe capture needs Linux kernel uprobes, which this platform does not \
+         have; {} target(s) were requested",
+        targets.len()
+    );
+    if let Some(tx) = ready_tx {
+        let _ = tx.send(Err(msg.clone()));
+    }
+    anyhow::bail!(msg)
+}
+
+/// Which uprobe machinery reads the plaintext.
+///
+/// Two roads to the same `Packet`, and they differ in exactly one thing: only
+/// one of them can say who the peer was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UprobeBackend {
+    /// Kernel `tracefs` probes and `perf_event_open`. **The default**, because
+    /// it needs no BTF, no nightly toolchain and no extra build step — it runs
+    /// on the development host, which the BPF backend cannot. It sees no
+    /// socket, so its dialogs name a process rather than a peer.
+    #[default]
+    Tracefs,
+    /// A real BPF program pairing each write with its `tcp_sendmsg`, which is
+    /// what recovers the 5-tuple. Needs `--features bpf` at build time and a
+    /// kernel with `CONFIG_DEBUG_INFO_BTF` at run time.
+    Bpf,
+}
+
+/// One TLS library to probe, and the symbol to probe in it.
+///
+/// Carries the symbol per library rather than once for the capture, because
+/// the flavours do not share a name: OpenSSL exports `SSL_write` and wolfSSL
+/// `wolfSSL_write`. They do share argument positions, which is why one probe
+/// shape serves both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UprobeTarget {
+    /// Path naming the library **from sipnab's own mount namespace** — for a
+    /// containerised process a `/proc/<pid>/root/…` path, not the one the
+    /// process itself sees.
+    pub library: String,
+    /// Exported write function to probe.
+    pub symbol: String,
+}
+
 /// Describes where packets come from.
 #[derive(Debug, Clone)]
 pub enum CaptureSource {
@@ -36,6 +127,22 @@ pub enum CaptureSource {
     File {
         /// Capture files, in the order they are to be read.
         paths: Vec<std::path::PathBuf>,
+    },
+    /// Read SIP plaintext out of a process's TLS library with uprobes.
+    ///
+    /// Unlike every other source this one observes no wire at all: the bytes
+    /// are taken where an application hands them to its TLS library, so there
+    /// is no addressing and no frame. See [`crate::capture::uprobe`].
+    Uprobe {
+        /// Every library to probe, because a host commonly runs more than one.
+        ///
+        /// A list rather than a single path: OpenSSL and wolfSSL coexist on an
+        /// ordinary host, as do several builds of one flavour, and probing the
+        /// one an operator happened to name captures that one and silently
+        /// misses the rest. See [`crate::capture::uprobe::discover`].
+        targets: Vec<UprobeTarget>,
+        /// Which machinery reads them.
+        backend: UprobeBackend,
     },
     /// Receive packets via HEP (Homer Encapsulation Protocol).
     Hep {
@@ -273,6 +380,14 @@ pub fn start_capture(
                 .name("capture-file".to_string())
                 .spawn(move || file::capture_files(&paths, &config, tx, ready_tx))
                 .context("Failed to spawn file reader thread")?
+        }
+        CaptureSource::Uprobe { targets, backend } => {
+            let targets = targets.clone();
+            let backend = *backend;
+            thread::Builder::new()
+                .name("capture-uprobe".to_string())
+                .spawn(move || run_uprobe_capture(&targets, backend, tx, ready_tx))
+                .context("Failed to spawn uprobe capture thread")?
         }
         #[cfg(feature = "hep")]
         CaptureSource::Hep {

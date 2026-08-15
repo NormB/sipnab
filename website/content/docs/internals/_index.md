@@ -43,6 +43,10 @@ Already written, and narrower:
   the lock discipline.
 - [Zero-copy payloads](@/docs/internals/zero-copy-payloads.md) — the `bytes::Bytes` spine from
   capture to output, including a performance claim the page itself refutes.
+- [Uprobe TLS capture](@/docs/internals/uprobe-capture.md) — reading SIP plaintext out of a
+  process's TLS library with kernel uprobes: banded fetches, the wipe that
+  keeps adjacent heap from leaving, why this input can never transmit, and
+  the one thing tracefs cannot do.
 - [TUI testing](@/docs/internals/tui-testing.md) — snapshot and state testing for the terminal
   UI.
 

@@ -502,6 +502,172 @@ automatically) and x86_64 (Debian 13, OpenSSL 3.5.6, BTF present).
 - A keylog is key material. It decrypts every session it covers, so treat the file as a secret: sipnab disables core dumps once decryption is active for the same reason.
 - Keys only appear for handshakes eCapture was running for. Start it before the calls you care about — it cannot recover a session whose handshake it missed.
 
+### 7f. Decrypt without writing the keys to disk
+
+7e leaves master secrets in a file, and that file decrypts every session it
+covers — which is why the pitfall above says to treat it as a secret. sipnab can
+take the same keylog lines over a pipe instead, so they never reach a disk at
+all.
+
+Hand sipnab the read end of a pipe with `--keylog-fd`:
+
+```bash
+sudo sh -c 'ecapture tls -m keylog --keylogfile=/dev/stdout | sipnab -N -d eth0 --keylog-fd 0'
+```
+
+Or use a named pipe, when a supervisor starts the two halves separately:
+
+Create the pipe once:
+
+```bash
+sudo mkfifo -m 600 /run/sip.keys
+```
+
+then read it as a live stream:
+
+```bash
+sudo sipnab -N -d eth0 --keylog /run/sip.keys --keylog-watch
+```
+
+`--keylog` accepts a FIFO and reads it as a live stream. `--keylog-fd` implies
+`--keylog-watch`, since a descriptor from a running producer has nothing to read
+at startup and everything to read later. Pass one or the other, never both.
+
+**sipnab cannot start the extractor for you, and that is deliberate.** It sets
+`PR_SET_NO_NEW_PRIVS` at startup and every child inherits it, so a process
+sipnab spawns can never acquire the `CAP_BPF` eCapture needs. Start the
+extractor from a supervisor and hand sipnab the read end.
+
+**Pitfalls:**
+
+- sipnab opens a FIFO named by `--keylog` **before** it drops privileges, for
+  the same reason it opens capture devices there. A path under `/run` is
+  unreachable once sipnab has dropped to an unprivileged user or entered a
+  `--chroot`.
+- An inherited descriptor needs no privilege at all, so `--keylog-fd` works
+  whatever sipnab drops to afterwards.
+- Core dumps are still disabled, exactly as for a keylog file: the secrets
+  arrive over a pipe but land in the same process memory.
+
+### 7g. Read TLS with no keys at all
+
+7e and 7f still need session secrets from somewhere. This recipe needs none:
+sipnab puts a kernel uprobe on the TLS library's write function and reads the
+plaintext **before encryption**. No certificate, no private key, no
+keylog, and nothing restarted.
+
+**Look before you probe.** This installs nothing and answers whether the
+capture is worth starting:
+
+```bash
+sudo sipnab --uprobe-list
+```
+
+```
+FLAVOUR        INODE  PIDS  LIBRARY
+OpenSSL     14166752     1  /proc/982690/root/usr/lib/aarch64-linux-gnu/libssl.so.3
+wolfSSL     17433084     1  /proc/982702/root/usr/lib/aarch64-linux-gnu/libwolfssl.so.42.2.0
+OpenSSL        21143    12  /usr/lib/aarch64-linux-gnu/libssl.so.3
+```
+
+Then capture. sipnab probes every library listed, not one:
+
+```bash
+sudo sipnab -N --uprobe-tls
+```
+
+Narrow it if only one stack is yours to read:
+
+```bash
+sudo sipnab -N --uprobe-tls --uprobe-flavour openssl
+```
+
+Or name a library yourself, which is the only way to attach to a daemon that
+has **not started yet** — discovery can only see what is already mapped:
+
+```bash
+sudo sipnab -N --uprobe-tls --uprobe-library /usr/lib/x86_64-linux-gnu/libssl.so.3
+```
+
+**What this gives up.** A uprobe sees the bytes an application handed its TLS
+library and nothing about the socket beneath, so dialogs from this source carry
+**no addresses and port 0**. sipnab labels them `uprobe:<comm>/<pid>` instead —
+the process, not a peer. It never invents an address it did not observe.
+
+**Pitfalls:**
+
+- Needs root (or `CAP_SYS_ADMIN` + `CAP_PERFMON`) and a mounted `tracefs`.
+  Unprivileged, `/proc/<pid>/maps` is readable only for your own processes, so
+  `--uprobe-list` quietly shows a fraction of the host — run it as root before
+  concluding a daemon is not using TLS.
+- **Containers.** The path a containerised process sees names a *different
+  file* from sipnab's namespace. sipnab handles this by matching inodes and
+  probing through `/proc/<pid>/root`, which is why the listing above shows such
+  paths. If you pass `--uprobe-library` by hand for a container, pass the
+  `/proc/<pid>/root/...` form, or the probe attaches to the host's copy and
+  captures nothing.
+- GnuTLS is not probed. Its write function has a different signature, and
+  attaching the OpenSSL probe shape to it would read the wrong register.
+- This input can never transmit. `--hep-allow-kill` has an equivalent for HEP
+  input; there is deliberately no such flag here, because sipnab has no
+  observed peer to answer to.
+- A write larger than 2048 bytes arrives truncated, and sipnab marks it as
+  such rather than presenting a fragment as a whole message.
+
+### 7h. Read TLS *and* who the peer was
+
+7g gives you the plaintext but no addresses: a uprobe sees the bytes an
+application handed its TLS library and nothing about the socket beneath, so
+those dialogs name a process rather than a peer.
+
+The `bpf` backend closes that gap. It pairs each write with the `tcp_sendmsg`
+that carried it — same thread, back to back — and reports the addresses the
+plaintext actually went out on:
+
+```bash
+sudo sipnab -N --uprobe-tls --uprobe-backend bpf --portrange 0-65535
+```
+
+```text
+200 OK     127.0.0.1:15061 -> 127.0.0.1:36160  TCP  uprobe:python3/349147#0
+REGISTER   127.0.0.1:36160 -> 127.0.0.1:15061  TCP  uprobe:python3/349147#1
+200 OK     127.0.0.1:15061 -> 127.0.0.1:36172  TCP  uprobe:python3/349147#2
+```
+
+Each request and its response share an ephemeral port, and a second connection
+gets a different one — the pairing binds each write to **its own** socket.
+
+**What it needs, and what it refuses:**
+
+- a sipnab built with `--features bpf`, which needs a nightly toolchain and
+  `cargo install bpf-linker`. Without them sipnab still builds and every other
+  backend still works; this one refuses at runtime and names the missing tool;
+- a kernel with `CONFIG_DEBUG_INFO_BTF` — BTF is the **BPF Type Format**, the
+  kernel's description of its own structs and where each member sits. Check
+  with `ls /sys/kernel/btf/vmlinux`. sipnab reads the socket layout out of that BTF
+  at load time, so the program keeps working across kernels instead of
+  matching only the one that compiled it;
+- root, as 7g does.
+
+Asked for on a build or a kernel that cannot run it, sipnab **refuses** rather
+than falling back to `tracefs`. The addresses are the only reason to choose
+this backend, and a silent downgrade would hand you a capture with none.
+
+**Pitfalls:**
+
+- **Widen `--portrange`.** A TLS trunk on 5061 is the exception, and the port a
+  uprobe reports is whatever the socket actually used — often ephemeral. The
+  default range drops them.
+- A write the TLS library buffered rather than sent arrives with **no
+  addresses**, exactly like a 7g capture. sipnab does not guess a peer for it,
+  because a guessed one would be indistinguishable from an observed one.
+- The kernel and the daemon may disagree about which symbol carries the
+  plaintext: OpenSSL 3 applications increasingly call `SSL_write_ex`. Check with
+  `nm -D --undefined-only /path/to/app | grep SSL_write` and pass
+  `--uprobe-symbol` if it differs.
+
+---
+
 ---
 
 ## 8. Run sipnab as an MCP server

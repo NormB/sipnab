@@ -2071,6 +2071,20 @@ pub struct McpArgs {
     )]
     pub mcp_allow_open_capture: bool,
 
+    /// Let an agent install kernel uprobes and read TLS plaintext
+    /// (`start_tls_capture`, `stop_tls_capture`).
+    ///
+    /// The most consequential opt-in on this surface. It lets an agent read the
+    /// plaintext of TLS sessions belonging to processes it does not own, needs
+    /// the server to still be root, and creates kernel state that outlives a
+    /// crash. `list_tls_libraries` stays available without it, so an agent can
+    /// always report what a capture WOULD see.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-allow-tls-capture"
+    )]
+    pub mcp_allow_tls_capture: bool,
+
     /// Name this box reports as, on every answer it gives.
     ///
     /// Defaults to the system hostname. It appears in `capture_identity.node`
@@ -2287,6 +2301,75 @@ pub struct TlsArgs {
     /// Allow core dumps (do not call prctl to disable).
     #[arg(help_heading = "TLS / Decryption", long)]
     pub allow_coredump: bool,
+
+    /// Read SIP plaintext from the TLS libraries this host is running, using
+    /// kernel uprobes. No certificate, no key, and no restart of the process
+    /// being observed.
+    ///
+    /// Every mapped TLS library is probed, not one: a host commonly runs
+    /// OpenSSL and wolfSSL together. Narrow with --uprobe-flavour, or name
+    /// libraries yourself with --uprobe-library.
+    ///
+    /// Needs root (or CAP_SYS_ADMIN + CAP_PERFMON) and a mounted tracefs.
+    #[arg(help_heading = "TLS / Decryption", long = "uprobe-tls")]
+    pub uprobe_tls: bool,
+
+    /// Probe this library instead of discovering them. Repeatable.
+    ///
+    /// Bypasses discovery entirely, so it also reaches a library nothing has
+    /// mapped yet. For a process in a container, give the path as sipnab sees
+    /// it, through that process's own root: /proc/PID/root/usr/lib/libssl.so.3
+    #[arg(
+        help_heading = "TLS / Decryption",
+        long = "uprobe-library",
+        value_name = "PATH"
+    )]
+    pub uprobe_library: Vec<String>,
+
+    /// Write symbol to probe. Defaults to the one the library's flavour
+    /// exports: SSL_write for OpenSSL, wolfSSL_write for wolfSSL.
+    #[arg(
+        help_heading = "TLS / Decryption",
+        long = "uprobe-symbol",
+        value_name = "NAME"
+    )]
+    pub uprobe_symbol: Option<String>,
+
+    /// Probe only these flavours. Repeatable. Default is every one found.
+    #[arg(
+        help_heading = "TLS / Decryption",
+        long = "uprobe-flavour",
+        value_name = "NAME",
+        value_parser = clap::builder::PossibleValuesParser::new(["openssl", "wolfssl"])
+    )]
+    pub uprobe_flavour: Vec<String>,
+
+    /// Which uprobe machinery reads the plaintext: `tracefs` or `bpf`.
+    ///
+    /// `tracefs` is the default and works on any Linux with tracefs mounted.
+    /// It sees no socket, so its dialogs name a process rather than a peer.
+    ///
+    /// `bpf` pairs each write with its `tcp_sendmsg` and so recovers the real
+    /// addresses — but needs a sipnab built with `--features bpf` and a kernel
+    /// with `CONFIG_DEBUG_INFO_BTF`. Asking for it in a build or on a kernel
+    /// without those is refused, never silently downgraded: the addresses are
+    /// the only reason to ask.
+    #[arg(
+        help_heading = "TLS / Decryption",
+        long = "uprobe-backend",
+        value_name = "NAME",
+        default_value = "tracefs",
+        value_parser = clap::builder::PossibleValuesParser::new(["tracefs", "bpf"])
+    )]
+    pub uprobe_backend: String,
+
+    /// List the TLS libraries sipnab would probe, then exit.
+    ///
+    /// Run this first. It needs the same privileges as the capture and answers
+    /// the question that decides whether the capture is worth starting: is the
+    /// process you care about actually mapping a library sipnab can read?
+    #[arg(help_heading = "TLS / Decryption", long = "uprobe-list")]
+    pub uprobe_list: bool,
 }
 
 /// `Privilege` flags.

@@ -355,6 +355,9 @@ ordinary update.
 | [`open_capture`](#open_capture) | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
 | [`save_findings`](#save_findings) | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
 | [`server_capabilities`](#server_capabilities) | -- | sipnab version and the optional features this binary carries |
+| [`list_tls_libraries`](#list_tls_libraries) | -- | which TLS libraries this host runs, and whether sipnab could read their plaintext without keys |
+| [`start_tls_capture`](#start_tls_capture) | `flavours`, `libraries` | installs kernel uprobes and reads SIP plaintext with no key; needs `--mcp-allow-tls-capture` |
+| [`stop_tls_capture`](#stop_tls_capture) | -- | stops that capture and removes its kernel probes |
 
 ### What changed in 0.5.98
 
@@ -2571,6 +2574,137 @@ turned on — and no compile-time check can answer it. Without it an agent
 discovers the setup by calling a tool and collecting a refusal, and a refusal
 mid-investigation reads as a dead end rather than as a server it was never
 allowed to use that way.
+
+### `list_tls_libraries`
+
+Which TLS libraries processes on this host are **actually mapping**, and
+whether sipnab could attach a uprobe to read their plaintext. Ask before
+concluding that reading SIP over TLS needs keys — and read
+`privileged` and `probe_path` before concluding it can.
+
+No parameters. Returns:
+
+```jsonc
+{
+  "schema_version": 1,
+  "supported": true,          // false off Linux, or without the `native` feature
+  "privileged": true,         // running as root
+  "libraries": [
+    {
+      "flavour": "OpenSSL",
+      "path": "/usr/lib/aarch64-linux-gnu/libssl.so.3",
+      "inode": 21143,         // the identity; the PATH is not unique
+      "process_count": 12,
+      "symbol": "SSL_write",
+      "probe_path": "/proc/954/root/usr/lib/aarch64-linux-gnu/libssl.so.3"
+    },
+    {
+      "flavour": "wolfSSL",
+      "path": "/usr/lib/aarch64-linux-gnu/libwolfssl.so.42.2.0",
+      "inode": 17433084,
+      "process_count": 1,
+      "symbol": "wolfSSL_write",
+      "probe_path": null      // in use, but NOT capturable from here
+    }
+  ],
+  "unreachable_count": 1,
+  "summary": "1 of 2 TLS libraries could be read with `sipnab --uprobe-tls`, without any key or certificate. 1 cannot be reached from this server's mount namespace and would be missed."
+}
+```
+
+**Read `privileged` before believing an empty list.** Unprivileged,
+`/proc/<pid>/maps` is readable only for the server's own processes, so a short
+list is evidence about privilege rather than about the host. `summary` says
+which of the two situations produced the answer, so a relayed conclusion does
+not lose it.
+
+**`probe_path: null` is a finding, not a blank.** That library is carrying
+traffic sipnab cannot capture — usually a containerised process whose
+`/proc/<pid>/root` this server cannot read. sipnab reports it rather than
+dropping it, because the alternative is a capture that looks complete and is
+not.
+
+`inode` is there because `path` is **not** unique: the same string names
+different files in different mount namespaces, and on an ordinary host with
+containers several distinct `libssl.so.3` files coexist.
+
+### `start_tls_capture`
+
+Installs kernel uprobes on this host's TLS libraries and reads SIP plaintext
+from them — no key, no certificate, and no restart of the process observed.
+
+**Needs `--mcp-allow-tls-capture`.** It is off by default and separate from
+`--mcp-allow-open-capture`, because it is a different act: that one reads a
+file an operator placed in a directory, this one attaches probes to a running
+process's TLS library and reads its plaintext.
+
+Call [`list_tls_libraries`](#list_tls_libraries) first.
+
+| Parameter | Type | Default | Meaning |
+|---|---|---|---|
+| `flavours` | array of string | every one found | `openssl`, `wolfssl` |
+| `libraries` | array of string | discover | probe these paths instead of discovering |
+
+```jsonc
+// start_tls_capture { }                                  // every library found
+// start_tls_capture { "flavours": ["openssl"] }          // one flavour only
+// start_tls_capture { "libraries": ["/proc/954/root/usr/lib/libssl.so.3"] }
+{
+  "schema_version": 1,
+  "running": true,
+  "targets": ["/proc/954/root/usr/lib/libssl.so.3:SSL_write"],
+  "messages": 0,
+  "lost": null,
+  "uptime_sec": 0,
+  "error": null,
+  "summary": "Probing 1 TLS library. ..."
+}
+```
+
+**Three refusals, each before any kernel state exists**, and each says which
+one it is rather than a bare failure:
+
+- **not root** — sipnab drops privileges after opening its capture devices, so
+  a server started with `--user` cannot attach probes later;
+- **a live source is already running** — sipnab's stores have one writer, so a
+  uprobe capture cannot run beside one;
+- **a capture is still loading** — poll `capture_status` until `load.done`.
+
+**An attach failure arrives later, not here.** A background thread installs
+the probes, so the call returns as soon as that thread starts. Poll
+[`stop_tls_capture`](#stop_tls_capture) or `capture_status` to see whether
+messages actually arrive.
+
+### `stop_tls_capture`
+
+Stops the running capture and removes its kernel probes. Safe to call when
+nothing is running — it says so rather than failing.
+
+No parameters. Returns:
+
+```jsonc
+// stop_tls_capture { }
+{
+  "schema_version": 1,
+  "running": false,
+  "targets": ["/proc/954/root/usr/lib/libssl.so.3:SSL_write"],
+  "messages": 412,
+  "lost": 0,          // records the kernel DROPPED: messages that existed and are missing
+  "uptime_sec": 96,
+  "error": null,
+  "summary": "The TLS capture has stopped and its probes are removed."
+}
+```
+
+**Keep calling until `running` is false.** The stop is a request: the worker
+owns the probes and removes them on its way out, which is a kernel round trip
+per probe. Probes left installed cost every process that maps the library, and
+they outlive sipnab.
+
+`lost` is worth reading. It counts records the kernel dropped because the
+reader fell behind — messages that existed and are missing, which is a
+different fact from a quiet trunk and the only one you cannot discover any
+other way. The dialogs already collected stay in the store after the stop.
 
 ### `capture_health`
 
