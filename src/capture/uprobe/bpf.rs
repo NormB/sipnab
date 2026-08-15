@@ -18,7 +18,8 @@
 //!
 //! # The one thing it adds, and the one thing it must not fake
 //!
-//! A record arrives with [`FLAG_HAS_TUPLE`] set or clear. Set, the addresses
+//! A record arrives with [`FLAG_HAS_TUPLE`](sipnab_bpf_types::FLAG_HAS_TUPLE)
+//! set or clear. Set, the addresses
 //! were read out of the socket the plaintext actually went out on, and the
 //! packet carries them. Clear, the pairing did not hold — a write the library
 //! buffered rather than sent — and the packet is built exactly as the tracefs
