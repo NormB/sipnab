@@ -614,6 +614,60 @@ the process, not a peer. It never invents an address it did not observe.
 - A write larger than 2048 bytes arrives truncated, and sipnab marks it as
   such rather than presenting a fragment as a whole message.
 
+### 7h. Read TLS *and* who the peer was
+
+7g gives you the plaintext but no addresses: a uprobe sees the bytes an
+application handed its TLS library and nothing about the socket beneath, so
+those dialogs name a process rather than a peer.
+
+The `bpf` backend closes that gap. It pairs each write with the `tcp_sendmsg`
+that carried it — same thread, back to back — and reports the addresses the
+plaintext actually went out on:
+
+```bash
+sudo sipnab -N --uprobe-tls --uprobe-backend bpf --portrange 0-65535
+```
+
+```text
+200 OK     127.0.0.1:15061 -> 127.0.0.1:36160  TCP  uprobe:python3/349147#0
+REGISTER   127.0.0.1:36160 -> 127.0.0.1:15061  TCP  uprobe:python3/349147#1
+200 OK     127.0.0.1:15061 -> 127.0.0.1:36172  TCP  uprobe:python3/349147#2
+```
+
+Each request and its response share an ephemeral port, and a second connection
+gets a different one — the pairing binds each write to **its own** socket.
+
+**What it needs, and what it refuses:**
+
+- a sipnab built with `--features bpf`, which needs a nightly toolchain and
+  `cargo install bpf-linker`. Without them sipnab still builds and every other
+  backend still works; this one refuses at runtime and names the missing tool;
+- a kernel with `CONFIG_DEBUG_INFO_BTF` — BTF is the **BPF Type Format**, the
+  kernel's description of its own structs and where each member sits. Check
+  with `ls /sys/kernel/btf/vmlinux`. sipnab reads the socket layout out of that BTF
+  at load time, so the program keeps working across kernels instead of
+  matching only the one that compiled it;
+- root, as 7g does.
+
+Asked for on a build or a kernel that cannot run it, sipnab **refuses** rather
+than falling back to `tracefs`. The addresses are the only reason to choose
+this backend, and a silent downgrade would hand you a capture with none.
+
+**Pitfalls:**
+
+- **Widen `--portrange`.** A TLS trunk on 5061 is the exception, and the port a
+  uprobe reports is whatever the socket actually used — often ephemeral. The
+  default range drops them.
+- A write the TLS library buffered rather than sent arrives with **no
+  addresses**, exactly like a 7g capture. sipnab does not guess a peer for it,
+  because a guessed one would be indistinguishable from an observed one.
+- The kernel and the daemon may disagree about which symbol carries the
+  plaintext: OpenSSL 3 applications increasingly call `SSL_write_ex`. Check with
+  `nm -D --undefined-only /path/to/app | grep SSL_write` and pass
+  `--uprobe-symbol` if it differs.
+
+---
+
 ---
 
 ## 8. Run sipnab as an MCP server

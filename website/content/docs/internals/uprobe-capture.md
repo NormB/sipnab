@@ -15,8 +15,9 @@ keylog file, and no restart of the process it observes.
 
 Everything here is `tracefs` and `perf_event_open`. There is no BPF program
 and no `bpf-linker`, which is what makes it build on stable Rust and run on a
-kernel without BTF. See [§7](#7-what-tracefs-cannot-do) for the one thing that
-costs.
+kernel without BTF — the **BPF Type Format**, the kernel's description of its
+own structs and where each member sits. See
+[§7](#7-what-tracefs-cannot-do) for the one thing that costs.
 
 ---
 

@@ -49,6 +49,14 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "features",
         &["docs/cli-reference.md", "website/content/docs/cli.md"],
     ),
+    // `--undefined-only` is binutils' `nm`, not sipnab's. The cookbook names it
+    // because a reader whose daemon calls `SSL_write_ex` rather than
+    // `SSL_write` needs a way to find that out before choosing
+    // `--uprobe-symbol`. Scoped to the cookbook and its mirror.
+    (
+        "undefined-only",
+        &["docs/examples.md", "website/content/docs/cookbook.md"],
+    ),
     (
         "keylogfile",
         &[

@@ -1823,14 +1823,24 @@ HEP mirroring and sipnab lives elsewhere.
 What the design already gives you (details in
 [mcp.md § Security model](@/docs/mcp.md#security-model)):
 
-- **No control plane, and no tool alters the analysis.** No MCP tool sends SIP
-  or mutates the dialog, stream and alert stores, so a compromised or confused
-  agent can disclose data rather than take over the server. Two tools reach
-  past the query surface, and both stay off until you enable them.
-  `export_capture` and `export_audio` write files, and only under the directory
-  `--mcp-file-root` names — name no root and they refuse. `shutdown_server`
-  ends the run only under `--mcp-allow-shutdown`. Otherwise the capture
-  lifecycle belongs to systemd.
+- **No control plane, and no tool sends SIP.** No MCP tool puts a packet on
+  the wire, so a compromised or confused agent can disclose data rather than
+  take over the server. The tools that reach past the query surface stay off
+  until you enable them, each behind its own flag. `export_capture` and
+  `export_audio` write files, and only under the directory `--mcp-file-root`
+  names — name no root and they refuse. `shutdown_server` ends the run only
+  under `--mcp-allow-shutdown`. `open_capture` replaces the loaded capture only
+  under `--mcp-allow-open-capture`.
+- **One tool creates kernel state, and it has the sharpest opt-in.**
+  `start_tls_capture` installs uprobes on a running process's TLS library and
+  reads its plaintext — sessions belonging to processes the agent does not own.
+  It needs `--mcp-allow-tls-capture`, deliberately separate from
+  `--mcp-allow-open-capture`, because reading a file an operator placed in a
+  directory and attaching probes to a live daemon are not the same act. It also
+  needs the server to still be root, and refuses if a live source is already
+  running. `list_tls_libraries` — which only *reports* what a capture would
+  see — needs no opt-in at all, so an agent can always tell you whether the
+  answer is reachable without being able to go and get it.
 - **Fail-closed remote access.** Non-loopback HTTP binds refuse to start
   without a bearer token; tokens compare in constant time; DNS-rebind
   protection rejects unexpected `Host:` headers; the listener binds after

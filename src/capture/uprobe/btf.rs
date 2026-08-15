@@ -2,6 +2,9 @@
 
 //! Reading struct member offsets out of the running kernel's BTF.
 //!
+//! BTF is the **BPF Type Format**: the kernel's description of its own types —
+//! every struct, its members, and the offset of each one.
+//!
 //! The BPF backend has to read addresses out of `struct sock`, and where those
 //! addresses sit differs between kernels. Three ways to deal with that, and two
 //! of them are wrong:
