@@ -19,7 +19,11 @@
 //! is why the truncation below still happens.
 
 /// Loading and attaching the BPF programs. Needs `aya` and a built object.
-#[cfg(feature = "bpf")]
+///
+/// Linux only as well as feature-gated: `aya` calls `SYS_bpf`,
+/// `SYS_perf_event_open` and `CLOCK_BOOTTIME`, so it does not compile on Apple
+/// at all — and `--all-features` reaches this on every platform CI builds.
+#[cfg(all(feature = "bpf", target_os = "linux"))]
 pub mod bpf;
 /// Turning one BPF record into a packet — no kernel, no `aya`, always tested.
 pub mod bpf_record;

@@ -16,9 +16,12 @@ repository = "https://github.com/NormB/sipnab"
 publish = false
 
 [dependencies]
-# Only for the `Pod` impls below, and only on the host. The kernel half never
-# enables this: `aya` is the userspace loader and does not build for
-# bpfel-unknown-none.
+
+# Linux only, for the same reason the parent crate scopes it: `aya` cannot
+# compile on Apple, and the `pod` feature is reachable from `--all-features`.
+[target.'cfg(target_os = "linux")'.dependencies]
+# Only for the `Pod` impls, and only on the host. The kernel half never enables
+# this: `aya` is the userspace loader and does not build for bpfel-unknown-none.
 aya = { version = "0.13", optional = true }
 
 [features]

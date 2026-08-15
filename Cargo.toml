@@ -45,9 +45,6 @@ exclude = ["website/", "demos/", "fuzz/", ".githooks/", "tests/pcap-samples/"]
 
 [dependencies]
 sipnab-bpf-types = { path = "crates/sipnab-bpf-types" }
-# Userspace half of the eBPF backend. Stable Rust; only the KERNEL half needs
-# nightly. Optional so a stock build pulls in neither.
-aya = { version = "0.13", optional = true }
 # Fast, DoS-resistant (random-seeded, AES-based) hasher for the per-packet
 # stores. Replaces the default SipHash on the hot path — every RTP packet does a
 # StreamStore key lookup — while keeping flood resistance for attacker-controlled
@@ -250,6 +247,16 @@ plugins = ["native", "dep:wasmi"]
 # build sipnab, and CI's pinned jobs must be unaffected.
 bpf = ["native", "dep:aya", "sipnab-bpf-types/pod"]
 full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metrics", "plugins"]
+
+# Userspace half of the eBPF backend. Stable Rust; only the KERNEL half needs
+# nightly.
+#
+# LINUX ONLY, and not merely by convention: `aya` calls `SYS_bpf`,
+# `SYS_perf_event_open` and `CLOCK_BOOTTIME`, none of which exist on Apple. A
+# plain optional dependency was pulled in by `--all-features` on the macOS CI
+# job and failed to compile there, which is what turned main red on 0.5.102.
+[target.'cfg(target_os = "linux")'.dependencies]
+aya = { version = "0.13", optional = true }
 
 [lib]
 name = "sipnab"
