@@ -256,7 +256,7 @@ full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metri
 # plain optional dependency was pulled in by `--all-features` on the macOS CI
 # job and failed to compile there, which is what turned main red on 0.5.102.
 [target.'cfg(target_os = "linux")'.dependencies]
-aya = { version = "0.13", optional = true }
+aya = { version = "0.14", optional = true }
 
 [lib]
 name = "sipnab"
