@@ -266,6 +266,34 @@ CARGO_TARGET_DIR="$SHIM/target" \
 # compiler) is skipped with a note rather than failed: that is a property of
 # this host, not of the code, and failing on it would train everyone to ignore
 # the gate.
+# -- Phase 2a: resolution, for the crates phase 2b cannot compile -------------
+#
+# The main crate's build scripts (ring, pcap) need a C cross compiler, so it is
+# SKIPPED below and would otherwise go unchecked -- which is exactly where the
+# FIRST macOS break lived: `aya` declared as a plain optional dependency rather
+# than a Linux-scoped one.
+#
+# Resolution needs no compiler. Every crate listed here is Linux-only, so its
+# presence in a non-Linux dependency graph is the bug, whichever manifest
+# introduced it. The list is asserted PRESENT on Linux too, so a stale entry
+# fails loudly instead of silently checking nothing.
+LINUX_ONLY_CRATES="aya"
+MACOS_TARGET=x86_64-apple-darwin
+resolution_rc=0
+for c in $LINUX_ONLY_CRATES; do
+	if ! cargo tree --target aarch64-unknown-linux-gnu --all-features -i "$c" >/dev/null 2>&1; then
+		printf '  phase 2a: %s is listed as Linux-only but is not in the Linux graph -- stale entry\n' "$c"
+		resolution_rc=1
+		continue
+	fi
+	if cargo tree --target "$MACOS_TARGET" --all-features -i "$c" 2>/dev/null | grep -q "^$c v"; then
+		printf '  phase 2a: %s IS in the %s graph -- scope it to\n' "$c" "$MACOS_TARGET"
+		printf "           [target.'cfg(target_os = \"linux\")'.dependencies]\n"
+		resolution_rc=1
+	fi
+done
+[ $resolution_rc -eq 0 ] || exit 1
+
 NONLINUX_TARGET=x86_64-unknown-freebsd
 if ! rustup target list --installed 2>/dev/null | grep -qx "$NONLINUX_TARGET"; then
 	printf '  phase 2: NOT CHECKED -- rustup target add %s\n' "$NONLINUX_TARGET"
