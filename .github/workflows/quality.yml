@@ -423,11 +423,27 @@ jobs:
         working-directory: website
         run: zola build
 
+      # `--exclude` the site's OWN absolute URLs, in this pass only.
+      #
+      # Zola renders internal links as absolute https://sipnab.com/... URLs, so
+      # lychee fetches them over the network -- checking the PREVIOUS deploy
+      # rather than the build under test. Any page added in this commit
+      # therefore 404s on exactly the commit that adds it, and if the page is
+      # in the global nav, EVERY page fails: that is how 0.5.102 and 0.5.103
+      # both went red, once for a docs page and once for a nav entry.
+      #
+      # Nothing is lost by excluding them here. Zola FAILS ITS OWN BUILD on a
+      # broken internal link and reports the count it verified ("Successfully
+      # checked N internal link(s) with anchors"), so these are already gated
+      # by the tool that resolves them -- the same argument lychee.toml already
+      # makes for `@/`-style links. Pass one still checks sipnab.com URLs that
+      # appear in Markdown, so install.sh and friends stay covered.
       - name: Dead links (built site)
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
           args: >-
             --no-progress --config lychee.toml
+            --exclude '^https://sipnab\.com/'
             --root-dir "$GITHUB_WORKSPACE/website/public"
             'website/public/**/*.html'
           fail: true

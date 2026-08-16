@@ -572,7 +572,9 @@ wolfSSL     17433084     1  /proc/982702/root/usr/lib/aarch64-linux-gnu/libwolfs
 OpenSSL        21143    12  /usr/lib/aarch64-linux-gnu/libssl.so.3
 ```
 
-Then capture. sipnab probes every library listed, not one:
+Then capture. sipnab probes every library listed, not one — a host commonly
+runs both OpenSSL and wolfSSL, and probing only the one you had in mind
+misses the rest without saying so:
 
 ```bash
 sudo sipnab -N --uprobe-tls
