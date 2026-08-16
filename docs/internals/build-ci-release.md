@@ -157,7 +157,7 @@ before committing.
 `fuzz-check`**.
 
 - **`check`** (per-OS matrix) — `cargo build --all-features`, `cargo test
-  --all-features`, `cargo clippy --all-features --all-targets -D warnings`,
+  --all-features`, `cargo clippy --workspace --all-features --all-targets -D warnings`,
   `cargo fmt --check`, `cargo doc --no-deps --all-features --workspace`, plus
   the `--ignored` PTY TUI end-to-end tests.
 - **`features`** — `cargo check --no-default-features --features X --tests`
@@ -284,7 +284,7 @@ machine, and CI runs the rest. Moving them into the pre-commit hook buys
 nothing — it is the same wait, on every commit instead of every push.
 
 [`pre-push`](../../.githooks/pre-push) adds eight hard gates that `cargo test`
-does not cover: `cargo fmt --check`, `cargo clippy --all-features --all-targets
+does not cover: `cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
 cargo check`, a check of the reduced feature combinations `tls`, `api` and
 `wasm`, a non-Linux compile of the whole tree, and the two prose linters — Vale
@@ -712,7 +712,7 @@ sequenceDiagram
     Dev->>PC: git commit
     PC-->>Dev: clippy, tests, unwrap scan, wasm sync, versions, TODOs
     Dev->>PP: git push
-    PP-->>Dev: fmt, clippy --all-features, cargo doc, fuzz check
+    PP-->>Dev: fmt, clippy --workspace --all-features, cargo doc, fuzz check
     Dev->>CI: push lands
     CI->>Agg: check, features, audit, fuzz-check
     CI->>CI: install-sh, deb-package

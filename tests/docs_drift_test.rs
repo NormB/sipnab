@@ -539,10 +539,18 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        // Cargo's flag, not sipnab's. Every page here documents the clippy
+        // command the hooks and CI run, which carries `--workspace` because
+        // without it the lint stops at the main crate and the other workspace
+        // members go unlinted.
         "workspace",
         &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+            "docs/internals/README.md",
+            "website/content/docs/internals/_index.md",
             "CONTRIBUTING.md",
         ],
     ),

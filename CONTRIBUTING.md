@@ -165,7 +165,7 @@ which blocks the push:
 |---|---|
 | `scripts/preflight.sh` | **Run this first.** About a minute, and it checks only the things that actually bounce a commit — Vale at CI's pinned version, codespell, both site-mirror generators, the documentation ratchets, and whether a changed test count left the homepage tile behind. On 2026-08-08 four commits bounced on exactly these at ~25 minutes each; none needed the suite to find. It does NOT run the suite, clippy, the corpus gate or the feature matrix, so a green preflight means the paperwork is right, not that the change is. A tool it cannot find — no `vale`, no `codespell`, no `python3` — warns at an interactive terminal and FAILS anywhere else: under `CI`, with output redirected, or with `PREFLIGHT_STRICT=1`. `PREFLIGHT_STRICT=0` keeps the warning everywhere. Automation reading "Preflight clean" from a gate that never ran is how two Vale errors reached CI on 2026-08-10. |
 | `cargo fmt --all -- --check` | Formatting is never checked by a build. |
-| `cargo clippy --all-features --all-targets -- -D warnings` | Broader than pre-commit's `--features full`: also lints tests, benches, examples, and every feature-gated path. |
+| `cargo clippy --workspace --all-features --all-targets -- -D warnings` | Broader than pre-commit's `--features full`: also lints tests, benches, examples, and every feature-gated path. |
 | `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features --workspace` | Rustdoc lints (e.g. private intra-doc links) build independently of the test build. |
 | `cd fuzz && cargo check` | `fuzz/` is a separate workspace nothing else compiles. |
 | `cargo check --no-default-features --features <combo> --tests` over the reduced combinations | `--all-features` never builds a tree without `native`, so `#[cfg]` rot is invisible to it. The `--tests` part matters: without it no test file compiles and the gate passes over nothing. |
@@ -322,7 +322,7 @@ test: add pcap round-trip tests for IPv6
 1. Fork the repository and create a feature branch from `main`.
 2. Keep changes focused -- one logical change per PR.
 3. Ensure the CI gate passes locally. Beyond `cargo fmt` and
-   `cargo test --all-features`, CI enforces: `cargo clippy --all-features
+   `cargo test --all-features`, CI enforces: `cargo clippy --workspace --all-features
    --all-targets -- -D warnings`; a reduced-feature matrix that must
    compile (`native`, `tls`, `api`, `mcp`, `hep`, `tls,api`,
    `native,tui,audio`, `native,tui,tls,hep,api`,

@@ -148,7 +148,7 @@ commit through). Sub-gate 5c no longer exists: it re-implemented a Rust test in 
 the copies diverged, and the surviving Rust version runs here *and* in CI. Also
 four in
 [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) (`fmt`,
-`clippy --all-features --all-targets`, `cargo doc` with `-D warnings`, and a
+`clippy --workspace --all-features --all-targets`, `cargo doc` with `-D warnings`, and a
 `fuzz` workspace check), and the CI jobs behind them.
 
 **The drift tests** — the subset of the gate suite that compares documentation

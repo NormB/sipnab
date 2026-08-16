@@ -129,6 +129,6 @@ every function the site calls, and one refuses a commit that stages
 
 **Feature matrices.** A green `cargo test --features full` is not proof: CI
 also builds reduced feature sets, and code behind `#[cfg(not(feature = ...))]`
-is invisible to the full build. Before pushing, `cargo clippy --all-features
+is invisible to the full build. Before pushing, `cargo clippy --workspace --all-features
 --all-targets -- -D warnings` and the `fuzz` workspace check are what the
 pre-push hook runs for exactly this reason.

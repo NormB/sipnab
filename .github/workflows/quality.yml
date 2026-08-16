@@ -271,7 +271,7 @@ jobs:
         # Report-only: collect lints as JSON->SARIF without -Dwarnings so a lint
         # does not fail this job (CI's `check` job already enforces the gate).
         run: |
-          cargo clippy --all-features --all-targets --message-format=json \
+          cargo clippy --workspace --all-features --all-targets --message-format=json \
             | clippy-sarif | tee clippy.sarif | sarif-fmt
         continue-on-error: true
 

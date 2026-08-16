@@ -3,7 +3,7 @@
 #
 # Hard gate: refuse to push code that fails any of
 #   * `cargo fmt --all -- --check`,
-#   * `cargo clippy --all-features --all-targets -- -D warnings`,
+#   * `cargo clippy --workspace --all-features --all-targets -- -D warnings`,
 #   * `cargo doc --no-deps --all-features --workspace` (RUSTDOCFLAGS -D warnings),
 #   * `cd fuzz && cargo check`,
 #   * `vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md`, or
@@ -78,19 +78,27 @@ else
 fi
 
 # -- Hard gate: clippy --------------------------------------------------------
-# Mirrors CI exactly (`cargo clippy --all-features --all-targets -- -D warnings`)
-# so a lint that would fail CI fails here first. `--all-features --all-targets`
-# is broader than pre-commit's `--features full`: it also lints tests, benches,
+# Mirrors CI exactly
+# (`cargo clippy --workspace --all-features --all-targets -- -D warnings`) so a
+# lint that would fail CI fails here first. `--all-features --all-targets` is
+# broader than pre-commit's `--features full`: it also lints tests, benches,
 # and examples, and every feature-gated path.
-printf '  cargo clippy --all-features --all-targets -- -D warnings ... '
-if cargo clippy --all-features --all-targets -- -D warnings; then
+#
+# `--workspace` is load-bearing, not decoration. Without it this lints the main
+# crate alone, so a warning in sipnab-audio, sipnab-bpf-types or the example
+# plugin passes here and fails in CI -- which spends a CI round trip to learn
+# something this hook could have said in seconds. The flag stays in step with
+# the CI line above it; the two are one rule, and a gate that asks for less
+# than its CI counterpart is not a gate.
+printf '  cargo clippy --workspace --all-features --all-targets -- -D warnings ... '
+if cargo clippy --workspace --all-features --all-targets -- -D warnings; then
 	printf '%bOK%b\n' "$GREEN" "$NC"
 else
 	printf '%bFAIL%b\n' "$RED" "$NC"
 	printf '\n'
 	printf '%bPush blocked: clippy reported warnings.%b\n' "$RED" "$NC"
 	printf 'Fix them with:\n'
-	printf '    cargo clippy --all-features --all-targets --fix\n'
+	printf '    cargo clippy --workspace --all-features --all-targets --fix\n'
 	printf 'or address them by hand, then commit and push again.\n'
 	printf '\n'
 	printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'

@@ -12,6 +12,18 @@ entry that carries them.
 
 ## [0.5.103] - 2026-08-16
 
+### Fixed
+
+- **The pre-push hook now lints the whole workspace, as CI does.** CI was
+  widened to `cargo clippy --workspace` without the hook or the documentation
+  following, so a warning in `sipnab-audio`, `sipnab-bpf-types` or the example
+  plugin passed every local gate and failed in CI -- spending a round trip to
+  learn something the hook could have said in seconds, which is the one thing a
+  local gate exists to prevent. The hook, its `--fix` hint, the Code Scanning
+  report and all seven pages that quote the command now carry the same flag:
+  measured, a lint in a workspace crate exits 0 under the old command and 101
+  under the new one.
+
 ### Security
 
 - **A plugin file is now read through a 16 MiB bound.** Loading a plugin
