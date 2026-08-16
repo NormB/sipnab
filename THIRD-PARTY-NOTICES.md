@@ -90,7 +90,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | cipher | 0.5.2 | MIT OR Apache-2.0 |
 | clap | 4.6.3 | MIT OR Apache-2.0 |
 | clap_builder | 4.6.2 | MIT OR Apache-2.0 |
-| clap_complete | 4.6.8 | MIT OR Apache-2.0 |
+| clap_complete | 4.6.9 | MIT OR Apache-2.0 |
 | clap_derive | 4.6.3 | MIT OR Apache-2.0 |
 | clap_lex | 1.1.0 | MIT OR Apache-2.0 |
 | cmake | 0.1.58 | MIT OR Apache-2.0 |
@@ -176,7 +176,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | hmac | 0.13.0 | MIT OR Apache-2.0 |
 | http | 1.4.0 | MIT OR Apache-2.0 |
 | http-body | 1.0.1 | MIT |
-| http-body-util | 0.1.4 | MIT |
+| http-body-util | 0.1.5 | MIT |
 | httparse | 1.10.1 | MIT OR Apache-2.0 |
 | httpdate | 1.0.3 | MIT OR Apache-2.0 |
 | hybrid-array | 0.4.12 | MIT OR Apache-2.0 |
@@ -287,7 +287,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | regex-automata | 0.4.16 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
-| rmcp | 3.1.1 | Apache-2.0 |
+| rmcp | 3.1.2 | Apache-2.0 |
 | rmcp-macros | 3.1.2 | Apache-2.0 |
 | rsa | 0.9.10 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
@@ -342,9 +342,9 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | termios | 0.3.3 | MIT |
 | termwiz | 0.23.3 | MIT |
 | thiserror | 1.0.69 | MIT OR Apache-2.0 |
-| thiserror | 2.0.19 | MIT OR Apache-2.0 |
+| thiserror | 2.0.20 | MIT OR Apache-2.0 |
 | thiserror-impl | 1.0.69 | MIT OR Apache-2.0 |
-| thiserror-impl | 2.0.19 | MIT OR Apache-2.0 |
+| thiserror-impl | 2.0.20 | MIT OR Apache-2.0 |
 | thread_local | 1.1.9 | MIT OR Apache-2.0 |
 | time | 0.3.47 | MIT OR Apache-2.0 |
 | time-core | 0.1.8 | MIT OR Apache-2.0 |
@@ -386,15 +386,15 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | wasm-bindgen-macro | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-macro-support | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-shared | 0.2.117 | MIT OR Apache-2.0 |
-| wasm-encoder | 0.255.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasm-encoder | 0.256.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasmi | 1.1.0 | MIT/Apache-2.0 |
 | wasmi_collections | 1.1.0 | MIT/Apache-2.0 |
 | wasmi_core | 1.1.0 | MIT/Apache-2.0 |
 | wasmi_ir | 1.1.0 | MIT/Apache-2.0 |
 | wasmparser | 0.239.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wasmparser | 0.255.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wast | 255.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wat | 1.255.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasmparser | 0.256.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wast | 256.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wat | 1.256.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wezterm-bidi | 0.2.3 | MIT AND Unicode-DFS-2016 |
 | wezterm-blob-leases | 0.1.1 | MIT |
 | wezterm-color-types | 0.3.0 | MIT |
