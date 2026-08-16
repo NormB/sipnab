@@ -136,12 +136,17 @@ pub struct SockOffsets {
 // no padding the compiler chooses and no pointers — which is exactly what `Pod`
 // asserts. `every_field_sits_where_both_halves_expect_it` pins the layout, so a
 // field added without thinking fails there rather than inside a map read.
-#[cfg(feature = "pod")]
+//
+// Gated on the TARGET as well as the feature: `aya` is a Linux-only dependency
+// (it calls `SYS_bpf` and friends), so on macOS the feature can be on while the
+// crate is absent — which is exactly what `--all-features` does on the macOS CI
+// job, and what turned main red twice.
+#[cfg(all(feature = "pod", target_os = "linux"))]
 unsafe impl aya::Pod for SockOffsets {}
 
 // SAFETY: as above. The 2 KiB payload is a byte array; nothing here is a
 // reference, and any byte pattern is a valid value.
-#[cfg(feature = "pod")]
+#[cfg(all(feature = "pod", target_os = "linux"))]
 unsafe impl aya::Pod for TlsRecord {}
 
 #[cfg(test)]
