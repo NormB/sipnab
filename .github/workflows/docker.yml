@@ -96,7 +96,7 @@ jobs:
       # users `docker pull`, and until now it was the one published thing with
       # no vulnerability scan at all.
       - name: Scan the image for vulnerable OS packages
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: sipnab:smoke
           format: sarif
@@ -113,7 +113,7 @@ jobs:
       # failure would never be visible anywhere.
       - name: Upload image scan results
         if: always()
-        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4
         with:
           sarif_file: trivy.sarif
           category: trivy-image
