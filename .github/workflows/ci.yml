@@ -168,7 +168,11 @@ jobs:
       - name: Clippy
         # --all-targets so bench and test-target code is lint-gated too
         # (previously only the report-only SARIF job covered those).
-        run: cargo clippy --all-features --all-targets -- -D warnings
+        # `--workspace`, because without it these switches cover only THIS
+        # package's targets and features. crates/sipnab-plugin-example escaped
+        # the lint gate entirely that way and carried a denied lint while CI
+        # stayed green.
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
 
       - name: Format
         run: cargo fmt --check

@@ -181,8 +181,22 @@ impl KeylogSource {
     /// Take an already-open descriptor, as inherited from a supervisor that
     /// started the privileged producer.
     ///
-    /// The descriptor is duplicated before `O_NONBLOCK` is set, so sipnab never
-    /// changes flags on a descriptor its caller still owns.
+    /// # The caller's descriptor is left exactly as it was
+    ///
+    /// It is duplicated, and **the duplicate's status flags are not touched**.
+    /// An earlier version set `O_NONBLOCK` on the duplicate and claimed that
+    /// left the original alone; it did not. `dup` returns a distinct descriptor
+    /// NUMBER, but both refer to one open-file description, and `O_NONBLOCK`
+    /// belongs to that description — so a supervisor still reading the
+    /// descriptor it lent sipnab began getting `EAGAIN` from a borrow. Proven
+    /// by comparing `F_GETFL` before and after, which is the only way to see
+    /// it: the two descriptors are unequal, so nothing about the call looks
+    /// wrong.
+    ///
+    /// sipnab therefore reads whatever mode the caller chose. A blocking
+    /// descriptor blocks, which is correct for the supervisor-fed pipe this
+    /// exists for: the producer writes keys as sessions start, and a read that
+    /// waits for them is the intended behaviour rather than a busy loop.
     #[cfg(unix)]
     pub fn from_fd(fd: std::os::fd::RawFd) -> Result<Self> {
         // SAFETY: `dup` either returns a fresh owned descriptor or -1.
@@ -190,15 +204,9 @@ impl KeylogSource {
         if dup < 0 {
             return Err(std::io::Error::last_os_error().into());
         }
-        // SAFETY: `dup` is a valid descriptor this function exclusively owns.
-        let flags = unsafe { libc::fcntl(dup, libc::F_GETFL) };
-        let set = if flags < 0 {
-            -1
-        } else {
-            // SAFETY: same descriptor, still owned and open; `F_SETFL` alters
-            // the status flags of this duplicate, never the caller's original.
-            unsafe { libc::fcntl(dup, libc::F_SETFL, flags | libc::O_NONBLOCK) }
-        };
+        // Deliberately NOT `F_SETFL`. See the contract above: the flag would
+        // land on the caller's descriptor too.
+        let set = 0;
         if set < 0 {
             let err = std::io::Error::last_os_error();
             // SAFETY: closing the descriptor this function just created.
@@ -711,6 +719,57 @@ mod tests {
         assert!(
             src.is_exhausted(),
             "a closed producer is reported, not polled forever"
+        );
+    }
+}
+
+#[cfg(all(test, unix, feature = "tls"))]
+mod fd_contract_tests {
+    use super::*;
+
+    /// **The caller's descriptor must come back exactly as it went in.**
+    ///
+    /// `dup` returns a distinct descriptor NUMBER but both refer to the same
+    /// open-file description, and `O_NONBLOCK` is a property of that
+    /// description rather than of the number. So setting it on the duplicate
+    /// sets it on the caller's too, and a supervisor that handed sipnab a
+    /// descriptor it still reads starts getting `EAGAIN` from a borrow.
+    ///
+    /// Compares `F_GETFL` before and after, which is the only way to see it:
+    /// the two descriptors are not equal, so nothing about the call LOOKS
+    /// wrong.
+    #[test]
+    fn from_fd_does_not_change_the_callers_descriptor_flags() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("keys.log");
+        std::fs::write(&path, b"").expect("create");
+        let file = std::fs::File::open(&path).expect("open");
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&file);
+
+        // SAFETY: `fd` is open and owned by `file` for the whole test.
+        let before = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        assert!(
+            before >= 0,
+            "F_GETFL failed: {}",
+            std::io::Error::last_os_error()
+        );
+        assert_eq!(
+            before & libc::O_NONBLOCK,
+            0,
+            "the fixture must start BLOCKING or this test proves nothing"
+        );
+
+        let source = KeylogSource::from_fd(fd).expect("from_fd");
+
+        // SAFETY: as above.
+        let after = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        drop(source);
+        assert_eq!(
+            after & libc::O_NONBLOCK,
+            0,
+            "from_fd set O_NONBLOCK on the CALLER's descriptor. `dup` shares the \
+             open-file description, so F_SETFL on the duplicate changes both — \
+             the doc comment promises the opposite"
         );
     }
 }

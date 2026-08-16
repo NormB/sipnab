@@ -144,10 +144,15 @@ fn the_quoted_test_policy_line_is_still_in_contributing() {
 #[test]
 fn cited_ci_gates_exist_and_are_strict() {
     let ci = read(".github/workflows/ci.yml");
+    // `--workspace` is required as well as `-D warnings`. Without it the
+    // switches cover only the root package, and crates/sipnab-plugin-example
+    // escaped the gate entirely while CI stayed green -- so the badge answer
+    // was true of one crate and asserted for the repository.
     assert!(
-        ci.contains("cargo clippy --all-features --all-targets -- -D warnings"),
+        ci.contains("cargo clippy --workspace --all-features --all-targets -- -D warnings"),
         "`warnings`/`warnings_fixed` are answered Met because clippy is \
-         deny-on-warning; a downgrade makes both answers false"
+         deny-on-warning ACROSS THE WORKSPACE; dropping either the deny or the \
+         workspace scope makes both answers false"
     );
     assert!(
         ci.contains("cargo-deny") || ci.contains("cargo deny"),

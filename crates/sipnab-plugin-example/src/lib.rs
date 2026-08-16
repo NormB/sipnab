@@ -143,7 +143,7 @@ fn detect(input: &str) -> Option<(usize, usize, i64)> {
             && contains_field(msg, "\"method\":\"BYE\"")
         {
             let elapsed = offset - answered_at;
-            if elapsed >= 0 && elapsed < SHORT_CALL_MS {
+            if (0..SHORT_CALL_MS).contains(&elapsed) {
                 return Some((answer_idx, index, elapsed));
             }
             return None;

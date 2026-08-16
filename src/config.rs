@@ -1884,6 +1884,28 @@ fn write_sipnabrc_atomic(path: &Path, contents: &str) -> Result<(), crate::Error
     result.map_err(|e| crate::Error::ConfigInvalid(format!("write {}: {e}", path.display())))
 }
 
+/// Read an existing sipnabrc for a surgical update, or an empty string when
+/// there is genuinely no file yet.
+///
+/// **Only `NotFound` means empty.** Every other failure -- permission denied,
+/// invalid UTF-8, a directory where a file was expected, transient I/O -- is
+/// reported. `unwrap_or_default()` here turned all of them into an empty
+/// string, which the caller then merged one section into and wrote atomically:
+/// saving TUI columns could erase every unrelated setting, and the atomic
+/// write committed that erasure faithfully. Losing a config cleanly is still
+/// losing it.
+fn read_existing_sipnabrc(path: &Path) -> Result<String, crate::Error> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(crate::Error::ConfigInvalid(format!(
+            "read {}: {e}. Refusing to save, because writing what was merged \
+             into an empty file would replace the existing configuration",
+            path.display()
+        ))),
+    }
+}
+
 /// Write the current visible column layout into `[display] visible_columns` of
 /// the sipnabrc at `path`, preserving the rest of the file (see
 /// [`upsert_display_columns`]). Creates the file and parent directory if needed.
@@ -1893,11 +1915,12 @@ fn write_sipnabrc_atomic(path: &Path, contents: &str) -> Result<(), crate::Error
 /// created, or the write fails.
 ///
 /// # Side effects
-/// Reads `path` (missing file treated as empty), creates its parent
+/// Reads `path` (only a MISSING file is treated as empty; an unreadable one
+/// is an error and nothing is written), creates its parent
 /// directory, and rewrites the file atomically (temp-in-dir + rename via
 /// [`crate::capture::atomic::write_atomic`] in native builds).
 pub fn write_display_columns_file(path: &Path, columns: &[String]) -> Result<(), crate::Error> {
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let existing = read_existing_sipnabrc(path)?;
     let updated = upsert_display_columns(&existing, columns)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -1944,14 +1967,15 @@ pub fn default_user_config_path() -> Option<PathBuf> {
 /// created, or the write fails.
 ///
 /// # Side effects
-/// Reads `path` (missing file treated as empty), creates its parent
+/// Reads `path` (only a MISSING file is treated as empty; an unreadable one
+/// is an error and nothing is written), creates its parent
 /// directory, and rewrites the file atomically (temp-in-dir + rename via
 /// [`crate::capture::atomic::write_atomic`] in native builds).
 pub fn write_manual_mappings_file(
     path: &Path,
     entries: &[(String, String)],
 ) -> Result<(), crate::Error> {
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let existing = read_existing_sipnabrc(path)?;
     let updated = upsert_manual_mappings(&existing, entries)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -2899,5 +2923,62 @@ column_selector = "F10"
         };
         let err = limits.validate().unwrap_err();
         assert!(err.to_string().contains("max_audio_frames"));
+    }
+}
+
+#[cfg(test)]
+mod config_preservation_tests {
+    use super::*;
+
+    /// **A read failure must never become an empty configuration.**
+    ///
+    /// Both save paths read the existing file, merge one section into it, and
+    /// write the result atomically. `unwrap_or_default()` turned every read
+    /// failure -- permission denied, invalid UTF-8, a directory -- into an
+    /// empty string, so the merge produced a file containing ONLY the section
+    /// being saved and the atomic write committed it faithfully. Saving TUI
+    /// columns could therefore erase every unrelated setting, and atomicity
+    /// guaranteed the erasure was clean.
+    ///
+    /// Invalid UTF-8 is the deterministic case: no privilege tricks, no
+    /// filesystem setup, and a real thing to find in a config someone edited
+    /// with the wrong encoding.
+    #[test]
+    fn a_config_that_cannot_be_read_is_not_replaced_by_an_empty_one() {
+        for label in ["display columns", "manual mappings"] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = dir.path().join("sipnabrc");
+            // Valid TOML in the file, but not valid UTF-8.
+            let original: Vec<u8> =
+                b"[display]\nvisible_columns = [\"from\"]\n# \xff\xfe\n".to_vec();
+            std::fs::write(&path, &original).expect("write fixture");
+
+            let result = if label == "display columns" {
+                write_display_columns_file(&path, &["from".to_string()])
+            } else {
+                write_manual_mappings_file(&path, &[("a".to_string(), "b".to_string())])
+            };
+            let after = std::fs::read(&path).expect("still readable as bytes");
+
+            assert!(
+                result.is_err(),
+                "{label}: an unreadable config must be reported, not silently replaced"
+            );
+            assert_eq!(
+                after, original,
+                "{label}: the original bytes must survive a failed save"
+            );
+        }
+    }
+
+    /// The ordinary case still works: no file yet means start from empty.
+    #[test]
+    fn a_missing_config_is_still_created() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("nested/sipnabrc");
+        write_display_columns_file(&path, &["from".to_string(), "to".to_string()])
+            .expect("a missing file is created, not an error");
+        let written = std::fs::read_to_string(&path).expect("created");
+        assert!(written.contains("visible_columns"), "wrote: {written}");
     }
 }

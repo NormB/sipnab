@@ -1795,6 +1795,55 @@ authoritative; the PB text above adds only what they do not already say.
   releases stale, and nothing in CI measures throughput. A perf gate would have
   caught a 40% drop the day it landed.
 
+## CR — codebase improvement review intake (added 2026-08-16)
+
+Triage of
+[`codebase-improvement-review-2026-08-16.md`](codebase-improvement-review-2026-08-16.md),
+recorded here because **this file is the one live backlog** and that review is
+an intake document. Its P0–P3 labels are *local intake priorities* and do not
+mean the same thing as the P0–P4 sections above; the disposition column below is
+what governs. Nothing is copied twice: an accepted item lives here, and the
+review keeps its evidence and acceptance criteria.
+
+Three items were verified and fixed on intake rather than queued, because each
+was a defect with a reproduction rather than a proposal.
+
+| ID | Disposition | Note |
+|---|---|---|
+| CODE-01 | **DONE 2026-08-16** | Confirmed: both save paths turned *every* read failure into an empty config and wrote it atomically. Fixed to treat only `NotFound` as empty; a failing test proved the erasure first. |
+| CODE-02 | **DONE 2026-08-16** | Confirmed **empirically**, not by reading POSIX: a test comparing `F_GETFL` before and after showed `from_fd` setting `O_NONBLOCK` on the caller's descriptor while the doc promised it did not. `dup` shares the open-file description. sipnab no longer touches the flags. |
+| CODE-03 | **DONE 2026-08-16** | Reproduced: `cargo clippy --workspace …` failed on `crates/sipnab-plugin-example` with `manual_range_contains` while CI stayed green, because CI omitted `--workspace`. Lint fixed and the gate widened. |
+| OPS-01 | accepted, P1 | Packaged systemd unit cannot start as shipped: `/usr/local/bin` vs the packaged `/usr/bin`, an `%i` with no instance in a non-template unit, and unauthenticated non-loopback listeners the code rejects. **Acceptance is a clean-VM install**, which static inspection cannot substitute for. |
+| OPS-02 | accepted, P1 | The published Docker live-capture recipe grants the non-root image no capabilities. Treat `NET_RAW`/`NET_ADMIN` as hypotheses to MEASURE per runtime, not flags to copy. |
+| DOC-01 | accepted, P1 | The site task card advertises `sipnab --mcp`, which fails validation without `-N`. Decide whether the long-running MCP mode needs a source at all rather than assuming `-I`. |
+| GOV-01 | **DONE 2026-08-16** | This section is the reconciliation it asks for. |
+| CODE-04 | accepted, P2 | Alert hooks need a deadline and process-GROUP reaping. The cap is intentional; the gap is descendants and timeouts, and a timeout must not kill a legitimately slow hook. |
+| CODE-05 | accepted, P2 | Bound plugin module size before compilation. |
+| CODE-06 | accepted, P3 | Split the 5,000–11,000-line modules **along ownership boundaries**, with measured improvement — not to hit a line count. |
+| CODE-07 | accepted, P3 | Add a genuinely featureless build leg. |
+| OPS-04 | accepted, P2 | Add readiness *beside* `/health`; do not change `/health` semantics and break existing probes. |
+| OPS-05 | accepted, P2 | Validate secret-file permissions with race-resistant resolution. Blanket symlink rejection would break Kubernetes projected secrets. |
+| OPS-06 | accepted, P2 | Make the packaged service identity real and explicit. |
+| OPS-08 | accepted, P2 | Make the observability example safe by default. |
+| OPS-03 | accepted, P3 | Correct the contradictory dependency/tracing language. Text first; implementing tracing is a separate product decision. |
+| OPS-07 | accepted, P3 | Define reload semantics for configuration and credentials. |
+| OPS-09 | accepted, P3 | Unify the metrics contract across endpoints, preserving compatibility. |
+| DOC-02 | accepted, P2 | Make the beginner tutorial self-contained and deterministic. |
+| DOC-03 | accepted, P2 | Replace the contradictory "one static binary" positioning. |
+| DOC-04 | accepted, P2 | Split and refresh the MCP learning path. Navigation cost, not proven-wrong instructions. |
+| DOC-06 | accepted, P2 | Turn core recipes into executable documentation. |
+| DOC-05 | accepted, P3 | Publish an sngrep/sipgrep compatibility matrix. |
+| DOC-07 | accepted, P3 | Separate active design guidance from archives. |
+| DEV-01 | accepted, P2 | The developer page's integration-test count is stale. Derive it or delete it rather than re-typing a number that ages. |
+| DEV-02 | accepted, P2 | Provide a contributor toolchain bootstrap. This session lost time to exactly this: a fresh worktree has no Vale style package, so pre-push died with `style 'Google' does not exist` and nothing wrong in the prose. |
+| DEV-03 | accepted, P3 | Turn known unenforced contributor steps into backlog items. |
+
+**Limitations the review states about itself, kept here so they are not lost:**
+the DEB/RPM units were inspected but never installed in a clean VM; container
+capture was not exercised under alternate runtimes or rootless mode; no hostile
+Wasm module or hung hook was run; and its line references describe 0.5.101, so
+symbols must be re-resolved before patching.
+
 ## TK — TLS key acquisition without the daemon's cooperation (added 2026-08-14)
 
 <!-- Added 2026-08-14. Design: docs/superpowers/specs/2026-08-14-ebpf-tls-capture-design.md -->
