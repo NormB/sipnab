@@ -117,6 +117,7 @@ kind of artifact people copy off the internet.
 |---|---|
 | Infinite loop | `wasmi` fuel metering. Exhausted fuel = plugin error, capture continues |
 | Memory exhaustion | `wasmi` `StoreLimits` installed on the store **before** instantiation |
+| Memory exhaustion *at load* | The `.wasm` file is read through a 16 MiB bound, so the host never allocates a length the file chose. Bounding the read rather than checking the length first also holds if the file grows in between |
 | Escaping the sandbox | No imports whatsoever — nothing to call |
 | Reading the host's data | Linear memory is the plugin's own; the host copies the dialog in |
 | Crashing sipnab | Every trap is caught and reported as a plugin error against that dialog |

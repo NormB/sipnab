@@ -163,6 +163,28 @@ fn read_record(raw: &[u8]) -> Option<TlsRecord> {
     Some(rec)
 }
 
+/// Present a perf sample as one contiguous record.
+///
+/// The kernel writes a sample in one run only when it fits before the end of
+/// the ring; otherwise it wraps, and the reader is handed the two pieces. The
+/// common case borrows the mapping directly and copies nothing — `stitch` is
+/// touched only for the sample that actually wrapped, and is reused across
+/// reads so that case does not allocate either.
+///
+/// Lives here rather than beside the reader on purpose: this module is the one
+/// that compiles and runs its tests without the `bpf` feature, a kernel, or
+/// `aya`. A wrapped sample is rare and load-dependent, so a bug in reassembly
+/// would otherwise be found by a capture rather than by the suite.
+pub fn assemble<'a>(head: &'a [u8], tail: &[u8], stitch: &'a mut Vec<u8>) -> &'a [u8] {
+    if tail.is_empty() {
+        return head;
+    }
+    stitch.clear();
+    stitch.extend_from_slice(head);
+    stitch.extend_from_slice(tail);
+    stitch.as_slice()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,5 +346,49 @@ mod tests {
             r.source_kind(),
             crate::capture::packet::FrameSource::Uprobe { pid: 4242, .. }
         ));
+    }
+
+    /// **A sample that wrapped the ring must decode to the same packet.**
+    ///
+    /// Swept across every split point rather than one chosen boundary,
+    /// because the interesting ones are precisely the offsets a hand-picked
+    /// case misses: inside the header, on a field edge, and one byte either
+    /// side of the header/payload seam.
+    #[test]
+    fn a_wrapped_sample_decodes_the_same_as_a_contiguous_one() {
+        let raw = record(FLAG_HAS_TUPLE, sipnab_bpf_types::FAMILY_IPV4, INVITE);
+        let whole = decode(&raw, 7).expect("the contiguous record decodes");
+        let expected = whole.pre_parsed.as_ref().expect("pre-parsed");
+
+        let mut stitch = Vec::new();
+        for split in 0..=raw.len() {
+            let (head, tail) = raw.split_at(split);
+            let joined = assemble(head, tail, &mut stitch);
+            assert_eq!(joined, &raw[..], "split at {split} lost or reordered bytes");
+
+            let pkt =
+                decode(joined, 7).unwrap_or_else(|| panic!("split at {split} failed to decode"));
+            let meta = pkt.pre_parsed.as_ref().expect("pre-parsed");
+            assert_eq!(meta.src_addr, expected.src_addr, "split at {split}");
+            assert_eq!(meta.dst_addr, expected.dst_addr, "split at {split}");
+            assert_eq!(meta.src_port, expected.src_port, "split at {split}");
+            assert_eq!(meta.dst_port, expected.dst_port, "split at {split}");
+            assert_eq!(pkt.data, whole.data, "split at {split}");
+        }
+    }
+
+    /// The unwrapped case must not pay for the wrapped one.
+    ///
+    /// Asserts the EFFECT — that nothing was copied — by observing that the
+    /// reassembly buffer was never written, and that the returned slice is the
+    /// caller's own memory rather than a duplicate of it.
+    #[test]
+    fn a_contiguous_sample_is_borrowed_not_copied() {
+        let raw = record(FLAG_HAS_TUPLE, sipnab_bpf_types::FAMILY_IPV4, INVITE);
+        let mut stitch = Vec::new();
+
+        let got = assemble(&raw, &[], &mut stitch);
+        assert_eq!(got.as_ptr(), raw.as_ptr(), "the sample was copied");
+        assert!(stitch.is_empty(), "the reassembly buffer was touched");
     }
 }

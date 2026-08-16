@@ -117,6 +117,19 @@ struct StoreState {
 /// global one.
 const MAX_OUTPUT_BYTES: u32 = 4 * 1024 * 1024;
 
+/// Ceiling on the `.wasm` FILE, before any of it is compiled.
+///
+/// The other two ceilings bound what a plugin does once it is running. This
+/// one bounds getting there: reading a plugin allocates the file's whole
+/// length up front, so without it the largest thing an operator can point
+/// `--plugin` at is the largest allocation the host will make — and a plugin
+/// path can arrive from a config file rather than from the command line.
+///
+/// 16 MiB matches the per-instance memory ceiling above. A module that does
+/// not fit is not a plugin that needs a larger cap; it is a plugin that will
+/// not fit in the memory it is given either.
+const MAX_PLUGIN_BYTES: usize = 16 * 1024 * 1024;
+
 /// One finding reported by a plugin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginFinding {
@@ -220,8 +233,26 @@ impl Plugin {
     /// discovering its plugin was never loadable has wasted the capture.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, PluginError> {
         let path = path.as_ref().to_path_buf();
-        let bytes = std::fs::read(&path)
-            .map_err(|e| PluginError::Read(format!("{}: {e}", path.display())))?;
+        // Read through a `take` rather than checking the length first: the
+        // bound then holds against a file that GROWS between the check and the
+        // read, and costs one allocation either way. Reading one byte past the
+        // cap is what makes "too large" distinguishable from "exactly at it".
+        let bytes = {
+            use std::io::Read as _;
+            let file = std::fs::File::open(&path)
+                .map_err(|e| PluginError::Read(format!("{}: {e}", path.display())))?;
+            let mut buf = Vec::new();
+            file.take(MAX_PLUGIN_BYTES as u64 + 1)
+                .read_to_end(&mut buf)
+                .map_err(|e| PluginError::Read(format!("{}: {e}", path.display())))?;
+            if buf.len() > MAX_PLUGIN_BYTES {
+                return Err(PluginError::Read(format!(
+                    "{}: larger than the {MAX_PLUGIN_BYTES}-byte plugin limit",
+                    path.display()
+                )));
+            }
+            buf
+        };
 
         let mut config = wasmi::Config::default();
         config.consume_fuel(true);
@@ -611,5 +642,48 @@ mod tests {
             Err(PluginError::Read(_)) => {}
             other => panic!("expected Read, got {other:?}"),
         }
+    }
+
+    /// Asserts the EFFECT — that the host does not allocate the file's length.
+    ///
+    /// Written against a SPARSE file, so the test itself costs no disk: the
+    /// bytes exist only if something reads them, which makes "was it bounded?"
+    /// and "did the test pass?" the same question. An unbounded `fs::read`
+    /// here allocates 2 GiB before `wasmi` is ever handed anything.
+    #[test]
+    fn a_plugin_file_larger_than_the_cap_is_refused_without_reading_it() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("huge.wasm");
+        let mut f = std::fs::File::create(&path).expect("create");
+        // A real WASM header, so a rejection cannot be the magic number.
+        f.write_all(b"\0asm\x01\0\0\0").expect("header");
+        f.seek(SeekFrom::Start(2 * 1024 * 1024 * 1024))
+            .expect("seek");
+        f.write_all(b"\0").expect("tail");
+        drop(f);
+
+        match Plugin::load(&path) {
+            Err(PluginError::Read(m)) => {
+                assert!(
+                    m.contains("larger than"),
+                    "the reason must name the size limit, got {m:?}"
+                );
+            }
+            other => panic!("expected Read, got {other:?}"),
+        }
+    }
+
+    /// The cap is a ceiling, not a target: an ordinary plugin still loads.
+    ///
+    /// Without this, "reject everything" would pass the test above.
+    #[test]
+    fn a_plugin_at_a_normal_size_still_loads() {
+        let p = write_plugin("normal", &wat_plugin(1, "[]"));
+        assert!(
+            Plugin::load(&p).is_ok(),
+            "an ordinary plugin must still load"
+        );
     }
 }

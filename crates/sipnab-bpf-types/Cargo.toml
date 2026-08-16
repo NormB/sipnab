@@ -22,7 +22,7 @@ publish = false
 [target.'cfg(target_os = "linux")'.dependencies]
 # Only for the `Pod` impls, and only on the host. The kernel half never enables
 # this: `aya` is the userspace loader and does not build for bpfel-unknown-none.
-aya = { version = "0.13", optional = true }
+aya = { version = "0.14", optional = true }
 
 [features]
 # Marks the record types as plain-old-data so `aya` will read and write them

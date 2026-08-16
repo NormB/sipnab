@@ -12,7 +12,28 @@ entry that carries them.
 
 ## [0.5.103] - 2026-08-16
 
+### Security
+
+- **A plugin file is now read through a 16 MiB bound.** Loading a plugin
+  allocated the file's whole length up front, so the largest thing an operator
+  could point `--plugin` at was the largest allocation sipnab would make -- and
+  a plugin path can arrive from a config file rather than from the command
+  line. The read is bounded rather than the length checked, so the bound also
+  holds against a file that grows between the check and the read.
+
 ### Changed
+
+- **`aya` 0.13 to 0.14**, for the eBPF backend. The upgrade is a breaking API
+  change on `aya`'s side -- `UProbe::attach` takes an attach point and a scope
+  instead of four positional arguments, and the synchronous perf reader yields
+  events to a closure instead of filling caller-supplied buffers. Verified
+  against a live SIP-over-TLS trunk, recovering the same peer addresses as
+  before. The new reader borrows samples straight from the kernel ring, which
+  retires sipnab's per-CPU scratch buffers and the sharp edge that came with
+  them: a `BytesMut` clone copies contents rather than capacity, so a set of
+  cloned buffers read no events and reported no error -- silence a reader could
+  not tell from a quiet trunk.
+
 
 - **The homepage no longer invites the reading that sipnab breaks TLS.** "Read
   SIP over TLS with no key and no certificate" is a severe claim, and stated

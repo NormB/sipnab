@@ -29,13 +29,14 @@
 
 use std::io;
 
+use aya::maps::perf::PerfEvent;
 use aya::maps::{Array, MapData, PerfEventArray};
+use aya::programs::uprobe::UProbeScope;
 use aya::programs::{KProbe, UProbe};
 use aya::{Ebpf, EbpfLoader};
-use bytes::BytesMut;
 use sipnab_bpf_types::{SockOffsets, TlsRecord};
 
-use super::bpf_record::decode;
+use super::bpf_record::{assemble, decode};
 use super::btf::Btf;
 use super::reader::Target;
 use crate::capture::channel::PacketTx;
@@ -84,8 +85,13 @@ pub struct BpfReader {
     /// for no benefit, and would drag `tokio` into a feature that otherwise
     /// needs none.
     buffers: Vec<aya::maps::perf::PerfEventArrayBuffer<MapData>>,
-    /// Scratch buffers reused across reads, one set per ring.
-    scratch: Vec<Vec<BytesMut>>,
+    /// Reassembly buffer for the rare sample that wraps the ring boundary.
+    ///
+    /// The kernel writes a sample as one contiguous run only when it fits
+    /// before the end of the mapping; otherwise it splits, and the reader is
+    /// handed two slices. Reused across reads so the common (unsplit) case
+    /// never allocates.
+    stitch: Vec<u8>,
     /// Records the kernel dropped because this reader fell behind.
     lost: u64,
 }
@@ -169,7 +175,7 @@ impl BpfReader {
             prog.load()
                 .map_err(|e| io::Error::other(format!("verifier rejected the uprobe: {e}")))?;
             for t in targets {
-                prog.attach(Some(t.symbol.as_str()), 0, &t.library, None)
+                prog.attach(t.symbol.as_str(), &t.library, UProbeScope::AllProcesses)
                     .map_err(|e| {
                         io::Error::other(format!(
                             "attaching {}:{} failed: {e}",
@@ -187,22 +193,11 @@ impl BpfReader {
         .map_err(|e| io::Error::other(format!("EVENTS is not a perf array: {e}")))?;
 
         let mut buffers = Vec::new();
-        let mut scratch = Vec::new();
         for cpu in aya::util::online_cpus().map_err(|(_, e)| io::Error::other(e.to_string()))? {
             let buf = events
                 .open(cpu, None)
                 .map_err(|e| io::Error::other(format!("opening the ring for cpu {cpu}: {e}")))?;
             buffers.push(buf);
-            // Built one at a time rather than with `vec![buf; 8]`: cloning a
-            // `BytesMut` copies its CONTENTS, not its capacity, so the clones
-            // would each have room for nothing — and `read_events` into a
-            // zero-capacity buffer reads no events and reports no error, which
-            // is silence indistinguishable from a quiet trunk.
-            scratch.push(
-                (0..8)
-                    .map(|_| BytesMut::with_capacity(size_of::<TlsRecord>()))
-                    .collect(),
-            );
         }
         if buffers.is_empty() {
             return Err(io::Error::other(
@@ -213,7 +208,7 @@ impl BpfReader {
         Ok(Self {
             _bpf: bpf,
             buffers,
-            scratch,
+            stitch: Vec::with_capacity(size_of::<TlsRecord>()),
             lost: 0,
         })
     }
@@ -227,26 +222,31 @@ impl BpfReader {
     /// Drain every ring once, sending what arrives. Returns packets sent.
     pub fn drain_once(&mut self, tx: &PacketTx, ordinal: &mut u64) -> usize {
         let mut sent = 0;
-        for (i, buf) in self.buffers.iter_mut().enumerate() {
+        let mut lost = 0;
+        let stitch = &mut self.stitch;
+        for buf in &mut self.buffers {
             // Nothing queued on this CPU is the common case: these probes fire
             // per write, and a quiet trunk writes rarely.
             if !buf.readable() {
                 continue;
             }
-            let Ok(events) = buf.read_events(&mut self.scratch[i]) else {
-                continue;
-            };
-            self.lost += events.lost as u64;
-            for slot in self.scratch[i].iter().take(events.read) {
-                let Some(packet) = decode(slot, *ordinal) else {
-                    continue;
-                };
-                if tx.send(packet).is_ok() {
-                    *ordinal += 1;
-                    sent += 1;
+            buf.for_each(|event| match event {
+                PerfEvent::Lost { count } => lost += count,
+                PerfEvent::Sample { head, tail } => {
+                    // The slices borrow the kernel mapping directly, so a
+                    // sample that did not wrap decodes without copying.
+                    let raw = assemble(head, tail, stitch);
+                    let Some(packet) = decode(raw, *ordinal) else {
+                        return;
+                    };
+                    if tx.send(packet).is_ok() {
+                        *ordinal += 1;
+                        sent += 1;
+                    }
                 }
-            }
+            });
         }
+        self.lost += lost;
         sent
     }
 }
