@@ -10,6 +10,42 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.103] - 2026-08-16
+
+### Changed
+
+- **The homepage no longer invites the reading that sipnab breaks TLS.** "Read
+  SIP over TLS with no key and no certificate" is a severe claim, and stated
+  alone it sounds like an attack on the protocol. It is not one: nothing is
+  decrypted, no other machine is read, and no session key is recovered. sipnab
+  reads plaintext inside a process on a host where the operator already has
+  root, before the TLS library encrypts it. The capability row now says so
+  first, names the constraint in its title, and links to a walkthrough.
+
+### Added
+
+- **[A walkthrough for reading SIP over TLS without keys](https://sipnab.com/docs/uprobe-walkthrough/).**
+  What the feature is and is NOT, its security implications as their own
+  section rather than a footnote, the limitations up front with a command to
+  test each -- no Linux, no tracefs, no root or no BTF are hard stops rather
+  than degraded modes -- and both backends step by step. Carries the trap that
+  a probe on the wrong symbol captures nothing while looking perfectly healthy.
+
+- **Every capability on the homepage links to the page that documents it.**
+
+- **A discoverability gate.** Each user-facing feature must name the phrase a
+  reader would search for on the homepage. It exists because eBPF TLS capture
+  shipped fully documented and unfindable -- zero occurrences of "eBPF" on the
+  homepage -- and on its first run it found a second one: the WASM plugin host.
+
+### Fixed
+
+- **The non-Linux gate now catches the break that turned main red twice.**
+  Rewriting `target_os` inverts the code, but cargo still resolves dependencies
+  for the host, so a Linux-scoped dependency was present in the graph the shim
+  compiled against. Two new phases check resolution against a macOS target and
+  compilation against FreeBSD, reproducing both breaks locally with no Mac.
+
 ## [0.5.102] - 2026-08-15
 
 ### Added
