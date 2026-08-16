@@ -70,20 +70,6 @@ retry_wait_time = 3
 accept = [200, 206, 429, 502, 503, 504]
 
 exclude = [
-  # A site page that exists in the BUILD but not yet on the DEPLOY.
-  #
-  # The built-site pass resolves root-relative links locally with --root-dir,
-  # but Zola renders internal links as absolute `https://sipnab.com/...` URLs,
-  # which lychee fetches over the network -- so it checks the PREVIOUS deploy.
-  # Any brand-new page therefore 404s on the commit that adds it, and on that
-  # commit only: Pages publishes from main after CI, so the page cannot be live
-  # before the run that gates it. That is what turned 0.5.102 red.
-  #
-  # Scoped to the one page rather than to `sipnab\.com`, which would stop
-  # checking install.sh and every other link the docs legitimately cite. Delete
-  # this entry once the site has deployed -- the follow-up commit that points
-  # the download markers at the release is the natural place.
-  '^https://sipnab\.com/docs/internals/uprobe-capture/$',
   # Zola internal links -- see above. Matched on the resolved path because
   # lychee turns them into file:// URIs before exclusions apply, so a pattern
   # anchored with ^@/ never matches.

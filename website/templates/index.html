@@ -279,6 +279,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
           <tr><td>Filter DSL</td><td>30 fields, 7 operators, boolean combinators. Named aliases for common queries.</td></tr>
           <tr><td>Security</td><td>Scanner detection, toll fraud, digest leak, registration flood. Fail2ban output.</td></tr>
           <tr><td>TLS/SRTP decryption</td><td>TLS 1.2 + 1.3 via SSLKEYLOGFILE. SRTP auth verification (SDES key extraction).</td></tr>
+          <tr><td>eBPF TLS capture</td><td>Read SIP over TLS with <strong>no key and no certificate</strong>, and no restart of the daemon: kernel uprobes take the plaintext where the application hands it to OpenSSL or wolfSSL. The eBPF backend pairs each write with its socket and reports the real peer addresses.</td></tr>
           <tr><td>Export formats</td><td>PCAP, PCAP-NG, TXT, JSON, NDJSON, CSV, HTML, Markdown, WAV audio, SIPp XML, RTP JSON.</td></tr>
           <tr><td>HEP v2/v3</td><td>HEP v3 send, HEP v2/v3 receive. Feed Homer/SIPCAPTURE, or point Kamailio, OpenSIPS and Asterisk at a sipnab listener and read a whole estate from one box &mdash; the proxies already speak HEP, so nothing goes on them.</td></tr>
           <tr><td>REST API + Prometheus</td><td>Query dialogs, streams, stats via HTTP. Prometheus metrics endpoint.</td></tr>

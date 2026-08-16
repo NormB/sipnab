@@ -584,7 +584,7 @@ fn wiki_intra_docs_links_resolve() {
     // restating in a table cell which files the flag will and will not remove.
     // 385: `docs/mcp.md` +1. The tool table's new `media_diagnostics` row
     // links into the section documenting it, exactly as every other row does.
-    const EXPECTED_WIKI_LINKS: usize = 396;
+    const EXPECTED_WIKI_LINKS: usize = 398;
     // 385: `docs/mos-and-codecs.md` +1. The new "Declaring an impairment factor
     // sipnab does not have" section points at "AMR-WB — published, and
     // mode-dependent" further down the same page rather than restating why a
