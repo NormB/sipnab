@@ -264,10 +264,30 @@ What sipnab would probe, without installing anything:
 sudo sipnab --uprobe-list
 ```
 
-Capture, probing every TLS library discovered:
+Capture, probing every TLS library discovered — the default, because an
+ordinary host runs more than one and probing only the one you had in mind
+misses the rest silently:
 
 ```sh
 sudo sipnab -N --uprobe-tls
+```
+
+One flavour only, when the other stack is not yours to read. Repeatable, so
+naming both is the same as naming neither:
+
+```sh
+sudo sipnab -N --uprobe-tls --uprobe-flavour openssl
+```
+
+```sh
+sudo sipnab -N --uprobe-tls --uprobe-flavour wolfssl
+```
+
+One specific library, which is also how to reach a daemon that has not started
+yet — discovery can only see what something has already mapped:
+
+```sh
+sudo sipnab -N --uprobe-tls --uprobe-library /usr/lib/x86_64-linux-gnu/libssl.so.3
 ```
 
 Inspect the kernel state sipnab created — it should be empty after exit:
