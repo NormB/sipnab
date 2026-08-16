@@ -239,4 +239,55 @@ fi
 # .githooks/pre-push; nothing is lost by suppressing it in the copy.
 cd "$TREE"
 CARGO_TARGET_DIR="$SHIM/target" \
-	cargo clippy --all-features --all-targets -- -D warnings -A unexpected_cfgs
+	cargo clippy --all-features --all-targets -- -D warnings -A unexpected_cfgs || exit 1
+
+# -- Phase 2: a genuinely different target ------------------------------------
+#
+# WHY THE SHIM ABOVE IS NOT ENOUGH.
+#
+# Rewriting `target_os` inverts the CODE, but cargo still resolves DEPENDENCIES
+# for the host -- which is Linux. So a dependency declared under
+# `[target.'cfg(target_os = "linux")'.dependencies]` is present in the graph the
+# shim compiles against, and code referring to it compiles clean here while
+# failing on a real non-Linux target.
+#
+# Measured, twice, on the 0.5.102 release: `aya` is Linux-only (it calls
+# SYS_bpf, SYS_perf_event_open and CLOCK_BOOTTIME). Phase 1 said OK both times
+# while the macOS CI job failed -- first because the dependency itself was not
+# target-scoped, then because the `unsafe impl aya::Pod` blocks were gated on
+# the FEATURE but not the TARGET, so `--all-features` compiled them against a
+# crate absent from that target's graph.
+#
+# This phase asks cargo about a target that is not Linux at all, so dependency
+# resolution differs for real. FreeBSD rather than macOS because `rustup target
+# add x86_64-unknown-freebsd` needs no Apple SDK.
+#
+# A crate whose BUILD SCRIPT cannot cross-compile (ring needs a C cross
+# compiler) is skipped with a note rather than failed: that is a property of
+# this host, not of the code, and failing on it would train everyone to ignore
+# the gate.
+NONLINUX_TARGET=x86_64-unknown-freebsd
+if ! rustup target list --installed 2>/dev/null | grep -qx "$NONLINUX_TARGET"; then
+	printf '  phase 2: NOT CHECKED -- rustup target add %s\n' "$NONLINUX_TARGET"
+	exit 0
+fi
+cd "$ROOT"
+MEMBERS=$(cargo metadata --no-deps --format-version 1 2>/dev/null \
+	| python3 -c 'import sys,json; print("\n".join(p["name"] for p in json.load(sys.stdin)["packages"]))')
+phase2_rc=0
+for m in $MEMBERS; do
+	# `set -e` is on: capture the status without letting a failure abort the
+	# loop, because a build-script failure below is a SKIP rather than a fault.
+	out=$(cargo check -q -p "$m" --target "$NONLINUX_TARGET" --all-features 2>&1) || rc=$?
+	rc=${rc:-0}
+	if [ "$rc" -eq 0 ]; then unset rc; continue; fi
+	unset rc
+	if printf '%s' "$out" | grep -q 'failed to run custom build command'; then
+		printf '  phase 2: %s SKIPPED -- a build script needs a cross compiler\n' "$m"
+		continue
+	fi
+	printf '  phase 2: %s FAILED for %s\n' "$m" "$NONLINUX_TARGET"
+	printf '%s\n' "$out" | grep -E '^error' | head -5
+	phase2_rc=1
+done
+exit $phase2_rc

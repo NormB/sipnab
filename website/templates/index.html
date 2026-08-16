@@ -273,19 +273,20 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
           </tr>
         </thead>
         <tbody>
-          <tr><td>Interactive TUI + CLI</td><td>Both modes in one binary. TUI for interactive analysis, CLI for batch/scripting.</td></tr>
-          <tr><td>RTP quality analysis</td><td>Jitter, packet loss, estimated MOS (ITU-T G.107 E-model) per stream. RTCP XR (RFC 3611) parsing.</td></tr>
-          <tr><td>VoIP diagnosis</td><td>One-way audio detection, NAT mismatch, SDP timeline, PDD measurement.</td></tr>
-          <tr><td>Filter DSL</td><td>30 fields, 7 operators, boolean combinators. Named aliases for common queries.</td></tr>
-          <tr><td>Security</td><td>Scanner detection, toll fraud, digest leak, registration flood. Fail2ban output.</td></tr>
-          <tr><td>TLS/SRTP decryption</td><td>TLS 1.2 + 1.3 via SSLKEYLOGFILE. SRTP auth verification (SDES key extraction).</td></tr>
-          <tr><td>eBPF TLS capture</td><td>Read SIP over TLS with <strong>no key and no certificate</strong>, and no restart of the daemon: kernel uprobes take the plaintext where the application hands it to OpenSSL or wolfSSL. The eBPF backend pairs each write with its socket and reports the real peer addresses.</td></tr>
-          <tr><td>Export formats</td><td>PCAP, PCAP-NG, TXT, JSON, NDJSON, CSV, HTML, Markdown, WAV audio, SIPp XML, RTP JSON.</td></tr>
-          <tr><td>HEP v2/v3</td><td>HEP v3 send, HEP v2/v3 receive. Feed Homer/SIPCAPTURE, or point Kamailio, OpenSIPS and Asterisk at a sipnab listener and read a whole estate from one box &mdash; the proxies already speak HEP, so nothing goes on them.</td></tr>
-          <tr><td>REST API + Prometheus</td><td>Query dialogs, streams, stats via HTTP. Prometheus metrics endpoint.</td></tr>
-          <tr><td>MCP server</td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. 32 tools cover dialogs, RTP, diagnostics, and security findings. 27 are read-only; the five that write — file export, capture swap, findings, shutdown — each stay off until you enable them server-side.</td></tr>
-          <tr><td>Browser analysis</td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
-          <tr><td>Built in Rust</td><td>Memory-safe by construction. 5115 automated tests. Under 12 MB static binary.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/tui.md') }}">Interactive TUI + CLI</a></td><td>Both modes in one binary. TUI for interactive analysis, CLI for batch/scripting.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/mos-and-codecs.md') }}">RTP quality analysis</a></td><td>Jitter, packet loss, estimated MOS (ITU-T G.107 E-model) per stream. RTCP XR (RFC 3611) parsing.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}">VoIP diagnosis</a></td><td>One-way audio detection, NAT mismatch, SDP timeline, PDD measurement.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/filter-dsl.md') }}">Filter DSL</a></td><td>30 fields, 7 operators, boolean combinators. Named aliases for common queries.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}">Security</a></td><td>Scanner detection, toll fraud, digest leak, registration flood. Fail2ban output.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}">TLS/SRTP decryption</a></td><td>TLS 1.2 + 1.3 via SSLKEYLOGFILE. SRTP auth verification (SDES key extraction).</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/integrations.md') }}">WASM plugins</a></td><td>Load third-party dialog detections as sandboxed WebAssembly (<code>--plugin</code>). Off by default, so a stock binary carries no interpreter.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/internals/uprobe-capture.md') }}">eBPF TLS capture</a></td><td>Read SIP over TLS with <strong>no key and no certificate</strong>, and no restart of the daemon: kernel uprobes take the plaintext where the application hands it to OpenSSL or wolfSSL. The eBPF backend pairs each write with its socket and reports the real peer addresses.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/output-formats.md') }}">Export formats</a></td><td>PCAP, PCAP-NG, TXT, JSON, NDJSON, CSV, HTML, Markdown, WAV audio, SIPp XML, RTP JSON.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}">HEP v2/v3</a></td><td>HEP v3 send, HEP v2/v3 receive. Feed Homer/SIPCAPTURE, or point Kamailio, OpenSIPS and Asterisk at a sipnab listener and read a whole estate from one box &mdash; the proxies already speak HEP, so nothing goes on them.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/api.md') }}">REST API + Prometheus</a></td><td>Query dialogs, streams, stats via HTTP. Prometheus metrics endpoint.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. 32 tools cover dialogs, RTP, diagnostics, and security findings. 27 are read-only; the five that write — file export, capture swap, findings, shutdown — each stay off until you enable them server-side.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Memory-safe by construction. 5116 automated tests. Under 12 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -371,7 +372,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
         <span class="arch-label">Headroom to take a whole estate's HEP feed on one box, with no collector tier &mdash; offline reconstruction, four cores (measured v0.5.91)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
-        <span class="arch-stat" data-count="5115" data-suffix="">5115</span>
+        <span class="arch-stat" data-count="5116" data-suffix="">5116</span>
         <span class="arch-label">Automated tests</span>
       </a>
     </div>

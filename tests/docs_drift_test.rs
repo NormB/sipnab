@@ -1603,6 +1603,61 @@ fn carrier_generator_produces_the_documented_corpus() {
     }
 }
 
+/// Every capability an operator can choose must be findable on the HOMEPAGE.
+///
+/// The README table (below) proves a feature is *documented*. This proves it is
+/// *discoverable*, which is a different thing and the one that failed: the eBPF
+/// TLS capture shipped in 0.5.102 fully documented -- a developer page, two
+/// cookbook recipes, six flags with runnable examples -- and the word "eBPF"
+/// appeared ZERO times on the homepage and zero times on the internals index.
+/// It was written up throughout as "uprobe" and "BPF", which is accurate and is
+/// not the word anyone searches for. The owner could not find his own feature.
+///
+/// So each non-default, user-facing feature names the phrase a reader would
+/// actually look for. The map is explicit rather than derived, because
+/// `bpf` -> "eBPF" is a judgement about vocabulary that no rule can infer --
+/// and adding a feature without deciding how a reader finds it fails here.
+#[test]
+fn the_homepage_names_every_capability_a_reader_would_search_for() {
+    let home = include_str!("../website/templates/index.html");
+    // (cargo feature, the phrase a reader searches for)
+    let must_appear: &[(&str, &str)] = &[
+        ("tls", "TLS"),
+        ("hep", "HEP"),
+        ("mcp", "MCP"),
+        ("metrics", "Prometheus"),
+        ("plugins", "plugin"),
+        ("wasm", "browser"),
+        // The one this test exists for.
+        ("bpf", "eBPF"),
+    ];
+    let manifest = include_str!("../Cargo.toml");
+    let features_block = manifest
+        .split("[features]")
+        .nth(1)
+        .expect("Cargo.toml has a [features] table")
+        .split("\n[")
+        .next()
+        .expect("features table terminates");
+
+    let mut missing = Vec::new();
+    for (feature, phrase) in must_appear {
+        assert!(
+            features_block.contains(&format!("{feature} = [")),
+            "the map names a `{feature}` feature that Cargo.toml does not define"
+        );
+        if !home.contains(phrase) {
+            missing.push(format!("`{feature}` -> no \"{phrase}\" on the homepage"));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "a capability a reader cannot find is not documented, however well it is \
+         written up elsewhere:\n  {}",
+        missing.join("\n  ")
+    );
+}
+
 /// Every `[features]` key in Cargo.toml must appear in the README feature
 /// table. `metrics` is a DEFAULT feature that was absent for several
 /// releases, so a reader could not discover it existed.
