@@ -28,6 +28,7 @@ nothing and they tell you what you should see at each step.
    `sudo sipnab -d eth0`. Both open the TUI; the walkthrough takes you through
    your first analysis step by step.
 3. **[Drive sipnab from an AI agent](mcp-walkthrough.md)** — deployment
+- [Reading SIP over TLS without keys](uprobe-walkthrough.md) — what uprobe and eBPF capture is and is **not**, its security implications, whether your kernel supports it at all, and both backends step by step.
    scenarios in order, from same-box stdio to a remote production server.
 
 ## How-to guides

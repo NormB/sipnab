@@ -181,6 +181,7 @@ DOCS_TO_SITE = {
     "rest-api.md": "api.md",
     "mcp.md": "mcp.md",
     "mcp-walkthrough.md": "mcp-walkthrough.md",
+    "uprobe-walkthrough.md": "uprobe-walkthrough.md",
     "sip-lint-rules.md": "sip-lint-rules.md",
     "benchmarks.md": "benchmarks.md",
     "internals/profiling.md": "internals/profiling.md",

@@ -207,6 +207,16 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "TOML configuration file format and all configurable sections.",
     ),
     (
+        "docs/uprobe-walkthrough.md",
+        "uprobe-walkthrough.md",
+        "Reading SIP over TLS without keys — step by step",
+        "TLS Without Keys",
+        26,
+        "What uprobe and eBPF capture is and is NOT, its security "
+        "implications, whether your kernel supports it at all, and how to "
+        "run both backends step by step.",
+    ),
+    (
         "docs/mcp-walkthrough.md",
         "mcp-walkthrough.md",
         "MCP walkthrough — every deployment scenario, step by step",
