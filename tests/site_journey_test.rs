@@ -3719,7 +3719,23 @@ fn packaging_scripts_reference_existing_paths() {
             // skipped `contrib/sipnab.service` and missed the bug this test
             // exists to catch. Add an entry only for something a workflow
             // creates, never for something it reads.
-            const GENERATED: [&str; 3] = ["website/public", "build/", "target/"];
+            // `sipnab_bg.wasm` joined this list in 0.5.106, when it stopped
+            // being committed. pages.yml CREATES it — `wasm-pack build
+            // --out-dir website/static/wasm` — so it satisfies the rule above
+            // rather than bending it. It was removed from the repository
+            // because OpenSSF Scorecard's Binary-Artifacts check flagged it at
+            // high severity, correctly: a committed binary is not auditable
+            // from its source, and this one had already served eleven releases
+            // of stale analysis before the workflow began rebuilding it.
+            //
+            // `sipnab.js` is NOT here and must keep existing: it is text, the
+            // export guard reads it, and its absence is a real failure.
+            const GENERATED: [&str; 4] = [
+                "website/public",
+                "build/",
+                "target/",
+                "website/static/wasm/sipnab_bg.wasm",
+            ];
             if GENERATED.iter().any(|g| cand.starts_with(g)) {
                 continue;
             }
@@ -3745,8 +3761,8 @@ fn packaging_scripts_reference_existing_paths() {
     // file before moving: HEAD has 0 in each, the working tree has 1 in each,
     // and the path they name exists — which is exactly what this gate checks.
     assert_eq!(
-        checked, 66,
-        "packaging path scan saw {checked} references, expected 66. More is \
+        checked, 65,
+        "packaging path scan saw {checked} references, expected 65. More is \
          fine — bump this. FEWER means the candidate extractor stopped matching \
          and unverified paths pass unseen."
     );

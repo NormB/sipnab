@@ -180,31 +180,14 @@ else
 fi
 rm -rf "$D"
 
-# ── Scenario 2c: gate 7 requires the compiled artifact, not any path ───────
-# `grep -q "website/static/wasm/sipnab"` matched sipnab.js, so a single
-# appended newline to the glue satisfied it while sipnab_bg.wasm stayed
-# byte-identical — a behavior change to src/wasm.rs shipping with a stale
-# bundle.
-D=$(sandbox 10)
-echo '// behavior change' >> "$D/src/wasm.rs"
-echo '' >> "$D/website/static/wasm/sipnab.js"
-( cd "$D" && git add src/wasm.rs website/static/wasm/sipnab.js )
-run_hook "$D"
-if [ "$HOOK_RC" -ne 0 ]; then
-	ok "gate 7 rejects a src/wasm.rs change with only the glue restaged"
-else
-	bad "gate 7 accepted a src/wasm.rs change whose .wasm was never rebuilt"
-fi
-# Restaging the compiled artifact clears it.
-printf '\0asmREBUILT' > "$D/website/static/wasm/sipnab_bg.wasm"
-( cd "$D" && git add website/static/wasm/sipnab_bg.wasm )
-run_hook "$D"
-if [ "$HOOK_RC" -eq 0 ]; then
-	ok "gate 7 passes once sipnab_bg.wasm is rebuilt and staged"
-else
-	bad "gate 7 still blocked after the .wasm was rebuilt; output: $HOOK_OUT"
-fi
-rm -rf "$D"
+# ── Scenario 2c: RETIRED with gate 7 ───────────────────────────────────────
+# Gate 7 demanded a rebuilt sipnab_bg.wasm beside any src/wasm.rs change, and
+# this scenario proved it could not be satisfied by touching the glue alone.
+# Both are gone: the binary is no longer committed (it is built at deploy time
+# and tripped OpenSSF Scorecard's Binary-Artifacts check), so a gate demanding
+# it be restaged would block every src/wasm.rs commit forever. The export
+# guard that DOES still work is exercised by tests/wasm_exports_test.rs and
+# scripts/check-wasm-exports.py, both of which read the committed glue.
 
 # ── Scenario 3: the step-2 gate rejects a non-zero (partial) run ────────────
 COMPLETE=$(printf '%s\n' \

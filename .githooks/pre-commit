@@ -427,21 +427,25 @@ else
     echo -e "${GREEN}OK${NC}"
 fi
 
-# ── 7. Check for staged wasm.rs changes without WASM rebuild ──────
-echo -n "  WASM rebuild check... "
-if git diff --cached --name-only | grep -q "src/wasm.rs"; then
-    # The compiled artifact specifically. Matching any "website/static/wasm/sipnab*"
-    # path meant a single appended newline to sipnab.js satisfied this while
-    # sipnab_bg.wasm stayed byte-identical — a behaviour change to src/wasm.rs
-    # shipping with a stale bundle.
-    if ! git diff --cached --name-only | grep -q "website/static/wasm/sipnab_bg.wasm"; then
-        echo -e "${RED}FAIL${NC}"
-        echo "  src/wasm.rs changed but website/static/wasm/sipnab_bg.wasm was not rebuilt."
-        echo "  Rebuild: wasm-pack build --target web --out-dir website/static/wasm --no-typescript -- --no-default-features --features wasm"
-        exit 1
-    fi
-fi
-echo -e "${GREEN}OK${NC}"
+# ── 7. WASM bundle: the binary is no longer committed ─────────────
+#
+# This used to demand a rebuilt `sipnab_bg.wasm` alongside any `src/wasm.rs`
+# change. That gate is gone with the binary it guarded, for two reasons that
+# both point the same way.
+#
+# It did not work. The published analyzer went eleven releases stale while
+# this stayed green, because `src/wasm.rs` had no commits in that window: the
+# interface held still while the implementation behind it moved. The Pages
+# workflow now builds the bundle at deploy time, so what ships is generated
+# rather than committed and cannot go stale — the argument is written out in
+# .github/workflows/pages.yml.
+#
+# And a committed binary is a finding in its own right. OpenSSF Scorecard's
+# Binary-Artifacts check flagged it at high severity, correctly: a binary in a
+# repository is not auditable from its source.
+#
+# `sipnab.js` stays committed. It is text, Scorecard does not flag it, and the
+# export guard below reads it — see `scripts/check-wasm-exports.py`.
 
 # ── 8. Developer docs cite code — flag edits to cited files ────────
 echo -n "  Developer-docs coupling... "

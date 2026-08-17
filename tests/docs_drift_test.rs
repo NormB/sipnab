@@ -56,7 +56,23 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             // cargo invocation has to be runnable as written.
             "docs/plugins.md",
             "website/content/docs/plugins.md",
+            // The TLS chooser names `--features bpf` because method 4 needs a
+            // build that carries it, exactly as the CLI reference does.
+            "docs/tls-capture.md",
+            "website/content/docs/tls-capture.md",
         ],
+    ),
+    // `--undefined-only` is binutils `nm`, and `--keylogfile` is eCapture's.
+    // The TLS chooser names both because the commands it gives have to be
+    // runnable as written: one finds which symbol a daemon actually calls,
+    // the other lifts keys from a daemon nobody can restart.
+    (
+        "undefined-only",
+        &["docs/tls-capture.md", "website/content/docs/tls-capture.md"],
+    ),
+    (
+        "keylogfile",
+        &["docs/tls-capture.md", "website/content/docs/tls-capture.md"],
     ),
     // `--release` and `--target` are cargo's too, and appear for the same
     // reason: `cargo build --release --target wasm32-unknown-unknown` is what
@@ -2401,8 +2417,8 @@ fn no_documentation_table_repeats_a_row() {
     // one. Also from a failing run.
     assert_eq!(
         files.len(),
-        144,
-        "found {} tracked markdown files, expected 144. More is fine — bump \
+        146,
+        "found {} tracked markdown files, expected 146. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2669,8 +2685,8 @@ fn no_documentation_table_repeats_a_row() {
         // against what sipnab already does, so neither is rebuilt by mistake.
         // Not doubled by a site mirror — docs/design/ is not published.
         tables,
-        562,
-        "walked {tables} tables, expected 562. More is fine — bump this. FEWER \
+        566,
+        "walked {tables} tables, expected 566. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

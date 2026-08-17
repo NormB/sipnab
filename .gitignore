@@ -60,3 +60,10 @@ build/
 /*.pcapng
 /bench/*.pcap
 /bench/*.pcapng
+
+# The browser analyzer binary. Built by .github/workflows/pages.yml at
+# deploy time — see the "THE COMMITTED BUNDLE IS NO LONGER WHAT SHIPS" note
+# there. Committing it served eleven releases of stale analysis and tripped
+# the OpenSSF Scorecard Binary-Artifacts check, which is right: a binary in a
+# repository cannot be audited from source.
+website/static/wasm/sipnab_bg.wasm

@@ -51,6 +51,11 @@ you want.
   aliases (`--filter codec-asym`).
 - **[Set up authentication](auth.md)** — minting signed bearer tokens, TTLs,
   signing-key rotation, and revocation for the API and MCP.
+- **[Capture SIP over TLS](tls-capture.md)** — you have SIP on 5061 and see
+  nothing. Picks the method by what access you have: a key log from the
+  endpoint, plaintext read out of the process with no keys at all, eBPF
+  with peer addresses, or eCapture — and says what does not work, so you
+  stop trying it.
 - **[Write a WASM plugin](plugins.md)** — add your own detection to sipnab's
   diagnosis without forking it: what the sandbox does and does not bound,
   what trusting a `.wasm` costs you, and a worked example from crate to

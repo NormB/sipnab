@@ -141,6 +141,7 @@
             <p class="nav-drop-label" aria-hidden="true">Getting started</p>
             <a href="{{ get_url(path='@/docs/install.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/install/" %}class="active"{% endif %}>Install</a>
             <a href="{{ get_url(path='@/docs/cookbook.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/cookbook/" %}class="active"{% endif %}>Cookbook</a>
+            <a href="{{ get_url(path='@/docs/tls-capture.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/tls-capture/" %}class="active"{% endif %}>Capture SIP over TLS</a>
             <a href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/uprobe-walkthrough/" %}class="active"{% endif %}>TLS Without Keys</a>
             <a href="{{ get_url(path='@/docs/troubleshooting.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/troubleshooting/" %}class="active"{% endif %}>Troubleshooting</a>
             <a href="{{ get_url(path='@/docs/tuning-capture.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/tuning-capture/" %}class="active"{% endif %}>Tuning Capture</a>

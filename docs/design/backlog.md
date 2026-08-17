@@ -2368,7 +2368,7 @@ neither visible to `--features full`:**
    that has either.
 2. `TK6`'s `ebpf` feature sits **outside `full`**, and
    `no_test_hides_behind_a_feature_outside_full`
-   ([`tests/site_journey_test.rs:4795`](https://github.com/NormB/sipnab/blob/main/tests/site_journey_test.rs#L4795)) fails on any `#[test]` or
+   ([`tests/site_journey_test.rs:4816`](https://github.com/NormB/sipnab/blob/main/tests/site_journey_test.rs#L4816)) fails on any `#[test]` or
    `mod tests` gated on such a feature. So the offset table and version parsing
    are **ungated** pure logic and only the aya attachment is gated. This is
    architecture, not style.

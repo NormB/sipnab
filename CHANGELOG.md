@@ -10,7 +10,55 @@ entry that carries them.
 
 ## [Unreleased]
 
-## [0.5.106] - 2026-08-17
+## [0.5.107] - 2026-08-17
+
+### Added
+
+- **A page that picks a TLS capture method for you.** Prompted by a VoIP
+  engineer who tried to get TLS capture working and could not figure it out —
+  and who then said *"all my traffic comes in via TLS, we don't even open up
+  5060 on that server."* That is the case this page is written for. sipnab has
+  had every method he needed since 0.5.102; what it did not have was a door.
+
+  The failure was visible in the navigation. It offered "TLS Without Keys" and
+  "Uprobe TLS Capture" — both the same exotic eBPF path, named after the kernel
+  mechanism rather than the goal, and both demanding root, BTF and a
+  non-default build. The ordinary route, a key log from the endpoint, sat
+  inside the cookbook as §7. The menu advertised the hard road and hid the easy
+  one.
+
+  The new page opens with a table you read down until you reach a row you can
+  satisfy, ordered by **what access you have** rather than by how sipnab works:
+  set `SSLKEYLOGFILE`, or hold root without being able to restart the daemon,
+  or hold root on a BTF kernel, or run eCapture, or face an old RSA server.
+  Each row names one command and what it costs. For the reader who is new to
+  this it states plainly that a capture alone can never be decrypted and why —
+  forward secrecy means the information is not in the pcap and never was. For
+  the reader who already knows that, there is a "what does not work" section so
+  they stop trying, and a symptom table for the failures that look like bugs
+  and are not: `--uprobe-list` silent without `sudo`, zero messages from a
+  daemon that calls `SSL_write_ex`, `0.0.0.0:0` peers on the tracefs backend.
+
+  It sits above the mechanism-named pages in the navigation, and the homepage's
+  TLS row now lands on it rather than on one recipe among eight.
+
+### Security
+
+- **The compiled browser analyzer is no longer committed.** OpenSSF Scorecard
+  flagged `website/static/wasm/sipnab_bg.wasm` at high severity under
+  Binary-Artifacts, correctly: a binary in a repository cannot be audited from
+  its source. It was already dead weight — the Pages workflow rebuilds it at
+  deploy time, precisely because the committed copy had served eleven releases
+  of stale analysis.
+
+  Removing it retires the pre-commit gate that demanded it be restaged
+  alongside any `src/wasm.rs` change. That gate had to go rather than stay:
+  with the binary untracked it could never be satisfied and would have blocked
+  every future commit touching that file. It never worked anyway — the eleven
+  stale releases happened while it was green, because `src/wasm.rs` had no
+  commits in that window and the interface held still while the implementation
+  moved. `sipnab.js` stays committed: it is text, Scorecard does not flag it,
+  and the export guard reads it.
 
 ### Added
 

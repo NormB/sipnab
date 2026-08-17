@@ -585,7 +585,8 @@ fn wiki_intra_docs_links_resolve() {
     // 385: `docs/mcp.md` +1. The tool table's new `media_diagnostics` row
     // links into the section documenting it, exactly as every other row does.
     // 406 -> 412: the plugins and authentication pages 0.5.106 published.
-    const EXPECTED_WIKI_LINKS: usize = 412;
+    // 412 -> 426: the TLS capture chooser, which links every method it lists.
+    const EXPECTED_WIKI_LINKS: usize = 426;
     // 385: `docs/mos-and-codecs.md` +1. The new "Declaring an impairment factor
     // sipnab does not have" section points at "AMR-WB — published, and
     // mode-dependent" further down the same page rather than restating why a
@@ -1041,8 +1042,8 @@ fn every_docs_page_is_linked_from_the_index() {
     // `internals/uprobe-capture.md`, 39 -> 40 by `plugins.md` — the published
     // WASM plugins page 0.5.106 added.
     assert_eq!(
-        checked, 40,
-        "docs-page walk saw {checked} pages, expected 40. More is fine — bump \
+        checked, 41,
+        "docs-page walk saw {checked} pages, expected 41. More is fine — bump \
          this. FEWER means the walk stopped reading part of docs/ and every \
          reachability assertion above it silently narrowed."
     );
