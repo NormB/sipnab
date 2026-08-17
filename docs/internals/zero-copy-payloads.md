@@ -103,15 +103,15 @@ traffic*, not *no copy*. Two further guesses also failed: `MAP_POPULATE` plus
 
 What made the mapping pay was keeping the block copy: it spreads refcounting
 across one counter per ~270 frames. So the conclusion of this document holds at
-every stage measured so far — **at these packet sizes the copy is not the cost;
-the cross-thread refcount and allocator traffic is.** A change that removes a
-copy and adds sharing is not obviously a win, and must be measured at more than
+every stage measured so far — **at these packet sizes the copy is not the cost.
+The cross-thread refcount and allocator traffic is.** A change that removes a
+copy and adds sharing is not obviously a win, and needs measuring at more than
 one core count, because the whole effect is invisible at one.
 
 Two things the mapping must do that libpcap did for free, both found by
 comparing against it over the real corpus rather than against fixtures:
 
 - Read **snapped** captures. `orig_len > snaplen` is the definition of
-  snapping, not corruption, so the strict record parser cannot be used.
+  snapping, not corruption, so the strict record parser rules out too much.
 - Report a **truncated** file. Stopping quietly at the cut turns "this capture
   is incomplete" into "read in full".
