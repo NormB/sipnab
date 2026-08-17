@@ -4,32 +4,32 @@ How fast sipnab is, measured honestly — and what that speed is for. The number
 is not a race against the local capture tools. It is the headroom that decides
 how much of an estate one binary can take at once, and therefore whether you
 stand up a collector tier at all. **Every table on this page comes from one run
-on 0.5.104, on 2026-08-17.**
+on 0.5.108, on 2026-08-17.**
 
 Every number here is reproducible, and has been a checked claim rather than an
 asserted one since 0.5.47 — the release that put the corpus generator and the
 timing harness in [`bench/`](../bench/), so you can regenerate the corpus and
 re-run every table below. 0.5.47 dates the recipe, not this run.
 
-> **Measured against 0.5.104, on 2026-08-17.** Every table below is that
+> **Measured against 0.5.108, on 2026-08-17.** Every table below is that
 > measurement, taken on the released artifact rather than a local build. No
 > number here stands in for a release it did not measure, and none carries
 > forward from a run nobody repeated.
 
-The generator reproduces the documented corpus composition exactly: 535,000
-packets, 35,000 SIP messages, 500,000 RTP, 93.5% RTP, 100 Call-IDs, 200
-streams.
+The generator reproduces the documented corpus composition exactly:
+535,000 packets, 35,000 SIP messages, 500,000 RTP, 93.5% RTP, 100 Call-IDs,
+200 streams.
 
-**Measured on the released 0.5.104 artifact, checksum-verified, 2026-08-17, on
-an idle host.** Comparable to the 0.5.91 figures this page carried before:
-the corpus generator still reproduces the same composition
-(535,000 packets, 35,000 SIP, 500,000 RTP, 100 Call-IDs, 200 streams), and
-the same session measured the released 0.5.103 on the same host as a
-control — its four-core figure matched 0.5.91's published table within noise,
-and its single-core figure (1.01M against 0.5.91's published 1.07M) carries
-the small diffuse erosion that formed the 0.5.104 change's baseline. Neither
-set is comparable to the pre-0.5.47 figures, which came from an unpublished
-corpus nobody can rebuild.
+**Measured on the released 0.5.108 artifact, checksum-verified, 2026-08-17, on
+an idle host.** The same session measured the released **0.5.107** on the same
+host, in two interleaved rounds, as the control for the multi-core change that
+landed in 0.5.108 — so the before and after come from one afternoon, one
+corpus, and two artifacts whose checksums both verify, rather than from a
+remembered number. 0.5.107's four-core and single-core figures match the
+0.5.104 table this page carried before within noise, which is the evidence that
+nothing between those releases moved the numbers and that the method still
+agrees with itself. Neither set is comparable to the pre-0.5.47 figures, which
+came from an unpublished corpus nobody can rebuild.
 
 ## What the throughput is for
 
@@ -45,7 +45,7 @@ exists to skip.
 
 Put the figures next to the load. A proxy running 100 calls per second at
 roughly ten SIP messages per call emits about 1,000 signaling packets per
-second. The tables below measure 1.28M packets per second on one core and 2.31M
+second. The tables below measure 1.29M packets per second on one core and 3.25M
 on four, on a corpus that is 93.5% RTP — media a signaling-only HEP feed never
 carries at all. Three orders of magnitude separate that proxy from a single
 core's budget.
@@ -69,33 +69,52 @@ discover:
   G.711 PCMU at 20 ms, 93.5% RTP by packet count.
 - **Method:** offline pcap reconstruction (`-I file`), median-of-5 after one
   discarded warmup. `pkts/s = packets ÷ wall-clock seconds`, startup included.
-- **Version:** sipnab 0.5.104 (release artifact). **Date:** 2026-08-17.
+- **Version:** sipnab 0.5.108 (release artifact). **Date:** 2026-08-17.
 
 ## Multi-core offline reconstruction
 
 `--cores N` shards by host-pair across worker threads. On the 535k-packet
 fixed-state corpus (100 Call-IDs, 200 streams):
 
-| cores | pkts/s |
-|------:|-------:|
-| 1 | 1.28M |
-| 2 | 2.17M |
-| 4 | **2.31M** |
-| 8 | 2.16M |
+Both columns come from release artifacts, checksum-verified, over two
+interleaved rounds on the same idle host (median-of-5 per round):
 
-**Single core gained 27% in 0.5.104, and the multi-core figures did not move —
-both facts come from the same profile.** The default (single-core) path used to
-push every packet through the capture channel one send at a time, and on a
-single-core reconstruction that machinery — the slot claim, the storage send,
-the receiver wake-up — measured as ~35% of wall time, against ~9% for the SIP
-and RTP analysis itself. 0.5.104 batches a file read at 128 packets per channel
-item, and single core went from 1.01M to 1.28M on the released artifacts,
-same session, interleaved. The `--cores` path was already batched, which is
-why its numbers stayed put: its ceiling is the serial reader stage (read +
-buffer copy + host-pair peek), not the hand-off. That ceiling is why the curve
-flattens past two cores and sags past four — the honest sizing advice this
-table gives is that `--cores 4` is the most this workload can use, and more
-workers than that measure slightly worse, not better.
+| cores | 0.5.107 | 0.5.108 |      |
+|------:|--------:|--------:|-----:|
+| 1 | 1.29M | 1.29M | — |
+| 2 | 2.18M | 2.19M | — |
+| 4 | 2.34M | **3.25M** | **+39%** |
+| 8 | 2.17M | **3.30M** | **+53%** |
+
+**0.5.108 raised the multi-core ceiling by removing a read, and the sizing
+advice this page gave for four releases is now wrong.** The `--cores` path is
+one serial thread reading, copying and host-pair-peeking every packet while N
+workers wait, and reading through libpcap charged that thread a `read` into
+libpcap's buffer *and* a copy out of it. 0.5.108 maps the capture file instead,
+so it parses records in place out of page cache and copies only the frame.
+
+That moves where the curve stops. It used to flatten past two cores and sag
+past four, so the honest advice was that `--cores 4` was the most this workload
+could use. On 0.5.108 eight cores is marginally the best figure on the table
+rather than a regression, and **`--cores 4` is the point where most of the gain
+has arrived, not a ceiling that penalises you for passing it.**
+
+One and two cores do not move, which follows from the design rather than
+disappointing it: `--cores 1` and a run with no `--cores` use the
+single-threaded reader, which still goes through libpcap. Only `--cores 2` and
+above reach the mapped reader, and nothing needs unblocking until enough
+workers pile up behind it. The single-core row is therefore a control here — two
+artifacts doing the identical thing — and its ~1% spread is this harness's
+noise floor, against which the four- and eight-core gaps are 39 and 53 times
+larger.
+
+The obvious version of that change is a regression, which is worth stating on a
+page about honest measurement: handing each frame out as a refcounted slice of
+the mapping, copying nothing at all, measures 1.88M at four cores — well under
+libpcap. One mapping is one atomic refcount, and 535k frames cloned by the
+reader and dropped by the workers drive ~1M atomic updates through a single
+cache line. [`docs/internals/zero-copy-payloads.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/zero-copy-payloads.md) records the failed
+hypotheses in full.
 
 ## Is the packet path still what it was at 0.5.47?
 
@@ -220,19 +239,25 @@ volume. Measured at `--cores 4`:
 
 | calls | pkts | dialogs | streams | pkts/s | peak RSS |
 |------:|-----:|--------:|--------:|-------:|---------:|
-| 500 | 53.5k | 500 | 1,000 | 1.69M | 23.5 MiB |
-| 2,000 | 214k | 2,000 | 4,000 | 2.01M | 62.8 MiB |
-| 8,000 | 856k | 8,000 | 16,000 | 2.14M | 219.5 MiB |
-| 20,000 | 2.14M | 20,000 | 40,000 | 2.14M | 484.6 MiB |
+| 500 | 53.5k | 500 | 1,000 | 2.17M | 27.9 MiB |
+| 2,000 | 214k | 2,000 | 4,000 | 2.80M | 70.4 MiB |
+| 8,000 | 856k | 8,000 | 16,000 | 3.05M | 220.9 MiB |
+| 20,000 | 2.14M | 20,000 | 40,000 | 3.09M | 498.1 MiB |
 
 **Honest read:** throughput is flat from 8k calls up — reconstruction cost is
 per-packet, not per-dialog, and 40k concurrent streams do not degrade it. The
 smaller corpora post lower figures because startup is inside the clock and a
-53.5k-packet read is over in ~30 ms. Memory grows close to linearly with
-tracked state, about 24 KiB per call (dialog + two RTP streams + jitter/loss
-accounting), reaching 485 MiB at 20k calls. That linearity is the useful
+53.5k-packet read is over in ~25 ms. Memory grows close to linearly with
+tracked state, about 25 KiB per call (dialog + two RTP streams + jitter/loss
+accounting), reaching 498 MiB at 20k calls. That linearity is the useful
 property: it is predictable, so capacity planning is arithmetic rather than
 guesswork.
+
+The mapped reader shows up here too — every row posts a higher figure than the
+0.5.104 table this page carried before, 2.14M to 3.09M at 20k calls — while
+peak memory moved by under 3%. The mapping does not stay resident: the read
+hands pages back to the kernel as it passes them, so a capture larger than RAM
+costs the same working set as a small one.
 
 ## Reproduce
 

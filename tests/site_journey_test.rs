@@ -1453,7 +1453,7 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
     // One tile now, where there were two. Written as a binding rather than a
     // one-element loop because clippy::single_element_loop rejects the latter;
     // if a second throughput tile ever returns, restore the loop.
-    let (count, suffix) = ("2.31", "M pkts/s");
+    let (count, suffix) = ("3.25", "M pkts/s");
     let tile = format!(r#"data-count="{count}" data-suffix="{suffix}""#);
     assert!(
         idx.contains(&tile),
@@ -3719,7 +3719,7 @@ fn packaging_scripts_reference_existing_paths() {
             // skipped `contrib/sipnab.service` and missed the bug this test
             // exists to catch. Add an entry only for something a workflow
             // creates, never for something it reads.
-            // `sipnab_bg.wasm` joined this list in 0.5.106, when it stopped
+            // `sipnab_bg.wasm` joined this list in 0.5.107, when it stopped
             // being committed. pages.yml CREATES it — `wasm-pack build
             // --out-dir website/static/wasm` — so it satisfies the rule above
             // rather than bending it. It was removed from the repository

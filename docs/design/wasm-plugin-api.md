@@ -11,7 +11,7 @@ step 5 included — the start-to-finish guide below is that step.
 Still supersedes the one-line backlog entry "WASM plugin API (design decision D7
 rules out Lua; WASM is the path if plugins are ever needed)". **Not done yet**,
 at the foot of the page, now holds on one count rather than two: the published
-page landed in 0.5.106, and only `--json-dialogs` carries plugin findings.
+page landed in 0.5.107, and only `--json-dialogs` carries plugin findings.
 
 **Check:** `grep '^plugins = ' Cargo.toml` prints `plugins = ["native", "dep:wasmi"]`.
 The feature exists, so the host ships.
@@ -330,7 +330,7 @@ letting the word "sandboxed" imply a guarantee it does not make.
 
 ## Not done yet
 
-- ~~**A published docs page.**~~ Landed in 0.5.106:
+- ~~**A published docs page.**~~ Landed in 0.5.107:
   [`docs/plugins.md`](https://github.com/NormB/sipnab/blob/main/docs/plugins.md) and its site mirror. The registration burden
   this bullet predicted was real and was exactly the shape described — wiki
   builder, site-internals map, docs index, both sidebar templates and the

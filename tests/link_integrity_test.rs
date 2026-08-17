@@ -584,7 +584,7 @@ fn wiki_intra_docs_links_resolve() {
     // restating in a table cell which files the flag will and will not remove.
     // 385: `docs/mcp.md` +1. The tool table's new `media_diagnostics` row
     // links into the section documenting it, exactly as every other row does.
-    // 406 -> 412: the plugins and authentication pages 0.5.106 published.
+    // 406 -> 412: the plugins and authentication pages 0.5.107 published.
     // 412 -> 426: the TLS capture chooser, which links every method it lists.
     const EXPECTED_WIKI_LINKS: usize = 426;
     // 385: `docs/mos-and-codecs.md` +1. The new "Declaring an impairment factor
@@ -1040,7 +1040,7 @@ fn every_docs_page_is_linked_from_the_index() {
     // count. Adding a docs page fails this once, deliberately: bump the number.
     // Raised 34 -> 35 by `tuning-capture.md`, 37 -> 38 by
     // `internals/uprobe-capture.md`, 39 -> 40 by `plugins.md` — the published
-    // WASM plugins page 0.5.106 added.
+    // WASM plugins page 0.5.107 added.
     assert_eq!(
         checked, 41,
         "docs-page walk saw {checked} pages, expected 41. More is fine — bump \
