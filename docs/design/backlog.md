@@ -398,7 +398,7 @@ Tiers:
 - [x] src/sip/dialog.rs (update_register_state) — [missed-edge-case] 401/407 challenge marks REGISTER dialog Failed; challenge-only capture reads as failure rather than auth-pending. **Done:** 401/407 leave the state unchanged (auth pending); only a genuine 4xx-6xx marks Failed, a later 2xx marks Registered.
 - [x] src/sip/timing.rs:135 — [edge-case] `answered_at` matches any 200-to-INVITE without CSeq check; re-INVITE 200 can be recorded as answer time. **Done:** `DialogTiming` records the initial INVITE's CSeq; the 100/180/200 INVITE-response milestones are pinned to it (fallback to first-match when the INVITE wasn't captured).
 - [x] src/sip/message.rs:117 — [edge-case] `cseq()` keeps trailing garbage in method (`"INVITE extra"`), defeating comparisons in timing.rs; untested. **Done:** `cseq()` returns only the single method token via `split_whitespace`.
-- [ ] src/sip/message.rs:294 — [adversarial] `extract_uri_user` finds `sip:` anywhere; crafted display name parses from wrong position. **Done for `extract_uri_user`, and this line claimed the defect class was closed until 2026-08-06.** That function is fixed ([`src/sip/message.rs:276`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L276)): the user is read from inside the `<...>` name-addr (or the bare addr-spec), never a quoted display name; a non-sip URI (e.g. `tel:`) yields None. Its sibling **thirty lines below it has the identical bug**: `extract_uri_host_port` ([`src/sip/message.rs:375`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L375)) is `find("<sip:").or_else(|| find("<sips:")).or_else(|| find("sip:")).or_else(|| find("sips:"))`, and the last two arms are the anywhere-scan — a `From: "sip:evil@attacker.test" <sip:alice@real.test>` with no name-addr on the fallback path resolves the host from the display name. Same file, same header values, same crafted input; the fix stopped at the first function.
+- [x] src/sip/message.rs:294 — [adversarial] `extract_uri_user` finds `sip:` anywhere; crafted display name parses from wrong position. **Done for `extract_uri_user`, and this line claimed the defect class was closed until 2026-08-06.** That function is fixed ([`src/sip/message.rs:276`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L276)): the user is read from inside the `<...>` name-addr (or the bare addr-spec), never a quoted display name; a non-sip URI (e.g. `tel:`) yields None. Its sibling **thirty lines below it has the identical bug**: `extract_uri_host_port` ([`src/sip/message.rs:375`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L375)) is `find("<sip:").or_else(|| find("<sips:")).or_else(|| find("sip:")).or_else(|| find("sips:"))`, and the last two arms are the anywhere-scan — a `From: "sip:evil@attacker.test" <sip:alice@real.test>` with no name-addr on the fallback path resolves the host from the display name. Same file, same header values, same crafted input; the fix stopped at the first function. **Done, and verified 2026-08-17 rather than assumed.** Both functions now locate the URI through one `addr_spec` helper, whose doc records why a second scanner was the bug: *"the user side was hardened against a decoy and the host side was not, thirty lines below it. One locator is the fix; a second scanner was the bug."* Four tests drive the crafted inputs this entry names — a bracketed decoy, a bare scheme, a `\"` quoted-pair, and an unterminated display name — and assert the user AND the host on each. Mutation-checked: replacing `skip_quoted_display_name` with the raw header kills three of them, so they are guards rather than restatements.
 - [x] src/sip/siprec.rs:66 — [adversarial] `split_multipart` splits on `--boundary` anywhere, not line-anchored per [RFC 2046](https://www.rfc-editor.org/rfc/rfc2046). **Done:** the split is a manual scan that only accepts `--boundary` at the start of a line (body start or preceded by `\n`, covering CRLF and the parser's existing bare-LF tolerance); mid-line occurrences inside part content are literal text. Preamble, missing-terminator, and `--boundary--` handling unchanged.
 - [x] src/sip/sdp_timeline.rs:184 — [bug-risk] repeated T.38 re-INVITEs re-emit T38Switch every other exchange (suppression checks only previous event). **Done:** `SdpExchange` now records `is_t38` and suppression compares the previous exchange's media *state* (`is_t38 && !prev.is_t38`), matching how hold/resume compare `prev.mode` — one T38Switch per genuine audio→T.38 transition, re-emitted only after a real return to audio.
 - [x] src/sip/dsl.rs:1069 — [correctness] `compare_num` absolute-epsilon equality is effectively exact for values ≥2; `duration == 5.0` ~never matches. **Done:** `==`/`!=` use `NUM_EQ_TOLERANCE = 5e-4` — half the finest domain step, since every numeric field is integral (ports, counts) or millisecond-derived (duration/pdd/setup, jitter, MOS/loss to ≥0.1) — absorbing float noise while keeping adjacent domain values (5.001 vs 5.0) distinct.
@@ -425,7 +425,7 @@ Tiers:
 
 ## P2 — robustness, observability & efficiency
 
-- [ ] **DH1 — The TUI is the one diagnosis surface that hints never reach.**
+- [x] **DH1 — The TUI is the one diagnosis surface that hints never reach.**
   Media hints are produced once, in [`src/rtp/diagnosis.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/diagnosis.rs), and consumed by four
   renderers: the text call report, `--json`, the MCP tools, and the REST API,
   which recomputes the diagnosis through the same functions. Counted
@@ -451,6 +451,24 @@ Tiers:
   compared against the SDP-advertised receive port). That change lands in the
   producer and so improves the other four surfaces for free; this entry exists
   so the fifth is not discovered missing months later.
+
+  **Done 2026-08-17, and not the way this entry proposed.** `media_origin` is
+  split out of `diagnose_media`, which now reaches its own `nat_mismatch`
+  verdict *through* it, and the stream list calls the same function per row —
+  so the column and the hint cannot disagree, asserted by a test that drives
+  both against one dialog rather than checking each looks right alone. Address
+  only, never port, matching the diagnosis.
+
+  This entry proposed the advertised-versus-actual PORT pair as the column.
+  That was tried first and reverted: the table already filled its width
+  exactly, so 22 columns of advertised endpoint truncated the address columns —
+  `10.0.0.2:30000` rendered as `10.0.0.2:3000`, a wrong port that reads as a
+  real one. Corrupting the addresses to make room for evidence *about* the
+  addresses is a bad trade. The list carries a five-column verdict
+  (`ok` / `NAT` / `-`, taken from the Dialog column's width) and the endpoint
+  stays in the stream detail view, which has room to print it whole. `-` is
+  deliberately not `ok`: a dialog that advertised nothing is unknowable, not
+  clean.
 
 
 <!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
@@ -500,13 +518,20 @@ Tiers:
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
-  needed its own message naming `export_audio` rather than `-O`. Still open:
-  named capture profiles (`--profile signaling` → small snaplen, `--profile
-  full` → 65535) rather than moving the bare default, and surfacing `caplen`
-  vs `origlen` truncation counts in the batch summary — both warnings above
-  fire per-run, not per-packet, so an operator still cannot see *how much* of
-  a given capture was truncated.
-- [ ] **CT4 — No `PACKET_FANOUT`, so live capture cannot use more than one core.**
+  needed its own message naming `export_audio` rather than `-O`. **The truncation
+  count landed 2026-08-17.** `snapped_frames` counts frames whose `caplen` is
+  below their `origlen`, and the capture-quality summary carries it beside
+  kernel drops, interface drops, bad timestamps and undecodable frames — so an
+  operator can now see *how much* of a capture arrived cut short, which the
+  per-run warnings could not say. It is deliberately its own counter and not
+  `TRUNCATED_FRAMES` ("shorter than the header it claims", i.e. malformed): a
+  snapped frame is neither malformed nor lost, it usually decodes perfectly,
+  and merging the two would report a correct capture configuration as
+  corruption. Counted in `Packet::from_bytes`, the one constructor every reader
+  passes through, so a new reader cannot forget it. Still open: named capture
+  profiles (`--profile signaling` → small snaplen, `--profile full` → 65535)
+  rather than moving the bare default.
+- [x] **CT4 — No `PACKET_FANOUT`, so live capture cannot use more than one core.**
   `grep -rn 'FANOUT\|fanout' src/` matches nothing. `--cores N` is offline-only
   (`RunMode::CoresFile` requires `-I`, [`src/app/bootstrap.rs:71`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L71)), so on a busy
   server the live path is one `capture-<device>` thread feeding one processing
@@ -529,6 +554,26 @@ Tiers:
   SDP-negotiated ports) — different 5-tuples, different workers; see CT11 for
   the cheap fix. Requires no new capability, no new toolchain, and works in the
   existing Docker image. Linux-only; must degrade cleanly elsewhere.
+
+  **Done — and this entry's opening claim went stale before the work did.**
+  *"`grep -rn 'FANOUT\|fanout' src/` matches nothing"* has been false since
+  [`src/capture/fanout.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs) landed: the module, the `plan_fanout` degradation
+  path and seven tests were all in the tree, wired into `live.rs`, while this
+  line still said the feature did not exist.
+
+  What was genuinely missing was a caller. `capture_live_fanout` had no
+  reference outside its own module, so nothing an operator could type reached
+  it — built, tested, and unreachable, which is indistinguishable from absent
+  from the outside.
+
+  Closed 2026-08-17 by wiring it to `--cores` on a live device, per the
+  decision recorded in [`docs/design/live-fanout.md`](https://github.com/NormB/sipnab/blob/main/docs/design/live-fanout.md), with all three of that
+  document's obligations met in the same commit: the help text states both
+  meanings and that processing stays on one thread either way; the live branch
+  of `cores_ignored_warning` is gone while the `--multi-device` branch stays,
+  with its complement test rewritten rather than deleted; and the success log
+  says the run bought capture width, not cores of analysis. `--cores 1` and
+  every non-Linux host still capture on one socket, with the reason logged.
 - [ ] **CT11 — Call-aware fanout steering with CLASSIC BPF (no eBPF toolchain).**
   Follows CT4 and closes its one remaining gap. Symmetric flow hashing keeps
   each RTP stream on one worker but cannot put a call's SIP signaling on the
@@ -562,11 +607,27 @@ Tiers:
   re-scoped and tracked as CT7b in `capture-tuning-tasks.md` rather than left
   implied here.
 - [ ] **PR1 — `--cores` plateaus at 4 because one thread reads the whole `-I`
-  set serially.** Measured, [`docs/benchmarks.md:57-62`](https://github.com/NormB/sipnab/blob/main/docs/benchmarks.md#L57-L62): 1 core 1.07M pkts/s,
-  2 cores 2.21M, 4 cores 2.32M, 8 cores 2.13M — throughput *declines* past four.
-  The plateau sat at two cores until 0.5.89 moved the frame-provenance digest
-  off the reader; that raised the ceiling without removing it, so this item's
-  premise survives its own evidence being restated.
+  set serially.** **Re-measured 2026-08-17 on 0.5.108, and this entry's headline
+  premise no longer holds: throughput no longer declines past four.** On
+  released artifacts, interleaved against 0.5.107 as a control: 1 core 1.29M
+  pkts/s (unchanged — the single-threaded reader does not map), 2 cores 2.19M,
+  4 cores 3.25M, 8 cores 3.30M. Eight cores is now marginally the best figure
+  rather than a regression.
+
+  What changed is the reader, not the loop this entry is about: 0.5.108 maps
+  the capture file instead of streaming it through libpcap — `MappedPcap`
+  ([`src/capture/mapped.rs:76`](https://github.com/NormB/sipnab/blob/main/src/capture/mapped.rs#L76)) — removing a `read` and a copy from the
+  serial stage. The plateau sat at two cores until 0.5.89
+  moved the frame-provenance digest off the reader, and at four until 0.5.108
+  removed the read — each raised the ceiling without removing the stage.
+
+  So the item is **narrowed, not closed**: one thread still reads every file of
+  an `-I` set serially, and the remedy below (N reader threads, one per file,
+  sharding into the same worker pool) is untouched. What is gone is the claim
+  that more than four workers actively hurt; the argument now rests on the
+  serial stage remaining serial, not on a declining curve. The prior figures
+  (1.07M / 2.21M / 2.32M / 2.13M, from 0.5.91) are kept here as history and are
+  no longer what [`docs/benchmarks.md`](https://github.com/NormB/sipnab/blob/main/docs/benchmarks.md) publishes.
   The published cause is *"the single sequential stage that already sets this
   ceiling (read + buffer copy + host-pair peek)"*, and [`src/parallel.rs:758`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L758)
   confirms

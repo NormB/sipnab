@@ -68,8 +68,8 @@ wrong at once, and one of them is a test that pins the *complement*:
   saved file … parallel reconstruction is offline-only — it shards a capture
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
-- `cores_warning_is_the_exact_complement_of_the_parallel_path`
-  ([`bootstrap.rs:2993`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2993)), which asserts the warning
+- `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it`
+  ([`bootstrap.rs:3020`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3020)), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N
@@ -108,7 +108,7 @@ that is a log line and a help-text sentence, not a second noun.
 2. **`cores_ignored_warning` loses its live branch and keeps its
    `--multi-device` branch.** The `--multi-device` reason
    ([`bootstrap.rs:2993`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2993)) stays true; see §2.1.
-   `cores_warning_is_the_exact_complement_of_the_parallel_path` must be rewritten
+   `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it` must be rewritten
    in the same commit, not after — it is currently the gate that would catch the
    two conditions drifting, and a half-updated complement is worse than none.
 3. **The run says what it bought.** `capture_live_fanout` already logs
@@ -144,7 +144,7 @@ is what actually helps a burst. Not decidable from the code — it needs §5.
 
 ### 2.2 `--multi-device` composes badly and should stay refused
 
-`start_multi_capture` ([`native.rs:480`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L480)) already
+`start_multi_capture` ([`native.rs:499`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L499)) already
 spawns one capture thread per interface into one shared channel, with a
 coordinator thread and an aggregated readiness signal. That is the same topology
 `capture_live_fanout` builds — which is a good sign for the design and a problem

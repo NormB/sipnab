@@ -215,6 +215,20 @@ pub struct CaptureConfig {
     /// headless capture gives it up to get the deeper ring. Ignored by the file
     /// and HEP sources, which have no kernel ring.
     pub immediate_mode: bool,
+    /// How many `AF_PACKET` sockets to spread this device across via
+    /// `PACKET_FANOUT` (`--cores` on a live device).
+    ///
+    /// `1` is one socket and one drainer, which is what a live capture has
+    /// always been. Above 1, the kernel hash-distributes the interface across N
+    /// sockets, each with its own ring and its own drainer, which is what a
+    /// ring that overflows actually needs — a bigger `-B` buys a deeper ring
+    /// and still only one thread emptying it.
+    ///
+    /// Widens CAPTURE only: every socket feeds the same channel and the same
+    /// processing loop, so the stores never see a shard. Linux-only, and
+    /// degrades to one socket with a warning naming the reason elsewhere. See
+    /// [`crate::capture::fanout`].
+    pub fanout_sockets: usize,
 }
 
 /// Default kernel capture buffer, in MiB — the ring libpcap fills and sipnab
@@ -261,6 +275,8 @@ impl Default for CaptureConfig {
             buffer_budget_mb: 64,
             promisc: true,
             immediate_mode: true,
+            // One socket: what a live capture has always been.
+            fanout_sockets: 1,
         }
     }
 }
@@ -371,7 +387,10 @@ pub fn start_capture(
             let device = device.clone();
             thread::Builder::new()
                 .name(format!("capture-{device}"))
-                .spawn(move || live::capture_live(&device, &config, tx, ready_tx))
+                .spawn(move || {
+                    let sockets = config.fanout_sockets;
+                    live::capture_live_fanout(&device, &config, tx, ready_tx, sockets)
+                })
                 .context("Failed to spawn live capture thread")?
         }
         CaptureSource::File { paths } => {
@@ -544,7 +563,10 @@ fn spawn_live_device(
     let dev_ctx = device.clone(); // for error context
     thread::Builder::new()
         .name(format!("capture-{device}"))
-        .spawn(move || live::capture_live(&device, &config, tx, Some(ready)))
+        .spawn(move || {
+            let sockets = config.fanout_sockets;
+            live::capture_live_fanout(&device, &config, tx, Some(ready), sockets)
+        })
         .with_context(|| format!("Failed to spawn capture thread for '{dev_ctx}'"))
 }
 
@@ -934,5 +956,33 @@ mod tests {
                 .expect("coordinator finishes after siblings stop")
                 .expect("clean shutdown is Ok");
         }
+    }
+}
+
+#[cfg(test)]
+mod fanout_wiring_tests {
+    use super::*;
+
+    /// `--cores` must actually REACH the live capture, not just exist.
+    ///
+    /// `PACKET_FANOUT` was implemented, tested and wired into `live.rs` — and
+    /// `capture_live_fanout` had no caller outside its own module, so no
+    /// operator could turn it on. A feature reachable only from its own tests
+    /// is indistinguishable from an absent one, which is why this asserts the
+    /// value survives the config the spawn sites read rather than asserting
+    /// that the module compiles.
+    #[test]
+    fn the_socket_count_reaches_the_capture_config() {
+        let one = CaptureConfig::default();
+        assert_eq!(
+            one.fanout_sockets, 1,
+            "a default capture is one socket, exactly as it always was"
+        );
+
+        let wide = CaptureConfig {
+            fanout_sockets: 4,
+            ..CaptureConfig::default()
+        };
+        assert_eq!(wide.fanout_sockets, 4);
     }
 }

@@ -1927,6 +1927,12 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
         replay: cli.capture_args.replay,
         buffer_budget_mb,
         promisc,
+        // `--cores` on a LIVE device asks for N capture sockets rather than N
+        // reader threads: the offline meaning is a parallel file reader, and a
+        // live capture has no file to shard. `capture_live_fanout` reduces this
+        // to one socket wherever fanout is unavailable, so passing it
+        // unconditionally is safe and the fallback explains itself.
+        fanout_sockets: cli.limits_args.cores.max(1),
         // Finalised by `plan` once the run mode is known — see
         // `immediate_mode_for`. The interactive value is the right thing to
         // start from: it is what every capture asked for before the choice
@@ -2294,20 +2300,27 @@ fn cores_ignored_warning(cli: &Cli) -> Option<String> {
     if cli.limits_args.cores <= 1 {
         return None;
     }
-    let reason = if cli.capture_args.multi_device {
-        "--multi-device opens one capture per interface"
-    } else if !cli.has_input() {
-        "this run captures live rather than reading a saved file"
-    } else {
-        // `--cores N -I file` without --multi-device: honored, say nothing.
+    // A LIVE single-device run no longer ignores --cores: it asks the kernel to
+    // spread the interface across N capture sockets (PACKET_FANOUT). That is a
+    // different meaning from the offline one — N sockets, not N reader threads —
+    // and `capture_live_fanout` reduces it to one socket, with a warning naming
+    // the reason, wherever fanout is unavailable. So this stays silent and lets
+    // that path speak, rather than announcing "ignored" about a flag that now
+    // does something.
+    if !cli.capture_args.multi_device {
+        // Either a live capture (fanned out) or `--cores N -I file` (the
+        // offline reader). Both honor it.
         return None;
-    };
+    }
     Some(format!(
-        "--cores {n} is ignored here: {reason}, and parallel reconstruction is \
-         offline-only — it shards a capture FILE by host pair, which needs the \
-         whole capture up front. This run continues on ONE core; its output is \
-         complete, just slower. Point --cores at a saved capture \
-         (-I/--input <file>, without --multi-device) to actually use {n} of them.",
+        "--cores {n} is ignored here: --multi-device opens one capture per \
+         interface, which already spreads the load across interfaces, and \
+         parallel reconstruction is offline-only — it shards a capture FILE by \
+         host pair, which needs the whole capture up front. This run continues \
+         as one capture per device. Point --cores at a saved capture \
+         (-I/--input <file>, without --multi-device) to use {n} of them for \
+         reconstruction, or drop --multi-device to fan one interface out across \
+         {n} capture sockets.",
         n = cli.limits_args.cores,
     ))
 }
@@ -2947,30 +2960,37 @@ mod tests {
         assert!(cores_ignored_warning(&cli).is_none());
     }
 
-    /// The defect: `--cores 8 -d eth0` used to run single-threaded in silence.
-    /// The warning must name the count that was discarded and the flag that
-    /// would honor it.
+    /// The original defect was `--cores 8 -d eth0` running single-threaded IN
+    /// SILENCE, and the fix was this warning. The flag now does something on a
+    /// live device — it asks the kernel to spread the interface across N
+    /// capture sockets — so the warning would itself be the wrong answer.
+    ///
+    /// The defect it guarded is still guarded, just not here: when fanout is
+    /// unavailable (not Linux, or the kernel refuses the probe),
+    /// `capture_live_fanout` warns with the reason and captures on one socket.
+    /// That check knows the platform and the kernel's answer, which CLI
+    /// validation does not, so it can say "one socket, because X" where this
+    /// could only ever have said "ignored".
     #[test]
-    fn cores_warning_fires_on_a_live_device() {
+    fn cores_on_a_live_device_is_not_reported_as_ignored() {
         let mut cli = base_cli();
         cli.limits_args.cores = 8;
         cli.capture_args.device = Some("eth0".to_string());
-        let msg = cores_ignored_warning(&cli).expect("--cores on a live device must be reported");
-        assert!(msg.contains("--cores 8"), "names the request: {msg}");
-        assert!(msg.contains("-I"), "names the flag that works: {msg}");
-        assert!(
-            msg.contains("ONE core"),
-            "says what actually happens: {msg}"
+        assert_eq!(
+            cores_ignored_warning(&cli),
+            None,
+            "live --cores fans the interface out; calling it ignored is false"
         );
     }
 
-    /// No source at all is still a live run — the device is auto-detected —
-    /// so `--cores` is ignored there too and must say so.
+    /// No source at all is still a live run — the device is auto-detected — so
+    /// it fans out for the same reason a named device does, and is not
+    /// reported as ignored either.
     #[test]
-    fn cores_warning_fires_on_auto_detected_capture() {
+    fn cores_on_auto_detected_capture_is_not_reported_as_ignored() {
         let mut cli = base_cli();
         cli.limits_args.cores = 4;
-        assert!(cores_ignored_warning(&cli).is_some());
+        assert_eq!(cores_ignored_warning(&cli), None);
     }
 
     /// `--multi-device` bypasses the parallel reader even with `-I` present,
@@ -2986,11 +3006,18 @@ mod tests {
         assert!(msg.contains("--multi-device"), "got: {msg}");
     }
 
-    /// The warning fires exactly when the run mode is NOT `CoresFile`, for
-    /// every combination of the two inputs that decide it. Pinning the
-    /// complement is what stops the two conditions drifting apart later.
+    /// The warning fires exactly when `--multi-device` is set, for every
+    /// combination of the two inputs that decide it. Pinning the complement is
+    /// what stops the two conditions drifting apart later.
+    ///
+    /// The complement moved when live capture learned to fan out. It used to be
+    /// "everything except `--cores N -I file`", because that was the only mode
+    /// that honored the flag. Now a live single-device run honors it too (N
+    /// capture sockets rather than N reader threads), so the only mode left
+    /// that genuinely discards it is `--multi-device`, which already opens one
+    /// capture per interface.
     #[test]
-    fn cores_warning_is_the_exact_complement_of_the_parallel_path() {
+    fn cores_warning_is_the_exact_complement_of_the_paths_that_honor_it() {
         for (has_input, multi_device) in
             [(false, false), (false, true), (true, false), (true, true)]
         {
@@ -3002,13 +3029,12 @@ mod tests {
             } else {
                 cli.capture_args.device = Some("eth0".to_string());
             }
-            let takes_parallel_path =
-                cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device;
+            let honors_the_flag = !cli.capture_args.multi_device;
             assert_eq!(
                 cores_ignored_warning(&cli).is_none(),
-                takes_parallel_path,
+                honors_the_flag,
                 "input={has_input} multi_device={multi_device}: the warning must \
-                 cover every case the parallel path does not"
+                 cover every case that does not honor --cores, and no other"
             );
         }
     }
@@ -4574,4 +4600,41 @@ mod tests {
 
     /// A real capture, for the `-I` paths that resolve their input.
     const FIXTURE_FILE: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
+}
+
+#[cfg(test)]
+mod cores_live_meaning_tests {
+    use super::*;
+
+    /// A live `--cores` run must NOT be told the flag is ignored.
+    ///
+    /// It was true until the fanout wiring landed: live capture was one socket
+    /// and one drainer, so the warning was correct and useful. It is now false
+    /// — `--cores N` on a live device asks the kernel for N capture sockets —
+    /// and a warning that says a working flag does nothing is worse than none,
+    /// because the operator turns it off.
+    #[test]
+    fn a_live_cores_run_is_not_told_the_flag_is_ignored() {
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.limits_args.cores = 4;
+        assert_eq!(
+            cores_ignored_warning(&cli),
+            None,
+            "live --cores now fans the interface out; saying it is ignored is wrong"
+        );
+    }
+
+    /// `--multi-device` still ignores it, and still says so: that path already
+    /// opens one capture per interface, so there is nothing for fanout to add.
+    #[test]
+    fn multi_device_still_reports_cores_as_ignored() {
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.limits_args.cores = 4;
+        cli.capture_args.multi_device = true;
+        let msg = cores_ignored_warning(&cli).expect("multi-device still warns");
+        assert!(
+            msg.contains("--multi-device"),
+            "warning names the reason: {msg}"
+        );
+    }
 }

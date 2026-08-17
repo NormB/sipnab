@@ -2498,12 +2498,21 @@ pub struct LimitsArgs {
     )]
     pub max_gunzip_bytes: Option<u64>,
 
-    /// CPU cores for OFFLINE pcap reconstruction (`-I`). 1 = the standard
-    /// single-threaded path. >1 shards packets by host pair across N worker
-    /// threads for multi-core throughput on large captures; covers dialog +
-    /// RTP-stream reconstruction and `--report`/`--json`. Advanced features
-    /// (live capture, per-message output ordering, security detectors, SRTP
-    /// decrypt) use the single-threaded path regardless.
+    /// CPU cores. The number means a different resource on each source, and
+    /// both are stated because they are not interchangeable.
+    ///
+    /// With `-I <file>`: N parallel OFFLINE reconstruction workers, sharding
+    /// packets by host pair, each with private dialog and RTP-stream stores.
+    /// Covers reconstruction and `--report`/`--json`. Per-message output
+    /// ordering, security detectors and SRTP decrypt use the single-threaded
+    /// path regardless.
+    ///
+    /// With a live device: N capture SOCKETS, which the kernel hash-distributes
+    /// the interface across (`PACKET_FANOUT`, Linux only; one socket elsewhere,
+    /// with the reason logged). This widens capture only — PROCESSING STAYS ON
+    /// ONE THREAD either way, so it buys ring capacity and drainers against a
+    /// dropping interface, not N cores of analysis. Note `-B` is per socket, so
+    /// N sockets ask the kernel for N rings of that size.
     #[arg(
         help_heading = "Resource limits",
         long,

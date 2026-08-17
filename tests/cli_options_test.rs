@@ -1123,22 +1123,26 @@ fn hexdump_with_count_and_color_never() {
 //  --cores ON A SOURCE THAT CANNOT USE IT (G6)
 // ═══════════════════════════════════════════════════════════════════════
 
-/// `--cores N` with a live device runs single-threaded — parallel
-/// reconstruction shards a saved capture and has no streaming equivalent. That
-/// used to happen in silence: the operator asked for N cores, got one, and
-/// nothing in the run said so. The device name is deliberately bogus so the
-/// test needs no interface and no capture privileges; the warning is emitted
-/// while planning, before anything is opened.
+/// `--cores N` with a live device is NOT discarded any more: it asks the
+/// kernel to spread the interface across N capture sockets (`PACKET_FANOUT`),
+/// so the planner must not announce that it was ignored.
+///
+/// This test used to assert the opposite, and was right to: live capture was
+/// one socket and one drainer, and the operator asked for N cores, got one, and
+/// nothing said so. The warning was the fix for that silence. Now the flag does
+/// something, and the same warning would be the wrong answer — so the silence
+/// is guarded elsewhere instead: when fanout is genuinely unavailable (not
+/// Linux, or the kernel refuses the probe), `capture_live_fanout` says so with
+/// the reason, which is a judgement only the runtime can make.
+///
+/// The device name is deliberately bogus so the test needs no interface and no
+/// capture privileges; planning happens before anything is opened.
 #[test]
-fn cores_with_a_live_device_warns_that_it_is_ignored() {
+fn cores_with_a_live_device_is_not_announced_as_ignored() {
     let (_stdout, stderr, _code) = run(&["-N", "--cores", "8", "-d", "sipnab-no-such-dev0"]);
     assert!(
-        stderr.contains("--cores 8 is ignored"),
-        "a discarded --cores request must be reported, got: {stderr}"
-    );
-    assert!(
-        stderr.contains("-I"),
-        "the warning must name the flag that would honor it, got: {stderr}"
+        !stderr.contains("--cores 8 is ignored"),
+        "live --cores fans the interface out; calling it ignored is false: {stderr}"
     );
 }
 

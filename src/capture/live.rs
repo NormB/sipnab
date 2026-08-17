@@ -266,7 +266,9 @@ pub fn capture_live_fanout(
     let total_ring_mb = u64::from(config.buffer_mb) * sockets as u64;
     tracing::info!(
         "'{device}': capturing on {sockets} sockets, fanout group {group}; \
-         -B {} MiB is per socket, so ~{total_ring_mb} MiB of ring in total",
+         -B {} MiB is per socket, so ~{total_ring_mb} MiB of ring in total. \
+         This widens CAPTURE only — processing stays on one thread, so this is \
+         not {sockets} cores of analysis",
         config.buffer_mb,
     );
     let mut handles = Vec::with_capacity(sockets);
