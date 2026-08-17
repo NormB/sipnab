@@ -24,10 +24,10 @@ streams.
 an idle host.** Comparable to the 0.5.91 figures this page carried before:
 the corpus generator still reproduces the same composition
 (535,000 packets, 35,000 SIP, 500,000 RTP, 100 Call-IDs, 200 streams), and
-the released 0.5.103 was measured on the same host in the same session as a
+the same session measured the released 0.5.103 on the same host as a
 control — its four-core figure matched 0.5.91's published table within noise,
 and its single-core figure (1.01M against 0.5.91's published 1.07M) carries
-the small diffuse erosion the 0.5.104 change was measured against. Neither
+the small diffuse erosion that formed the 0.5.104 change's baseline. Neither
 set is comparable to the pre-0.5.47 figures, which came from an unpublished
 corpus nobody can rebuild.
 
@@ -173,7 +173,7 @@ checksum-verified, same idle host, same session:
 | 8 | 2.13M | 2.16M | +1% |
 
 The single-core gain is 0.5.104's batched file read (the channel hand-off
-paid per packet on the default path; see the multi-core section above). The
+paid per packet on the default path — see the multi-core section above). The
 0.5.103 single-core figure also records honestly what happened between 0.5.91
 and 0.5.103: a ~4%-of-figure erosion, diffuse across two hundred commits of
 added analysis, that a profiler could not pin to any single function — found,

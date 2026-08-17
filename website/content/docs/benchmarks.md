@@ -89,7 +89,7 @@ is the most this workload can use, and more workers than that measure
 slightly worse, not better.
 
 Before v0.4.16 a per-packet cross-core hand-off collapsed this to 0.84M @ 4
-cores and 0.50M @ 8. Batching the hand-off removed that one; 0.5.104 extends
+cores and 0.50M @ 8. Batching the hand-off removed that one, and 0.5.104 extends
 the same cure to the single-core path.
 
 ## Is the packet path still what it was at 0.5.47?
@@ -147,8 +147,8 @@ host is one self-hosted runner that also serves CI, so two jobs on it would
 measure their own contention. It does not catch slow erosion inside the floor —
 a deliberate trade.
 
-**Continued, 2026-08-17: 0.5.103 → 0.5.104.** The table above was measured on
-2026-08-10 and its columns say nothing about anything released after; this
+**Continued, 2026-08-17: 0.5.103 → 0.5.104.** The table above dates from
+2026-08-10 and its columns say nothing about anything released after. This
 continuation is a separate session with its own control, both released
 artifacts, checksum-verified, same idle host:
 
