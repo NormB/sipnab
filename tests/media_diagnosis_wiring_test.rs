@@ -640,7 +640,7 @@ fn unanswered_offer_is_not_no_media() {
 /// 2xx, and without it the two sides never agreed on a media path to fail.
 /// `no_media` claims a negotiated path carried nothing; here there is no
 /// negotiated path, and the real fault ("the 200 carried no SDP") belongs to
-/// the signalling diagnosis. Counting SDP bodies instead of requiring one in a
+/// the signaling diagnosis. Counting SDP bodies instead of requiring one in a
 /// request AND one in a response would report this as a media failure, and
 /// would also let an INVITE plus its own retransmission look like an
 /// offer/answer.
@@ -689,7 +689,7 @@ fn call_answered_without_an_sdp_answer_is_not_no_media() {
 
 /// On a capture that carried no RTP at all, `no_media` stays silent.
 ///
-/// A signalling-only capture — a proxy tap, a HEP feed, `--no-rtp` — cannot
+/// A signaling-only capture — a proxy tap, a HEP feed, `--no-rtp` — cannot
 /// answer a question about RTP. Without this guard the flag reports the
 /// capture's vantage point rather than the call, and selects every answered
 /// call in the file.

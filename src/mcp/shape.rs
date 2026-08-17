@@ -185,7 +185,7 @@ pub const DIALOG_VERBATIM_FIELDS: &[&str] = &[
 ///
 /// The MCP tools call this instead of `DialogSummary::from`, which stays
 /// unfenced for the CLI and REST paths — their reader is an operator or a
-/// script, and a marker pair there is noise rather than defence.
+/// script, and a marker pair there is noise rather than defense.
 pub fn fenced_dialog_summary(
     d: &crate::sip::dialog::SipDialog,
 ) -> crate::output::model::DialogSummary {
@@ -296,7 +296,7 @@ pub struct Cursor {
     /// subject to the identity tie-break.
     pub at: chrono::DateTime<chrono::Utc>,
     /// Identity of the last record on the previous page. `None` for a bare
-    /// timestamp, which keeps the pre-compound strictly-after behaviour for
+    /// timestamp, which keeps the pre-compound strictly-after behavior for
     /// clients that still send one.
     pub id: Option<String>,
 }
@@ -546,7 +546,7 @@ mod fence_tests {
         assert_eq!(v["status_code"].as_u64(), Some(200));
     }
 
-    /// The note names both markers, so an agent reading it can recognise them.
+    /// The note names both markers, so an agent reading it can recognize them.
     #[test]
     fn the_note_names_the_markers_it_describes() {
         let note = untrusted_note();

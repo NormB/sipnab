@@ -50,7 +50,7 @@ sipnab -N -I capture.pcap --problems --json
 > at the end of the run:
 >
 > ```text
-> NOT ANALYSED: 1 further SIP message(s) were seen on ports outside --portrange
+> NOT ANALYZED: 1 further SIP message(s) were seen on ports outside --portrange
 > and are in none of the totals above. Busiest: 8090 (1).
 > ```
 >
@@ -159,7 +159,7 @@ sipnab -N -I capture.pcap --call-report 'abc123@host' --no-cli-print
 ```
 
 ```text
-Signalling Issues:
+Signaling Issues:
   - Final failure: 408 Request Timeout
     evidence: #2 408 Request Timeout
   - ICMP port unreachable: 192.0.2.10:5060 unreachable (2 times), reported by 198.51.100.1
@@ -404,7 +404,7 @@ The `--nat-issues` alias is the same selection without writing the filter out:
 sipnab -N -I capture.pcap --nat-issues
 ```
 
-**What to look for:** `nat_mismatch == true` means RTP for the call reached the capture point from an address that no SDP in the dialog advertised. The far end therefore sends its media to the address the SDP named, which nothing answers on -- so the return path fails even though signalling completed. sipnab compares addresses only, not ports, because NAT and RTP proxies rewrite the port on healthy calls too.
+**What to look for:** `nat_mismatch == true` means RTP for the call reached the capture point from an address that no SDP in the dialog advertised. The far end therefore sends its media to the address the SDP named, which nothing answers on -- so the return path fails even though signaling completed. sipnab compares addresses only, not ports, because NAT and RTP proxies rewrite the port on healthy calls too.
 
 **Next steps:**
 
@@ -441,7 +441,7 @@ sipnab -N -I capture.pcap --filter "ua =~ 'friendly-scanner|sipcli|sipvicious'"
      | grep -oE 'src=[^ ]+' | sort | uniq -c | sort -rn
    ```
 
-   Put every address you recognise into the jail's `ignoreip` and raise `maxretry` until the list holds only what you meant. A jail that bans your carrier takes the phone system down more thoroughly than the scanner would have.
+   Put every address you recognize into the jail's `ignoreip` and raise `maxretry` until the list holds only what you meant. A jail that bans your carrier takes the phone system down more thoroughly than the scanner would have.
 2. Then point fail2ban at the log file. `--fail2ban` chooses the **format** and detects nothing on its own: `--kill-scanner` (or `--kill-ua`) produces `scanner_detected` lines, `--reg-flood` produces `reg_flood` lines, and without one of those the log stays empty while looking like an all-clear. sipnab warns on stderr when you ask for the format with no scanner detector armed.
 3. For broader detection, combine flags: `sudo sipnab -N -d eth0 --kill-scanner --fraud-detect --reg-flood --alert syslog`
 4. Use `--digest-leak` to check if any endpoints are leaking credentials in cleartext.

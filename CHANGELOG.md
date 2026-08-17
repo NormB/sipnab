@@ -10,6 +10,51 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.105] - 2026-08-17
+
+### Changed
+
+- **US English throughout: 2,904 replacements across 274 files.** The tree
+  mixed British and US spellings — `flavour` beside `flavor`, `signalling`,
+  `cancelled`, `behaviour`, `colour`, `analyse`, `honour`, `licence` and
+  thirty more — in prose, doc comments, test names and one released CLI flag.
+  A repository that spells the same word two ways teaches a reader that
+  neither spelling is meant, and a grep for either finds half the matches.
+
+  **Two surfaces were contracts rather than prose, and both keep working:**
+
+  - `--uprobe-flavour` is now `--uprobe-flavor`, with the old spelling kept as
+    an alias. A flag that shipped through 0.5.104 is a promise to every script
+    that names it. A test asserts the old spelling still reaches the same
+    field, and it fails if the alias is removed.
+  - The MCP `start_tls_capture` parameter `flavours` is now `flavors`, with
+    `#[serde(alias = "flavours")]`. A JSON field an agent was told to send is
+    wire format; wire format does not change because the prose around it did.
+
+  Identifiers containing an underscore (`parse_flavour`) were renamed
+  deliberately rather than by the sweep, which matches whole words only.
+
+- **The homepage capability rows link where they claim to.** Five were wrong
+  or imprecise, found by measuring each target for its own topic rather than
+  by reading them:
+
+  - **WASM plugins** pointed at the integrations page, which contains no
+    occurrence of "WASM", "WebAssembly" or "plugin" — it documents HEP, event
+    execution and fail2ban. It now points at the plugin API specification,
+    which is the only WASM documentation that exists. (That there is no
+    published plugins page is a real gap, recorded in that spec's own "Not
+    done yet".)
+  - **HEP v2/v3** pointed at the cookbook; the integrations page *is* the HEP
+    page. Those two rows were effectively swapped.
+  - **VoIP diagnosis**, **Security** and **TLS/SRTP decryption** landed on the
+    cookbook's top rather than on the recipe each names, so a click left the
+    reader to find it among eleven others.
+
+- **The Inspect, Diagnose and Export tiles are links.** They already had the
+  hover lift and shadow of something clickable and were not, which is a
+  promise the markup did not keep.
+
+
 ## [0.5.104] - 2026-08-17
 
 ### Changed
@@ -143,7 +188,7 @@ entry that carries them.
   machine -- rather than one an operator named. `--uprobe-list` reports what a
   capture would probe without installing anything, and exits non-zero when
   nothing is visible. `--uprobe-library`, `--uprobe-symbol` and
-  `--uprobe-flavour` narrow or override it; `--uprobe-backend` chooses between
+  `--uprobe-flavor` narrow or override it; `--uprobe-backend` chooses between
   `tracefs` and `bpf`.
 
   Libraries are identified by inode, not path: three distinct `libssl.so.3`
@@ -161,7 +206,7 @@ entry that carries them.
 
 - **Uprobe reads were swallowed by the TCP reassembler.** A uprobe read is a
   complete application write, not a segment of a byte stream, and carries no
-  sequence number -- so every message was held for neighbours that could never
+  sequence number -- so every message was held for neighbors that could never
   arrive. Both uprobe backends captured packets and produced **zero SIP
   messages**, which reads exactly like a quiet trunk.
 
@@ -199,7 +244,7 @@ entry that carries them.
   with no opt-in. Bytes lifted out of a process carry no socket, so a response
   would be aimed at a guess, and an opt-in there would be an invitation to send
   one. The old boolean could describe only two of the three cases, so making the
-  third safe would have meant labelling it HEP.
+  third safe would have meant labeling it HEP.
 
 ### Fixed
 
@@ -302,7 +347,7 @@ entry that carries them.
 - **The homepage leads with MCP.** The demo strip opened on seven terminal
   recordings, which argue "a better sngrep" — the local-tool position
   `docs/design/positioning.md` declines. Four MCP examples now come first,
-  labelled by what an agent asks rather than by the tool it calls: why a call
+  labeled by what an agent asks rather than by the tool it calls: why a call
   failed, which RFC a dialog breaks, the captured bytes behind an answer, and
   which other leg is the same call across a B2BUA.
 - **`demos/mcp-stdio.sh`** runs one MCP tool call over stdio against a capture
@@ -322,7 +367,7 @@ entry that carries them.
   fragments in flight and the TCP reassembler inherited it: a persistent
   SIP/TCP or SIP/TLS trunk to a carrier goes quiet for far longer on any
   ordinary night, and sweeping its half-read stream means the next segment
-  re-initialises mid-message — so the peer that sent a valid message is the one
+  re-initializes mid-message — so the peer that sent a valid message is the one
   sipnab reports as broken.
 - **`--hep-hmac-window` / `[security] hep_hmac_window_secs`** sets the
   acceptance window for a `--hep-auth-mode hmac` token's timestamp, which was a
@@ -360,7 +405,7 @@ entry that carries them.
   dialog may go untouched and still count toward the active-dialog and
   active-call gauges, which was a hard-coded hour. Twice RFC 4028's default
   `Session-Expires` grounds the DEFAULT, not the number being fixed: a contact
-  centre parks callers on hold past an hour and its gauge stops counting every
+  center parks callers on hold past an hour and its gauge stops counting every
   one of them.
 - **`[media.codec_ie]`** declares ITU-T G.107 `Ie` values for codecs sipnab has
   no published figure for. sipnab knows G.711, G.729 and Opus; G.722, G.726,
@@ -388,7 +433,7 @@ entry that carries them.
   master secret is 48 bytes whatever the hash.
 
 - **BREAKING: `HepEndpoint` carries the transport.** It is the fifth element of
-  the 5-tuple the struct already modelled, and the value the HEP IP-protocol
+  the 5-tuple the struct already modeled, and the value the HEP IP-protocol
   chunk reports.
 
 - **BREAKING: `Cli` is 18 `#[command(flatten)]` sub-structs, one per help
@@ -407,7 +452,7 @@ entry that carries them.
   an existing invocation does**: `--autostop filesize:100` used to stop at
   100 000 000 bytes and now stops at 104 857 600, so a run relying on the old
   meaning writes 4.9 % more before it stops, and `--split filesize:50` rotates
-  4.9 % later. Nothing reported the old behaviour, which is why it survived: a
+  4.9 % later. Nothing reported the old behavior, which is why it survived: a
   capture that stopped early looks exactly like a capture that stopped when
   asked. Divide by 1.048576 to keep the old byte figure. The conversion now has
   one definition, `capture::writer::mib_to_bytes`, which both conditions read,
@@ -440,17 +485,17 @@ entry that carries them.
   all, so a ServerHello offering `ECDHE-RSA-AES256-GCM-SHA384` (0xC030,
   OpenSSL's default) was unidentified and no session was derived from a
   `CLIENT_RANDOM` keylog entry. The ECDHE, ECDSA and DHE GCM suites are now
-  recognised, plus two ECDHE CBC ones. ChaCha20-Poly1305 stays deliberately
+  recognized, plus two ECDHE CBC ones. ChaCha20-Poly1305 stays deliberately
   unmapped: the backend implements no such AEAD, so claiming the suite would
   derive key material that can never be opened.
 
-- **HEP export labelled every message UDP.** `build_hep_v3` wrote a literal 17
+- **HEP export labeled every message UDP.** `build_hep_v3` wrote a literal 17
   into the IP-protocol chunk, three lines after correctly deriving the address
   family from the address. sipnab knows the transport — the pipeline goes out
   of its way to stamp TLS-recovered SIP as `Tls` "so the pipeline parses (and
   reports) the true transport origin" — and then discarded it at the HEP
   boundary, so a collector filtering on transport was given a wrong answer for
-  every TCP and TLS capture. The receiving side already honoured the chunk.
+  every TCP and TLS capture. The receiving side already honored the chunk.
 
 - **`PR_SET_NO_NEW_PRIVS` is now set on the install sipnab recommends.** It was
   set from inside `drop_privileges`, below the early return taken whenever the
@@ -460,7 +505,7 @@ entry that carries them.
   the flag was the only barrier there was, and it was never raised. It has no
   precondition and cannot be undone, so it moved out of the drop entirely:
   `privilege::block_privilege_escalation()` is called once at startup, on every
-  run mode, root or not. **Behaviour change:** an event hook
+  run mode, root or not. **Behavior change:** an event hook
   (`--on-dialog-exec`, `--on-quality-exec`, `--alert-exec`) that relies on a
   setuid helper such as `sudo` will find it unprivileged on an unprivileged
   run. Root runs already behaved this way.
@@ -532,7 +577,7 @@ entry that carries them.
   than the transaction it answers. `INVITE`, `ACK`, `BYE`, `CANCEL` and `PRACK`
   share the INVITE dialog family and four of them carry responses of their own,
   so routing by family alone hands `200 OK (CSeq 1 CANCEL)` to the arm that
-  establishes a call — and a cancelled call then reports `InCall`, counted as a
+  establishes a call — and a canceled call then reports `InCall`, counted as a
   channel in use, which is worse than the `Trying` it replaced. The transitions
   now live in one total table keyed on the dialog's family, the transaction the
   arriving message belongs to, and the current state, with no wildcard arm at
@@ -541,9 +586,9 @@ entry that carries them.
   the specification, and its §0 records where that page was wrong.
 
   Measured over the reference corpus, 61 captures and 39,236 dialogs, before
-  and after: 100 dialogs move into `Cancelled` — 90 from `Completed`, 8 from
+  and after: 100 dialogs move into `Canceled` — 90 from `Completed`, 8 from
   `Failed`, 2 from `Trying` — and nothing else changes. Every one is a
-  cancelled call that used to report some other outcome, and `InCall` does not
+  canceled call that used to report some other outcome, and `InCall` does not
   move.
 - **A call whose `BYE` was lost no longer counts as a channel in use.** A UAS
   answers a `BYE` only after terminating the session ([RFC 3261
@@ -592,7 +637,7 @@ entry that carries them.
   It was a complete, tested design for vetoing tunnel decapsulation on sockets
   that SDP had declared as media, and nothing in the codebase called `declare`,
   `unless_declared` or `clear`. Its own module documentation described the
-  wiring in the present tense, so the rustdoc promised a defence sipnab did not
+  wiring in the present tense, so the rustdoc promised a defense sipnab did not
   have. Retired rather than kept as dead code with an honest sign on it; the
   design is intact in git at 1466cd86 for whoever schedules the work.
 
@@ -615,13 +660,13 @@ where it did not know.
 - **SIP-over-WebSocket now says what it skipped.** sipnab unwrapped it only on
   ports 80, 443, 8080 and 8443, so a deployment terminating WSS anywhere else —
   Kamailio, OpenSIPS and Janus defaults among them, or anything behind a reverse
-  proxy — had its entire WebRTC signalling leg vanish, and unlike `--portrange`
+  proxy — had its entire WebRTC signaling leg vanish, and unlike `--portrange`
   was told nothing at all. `[capture] ws_ports` / `--ws-portrange` sets the
   ports, and sipnab now tallies the SIP-over-WebSocket it declines to unwrap and
   names the ports it arrived on.
 
 Four MCP tools answered confidently and wrongly. The docs described the
-behaviour honestly; the behaviour is what changed.
+behavior honestly; the behavior is what changed.
 
 ### Changed
 
@@ -767,10 +812,10 @@ answer all along.
 
 ### Added
 
-- **The quality colour bands are yours.** Eight `[quality]` keys and eight
+- **The quality color bands are yours.** Eight `[quality]` keys and eight
   matching flags — `jitter_warn_ms`, `jitter_bad_ms`, `loss_warn_pct`,
   `loss_bad_pct`, `mos_warn`, `mos_bad`, `rtt_warn_ms`, `rtt_bad_ms` — set
-  where the colour column turns yellow and where it turns red. The shipped
+  where the color column turns yellow and where it turns red. The shipped
   figures suit a general-purpose trunk, and 30 ms of jitter is already a fault
   on a LAN PBX while 1 percent loss is unremarkable on an international one, so
   a column tuned for neither was wrong in both directions. sipnab validates the
@@ -798,7 +843,7 @@ answer all along.
 ### Changed
 
 - **BREAKING: detection flags refuse in the default mode instead of warning.**
-  `--kill-scanner` and its neighbours were accepted in the interactive mode and
+  `--kill-scanner` and its neighbors were accepted in the interactive mode and
   armed nothing, silently — indistinguishable, from the operator's side, from a
   detector that ran and found nothing. They now exit 2 naming the flag, which
   is the requirement `--fail2ban` already carried. A run that relied on the
@@ -870,9 +915,9 @@ can actually set.
   Each took a parameter, was documented as configurable, and had no production
   caller that ever supplied one: the REGISTER-flood rate, the scanner-kill
   transmit budget, five fraud constants, the off-hours window (which made a
-  documented detector unreachable), three signalling-diagnosis timers, three
+  documented detector unreachable), three signaling-diagnosis timers, three
   media-asymmetry thresholds, the per-rule lint cap and the findings history.
-  All now carry a flag and a config key. Signalling and media thresholds moved
+  All now carry a flag and a config key. Signaling and media thresholds moved
   to a new `[diagnosis]` section — they decide whether a WORKING call gets
   reported as broken, which is neither `[security]`'s question nor `[limits]`'.
 
@@ -887,7 +932,7 @@ can actually set.
   fail-closed, not the reflector the wording implied.)
 
 - The multi-node MCP walkthrough's transcripts were real output from 0.5.87,
-  eight releases back, presented as current behaviour. Re-run end to end
+  eight releases back, presented as current behavior. Re-run end to end
   against this release rather than search-and-replaced.
 
 ### Documentation
@@ -1105,7 +1150,7 @@ What sipnab claims about itself is now checked against what it does.
 
   Proved by measurement rather than inspection: the same capture read with
   `[display] color = "always"` produces no ANSI escapes on the previous build
-  and coloured output on this one.
+  and colored output on this one.
 
   `[security] kill_response` also gained the range check its flag always had.
   `--kill-response 9999` is refused by clap, while the config file accepted it
@@ -1229,7 +1274,7 @@ Remote capture becomes usable on more than one box, and on RHEL.
 ### Added
 
 - **`--hep-send` forwards RTCP, not only SIP.** RTCP now travels as HEP
-  protocol type 5 alongside signalling as type 1, so a remote collector can
+  protocol type 5 alongside signaling as type 1, so a remote collector can
   report media quality — loss, jitter, MOS — rather than only whether calls
   connect. The receiving half of `capture/hep.rs` has understood type 5 since
   it was written; only the sender never emitted it, which made a remote viewer
@@ -1241,7 +1286,7 @@ Remote capture becomes usable on more than one box, and on RHEL.
   UDP feed can absorb. Media is the opposite on both counts, and forwarding it
   would turn a monitoring feed into a call recorder aimed at the collector.
 
-  The `-I <file>` export notice moves with the behaviour rather than after it.
+  The `-I <file>` export notice moves with the behavior rather than after it.
   It exists because naming the socket described the plumbing and not the
   consequence, and a notice that still said "every SIP message" while RTCP also
   left the machine would have reintroduced exactly the silence it was written
@@ -1291,7 +1336,7 @@ Remote capture becomes usable on more than one box, and on RHEL.
 
 - **The call list rendered distinct hosts identically.** Source and destination
   truncated to 11 cells, so `10.0.0.41` and `10.0.0.412` — different endpoints
-  — displayed as the same string, and the header set a background colour
+  — displayed as the same string, and the header set a background color
   without ever setting a foreground, leaving it unreadable on light terminals.
   Addresses now elide in the middle, keeping both ends, and the header derives
   its foreground from the background's luminance.
@@ -1465,7 +1510,7 @@ Profiling, and what it overturned.
 
 ### Fixed
 
-- The licence appeared twice on the homepage; the pill is gone and the footer
+- The license appeared twice on the homepage; the pill is gone and the footer
   credit stands. The signed-provenance badge now links to the instructions for
   verifying a download rather than to a raw attestations list.
 
@@ -1540,7 +1585,7 @@ claiming a field that was never there.
   conformant back-to-back user agent emits a *different* icid on each side.
   §4.6.4.1 is the parameter that survives it: a B2BUA MAY add `related-icid`
   carrying "the icid value of the original dialog towards the remote end".
-  Plain equality across a re-origination is a vendor behaviour, not a
+  Plain equality across a re-origination is a vendor behavior, not a
   guarantee, and it scores accordingly.
 
   Both report `identifier_match: true` — an icid comparison compares values,
@@ -1660,7 +1705,7 @@ reader cannot download is worse than a merged section.
 
   Both now share one `addr_spec()`. That is the fix, rather than another
   fallback arm: two independent URI locators is **why** hardening one left the
-  other exposed thirty lines below it. The display-name skipper honours `\`
+  other exposed thirty lines below it. The display-name skipper honors `\`
   quoted-pairs and walks `char_indices` rather than bytes, because a `\` may
   escape a multi-byte character and stepping two *bytes* past it slices
   mid-character and panics — a crash reachable from the same header. An
@@ -1677,7 +1722,7 @@ reader cannot download is worse than a merged section.
 
 - **A default that is ON: MCP tool calls are now rate limited to 100 per second
   per peer.** A client that sustains more than that starts seeing refusals after
-  upgrading. `--mcp-rate-limit-per-peer 0` restores the previous behaviour.
+  upgrading. `--mcp-rate-limit-per-peer 0` restores the previous behavior.
 
   The concurrency cap that shipped in 0.5.83 bounds calls *in flight*; it does
   nothing about an agent that stays under the cap and loops as fast as it is
@@ -1796,7 +1841,7 @@ upgrading from 0.5.84 gains a user nothing at runtime.
   shadow and brightens its border — over the entire tile — while the anchor was
   an inline element inside `.arch-label`, so the only place a click did anything
   was one short line of text at the bottom. Clicking the big number, which is the
-  visual centre and the thing the hover advertises, did nothing.
+  visual center and the thing the hover advertises, did nothing.
 
   Whether a given tile "worked" therefore depended on where in it you clicked,
   and the labels differ sharply in length at four columns — "Automated tests" is
@@ -1840,7 +1885,7 @@ had drifted from the code are now what the code does.
 - **BREAKING for MCP deployments that export audio: retention is now an
   explicit opt-in.** Every `--mcp` run used to hold decoded call audio in
   memory so `export_audio` could succeed — whether or not anything would ever
-  call it. Call audio is content, not signalling; holding it should be a
+  call it. Call audio is content, not signaling; holding it should be a
   decision the operator makes, not a side effect of enabling an MCP server.
   A new `--retain-audio` flag is that decision. It requires `--mcp` at parse
   time, because the MCP server is the only batch-mode consumer that can read
@@ -1891,7 +1936,7 @@ had drifted from the code are now what the code does.
   ones a post-mortem wants, and a multi-file set feeds one store, so a 27-file
   directory reaches the cap 27× sooner than a single file.
 
-  Behaviour is deliberately unchanged. Completed dialogs are retained on
+  Behavior is deliberately unchanged. Completed dialogs are retained on
   purpose, because `--report` and `--call-report` answer about calls that have
   already ended, and evicting on completion would break the after-the-fact
   analysis sipnab exists for. Whether the answer is a separate window for
@@ -2096,7 +2141,7 @@ had drifted from the code are now what the code does.
   `capture_status` — the tool whose own description tells an agent to call it
   "before reasoning about" a capture — answered `dialog_count` and
   `stream_count` with nothing beside them, so its response was byte-identical
-  whether or not a third of the SIP had been analysed. The corpus sweep
+  whether or not a third of the SIP had been analyzed. The corpus sweep
   measured what that costs: **2,311 dialogs reported against 3,712 real, 1,401
   lost, 37.7%**, because a third of the messages never touch 5060/5061,
   cross-checked against tshark at 4,247 of 13,455.
@@ -2141,7 +2186,7 @@ had drifted from the code are now what the code does.
   unaffected: sipnab parses what it captured, and only the written file is
   short. `--retain-audio` is the path where that reassurance is false. It
   buffers RTP payload for `export_audio` to decode later, so a snaplen sized
-  for signalling — 200–400 bytes is the usual guidance for SIP headers —
+  for signaling — 200–400 bytes is the usual guidance for SIP headers —
   truncates the payload before retention ever sees it, and the exported WAV or
   Opus is short or corrupted for exactly the truncated packets, with nothing
   marking which. It carries its own message, which names `export_audio` rather
@@ -2169,7 +2214,7 @@ had drifted from the code are now what the code does.
   to leave behind. `lint_dialog` now attaches the message's `frame_ref`, done
   at the MCP projection rather than on `Finding` itself, so the lint engine's
   result stays a pure conformance verdict and a transport concern stays out of
-  the rule catalogue.
+  the rule catalog.
 
   The omission is the load-bearing half. A message with no pointer produces
   **no key at all** — not `""`, not frame 0, both of which read as a real
@@ -2199,8 +2244,8 @@ had drifted from the code are now what the code does.
   is a capture that **begins mid-dialog**, leading with a 486, a BYE or a
   CANCEL. That outcome was discarded and the call reported `Trying` hours after
   it ended. The message log and response list stay complete, so no count
-  catches it. Measured on a cancelled call fed `[CANCEL, 487, INVITE, 100,
-  180]`: timestamp order reaches `Cancelled`, the permuted order reached
+  catches it. Measured on a canceled call fed `[CANCEL, 487, INVITE, 100,
+  180]`: timestamp order reaches `Canceled`, the permuted order reached
   `Trying`.
 
   One divergence is deliberately left, pinned by its own test rather than
@@ -2210,7 +2255,7 @@ had drifted from the code are now what the code does.
   The obvious fix — dispatching on the method a request implies — was tried and
   reverted, because the INVITE machine guards its 2xx, 487 and 3xx arms on
   conditions a BYE/CANCEL-seeded dialog does not meet, so routing there leaves
-  cells unmodelled rather than filled. Landing a half-modelled state machine in
+  cells unmodelled rather than filled. Landing a half-modeled state machine in
   the code that decides whether a call is up is worse than the bug it closes.
 
 - **`--markdown` was a no-op alongside `--report`.** It was parsed, documented
@@ -2318,7 +2363,7 @@ reported success after reading only part of its input.
   admits `%x61-66` with no uppercase alternative, and the section closes by
   saying the values appear as lowercase. sipnab still correlates on an
   uppercase half, but a peer, SBC or log pipeline comparing bytes sees two
-  identifiers for one session. Catalogue: 29 rules to 31.
+  identifiers for one session. Catalog: 29 rules to 31.
 
 ### Fixed
 
@@ -2466,7 +2511,7 @@ and the provenance a federated setup needs.
   querying an SBC and two PBXes at once cannot otherwise know. Deliberately not
   part of the rotating capture instance: a capture restart is not a topology
   change.
-- **Clock discipline in `capture_health`** — `synchronised`, `max_error_us`,
+- **Clock discipline in `capture_health`** — `synchronized`, `max_error_us`,
   `est_error_us`, `available`, read from `adjtimex(2)`. Irrelevant within one
   capture, where a constant offset cancels; decisive across nodes, where the
   timing heuristic's two-second window is smaller than a day's skew.
@@ -2569,12 +2614,12 @@ and the provenance a federated setup needs.
   discarded: MPLS (`0x8847`/`0x8848` and IP protocol 137), NSH (`0x894F`),
   PPPoE Session (`0x8864`), PBB I-TAG (`0x88E7`), MACsec (`0x88E5`), legacy
   QinQ (`0x9100`), GRE Transparent Ethernet Bridging (`0x6558`), GTP-U (UDP
-  2152 — how VoLTE signalling crosses a mobile core), VXLAN (4789), GENEVE
+  2152 — how VoLTE signaling crosses a mobile core), VXLAN (4789), GENEVE
   (6081), Teredo (3544), and AH (IP protocol 51, which authenticates without
   encrypting, so its payload was readable and was being thrown away). Link
   types `DLT_NULL` (0) and `DLT_LOOP` (108) join the four already supported.
 
-  Encapsulations that are recognised but genuinely cannot be decoded report
+  Encapsulations that are recognized but genuinely cannot be decoded report
   that rather than vanishing: UDP-encapsulated ESP (4500) and
   confidentiality-protected MACsec are named as encrypted. MACsec that is
   integrity-protected but *not* encrypted is read normally — the distinction
@@ -2588,10 +2633,10 @@ and the provenance a federated setup needs.
   all occur as the ephemeral source port of ordinary RTP, so every port-keyed
   decoder is required to reject a realistic RTP packet on its own port, and that
   is a test rather than an aspiration. L2TPv3 over UDP is refused outright: its
-  cookie length is signalled on the control channel and guessing it is precisely
+  cookie length is signaled on the control channel and guessing it is precisely
   how a decapsulator fabricates a flow.
 
-- **`--capture-tunnels[=<PORTS>]`**, opt-in, for capturing UDP-tunnelled SIP
+- **`--capture-tunnels[=<PORTS>]`**, opt-in, for capturing UDP-tunneled SIP
   live. BPF cannot parse a variable-length GTP-U header to reach the inner port,
   so covering these means capturing everything on those ports — a firehose on a
   mobile core, and not something to switch on by default. The default path warns
@@ -2695,7 +2740,7 @@ test asserted the decision rather than its effect.
   its stream-detail view plays a stream straight out of that buffer. The batch
   path then read `if audio_retention_wanted(&cli) { set(true) }` with no `else`,
   and a one-armed `if` cannot switch off something already on, so the condition
-  gated the operator *notice* and never the behaviour. Only the MCP
+  gated the operator *notice* and never the behavior. Only the MCP
   `export_audio` tool consumes those buffers in batch mode, so every run without
   `--mcp` retained up to 1500 frames per stream across up to 50,000 streams at
   the defaults, bounded per frame only by `--snaplen`, for a reader that did not
@@ -2744,7 +2789,7 @@ test asserted the decision rather than its effect.
   same confident report as a complete one. Every conclusion downstream — a
   dialog that "never got a 200", a stream "losing 4%" — inherited the gap
   silently, which is the worst failure a capture tool has. The counters are
-  now polled on a timer, warned about on the first drop, summarised at exit,
+  now polled on a timer, warned about on the first drop, summarized at exit,
   and carried into `/v1/stats`, the MCP `stats` tool and Prometheus alongside
   the invalid-timestamp count, which had the identical gap: a run with
   unusable pcap timestamps has unreliable post-dial delay, jitter and MOS and
@@ -2871,7 +2916,7 @@ The drop counters added above are the instrument that measurement needs.
 
   The `PRACK` rule is the first dialog-scoped rule with a truncation guard. A
   capture is a window, not a transcript, and the naive version fires on every
-  dialog whose file stopped between the provisional and the acknowledgement. It
+  dialog whose file stopped between the provisional and the acknowledgment. It
   reports only where the capture already proved it saw the rest: the dialog
   carries a final response to the `INVITE`, so an absent `PRACK` is genuinely
   absent rather than off the end of the file.
@@ -2892,13 +2937,13 @@ The drop counters added above are the instrument that measurement needs.
   exactly 30 minutes is almost always a refresher nobody claimed. All four read
   one message on its own, so a message linted alone still settles them.
   `Session-Expires` below the `Min-SE` carried beside it (§7.1) contradicts
-  itself inside a single request and draws a 422 from any UAS honouring the
+  itself inside a single request and draws a 422 from any UAS honoring the
   floor. `Session-Expires` and `Min-SE` each below the 90-second minimum (§4,
   §5). And a 2xx answer to `INVITE` that negotiates a timer without naming a
   refresher (§9), where both ends can end up believing the other refreshes.
 
   The §9 citation was checked against the table of contents in RFC 4028 rather
-  than recalled, and the check earned itself: the behaviour sections run 7 UAC,
+  than recalled, and the check earned itself: the behavior sections run 7 UAC,
   8 Proxy, 9 UAS, and the recollection that put UAS at §8 would have sent
   readers to the proxy's rules about the same header field.
 
@@ -2947,23 +2992,23 @@ The drop counters added above are the instrument that measurement needs.
   dropped, and the Prometheus metrics that were declared and never incremented.
   Three tools close it:
 
-  `lint_dialog` runs the whole catalogue against one call, media included, and
+  `lint_dialog` runs the whole catalog against one call, media included, and
   is described to the model with the declaration-versus-observation rules
   first, because those are the ones no other tool can run: SDP declaring PCMU
   on payload type 0 while the wire carries payload type 8, RTP arriving on a
   port no `m=` line advertised, `sendrecv` negotiated with media flowing one
   way. `validate_message` checks one message by index. `explain_rule` turns an
   identifier from a finding, a CI log or a suppression file back into its
-  catalogue entry with a link to the cited section.
+  catalog entry with a link to the cited section.
 
   Findings cross the wire exactly as the library shapes them, `rfc` and
   `section` as separate typed fields rather than folded into the explanation.
   That is the whole point of the shape: an agent quotes RFC 3264 section 6.1
   out of the data instead of inventing a section number that reads plausibly.
 
-  `rulesets` narrows a run by catalogue name (`all`, `must`, `rfc`, `interop`,
+  `rulesets` narrows a run by catalog name (`all`, `must`, `rfc`, `interop`,
   `observation`, `syntax`) or by the RFC a rule cites (`rfc3261`, `rfc3264`,
-  `rfc4566`, `rfc3551`, `rfc5761`), and only RFCs the catalogue really cites
+  `rfc4566`, `rfc3551`, `rfc5761`), and only RFCs the catalog really cites
   parse — `rfc3621` is one transposition from `rfc3261`, and accepting it would
   have selected nothing and returned an empty finding list that reads as a
   clean call.
@@ -2988,7 +3033,7 @@ The drop counters added above are the instrument that measurement needs.
   `install.md`, the build page and the WASM plugin design note.
 
 - **`docs/sip-lint-rules.md` is on the website.** It was registered in the wiki
-  generator and not the site one, so a reader following the rule catalogue out
+  generator and not the site one, so a reader following the rule catalog out
   of the MCP tool reference left the site for a GitHub blob URL.
 
 ### Fixed
@@ -3117,7 +3162,7 @@ The drop counters added above are the instrument that measurement needs.
   overwrites sipnab's own jitter, loss or MOS with them — `MosProvenance` gains
   a third category, `ReportedByEndpoint`, distinct from both a grounded estimate
   and a placeholder. The TUI shows them below everything measured and
-  deliberately does not colour them like a sipnab MOS, so two numbers cannot
+  deliberately does not color them like a sipnab MOS, so two numbers cannot
   read as one.
 
 - **ICMP errors that quote media are visible.** 3,262 quoting a SIP request were
@@ -3214,7 +3259,7 @@ The drop counters added above are the instrument that measurement needs.
 
 ### Fixed
 - **Scanner detection flagged the carrier's own PBX and customer phones.** The
-  behavioural rules stood on a request rate, and volume does not separate
+  behavioral rules stood on a request rate, and volume does not separate
   reconnaissance from operation — a trunk sends OPTIONS keepalives by design.
   On an ordinary 11-second carrier capture the busiest "scanner" was an Asterisk
   PBX with 2,713 keepalives.
@@ -3226,13 +3271,13 @@ The drop counters added above are the instrument that measurement needs.
   a registration or a call needs four times either number.
 
   Across ten captures of one trunk: **25,738 scanner alerts became 21**, all
-  from User-Agent matches, with no behavioural source at all. Corpus-wide, six
-  behavioural sources remain and every one is supported by an outcome in the
+  from User-Agent matches, with no behavioral source at all. Corpus-wide, six
+  behavioral sources remain and every one is supported by an outcome in the
   packets.
 
   **What it misses is documented rather than tuned away**: a sweep the box
   answers `200` — which is what the corpus's own real scanner traffic is — is
-  invisible to the behavioural rules and caught only by User-Agent.
+  invisible to the behavioral rules and caught only by User-Agent.
 
 - **Three fraud detectors had the same error as the scanner.** `VolumeSpike`
   started from a *guessed* baseline of 1.0, truncated it to an integer, and
@@ -3290,7 +3335,7 @@ The drop counters added above are the instrument that measurement needs.
 ### Documented
 - **`rtp.*` fields read `0` for a dialog with no media, not "unknown"**, and a
   scored stream never goes below `1.0`. So `rtp.mos < 3.5` selects 2292 of 2311
-  dialogs on a signalling-heavy capture — nearly everything — while
+  dialogs on a signaling-heavy capture — nearly everything — while
   `AND rtp.packets > 0` selects 2. The documented low-MOS recipe now carries
   that guard.
 - **`no_media`, `nat_mismatch` and `rtp.orphaned` can never be true.** Not
@@ -3379,7 +3424,7 @@ The drop counters added above are the instrument that measurement needs.
   scanner-kill responder fired on packets read from a pcap, sending SIP
   responses to the addresses recorded inside it. Those addresses belong to
   whoever was on the wire when the capture was taken — not to the person
-  analysing it, and not to their network. Verified during development: three
+  analyzing it, and not to their network. Verified during development: three
   responses (317/317/322 bytes) left the machine for three public addresses on
   ports 5060/5060/5080, from a capture file.
 
@@ -3719,7 +3764,7 @@ The drop counters added above are the instrument that measurement needs.
   nor natural-numeric filename order reconstructs it, so sipnab sorts by each
   file's **first packet timestamp**. Every timing derivation assumes monotonic
   timestamps: post-dial delay, setup time, retransmission detection, and the
-  RFC 3261 Timer B/C/H bounds in the signalling diagnosis.
+  RFC 3261 Timer B/C/H bounds in the signaling diagnosis.
 
   **What it buys:** the files feed one dialog store, so a call whose INVITE
   lands in one file and whose BYE lands in the next is reconstructed instead of
@@ -3728,7 +3773,7 @@ The drop counters added above are the instrument that measurement needs.
   capture, crossed a boundary.** Read one at a time each of those appears as a
   call that never ends plus a stray BYE, and neither half is the truth.
 
-  A file is recognised as a capture by **opening it**, not by its extension:
+  A file is recognized as a capture by **opening it**, not by its extension:
   `tg.pcap0` has the extension `pcap0`, and `SIP_CALL_RTP_G711` has none.
   Since the first packet must be read anyway to order the set, the open doubles
   as the test and accepts exactly what libpcap accepts. gzip members are
@@ -3741,15 +3786,15 @@ The drop counters added above are the instrument that measurement needs.
   repository's own sample directory — a NetMon capture libpcap cannot open.
 
   `--recursive` descends into subdirectories, off by default: recursing
-  silently can analyse several times the traffic you pointed at and nothing in
+  silently can analyze several times the traffic you pointed at and nothing in
   the output would say so. `--input-name` filters by filename glob at every
   depth.
 
   Packet count, duration and the replay timeline are shared across the set, so
   `--count 100` over four files means a hundred packets, not four hundred.
 
-  Single-file behaviour is unchanged, and a test asserts the long-standing
-  2-dialog result for the G.711 fixture to keep it that way. One behaviour did
+  Single-file behavior is unchanged, and a test asserts the long-standing
+  2-dialog result for the G.711 fixture to keep it that way. One behavior did
   change: `-I` now validates during planning, so a mistyped path fails before
   any thread starts rather than inside the capture reader.
 
@@ -3765,7 +3810,7 @@ The drop counters added above are the instrument that measurement needs.
   codecs caused a 488, why a phone will not register, why audio was bad on a
   call that connected, what you are connected to, and how to save a live
   capture before stopping it. A flowchart puts `triage_call` first, because its
-  signalling/media verdict decides which half of the stack to search and
+  signaling/media verdict decides which half of the stack to search and
   getting it wrong costs an hour.
 
   **Every output block was produced by running the tool against a capture in
@@ -3913,7 +3958,7 @@ The drop counters added above are the instrument that measurement needs.
 
   The cause was the gate: `mcp_tool_table_lists_every_registered_tool` checks
   the **index**, and an index is not documentation. It was green throughout, so
-  nothing signalled the gap.
+  nothing signaled the gap.
 
   Every one of the 24 tools now has its own heading and a real captured example.
   `every_mcp_tool_has_a_documented_section_with_an_example` attributes each
@@ -3923,7 +3968,7 @@ The drop counters added above are the instrument that measurement needs.
 
 ### Fixed
 - **The MCP diagnostic tests raced the pcap reader and passed on Linux by
-  luck.** They sent a tool call as soon as the server initialised, before
+  luck.** They sent a tool call as soon as the server initialized, before
   sipnab had finished reading the capture into the store. Linux won that race
   every time; macOS did not, and reported exactly what an empty store looks
   like — "nothing to export: no messages are held", "call_id not found", and a
@@ -3993,7 +4038,7 @@ The drop counters added above are the instrument that measurement needs.
   decision and no tool made it, so an agent had to infer it from a pile of
   fields.
 
-  - **`triage_call`** — signalling, media, both, or none, with the evidence for
+  - **`triage_call`** — signaling, media, both, or none, with the evidence for
     each. Start here; the two halves have different causes and different fixes.
   - **`check_codec_negotiation`** — codecs offered against codecs answered, for
     488 Not Acceptable Here, which usually means the far end was offered nothing
@@ -4035,7 +4080,7 @@ The drop counters added above are the instrument that measurement needs.
 
   Both directions of the old wording misinform. A Linux reader concludes they
   are missing loopback traffic when they are already capturing it; a macOS
-  reader assumes the Linux behaviour and sees nothing when SIP is not on the
+  reader assumes the Linux behavior and sees nothing when SIP is not on the
   interface libpcap happened to pick — a capture that looks merely quiet.
 
   Corrected in `-d`'s CLI help and both CLI reference trees, with promiscuous
@@ -4136,7 +4181,7 @@ The drop counters added above are the instrument that measurement needs.
 ### Fixed
 - **The plugin example tests raced each other.** All five call the same
   `build_example()`, libtest runs them in parallel, so five concurrent
-  `cargo build`s hit one target directory. They serialise on cargo's
+  `cargo build`s hit one target directory. They serialize on cargo's
   package-cache lock but the artifact check does not, so a test could stat the
   path while another build was still writing it — "build reported success but
   produced no artifact". It passed on Linux and failed on macOS, which is what
@@ -4361,11 +4406,11 @@ The drop counters added above are the instrument that measurement needs.
   **3xx remains a known gap, now pinned.** A redirect leaves the dialog in its
   pre-answer state, because sipnab has no `Redirected` variant and adding one
   changes the JSON schema, the filter DSL and the TUI column. The matrix records
-  the current behaviour so the gap is a decision on the record, and closing it
+  the current behavior so the gap is a decision on the record, and closing it
   fails there first.
 
 - **`response_class()` — one classifier, replacing inline ranges in four
-  handlers.** `provisional`, `success`, `redirect`, `challenge`, `cancelled`,
+  handlers.** `provisional`, `success`, `redirect`, `challenge`, `canceled`,
   `declined`, `failure`. The dialog state machine answered this with `400..=699`
   in one arm, `401 | 407` in another and a bare `487` in a third, restated per
   handler, and two defects lived in the gaps: a 487 could not move a dialog at
@@ -4387,9 +4432,9 @@ The drop counters added above are the instrument that measurement needs.
   0.985 on the text the demo exists to show, and the encode that holds
   fidelity costs 415 KiB — 18% *more* than the WebP already shipping.
 
-- **SIP diagnosis detections 4–7 — missing `ACK`, abandoned/cancelled, high
+- **SIP diagnosis detections 4–7 — missing `ACK`, abandoned/canceled, high
   post-dial delay, registration failure.** The set is complete: a dialog now
-  reports an answered `INVITE` that was never acknowledged, a call cancelled or
+  reports an answered `INVITE` that was never acknowledged, a call canceled or
   left without an outcome, ring-back slower than the E.721 target, and a
   `REGISTER` that was rejected or granted less time than it asked for. Every
   finding carries the message indices it was drawn from, and every surface —
@@ -4484,8 +4529,8 @@ The drop counters added above are the instrument that measurement needs.
 ### Fixed
 - **A `487 Request Terminated` with no `CANCEL` in the capture left the dialog
   in `Ringing` forever.** The `487` match arm did nothing unless the dialog was
-  *already* `Cancelled`, and because it matches before the `400..=699` arm the
-  response did not fall through to `Failed` either. So a cancelled call whose
+  *already* `Canceled`, and because it matches before the `400..=699` arm the
+  response did not fall through to `Failed` either. So a canceled call whose
   CANCEL went uncaptured reported as one still waiting for an answer — a
   different diagnosis from the one the wire carried.
 
@@ -4493,7 +4538,7 @@ The drop counters added above are the instrument that measurement needs.
   CANCEL request". The 487 is itself the proof; seeing the CANCEL is not a
   precondition. A CANCEL can take a different path from the response, a capture
   can start mid-dialog, and sampling can drop it. A 487 whose CSeq method is
-  INVITE now sets `Cancelled` from `Trying`, `Ringing` or `Cancelled`, guarded on
+  INVITE now sets `Canceled` from `Trying`, `Ringing` or `Canceled`, guarded on
   those pre-answer states for the same reason the 2xx arm is: once a final 2xx
   has established the call the CANCEL has no effect (§9, §15), so a late 487 must
   not un-answer it.
@@ -4522,10 +4567,10 @@ The drop counters added above are the instrument that measurement needs.
   than assumed.
 
   The classification is the part sipnab needs: `provisional`, `success`,
-  `redirect`, `challenge`, `cancelled`, `declined`, `failure`. Only the last is
+  `redirect`, `challenge`, `canceled`, `declined`, `failure`. Only the last is
   a failed call. Folding the others into "failed" loses what an operator acts
   on — a call that drew a `challenge` and never authenticated is a provisioning
-  problem, one that ended `cancelled` is a caller who hung up, and one that came
+  problem, one that ended `canceled` is a caller who hung up, and one that came
   back `declined` reached a human who said no.
 
   The tables sit inside `<!-- vale off -->`: the descriptions quote normative
@@ -4716,7 +4761,7 @@ The drop counters added above are the instrument that measurement needs.
   quoted error string (`cursor position could not be read`) is what the binary
   actually prints, so it became inline code rather than prose. And in
   `domain-primer.md`'s table of wrong assumptions, "`cumulative_lost` is
-  unsigned" *is* the mistaken belief being catalogued; it reads "has no sign bit"
+  unsigned" *is* the mistaken belief being cataloged; it reads "has no sign bit"
   now, which preserves the claim instead of inverting it.
 
   The promotion needed a matching `Google.Passive = NO` in each of the three
@@ -4806,9 +4851,9 @@ The drop counters added above are the instrument that measurement needs.
   detected, so a healthy dialog serializes exactly as before. Fields for
   detections 4–7 are absent rather than always-null: a field that is never
   populated reads as "checked, nothing found", which would be false.
-- **The call report carries the signalling findings.** Text and Markdown both get a
-  Signalling section listing each detection with its evidence — which is also what
-  MCP's `get_dialog_report` returns for its non-JSON formats. Evidence is labelled
+- **The call report carries the signaling findings.** Text and Markdown both get a
+  Signaling section listing each detection with its evidence — which is also what
+  MCP's `get_dialog_report` returns for its non-JSON formats. Evidence is labeled
   with the message rather than printed as a bare index: JSON emits `[1]` because a
   machine will join it against the message list, but a report pasted into a ticket
   has no such list to hand, so it reads `#1 503 Service Unavailable`. An index
@@ -4816,7 +4861,7 @@ The drop counters added above are the instrument that measurement needs.
   dropped, since a quiet drop would make the report claim less evidence than the
   diagnosis found.
 - **The TUI call list marks diagnosed dialogs.** A `⚠` in the State cell when a
-  dialog has any signalling finding. The spec asked for this "in the style of the
+  dialog has any signaling finding. The spec asked for this "in the style of the
   existing media badge" — there was no existing media badge, though
   `src/tui/call_list.rs` had claimed in its module documentation to show
   "diagnosis warning indicators" for some time. The marker shares the State cell
@@ -4850,7 +4895,7 @@ The drop counters added above are the instrument that measurement needs.
   Every exclusion in the three configs records the alert count it produced on
   first run, so a considered exemption is distinguishable from a silenced
   inconvenience: Vale went from 13,892 alerts to zero, and the disabled rules are
-  the ones whose advice is wrong here — "spell out SIP" on a SIP analyser (3,675),
+  the ones whose advice is wrong here — "spell out SIP" on a SIP analyzer (3,675),
   "command-line tool" for CLI (171), and American quote placement in prose that
   quotes exact protocol literals (47).
 
@@ -4870,7 +4915,7 @@ The drop counters added above are the instrument that measurement needs.
   `MinAlertLevel = error`, so they reported nothing whether on or off — but their
   comments cited counts from a probe run at `suggestion`, which read as though
   each was suppressing thousands of live alerts. The counts are now measured at
-  the enforced level, the preemptive disables are labelled as such, the 670-alert
+  the enforced level, the preemptive disables are labeled as such, the 670-alert
   backlog that a threshold change would surface is written down, and the rules
   that actually fire are listed by name and verified by mutation.
 
@@ -4928,7 +4973,7 @@ The drop counters added above are the instrument that measurement needs.
   compares a file to a list, so anyone serving both files passes it. The page
   already said so correctly one paragraph later, and `docs/install.md` says it
   correctly too, so the page contradicted itself on a security claim. Integrity
-  and origin are now two labelled steps, with the `gh attestation verify` command
+  and origin are now two labeled steps, with the `gh attestation verify` command
   promoted out of a parenthetical into its own copyable block.
 - **`/download` hard-coded the repo slug and container image.** `NormB/sipnab`
   appeared literally in a `gh attestation verify --repo` command and a releases-API
@@ -4959,7 +5004,7 @@ The drop counters added above are the instrument that measurement needs.
   the `-noaudio` and `aarch64` lines sitting in the same section — same
   copy-paste, same 404 if stale — were invisible to it. Verified by reverting the
   pattern and watching the gate pass with a stale version present. The arch and
-  variant are now alternations, so a new package flavour is covered the day it is
+  variant are now alternations, so a new package flavor is covered the day it is
   documented.
 
 ## [0.5.64] - 2026-07-29
@@ -5026,7 +5071,7 @@ The drop counters added above are the instrument that measurement needs.
 ## [0.5.62] - 2026-07-29
 
 ### Added
-- **Spec for SIP problem diagnosis** — the signalling-side complement to
+- **Spec for SIP problem diagnosis** — the signaling-side complement to
   `rtp/diagnosis.rs`, which can already report one-way audio and NAT mismatch
   but cannot say a call failed on a `503` after three retransmitted INVITEs.
   `docs/design/sip-problem-diagnosis.md` scopes seven detections in build
@@ -5088,7 +5133,7 @@ The drop counters added above are the instrument that measurement needs.
   `SipDialog::new` fabricated `SipMethod::Custom("UNKNOWN")` when a response
   carried no parseable `CSeq`. `method` is set once at creation and never
   corrected, and dialogs are keyed by Call-ID — so such a response arriving
-  *before* the INVITE created a dialog labelled `UNKNOWN`, and the genuine
+  *before* the INVITE created a dialog labeled `UNKNOWN`, and the genuine
   INVITE then matched that entry and left the label wrong for the rest of the
   capture. `dialog_store`'s INVITE-specific matching stops working on that
   dialog, and every per-method count, filter and export reports it under a
@@ -5254,7 +5299,7 @@ The drop counters added above are the instrument that measurement needs.
 - Legacy-gate audit, tiers D and E (27 findings): the shared CommonMark lexer
   behind the docs gates, WASM exports derived from `src/wasm.rs` rather than a
   hand-kept list, pre-commit and pre-push hooks executed rather than grepped,
-  and the licence-election table deduplicated. Each fix verified by
+  and the license-election table deduplicated. Each fix verified by
   reintroducing the demonstrated defect and observing the gate fire.
 
 ## [0.5.57] - 2026-07-29
@@ -5303,7 +5348,7 @@ The drop counters added above are the instrument that measurement needs.
 - **Every code fence declares its language.** An unlabeled fence still gets a
   copy button on every surface, but the one-command gate only reads fences whose
   info string names a shell, so unlabeled shell blocks were invisible to it.
-  Output, transcripts and diagrams are labelled `text` deliberately — labelling
+  Output, transcripts and diagrams are labeled `text` deliberately — labeling
   them `bash` would put an unrunnable block under a gate demanding it be one
   command.
 
@@ -5505,7 +5550,7 @@ The drop counters added above are the instrument that measurement needs.
   1.97), `%license LICENSE` (no such file; there are LICENSE-MIT and
   LICENSE-APACHE), and a build-from-source recipe the real builder does not
   use. It looked authoritative enough for a distro packager to adopt verbatim,
-  which would have shipped sipnab under the wrong licence. Deleted rather than
+  which would have shipped sipnab under the wrong license. Deleted rather than
   repaired: a second spec is what allowed the drift.
 
 ### Changed
@@ -5566,7 +5611,7 @@ The drop counters added above are the instrument that measurement needs.
   A Call-ID still resolves to a dialog in `branch` mode — `--call-report`, the
   REST API, the MCP tools, the TUI and the WASM analyzer all look up by
   Call-ID, and `DialogStore::get` returns the first matching unit so none of
-  them changed behaviour. `get_by_key` addresses one specific transaction.
+  them changed behavior. `get_by_key` addresses one specific transaction.
 
   The default path still allocates no per-message key: `call-id` mode keeps the
   original borrowed lookup, and only `branch` composes an owned key.
@@ -5596,7 +5641,7 @@ The drop counters added above are the instrument that measurement needs.
 - **`--call-report` with an unknown Call-ID exited 0 on the `--cores` path.**
   `generate_reports` returns `false` for exactly this, and its doc says the
   caller exits non-zero so "scripts must be able to trust the exit code" — but
-  two of the three callers discarded the value. Both now honour it.
+  two of the three callers discarded the value. Both now honor it.
 - The fuzz workspace is scanned and updated. `fuzz/Cargo.lock` sits outside the
   root workspace, so `cargo audit`, `cargo deny` and Dependabot all missed it —
   194 packages, drifted 39 crates behind the root. Adding the scan immediately
@@ -5633,14 +5678,14 @@ The drop counters added above are the instrument that measurement needs.
   argument being passed to the binary.
 
   The ratchet had read 106 of 143 flags covered; the honest figure was 101.
-  Four of the five gaps now have real behaviour tests — `--rotate`,
+  Four of the five gaps now have real behavior tests — `--rotate`,
   `--duration`, `--strip-secrets` and `--hep-parse` — and the fifth was
   `--dialog-track`, removed above.
 
 - **The release ran a `strip` that had never worked on cross-compiled targets.**
   It sat behind `|| true`, so nothing was visible either way. On the
   cross-compiled targets the host's GNU strip cannot even read the output
-  (`Unable to recognise the format of the input file`) and had failed on every
+  (`Unable to recognize the format of the input file`) and had failed on every
   release for the project's history; on native targets it was a no-op against a
   binary `[profile.release] strip = true` had already stripped at link time. It
   looked like the thing doing the stripping while doing nothing at all.
@@ -5695,7 +5740,7 @@ gates that, by their nature, cannot be tested except by cutting a release.
   Artifact filenames, the `.deb` `Version:`, the `.rpm` version and the Homebrew
   formula all derive from `${GITHUB_REF_NAME#v}`, while the version the binary
   reports comes from `Cargo.toml`. Nothing compared them, so tagging `v0.6.0`
-  without bumping the crate would ship packages labelled 0.6.0 containing a
+  without bumping the crate would ship packages labeled 0.6.0 containing a
   binary reporting 0.5.49 — into package managers, checksummed and attested,
   with every badge green, because each half is internally consistent. A
   `preflight` job now blocks the build on a mismatch.
@@ -5824,11 +5869,11 @@ artifact every number on the benchmarks page is measured against.
 - **Third-party notices, generated and shipped.** `THIRD-PARTY-NOTICES.md`
   covers 373 distributed crates plus the two system libraries the binaries link
   — libpcap (BSD-3-Clause) and libasound (LGPL-2.1-or-later). Attribution is a
-  licence obligation, not a courtesy: MIT and Apache-2.0 both require the notice
+  license obligation, not a courtesy: MIT and Apache-2.0 both require the notice
   to travel with the binary. It is generated from `cargo metadata` and gated, so
   it cannot go stale on the next `cargo update`, and it now ships in the
   tarballs, the `.rpm` and the `.deb`. The `.deb` previously shipped **no**
-  licence files at all.
+  license files at all.
 - **Every released binary is now executed before it is published.** `release.yml`
   built eight targets, gated their glibc floor and their size, attested their
   provenance and shipped them without ever running one — those gates check facts
@@ -5842,7 +5887,7 @@ artifact every number on the benchmarks page is measured against.
   capture parse: reading a capture drops privileges, `getpwnam()` sends glibc
   through NSS, NSS `dlopen`s `libnss_files.so`, and `dlopen` under `qemu-user`
   deadlocks — the first version of this step hung for 37 minutes on exactly that
-  before being cancelled by hand. The static musl aarch64 binary completes the
+  before being canceled by hand. The static musl aarch64 binary completes the
   same parse under the same emulator, because it resolves users without NSS. So
   it is a limit of emulating glibc, not a property of the shipped binary.
 - **The Docker image is run before it is pushed.** `docker.yml` went from build
@@ -5869,7 +5914,7 @@ artifact every number on the benchmarks page is measured against.
   held, because criterion's baselines live in `target/criterion` and do not
   survive a cache miss.
 - **Coverage was measured and never enforced.** `quality.yml` collected it,
-  summarised it, uploaded HTML and pushed to Codecov with
+  summarized it, uploaded HTML and pushed to Codecov with
   `fail_ci_if_error: false`, while nothing asserted a minimum — it could decline
   release after release with every run green. Now gated at
   `--fail-under-lines 92`, chosen from the real figure in CI's own coverage
@@ -5884,7 +5929,7 @@ artifact every number on the benchmarks page is measured against.
 - The full suite passes on Alpine/musl — 3010 tests, 0 failures, 55 binaries
   including doctests — matching the glibc host exactly. This is the first time
   musl has been tested at all.
-- The `.deb` now provably carries its licence files: `test-build-deb.sh`
+- The `.deb` now provably carries its license files: `test-build-deb.sh`
   asserts `LICENSE-MIT`, `LICENSE-APACHE` and `THIRD-PARTY-NOTICES.md` are
   inside the built package, not merely that the build succeeded. Those are
   different claims, and only the second one was ever checked.
@@ -5911,7 +5956,7 @@ artifact every number on the benchmarks page is measured against.
   any surviving handler attribute live. Hand-rolling a scrubber on top then
   introduced a *new* high-severity finding of its own
   (`js/incomplete-url-scheme-check`): a scheme denylist that missed `vbscript:`.
-  The recurring error was marshalling markup by hand; the fix was to stop.
+  The recurring error was marshaling markup by hand; the fix was to stop.
   All 17 diagrams verified rendering afterwards with drag, zoom and collapse
   intact.
 
@@ -5946,7 +5991,7 @@ artifact every number on the benchmarks page is measured against.
   the static musl build — which the installer's own message notes has no TUI
   audio — instead of the gnu build it can run. Verified against the released
   v0.5.44 artifacts: both the x86_64 and aarch64 gnu binaries need only
-  GLIBC_2.34. The installer's own test suite had asserted the wrong behaviour
+  GLIBC_2.34. The installer's own test suite had asserted the wrong behavior
   (`glibc 2.36 → musl`), so it passed for the same reason the bug existed.
 - **The homepage understated the binary by 87%.** The stat tile and the build
   docs said 5 MB; the shipped stripped musl binary is 9.34 MB. The tile's gate
@@ -6454,8 +6499,8 @@ behavior changes.
   check errors, instead of forgetting it — the child could previously
   linger as a zombie.
 - A 200 OK to INVITE that races a CANCEL now correctly establishes the call
-  (Cancelled → InCall) per RFC 3261, instead of leaving a call that was
-  actually answered stuck in the Cancelled state.
+  (Canceled → InCall) per RFC 3261, instead of leaving a call that was
+  actually answered stuck in the Canceled state.
 - A 401/407 auth challenge to REGISTER no longer marks the registration
   Failed: challenges are intermediate (the client re-registers with
   credentials), so the dialog stays auth-pending until a genuine failure or
@@ -6577,7 +6622,7 @@ behavior changes.
   completing the real-time MOS/jitter/loss view.
 - TUI: call-timeline view (`T` from the call list) — a horizontal,
   proportional time axis of call phases (setup → ringing → in-call →
-  teardown, or the failed/cancelled path) derived from dialog timing
+  teardown, or the failed/canceled path) derived from dialog timing
   milestones, with per-phase duration labels, phase colors, a legend,
   and a PDD/ring/setup/teardown summary line. Degrades gracefully for
   never-answered calls and dialogs without timing data.
@@ -7620,7 +7665,7 @@ tests-first (red → green) with adversarial-input coverage.
 ### Added
 - Dialog report (`--report`) gains a `Code` column showing the terminating SIP
   response behind each dialog's `State` — `Completed 200`, `Failed 486`,
-  `Cancelled 487` — so the precise outcome (486 busy vs 503 unavailable vs 408
+  `Canceled 487` — so the precise outcome (486 busy vs 503 unavailable vs 408
   timeout …) is visible, not just the generic state word. Backed by a new
   `SipDialog::final_status_code()` (highest final response on the INVITE CSeq;
   `-` while the call is still in progress).
@@ -7816,7 +7861,7 @@ performance, usability); roadmap and per-item status in `TODO.md`.
   `parse_sip_bytes`, and `SipMessage::clone` (dialog-store insertion)
   no longer copies message bytes. Measured honestly: cost-neutral at
   typical packet sizes (the copies it removes were already ~15 ns);
-  shipped for large-payload behaviour, allocator pressure, and the
+  shipped for large-payload behavior, allocator pressure, and the
   structural simplification — see `docs/internals/zero-copy-payloads.md`.
 - `src/tui/mod.rs` (5,278 lines) split into `theme.rs`, `render.rs`,
   `events.rs`, `save.rs`, with state/App/entry point remaining; pure

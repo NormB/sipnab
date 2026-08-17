@@ -559,7 +559,7 @@ fn burst_and_gap_durations_follow_the_streams_own_packetization() {
 /// fills. Both orderings are asserted because the store learns an endpoint by
 /// two different routes — `link_endpoint` enriches streams that already exist,
 /// and `resolve_from_sdp` fills one created afterwards — and a value wired
-/// into only one is a setting honoured on offline replay and dropped on live
+/// into only one is a setting honored on offline replay and dropped on live
 /// capture, or the reverse.
 #[test]
 fn the_sdp_ptime_reaches_the_stream_in_both_orderings() {

@@ -354,7 +354,7 @@ mod tests {
     /// A raised group cap accepts keys the shipped one refuses, and the note
     /// names the cap that was actually enforced.
     ///
-    /// Asserted on the buffer's behaviour rather than on `caps()`: a resolver
+    /// Asserted on the buffer's behavior rather than on `caps()`: a resolver
     /// that computed the right number and a buffer that ignored it read the
     /// same way through the accessor alone.
     #[test]
@@ -419,7 +419,7 @@ mod tests {
     /// At the SHIPPED caps a run holding more keys than the old 10,000-key
     /// default still groups every one of them.
     ///
-    /// The behaviour the doc comment on [`DEFAULT_MAX_GROUPS`] always claimed
+    /// The behavior the doc comment on [`DEFAULT_MAX_GROUPS`] always claimed
     /// and did not have: it shipped an order of magnitude below the store
     /// default, so a `--group-by` run over a capture the store held whole
     /// reported an incomplete grouping. 20,000 distinct keys is past the old

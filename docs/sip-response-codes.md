@@ -20,7 +20,7 @@ the previous name. 500 is *Server Internal Error*, not *Internal Server Error*.
 
 **Reason phrases on the wire are free text.** [RFC 3261 §7.2](https://www.rfc-editor.org/rfc/rfc3261#section-7.2) lets a sender write
 anything after the code, so a capture showing `500 Service Unavailable` or `487
-Request Cancelled` is legal, and both are common in the field. The phrase in this
+Request Canceled` is legal, and both are common in the field. The phrase in this
 table is the canonical one. Match on the code, never on the text.
 
 ## Classification
@@ -31,14 +31,14 @@ table is the canonical one. Match on the code, never on the text.
 | `success` | The request succeeded. |
 | `redirect` | The request needs different routing. Not a failure of the call, and not an answer either. |
 | `challenge` | The server wants credentials or a security agreement, and the client retries. Intermediate, not an outcome. |
-| `cancelled` | The caller gave up before a final response. Abandonment, not failure. |
+| `canceled` | The caller gave up before a final response. Abandonment, not failure. |
 | `declined` | The call reached the callee or an intermediary, which refused it. A human or a policy said no. |
 | `failure` | The call attempt failed. |
 
-Only `failure` is a failed call. `challenge`, `cancelled`, `redirect` and
+Only `failure` is a failed call. `challenge`, `canceled`, `redirect` and
 `declined` each point somewhere different, and folding them together loses the
 distinction that tells an operator what to do next. A call that drew a `challenge`
-and never authenticated is a provisioning problem. One that ended `cancelled` is a
+and never authenticated is a provisioning problem. One that ended `canceled` is a
 caller who hung up. One that came back `declined` reached a human who said no.
 
 <!-- vale off -->
@@ -92,7 +92,7 @@ The server wants credentials or a security agreement, and the client retries. In
 | `407` | Proxy Authentication Required | [RFC 3261 §21.4.8](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.8) | This code is similar to 401 (Unauthorized), but indicates that the client MUST first authenticate itself with the proxy. SIP access authentication is explained in Sections 26 and 22.3. |
 | `494` | Security Agreement Required | [RFC 3329 §6.5](https://www.rfc-editor.org/rfc/rfc3329#section-6.5) | the client with a 494 (Security Agreement Required) response. The server MUST add a Security-Server header field to this response listing the security mechanisms that the server supports. |
 
-## Cancelled
+## Canceled
 
 The caller gave up before a final response. Abandonment, not failure.
 

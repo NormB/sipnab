@@ -90,13 +90,13 @@ struct MessageJson<'a> {
     frame: Option<String>,
     /// The DSCP the frame carrying this message was marked with
     /// ([RFC 2474](https://www.rfc-editor.org/rfc/rfc2474)), 0 to 63 — the
-    /// queue the network was asked to put this signalling in.
+    /// queue the network was asked to put this signaling in.
     ///
     /// Omitted, never null, when no IP header was observed: a HEP-fed message
     /// arrives with addressing its sender asserted and no marking at all. An
     /// absent key therefore means "not observed" and `0` means "observed, and
     /// it is best effort" — the distinction the whole field exists for, since
-    /// unmarked signalling is itself the common fault.
+    /// unmarked signaling is itself the common fault.
     #[serde(skip_serializing_if = "Option::is_none")]
     dscp: Option<u8>,
 }
@@ -381,7 +381,7 @@ struct DialogJson {
     state: String,
     /// The final response code that decided the outcome behind `state` — 200
     /// for an answered call, the 4xx/5xx/6xx for a failed one, 487 for a
-    /// cancelled one. `None` while the call is still in progress.
+    /// canceled one. `None` while the call is still in progress.
     ///
     /// Auth challenges are excluded: a call challenged then answered reports
     /// 200, not the 401. The challenge is the outcome only for a call that drew
@@ -410,7 +410,7 @@ struct DialogJson {
     sdp_timeline: Vec<SdpExchangeJson>,
     /// Media diagnosis findings.
     diagnosis: DiagnosisJson,
-    /// Signalling diagnosis findings, omitted entirely when nothing was
+    /// Signaling diagnosis findings, omitted entirely when nothing was
     /// detected — the spec's rule, and what keeps a clean dialog's JSON the size
     /// it was before this existed.
     ///
@@ -586,7 +586,7 @@ pub fn message_to_json_pretty(msg: &SipMessage) -> String {
 /// # Returns
 ///
 /// One compact JSON object followed by `\n`; an `{"error": ...}` line on
-/// serialization failure, matching [`dialog_to_json`]'s behaviour.
+/// serialization failure, matching [`dialog_to_json`]'s behavior.
 #[must_use]
 pub fn dialog_to_ndjson(
     dialog: &SipDialog,

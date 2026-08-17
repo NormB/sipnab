@@ -332,7 +332,7 @@ pub struct CaptureArgs {
 
     /// Descend into subdirectories when `-I` names a directory.
     ///
-    /// Off by default: recursing silently can analyse several times the
+    /// Off by default: recursing silently can analyze several times the
     /// traffic you pointed at, and nothing in the output would say so.
     #[arg(help_heading = "Capture", long = "recursive")]
     pub recursive: bool,
@@ -407,7 +407,7 @@ pub struct CaptureArgs {
 
     /// SIP port range to capture [default: 5060-5061].
     ///
-    /// Signalling only — media is never gated, because RTP uses
+    /// Signaling only — media is never gated, because RTP uses
     /// SDP-negotiated dynamic ports.
     ///
     /// The default is narrow, and SIP on other ports is ordinary: carriers and
@@ -416,7 +416,7 @@ pub struct CaptureArgs {
     /// then appears in no message count, no dialog, and no output format. That
     /// used to be silent; sipnab now counts what it skipped and says so,
     /// naming the busiest ports so there is something to widen to. Pass
-    /// `--portrange 1-65535` to analyse everything the capture holds.
+    /// `--portrange 1-65535` to analyze everything the capture holds.
     ///
     /// Live capture also turns this into the BPF filter when no explicit
     /// filter is given, so there the kernel drops the traffic and nothing
@@ -434,12 +434,12 @@ pub struct CaptureArgs {
     /// web, not a deployment's. Kamailio, OpenSIPS and Janus each default to
     /// WSS on ports outside it, and behind a reverse proxy sipnab sees
     /// whichever port the proxy forwards to; on such a capture the entire
-    /// WebRTC signalling leg is invisible. Unlike `--portrange` this used to
+    /// WebRTC signaling leg is invisible. Unlike `--portrange` this used to
     /// report nothing at all, so sipnab now tallies the SIP-over-WebSocket it
     /// declined to unwrap and names the ports it was on.
     ///
     /// A range REPLACES the shipped set, exactly as `--portrange` replaces the
-    /// default signalling ports; pass `--ws-portrange 1-65535` to unwrap
+    /// default signaling ports; pass `--ws-portrange 1-65535` to unwrap
     /// wherever it appears.
     #[arg(help_heading = "Capture", long = "ws-portrange", value_name = "RANGE")]
     pub ws_portrange: Option<String>,
@@ -473,7 +473,7 @@ pub struct CaptureArgs {
     /// OFF by default because it is not a narrowing filter: BPF cannot walk a
     /// GTP-U extension-header chain to reach the inner port, so the only way
     /// to cover these is to take everything on the port. On a mobile core or a
-    /// data-centre fabric that is the entire user plane. Without it the
+    /// data-center fabric that is the entire user plane. Without it the
     /// auto-generated filter still sees VLAN/QinQ/PPPoE/MPLS-encapsulated SIP,
     /// which cost nothing to add. Ignored when you supply your own filter.
     #[arg(
@@ -577,7 +577,7 @@ pub struct ModeArgs {
     /// This publishes the caller's keypresses. After answer, DTMF digits are
     /// routinely voicemail PINs, calling-card numbers, account numbers and
     /// credit-card numbers with their CVVs, and they arrive in the clear no
-    /// matter how the signalling was protected. Everyone who can read this
+    /// matter how the signaling was protected. Everyone who can read this
     /// run's log can read them: the terminal, the redirected file, journald,
     /// and whatever log aggregator ships them onward.
     ///
@@ -896,7 +896,7 @@ pub struct OutputArgs {
     ///
     /// The linter reads what the capture actually contains against what the
     /// cited RFC section calls for, so a finding names a section rather than
-    /// an opinion. `sipnab --help-rules` is not a thing; the catalogue is in
+    /// an opinion. `sipnab --help-rules` is not a thing; the catalog is in
     /// docs/sip-lint-rules.md and over MCP as `explain_rule`.
     #[arg(help_heading = "Output", long)]
     pub lint: bool,
@@ -999,7 +999,7 @@ pub struct DialogArgs {
     /// so this bound scales with UPTIME, not with load.
     ///
     /// This help used to say "track simultaneously", which is the reading an
-    /// operator wants and not the behaviour that exists. A box carrying five
+    /// operator wants and not the behavior that exists. A box carrying five
     /// concurrent calls still evicts once 100,000 calls have COMPLETED, and
     /// eviction drops the OLDEST dialogs — the worst ones to lose for a
     /// post-mortem. A multi-file set feeds one store, so a 27-file directory
@@ -1275,7 +1275,7 @@ pub struct SecurityArgs {
     ///
     /// Bounds the active-dialog and active-call gauges every surface publishes.
     /// The shipped hour is twice RFC 4028's default `Session-Expires`, which
-    /// describes a trunk carrying session timers and not a contact centre: a
+    /// describes a trunk carrying session timers and not a contact center: a
     /// caller parked on hold past an hour is a channel in use that the gauge
     /// stops counting. Widening it also widens the opposite error — a call
     /// whose BYE was lost stays counted for longer — and that one never
@@ -1356,7 +1356,7 @@ pub struct SecurityArgs {
     /// Rejected probes inside the scanner window at which a source reads as
     /// probing rather than operating.
     ///
-    /// This is the evidence gate, not a rate: neither behavioural signal
+    /// This is the evidence gate, not a rate: neither behavioral signal
     /// reports anything until a source clears this or
     /// `--scanner-unanswered-probes`, which is what separates an enumeration
     /// sweep from a trunk running keepalives at the same rate.
@@ -1449,7 +1449,7 @@ pub struct SecurityArgs {
     ///
     /// It does NOT verify the signature. Doing so means fetching the
     /// certificate the token references and checking the signature over it,
-    /// and sipnab makes no outbound request to analyse a capture. The one
+    /// and sipnab makes no outbound request to analyze a capture. The one
     /// check applied locally is `iat` freshness (RFC 8224 Section 4.4), which
     /// reports `Expired`. That window is measured against the capture
     /// timestamp of the packet carrying the header, so an old pcap reports the
@@ -1859,7 +1859,7 @@ pub struct McpArgs {
     )]
     pub cn_suppression_ratio: Option<f64>,
 
-    /// Jitter, in milliseconds, at or above which the colour column turns
+    /// Jitter, in milliseconds, at or above which the color column turns
     /// yellow. Config: `[quality] jitter_warn_ms`.
     ///
     /// None of the eight quality flags carries a clap `default_value`, for the
@@ -1869,37 +1869,37 @@ pub struct McpArgs {
     #[arg(help_heading = "Analysis", long = "jitter-warn-ms", value_name = "MS")]
     pub jitter_warn_ms: Option<f64>,
 
-    /// Jitter, in milliseconds, at or above which the colour column turns red.
+    /// Jitter, in milliseconds, at or above which the color column turns red.
     /// Config: `[quality] jitter_bad_ms`.
     #[arg(help_heading = "Analysis", long = "jitter-bad-ms", value_name = "MS")]
     pub jitter_bad_ms: Option<f64>,
 
-    /// Packet loss, in percent, at or above which the colour column turns
+    /// Packet loss, in percent, at or above which the color column turns
     /// yellow. Config: `[quality] loss_warn_pct`.
     #[arg(help_heading = "Analysis", long = "loss-warn-pct", value_name = "PCT")]
     pub loss_warn_pct: Option<f64>,
 
-    /// Packet loss, in percent, at or above which the colour column turns red.
+    /// Packet loss, in percent, at or above which the color column turns red.
     /// Config: `[quality] loss_bad_pct`.
     #[arg(help_heading = "Analysis", long = "loss-bad-pct", value_name = "PCT")]
     pub loss_bad_pct: Option<f64>,
 
-    /// MOS below which the colour column turns yellow. MOS bands run downward,
+    /// MOS below which the color column turns yellow. MOS bands run downward,
     /// so this must sit at or above `--mos-bad`. Config: `[quality] mos_warn`.
     #[arg(help_heading = "Analysis", long = "mos-warn", value_name = "MOS")]
     pub mos_warn: Option<f64>,
 
-    /// MOS below which the colour column turns red.
+    /// MOS below which the color column turns red.
     /// Config: `[quality] mos_bad`.
     #[arg(help_heading = "Analysis", long = "mos-bad", value_name = "MOS")]
     pub mos_bad: Option<f64>,
 
-    /// Round trip, in milliseconds, at or above which the colour column turns
+    /// Round trip, in milliseconds, at or above which the color column turns
     /// yellow. Config: `[quality] rtt_warn_ms`.
     #[arg(help_heading = "Analysis", long = "rtt-warn-ms", value_name = "MS")]
     pub rtt_warn_ms: Option<f64>,
 
-    /// Round trip, in milliseconds, at or above which the colour column turns
+    /// Round trip, in milliseconds, at or above which the color column turns
     /// red. Config: `[quality] rtt_bad_ms`.
     #[arg(help_heading = "Analysis", long = "rtt-bad-ms", value_name = "MS")]
     pub rtt_bad_ms: Option<f64>,
@@ -2035,7 +2035,7 @@ pub struct McpArgs {
     /// Retain RTP audio payload in memory so the `export_audio` MCP tool can
     /// decode it.
     ///
-    /// Off by default: call audio is content, not signalling, and holding it
+    /// Off by default: call audio is content, not signaling, and holding it
     /// should be a decision an operator makes rather than a side effect of
     /// enabling an MCP server. Without this flag `export_audio` refuses and
     /// its refusal says retention was off for the run — a capture setting,
@@ -2307,7 +2307,7 @@ pub struct TlsArgs {
     /// being observed.
     ///
     /// Every mapped TLS library is probed, not one: a host commonly runs
-    /// OpenSSL and wolfSSL together. Narrow with --uprobe-flavour, or name
+    /// OpenSSL and wolfSSL together. Narrow with --uprobe-flavor, or name
     /// libraries yourself with --uprobe-library.
     ///
     /// Needs root (or CAP_SYS_ADMIN + CAP_PERFMON) and a mounted tracefs.
@@ -2326,7 +2326,7 @@ pub struct TlsArgs {
     )]
     pub uprobe_library: Vec<String>,
 
-    /// Write symbol to probe. Defaults to the one the library's flavour
+    /// Write symbol to probe. Defaults to the one the library's flavor
     /// exports: SSL_write for OpenSSL, wolfSSL_write for wolfSSL.
     #[arg(
         help_heading = "TLS / Decryption",
@@ -2335,14 +2335,20 @@ pub struct TlsArgs {
     )]
     pub uprobe_symbol: Option<String>,
 
-    /// Probe only these flavours. Repeatable. Default is every one found.
+    /// Probe only these flavors. Repeatable. Default is every one found.
     #[arg(
         help_heading = "TLS / Decryption",
-        long = "uprobe-flavour",
+        long = "uprobe-flavor",
+        // The flag shipped as `--uprobe-flavour` through 0.5.104. The spelling
+        // moved to US English with the rest of the tree; the alias keeps every
+        // script that already names the old one working, because a flag that
+        // was documented and released is a contract, not a spelling choice.
+        alias = "uprobe-flavour",
+
         value_name = "NAME",
         value_parser = clap::builder::PossibleValuesParser::new(["openssl", "wolfssl"])
     )]
-    pub uprobe_flavour: Vec<String>,
+    pub uprobe_flavor: Vec<String>,
 
     /// Which uprobe machinery reads the plaintext: `tracefs` or `bpf`.
     ///
@@ -2418,7 +2424,7 @@ pub struct LimitsArgs {
     /// about how long. Thirty seconds describes IP fragments in flight; a
     /// persistent SIP/TCP or SIP/TLS trunk to a carrier goes quiet for far
     /// longer on any ordinary night, and sweeping its half-read stream means
-    /// the next segment re-initialises mid-message — so the peer that sent a
+    /// the next segment re-initializes mid-message — so the peer that sent a
     /// valid message is the one reported broken.
     #[arg(
         help_heading = "Resource limits",
@@ -2648,7 +2654,7 @@ impl Cli {
     /// definition can serve both — `mcp::shape::DEFAULT_MAX_BODY_BYTES` reads
     /// it from here.
     pub const DEFAULT_MCP_MAX_BODY_BYTES: u64 = 4_096;
-    /// Default colour mode. `auto` means "colour when stdout is a terminal".
+    /// Default color mode. `auto` means "color when stdout is a terminal".
     pub const DEFAULT_COLOR: &'static str = "auto";
     /// Default scanner-kill response code. `200 OK` is the sipgrep default: it
     /// ends the scan without telling the scanner anything about the target.
@@ -3008,7 +3014,7 @@ impl Cli {
             })
     }
 
-    /// Colour mode: `--color`, else `[display] color`, else the default.
+    /// Color mode: `--color`, else `[display] color`, else the default.
     ///
     /// Both this and [`Self::kill_response_code`] exist because the flags used
     /// to carry a clap `default_value`, which made their config keys dead —
@@ -3334,7 +3340,7 @@ impl Cli {
             .unwrap_or(Self::DEFAULT_LINT_MAX_PER_RULE) as usize
     }
 
-    /// Signalling diagnosis thresholds: each flag, else its `[diagnosis]` key,
+    /// Signaling diagnosis thresholds: each flag, else its `[diagnosis]` key,
     /// else the standards figure.
     #[must_use]
     pub fn signaling_thresholds(
@@ -3366,7 +3372,7 @@ impl Cli {
     ///
     /// Composed from the three resolved threshold sets rather than resolved
     /// again here, so `--problems` cannot disagree with the diagnosis it
-    /// reports, the colour an operator sees, or the fraud detector's idea of a
+    /// reports, the color an operator sees, or the fraud detector's idea of a
     /// short call. Each part has already applied its own
     /// flag-over-key-over-default precedence; a fourth chain here is exactly
     /// the drift this replaces.
@@ -3415,7 +3421,7 @@ impl Cli {
         }
     }
 
-    /// Quality colour bands: each flag, else its `[quality]` key, else the
+    /// Quality color bands: each flag, else its `[quality]` key, else the
     /// shipped boundary. See [`Self::dialog_limit`] for the precedence rule.
     ///
     /// Resolved ONCE, at startup, and handed to the views. That is the whole
@@ -3483,7 +3489,7 @@ impl Cli {
         !self.capture_args.input.is_empty()
     }
 
-    /// The first `-I` argument, for labelling and for the single-file paths
+    /// The first `-I` argument, for labeling and for the single-file paths
     /// that predate multi-file input.
     ///
     /// This is the *spec* as typed, which may be a directory or a glob rather
@@ -3873,7 +3879,7 @@ mod tests {
         }
     }
 
-    /// With no flag and no config key, the resolved colour mode is `auto`.
+    /// With no flag and no config key, the resolved color mode is `auto`.
     ///
     /// Asserts the RESOLVER, not the field. `cli.output_args.color == "auto"` was the old
     /// assertion and it passed for the wrong reason: clap filled the field
@@ -3891,7 +3897,7 @@ mod tests {
         assert_eq!(cli.color_mode(&cfg), "auto");
     }
 
-    /// `[display] color` is honoured when the flag is absent, and loses to it
+    /// `[display] color` is honored when the flag is absent, and loses to it
     /// when present. This is the wiring the old field-assertion could not see.
     #[test]
     fn config_color_is_reachable_and_the_flag_still_wins() {

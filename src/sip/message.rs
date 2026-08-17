@@ -78,13 +78,13 @@ pub struct SipMessage {
     ///
     /// `None` for a message that came from no frame — hand-built in a test, or
     /// reassembled from a source that could not number its frames. Downstream
-    /// must report the absence rather than substitute a neighbouring frame:
+    /// must report the absence rather than substitute a neighboring frame:
     /// naming the wrong bytes is the failure this whole mechanism exists to
     /// prevent.
     pub frame: Option<crate::capture::packet::FrameRef>,
     /// The DSCP the frame carrying this message was marked with.
     ///
-    /// Signalling and media are marked separately and frequently disagree —
+    /// Signaling and media are marked separately and frequently disagree —
     /// the classic fault is media marked `EF` while `INVITE`s go out
     /// unmarked, so call setup queues behind bulk traffic on a congested link
     /// and post-dial delay climbs while every media metric stays clean. That

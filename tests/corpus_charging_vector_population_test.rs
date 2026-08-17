@@ -12,7 +12,7 @@
 //! asserted to correlate, green. It looks like validation and is not, and it
 //! is the shape that survives review because the word "corpus" is in the name.
 //!
-//! So this file asserts the **population**, not the behaviour. It answers one
+//! So this file asserts the **population**, not the behavior. It answers one
 //! question — how many parsed SIP messages carry the header, and how many
 //! dialogs — and pins the answer. Two properties follow:
 //!

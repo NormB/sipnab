@@ -940,7 +940,7 @@ mod tests {
 
     /// The post-drop verification rejects ids that are not the ones asked for.
     ///
-    /// `verify_dropped` is the last line of defence: it is what would catch a
+    /// `verify_dropped` is the last line of defense: it is what would catch a
     /// future edit that reordered the drop, switched to `setresuid`, or
     /// dropped only the real ids. Asking it to confirm a drop to uid 0 from a
     /// process that is not uid 0 is the cheapest way to prove it actually

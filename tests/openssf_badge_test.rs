@@ -34,7 +34,7 @@ fn sheet() -> String {
 }
 
 /// `license_location`, `floss_license`, `floss_license_osi` — the sheet says
-/// both licence files sit at the repo root under a dual MIT/Apache-2.0 grant.
+/// both license files sit at the repo root under a dual MIT/Apache-2.0 grant.
 #[test]
 fn licence_claims_hold() {
     for f in ["LICENSE-MIT", "LICENSE-APACHE"] {

@@ -54,7 +54,7 @@ it is not the same guarantee:
    happens instead and says how to get what was asked for. It fires from
    `bootstrap::plan` ([`bootstrap.rs:245-263`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L245-L263)),
    which runs for every mode. The doc comment at `:31-36` is explicit that the
-   pair is deliberate: a type-only guard leaves someone believing their defence
+   pair is deliberate: a type-only guard leaves someone believing their defense
    is armed, and a message-only guard is one forgetful call site away from being
    no guard at all.
 
@@ -123,7 +123,7 @@ refusal and no warning.
 This is a *different* failure from the kill path and should not be conflated with
 it. The destination is operator-supplied, so sipnab is not spraying packets at
 uninvolved third parties. What it does instead is **exfiltrate the capture**:
-customer signalling, including whatever the capture holds, leaves the analyst's
+customer signaling, including whatever the capture holds, leaves the analyst's
 machine because a flag that reads like a live-capture forwarding option was left
 in a shell history and reused on a file.
 
@@ -178,7 +178,7 @@ capture's, so the analyst's resolver — and its upstream — learn the address 
 of a customer capture. It is off by default
 ([`config.rs`](../../src/config.rs), `names.reverse_dns`), it is a legitimate
 analysis aid, and PTR lookups are not the same order of exposure as forwarding
-signalling. It is recorded here so the inventory is complete, not as a
+signaling. It is recorded here so the inventory is complete, not as a
 recommendation to change it.
 
 ## 4. The three things someone legitimately wants to send
@@ -257,7 +257,7 @@ trick `TransmitPermit`'s private field plays, applied to the destination instead
 of the source, and it is the reason to build the capability this way rather than
 as a well-reviewed function.
 
-Everything below is defence in depth. If layer 1 is right, none of it is load-bearing;
+Everything below is defense in depth. If layer 1 is right, none of it is load-bearing;
 if layer 1 is wrong, none of it saves the design.
 
 **Layer 2 — resolve once, at startup, before any packet is read.** The
@@ -311,7 +311,7 @@ Every one off by default, matching the standing rule
 
 ### 5.4 What the guard must never grow
 
-Recorded so a future change can be recognised as crossing the line rather than
+Recorded so a future change can be recognized as crossing the line rather than
 extending it:
 
 - **`TransmitPermit::for_source` must keep returning `None` for `CaptureSource::File`.**

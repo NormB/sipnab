@@ -58,7 +58,7 @@ const DEFAULT_MAX_ENTRIES: usize = 10_000;
 /// the TCP reassembler inherited it. Those are not the same wait. A persistent
 /// SIP/TLS trunk to a carrier is idle for far longer than thirty seconds on any
 /// quiet night, and sweeping its half-read stream means the next segment
-/// re-initialises MID-MESSAGE: the message it lands in the middle of parses as
+/// re-initializes MID-MESSAGE: the message it lands in the middle of parses as
 /// malformed, and the peer that sent a perfectly good one is the peer reported
 /// broken. `--max-reassembly` bounds how MANY entries are held and says nothing
 /// about how long; `--reassembly-ttl` or `[limits] reassembly_ttl_secs` is the
@@ -74,7 +74,7 @@ pub const DEFAULT_TTL: Duration = Duration::from_secs(30);
 /// Process-global and written once at startup, the same shape as
 /// [`MAX_TCP_BUFFER`] below and for the same reason: a reassembler is created
 /// by the batch runner, the TUI and every `--cores` shard, so a value threaded
-/// to some of them is a setting honoured on some surfaces and ignored on
+/// to some of them is a setting honored on some surfaces and ignored on
 /// others.
 static REASSEMBLY_TTL_SECS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(DEFAULT_TTL.as_secs());
@@ -139,7 +139,7 @@ pub const MIN_TCP_BUFFER: usize = crate::sip::parser::DEFAULT_MAX_HEADER_LINE_LE
 /// Process-global and written once at startup, the same shape as
 /// [`crate::rtp::stream::set_lost_seq_log_cap`] and for the same reason: a
 /// reassembler is created by the batch runner, the TUI and every `--cores`
-/// shard, so a value threaded to some of them is a setting honoured on some
+/// shard, so a value threaded to some of them is a setting honored on some
 /// surfaces and ignored on others.
 static MAX_TCP_BUFFER: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_TCP_BUFFER);

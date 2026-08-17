@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate THIRD-PARTY-NOTICES.md from the real dependency graph.
 
-Attribution is a licence obligation, not a courtesy: MIT and Apache-2.0 both
+Attribution is a license obligation, not a courtesy: MIT and Apache-2.0 both
 require the notice to travel with the binary, and the one copyleft component
 sipnab touches (libasound, LGPL-2.1-or-later) requires saying so. A file like
 this hand-maintained goes stale on the first `cargo update` and nobody notices,
@@ -21,7 +21,7 @@ Scope, stated plainly because it bounds what the file is evidence of:
     stronger obligation and is why each row says which case it is.
 
 It records each crate's SPDX expression as declared in its own manifest. It is
-an inventory, not a compendium of licence texts; full texts live at the SPDX
+an inventory, not a compendium of license texts; full texts live at the SPDX
 identifiers given, and sipnab's own LICENSE-MIT / LICENSE-APACHE ship beside it.
 
 Run from the repo root:  python3 scripts/build-third-party-notices.py [OUT]
@@ -82,7 +82,7 @@ SYSTEM_LIBS = [
 ]
 
 # Crates offering a copyleft option alongside permissive ones. sipnab elects a
-# permissive licence in each case; recording the election is the point.
+# permissive license in each case; recording the election is the point.
 ELECTIONS = {
     "r-efi": ("MIT OR Apache-2.0 OR LGPL-2.1-or-later", "Apache-2.0"),
     "termina": ("MIT OR MPL-2.0", "MIT"),
@@ -105,7 +105,7 @@ the artifacts either link from the host or compile in. Dev-dependencies are
 excluded: test harnesses are not part of any distributed artifact.
 
 Each entry gives the SPDX expression the crate declares in its own manifest.
-Full licence texts are published at <https://spdx.org/licenses/> under those
+Full license texts are published at <https://spdx.org/licenses/> under those
 identifiers.
 """
 
@@ -156,13 +156,13 @@ def distributed_packages(meta: dict) -> list[tuple[str, str, str]]:
         if pid in workspace:
             continue
         pkg = packages[pid]
-        licence = pkg.get("license")
-        if not licence:
+        license = pkg.get("license")
+        if not license:
             raise SystemExit(
                 f"ERROR: {pkg['name']} {pkg['version']} declares no license; "
                 "add it to the notices by hand or vendor the text"
             )
-        rows.append((pkg["name"], pkg["version"], licence))
+        rows.append((pkg["name"], pkg["version"], license))
     return sorted(rows, key=lambda r: (r[0].lower(), r[1]))
 
 
@@ -178,42 +178,42 @@ def render(rows: list[tuple[str, str, str]]) -> str:
         "last column says which case each library falls under."
     )
     out.append("")
-    out.append("| Library | Licence | How sipnab uses it |")
+    out.append("| Library | License | How sipnab uses it |")
     out.append("|---|---|---|")
-    for name, licence, note in SYSTEM_LIBS:
-        out.append(f"| {name} | {licence} | {note} |")
+    for name, license, note in SYSTEM_LIBS:
+        out.append(f"| {name} | {license} | {note} |")
 
     elected = [(n, v, l) for n, v, l in rows if n in ELECTIONS]
     if elected:
-        out += ["", "## Multi-licensed crates and the licence elected", ""]
+        out += ["", "## Multi-licensed crates and the license elected", ""]
         out.append(
             "These offer a copyleft option alongside permissive ones. sipnab "
-            "elects the permissive licence named here."
+            "elects the permissive license named here."
         )
         out.append("")
         out.append("| Crate | Offered | Elected |")
         out.append("|---|---|---|")
         # Deduplicate on what is EMITTED, not on what was collected. The
-        # version is dropped from this table -- the licence election is a
+        # version is dropped from this table -- the license election is a
         # property of the crate, not of a version -- so a crate vendored at two
         # versions passed `set()` as two distinct tuples and printed the same
         # row twice. r-efi, at 5.3.0 and 6.0.0, did exactly that. Two versions
-        # declaring DIFFERENT licences still produce two rows, and the check
+        # declaring DIFFERENT licenses still produce two rows, and the check
         # below then fires on whichever disagrees with the recorded election.
-        for name, licence in sorted({(n, l) for n, _v, l in elected}):
+        for name, license in sorted({(n, l) for n, _v, l in elected}):
             offered, choice = ELECTIONS[name]
-            if licence != offered:
+            if license != offered:
                 raise SystemExit(
-                    f"ERROR: {name} now declares `{licence}`, not `{offered}` — "
+                    f"ERROR: {name} now declares `{license}`, not `{offered}` — "
                     "re-check the election in ELECTIONS before regenerating"
                 )
             out.append(f"| {name} | {offered} | **{choice}** |")
 
     out += ["", f"## Rust crates ({len(rows)})", ""]
-    out.append("| Crate | Version | Licence |")
+    out.append("| Crate | Version | License |")
     out.append("|---|---|---|")
-    for name, version, licence in rows:
-        out.append(f"| {name} | {version} | {licence} |")
+    for name, version, license in rows:
+        out.append(f"| {name} | {version} | {license} |")
     out.append("")
     return "\n".join(out)
 

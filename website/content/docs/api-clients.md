@@ -233,7 +233,7 @@ async def tail_dialogs(poll_interval: float = 2.0) -> None:
                     if d["call_id"] in seen:
                         continue
                     seen.add(d["call_id"])
-                    if d["state"] in ("Completed", "Failed", "Cancelled"):
+                    if d["state"] in ("Completed", "Failed", "Canceled"):
                         print(f"{datetime.now(timezone.utc).isoformat()}  "
                               f"{d['state']:10s}  {d['call_id']}  "
                               f"{d.get('from_user')} → {d.get('to_user')}")

@@ -209,7 +209,7 @@ const MAX_PATTERN_ENTRIES: usize = 10_000;
 /// it is denominated in windows, so it holds its relationship to the window at
 /// every width. The memory caps (`MAX_PATTERN_ENTRIES`,
 /// `MAX_SHORT_CALLS_PER_SOURCE`) are not here either: they bound sipnab's
-/// footprint, not the network's behaviour.
+/// footprint, not the network's behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FraudThresholds {
     /// Measured duration below which a completed call counts as "short".
@@ -371,7 +371,7 @@ impl FraudDetector {
     /// wangiri if that pushed a prefix over the threshold.
     ///
     /// A call's duration is not knowable when it starts. The dialog is created
-    /// from the INVITE, so at the moment the INVITE is analysed `created_at`
+    /// from the INVITE, so at the moment the INVITE is analyzed `created_at`
     /// and `updated_at` are the same timestamp and every call measures zero
     /// seconds — which is how three 200-second conversations were reported as
     /// "3 short calls in 60s". It IS knowable when the call ends, which is
@@ -386,7 +386,7 @@ impl FraudDetector {
     /// `200 OK` to a `BYE` arrives after the dialog is already terminal and
     /// must not count the call twice.
     ///
-    /// Only `Completed` and `Cancelled` count. Wangiri is a call that CONNECTED
+    /// Only `Completed` and `Canceled` count. Wangiri is a call that CONNECTED
     /// and was cut, or rang and was pulled — the caller's choice either way,
     /// which is what makes it a lure. A `Failed` dialog is one the NETWORK
     /// refused, and a `404` comes back in milliseconds, so counting those made
@@ -397,7 +397,7 @@ impl FraudDetector {
         if dialog.method != crate::sip::SipMethod::Invite
             || !matches!(
                 dialog.state(),
-                DialogState::Completed | DialogState::Cancelled
+                DialogState::Completed | DialogState::Canceled
             )
         {
             return None;
@@ -436,8 +436,8 @@ impl FraudDetector {
     ///
     /// Whether a number is there is knowable only once the call ends, which is
     /// the same reason [`Self::record_if_short_call`] waits: at the moment the
-    /// INVITE is analysed the dialog has no outcome yet. A `Failed` dialog is
-    /// one a final `4xx`, `5xx` or `6xx` ended. `Cancelled` deliberately does
+    /// INVITE is analyzed the dialog has no outcome yet. A `Failed` dialog is
+    /// one a final `4xx`, `5xx` or `6xx` ended. `Canceled` deliberately does
     /// not count — the CALLER gave up, which says nothing about the number —
     /// and neither does `Redirected`, where a `3xx` sent the call somewhere
     /// else rather than saying it did not exist.
@@ -622,7 +622,7 @@ impl FraudDetector {
 /// The alert says "N short calls to prefix P", and now N and P come from the
 /// short calls themselves.
 ///
-/// `now` is capture time — the timestamp of the message being analysed.
+/// `now` is capture time — the timestamp of the message being analyzed.
 ///
 /// Iteration order over the prefix map is unspecified, so the alert names the
 /// prefix with the most short calls (ties broken by the prefix itself). Two
@@ -792,7 +792,7 @@ mod tests {
     /// Each call is placed and hung up, because that is when a call's duration
     /// becomes knowable. This test used to hand the detector a dialog whose
     /// `created_at` and `updated_at` it had set one second apart by hand — a
-    /// dialog no capture produces at the moment an INVITE is analysed, and the
+    /// dialog no capture produces at the moment an INVITE is analyzed, and the
     /// reason the defect survived: the fixture supplied the very measurement
     /// the code could not make.
     #[test]
@@ -851,7 +851,7 @@ mod tests {
     /// consecutive numbers is only a scan when the numbers are not there — see
     /// [`a_hunt_group_answered_in_order_is_not_sequential_scanning`]. This test
     /// used to hand the detector a dialog whose duration it had set by hand,
-    /// which no capture produces at the moment an INVITE is analysed.
+    /// which no capture produces at the moment an INVITE is analyzed.
     #[test]
     fn sequential_scanning_detected() {
         let alerts = replay_refused(&DIDS[..5], attacker_ip());

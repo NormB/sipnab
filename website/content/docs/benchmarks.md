@@ -25,16 +25,16 @@ Reach, not a benchmark win. sipnab sits between a local capture tool and a
 capture platform: many nodes, no infrastructure behind it
 ([the position](https://github.com/NormB/sipnab/blob/main/docs/design/positioning.md)).
 Kamailio, OpenSIPS and Asterisk already speak HEP, so they mirror their
-signalling to one sipnab listener and that single process answers for the whole
+signaling to one sipnab listener and that single process answers for the whole
 estate — nothing goes on the production hosts. Throughput is what keeps that
 arrangement honest. A listener that falls behind the fan-in sends you back to
 capture agents feeding a collector, which is the deployment project sipnab
 exists to skip.
 
 Put the figures next to the load. A proxy running 100 calls per second at
-roughly ten SIP messages per call emits about 1,000 signalling packets per
+roughly ten SIP messages per call emits about 1,000 signaling packets per
 second. The tables below measure 1.28M packets per second on one core and 2.31M
-on four, on a corpus that is 93.5% RTP — media a signalling-only HEP feed never
+on four, on a corpus that is 93.5% RTP — media a signaling-only HEP feed never
 carries at all. Three orders of magnitude separate that proxy from a single
 core's budget.
 
@@ -57,7 +57,7 @@ discover:
   G.711 PCMU at 20 ms, 93.5% RTP by packet count.
 - **Method:** offline pcap reconstruction (`-I file`), median-of-5 after one
   discarded warmup. `pkts/s = packets ÷ wall-clock seconds`, startup included.
-- **Version:** sipnab 0.5.104 (release artifact). **Date:** 2026-08-17.
+- **Version:** sipnab 0.5.105 (release artifact). **Date:** 2026-08-17.
 
 ## Multi-core offline reconstruction
 

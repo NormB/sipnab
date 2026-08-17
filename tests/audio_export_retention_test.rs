@@ -15,7 +15,7 @@
 //! rather than about the run. A batch run now retains exactly when it is an MCP
 //! run AND the operator passed `--retain-audio` — the only batch configuration
 //! that can read the buffers back, gated on explicit consent because call
-//! audio is content, not signalling (`app::batch::apply_audio_retention`).
+//! audio is content, not signaling (`app::batch::apply_audio_retention`).
 //!
 //! Both halves stay worth pinning against a real capture, because both are
 //! still reachable — the second is what every non-MCP batch run does:
@@ -59,7 +59,7 @@ fn replay(retain_audio: bool) -> (Arc<RwLock<DialogStore>>, Arc<RwLock<StreamSto
     ss.write().set_audio_capture(retain_audio);
     let mut heuristic = RtpHeuristic::new();
     let opts = PipelineOptions {
-        // The sample's signalling is on 5060, but do not make the test depend
+        // The sample's signaling is on 5060, but do not make the test depend
         // on that: the gate exists for live capture.
         sip_portrange: None,
         ..Default::default()

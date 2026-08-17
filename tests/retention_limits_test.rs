@@ -136,7 +136,7 @@ fn raising_the_keep_limit_keeps_more_of_the_ladder() {
     let survived = store.get(&call_id).expect("dialog").messages.len();
     assert_eq!(
         survived, raised,
-        "compaction honoured neither the raised limit nor the default; it left \
+        "compaction honored neither the raised limit nor the default; it left \
          {survived} messages"
     );
     assert!(

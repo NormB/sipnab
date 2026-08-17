@@ -115,7 +115,7 @@ sudo sipnab --uprobe-list
 It installs nothing, and prints what a capture would probe:
 
 ```text
-FLAVOUR        INODE  PIDS  LIBRARY
+FLAVOR        INODE  PIDS  LIBRARY
 OpenSSL        21143    12  /proc/954/root/usr/lib/x86_64-linux-gnu/libssl.so.3
 wolfSSL     17433084     1  /proc/982702/root/usr/lib/libwolfssl.so.42.2.0
 ```
@@ -144,7 +144,7 @@ than one.
 Narrow it if only one stack is yours to read:
 
 ```bash
-sudo sipnab -N --uprobe-tls --uprobe-flavour openssl
+sudo sipnab -N --uprobe-tls --uprobe-flavor openssl
 ```
 
 ### Step 3 — read the output, and know what is missing
@@ -153,7 +153,7 @@ sudo sipnab -N --uprobe-tls --uprobe-flavour openssl
 REGISTER sip:example.net SIP/2.0 ... uprobe:opensips/954#3
 ```
 
-Dialogs carry **no addresses and port 0**, labelled `uprobe:<comm>/<pid>`. A
+Dialogs carry **no addresses and port 0**, labeled `uprobe:<comm>/<pid>`. A
 uprobe sees the bytes an application handed its TLS library and nothing about
 the socket beneath, so sipnab names the process rather than inventing a peer.
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Structured findings: the rule catalogue, and the citation carried with
+//! Structured findings: the rule catalog, and the citation carried with
 //! every result.
 //!
 //! # Why the citation is a field and not a sentence
@@ -80,7 +80,7 @@ pub enum Basis {
     Interop,
     /// The declaration and the observed media disagree. The specification is
     /// cited for what was promised; the finding comes from the wire, and only a
-    /// tool holding signalling and media together can raise it.
+    /// tool holding signaling and media together can raise it.
     Observation,
 }
 
@@ -244,7 +244,7 @@ impl Finding {
     }
 }
 
-// ── The rule catalogue ──────────────────────────────────────────────────
+// ── The rule catalog ──────────────────────────────────────────────────
 //
 // Every citation below was read out of the RFC text, not recalled. Where the
 // section a rule is usually attributed to turned out to be the wrong one, the
@@ -581,7 +581,7 @@ pub const ANSWER_NO_COMMON_FORMAT: RuleMeta = RuleMeta {
     rfc: 3264,
     // §6.1: "For streams marked as sendrecv in the answer, the 'm=' line MUST
     // contain at least one codec the answerer is willing to both send and
-    // receive, from amongst those listed in the offer."
+    // receive, from among those listed in the offer."
     section: "6.1",
 };
 
@@ -618,10 +618,10 @@ pub const ANSWER_DIRECTION_ILLEGAL: RuleMeta = RuleMeta {
     section: "6.1",
 };
 
-/// A hold signalled by setting the connection address to `0.0.0.0`.
+/// A hold signaled by setting the connection address to `0.0.0.0`.
 pub const HOLD_CONNECTION_ZERO: RuleMeta = RuleMeta {
     id: "SDP-3264-8.4-HOLD-CONNECTION-ZERO",
-    title: "hold signalled with c=0.0.0.0",
+    title: "hold signaled with c=0.0.0.0",
     severity: Severity::Warning,
     basis: Basis::Should,
     rfc: 3264,
@@ -641,7 +641,7 @@ pub const PT_UNDECLARED: RuleMeta = RuleMeta {
     basis: Basis::Observation,
     rfc: 3264,
     // §6.1 binds what may be sent to what the offer listed: the answerer's
-    // formats come "from amongst those listed in the offer", and "if a
+    // formats come "from among those listed in the offer", and "if a
     // particular codec was referenced with a specific payload type number in
     // the offer, that same payload type number SHOULD be used for that codec in
     // the answer".
@@ -755,7 +755,7 @@ pub fn rule_by_id(id: &str) -> Option<&'static RuleMeta> {
     RULES.iter().find(|r| r.id == id)
 }
 
-/// Tests for the rule catalogue and the finding type.
+/// Tests for the rule catalog and the finding type.
 #[cfg(test)]
 mod tests {
     use super::*;

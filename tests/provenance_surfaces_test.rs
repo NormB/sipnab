@@ -49,7 +49,7 @@ fn fixture(name: &str) -> String {
     format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The three checked-in fixtures carry signalling only, so the media half of
+/// The three checked-in fixtures carry signaling only, so the media half of
 /// this suite reads from the synthetic sample corpus instead.
 fn sample(name: &str) -> String {
     format!("{}/tests/pcap-samples/{name}", env!("CARGO_MANIFEST_DIR"))
@@ -437,7 +437,7 @@ fn a_dialog_with_no_frame_omits_the_key_rather_than_emitting_a_default() {
 
 // ── media streams ─────────────────────────────────────────────────────
 //
-// Everything above is about signalling. A stream reached every surface with
+// Everything above is about signaling. A stream reached every surface with
 // no pointer at all: `grep -rn frame_ref src/rtp/` matched nothing, so
 // `rtp_stats`, `/v1/streams`, `--json` and the TUI's stream export each named
 // an SSRC, a jitter figure and a loss percentage that no reader could tie to a
@@ -471,7 +471,7 @@ fn a_stream_records_the_frame_its_first_packet_arrived_in() {
 /// Asserts the round trip through the emitted *string*, not the presence of a
 /// field. A populated pointer aimed one frame off would satisfy `is_some()`
 /// and be exactly the confident wrong answer this feature exists to prevent —
-/// and `resolve` checks the digest, so a neighbouring frame is refused rather
+/// and `resolve` checks the digest, so a neighboring frame is refused rather
 /// than quietly returned.
 #[test]
 fn the_stream_pointer_resolves_to_the_frame_the_stream_opened_in() {

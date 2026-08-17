@@ -32,7 +32,7 @@ pub enum DialogState {
     /// The INVITE transaction was terminated: a CANCEL was seen, a 487 came
     /// back, or both. Either alone is enough — the CANCEL can take a different
     /// path from the response, and a capture can begin mid-dialog.
-    Cancelled,
+    Canceled,
     /// Final error response received (4xx, 5xx, or 6xx).
     Failed,
     /// A 3xx redirected the request elsewhere.
@@ -66,7 +66,7 @@ impl std::fmt::Display for DialogState {
             Self::Ringing => "Ringing",
             Self::InCall => "InCall",
             Self::Completed => "Completed",
-            Self::Cancelled => "Cancelled",
+            Self::Canceled => "Canceled",
             Self::Failed => "Failed",
             Self::Redirected => "Redirected",
             Self::Registered => "Registered",
@@ -206,12 +206,12 @@ impl SipDialog {
     /// The final SIP response code of the call's INVITE transaction — the code
     /// that determined the outcome behind the [`DialogState`] word: 200 for an
     /// answered call (`InCall`/`Completed`), the 4xx/5xx/6xx for a `Failed` one
-    /// (486 busy vs 503 unavailable vs 404 …), 487 for `Cancelled`. Returns
+    /// (486 busy vs 503 unavailable vs 404 …), 487 for `Canceled`. Returns
     /// `None` while the call is still in progress (no final response yet), so a
     /// `Ringing`/`Trying` dialog shows no code.
     ///
     /// Considers final (`>= 200`) responses carrying a CSeq method of `INVITE`
-    /// (responses to CANCEL/BYE — their own CSeq — are excluded, so a cancelled
+    /// (responses to CANCEL/BYE — their own CSeq — are excluded, so a canceled
     /// call reports 487, not the 200 that acknowledged its CANCEL). Auth
     /// challenges (401/407) are *intermediate* — a call challenged then answered
     /// reports its real outcome (200), not the 407 — so they are ignored unless
@@ -270,7 +270,7 @@ impl SipDialog {
     /// that was not a cosmetic placeholder. `method` is set once here and never
     /// corrected: a malformed response — Call-ID present, CSeq absent or
     /// unparseable — arriving BEFORE the INVITE created a dialog under that
-    /// Call-ID labelled `UNKNOWN`, and the real INVITE then matched the
+    /// Call-ID labeled `UNKNOWN`, and the real INVITE then matched the
     /// existing entry and left the label wrong for the rest of the capture.
     /// `dialog_store`'s INVITE-specific matching (`candidate.method ==
     /// SipMethod::Invite`) stops working on that dialog, and every per-method
@@ -538,7 +538,7 @@ mod tests {
         assert_eq!(dialog.state, DialogState::Completed);
     }
 
-    /// CANCEL during Ringing moves the dialog to Cancelled, and the 487
+    /// CANCEL during Ringing moves the dialog to Canceled, and the 487
     /// confirmation keeps it there.
     #[test]
     fn invite_cancelled() {
@@ -551,15 +551,15 @@ mod tests {
 
         let cancel = make_request("CANCEL");
         update_state(&mut dialog, &cancel);
-        assert_eq!(dialog.state, DialogState::Cancelled);
+        assert_eq!(dialog.state, DialogState::Canceled);
 
         // 487 confirms the cancellation
         let terminated = make_response(487, "Request Terminated", "INVITE");
         update_state(&mut dialog, &terminated);
-        assert_eq!(dialog.state, DialogState::Cancelled);
+        assert_eq!(dialog.state, DialogState::Canceled);
     }
 
-    /// A 487 with no CANCEL in the capture still marks the dialog Cancelled.
+    /// A 487 with no CANCEL in the capture still marks the dialog Canceled.
     ///
     /// RFC 3261 §21.4.25: a 487 means the request "was terminated by a BYE or
     /// CANCEL request". The 487 alone is the proof; seeing the CANCEL is not a
@@ -567,8 +567,8 @@ mod tests {
     /// the response, a capture can start mid-dialog, and sampling can drop it.
     ///
     /// This arm previously did nothing at all unless the dialog was ALREADY
-    /// Cancelled, and because `487` matches before the `400..=699` arm the
-    /// response did not fall through to Failed either. A cancelled call whose
+    /// Canceled, and because `487` matches before the `400..=699` arm the
+    /// response did not fall through to Failed either. A canceled call whose
     /// CANCEL went uncaptured therefore sat in Ringing forever — reported as a
     /// call still waiting for an answer, which is a different diagnosis from
     /// the one the wire actually carried.
@@ -586,7 +586,7 @@ mod tests {
         update_state(&mut dialog, &terminated);
         assert_eq!(
             dialog.state,
-            DialogState::Cancelled,
+            DialogState::Canceled,
             "a 487 is proof the INVITE transaction was terminated, with or \
              without the CANCEL in the capture"
         );
@@ -595,7 +595,7 @@ mod tests {
     /// A 487 arriving after the call was answered does NOT cancel it.
     ///
     /// The 2xx wins the race (RFC 3261 §9, §15): once a final 2xx is sent the
-    /// CANCEL has no effect. Guarding the transition on Trying/Ringing/Cancelled
+    /// CANCEL has no effect. Guarding the transition on Trying/Ringing/Canceled
     /// is what keeps a late or duplicated 487 from rewriting an established
     /// call, and mirrors the guard the 2xx arm uses.
     #[test]
@@ -621,7 +621,7 @@ mod tests {
     /// `domain-primer.md` has always said 401/407 are *intermediate*, and the
     /// REGISTER handler implemented that. The INVITE one did not: a challenge
     /// fell into its `400..=699` arm and set `Failed`, and because the 2xx arm
-    /// only transitions from Trying/Ringing/Cancelled, the call could never
+    /// only transitions from Trying/Ringing/Canceled, the call could never
     /// recover. `outcome_code()` reported 200 while `state` said Failed. The
     /// rule is now one cell in `sip::dialog_state_machine` rather than a
     /// convention four handlers each had to remember.
@@ -811,7 +811,7 @@ mod tests {
                 // What `DialogStore::process_message` does at creation: the
                 // creating message's own transition is applied, so a
                 // BYE-seeded dialog starts Completed and a CANCEL-seeded one
-                // starts Cancelled.
+                // starts Canceled.
                 let mut seeded = SipDialog::new(&req).expect("the seed just constructed");
                 update_state(&mut seeded, &req);
                 for &code in warmup {
@@ -989,7 +989,7 @@ mod tests {
 
     /// A 200 OK to INVITE that races a CANCEL — the UAS answered before the
     /// CANCEL arrived — establishes the call per RFC 3261 (the CANCEL has no
-    /// effect once a final 2xx exists), overriding the Cancelled state.
+    /// effect once a final 2xx exists), overriding the Canceled state.
     #[test]
     fn invite_200_after_cancel_becomes_incall() {
         let invite = make_invite();
@@ -997,7 +997,7 @@ mod tests {
 
         update_state(&mut dialog, &make_response(180, "Ringing", "INVITE"));
         update_state(&mut dialog, &make_request("CANCEL"));
-        assert_eq!(dialog.state, DialogState::Cancelled);
+        assert_eq!(dialog.state, DialogState::Canceled);
 
         // The 200 races the CANCEL and wins — the call was established.
         update_state(&mut dialog, &make_response(200, "OK", "INVITE"));
@@ -1449,7 +1449,7 @@ mod tests {
         assert!(
             SipDialog::new(&orphan).is_none(),
             "a response whose method cannot be determined must not create a \
-             dialog — it would be keyed by Call-ID and permanently labelled"
+             dialog — it would be keyed by Call-ID and permanently labeled"
         );
 
         // The genuine INVITE, same Call-ID, is unaffected and correct.

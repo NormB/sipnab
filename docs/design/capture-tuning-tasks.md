@@ -117,7 +117,7 @@ order*.
     carry more than one second in their own output. A partial normalizer, not
     `DeferredEffects`.
 - [x] **G6 — `--cores N` silently ignored on live capture.** Shipped as a
-  warning rather than a refusal: unlike the neighbouring `--cores` +
+  warning rather than a refusal: unlike the neighboring `--cores` +
   `--json`/`-O` check, which exits 2 because that combination emits nothing,
   here the output is complete and only the parallelism is missing, so refusing
   would break invocations that work today.
@@ -248,7 +248,7 @@ Recorded so these are not relitigated. Full reasoning in `backlog.md`.
 | | Verdict | Decisive reason |
 |---|---|---|
 | **DPDK** | Declined | Deleted in libpcap 1.11; not in Debian's build; `selectable_fd = portid` means `dpdk:0` polls **stdin** and captures nothing |
-| **PF_RING** | Declined | Proprietary ntop-EULA blobs linked into `libpfring`; incompatible with MIT/Apache-2.0 redistribution; ZC needs a paid per-MAC licence |
+| **PF_RING** | Declined | Proprietary ntop-EULA blobs linked into `libpfring`; incompatible with MIT/Apache-2.0 redistribution; ZC needs a paid per-MAC license |
 | **AF_XDP** | Declined | Ingress-only (loses half of every call); no tee, so it steals host traffic; no libpcap module in any version |
 | **XDP as a filter** | Declined | Runs *upstream* of the AF_PACKET taps — can only filter *from* sipnab, never *for* it |
 | **Fork more broadly** | Declined | Shared `Arc<RwLock<..>>` stores are the product; forking turns every read into a wire protocol |

@@ -124,7 +124,7 @@ kind of artifact people copy off the internet.
 | Silent wrong answers | Findings are namespaced by plugin id, so a reader always sees *which* plugin said it |
 
 **A plugin failure never fails the capture.** It is reported and the dialog is
-otherwise analysed normally, for the same reason a malformed packet is logged
+otherwise analyzed normally, for the same reason a malformed packet is logged
 and skipped rather than fatal.
 
 ### The memory cap has to be a limiter, not an audit

@@ -6,7 +6,7 @@
 //! where the SDP offers PCMU on payload type 0 and the far end then sends
 //! payload type 8, and it reports a clean call: both messages are perfect SIP.
 //! The defect is not in either message. It is in the disagreement between the
-//! signalling and the media, and reading it needs both in one process, which is
+//! signaling and the media, and reading it needs both in one process, which is
 //! what sipnab already is.
 //!
 //! # What "observed" means here
@@ -296,7 +296,7 @@ impl ObservedMedia {
     }
 }
 
-/// One media description as the signalling declared it.
+/// One media description as the signaling declared it.
 #[derive(Debug, Clone)]
 struct Declared {
     /// Index into the dialog's message list of the body that declared it.
@@ -417,7 +417,7 @@ fn payload_type_undeclared(
             ),
             format!("one of the declared payload types {all:?}"),
             format!(
-                "The signalling declared {all:?} and the wire carried {pt}. §6.1 binds what \
+                "The signaling declared {all:?} and the wire carried {pt}. §6.1 binds what \
                  either end may send to what the offer listed, so the receiver is decoding \
                  with a codec nobody agreed to — or discarding the stream and reporting \
                  silence while the sender's own counters climb."
@@ -982,7 +982,7 @@ mod tests {
     /// A call that carried no media at all raises no direction finding.
     ///
     /// A dialog with nothing on the wire is a call that never started, an
-    /// unanswered INVITE, or a capture filtered to signalling. None of those is
+    /// unanswered INVITE, or a capture filtered to signaling. None of those is
     /// a one-way call.
     #[test]
     fn a_silent_call_is_not_a_one_way_call() {

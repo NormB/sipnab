@@ -765,7 +765,7 @@ fn link_by_source_endpoint() {
 /// An unlinked stream is orphaned immediately, with no timeout to wait out.
 ///
 /// This test used to sweep the store at 31 seconds of capture time to make the
-/// assertion true, which is precisely the behaviour that made
+/// assertion true, which is precisely the behavior that made
 /// `tests/pcap-samples/codec-negotiation.pcap` — four streams, no dialogs,
 /// three seconds long — report four NON-orphans over MCP.
 #[test]

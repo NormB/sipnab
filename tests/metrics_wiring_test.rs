@@ -5,7 +5,7 @@
 //! `sipnab_capture_packets_total`, `sipnab_responses_total{code}` and
 //! `sipnab_diagnosis_total{type}` were declared by the exposition formatter
 //! and fed by nothing: the two scalars reported a hard `0` (indistinguishable
-//! from a capture that has stopped receiving packets) and the labelled family
+//! from a capture that has stopped receiving packets) and the labeled family
 //! dropped out of the scrape entirely, so an alert rule over it went no-data.
 //!
 //! These tests scrape a live server after it has processed a fixture capture
@@ -18,7 +18,7 @@ mod server;
 
 use server::ApiServer;
 
-/// The fixture with SIP signalling and RTP in both directions.
+/// The fixture with SIP signaling and RTP in both directions.
 const RTP_PCAP: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 
 /// Value of one exposition sample, looked up by its full `name{labels}` key.

@@ -71,7 +71,7 @@ updates:
     # queued ~100 jobs ahead of a release: main's `CI success` aggregate job is
     # dispatched only after its 20 siblings finish, so it landed at the back and
     # the v0.5.89 tag waited two and a half hours behind dependency bumps. The
-    # runs had to be cancelled by hand to let the release through.
+    # runs had to be canceled by hand to let the release through.
     open-pull-requests-limit: 2
     groups:
       # One PR for every action bump rather than one per action. Five separate

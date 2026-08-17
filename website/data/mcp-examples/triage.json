@@ -10,12 +10,12 @@
     "stream_count": 0
   },
   "schema_version": 1,
-  "signalling": {
+  "signaling": {
     "hints": [
       "Call failed: 486 Busy Here."
     ],
     "problem": true
   },
   "state": "Failed",
-  "verdict": "signalling"
+  "verdict": "signaling"
 }

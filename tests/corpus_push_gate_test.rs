@@ -67,7 +67,7 @@ fn extract_gate() -> String {
 }
 
 /// Build a runnable script from the shipped block plus the environment the
-/// hook itself supplies above it (colours only — everything else the block
+/// hook itself supplies above it (colors only — everything else the block
 /// needs, it defines).
 fn runnable_gate() -> String {
     format!(
@@ -143,7 +143,7 @@ fn run_gate(cargo_exit: i32, cargo_stdout: &str) -> GateRun {
 /// 128 on a `GIT_DIR` that is merely an empty directory, and the gate falls
 /// back to `.` on a non-zero rev-parse — which, with the cwd below, would put
 /// the log in the WORKING TREE. That is worse than the bug this replaces, so
-/// the directory is initialised rather than just created.
+/// the directory is initialized rather than just created.
 fn run_gate_seeded(cargo_exit: i32, cargo_stdout: &str, seed_log: Option<&str>) -> GateRun {
     let tmp = tempfile::tempdir().expect("tempdir");
     let bindir = tmp.path().join("bin");
@@ -160,7 +160,7 @@ fn run_gate_seeded(cargo_exit: i32, cargo_stdout: &str, seed_log: Option<&str>) 
         .expect("git init the throwaway gitdir");
     assert!(
         init.status.success(),
-        "could not initialise a throwaway gitdir, so this run would write its log \
+        "could not initialize a throwaway gitdir, so this run would write its log \
          into the real repository: {}",
         String::from_utf8_lossy(&init.stderr)
     );

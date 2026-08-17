@@ -16,7 +16,7 @@
 /// The classes are the ones an operator acts on differently, not the RFC's
 /// 1xx–6xx split. A call that drew a [`Challenge`](ResponseClass::Challenge) and
 /// never authenticated is a provisioning problem; one that ended
-/// [`Cancelled`](ResponseClass::Cancelled) is a caller who hung up; one that came
+/// [`Canceled`](ResponseClass::Canceled) is a caller who hung up; one that came
 /// back [`Declined`](ResponseClass::Declined) reached a human who said no. Only
 /// [`Failure`](ResponseClass::Failure) is a failed call.
 ///
@@ -34,7 +34,7 @@ pub enum ResponseClass {
     /// retries. Intermediate, not an outcome.
     Challenge,
     /// 487 — the INVITE transaction was terminated. Abandonment, not failure.
-    Cancelled,
+    Canceled,
     /// The callee or an intermediary was reached and refused.
     Declined,
     /// The call attempt failed.
@@ -54,7 +54,7 @@ pub enum ResponseClass {
 ///
 /// assert_eq!(response_class(180), ResponseClass::Provisional);
 /// assert_eq!(response_class(401), ResponseClass::Challenge);
-/// assert_eq!(response_class(487), ResponseClass::Cancelled);
+/// assert_eq!(response_class(487), ResponseClass::Canceled);
 /// assert_eq!(response_class(486), ResponseClass::Declined);
 /// assert_eq!(response_class(503), ResponseClass::Failure);
 /// ```
@@ -67,7 +67,7 @@ pub fn response_class(code: u16) -> ResponseClass {
         // 401/407 challenge for credentials; 494 for a security agreement.
         // All three mean "retry with more", not "this failed".
         401 | 407 | 494 => ResponseClass::Challenge,
-        487 => ResponseClass::Cancelled,
+        487 => ResponseClass::Canceled,
         // Reached its destination and was refused: busy here, busy everywhere,
         // declined by the user, unwanted, rejected by an intermediary.
         486 | 600 | 603 | 607 | 608 => ResponseClass::Declined,
@@ -325,7 +325,7 @@ pub fn explain_response_code(code: u16) -> Option<&'static str> {
              Try again later or enable call waiting.",
         ),
         487 => Some(
-            "487 Request Terminated — The request was cancelled by a CANCEL or \
+            "487 Request Terminated — The request was canceled by a CANCEL or \
              replaced by a new request (BYE/re-INVITE). Normal flow.",
         ),
         488 => Some(

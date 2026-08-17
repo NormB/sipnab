@@ -60,7 +60,7 @@ const KNOWN_UNTESTED: &[&str] = &[
                        // prove the report does not depend on read speed.
                        //
                        // `split` was here for needing "a large enough capture" to observe a
-                       // rotation. Its most consequential behaviour needs no rotation at all:
+                       // rotation. Its most consequential behavior needs no rotation at all:
                        // `--split` widens the set of paths a run may write from `-O out.pcap` to
                        // the whole `out_00001.pcap` family, so it can destroy an input the plain
                        // `-O` check would have cleared. See

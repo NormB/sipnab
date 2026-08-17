@@ -27,7 +27,7 @@ and is not re-argued here.
 `rfc-editor.org` while writing it, and is quoted rather than paraphrased where
 the exact words matter. Claims that could **not** be checked that way are
 marked **UNCHECKED** and collected in section 8. Nothing about 3GPP TS 24.229,
-about any vendor's shipped behaviour, or about the contents of any local
+about any vendor's shipped behavior, or about the contents of any local
 capture was verifiable here, and none of it is asserted.
 
 ## 1. The gap, and the deployment it comes from
@@ -238,7 +238,7 @@ and the security considerations, §6.6:
 > SIP request or response.
 
 So the normative posture is **SHOULD include, MAY modify** — and modification is
-described as *normal behaviour*, not as an edge case. Contrast RFC 7989, whose
+described as *normal behavior*, not as an edge case. Contrast RFC 7989, whose
 purpose is that the identifier stays constant end to end. **`icid-value` has no
 end-to-end constancy requirement of any kind.** Anything sipnab correlates on it
 is correlating on a value the RFC explicitly permits the next hop to rewrite.
@@ -310,7 +310,7 @@ carries. **Two reasons, not one**, because §3.3 shows they are different claims
 | Proposed reason | Proposed score | What a match means | Survives a B2BUA? |
 |---|---|---|---|
 | `ChargingVectorRelatedIcid` — one leg's `related-icid` equals the other's `icid-value` | 95 | The intermediary declared the link, in the parameter the RFC provides for it | **Yes, by design** — but only when the B2BUA chose to emit it (MAY) |
-| `ChargingVectorIcid` — plain `icid-value` equality across differing Call-IDs | 85 | An intermediary carried a per-dialog identifier onto a second dialog | Not by design; a vendor behaviour |
+| `ChargingVectorIcid` — plain `icid-value` equality across differing Call-IDs | 85 | An intermediary carried a per-dialog identifier onto a second dialog | Not by design; a vendor behavior |
 
 The placements, argued rather than asserted:
 
@@ -319,7 +319,7 @@ is a Proposed Standard whose stated purpose is surviving intermediaries and
 whose match is symmetric set intersection. `X-Call-ID` keeps 100 because it only
 ever appears when an operator deliberately configured a header to mean "this is
 the other leg" — a match is near-certain by construction. `related-icid` is
-standardised, which beats a vendor convention, but it is optional, one-way, and
+standardized, which beats a vendor convention, but it is optional, one-way, and
 lives in a header the next hop is explicitly permitted to modify. A distinct
 score keeps it distinguishable in the sort at
 [`:1100`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1100) without claiming parity.
@@ -549,7 +549,7 @@ answerable only with access this page did not have.
    fetched or read. [RFC 7315 §4.6.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.1) says only that the header *"is not included
    in a SIP message sent to another network if there is no trust relationship"*,
    which is an applicability statement without an [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) keyword. If TS 24.229
-   does impose a strip, the boundary behaviour is stricter than section 3.4
+   does impose a strip, the boundary behavior is stricter than section 3.4
    concludes, and section 3.5's last row becomes a firm "no" rather than an
    "unknown".
 4. **Whether the §4.6.2.2 wrong-header reading in section 3.4 is correct.** It
@@ -596,7 +596,7 @@ two-reason shape of section 4.** Not the shape it was proposed in.
 already model exactly this kind of identifier, two enum variants, two candidate
 blocks in a loop whose pattern is established, two match arms the compiler will
 demand, and three documentation tables. It adds a strategy that is silent when
-the header is absent, which is the correct behaviour in a deployment whose
+the header is absent, which is the correct behavior in a deployment whose
 B2BUA-ness varies per call and cannot be configured for in advance. The
 `identifier_match: true` classification is defensible against the field's
 documented meaning, and the existing response shape already surfaces the
@@ -608,18 +608,18 @@ nothing to keep.
 - **It is not a substitute for `Session-ID`, and the docs must not let it read
   as one.** RFC 7989 requires the identifier to survive intermediaries. RFC 7315
   permits the next hop to *"modify the contents"* and calls that normal
-  behaviour. An operator who adopts icid correlation and skips the SBC change
+  behavior. An operator who adopts icid correlation and skips the SBC change
   has bought a strategy that works until a proxy rewrite, with no signal when it
   stops.
 - **It is useless at the access edge** (section 3.5), which is where the pitch
   implied it would help most. If the SBC is the first proxy, it generates the
   icid, and the leg arriving from the endpoint has none.
 - **The B2BUA case runs on `related-icid`, which is a MAY** (section 3.3). Plain
-  `icid-value` equality across a B2BUA is a vendor behaviour, not a guarantee.
+  `icid-value` equality across a B2BUA is a vendor behavior, not a guarantee.
 - **The degenerate-generator guard is a prerequisite, not a refinement**
   (section 7). Without a cardinality limit, one badly implemented proxy turns
   the strategy into a combinatorial false-match generator, which is precisely
-  the manufactured-bug failure this project's correlation work is organised
+  the manufactured-bug failure this project's correlation work is organized
   around avoiding.
 - **PA5's redaction inventory must gain `P-Charging-Vector` in the same change**
   (section 5).
@@ -629,7 +629,7 @@ absent exactly where it is needed and rewritable everywhere else, so the
 strategy could fire rarely and prove little when it does. That case is real, and
 it is why the recommendation is conditional rather than unqualified — but the
 condition is one cheap measurement, and if the header *is* present on both sides
-of the operator's internal hops then a standardised, uniqueness-required
+of the operator's internal hops then a standardized, uniqueness-required
 identifier that costs the operator no configuration is worth 85 points and a
 name in the strategy table.
 

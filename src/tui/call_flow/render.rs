@@ -731,7 +731,7 @@ pub fn render_call_flow_direct(
                 annotation_x += w;
             }
 
-            // The signalling-diagnosis tag is NOT drawn here. It rides on the
+            // The signaling-diagnosis tag is NOT drawn here. It rides on the
             // arrow label above instead — see the comment there: this zone has
             // about one usable column at 80 wide, so an evidence tag placed here
             // would be clipped away and the reader would never know a message had

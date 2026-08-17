@@ -11,7 +11,7 @@ the same job for the media side.
 sipnab can already tell you a call had one-way audio, a NAT mismatch, or media
 that never arrived. It cannot tell you the call failed because the far end
 answered `503` after three retransmitted INVITEs, or that a phone has been
-looping on `401` for an hour without ever authenticating. The signalling
+looping on `401` for an hour without ever authenticating. The signaling
 evidence is all captured — it is simply never read as a diagnosis.
 
 This spec scopes that: what is detected, what shape it takes, and where it
@@ -85,7 +85,7 @@ fired on healthy traffic:
   `INVITE`/`180`/`200`/`BYE` capture that happened to miss one packet reported
   a completed call as broken — caught by a TUI snapshot, not by a unit test.
 
-### 5. Abandoned / cancelled
+### 5. Abandoned / canceled
 
 **Built.** `CANCEL` before a final response, or no final response at all before
 the capture ended. The second case must be reported as *unknown*, not as
@@ -177,9 +177,9 @@ detected-as-absent.
 | `--json` / NDJSON | **Done** — `signaling_diagnosis` object beside the existing media one, omitted entirely when every field is `None` |
 | REST API | **Done** — the same object, via `dialog_to_json`; no separate code path |
 | MCP | **Done** — through `get_dialog_report`: the JSON format inherits the object, and the text and Markdown formats get the report section below |
-| Call report | **Done** — a Signalling section in both text and Markdown, each detection with its evidence labelled by message rather than by index |
+| Call report | **Done** — a Signaling section in both text and Markdown, each detection with its evidence labeled by message rather than by index |
 | TUI call list | **Done** — a `⚠` in the State cell. Note the spec said "in the style of the existing media badge"; there was no existing media badge, though the module documentation claimed one |
-| TUI call flow | **Done** — a `[FAILURE]`/`[AUTH]`/`[NO-RSP]`/`[NO-ACK]`/`[CANCELLED]`/`[NO-FINAL]`/`[SLOW-PDD]`/`[REG]` tag on the arrow of each cited message. On the arrow, not in the annotation zone right of the ladder, which clips to roughly one column at 80 wide. `CANCELLED` and `NO-FINAL` are separate tags on purpose: one is a thing that happened, the other a thing that was not recorded |
+| TUI call flow | **Done** — a `[FAILURE]`/`[AUTH]`/`[NO-RSP]`/`[NO-ACK]`/`[CANCELED]`/`[NO-FINAL]`/`[SLOW-PDD]`/`[REG]` tag on the arrow of each cited message. On the arrow, not in the annotation zone right of the ladder, which clips to roughly one column at 80 wide. `CANCELED` and `NO-FINAL` are separate tags on purpose: one is a thing that happened, the other a thing that was not recorded |
 | JSON schema | **Done** — `signaling_diagnosis` is declared in [`tests/schemas/call_report.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/call_report.schema.json), which it had never been. An absent detection serializes as explicit `null` rather than being omitted, which is the module's way of saying "checked, not found", so the schema accepts null for each |
 
 ## What this must not do
@@ -206,7 +206,7 @@ Two things surfaced while building 4–7 that the spec had not anticipated:
 
 - **Three of the four needed a threshold, and thresholds rot.** Each is taken
   from a numbered clause — Table 2/E.721, Timer H, Timer C — and quoted at
-  `SignalingThresholds::default` rather than summarised, so a later reader can
+  `SignalingThresholds::default` rather than summarized, so a later reader can
   disagree with the source instead of guessing at the author.
 - **`signaling_diagnosis` was never declared in the JSON schema.** The schema
   set `additionalProperties: false` and omitted the field, so any diagnosed

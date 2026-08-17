@@ -10,7 +10,7 @@
 //! a frame pointer or a cursor — you are GIVEN one and you follow it.
 //!
 //! `show_evidence` shipped unable to follow a `frame_ref` into the capture it
-//! was analysing, which is the single reason frame pointers exist. It showed 1
+//! was analyzing, which is the single reason frame pointers exist. It showed 1
 //! integration reference and 7 unit references and read as covered. Every test
 //! either built its arguments by hand or deliberately pointed at a file outside
 //! the root; none took a pointer that `lint_dialog` had just produced and asked

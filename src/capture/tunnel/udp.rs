@@ -90,7 +90,7 @@ const PORT_SPAN_WIDTH: u16 = PORT_GENEVE - PORT_L2TP;
 /// payload fails the claimed protocol's structural validation.
 pub(crate) fn decap(payload: &[u8], base: usize, dst_port: u16) -> Option<Inner> {
     // This runs on EVERY UDP packet in the capture, and almost none of them
-    // are tunnelled, so saying no has to be nearly free. One wrapping
+    // are tunneled, so saying no has to be nearly free. One wrapping
     // subtract and one unsigned compare reject every port outside
     // [1701, 6081] — which is the whole RTP/RTCP convention (16384-32767,
     // RFC 3551 §8 and every SBC's default), the Linux ephemeral range
@@ -132,7 +132,7 @@ const GTPU_VERSION_PT_SPARE_MASK: u8 = 0xF8;
 /// NOTE 0 says "It shall be sent as '0'. The receiver shall not evaluate this
 /// bit." A GTP-U *endpoint* must not evaluate it, because a future release
 /// may define it and the endpoint would then drop traffic it should forward.
-/// A passive analyser is in the opposite position: it has no traffic to drop,
+/// A passive analyzer is in the opposite position: it has no traffic to drop,
 /// and the bit is one more place where an RTP packet masquerading as GTP-U
 /// gives itself away. If 3GPP ever assigns it, this constant is where the
 /// change lands.
@@ -162,7 +162,7 @@ const GTPU_MAX_EXTENSION_HEADERS: usize = 8;
 /// Decapsulate a GTP-U G-PDU (3GPP TS 29.281), returning where the T-PDU
 /// starts.
 ///
-/// This is the encapsulation that matters most here: VoLTE/VoNR signalling
+/// This is the encapsulation that matters most here: VoLTE/VoNR signaling
 /// crosses the mobile core inside GTP-U, so an operator capturing on S1-U,
 /// S5/S8 or N3 sees UDP/2152 and — until this function existed — no SIP at
 /// all.
@@ -260,10 +260,10 @@ const VXLAN_HEADER_LEN: usize = 8;
 /// (VNI). The other 7 bits (designated "R") are reserved fields and MUST be
 /// set to zero on transmission and ignored on receipt."
 ///
-/// The "ignored on receipt" half is deliberately not honoured. Ignoring the R
+/// The "ignored on receipt" half is deliberately not honored. Ignoring the R
 /// bits would cost seven bits of the structural evidence that this payload is
 /// a tunnel header rather than the first octet of a media packet, and a
-/// passive analyser pays nothing for strictness: the sender is required to
+/// passive analyzer pays nothing for strictness: the sender is required to
 /// zero them. The known casualty is VXLAN-GBP
 /// (`draft-smith-vxlan-group-policy`), which repurposes an R bit and the
 /// 24-bit Reserved field for a Group Policy ID on this same port; it is
@@ -1943,7 +1943,7 @@ mod tests {
 
     #[test]
     fn a_realistic_rtp_packet_is_rejected_on_every_decapsulating_port() {
-        // The heart of the false-positive defence. If any of these ever
+        // The heart of the false-positive defense. If any of these ever
         // returns an offset, sipnab is inventing a call out of voice samples.
         let rtp = rtp_pcmu();
         assert_eq!(gtpu(&rtp, 0), None);

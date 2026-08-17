@@ -103,7 +103,7 @@ first MCP tool or REST handler that reads an alert and *then* a dialog creates
 `alerts → stores`. The first packet-path change that re-nests the alert lock
 recreates `stores → alerts`. Either alone is harmless, and both together
 deadlock the capture thread. Written down here because nothing else says it.
-Background: `LK1` in [`backlog.md`](../design/backlog.md), analysed as R2 in
+Background: `LK1` in [`backlog.md`](../design/backlog.md), analyzed as R2 in
 [`process-isolation-and-hot-path-cost.md`](../design/process-isolation-and-hot-path-cost.md)
 §4.
 
@@ -502,7 +502,7 @@ Writing it somewhere else is not disclosure, and it reads as one.
   Kamailio, OpenSIPS, Janus and any reverse proxy — `capture_status` answered
   `dialog_count: 0`, `unanalysed_sip_messages: 0` and `degraded: false`, which
   is character for character what a perfect read of a capture holding no SIP
-  produces, while an entire WebRTC signalling leg went unreported. Adding a
+  produces, while an entire WebRTC signaling leg went unreported. Adding a
   disclosure to one surface is not the fix; the fix is adding it to every
   surface that answers the question it qualifies.
 - `export_capture` re-synthesises a frame per SIP message rather than writing

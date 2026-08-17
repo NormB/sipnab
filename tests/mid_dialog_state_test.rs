@@ -5,7 +5,7 @@
 //! Starting a capture while calls are already up is the normal way this tool
 //! is used, and it is the case the dialog state machine used to get wrong: the
 //! first message of a call was then a `BYE` or a `CANCEL`, `SipDialog::new`
-//! labelled the dialog with that method, and `update_state` dispatched on the
+//! labeled the dialog with that method, and `update_state` dispatched on the
 //! label — so every later message went to the generic handler, which inspects
 //! only responses and has no rule for either request. The call sat at `Trying`,
 //! reported as still in progress, with a complete message log to make it look
@@ -24,7 +24,7 @@
 //! and wrong if it stops there. The INVITE machine's `2xx` arm answers the
 //! call, and a `BYE` and a `CANCEL` each have a `2xx` of their own. Dispatching
 //! on the dialog FAMILY alone therefore lets `200 OK (CSeq 1 CANCEL)` walk into
-//! the arm that means "the callee picked up", and a cancelled call reports
+//! the arm that means "the callee picked up", and a canceled call reports
 //! `InCall`. `a_200_to_the_cancel_does_not_answer_the_call` and
 //! `a_capture_opening_on_the_200_to_a_bye_reports_the_call_completed` are that
 //! cell, in both directions.
@@ -174,16 +174,13 @@ fn a_capture_opening_on_a_cancel_reports_the_call_cancelled() {
     ]);
     assert_eq!(
         state,
-        DialogState::Cancelled,
-        "a capture opening on the CANCEL must report the call as cancelled"
+        DialogState::Canceled,
+        "a capture opening on the CANCEL must report the call as canceled"
     );
-    assert_eq!(
-        active_dialogs, 0,
-        "a cancelled call is not an active dialog"
-    );
+    assert_eq!(active_dialogs, 0, "a canceled call is not an active dialog");
     assert_eq!(
         active_calls, 0,
-        "a cancelled call was never a call in progress"
+        "a canceled call was never a call in progress"
     );
 }
 
@@ -193,7 +190,7 @@ fn a_capture_opening_on_a_cancel_reports_the_call_cancelled() {
 /// This is the cell a family-only dispatch gets wrong. `CANCEL` belongs to the
 /// INVITE dialog family, so a fix that dispatches on family alone routes this
 /// `200` into the arm that means "the call was established" and reports a
-/// cancelled call as `InCall` — a worse answer than the `Trying` it replaced,
+/// canceled call as `InCall` — a worse answer than the `Trying` it replaced,
 /// because `InCall` is counted as a live channel. The response's CSeq method,
 /// not its family, says which transaction it answers (RFC 3261 §8.1.1.5).
 #[test]
@@ -205,13 +202,13 @@ fn a_200_to_the_cancel_does_not_answer_the_call() {
     ]);
     assert_eq!(
         state,
-        DialogState::Cancelled,
+        DialogState::Canceled,
         "the 200 answers the CANCEL transaction, not the INVITE — the call \
-         was cancelled and must not report as established"
+         was canceled and must not report as established"
     );
     assert_eq!(
         active_calls, 0,
-        "reporting a cancelled call as a live channel is worse than reporting \
+        "reporting a canceled call as a live channel is worse than reporting \
          it as still ringing"
     );
 }

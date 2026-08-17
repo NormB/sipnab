@@ -35,7 +35,7 @@ release, is narrower than it was:
 | **Is this hour unlike the last hundred hours?** | — | **yes** |
 | **Is this endpoint behaving unlike its peers?** | — | **yes** |
 
-The seven signalling detections and the media diagnosis all answer *per-dialog*
+The seven signaling detections and the media diagnosis all answer *per-dialog*
 questions with a rule. The gap is **population** questions: a call that is
 individually unremarkable but collectively wrong — an ASR that quietly fell from
 71% to 64%, a codec that started appearing on a trunk that never used it, a
@@ -57,16 +57,16 @@ anomaly score 0.93" cannot be checked, argued with, or acted on, and an operator
 who cannot verify a finding learns to ignore it. sipnab's value proposition is
 *evidence, not verdicts*; an unexplainable score is precisely a verdict.
 
-**2. It cannot be reproduced from a pcap.** A capture analysed twice must give
+**2. It cannot be reproduced from a pcap.** A capture analyzed twice must give
 the same answer — the property that motivated fuel metering over wall-clock in
 the plugin host. A model introduces weights, a training set, and a version, none
 of which live in the pcap. Two operators running the same command on the same
 file would legitimately disagree.
 
-**3. It has no ground truth to train on.** There is no labelled corpus of
+**3. It has no ground truth to train on.** There is no labeled corpus of
 "anomalous" SIP. Unsupervised training on live traffic learns whatever that
 network does, including its faults — the model would flag a *fixed* network as
-anomalous, having normalised the breakage.
+anomalous, having normalized the breakage.
 
 **4. The dependency cost is disproportionate.** D7 rejected an embedded
 scripting runtime on supply-chain grounds; a tensor runtime is a great deal
@@ -127,7 +127,7 @@ this document as the record of what was ruled out and why.
 > **Correction, 2026-08-13.** Item 1 is not a prerequisite. It is the
 > disqualifier, and calling it a prerequisite is what left this page reading
 > like a plan waiting for one more thing to land. Items 2 and 3 are real and
-> small, and item 2 has an answer that needs no modelling: group by the
+> small, and item 2 has an answer that needs no modeling: group by the
 > address a dialog already carries.
 
 This is the real reason it is not next:
@@ -135,7 +135,7 @@ This is the real reason it is not next:
 1. **Persistence across runs.** Baselines need history. sipnab is a
    single-capture process today: `[limits]` bounds tracked state, nothing
    survives exit. A store is a bigger architectural decision than the detection.
-2. **A grouping key.** "Trunk" and "gateway" are not modelled; only
+2. **A grouping key.** "Trunk" and "gateway" are not modeled; only
    `src_addr`/`dst_addr` exist.
 3. **A statistics dependency, or hand-rolled tests.** Chi-square and a
    percentile tracker are small enough to write, which is preferable to a crate.
@@ -168,11 +168,11 @@ The four objections above hold. Positioning adds a fifth the 2026-07-30
 analysis did not have, and it is the one that settles it.
 
 Objection 4 measures the model in *crates*. The larger cost is the *release*.
-A trained model is a second artefact: it ships beside the binary, it carries a
+A trained model is a second artifact: it ships beside the binary, it carries a
 version that has to stay compatible with the binary's, it goes stale as the
 networks it was fitted to change, and somebody has to retrain it on a cadence.
 sipnab's distribution story is one static file an operator copies and runs. A
-companion artefact fails the positioning test — *if a feature requires sipnab
+companion artifact fails the positioning test — *if a feature requires sipnab
 to be operated rather than run, it is out of position* — at the distribution
 layer rather than the runtime one, which is why an audit that counted
 dependencies never surfaced it.
@@ -181,7 +181,7 @@ Recorded as declined rather than left unscheduled. An open item with a plan
 attached comes back every quarter carrying the same arguments; this one now has
 an answer and a trigger.
 
-**What would reverse it:** a labelled corpus of anomalous SIP that somebody
+**What would reverse it:** a labeled corpus of anomalous SIP that somebody
 else maintains and that ships separately from sipnab, *and* a demonstration
 that a shift test underperforms on that corpus. Both halves are required.
 Labels alone change nothing if the statistics already win.
@@ -191,7 +191,7 @@ Labels alone change nothing if the statistics already win.
 §1 proposed rolling baselines per grouping key as the honest replacement for
 the model. That recommendation does not survive objection 2.
 
-Objection 2 rejects the model because a capture analysed twice must give the
+Objection 2 rejects the model because a capture analyzed twice must give the
 same answer, and a model's weights, training set and version do not live in the
 pcap. **A rolling cross-run baseline has exactly that defect.** "ASR 64% over
 the last 200 calls, against 71% over the previous 2000" is a claim about 2200
@@ -256,7 +256,7 @@ One metric, one grouping key, one comparison, no new configuration:
 
 **Per-source failure-mix divergence across the dialogs in one capture.** Group
 the capture's INVITE dialogs by `src_addr`, the only grouping key that exists —
-"trunk" and "gateway" are still not modelled, and inventing them is a second
+"trunk" and "gateway" are still not modeled, and inventing them is a second
 feature. For each source carrying enough dialogs, compare its distribution of
 final status codes, which `final_status_code`
 ([`src/sip/dialog.rs:220`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L220))
@@ -265,7 +265,7 @@ same capture. Report the sources that diverge, printing both distributions and
 the dialog identifiers behind them, so an operator opens the calls rather than
 trusting the number.
 
-Failure mix before ASR, because ASR summarises the failure mix and shows less.
+Failure mix before ASR, because ASR summarizes the failure mix and shows less.
 Failure mix before PDD, because percentiles need a sketch, and that is more
 machinery than a first component should carry.
 

@@ -36,7 +36,7 @@ bad() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; }
 
 # ── The sandbox: run the REAL hook against a stubbed cargo ─────────────────
 # Everything below used to be grepped for out of the hook's source, which made
-# the hook's exact SPELLING the proxy for its behaviour, twice over:
+# the hook's exact SPELLING the proxy for its behavior, twice over:
 #
 #   * `grep -c '\$(cargo test --features full'` counted the literal `$(`. The
 #     regression this script is the designated pin for -- a second full-suite
@@ -183,10 +183,10 @@ rm -rf "$D"
 # ── Scenario 2c: gate 7 requires the compiled artifact, not any path ───────
 # `grep -q "website/static/wasm/sipnab"` matched sipnab.js, so a single
 # appended newline to the glue satisfied it while sipnab_bg.wasm stayed
-# byte-identical — a behaviour change to src/wasm.rs shipping with a stale
+# byte-identical — a behavior change to src/wasm.rs shipping with a stale
 # bundle.
 D=$(sandbox 10)
-echo '// behaviour change' >> "$D/src/wasm.rs"
+echo '// behavior change' >> "$D/src/wasm.rs"
 echo '' >> "$D/website/static/wasm/sipnab.js"
 ( cd "$D" && git add src/wasm.rs website/static/wasm/sipnab.js )
 run_hook "$D"

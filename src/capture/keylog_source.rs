@@ -196,7 +196,7 @@ impl KeylogSource {
     /// sipnab therefore reads whatever mode the caller chose. A blocking
     /// descriptor blocks, which is correct for the supervisor-fed pipe this
     /// exists for: the producer writes keys as sessions start, and a read that
-    /// waits for them is the intended behaviour rather than a busy loop.
+    /// waits for them is the intended behavior rather than a busy loop.
     #[cfg(unix)]
     pub fn from_fd(fd: std::os::fd::RawFd) -> Result<Self> {
         // SAFETY: `dup` either returns a fresh owned descriptor or -1.

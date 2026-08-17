@@ -13,9 +13,9 @@
 //! sipnab's failure mode for an encapsulation it did not understand used to be
 //! a confident zero: a capture full of INVITEs reported as "No SIP traffic
 //! found", because the frames were PPPoE- or MPLS-wrapped and the walk stopped
-//! at an EtherType it did not recognise. Carrier and mobile-core traffic is
+//! at an EtherType it did not recognize. Carrier and mobile-core traffic is
 //! routinely wrapped — MPLS in the core, GTP-U on the mobile side, VXLAN in the
-//! data centre — so "the operator can just capture somewhere else" is not an
+//! data center — so "the operator can just capture somewhere else" is not an
 //! answer when the wrapped segment is the only place the problem is visible.
 //!
 //! # The hazard that governs every decoder here
@@ -71,7 +71,7 @@ pub(crate) enum Inner {
     /// at this offset. Produced by the L2 tunnels (VXLAN, GRE-TEB, NSH with
     /// next-protocol Ethernet), whose payload is a frame rather than a packet.
     Ethernet(usize),
-    /// The encapsulation was recognised and its header validated, but the
+    /// The encapsulation was recognized and its header validated, but the
     /// payload cannot be decoded — it is encrypted, or otherwise opaque.
     ///
     /// This is deliberately NOT an error. "MACsec-encrypted payload" is a

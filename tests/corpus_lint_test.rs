@@ -189,7 +189,7 @@ struct CorpusScan {
     /// very different things — the traffic is clean, or the rule saw no media —
     /// and the rule table alone cannot tell them apart.
     dialogs_with_media: usize,
-    /// Dialogs whose signalling declared at least one media description.
+    /// Dialogs whose signaling declared at least one media description.
     dialogs_with_sdp: usize,
     /// `Contact`, `From` and `To` header values carrying a bare URI with at
     /// least one parameter. The population the bracket rules draw from.
@@ -317,7 +317,7 @@ fn observation_rules_have_media_to_read() {
 }
 
 /// Linting the whole corpus never panics, and every finding carries a citation
-/// that resolves to a rule in the catalogue.
+/// that resolves to a rule in the catalog.
 ///
 /// A finding whose `rule_id` is not in `RULES` cannot be suppressed, documented
 /// or looked up, which makes it worse than no finding at all.

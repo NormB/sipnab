@@ -154,7 +154,7 @@ fn dialog_state_display_matches_debug() {
         DialogState::Ringing,
         DialogState::InCall,
         DialogState::Completed,
-        DialogState::Cancelled,
+        DialogState::Canceled,
         DialogState::Failed,
         DialogState::Redirected,
         DialogState::Registered,
@@ -321,7 +321,7 @@ fn wasm_export_csv_state_format() {
         (DialogState::Ringing, "Ringing"),
         (DialogState::InCall, "InCall"),
         (DialogState::Completed, "Completed"),
-        (DialogState::Cancelled, "Cancelled"),
+        (DialogState::Canceled, "Canceled"),
         (DialogState::Failed, "Failed"),
         (DialogState::Registered, "Registered"),
         (DialogState::Expired, "Expired"),
@@ -359,7 +359,7 @@ fn dialog_state_all_variants_have_display() {
         DialogState::Ringing,
         DialogState::InCall,
         DialogState::Completed,
-        DialogState::Cancelled,
+        DialogState::Canceled,
         DialogState::Failed,
         DialogState::Registered,
         DialogState::Expired,
@@ -1858,7 +1858,7 @@ fn probe_idle_compact_after_secs() -> (String, String) {
 /// path reaches the audio ring buffer: `app::batch` turns audio capture off
 /// outright (`ss.set_audio_capture(false)`), leaving the interactive TUI —
 /// which calls exactly the [`sipnab::StreamStore::set_max_audio_frames`] used
-/// here — as the only consumer. The observation is still behavioural: bytes
+/// here — as the only consumer. The observation is still behavioral: bytes
 /// of exported WAV, from the real fixture, decoder and writer.
 fn probe_max_audio_frames() -> (String, String) {
     (
@@ -2018,7 +2018,7 @@ fn probe_max_tracked_peers() -> (String, String) {
 /// headless file run reads the whole capture in about twenty milliseconds and
 /// no entry can ever reach any TTL. There is no observation to make from the
 /// outside, which is exactly why nobody noticed the TTL was unsettable. The
-/// observation is still behavioural: the real fixture frames, the real
+/// observation is still behavioral: the real fixture frames, the real
 /// `PacketProcessor` constructor a capture uses, and the eviction counter every
 /// `/metrics` scrape publishes.
 ///
@@ -2448,7 +2448,7 @@ fn every_documented_limits_key_changes_observable_behaviour() {
     probed.sort();
     assert_eq!(
         probed, expected,
-        "every [limits] key needs a probe proving it changes behaviour; \
+        "every [limits] key needs a probe proving it changes behavior; \
          add one to limit_probes() rather than removing it from this list"
     );
 
@@ -2513,11 +2513,11 @@ fn display_color_reaches_the_output_and_the_flag_still_wins() {
     assert_eq!(
         escapes(&["--no-config"]),
         0,
-        "piped output with no colour setting must carry no escapes"
+        "piped output with no color setting must carry no escapes"
     );
     assert!(
         escapes(&["--no-config", "--color", "always"]) > 0,
-        "--color always must colour piped output, or this test cannot detect colour at all"
+        "--color always must color piped output, or this test cannot detect color at all"
     );
     assert!(
         escapes(&["--config", always]) > 0,
@@ -2662,7 +2662,7 @@ fn ws_ports_reaches_the_unwrap_and_the_skip_is_reported() {
     pcap_build::write_pcap(&pcap, &pcap_build::ws_sip_call("wss-probe", 8081));
     let pcap = pcap.to_str().unwrap().to_string();
     // `--portrange` is widened in every run: the WebSocket set and the
-    // signalling port range are different gates, and leaving the default
+    // signaling port range are different gates, and leaving the default
     // 5060-5061 in place would let the second one claim the traffic the first
     // one just unwrapped.
     let base: Vec<String> = [
@@ -2684,13 +2684,13 @@ fn ws_ports_reaches_the_unwrap_and_the_skip_is_reported() {
     assert_eq!(
         dialog_count(&out),
         0,
-        "8081 is outside the shipped WebSocket set, so the leg is not analysed \
+        "8081 is outside the shipped WebSocket set, so the leg is not analyzed \
          — this is the state the key exists to change:\n{out}"
     );
     assert!(
-        err.contains("NOT ANALYSED") && err.contains("SIP-over-WebSocket") && err.contains("8081"),
+        err.contains("NOT ANALYZED") && err.contains("SIP-over-WebSocket") && err.contains("8081"),
         "the run must SAY what it skipped and name the port, or the operator is \
-         told nothing whatsoever about their entire WebRTC signalling leg:\n{err}"
+         told nothing whatsoever about their entire WebRTC signaling leg:\n{err}"
     );
 
     let cfg = write_config(&dir, "[capture]\nws_ports = \"8081-8081\"\n");
@@ -2832,7 +2832,7 @@ fn answered_call_store(
 ///
 /// The observation is the count itself, at one fixed instant, under two
 /// windows: a call parked on hold for ninety minutes is zero channels in use
-/// under the shipped hour and one under a contact centre's two. Asserting the
+/// under the shipped hour and one under a contact center's two. Asserting the
 /// resolved number instead would pass against a store that ignored it, which
 /// is the state this key exists to make unreachable.
 ///
@@ -2876,7 +2876,7 @@ fn sip_active_idle_window_reaches_the_active_call_gauge() {
         store.active_dialog_count_at(now),
         1,
         "the wider window must reach active_dialog_count too — it shares the \
-         same predicate, and a key honoured by one gauge and not the other is \
+         same predicate, and a key honored by one gauge and not the other is \
          worse than none"
     );
 

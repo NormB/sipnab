@@ -222,7 +222,7 @@ pub struct App {
     /// [`crate::rtp::quality::resolve_one_way_delay`]. `None` means they said
     /// nothing, not that they chose the default.
     pub(crate) declared_one_way_delay_ms: Option<f64>,
-    /// The one band set every view in this session colours from, resolved at
+    /// The one band set every view in this session colors from, resolved at
     /// startup from `--jitter-warn-ms` and friends over `[quality]`.
     ///
     /// Held here for the same reason [`Self::theme`] is: it is a decision the

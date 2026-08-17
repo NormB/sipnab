@@ -230,7 +230,7 @@ pub struct LayoutRow {
     pub is_retransmission: bool,
     /// Index into the raw message slice (`None` for synthetic rows).
     pub raw_index: Option<usize>,
-    /// Signalling-diagnosis annotation when this message is cited as evidence
+    /// Signaling-diagnosis annotation when this message is cited as evidence
     /// for a detection — the surface that makes "evidence, not verdicts" visible,
     /// by marking the exact messages a finding was drawn from rather than
     /// asserting the finding somewhere else and leaving the reader to locate them.
@@ -667,7 +667,7 @@ pub fn layout(
         }
     }
 
-    // ── Signalling-diagnosis evidence annotation ──────────────────
+    // ── Signaling-diagnosis evidence annotation ──────────────────
     //
     // Marks the exact messages a detection was drawn from. This is the surface
     // where the spec's "evidence, not verdicts" rule stops being a data-model
@@ -697,12 +697,12 @@ pub fn layout(
             notes.extend(a.evidence.iter().map(|&i| (i, "NO-ACK")));
         }
         if let Some(a) = &diag.abandoned {
-            // The two shapes get different tags: `CANCELLED` is a thing that
+            // The two shapes get different tags: `CANCELED` is a thing that
             // happened, `NO-FINAL` is a thing that was not recorded. A shared
             // tag would put a verdict on the ladder that the capture cannot
             // support.
             let tag = match a.kind {
-                crate::sip::diagnosis::AbandonedKind::Cancelled => "CANCELLED",
+                crate::sip::diagnosis::AbandonedKind::Canceled => "CANCELED",
                 crate::sip::diagnosis::AbandonedKind::NoFinalResponse => "NO-FINAL",
             };
             notes.extend(a.evidence.iter().map(|&i| (i, tag)));
@@ -1822,7 +1822,7 @@ mod tests {
         assert!(badge.contains("PCMU"), "expected codec removal: {badge}");
     }
 
-    // ── Signalling-diagnosis evidence annotation ──────────────────
+    // ── Signaling-diagnosis evidence annotation ──────────────────
 
     /// The failure response carries the note; the INVITE that provoked it does
     /// not. Only the messages the detection actually cited are marked.
@@ -2599,7 +2599,7 @@ mod tests {
     }
 
     /// Expansion is keyed by the fold HEADER's raw index and works in every
-    /// timestamp mode; the expanded header is labelled so it can be
+    /// timestamp mode; the expanded header is labeled so it can be
     /// re-collapsed.
     #[test]
     fn expansion_keyed_by_header_raw_index_across_modes() {

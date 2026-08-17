@@ -25,7 +25,7 @@ const OPCODE_BINARY: u8 = 2;
 /// This is the BROWSER's view of the web, not a deployment's. Kamailio,
 /// OpenSIPS and Janus each ship WSS on ports outside it, and behind a reverse
 /// proxy the port sipnab sees is whichever one the proxy forwards to — so on
-/// those deployments the entire WebRTC signalling leg used to be invisible,
+/// those deployments the entire WebRTC signaling leg used to be invisible,
 /// with no skip report and nothing said. Replace the set with
 /// `--ws-portrange` or `[capture] ws_ports`; see
 /// [`crate::cli::Cli::ws_port_range`].
@@ -39,7 +39,7 @@ pub const WS_PORTS: &[u16] = &[80, 443, 8080, 8443];
 /// [`crate::rtp::stream::set_lost_seq_log_cap`] and for the same reason:
 /// unwrapping happens on the batch path, the TUI path, every `--cores` shard
 /// and the WASM entry point, and a value threaded to some of them is a setting
-/// honoured on some surfaces and ignored on others.
+/// honored on some surfaces and ignored on others.
 static WS_PORT_RANGE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Declare the SIP-over-WebSocket port range for this process. Call once, at
@@ -70,7 +70,7 @@ pub fn ws_port_range() -> Option<(u16, u16)> {
 /// Whether `port` is one sipnab will unwrap SIP-over-WebSocket on.
 ///
 /// A declared range REPLACES the shipped set rather than adding to it, exactly
-/// as `--portrange` replaces the default signalling ports. The traffic that
+/// as `--portrange` replaces the default signaling ports. The traffic that
 /// falls outside is not silently dropped: `crate::pipeline::try_websocket_unwrap`
 /// tallies it and `crate::pipeline::ws_port_skip_report` names the ports.
 #[must_use]

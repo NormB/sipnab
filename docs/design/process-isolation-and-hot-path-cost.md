@@ -222,7 +222,7 @@ into *one* dialog store, so a call seen on two interfaces is one call.
 Per-source processes fragment exactly that. `--cores` already hit this and
 needed `DialogStore::merge` to undo it —
 [`parallel.rs:17-30`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L17-L30) records that an earlier merge
-dropped roughly half of every proxied call's signalling, invisibly, because the
+dropped roughly half of every proxied call's signaling, invisibly, because the
 dialog *count* was unaffected. That is the failure mode process-splitting
 invites back.
 

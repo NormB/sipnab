@@ -1155,7 +1155,7 @@ impl TlsDecryptor {
 /// Borrows a single [`TlsSession`] and the crypto backend directly (rather than
 /// re-looking-up the session by key), so the caller can iterate `sessions` in
 /// place without cloning session keys. Key material stays owned by `session`;
-/// its `Drop`/zeroize behaviour is unaffected.
+/// its `Drop`/zeroize behavior is unaffected.
 fn try_decrypt_with_session(
     session: &mut TlsSession,
     crypto: &dyn CryptoBackend,

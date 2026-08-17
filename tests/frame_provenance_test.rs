@@ -547,7 +547,7 @@ fn a_sip_message_carries_a_frame_ref_that_resolves_to_its_own_bytes() {
 
             // The pointer must lead back to the frame this message was in --
             // and `resolve` verifies the digest, so a pointer aimed one frame
-            // off is refused rather than quietly returning a neighbour.
+            // off is refused rather than quietly returning a neighbor.
             let got = resolve(&r).expect("the message's own frame must resolve");
             assert!(
                 got.is_verified(),

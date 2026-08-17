@@ -58,7 +58,7 @@ use crate::capture::tls;
 /// The capture clock is threaded through explicitly rather than kept in a
 /// global: the receive loop already sees every packet's timestamp, and a
 /// process-wide "current packet time" would be wrong the moment two captures
-/// are analysed at once (the parallel `--cores` path, the API server).
+/// are analyzed at once (the parallel `--cores` path, the API server).
 #[derive(Debug)]
 pub(crate) enum SweepClock {
     /// Live capture: wall time.
@@ -847,7 +847,7 @@ pub fn run_cores_file(
                 report_retention_losses(&r.dialog_store);
                 report_capture_quality();
             }
-            // Same linter, same catalogue, same exit code as the batch path.
+            // Same linter, same catalog, same exit code as the batch path.
             // Wired here because a gate that silently passes under `--cores` is
             // worse than no gate: a pipeline adding `--cores 8` for speed would
             // stop failing on non-conformant captures and nothing would say so
@@ -873,7 +873,7 @@ pub fn run_cores_file(
 /// something in *this* run can read the buffers back AND the operator asked
 /// for it. Batch reporting cannot read them. The MCP server can — its
 /// `export_audio` tool decodes exactly these buffers — but "can read" stopped
-/// being the whole condition: call audio is content, not signalling, and
+/// being the whole condition: call audio is content, not signaling, and
 /// holding it in memory for every MCP session whether or not anything will
 /// ever export it made a privacy decision on the operator's behalf. The
 /// consent half is `--retain-audio`, which clap ties to `--mcp` so the
@@ -899,7 +899,7 @@ pub(crate) fn audio_retention_wanted(cli: &Cli) -> bool {
 /// retention by default — correctly, for the TUI, whose stream-detail view
 /// plays a stream straight out of `payload_buffer` (`app::tui_mode` builds its
 /// own store and keeps that default). So the one-armed `if` gated the operator
-/// *notice* and never the behaviour, and every batch run buffered audio nothing
+/// *notice* and never the behavior, and every batch run buffered audio nothing
 /// in it could read: up to 1500 frames per stream across up to 50,000 streams
 /// at the defaults, bounded per frame only by snaplen.
 ///
@@ -1095,7 +1095,7 @@ fn capture_quality_summary() -> Option<String> {
         // that only fires when something is wrong into something to skim.
         parts.push(format!(
             "{} frame(s) reached sipnab intact and could not be decoded at all, so \
-             nothing in them was analysed (see the NOT DECODED line above for which \
+             nothing in them was analyzed (see the NOT DECODED line above for which \
              link types, EtherTypes and IP protocols)",
             undecodable.frames
         ));
@@ -1239,7 +1239,7 @@ fn no_sip_guidance(
     // unreadable. Undecodable background here changes nothing.
     if rtp_packets > 0 {
         return vec![format!(
-            "No SIP signalling found, but {rtp_packets} RTP packets across {streams} \
+            "No SIP signaling found, but {rtp_packets} RTP packets across {streams} \
              stream(s) were parsed. Use --report to see stream details."
         )];
     }
@@ -1706,7 +1706,7 @@ impl BatchRunner {
         // Deliberately NOT armed by `--fail2ban` alone. The obvious wiring —
         // "the flag feeds a banning tool, so give it a detector" — was measured
         // on a real carrier trunk and produces 7008 detections naming 180
-        // peers, because the behavioural signature counts OPTIONS and the
+        // peers, because the behavioral signature counts OPTIONS and the
         // busiest "scanners" are the carrier's own PBXes sending keepalives
         // (2713 from one peer in 11 seconds). That is the same mass-ban as the
         // blanket emission this replaced, only wearing the authority of a real
@@ -2719,7 +2719,7 @@ impl BatchRunner {
                     .map(|p| format!("{} ({})", p.port, p.messages))
                     .collect();
                 eprintln!(
-                    "NOT ANALYSED: {} further SIP message(s) were seen on ports outside \
+                    "NOT ANALYZED: {} further SIP message(s) were seen on ports outside \
                      --portrange and are in none of the totals above. Busiest: {}. \
                      Re-run with --portrange 1-65535 to include them.",
                     skipped.messages,
@@ -2729,10 +2729,10 @@ impl BatchRunner {
 
             // And what the WebSocket port set discarded. Reported separately
             // because it is a different loss with a different fix: the SIP
-            // above was recognised and gated, this was wrapped in a WebSocket
+            // above was recognized and gated, this was wrapped in a WebSocket
             // frame on a port sipnab never tried to unwrap. Before this there
             // was no report at all — a deployment terminating WSS on 8081 was
-            // told nothing whatsoever about its entire WebRTC signalling leg.
+            // told nothing whatsoever about its entire WebRTC signaling leg.
             let ws_skipped = crate::pipeline::ws_port_skip_report();
             if ws_skipped.messages > 0 {
                 let top: Vec<String> = ws_skipped
@@ -2742,7 +2742,7 @@ impl BatchRunner {
                     .map(|p| format!("{} ({})", p.port, p.messages))
                     .collect();
                 eprintln!(
-                    "NOT ANALYSED: {} SIP-over-WebSocket message(s) arrived on ports \
+                    "NOT ANALYZED: {} SIP-over-WebSocket message(s) arrived on ports \
                      outside the WebSocket port set ({}) and are in none of the \
                      totals above. Busiest: {}. Re-run with --ws-portrange covering \
                      them (e.g. --ws-portrange 1-65535) to include them.",
@@ -2765,7 +2765,7 @@ impl BatchRunner {
             report_retention_losses(&dialog_store.read());
             report_capture_quality();
 
-            // Guidance when no SIP signalling was found — and, when the
+            // Guidance when no SIP signaling was found — and, when the
             // capture did not decode, a refusal to state that absence as a
             // finding. See `no_sip_guidance` for why the choice of sentence
             // is the whole point.
@@ -4087,7 +4087,7 @@ mod tests {
         let joined = lines.join("\n");
         assert!(
             joined.contains(
-                "No SIP signalling found, but 120 RTP packets across 2 stream(s) were parsed"
+                "No SIP signaling found, but 120 RTP packets across 2 stream(s) were parsed"
             ),
             "a demonstrably readable capture keeps its message: {joined}"
         );
@@ -4629,7 +4629,7 @@ mod tests {
             );
         }
         // Refuses even when -O could supply a single readable path: the
-        // output holds what was CAPTURED, not the files being analysed, so
+        // output holds what was CAPTURED, not the files being analyzed, so
         // pointing tshark at it would answer a different question quietly.
         assert!(
             tshark_input_file(&set, Some("saved.pcap")).is_err(),
@@ -5891,7 +5891,7 @@ mod tests {
             tight.rate_limited
         );
 
-        // And a ceiling ABOVE the built-in 10 is honoured, or the setting can
+        // And a ceiling ABOVE the built-in 10 is honored, or the setting can
         // only ever tighten — half a knob.
         let wide = sent_under(&["sipnab", "--kill-rate-limit", "100"], 20);
         assert_eq!(

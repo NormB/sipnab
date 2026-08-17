@@ -10,7 +10,7 @@
 //! throttled only by how fast they exited.
 //!
 //! These tests count *actual spawns* by giving the engine a command that
-//! appends one byte to a temp file, so they measure the process behaviour
+//! appends one byte to a temp file, so they measure the process behavior
 //! rather than the bookkeeping that is supposed to bound it.
 
 #![cfg(feature = "native")]

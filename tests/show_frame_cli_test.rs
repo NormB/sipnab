@@ -72,7 +72,7 @@ fn a_pointer_emitted_by_json_dialogs_can_be_followed() {
     );
 }
 
-/// The human-typed form works and is labelled honestly.
+/// The human-typed form works and is labeled honestly.
 #[test]
 fn a_pointer_without_a_digest_is_printed_but_called_unverified() {
     let full = emitted_pointer();

@@ -9,7 +9,7 @@
 //! -> `StreamStore::process_rtp`).
 //!
 //! Companion to the audit in docs/fault-model.md. The stores were
-//! already bounded in code; these are the missing behavioural
+//! already bounded in code; these are the missing behavioral
 //! regression guards for the #1 ranked DoS surface.
 
 use chrono::Utc;

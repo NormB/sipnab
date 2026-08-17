@@ -51,7 +51,7 @@ pub const ABI_VERSION: u32 = 1;
 /// Instructions a plugin may execute per dialog before it is cut off.
 ///
 /// Fuel, not wall-clock: wall-clock makes a capture's output depend on how busy
-/// the machine was, so the same pcap could analyse differently twice. Fuel is
+/// the machine was, so the same pcap could analyze differently twice. Fuel is
 /// deterministic, which keeps a plugin's findings reproducible — the property
 /// the whole tool is built around.
 ///

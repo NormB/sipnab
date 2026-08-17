@@ -56,7 +56,7 @@ fn wasm_js_exports_all_required_functions() {
     );
 }
 
-/// Every `getrandom` line in the lockfile that honours the `wasm_js` backend
+/// Every `getrandom` line in the lockfile that honors the `wasm_js` backend
 /// cfg has that feature enabled for the wasm32 target.
 ///
 /// `.cargo/config.toml` sets `--cfg getrandom_backend="wasm_js"` for

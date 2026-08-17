@@ -9,7 +9,7 @@
 //! hours out. Every timing figure sipnab reports from a single capture — PDD,
 //! call duration, jitter — is a difference, and a constant offset cancels.
 //!
-//! Across TWO captures on two hosts it stops cancelling, and one strategy
+//! Across TWO captures on two hosts it stops canceling, and one strategy
 //! depends on it directly. `find_correlated`'s `timing_heuristic` matches
 //! dialogs created within two seconds of each other, and two seconds is smaller
 //! than the skew an undisciplined host accumulates in a day. The failure is
@@ -39,12 +39,12 @@
 #[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
 #[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
 pub struct ClockDiscipline {
-    /// True when the kernel considers the clock synchronised to a time source.
+    /// True when the kernel considers the clock synchronized to a time source.
     ///
     /// False means `STA_UNSYNC` is set: no daemon is disciplining this clock,
     /// or it has lost its source. A cross-node time comparison against a host
     /// reporting `false` is a guess about a guess.
-    pub synchronised: bool,
+    pub synchronized: bool,
     /// Kernel's maximum error estimate, microseconds.
     ///
     /// The bound that matters for cross-node work: it grows without limit while
@@ -56,7 +56,7 @@ pub struct ClockDiscipline {
     pub est_error_us: i64,
     /// False when this platform cannot report discipline at all.
     ///
-    /// Distinguishes "the clock is not synchronised" from "we could not ask",
+    /// Distinguishes "the clock is not synchronized" from "we could not ask",
     /// which are different facts and would otherwise both read as a bad clock.
     /// A caller must not treat unavailability as a failed clock.
     pub available: bool,
@@ -65,14 +65,14 @@ pub struct ClockDiscipline {
 impl ClockDiscipline {
     /// What to report where the kernel cannot be asked.
     ///
-    /// `synchronised` is false and `available` is false, and the pair is the
-    /// point: a consumer that checks only `synchronised` sees the cautious
+    /// `synchronized` is false and `available` is false, and the pair is the
+    /// point: a consumer that checks only `synchronized` sees the cautious
     /// answer, and one that checks `available` learns that the caution is
     /// ignorance rather than measurement.
     #[must_use]
     pub const fn unavailable() -> Self {
         Self {
-            synchronised: false,
+            synchronized: false,
             max_error_us: 0,
             est_error_us: 0,
             available: false,
@@ -102,7 +102,7 @@ pub fn discipline() -> ClockDiscipline {
 /// Linux-only and `native`-only, because it needs `libc`.
 #[cfg(all(target_os = "linux", feature = "native"))]
 fn read_linux() -> ClockDiscipline {
-    // `STA_UNSYNC` (0x0040) is set when the clock is NOT synchronised. The
+    // `STA_UNSYNC` (0x0040) is set when the clock is NOT synchronized. The
     // sense is inverted from what the field name suggests, which is worth
     // stating: reading it as "synced" is a one-character bug that reports every
     // undisciplined host as healthy.
@@ -111,7 +111,7 @@ fn read_linux() -> ClockDiscipline {
     // SAFETY: `timex` is a plain C struct of integers with no invariants, so an
     // all-zero bit pattern is a valid value of it.
     let mut tx: libc::timex = unsafe { std::mem::zeroed() };
-    // SAFETY: `tx` is a live, initialised local, and the pointer stays valid
+    // SAFETY: `tx` is a live, initialized local, and the pointer stays valid
     // for the whole call. `modes` was zeroed above, which means QUERY ONLY —
     // adjtimex reads that field first and mutates no clock state when it is 0,
     // so this cannot step on a running time daemon. The kernel writes only
@@ -121,7 +121,7 @@ fn read_linux() -> ClockDiscipline {
         return ClockDiscipline::unavailable();
     }
     ClockDiscipline {
-        synchronised: (tx.status & STA_UNSYNC) == 0,
+        synchronized: (tx.status & STA_UNSYNC) == 0,
         max_error_us: tx.maxerror as i64,
         est_error_us: tx.esterror as i64,
         available: true,
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn unavailable_is_cautious_and_says_why() {
         let c = ClockDiscipline::unavailable();
-        assert!(!c.synchronised, "the cautious answer for an unknown clock");
+        assert!(!c.synchronized, "the cautious answer for an unknown clock");
         assert!(
             !c.available,
             "and it must be distinguishable from a measured bad clock"
@@ -158,7 +158,7 @@ mod tests {
                 c.max_error_us
             );
         } else {
-            assert!(!c.synchronised, "unavailable must not claim synchronised");
+            assert!(!c.synchronized, "unavailable must not claim synchronized");
         }
     }
 

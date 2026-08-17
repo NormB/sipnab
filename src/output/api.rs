@@ -931,7 +931,7 @@ async fn get_stream(
 /// # Returns
 ///
 /// 200 with `{schema_version, dialogs{total,active,completed,failed,
-/// cancelled}, streams{total,orphaned}, timing{pdd_p50_ms,pdd_p95_ms,
+/// canceled}, streams{total,orphaned}, timing{pdd_p50_ms,pdd_p95_ms,
 /// pdd_p99_ms}, capture_quality{kernel_dropped_packets,
 /// interface_dropped_packets, invalid_timestamps, undecodable_frames,
 /// degraded}}`; the percentiles are `null` when no dialog has a PDD. 401/503
@@ -973,7 +973,7 @@ async fn get_stats(
         match d.state() {
             DialogState::Failed => failed_count += 1,
             DialogState::Completed => completed_count += 1,
-            DialogState::Cancelled => cancelled_count += 1,
+            DialogState::Canceled => cancelled_count += 1,
             _ => {}
         }
     }
@@ -1007,6 +1007,10 @@ async fn get_stats(
             "in_call": active_calls,
             "completed": completed_count,
             "failed": failed_count,
+            // WIRE FORMAT, not prose: this key shipped as `cancelled` and
+            // dashboards read it by name. The US-English sweep renamed the
+            // Rust identifiers around it; the key a consumer matches on
+            // does not move for a spelling preference.
             "cancelled": cancelled_count,
         },
         "streams": {
@@ -2515,7 +2519,7 @@ mod tests {
     /// The REST stream row CARRIES a round trip when the store has one, and
     /// omits the key when it does not.
     ///
-    /// Behavioural on purpose. The parity gate in `tests/surface_parity_test.rs`
+    /// Behavioral on purpose. The parity gate in `tests/surface_parity_test.rs`
     /// scans source text, and once its REST scope had to include
     /// `src/output/model.rs` — which is where the field is DECLARED — it could
     /// no longer tell a populated field from a declared one. Deleting

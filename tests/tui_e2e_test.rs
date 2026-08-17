@@ -209,7 +209,7 @@ mod tui_e2e {
         /// Keys queue in the PTY and are consumed by the app in order, so no
         /// post-send sleep is needed for correctness; capture helpers
         /// (`wait_for`, `wait_until`, `stable_screen`) poll the screen and are
-        /// what actually synchronise with the render loop.
+        /// what actually synchronize with the render loop.
         ///
         /// # Side effects
         /// Spawns tmux to deliver the key(s) to the pane.

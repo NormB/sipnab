@@ -139,9 +139,9 @@ fn the_finding_cites_rfc_7989_section_5_and_quotes_the_abnf() {
     );
 
     // The exact JSON an agent reads back from `lint_dialog` and
-    // `validate_message`, both of which serialise `Finding` straight into
+    // `validate_message`, both of which serialize `Finding` straight into
     // `findings[]`.
-    let json = serde_json::to_value(&finding).expect("a finding must serialise");
+    let json = serde_json::to_value(&finding).expect("a finding must serialize");
     assert_eq!(json["rule_id"], SESSION_ID_MALFORMED.id);
     assert_eq!(json["rfc"], 7989);
     assert_eq!(json["section"], "5");
@@ -285,17 +285,17 @@ fn uppercase_hex_is_reported_even_though_correlation_still_succeeds() {
     );
 }
 
-/// Both rules are in the catalogue and resolvable by identifier.
+/// Both rules are in the catalog and resolvable by identifier.
 ///
 /// `explain_rule` over MCP answers out of `RULES` via `rule_by_id`, so a rule
-/// that fires without being catalogued hands an agent an identifier it cannot
+/// that fires without being cataloged hands an agent an identifier it cannot
 /// resolve — which is where a hallucinated citation comes from.
 #[test]
 fn both_session_id_rules_are_catalogued_and_resolvable_by_identifier() {
     for rule in [SESSION_ID_MALFORMED, SESSION_ID_UPPERCASE] {
         assert!(
             RULES.iter().any(|r| r.id == rule.id),
-            "{} is not in the catalogue, so the engine cannot report it",
+            "{} is not in the catalog, so the engine cannot report it",
             rule.id
         );
         let found = rule_by_id(rule.id).unwrap_or_else(|| panic!("{} does not resolve", rule.id));

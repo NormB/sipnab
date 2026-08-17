@@ -318,7 +318,7 @@ fn session_timers(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
             "Session-Expires greater than or equal to Min-SE",
             "§7.1 makes Session-Expires greater than or equal to any Min-SE carried with \
              it. The message asks for a refresh interval it has already declared too \
-             short, so a UAS honouring the floor rejects it with 422 Session Interval Too \
+             short, so a UAS honoring the floor rejects it with 422 Session Interval Too \
              Small and the call never starts.",
         );
     }
@@ -792,7 +792,7 @@ mod tests {
     /// An INVITE asking for a refresh interval it has already called too short.
     ///
     /// The two header fields contradict each other inside one message, which is
-    /// why this needs no dialog: a UAS honouring the floor answers 422 and the
+    /// why this needs no dialog: a UAS honoring the floor answers 422 and the
     /// call never starts.
     #[test]
     fn session_expires_below_min_se_is_reported() {
@@ -1322,7 +1322,7 @@ mod tests {
         );
     }
 
-    /// The bracket splitter recognises a name-addr wherever the brackets sit.
+    /// The bracket splitter recognizes a name-addr wherever the brackets sit.
     #[test]
     fn bracket_split_recognises_name_addr() {
         assert_eq!(

@@ -24,7 +24,7 @@ pub(in crate::tui) fn open_file_dialog(app: &mut App) {
     app.active_popup = Some(Popup::FileOpenDialog);
 }
 
-/// Extensions recognised as pcap/pcapng files by the file browser.
+/// Extensions recognized as pcap/pcapng files by the file browser.
 pub(in crate::tui) const PCAP_EXTENSIONS: &[&str] = &["pcap", "pcapng", "cap"];
 
 /// True if `name` is a capture file the browser should list: a bare

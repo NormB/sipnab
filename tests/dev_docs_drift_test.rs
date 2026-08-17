@@ -152,7 +152,7 @@ fn code_tree_list_matches_the_repository() {
 /// wiki or a site that has no such file; a tree missing from the fixer is a
 /// link the gate demands and the fixer cannot write.
 ///
-/// This asserts the BEHAVIOUR, not the spelling. An earlier version read the
+/// This asserts the BEHAVIOR, not the spelling. An earlier version read the
 /// alternation back out of each script's source, which is a proxy: it says
 /// what the file contains, not what the compiled pattern matches. Each
 /// generator's live `CODE_LINK_RE` is probed against every tree in the list,
@@ -255,7 +255,7 @@ fn generators_agree_on_the_code_tree_set() {
 
 /// Nobody has pasted the tree list back into a script.
 ///
-/// The behaviour probe above catches a re-hardcoded copy only once it has
+/// The behavior probe above catches a re-hardcoded copy only once it has
 /// already drifted. This catches the paste itself, in the exact shape the
 /// three generators shipped for months: `a|b|c` spelled out in a regex
 /// literal. Adjacent tree names joined by `|` appear nowhere else in this
@@ -1557,7 +1557,7 @@ fn release_artifact_counts_match_the_build_matrix() {
     let installable = tarballs + packages * 2;
     let assets = tarballs * 2 + packages * 2 + 1 + 2;
 
-    // Normalise: the prose is hard-wrapped, so every claim spans line breaks.
+    // Normalize: the prose is hard-wrapped, so every claim spans line breaks.
     // Lowercased too — these counts appear mid-sentence and at sentence starts,
     // and a gate that fails on a capital letter teaches people to reword rather
     // than recount.
@@ -1961,7 +1961,7 @@ fn line_citations_point_at_the_code_they_name() {
     // 140 -> 141 on 2026-08-14, attributed per file before moving: the whole
     // increase is ONE citation in docs/design/backlog.md, from the new `TK`
     // section (TLS key acquisition without the daemon's cooperation) and its
-    // `CFG1` neighbour. No other file's count changed, and the checker resolves
+    // `CFG1` neighbor. No other file's count changed, and the checker resolves
     // the new citation cleanly — measured by running scripts/check-line-drift.py
     // with and without that edit stashed: 141 against 140.
     assert_eq!(

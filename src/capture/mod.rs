@@ -53,7 +53,7 @@ pub mod resolve;
 pub mod rsa_key;
 #[cfg(feature = "tls")]
 pub mod tls;
-// Decapsulators for the wrappings carrier and data-centre traffic arrives in:
+// Decapsulators for the wrappings carrier and data-center traffic arrives in:
 // MPLS, NSH, GTP-U, VXLAN and friends. `parse` drives them; they own no walk
 // of their own.
 pub(crate) mod tunnel;
@@ -797,7 +797,7 @@ impl PacketProcessor {
         // Feeding it to the TCP reassembler is what silence looked like before
         // this: the reassembler orders segments by sequence number, a uprobe
         // packet carries `tcp_seq: None`, and every message was held for
-        // neighbours that would never arrive. Both uprobe backends captured
+        // neighbors that would never arrive. Both uprobe backends captured
         // packets and produced zero SIP messages.
         if parsed.input_origin == parse::InputOrigin::Uprobe {
             return smallvec![parsed];
@@ -1916,7 +1916,7 @@ mod tests {
         }
 
         /// Ethernet + IPv4 frame declaring IP protocol `proto` with a 20-byte
-        /// body the transport slicer will not recognise as UDP/TCP/SCTP.
+        /// body the transport slicer will not recognize as UDP/TCP/SCTP.
         fn eth_ipv4_proto(proto: u8) -> Vec<u8> {
             let mut ip = vec![0x45u8, 0x00];
             ip.extend_from_slice(&40u16.to_be_bytes()); // total length

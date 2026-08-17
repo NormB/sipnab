@@ -45,7 +45,7 @@
 //!
 //! The ABNF is `32(DIGIT / %x61-66)` — 32 LOWERCASE hex digits. Kit that emits
 //! uppercase is non-conforming, and this module preserves what arrived and
-//! flags the deviation rather than silently normalising it. Whether a vendor
+//! flags the deviation rather than silently normalizing it. Whether a vendor
 //! conforms is itself a finding an operator may need; a parser that quietly
 //! repairs the wire destroys the evidence for it.
 //!
@@ -274,7 +274,7 @@ mod tests {
     }
 
     /// The whole point of the module: the SBC swaps the halves, and the two
-    /// values must still be recognised as one session.
+    /// values must still be recognized as one session.
     #[test]
     fn the_halves_swap_across_a_b2bua_and_still_correlate() {
         let a_side = SessionId::parse(&format!("{A};remote={B}")).expect("parses");

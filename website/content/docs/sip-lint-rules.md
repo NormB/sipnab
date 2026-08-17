@@ -19,7 +19,7 @@ Most SIP linters read messages against a grammar. They catch a malformed
 `Contact` header. They cannot catch the far end sending payload type 8 when the
 SDP declared payload type 0, because they never see the RTP.
 
-sipnab holds the signalling and the media in one process. The `OBS-` rules
+sipnab holds the signaling and the media in one process. The `OBS-` rules
 compare what the SDP declared against what the wire carried, and that class of
 defect stays invisible to any tool that reads only text.
 
@@ -197,7 +197,7 @@ produce the same row, and only this note tells them apart.
 
 ### Session timers, and the section number that is easy to get wrong
 
-RFC 4028 numbers its behaviour sections 7 UAC, **8 Proxy, 9 UAS** — and the
+RFC 4028 numbers its behavior sections 7 UAC, **8 Proxy, 9 UAS** — and the
 refresher obligation belongs to the UAS, so it cites §9. Recalling it as §8
 sends a reader to the proxy's rules, which say something different about the
 same header field. The citation here came from the table of contents in RFC
@@ -304,7 +304,7 @@ the transaction took the count to zero.
 ## Validating a rule against real traffic
 
 A rule that fires on nearly every dialog is a bug in the rule, not a discovery
-about the traffic. [`tests/corpus_lint_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/corpus_lint_test.rs) runs the whole catalogue over a
+about the traffic. [`tests/corpus_lint_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/corpus_lint_test.rs) runs the whole catalog over a
 directory of captures named by `SIPNAB_CORPUS`, prints a hit count per rule,
 and fails when any rule trips more than 95% of dialogs.
 
@@ -323,10 +323,10 @@ let config = LintConfig::new()
     .suppress_list("OBS-*, SIP-3261-19.1.1-URI-PARAM-DEMOTED");
 let linter = Linter::new(config);
 
-// Signalling only.
+// Signaling only.
 // let findings = linter.lint_dialog(&dialog);
 
-// Signalling against the media observed for it.
+// Signaling against the media observed for it.
 // let media = ObservedMedia::from_streams(streams.streams_for(&dialog.call_id));
 // let findings = linter.lint_dialog_with_media(&dialog, &media);
 ```

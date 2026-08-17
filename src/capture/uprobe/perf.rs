@@ -150,7 +150,7 @@ impl PerfRing {
             // it an `i32` leaves the upper half of that slot undefined, so the
             // kernel sees a garbage pid and cpu. Measured: passing `-1i32` here
             // failed with EINTR on every cpu, which reads as a spurious
-            // interruption and is really a mis-marshalled argument.
+            // interruption and is really a mis-marshaled argument.
             //
             // SAFETY: `attr` outlives the call; pid -1 with a cpu means
             // "every process on this cpu", which is what a library-wide uprobe

@@ -102,14 +102,14 @@ and a large cut in pipeline-induced drops.
         program this harness never loads. The harness therefore reads
         `rx_queue_0_drops` (summed over the queues, since veth queue count is
         settable at creation), the `/sys/class/net/<iface>/statistics/rx_*`
-        deltas, and `/proc/net/softnet_stat` labelled system-wide because it is.
+        deltas, and `/proc/net/softnet_stat` labeled system-wide because it is.
       - **A veth number is not a physical-NIC number, and must never be quoted
         as one.** There is no hardware ring, no NAPI budget tuned by a driver,
         no interrupt coalescing, no RSS across queues, and no checksum or
         segmentation offload doing work — a `veth` transmit is a software
         enqueue onto the peer's backlog. What this harness can measure is the
         path from the kernel's ring to sipnab's counters: buffer sizing, ring
-        format, poll behaviour, channel backpressure. What it cannot measure is
+        format, poll behavior, channel backpressure. What it cannot measure is
         anything a NIC and its driver contribute, which on a real gigabit link
         is where a good share of the loss lives.
 

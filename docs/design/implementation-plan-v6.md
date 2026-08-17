@@ -645,7 +645,7 @@ The drop-to user is configurable via `--user <name>` (default: `sipnab` if it ex
 > differs from main"* can never pass and must not be treated as outstanding
 > work.** They assert a process architecture that was decided against.
 >
-> The decision is analysed, with the counter-arguments taken seriously, in
+> The decision is analyzed, with the counter-arguments taken seriously, in
 > [`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-path-cost.md).
 > Its verdict: forking the REST API is declined outright — the shared store
 > reads *are* the entire API, so isolating it turns every read into a wire
@@ -1296,7 +1296,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 - [ ] Compact header forms work (`i`=Call-ID, `f`=From, `t`=To, `v`=Via, `m`=Contact, `l`=Content-Length)
 - [ ] Header folding (multi-line headers with WSP continuation) parsed correctly
 - [ ] Multiple Via headers stacked correctly for proxied traffic
-- [ ] Dialog state machine transitions verified for: basic call, cancelled call, failed call, REGISTER, SUBSCRIBE
+- [ ] Dialog state machine transitions verified for: basic call, canceled call, failed call, REGISTER, SUBSCRIBE
 - [ ] Forked calls (multiple 200 OKs for one INVITE) create correct dialog structure
 - [ ] `--from`, `--to`, `--ua`, `--contact` filters work with regex
 - [ ] `--filter` DSL expressions evaluate correctly for all supported fields and operators
@@ -1484,7 +1484,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
   - **Default limit: 100,000 dialogs** (D17). Configurable via `-l`.
   - X-Call-ID correlation
 - [ ] Dialog state machine:
-  - **INVITE dialogs:** Trying → Ringing → InCall → Completed/Cancelled/Failed
+  - **INVITE dialogs:** Trying → Ringing → InCall → Completed/Canceled/Failed
   - **REGISTER dialogs:** tracked by AOR + Contact (not Call-ID alone), state = Registered/Expired/Failed
   - **SUBSCRIBE/NOTIFY dialogs:** Pending → Active → Terminated, linked by Event header + Call-ID
   - **Forked calls:** A single INVITE may produce multiple 200 OKs from different endpoints (forking proxy). Each 200 OK with a distinct To-tag creates a separate dialog branch. The Call-ID lookup returns the parent, branches are stored as children.
@@ -1538,7 +1538,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 
 **Gate — 2.4 is done when:**
 - [ ] Dialog state machine: INVITE basic call (Trying→Ringing→InCall→Completed) verified step-by-step against test pcap
-- [ ] Dialog state machine: cancelled call (Trying→Ringing→Cancelled) verified
+- [ ] Dialog state machine: canceled call (Trying→Ringing→Canceled) verified
 - [ ] Dialog state machine: failed call (Trying→Failed with 4xx/5xx/6xx) verified
 - [ ] REGISTER dialog: tracks AOR + Contact, state transitions (Registered/Expired/Failed)
 - [ ] SUBSCRIBE/NOTIFY: Pending→Active→Terminated linked by Event header

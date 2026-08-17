@@ -11,7 +11,7 @@
 
 use clap::Parser;
 use sipnab::capture::CaptureSource;
-use sipnab::capture::uprobe::discover::{Flavour, PlannedTarget, parse_flavour, plan_targets};
+use sipnab::capture::uprobe::discover::{Flavor, PlannedTarget, parse_flavour, plan_targets};
 use sipnab::cli::Cli;
 
 /// `--uprobe-list` is the flag an operator is told to run first, so it must
@@ -45,7 +45,7 @@ fn uprobe_tls_selects_the_uprobe_capture_source() {
             assert_eq!(targets[0].library, "/usr/lib/libssl.so.3");
             assert_eq!(
                 targets[0].symbol, "SSL_write",
-                "the symbol is inferred from the library's flavour"
+                "the symbol is inferred from the library's flavor"
             );
         }
         other => panic!("expected an uprobe source, got {other:?}"),
@@ -73,7 +73,7 @@ fn naming_a_library_is_enough_to_select_the_source() {
     }
 }
 
-/// Repeatable, because a host running both flavours needs both probed.
+/// Repeatable, because a host running both flavors needs both probed.
 #[test]
 fn uprobe_library_is_repeatable_and_each_gets_its_own_symbol() {
     let cli = Cli::try_parse_from([
@@ -145,20 +145,39 @@ fn an_unclassifiable_library_without_a_symbol_is_refused_with_the_fix() {
     );
 }
 
+/// The pre-0.5.105 spelling still parses, because a released flag is a
+/// contract. Asserts the EFFECT — the old name reaching the same field —
+/// rather than the presence of an `alias` attribute.
 #[test]
-fn uprobe_flavour_parses_both_and_is_repeatable() {
-    let cli = Cli::try_parse_from([
+fn the_old_uprobe_flavour_spelling_still_works() {
+    let cli = Cli::parse_from([
         "sipnab",
-        "--uprobe-list",
         "--uprobe-flavour",
         "openssl",
         "--uprobe-flavour",
         "wolfssl",
+    ]);
+    assert_eq!(
+        cli.tls_args.uprobe_flavor,
+        vec!["openssl", "wolfssl"],
+        "--uprobe-flavour shipped through 0.5.104; scripts naming it must keep working"
+    );
+}
+
+#[test]
+fn uprobe_flavor_parses_both_and_is_repeatable() {
+    let cli = Cli::try_parse_from([
+        "sipnab",
+        "--uprobe-list",
+        "--uprobe-flavor",
+        "openssl",
+        "--uprobe-flavor",
+        "wolfssl",
     ])
     .expect("parse");
-    assert_eq!(cli.tls_args.uprobe_flavour, vec!["openssl", "wolfssl"]);
-    assert_eq!(parse_flavour("openssl"), Ok(Flavour::OpenSsl));
-    assert_eq!(parse_flavour("wolfssl"), Ok(Flavour::WolfSsl));
+    assert_eq!(cli.tls_args.uprobe_flavor, vec!["openssl", "wolfssl"]);
+    assert_eq!(parse_flavour("openssl"), Ok(Flavor::OpenSsl));
+    assert_eq!(parse_flavour("wolfssl"), Ok(Flavor::WolfSsl));
 }
 
 /// GnuTLS is mapped on ordinary hosts and is deliberately not probed: its
@@ -166,8 +185,8 @@ fn uprobe_flavour_parses_both_and_is_repeatable() {
 /// shape would read the wrong register.
 #[test]
 fn a_flavour_sipnab_does_not_probe_is_rejected_at_parse_time() {
-    let err = Cli::try_parse_from(["sipnab", "--uprobe-list", "--uprobe-flavour", "gnutls"])
-        .expect_err("clap must reject an unsupported flavour");
+    let err = Cli::try_parse_from(["sipnab", "--uprobe-list", "--uprobe-flavor", "gnutls"])
+        .expect_err("clap must reject an unsupported flavor");
     let msg = err.to_string();
     assert!(
         msg.contains("openssl") && msg.contains("wolfssl"),
@@ -229,13 +248,13 @@ fn a_capture_that_would_attach_to_nothing_is_refused() {
     );
 }
 
-/// Flavour narrowing applies to the plan, not just to the listing.
+/// Flavor narrowing applies to the plan, not just to the listing.
 #[test]
 fn narrowing_by_flavour_changes_what_would_be_probed() {
     let planned = plan_targets(
         &["/usr/lib/libwolfssl.so.42".to_string()],
         None,
-        &[Flavour::WolfSsl],
+        &[Flavor::WolfSsl],
         Vec::new(),
     )
     .expect("an explicit library needs no discovery");

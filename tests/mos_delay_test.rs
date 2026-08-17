@@ -178,7 +178,7 @@ fn declared_delay_wins_over_reported_wins_over_derived_wins_over_assumed() {
         resolve_one_way_delay(None, None, Some(90.0)),
         (45.0, DelaySource::DerivedFromEcho),
         "with no XR, the figure derived from the RR echo must be used and \
-         labelled as derived — never as something an endpoint reported"
+         labeled as derived — never as something an endpoint reported"
     );
     assert_eq!(
         resolve_one_way_delay(None, None, None),
@@ -585,7 +585,7 @@ fn the_one_way_delay_flag_parses_and_beats_config() {
 /// The private scorers — REST's `approximate_mos`, MCP's `stream_mos` — cannot
 /// be called from here; both delegate to `MosDelay::score` now, and
 /// `no_surface_scores_a_mos_on_the_assumed_delay` in `surface_parity_test` is
-/// what keeps them delegating. This is the behavioural half: the surfaces that
+/// what keeps them delegating. This is the behavioral half: the surfaces that
 /// ARE reachable must agree on a real number rather than agree on a constant.
 #[test]
 fn one_stream_scores_one_mos_on_every_surface() {

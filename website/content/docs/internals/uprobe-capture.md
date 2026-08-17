@@ -78,7 +78,7 @@ traffic.
 
 **Identity is device and inode, never the path.** One file is reachable through
 a `libssl.so.3` symlink, its versioned real name, and a container mount, all at
-once. Two *builds* of one flavour are genuinely two targets, because their
+once. Two *builds* of one flavor are genuinely two targets, because their
 symbol offsets differ and an offset computed from one is wrong for the other.
 
 The container case is the one that captures nothing while looking healthy.
@@ -98,9 +98,9 @@ through `/proc/<pid>/root/…` and accepts a candidate only when the inode
 matches, returning `None` rather than probing a file that merely has the right
 name.
 
-### Flavours
+### Flavors
 
-| Flavour | Write symbol | Notes |
+| Flavor | Write symbol | Notes |
 |---------|--------------|-------|
 | OpenSSL | `SSL_write` | and the ABI-compatible forks that keep the name |
 | wolfSSL | `wolfSSL_write` | same `(ssl, buf, len)` positions, so one probe shape serves both |
@@ -123,7 +123,7 @@ sipnab_<pid>_l<slot>_b<band>
 `uprobe_events` is a **system-wide** namespace. The pid keeps two sipnabs, or a
 sipnab beside another tracer, from colliding. The slot keeps one sipnab's own
 libraries apart: without it the second install reuses the first's names and a
-mixed-flavour host captures exactly one of them.
+mixed-flavor host captures exactly one of them.
 
 ## 5. Two orders that are load-bearing
 
@@ -251,7 +251,7 @@ Nothing can fake the kernel's own record layout, so `record::parse_layout` runs
 against verbatim `format` output from a 6.8 kernel.
 
 Mutation-test any gate you add here. One of these tests began life believing
-the flavour list's *order* prevented misclassification. Reversing the order did
+the flavor list's *order* prevented misclassification. Reversing the order did
 not fail it, because `strip_prefix` already separates the two. The comment was
 wrong, not the code — see
 [`discover.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/uprobe/discover.rs).
@@ -272,15 +272,15 @@ misses the rest silently:
 sudo sipnab -N --uprobe-tls
 ```
 
-One flavour only, when the other stack is not yours to read. Repeatable, so
+One flavor only, when the other stack is not yours to read. Repeatable, so
 naming both is the same as naming neither:
 
 ```sh
-sudo sipnab -N --uprobe-tls --uprobe-flavour openssl
+sudo sipnab -N --uprobe-tls --uprobe-flavor openssl
 ```
 
 ```sh
-sudo sipnab -N --uprobe-tls --uprobe-flavour wolfssl
+sudo sipnab -N --uprobe-tls --uprobe-flavor wolfssl
 ```
 
 One specific library, which is also how to reach a daemon that has not started

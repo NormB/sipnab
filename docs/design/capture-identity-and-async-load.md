@@ -154,7 +154,7 @@ old id would be a claim about data that is already gone.
 **The worker routes through `pipeline::process_packet`**, the same applier the
 live path uses, rather than a second classify-and-store loop. The per-store
 write locks stay as brief as they are on the live path, and an opened capture is
-analysed the way an `-I` one is.
+analyzed the way an `-I` one is.
 
 **The poller is `capture_status`, not a new tool.** It is already the tool an
 agent is told to call first, the test harness already polls it for

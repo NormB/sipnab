@@ -29,7 +29,7 @@ pub fn port_in_range(src_port: u16, dst_port: u16, range: (u16, u16)) -> bool {
 // The default range is `5060-5061`, and SIP on other ports is ordinary —
 // carriers and SBCs use 5070, 5080 and 8090 routinely. Measured over a corpus
 // of real captures, the default skips 46,421 of the 148,944 SIP messages
-// sipnab can otherwise analyse (31.2%); `tshark` independently puts 49,576 of
+// sipnab can otherwise analyze (31.2%); `tshark` independently puts 49,576 of
 // 152,865 SIP frames outside the range (32.4%). In `tg.pcap0` it also costs
 // 1,401 of 3,712 dialogs (37.7%). The run then printed its reduced totals as
 // if they were complete.
@@ -49,9 +49,9 @@ pub fn port_in_range(src_port: u16, dst_port: u16, range: (u16, u16)) -> bool {
 //     invented four phantom streams from DNS, `starts_sip_message` needs a
 //     literal ` SIP/2.0` version token terminating the first line, and the RTP
 //     stream count is unchanged whether the gate is on or off (648 in
-//     `tg.pcap0` both ways). But it makes `--portrange` a no-op for signalling,
+//     `tg.pcap0` both ways). But it makes `--portrange` a no-op for signaling,
 //     which is a different promise from the one the flag documents, and the
-//     gate's behaviour is pinned by tests outside this file.
+//     gate's behavior is pinned by tests outside this file.
 //   * **Report what was skipped.** Keeps `--portrange` meaning what it says
 //     and turns the silent loss into a prompt.
 //
@@ -177,7 +177,7 @@ fn record_portrange_skip(src_port: u16, dst_port: u16, payload: &[u8], range: (u
             "SIP outside --portrange {lo}-{hi} is being skipped: {messages} \
              message(s) so far, in no count, no dialog, and no output. \
              Busiest port(s): {ports}. Re-run with a range that covers them \
-             (e.g. --portrange 1-65535) to analyse them."
+             (e.g. --portrange 1-65535) to analyze them."
         );
     }
 }
@@ -205,8 +205,8 @@ fn busiest_ports(st: &PortrangeSkips, n: usize) -> Vec<SkippedPort> {
 
 /// The SIP this run discarded because both ports fell outside `--portrange`.
 ///
-/// The totals sipnab prints count what it analysed. This is what it saw, knew
-/// was SIP, and did not analyse — the difference an operator otherwise has no
+/// The totals sipnab prints count what it analyzed. This is what it saw, knew
+/// was SIP, and did not analyze — the difference an operator otherwise has no
 /// way to learn. Report it beside any message or dialog count that a
 /// `--portrange` was applied to.
 ///
@@ -241,14 +241,14 @@ pub fn reset_portrange_skips() {
 // only ever ran on 80, 443, 8080 and 8443 — the browser's view of the web —
 // and any deployment terminating WSS elsewhere (Kamailio, OpenSIPS and Janus
 // each default outside that set, and a reverse proxy forwards to whatever port
-// it likes) had its entire WebRTC signalling leg vanish. Not skipped loudly:
-// the frames were never recognised as SIP at all, so they reached no count, no
+// it likes) had its entire WebRTC signaling leg vanish. Not skipped loudly:
+// the frames were never recognized as SIP at all, so they reached no count, no
 // dialog and no output, and no line of the report hinted they existed.
 //
 // The tally below closes that. The unwrap is now ATTEMPTED regardless of port
 // — the frame test is two bytes, so the cost falls on TCP payloads whose first
 // byte already looks like a WebSocket data frame — and a successful unwrap
-// carrying real SIP is either analysed (the port is in the set) or counted
+// carrying real SIP is either analyzed (the port is in the set) or counted
 // here (it is not). The silence was as much the bug as the ports were.
 
 /// What the WebSocket port set discarded during this run.
@@ -257,7 +257,7 @@ pub fn reset_portrange_skips() {
 /// SIP-over-WebSocket all lands on the configured ports.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WsPortSkipReport {
-    /// Total SIP-over-WebSocket messages sipnab recognised, unwrapped far
+    /// Total SIP-over-WebSocket messages sipnab recognized, unwrapped far
     /// enough to confirm they were SIP, and then declined because neither port
     /// was in the configured set. These appear in no count, no dialog, and no
     /// output format.
@@ -339,7 +339,7 @@ fn record_ws_port_skip(src_port: u16, dst_port: u16, payload: &[u8]) {
             "SIP-over-WebSocket outside the WebSocket port set ({configured}) is \
              being skipped: {messages} message(s) so far, in no count, no dialog, \
              and no output. Busiest port(s): {ports}. Re-run with --ws-portrange \
-             covering them (e.g. --ws-portrange 1-65535) to analyse them."
+             covering them (e.g. --ws-portrange 1-65535) to analyze them."
         );
     }
 }
@@ -364,13 +364,13 @@ fn busiest_ws_ports(st: &WsPortSkips, n: usize) -> Vec<SkippedPort> {
     ports
 }
 
-/// The SIP-over-WebSocket this run recognised and did not analyse because
+/// The SIP-over-WebSocket this run recognized and did not analyze because
 /// neither port was in the configured WebSocket set.
 ///
 /// The counterpart of [`portrange_skip_report`] for RFC 7118 traffic, and the
 /// report that did not exist at all before: a deployment terminating WSS on
 /// 8081 was told nothing whatsoever. Report it beside any message or dialog
-/// count taken from a capture that could carry WebSocket signalling.
+/// count taken from a capture that could carry WebSocket signaling.
 ///
 /// # Returns
 ///
@@ -410,7 +410,7 @@ pub fn reset_ws_port_skips() {
 //     the original IP header plus 8 bytes — so it is never parsed as SIP,
 //     never counted, and never appended to a dialog's `messages`. The message
 //     totals sipnab prints are unchanged by this feature, which is what makes
-//     the `analysed + skipped` reconciliation still mean what it says.
+//     the `analyzed + skipped` reconciliation still mean what it says.
 //   * **Unattributable evidence is reported, not dropped.** A quote that stops
 //     before the `Call-ID` header cannot name a dialog. Discarding it would
 //     hide the fact that the network answered; it is counted as unattributed
@@ -803,7 +803,7 @@ pub fn icmp_evidence_report() -> IcmpEvidenceReport {
 
 /// Discard all recorded ICMP evidence.
 ///
-/// The store is process-global, so a process analysing several captures in
+/// The store is process-global, so a process analyzing several captures in
 /// sequence — and a test asserting on the counts — needs a way back to zero.
 ///
 /// # Side effects
@@ -830,7 +830,7 @@ pub fn reset_icmp_evidence() {
 // sent to a host that is not listening" is one of the commonest questions this
 // tool exists to answer, and the packet that answers it was in the file.
 //
-// The association key is the hard part and it is NOT the signalling one. A
+// The association key is the hard part and it is NOT the signaling one. A
 // media datagram carries no `Call-ID`, so a quote of one has nothing to key on
 // but the failed datagram's own 5-tuple and — when the router quoted past RFC
 // 792's 8-byte minimum — an RTP or RTCP header. Matching those needs the
@@ -838,13 +838,13 @@ pub fn reset_icmp_evidence() {
 // per-worker while this store is process-global. So recording and attribution
 // are deliberately separate: the quote is filed by flow as it is parsed, and
 // [`icmp_media_report`] resolves it against a `StreamStore` at the end of the
-// run. That is the same split the signalling side uses (record by `Call-ID`,
+// run. That is the same split the signaling side uses (record by `Call-ID`,
 // resolve at diagnosis time), for the same reason.
 //
 // Three rules, each because the obvious alternative is wrong:
 //
 //   * **A quote is not a packet.** It never creates a stream, never moves a
-//     stream count, and never enters the SIP evidence report. The signalling
+//     stream count, and never enters the SIP evidence report. The signaling
 //     side holds that line for message counts; this holds it for stream counts.
 //   * **Unmatched is reported, not dropped.** A quote that matches no stream
 //     still names a real socket that a real router said was unreachable. It is
@@ -1005,7 +1005,7 @@ pub fn quoted_media_kind(payload: &[u8]) -> QuotedMediaKind {
 /// The quoted datagram's flow: who sent it, who did not answer, and over what.
 ///
 /// The association key for a media quote, and the reason the media store is
-/// keyed differently from the signalling one. Two sockets and a transport,
+/// keyed differently from the signaling one. Two sockets and a transport,
 /// with no room for the reporter's address — naming the router that noticed as
 /// the endpoint that failed is the mistake this whole area is shaped to
 /// prevent.
@@ -1044,7 +1044,7 @@ pub struct MediaIcmpEvidence {
 /// Every ICMP error recorded against one quoted flow.
 ///
 /// `errors` is exact; `samples` is capped at [`MAX_ICMP_PER_FLOW`], for the
-/// same reason the signalling side caps its own: a flow hit thirty times must
+/// same reason the signaling side caps its own: a flow hit thirty times must
 /// not be reported as hit eight.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FlowIcmpEvidence {
@@ -1086,7 +1086,7 @@ impl MediaIcmpStore {
     }
 }
 
-/// Process-global media evidence. Global for the same reason the signalling
+/// Process-global media evidence. Global for the same reason the signaling
 /// store is: `--cores` shards by outer host pair, and an ICMP error's outer
 /// pair is (router, sender) — a different pair from the media it describes.
 static MEDIA_ICMP: parking_lot::Mutex<Option<Box<MediaIcmpStore>>> = parking_lot::Mutex::new(None);
@@ -1210,7 +1210,7 @@ pub struct MediaIcmpFinding {
     pub hint: String,
 }
 
-/// What ICMP reported about this run's non-signalling traffic.
+/// What ICMP reported about this run's non-signaling traffic.
 ///
 /// All zeroes when no ICMP error quoted anything but SIP, which is the common
 /// case for a healthy capture.
@@ -1574,7 +1574,7 @@ pub fn publish_icmp_media_for_test(resolved: ResolvedIcmpMedia) {
 /// Render one media finding in plain language.
 ///
 /// Kept next to the report rather than in each surface for the reason
-/// [`crate::output::call_report`] states about the signalling hints: one
+/// [`crate::output::call_report`] states about the signaling hints: one
 /// renderer means two surfaces cannot disagree about what a failure meant.
 fn media_hint(
     flow: &QuotedFlow,
@@ -1723,7 +1723,7 @@ fn rtcp_length_frames_packet(data: &[u8]) -> bool {
 /// A frame that unwraps to real SIP on a port OUTSIDE the set is tallied by
 /// `record_ws_port_skip` before `None` is returned, so
 /// [`ws_port_skip_report`] can name what the set discarded. The port test
-/// deliberately runs LAST: it decides whether recognised SIP is analysed or
+/// deliberately runs LAST: it decides whether recognized SIP is analyzed or
 /// counted, and running it first is what made the loss invisible.
 pub fn try_websocket_unwrap(pp: &ParsedPacket) -> Option<Vec<u8>> {
     if pp.transport != TransportProto::Tcp {
@@ -2251,7 +2251,7 @@ mod quiet_bad_parse_tests {
         );
     }
 
-    /// Real RTP on a dynamic port is still recognised from the payload alone.
+    /// Real RTP on a dynamic port is still recognized from the payload alone.
     ///
     /// The guard must not cost the common case a single packet of latency:
     /// media on an ephemeral port is admitted immediately, without waiting for
@@ -2272,7 +2272,7 @@ mod quiet_bad_parse_tests {
                 classify(&pp, &PipelineOptions::default()),
                 PacketAction::Rtp { .. }
             ),
-            "media on a dynamic port must still be recognised from one packet"
+            "media on a dynamic port must still be recognized from one packet"
         );
     }
 

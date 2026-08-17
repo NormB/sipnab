@@ -177,7 +177,7 @@ A word on the BPF: sipnab auto-generates `portrange 5060-5061` from
 `--portrange` when a live source is given no filter (`src/app/bootstrap.rs:337`).
 Under that default the kernel discards 100% of the RTP and the run reports a
 pristine baseline having measured nothing, which is why the harness always
-passes an explicit trailing filter covering both the signalling port and the
+passes an explicit trailing filter covering both the signaling port and the
 generated media range.
 
 ## voipmonitor

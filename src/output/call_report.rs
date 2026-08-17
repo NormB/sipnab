@@ -63,9 +63,9 @@ pub fn generate_call_report(
     }
 }
 
-// ── Signalling diagnosis rendering ──────────────────────────────────
+// ── Signaling diagnosis rendering ──────────────────────────────────
 
-/// One `(headline, evidence)` pair per signalling detection, ready for either
+/// One `(headline, evidence)` pair per signaling detection, ready for either
 /// output format.
 ///
 /// Shared rather than written twice: the text and Markdown reports differ only in
@@ -127,14 +127,14 @@ fn signaling_findings(dialog: &SipDialog) -> Vec<(String, String)> {
     }
 
     if let Some(a) = &diag.abandoned {
-        // The wording carries the whole distinction. "Cancelled" is something
+        // The wording carries the whole distinction. "Canceled" is something
         // that happened; "no final response" is something that did not get
         // recorded, and a report that renders them alike hands the reader a
         // conclusion the capture does not support.
         let head = match a.kind {
-            AbandonedKind::Cancelled => {
+            AbandonedKind::Canceled => {
                 format!(
-                    "Cancelled by caller after {:.1}s, before any final response",
+                    "Canceled by caller after {:.1}s, before any final response",
                     a.elapsed_sec
                 )
             }
@@ -208,7 +208,7 @@ fn signaling_findings(dialog: &SipDialog) -> Vec<(String, String)> {
 /// The JSON surface emits bare indices because a machine will join them against
 /// the message list. A report pasted into a ticket has no such list to hand, so
 /// "messages 1, 3, 5" would send the reader back to the capture to find out what
-/// those were. Each index is labelled with what the message actually is.
+/// those were. Each index is labeled with what the message actually is.
 fn evidence_label(dialog: &SipDialog, indices: &[usize]) -> String {
     let parts: Vec<String> = indices
         .iter()
@@ -275,7 +275,7 @@ fn generate_text_report(
 
     let result_str = match dialog.state() {
         DialogState::Completed => "Completed (BYE)".to_string(),
-        DialogState::Cancelled => "Cancelled".to_string(),
+        DialogState::Canceled => "Canceled".to_string(),
         DialogState::Failed => "Failed".to_string(),
         DialogState::InCall => "In Progress".to_string(),
         other => format!("{other:?}"),
@@ -370,7 +370,7 @@ fn generate_text_report(
         }
     }
 
-    // Signalling section, separate from the media issues above because the
+    // Signaling section, separate from the media issues above because the
     // operator question differs: "was the audio bad" and "why did the call fail"
     // send you to different teams. Omitted when nothing was detected rather than
     // printing a reassuring "None" — the media section above already answers
@@ -378,7 +378,7 @@ fn generate_text_report(
     let signaling = signaling_findings(dialog);
     if !signaling.is_empty() {
         let _ = writeln!(out);
-        let _ = writeln!(out, "Signalling Issues:");
+        let _ = writeln!(out, "Signaling Issues:");
         for (head, evidence) in &signaling {
             let _ = writeln!(out, "  - {head}");
             let _ = writeln!(out, "    evidence: {evidence}");
@@ -508,11 +508,11 @@ fn generate_markdown_report(
         }
     }
 
-    // Signalling, as its own section for the same reason as the text report.
+    // Signaling, as its own section for the same reason as the text report.
     let signaling = signaling_findings(dialog);
     if !signaling.is_empty() {
         let _ = writeln!(out);
-        let _ = writeln!(out, "## Signalling");
+        let _ = writeln!(out, "## Signaling");
         let _ = writeln!(out);
         for (head, evidence) in &signaling {
             let _ = writeln!(out, "- **{head}**");
@@ -847,7 +847,7 @@ mod tests {
         );
     }
 
-    // ── Signalling diagnosis rendering ───────────────────────────────
+    // ── Signaling diagnosis rendering ───────────────────────────────
 
     /// A dialog that failed on a 503 carrying a `Reason:` header.
     fn make_failed_dialog() -> SipDialog {
@@ -917,8 +917,8 @@ mod tests {
         );
 
         assert!(
-            report.contains("Signalling Issues:"),
-            "expected a signalling section:\n{report}"
+            report.contains("Signaling Issues:"),
+            "expected a signaling section:\n{report}"
         );
         assert!(report.contains("Final failure: 503 Service Unavailable"));
         // The Reason header is the whole reason the detection carries it.
@@ -946,8 +946,8 @@ mod tests {
         );
 
         assert!(
-            report.contains("## Signalling"),
-            "expected a Signalling header:\n{report}"
+            report.contains("## Signaling"),
+            "expected a Signaling header:\n{report}"
         );
         assert!(report.contains("**Final failure: 503 Service Unavailable"));
         assert!(report.contains("- evidence: #1 503 Service Unavailable"));
@@ -964,8 +964,8 @@ mod tests {
             let report =
                 generate_call_report(&dialog, &streams, &MediaDiagnosis::default(), format);
             assert!(
-                !report.contains("Signalling Issues:") && !report.contains("## Signalling"),
-                "a successful call must not get a signalling section ({format:?}):\n{report}"
+                !report.contains("Signaling Issues:") && !report.contains("## Signaling"),
+                "a successful call must not get a signaling section ({format:?}):\n{report}"
             );
         }
     }
@@ -1071,13 +1071,13 @@ mod tests {
             &MediaDiagnosis::default(),
             ReportFormat::Markdown,
         );
-        assert!(report.contains("## Signalling"), "got:\n{report}");
+        assert!(report.contains("## Signaling"), "got:\n{report}");
         assert!(report.contains("OUTCOME UNKNOWN"), "got:\n{report}");
     }
 
     /// A `REGISTER` challenged `401`, answered with credentials, and refused
     /// `403` — the shape the corpus keeps, and the one this report used to
-    /// summarise as an offline endpoint.
+    /// summarize as an offline endpoint.
     fn make_rejected_registration_dialog() -> SipDialog {
         let t0 = base_ts();
         let build = |first_line: &str, extra: &[&str], offset: i64| {

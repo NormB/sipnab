@@ -16,7 +16,7 @@
 //! split across workers could not be reassembled at all.
 //!
 //! **A call's SIP does NOT stay on one worker, and nothing here assumes it
-//! does.** Signalling that traverses a proxy or SBC is captured on two host
+//! does.** Signaling that traverses a proxy or SBC is captured on two host
 //! pairs — access side and trunk side — and shards to two workers, which
 //! reconstruct two fragments of one Call-ID. That is the common case on carrier
 //! traffic, not an exotic one: in one 100 MB file of the reference corpus 1173
@@ -27,7 +27,7 @@
 //! built. (An earlier version of this doc claimed a call's SIP "stays together",
 //! and `merge` was written to that premise: it kept whichever fragment held more
 //! messages and dropped the other. Roughly half of every proxied call's
-//! signalling vanished, invisibly, because the dialog COUNT was unaffected.)
+//! signaling vanished, invisibly, because the dialog COUNT was unaffected.)
 //!
 //! Dialog↔stream association crosses workers for the same reason — plus the
 //! carrier case where SDP advertises a separate media IP, so the SDP lands on a
@@ -149,7 +149,7 @@ pub struct ParallelConfig {
     pub no_dialog: bool,
     /// How messages are grouped (`--dialog-track`). Carried through the config
     /// because each worker builds its own store; without it the parallel path
-    /// would silently ignore the flag the single-core path honours.
+    /// would silently ignore the flag the single-core path honors.
     pub dialog_tracking: crate::sip::dialog_store::DialogTracking,
     /// Skip RTP/RTCP processing (`--no-rtp`).
     pub no_rtp: bool,
@@ -771,7 +771,7 @@ fn shard_set(
             Ok(opened) => opened,
             // The first file owns the "is this set usable at all" verdict. A
             // later one that vanished mid-run — a rotating capture directory
-            // being cleaned up while it is analysed — is logged and skipped:
+            // being cleaned up while it is analyzed — is logged and skipped:
             // losing one file of a set is bad, losing the other nine is worse.
             Err(e) if is_first => return Err(e),
             Err(e) => {

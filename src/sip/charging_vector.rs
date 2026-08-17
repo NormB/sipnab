@@ -51,7 +51,7 @@
 //!   let the two read alike.
 //! * **Useless at the access edge.** If the SBC is the first proxy it generates
 //!   the icid, so the leg arriving from the endpoint carries none.
-//! * **Nothing about 3GPP TS 24.229**, about any vendor's behaviour, or about
+//! * **Nothing about 3GPP TS 24.229**, about any vendor's behavior, or about
 //!   how common the header is in real traffic. None of that was checked, so
 //!   none of it is asserted.
 //!
@@ -84,7 +84,7 @@
 //!
 //! So the header is split into parameters with a quote-aware scanner, the
 //! parameter NAME is compared for equality rather than containment, and a
-//! quoted value is unquoted with RFC 3261 `quoted-pair` escapes honoured.
+//! quoted value is unquoted with RFC 3261 `quoted-pair` escapes honored.
 //!
 //! # What never matches
 //!

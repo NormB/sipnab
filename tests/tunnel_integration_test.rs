@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Tunnelled SIP, end to end through the public API.
+//! Tunneled SIP, end to end through the public API.
 //!
 //! The unit tests in `capture::parse` prove each decapsulator is wired to the
 //! walk. This file proves the thing an operator actually cares about: a call
-//! that crossed a carrier core, a mobile core or a data-centre fabric comes
+//! that crossed a carrier core, a mobile core or a data-center fabric comes
 //! out of `sipnab` as a SIP **message**, not as a `ParsedPacket` that happens
 //! to hold the right bytes — and that the frames it must refuse produce a
 //! named refusal rather than an invented dialog.
@@ -31,7 +31,7 @@ fn invite() -> Vec<u8> {
     m.extend_from_slice(b"Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKtunnel\r\n");
     m.extend_from_slice(b"From: <sip:alice@example.com>;tag=t1\r\n");
     m.extend_from_slice(b"To: <sip:bob@example.com>\r\n");
-    m.extend_from_slice(b"Call-ID: tunnelled-call-1@example.com\r\n");
+    m.extend_from_slice(b"Call-ID: tunneled-call-1@example.com\r\n");
     m.extend_from_slice(b"CSeq: 1 INVITE\r\n");
     m.extend_from_slice(b"Content-Length: 0\r\n\r\n");
     m
@@ -155,12 +155,12 @@ fn assert_invite_through(what: &str, frame: Vec<u8>) {
     assert_eq!(msg.method, Some(SipMethod::Invite), "{what}: method");
     assert_eq!(
         msg.call_id(),
-        Some("tunnelled-call-1@example.com"),
+        Some("tunneled-call-1@example.com"),
         "{what}: Call-ID"
     );
 }
 
-/// MPLS is the carrier core, and a capture taken on a labelled segment is
+/// MPLS is the carrier core, and a capture taken on a labeled segment is
 /// often the only place the problem is visible.
 #[test]
 fn mpls_labelled_invite_reaches_the_sip_parser() {
@@ -217,7 +217,7 @@ fn macsec_integrity_only_invite_reaches_the_sip_parser() {
     assert_invite_through("MACsec", f);
 }
 
-/// VXLAN (RFC 7348) — the data-centre fabric.
+/// VXLAN (RFC 7348) — the data-center fabric.
 #[test]
 fn vxlan_encapsulated_invite_reaches_the_sip_parser() {
     let mut vx = vxlan_header().to_vec();
@@ -228,7 +228,7 @@ fn vxlan_encapsulated_invite_reaches_the_sip_parser() {
     );
 }
 
-/// GTP-U (3GPP TS 29.281) — VoLTE/VoNR signalling on S1-U, S5/S8 or N3.
+/// GTP-U (3GPP TS 29.281) — VoLTE/VoNR signaling on S1-U, S5/S8 or N3.
 #[test]
 fn gtpu_encapsulated_invite_reaches_the_sip_parser() {
     let inner = invite_packet();

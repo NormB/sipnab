@@ -53,7 +53,7 @@ pub struct BurstGapAnalysis {
 /// — while everything that reports a number to a human or an agent goes
 /// through [`MosDelay`], which resolves the delay from the capture's own RTCP
 /// and says where it came from. A caller outside the crate that wants the old
-/// behaviour still has it; a caller that wants the truth wants
+/// behavior still has it; a caller that wants the truth wants
 /// [`estimate_mos_with_delay`].
 ///
 /// # Arguments
@@ -130,10 +130,10 @@ pub const MAX_CODEC_IE: f64 = 95.0;
 /// [`estimate_mos_with_delay`] is a free function reached from the CLI, the
 /// REST API, the filter DSL, the Prometheus exporter, the TUI and the WASM
 /// build, and not one of them is threaded a config. A table handed to some of
-/// those is a declaration honoured on some surfaces and ignored on others,
+/// those is a declaration honored on some surfaces and ignored on others,
 /// which for a MOS means two surfaces disagreeing about the same stream — the
 /// exact defect [`crate::rtp::bands::QualityBands`] exists to prevent for
-/// colour.
+/// color.
 static CODEC_IE: std::sync::LazyLock<parking_lot::RwLock<std::collections::HashMap<String, f64>>> =
     std::sync::LazyLock::new(|| parking_lot::RwLock::new(std::collections::HashMap::new()));
 
@@ -323,7 +323,7 @@ pub fn one_way_delay_from_rtt_ms(round_trip_delay_ms: u16) -> Option<f64> {
 /// anchored on the capture point, so on any tap that does not sit with the SR's
 /// sender it is a LOWER BOUND on the endpoint-to-endpoint round trip. Half of a
 /// lower bound is a lower bound, so a MOS resting on this is optimistic — which
-/// is why the result is labelled [`DelaySource::DerivedFromEcho`] and never
+/// is why the result is labeled [`DelaySource::DerivedFromEcho`] and never
 /// folded in with what an endpoint actually reported.
 ///
 /// Zero is absent, for the same reason as in the reported case: a round trip of

@@ -38,7 +38,7 @@ Every row below was read at the SHA in the header.
 
 | In place | Where | Stops | Does not stop |
 |---|---|---|---|
-| Privilege drop: `setgroups(0, NULL)` → `setgid` → `setuid`, then a `getuid`/`getgid` readback | [`src/privilege.rs:66-70`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L66-L70), verified by `verify_dropped` ([`src/privilege.rs:593`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L593)) | Reaching other users' files, signalling their processes, opening a new privileged socket | Anything this process does as itself — its own memory, its own descriptors, `execve` |
+| Privilege drop: `setgroups(0, NULL)` → `setgid` → `setuid`, then a `getuid`/`getgid` readback | [`src/privilege.rs:66-70`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L66-L70), verified by `verify_dropped` ([`src/privilege.rs:593`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L593)) | Reaching other users' files, signaling their processes, opening a new privileged socket | Anything this process does as itself — its own memory, its own descriptors, `execve` |
 | `PR_SET_NO_NEW_PRIVS` | `set_no_new_privs` ([`src/privilege.rs:531`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L531)) behind `block_privilege_escalation` ([`src/privilege.rs:501`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L501)), called unconditionally from [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) step 2b | Regaining privilege through a setuid or setgid binary, on every run mode whether or not the process is root | `execve` itself, of anything already runnable |
 | Core dumps off: `prctl(PR_SET_DUMPABLE, 0)`, or `setrlimit(RLIMIT_CORE, 0)` on macOS | `disable_core_dumps` ([`src/privilege.rs:219`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L219)), called from [`src/app/bootstrap.rs:942`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L942) | Key material landing in a core file after a crash | Any live read of that key material |
 | `chroot` + `chdir("/")`, opt-in via `--chroot` | `do_chroot` ([`src/privilege.rs:563`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L563)), called from [`src/app/bootstrap.rs:775`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L775) | Naming a path outside the new root | Everything inside the new root, and every already-open descriptor |
@@ -111,14 +111,14 @@ dumps core, and that core carries packet payloads.
 line, and the caller's `exit(1)` on error was unreachable. This is the same
 silence-as-failure-mode §6 is built to avoid, and it was already present in the
 controls that exist — so §6's reporting surface was a fix for shipped
-behaviour, not only a requirement on new behaviour.
+behavior, not only a requirement on new behavior.
 
 Both now return the failure. What is done with it differs per call, and
 deliberately:
 
 - `set_no_new_privs` fails only on a kernel without `PR_SET_NO_NEW_PRIVS`
   (pre-3.5) or under something intercepting the `prctl`. [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) **warns
-  and continues** — refusing to capture because one defence-in-depth flag is
+  and continues** — refusing to capture because one defense-in-depth flag is
   unavailable would trade a working forensic tool for a marginal gain. The
   warning is the whole difference: nothing now claims the flag is set when it
   is not, and `set_no_new_privs` reads the flag back with
@@ -133,7 +133,7 @@ deliberately:
 ### 0.2 What a syscall filter adds that none of this does
 
 Every control above governs **identity** — which uid the process carries,
-whether it can regain root, which directory tree it can name — or **artefacts on
+whether it can regain root, which directory tree it can name — or **artifacts on
 disk**. Not one of them constrains what the sipnab process may ask the kernel
 for while running as itself.
 
@@ -532,9 +532,9 @@ it is the right one, so it is the cheap first assertion and never the only one.
 There is no `/proc` field for Landlock. Its ABI level can be read with
 `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)`, which
 reports what the kernel supports and not what this process installed. Landlock
-therefore has **only** a behavioural proof.
+therefore has **only** a behavioral proof.
 
-### 7.2 The behavioural proof, which is the one that matters
+### 7.2 The behavioral proof, which is the one that matters
 
 Assert the **effect**, not the predicate:
 
@@ -633,7 +633,7 @@ either.
 - **Should `--require-sandbox` also require Landlock, or only seccomp?** Landlock
   degrades by ABI level rather than by presence, so "required" needs a minimum
   ABI to mean anything, and no minimum has been argued for.
-- **What is the right behaviour for `--cores N` offline?** The parallel engine
+- **What is the right behavior for `--cores N` offline?** The parallel engine
   spawns workers after the drop
   ([`parallel.rs`](../../src/parallel.rs)); whether the filter installs before or
   after the pool exists has not been examined, and thread creation is a syscall

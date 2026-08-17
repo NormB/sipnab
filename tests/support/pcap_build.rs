@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Minimal pcap writer for flag-behaviour tests.
+//! Minimal pcap writer for flag-behavior tests.
 //!
 //! Several CLI flags can only be exercised against traffic the three checked-in
 //! fixtures do not contain: `--limit`/`--rotate` needs more dialogs than
@@ -131,7 +131,7 @@ pub fn ws_frame(payload: &[u8]) -> Vec<u8> {
 /// The whole point is `ws_port`: with a port outside sipnab's WebSocket set
 /// this capture used to produce nothing at all — no dialog, no message count
 /// and no notice — which is what a deployment terminating WSS on 8081 saw of
-/// its entire WebRTC signalling leg.
+/// its entire WebRTC signaling leg.
 pub fn ws_sip_call(call_id: &str, ws_port: u16) -> Vec<Vec<u8>> {
     let a = [10, 3, 0, 1];
     let b = [10, 3, 0, 2];
@@ -259,7 +259,7 @@ pub fn sdp_call_with_lossy_rtp_at(
     ptime_ms: u64,
 ) -> Vec<(Vec<u8>, u64)> {
     let frames = sdp_call_with_lossy_rtp(call_id, packets, losses_per_ten);
-    // The signalling frames bracket the media: three ahead of it (INVITE, 200,
+    // The signaling frames bracket the media: three ahead of it (INVITE, 200,
     // ACK) and two behind (BYE, 200). Only the RTP in between carries the
     // cadence; the rest keeps the 1 ms spacing so ordering stays well-defined.
     let media = frames.len() - 5;
@@ -410,7 +410,7 @@ fn crc32(data: &[u8]) -> u32 {
 ///
 /// An orphan RTP stream reaches no batch surface — `--json-dialogs` prints
 /// dialogs — so a capture that exercises per-stream loss retention has to
-/// carry the signalling that anchors the media to a call. The SDP offer names
+/// carry the signaling that anchors the media to a call. The SDP offer names
 /// the caller's port and the answer the callee's, which is what links the
 /// stream to the dialog.
 pub fn sdp_call_with_lossy_rtp(call_id: &str, packets: u16, losses_per_ten: u16) -> Vec<Vec<u8>> {
@@ -525,7 +525,7 @@ pub fn write_pcap_with_linktype(path: &Path, frames: &[Vec<u8>], network: u32) {
 /// Write frames at explicit microsecond offsets from the capture's start.
 ///
 /// The fixed 1 ms cadence above cannot express a capture that goes QUIET, and
-/// silence is the whole input to some behaviour: idle-dialog compaction fires
+/// silence is the whole input to some behavior: idle-dialog compaction fires
 /// on the gap between a dialog's last message and the capture's final
 /// timestamp, so a fixture whose frames are 1 ms apart can never be idle under
 /// any window an operator would set. This is the writer for those; the cadence

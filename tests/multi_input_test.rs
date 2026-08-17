@@ -10,7 +10,7 @@
 //!
 //! The split-call test is the one that matters. `tcpdump -C -W` cuts a busy
 //! capture mid-call, so a dialog whose INVITE lands in one file and whose BYE
-//! lands in the next is invisible to both when they are analysed separately:
+//! lands in the next is invisible to both when they are analyzed separately:
 //! one shows a call that never ends, the other a stray BYE. Measured on a real
 //! 10-file ring buffer, 2271 of 20512 calls — 11% — crossed a boundary.
 
@@ -199,7 +199,7 @@ fn a_call_split_across_two_files_is_stitched_back_together() {
 ///
 /// The Call-ID set is identical either way, which is exactly why this asserts
 /// fingerprints: `merge` is Call-ID-keyed, so an ID-only assertion passes on a
-/// reconstruction missing a third of its signalling. On the 100 MB carrier
+/// reconstruction missing a third of its signaling. On the 100 MB carrier
 /// corpus the same defect halved the message count of 1173 of 2311 dialogs.
 ///
 /// The baseline is anchored to the literal message count so the test cannot be
@@ -929,7 +929,7 @@ fn both_readers_report_the_same_summary_of_the_set_they_read() {
     let spec = dir.path().to_string_lossy().into_owned();
 
     let single = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "1"])
-        .expect("the single-threaded reader must summarise what it read");
+        .expect("the single-threaded reader must summarize what it read");
     let cores = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "4"])
         .expect("--cores read three files and must say so; a reader that reports nothing leaves the operator no way to tell a whole set from a partial one");
 
@@ -962,9 +962,9 @@ fn both_readers_report_a_truncated_member_at_the_same_severity() {
     let spec = dir.path().to_string_lossy().into_owned();
 
     let single = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "1"])
-        .expect("the single-threaded reader must summarise what it read");
+        .expect("the single-threaded reader must summarize what it read");
     let cores = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "4"])
-        .expect("--cores must summarise what it read, truncated member included");
+        .expect("--cores must summarize what it read, truncated member included");
 
     assert_eq!(
         cores, single,

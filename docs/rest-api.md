@@ -2,7 +2,7 @@
 
 sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs as a thread inside the sipnab process, reading the same in-memory dialog/stream stores as the capture pipeline — read-only, and it never mutates capture state.
 
-[CLI Reference](cli-reference.md#network-listeners) catalogues every API flag.
+[CLI Reference](cli-reference.md#network-listeners) catalogs every API flag.
 
 > **Looking for AI-agent access?** sipnab also exposes the same dialog / RTP / diagnostic data as a Model Context Protocol server. See [MCP Server](mcp.md) -- the MCP path uses the same in-memory stores as this REST API, so a running sipnab instance can serve both surfaces simultaneously.
 
@@ -305,7 +305,7 @@ List all tracked SIP dialogs with optional filtering and pagination.
 
 | Parameter | Type   | Default | Description |
 |-----------|--------|---------|-------------|
-| `state`   | string | --      | Filter by dialog state (`Trying`, `Ringing`, `InCall`, `Completed`, `Failed`, `Cancelled`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`) |
+| `state`   | string | --      | Filter by dialog state (`Trying`, `Ringing`, `InCall`, `Completed`, `Failed`, `Canceled`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`) |
 | `from`    | string | --      | Filter by From user (regex pattern) |
 | `limit`   | int    | 50      | Maximum results (capped at 1000) |
 | `offset`  | int    | 0       | Pagination offset |
@@ -571,7 +571,7 @@ answered call, so it shows the fields such a call has. Anything sipnab did not
 find is **absent from the object**, not present with a null value: `tags` when
 empty, `from_display` / `to_display` when the headers carried no display name,
 `final_status_code` / `final_status_reason` when there was no final INVITE
-response, and `signaling_diagnosis` when the signalling detections found
+response, and `signaling_diagnosis` when the signaling detections found
 nothing. Decode into a type with optional fields: a strict decoder that requires every
 key above rejects most real dialogs.
 
@@ -952,7 +952,7 @@ console.log(`PDD p50: ${timing.pdd_p50_ms}ms, p95: ${timing.pdd_p95_ms}ms`);
     "in_call": 9,
     "completed": 1180,
     "failed": 32,
-    "cancelled": 12
+    "canceled": 12
   },
   "streams": {
     "total": 46,
@@ -1075,7 +1075,7 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 
 | Metric | Type | Notes |
 |---|---|---|
-| `sipnab_dialogs_total{state}` | counter | Tracked dialogs grouped by `DialogState` (`Trying`, `Ringing`, `InCall`, `Completed`, `Cancelled`, `Failed`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`). The `--api` server emits state values lowercased; the standalone `--metrics` server emits them as-cased — pick the right form for your queries. |
+| `sipnab_dialogs_total{state}` | counter | Tracked dialogs grouped by `DialogState` (`Trying`, `Ringing`, `InCall`, `Completed`, `Canceled`, `Failed`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`). The `--api` server emits state values lowercased; the standalone `--metrics` server emits them as-cased — pick the right form for your queries. |
 | `sipnab_dialogs_active` | gauge | Dialogs in one of six active states: `Trying`, `Ringing`, `InCall`, `Transferring`, `Pending`, `Active`. Two of those six are SUBSCRIBE dialogs carrying no media, so **this is not a count of calls** — a box serving presence traffic reports a non-zero value here with nothing on the phone. Graph it to see load on the dialog store; alert on `sipnab_calls_active` instead. |
 | `sipnab_calls_active` | gauge | Calls that are up right now: dialogs in `InCall`, and nothing else. A dialog enters `InCall` on the 200 OK to its INVITE and leaves on the BYE, so this is the concurrent-call figure — channels in use, and the number to compare against a carrier's simultaneous-call limit. By construction never greater than `sipnab_dialogs_active`; the gap is calls still in setup plus subscriptions. |
 | `sipnab_messages_total{method}` | counter | SIP messages by method (`INVITE`, `REGISTER`, …). |
@@ -1102,7 +1102,7 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 
 Two shapes of counter share that table, and an alert rule has to know which one it reads. `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`, `sipnab_kill_responses_sent_total`, `sipnab_capture_backpressure_blocks_total`, `sipnab_capture_undecodable_frames_total` and the three capture-quality counters (`sipnab_capture_kernel_dropped_packets_total`, `sipnab_capture_interface_dropped_packets_total`, `sipnab_capture_invalid_timestamps_total`) count events since the process started and only ever climb, so `rate()` and `increase()` over them mean what they say. The rest — dialogs, messages, responses, streams, diagnosis findings — describe what sipnab tracks right now, and they fall as dialogs and streams age out of their stores. Alert on the current value or on a ratio there, never on `increase()`.
 
-`sipnab_security_alerts_total{type}` reads differently from the rest, and the difference matters to an alert rule. `AlertEngine::fire` records each alert under its rule name, so the family carries only the types that have actually fired and stays absent from the scrape entirely until the first one does. An absent series therefore means "no alert of that type has fired since this process started", not "the metric is unavailable" — the reading it carried up to 0.5.74, when nothing fed the family at all. `firing_an_alert_moves_the_metric` in [`tests/metrics_alert_wiring_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_alert_wiring_test.rs) holds the recording call to that behaviour.
+`sipnab_security_alerts_total{type}` reads differently from the rest, and the difference matters to an alert rule. `AlertEngine::fire` records each alert under its rule name, so the family carries only the types that have actually fired and stays absent from the scrape entirely until the first one does. An absent series therefore means "no alert of that type has fired since this process started", not "the metric is unavailable" — the reading it carried up to 0.5.74, when nothing fed the family at all. `firing_an_alert_moves_the_metric` in [`tests/metrics_alert_wiring_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_alert_wiring_test.rs) holds the recording call to that behavior.
 
 ## Status codes
 

@@ -97,7 +97,7 @@ t "glibc_at_least 3.0 >= 2.39" "yes" "$(glibc_at_least 3.0 2.39)"
 t "choose linux x86_64 glibc2.41" "sipnab-0.5.2-x86_64-unknown-linux-gnu.tar.gz"   "$(choose_artifact linux x86_64 2.41 0.5.2)"
 # Debian 12 is exactly the floor and must get the gnu build. This asserted the
 # musl fallback while SIPNAB_GLIBC_FLOOR said 2.39 — the test encoded the wrong
-# floor as expected behaviour, so it passed for the same reason the bug existed.
+# floor as expected behavior, so it passed for the same reason the bug existed.
 t "choose linux x86_64 glibc2.36 (at the floor)" "sipnab-0.5.2-x86_64-unknown-linux-gnu.tar.gz" "$(choose_artifact linux x86_64 2.36 0.5.2)"
 t "choose linux x86_64 glibc2.35 (below floor)"  "sipnab-0.5.2-x86_64-unknown-linux-musl.tar.gz" "$(choose_artifact linux x86_64 2.35 0.5.2)"
 t "choose linux x86_64 no-glibc"  "sipnab-0.5.2-x86_64-unknown-linux-musl.tar.gz"  "$(choose_artifact linux x86_64 "" 0.5.2)"

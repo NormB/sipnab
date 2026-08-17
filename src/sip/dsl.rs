@@ -474,7 +474,7 @@ impl FilterExpr {
     /// * `streams` — RTP streams associated with the dialog (may be empty;
     ///   RTP fields then compare as zero/empty values).
     /// * `capture` — whether the capture recorded any RTP at all. `no_media`
-    ///   is a claim that a call carried no audio, and on a signalling-only
+    ///   is a claim that a call carried no audio, and on a signaling-only
     ///   capture no call carries any, so the flag would describe the tap
     ///   rather than the call. Callers holding a stream store pass
     ///   [`CaptureMedia::of_store`]; the surfaces that filter dialogs with no
@@ -627,7 +627,7 @@ pub fn select_dialogs<'a>(
         .collect();
 
     let streams = match filter {
-        // Byte-for-byte the previous unfiltered behaviour: every stream the
+        // Byte-for-byte the previous unfiltered behavior: every stream the
         // store holds, orphans included, in store order.
         None => stream_store.iter().collect(),
         Some(_) => {
@@ -1519,7 +1519,7 @@ fn state_to_str(state: &DialogState) -> &'static str {
         DialogState::Ringing => "Ringing",
         DialogState::InCall => "InCall",
         DialogState::Completed => "Completed",
-        DialogState::Cancelled => "Cancelled",
+        DialogState::Canceled => "Canceled",
         DialogState::Failed => "Failed",
         DialogState::Redirected => "Redirected",
         DialogState::Registered => "Registered",
@@ -2530,7 +2530,7 @@ mod tests {
         assert!(expand_alias("slow_setup", &AliasThresholds::default()).is_none());
     }
 
-    // ── check_nesting_depth: boundary behaviour ─────────────────────────
+    // ── check_nesting_depth: boundary behavior ─────────────────────────
 
     /// Exactly 50 nested parens passes the depth check; 51 fails it.
     #[test]
@@ -2890,7 +2890,7 @@ mod tests {
             (DialogState::Ringing, "Ringing"),
             (DialogState::InCall, "InCall"),
             (DialogState::Completed, "Completed"),
-            (DialogState::Cancelled, "Cancelled"),
+            (DialogState::Canceled, "Canceled"),
             (DialogState::Failed, "Failed"),
             (DialogState::Registered, "Registered"),
             (DialogState::Expired, "Expired"),

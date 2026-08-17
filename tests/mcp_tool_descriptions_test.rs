@@ -47,7 +47,7 @@ fn tool_descriptions(src: &str) -> Vec<(String, String)> {
         let attr = &tail[..bound];
         if let Some(d) = attr.find("description = \"") {
             let body = &attr[d + 15..];
-            // Walk to the closing quote, honouring escapes and the `\` line
+            // Walk to the closing quote, honoring escapes and the `\` line
             // continuations these multi-line descriptions use.
             let mut text = String::new();
             let mut chars = body.chars().peekable();
@@ -158,12 +158,11 @@ fn an_export_that_synthesises_frames_says_so_where_the_model_reads() {
         export.0, export.1
     );
 
-    let names_the_gap =
-        lower.contains("rtp") || lower.contains("signalling") || lower.contains("signaling");
+    let names_the_gap = lower.contains("rtp") || lower.contains("signaling");
     assert!(
         names_the_gap,
         "the '{}' description must name what the file does NOT contain — it holds \
-         no RTP, only signalling. 'Re-synthesised' alone still reads as complete. \
+         no RTP, only signaling. 'Re-synthesised' alone still reads as complete. \
          Description was: {}",
         export.0, export.1
     );

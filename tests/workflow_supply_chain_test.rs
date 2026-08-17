@@ -247,13 +247,13 @@ fn a_tool_installed_by_more_than_one_workflow_is_pinned_identically() {
 /// ```
 ///
 /// That is correct — every commit on main deserves a real verdict rather than
-/// being cancelled by the next push, and it should stay. But it means a run
+/// being canceled by the next push, and it should stay. But it means a run
 /// holds its concurrency group until it ENDS, and with no `timeout-minutes`
 /// nothing bounds that.
 ///
 /// On 2026-08-05 the two combined: run 31024491079 reached 20 completed jobs and
 /// then its `CI success` aggregation job — the only check branch protection
-/// requires — sat in `queued` with its dependencies already cancelled. It could
+/// requires — sat in `queued` with its dependencies already canceled. It could
 /// never finish. It held `ci-CI-refs/heads/main`, and the 0.5.83 release commit's
 /// CI stayed `pending` with ZERO jobs created for 80 minutes. `gh run cancel`
 /// stalled; only the force-cancel API cleared it.
@@ -561,7 +561,7 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
         );
     }
 
-    // A detector that recognises nothing reports every workflow as correct.
+    // A detector that recognizes nothing reports every workflow as correct.
     assert!(
         jobs_needing >= 6,
         "only {jobs_needing} jobs were seen to need an inferable permission -- \

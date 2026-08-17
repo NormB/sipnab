@@ -53,7 +53,7 @@
            blocks against website/data/mcp-examples/*.json. Edit the tool, then
            regenerate. -->
       <div class="demo-panel active" data-demo="0" role="tabpanel" id="demo-panel-0" aria-labelledby="demo-tab-0">
-        <p class="demo-desc">An agent asks why a call failed and gets a <strong>verdict</strong>, not a packet list: signalling rather than media, the 486 that ended it, and media explicitly ruled out. Over MCP on stdio — no daemon, no port, no database.</p>
+        <p class="demo-desc">An agent asks why a call failed and gets a <strong>verdict</strong>, not a packet list: signaling rather than media, the 486 that ended it, and media explicitly ruled out. Over MCP on stdio — no daemon, no port, no database.</p>
         <pre class="demo-cmd"><code>demos/mcp-stdio.sh tests/pcap-samples/sip-problem-call.pcap \
   triage_call '{"call_id":"busy-3a2b1c@192.0.2.30"}'</code></pre>
         <pre class="demo-json"><code><!-- mcp-example:triage BEGIN -->
@@ -69,14 +69,14 @@
     "stream_count": 0
   },
   "schema_version": 1,
-  "signalling": {
+  "signaling": {
     "hints": [
       "Call failed: 486 Busy Here."
     ],
     "problem": true
   },
   "state": "Failed",
-  "verdict": "signalling"
+  "verdict": "signaling"
 }
 <!-- mcp-example:triage END --></code></pre>
       </div>
@@ -153,7 +153,7 @@
     "stream_generation": 2
   },
   "timing_clock": {
-    "synchronised": true,
+    "synchronized": true,
     "max_error_us": 643000,
     "est_error_us": 0,
     "available": true
@@ -201,27 +201,27 @@
       <h2>Everything, in one binary</h2>
     </header>
     <div class="features-grid">
-      <div class="feature-card feature-card--amber fade-in-up">
+      <a class="feature-card feature-card--amber fade-in-up" href="{{ get_url(path='@/docs/tui.md') }}">
         <div class="feature-icon">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         </div>
         <h3>Inspect</h3>
         <p>Ladder diagrams, auth collapse, retransmit folding, mark+delta timing — the whole call at a glance.</p>
-      </div>
-      <div class="feature-card feature-card--green fade-in-up">
+      </a>
+      <a class="feature-card feature-card--green fade-in-up" href="{{ get_url(path='@/docs/cookbook.md') }}">
         <div class="feature-icon">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
         </div>
         <h3>Diagnose</h3>
         <p>Per-stream jitter, loss, and MOS. One-way audio, NAT mismatch, post-dial delay — found, not guessed.</p>
-      </div>
-      <div class="feature-card feature-card--blue fade-in-up">
+      </a>
+      <a class="feature-card feature-card--blue fade-in-up" href="{{ get_url(path='@/docs/output-formats.md') }}">
         <div class="feature-icon">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         </div>
         <h3>Export</h3>
         <p>PCAP-NG, JSON/NDJSON, Mermaid, Wireshark filters, fail2ban, WAV — pipe it anywhere. The full list is below.</p>
-      </div>
+      </a>
     </div>
   </div>
 </section>
@@ -275,18 +275,18 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
         <tbody>
           <tr><td><a href="{{ get_url(path='@/docs/tui.md') }}">Interactive TUI + CLI</a></td><td>Both modes in one binary. TUI for interactive analysis, CLI for batch/scripting.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/mos-and-codecs.md') }}">RTP quality analysis</a></td><td>Jitter, packet loss, estimated MOS (ITU-T G.107 E-model) per stream. RTCP XR (RFC 3611) parsing.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}">VoIP diagnosis</a></td><td>One-way audio detection, NAT mismatch, SDP timeline, PDD measurement.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}#4-diagnose-a-one-way-audio-complaint">VoIP diagnosis</a></td><td>One-way audio detection, NAT mismatch, SDP timeline, PDD measurement.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/filter-dsl.md') }}">Filter DSL</a></td><td>30 fields, 7 operators, boolean combinators. Named aliases for common queries.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}">Security</a></td><td>Scanner detection, toll fraud, digest leak, registration flood. Fail2ban output.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}">TLS/SRTP decryption</a></td><td>TLS 1.2 + 1.3 via SSLKEYLOGFILE. SRTP auth verification (SDES key extraction).</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/integrations.md') }}">WASM plugins</a></td><td>Load third-party dialog detections as sandboxed WebAssembly (<code>--plugin</code>). Off by default, so a stock binary carries no interpreter.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}#10-detect-sip-scanners-and-auto-block-via-fail2ban">Security</a></td><td>Scanner detection, toll fraud, digest leak, registration flood. Fail2ban output.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}#7-decrypt-sip-tls-via-sslkeylogfile">TLS/SRTP decryption</a></td><td>TLS 1.2 + 1.3 via SSLKEYLOGFILE. SRTP auth verification (SDES key extraction).</td></tr>
+          <tr><td><a href="https://github.com/NormB/sipnab/blob/main/docs/design/wasm-plugin-api.md">WASM plugins</a></td><td>Load third-party dialog detections as sandboxed WebAssembly (<code>--plugin</code>). Off by default, so a stock binary carries no interpreter.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}">eBPF TLS capture <em>(root, same host)</em></a></td><td><strong>This does not break TLS.</strong> It decrypts nothing, reads no other machine and recovers no key. On a host you already have root on, kernel uprobes read the SIP plaintext where the daemon hands it to OpenSSL or wolfSSL — before encryption — so no key, certificate or restart is needed. The eBPF backend additionally reports the real peer addresses. Needs Linux with uprobes, and BTF for the eBPF backend. <a href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}">Read the security implications first</a>.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/output-formats.md') }}">Export formats</a></td><td>PCAP, PCAP-NG, TXT, JSON, NDJSON, CSV, HTML, Markdown, WAV audio, SIPp XML, RTP JSON.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}">HEP v2/v3</a></td><td>HEP v3 send, HEP v2/v3 receive. Feed Homer/SIPCAPTURE, or point Kamailio, OpenSIPS and Asterisk at a sipnab listener and read a whole estate from one box &mdash; the proxies already speak HEP, so nothing goes on them.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/integrations.md') }}#hep-protocol">HEP v2/v3</a></td><td>HEP v3 send, HEP v2/v3 receive. Feed Homer/SIPCAPTURE, or point Kamailio, OpenSIPS and Asterisk at a sipnab listener and read a whole estate from one box &mdash; the proxies already speak HEP, so nothing goes on them.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/api.md') }}">REST API + Prometheus</a></td><td>Query dialogs, streams, stats via HTTP. Prometheus metrics endpoint.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. 32 tools cover dialogs, RTP, diagnostics, and security findings. 27 are read-only; the five that write — file export, capture swap, findings, shutdown — each stay off until you enable them server-side.</td></tr>
           <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Memory-safe by construction. 5130 automated tests. Under 12 MB static binary.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Memory-safe by construction. 5131 automated tests. Under 12 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -372,7 +372,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
         <span class="arch-label">Headroom to take a whole estate's HEP feed on one box, with no collector tier &mdash; offline reconstruction, four cores (measured v0.5.104)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
-        <span class="arch-stat" data-count="5130" data-suffix="">5130</span>
+        <span class="arch-stat" data-count="5131" data-suffix="">5131</span>
         <span class="arch-label">Automated tests</span>
       </a>
     </div>
@@ -444,7 +444,7 @@ document.querySelectorAll('.copy-btn').forEach(function(btn) {
   // rather than arguing with the sink.
   var animated = {{ get_url(path='demos/01-intro.webp') | json_encode | safe }} + '?v=9';
 
-  // Honour the OS setting. The animation loops forever, which is precisely
+  // Honor the OS setting. The animation loops forever, which is precisely
   // what someone who set this asked not to be given.
   var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)');
   if (reduce && reduce.matches) return;

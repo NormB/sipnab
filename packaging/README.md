@@ -17,7 +17,7 @@ see [`contrib/`](../contrib/README.md).
 There is deliberately no checked-in `.spec` file. `build-rpm.sh` writes its
 own spec into the rpmbuild tree at build time, so a second copy in the repo is
 read by nothing — and the one that used to sit here had drifted into declaring
-`License: GPL-3.0-only`, which is not sipnab's licence.
+`License: GPL-3.0-only`, which is not sipnab's license.
 
 ## Running the builders
 

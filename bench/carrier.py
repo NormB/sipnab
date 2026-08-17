@@ -58,7 +58,7 @@ SIP_PER_CALL = 7  # INVITE 100 180 200 ACK BYE 200
 # reconstruction throughput, but it does decide what the derived metrics mean:
 # with a flat step the corpus reports 0s call durations and nonsense jitter, so
 # the media phase spaces each stream's packets a real packet-time apart and
-# signalling gets a plausible 1 ms.
+# signaling gets a plausible 1 ms.
 BASE_TS_SEC = 1_700_000_000
 PTIME_USEC = 20_000  # one G.711 packet-time
 SIGNALLING_STEP_USEC = 1_000

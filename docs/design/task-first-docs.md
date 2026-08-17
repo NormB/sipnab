@@ -49,12 +49,12 @@ someone asked what a user wants and then wrote that down.
 
 The MCP walkthrough is the same repo, the same author, a different instinct:
 `Scenario 1`, `Scenario 2A`, `Scenario 2B`, `Scenario 2C`, `Scenario 3` … The
-organising unit is a *deployment topology*, and topologies are how the
+organizing unit is a *deployment topology*, and topologies are how the
 implementer sees it. The reader arrives with a goal, not a topology.
 
 The cookbook sits between the two and shows the fault line inside one page:
 
-- "Diagnose a one-way audio complaint" — a reader recognises their own problem.
+- "Diagnose a one-way audio complaint" — a reader recognizes their own problem.
 - "8a. Stdio (local agent)" / "8b. HTTP (remote agent, single user)" — the same
   mechanism-first instinct, in the same section that failed this user.
 
@@ -129,7 +129,7 @@ subtitle in every case; nothing accurate is lost.
 | Now | Proposed |
 |---|---|
 | Scenario 1 — agent and sipnab on the same machine (stdio) | Run sipnab and your agent on the same machine |
-| 1A. Post-mortem on a capture file | Analyse a capture file you already have |
+| 1A. Post-mortem on a capture file | Analyze a capture file you already have |
 | 1B. Live capture on the same box | Watch live traffic on the machine you are sitting at |
 | **Scenario 2A — SSH-launched stdio: ad-hoc, zero server configuration** | **Connect Claude Code on your laptop to sipnab on a server** — *ad-hoc, nothing listening on the server* |
 | Scenario 2B — persistent HTTP service with a bearer token | Keep a capture running between agent sessions — *HTTP service with a token* |
@@ -144,7 +144,7 @@ subtitle in every case; nothing accurate is lost.
 | 8c. Test the JSON-RPC handshake from a shell | Check the MCP server responds, without an agent |
 | 9. Prometheus + Grafana end-to-end | Graph sipnab metrics in Grafana |
 | 11. Per-call asymmetry diagnosis | Find calls where the two directions disagree |
-| 14. Browser pcap analysis (no install) | Analyse a pcap in a browser, with nothing installed |
+| 14. Browser pcap analysis (no install) | Analyze a pcap in a browser, with nothing installed |
 
 `mcp-walkthrough.md` also needs a goal index at the top — the "Choosing a
 scenario" table already exists and is genuinely good, but it is keyed on

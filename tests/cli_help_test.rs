@@ -145,7 +145,7 @@ fn stir_shaken_help_does_not_promise_verification_it_never_performs() {
 /// certificate, so no code path could produce one. That is fine while the help
 /// says no signature is checked. It stops being fine the moment someone
 /// implements verification, because the natural change (add and construct
-/// `Valid`) leaves the CLI help and docs describing the old behaviour, which is
+/// `Valid`) leaves the CLI help and docs describing the old behavior, which is
 /// how the original defect was born.
 ///
 /// So this fails on the FIRST construction of `Valid`, and says what else to
@@ -162,7 +162,7 @@ fn implementing_signature_verification_must_also_update_the_claims() {
     ))
     .expect("read stir_shaken.rs");
 
-    // Production code only. What makes the help wrong is shipped behaviour,
+    // Production code only. What makes the help wrong is shipped behavior,
     // not scaffolding: a test may name `Valid` to assert it is absent, or to
     // exercise a decoder, without sipnab verifying anything.
     //
@@ -178,7 +178,7 @@ fn implementing_signature_verification_must_also_update_the_claims() {
         !prod.contains("VerificationStatus::Valid"),
         "src/sip/stir_shaken.rs now constructs VerificationStatus::Valid, so \
          sipnab verifies signatures. That is welcome — but the claims that \
-         were written for the non-verifying behaviour must move with it:\n\
+         were written for the non-verifying behavior must move with it:\n\
          \x20 - src/cli.rs, the --stir-shaken help (says it does NOT verify)\n\
          \x20 - docs/cli-reference.md, the flag table row and the audit example\n\
          \x20 - docs/rest-api.md, which states the status is only NotChecked \

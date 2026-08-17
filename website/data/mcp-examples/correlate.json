@@ -19,7 +19,7 @@
     "stream_generation": 2
   },
   "timing_clock": {
-    "synchronised": true,
+    "synchronized": true,
     "max_error_us": 643000,
     "est_error_us": 0,
     "available": true

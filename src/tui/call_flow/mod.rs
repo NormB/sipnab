@@ -190,7 +190,7 @@ pub fn ladder_split_width(
     // region, so ← was dead for all eight presses out of the box. The key
     // registered. Nothing moved. Nothing said why.
     //
-    // `detail_pct` is already clamped to 10..=80 by its callers, so honouring it
+    // `detail_pct` is already clamped to 10..=80 by its callers, so honoring it
     // verbatim still leaves both panes at least a tenth of the width; it cannot
     // produce the zero-width pane of #151.
     if user_set {
@@ -279,7 +279,7 @@ pub struct FormattedMessage {
     /// synthetic rows: spacers and RTP bars). Keeps folding, expansion and
     /// selection independent of display-mode row insertion.
     pub raw_index: Option<usize>,
-    /// Signalling-diagnosis annotation when this message is cited as evidence
+    /// Signaling-diagnosis annotation when this message is cited as evidence
     /// for a detection — the surface that makes "evidence, not verdicts" visible,
     /// by marking the exact messages a finding was drawn from rather than
     /// asserting the finding somewhere else and leaving the reader to locate them.
@@ -384,11 +384,11 @@ mod ladder_split_tests {
     fn the_untouched_split_still_widens_to_fit_arrow_labels() {
         let gap = arrow_gap_for_label(12, 0);
         let auto = ladder_split_width(4, gap, 40, 88, false);
-        let honoured = ladder_split_width(4, gap, 40, 88, true);
+        let honored = ladder_split_width(4, gap, 40, 88, true);
         assert!(
-            auto > honoured,
+            auto > honored,
             "with four participants an untouched ladder should widen past the 40% \
-             split to fit its labels (auto={auto}, honoured={honoured}); equal \
+             split to fit its labels (auto={auto}, honored={honored}); equal \
              means the label fit stopped doing anything"
         );
     }

@@ -98,7 +98,7 @@ Loopback is `DLT_EN10MB` on Linux but `DLT_NULL` on macOS and BSD, which is why
 | `0x88A8` | S-VLAN tag | IEEE 802.1Q | skipped to reach IP |
 | `0x9100` | legacy QinQ | **unregistered** | skipped to reach IP |
 | `0x8864` | PPPoE Session | [RFC 2516](https://www.rfc-editor.org/rfc/rfc2516) | decapsulated |
-| `0x8863` | PPPoE Discovery | RFC 2516 | recognised, never decapsulated |
+| `0x8863` | PPPoE Discovery | RFC 2516 | recognized, never decapsulated |
 | `0x8847` | MPLS unicast | RFC 5332 | decapsulated |
 | `0x8848` | MPLS upstream-assigned | RFC 5332 | decapsulated |
 | `0x894F` | NSH | RFC 8300 | decapsulated |
@@ -107,7 +107,7 @@ Loopback is `DLT_EN10MB` on Linux but `DLT_NULL` on macOS and BSD, which is why
 | any other | — | — | **counted and named** with its hex value |
 
 `0x9100` is genuinely absent from the IEEE RA listing — no assignee, no
-protocol text — while every neighbour has both. No standards body ever
+protocol text — while every neighbor has both. No standards body ever
 registered it: it is legacy vendor usage, still common on older carrier gear.
 Supporting it concedes to deployed equipment rather than to any specification.
 Do not "correct" it away after checking a registry and finding nothing.
@@ -164,7 +164,7 @@ rather than following it.
 ## Live capture needs the tunnel-aware filter
 
 With no explicit `--filter`, sipnab generates a BPF filter that matches SIP
-inside VLAN, QinQ, PPPoE and MPLS as well as untagged traffic. **UDP-tunnelled
+inside VLAN, QinQ, PPPoE and MPLS as well as untagged traffic. **UDP-tunneled
 SIP is not covered by default**: BPF cannot parse a variable-length GTP-U header
 to reach the inner port, so covering those means capturing every packet on those
 ports. Use `--capture-tunnels` to opt in — see the
@@ -184,7 +184,7 @@ handles those.
 ## What "not supported" means here
 
 sipnab drops nothing on this page silently. An encapsulation sipnab does not
-decode still increments a counter keyed by the number it did not recognise, and
+decode still increments a counter keyed by the number it did not recognize, and
 that count reaches the run summary, `--report`, `--json`, `/v1/stats`, MCP
 `capture_status`, and the Prometheus capture family. A capture producing no SIP *and* no
 undecodable frames is a finding. One producing no SIP and a pile of undecodable

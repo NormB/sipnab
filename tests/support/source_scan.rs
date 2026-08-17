@@ -21,7 +21,7 @@
 //!
 //! What the gates actually mean is "stop at the test MODULE", so that is what
 //! this cuts at: the first `#[cfg(test)]` whose item is a `mod` declaration.
-//! Comments are stripped before the attribute is recognised, and a
+//! Comments are stripped before the attribute is recognized, and a
 //! `#[cfg(test)]` on anything else is stepped over rather than obeyed.
 //!
 //! A gate silenced this way cannot be told apart from a gate that found

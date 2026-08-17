@@ -30,9 +30,9 @@ fn keycast() -> PathBuf {
     repo().join("demos/keycast.py")
 }
 
-fn run_self_test(script: &Path, optimised: bool) -> std::process::Output {
+fn run_self_test(script: &Path, optimized: bool) -> std::process::Output {
     let mut cmd = Command::new("python3");
-    if optimised {
+    if optimized {
         cmd.arg("-O");
     }
     cmd.arg(script).arg("--self-test");

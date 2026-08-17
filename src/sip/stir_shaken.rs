@@ -9,7 +9,7 @@
 //! This implementation decodes and extracts the JWT claims but does **not**
 //! perform cryptographic signature verification (that requires fetching the
 //! certificate from the `info` URL, and sipnab makes no outbound request to
-//! analyse a capture). The `verified` field is therefore
+//! analyze a capture). The `verified` field is therefore
 //! [`VerificationStatus::NotChecked`], except that a stale `iat` claim
 //! (RFC 8224 Section 4.4) reports [`VerificationStatus::Expired`]. Those are
 //! the only two states the type has; an attestation level here is the

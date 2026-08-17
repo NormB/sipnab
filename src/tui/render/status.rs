@@ -923,7 +923,7 @@ mod tests {
     /// This is a class gate, deliberately. The same defect has shipped
     /// twice before as one-off omissions — `F1 Help` missing from the call
     /// list (pinned by `fkey_bar_advertises_help_on_call_list_at_all_widths`)
-    /// and `F9` labelled `Addrs` while bound to clear-filter. Pinning each
+    /// and `F9` labeled `Addrs` while bound to clear-filter. Pinning each
     /// instance one assertion at a time leaves the next one free to ship.
     ///
     /// Not covered: popup bars. Popup keys are handled by impure

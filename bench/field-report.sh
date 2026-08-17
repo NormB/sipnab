@@ -272,7 +272,7 @@ run_sipnab() {
   # Peak RSS while the sample window runs. Sampled DURING, not after: the old
   # version read /proc/<pid>/status once the loop had already exited, by which
   # point the process was usually gone and the figure was either "?" or a
-  # teardown artefact.
+  # teardown artifact.
   ( while kill -0 "$pid" 2>/dev/null; do
       cur=$(awk '/VmHWM/{print $2}' "/proc/$pid/status" 2>/dev/null || true)
       [ -n "$cur" ] && [ "$cur" -gt "$rss" ] 2>/dev/null && rss=$cur
@@ -362,7 +362,7 @@ print(f"  dialogs tracked: {h.get('dialogs_tracked', 0):,}"
 # direction: a zero that is correct, and a zero that means nothing ran.
 if pkts and not h.get("streams_tracked"):
     print("  NOTE: SIP present but zero RTP streams. With the default filter")
-    print("        this is EXPECTED -- the auto BPF matches signalling only, so")
+    print("        this is EXPECTED -- the auto BPF matches signaling only, so")
     print("        media never leaves the kernel. Not a defect unless you")
     print("        passed a BPF that should have matched media.")
 if pkts == 0:

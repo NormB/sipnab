@@ -96,7 +96,7 @@ produce a subtler bug than the dead flag it replaces.
 The proposed resolution:
 
 1. `DialogStore::get(call_id)` keeps its signature and returns the **first**
-   entry whose Call-ID matches, preserving today's behaviour in `call-id` mode
+   entry whose Call-ID matches, preserving today's behavior in `call-id` mode
    exactly (where first == only).
 2. A new `get_by_key(&str)` addresses a specific tracked unit.
 3. The report, JSON and API surfaces gain a `tracking_key` field alongside

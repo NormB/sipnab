@@ -139,17 +139,17 @@ pub fn uprobe_list(cli: &Cli) -> i32 {
 
         // Narrowed the same way the capture would be, so the listing answers
         // "what will this command probe" rather than "what exists".
-        let mut flavours = Vec::new();
-        for name in &cli.tls_args.uprobe_flavour {
+        let mut flavors = Vec::new();
+        for name in &cli.tls_args.uprobe_flavor {
             match discover::parse_flavour(name) {
-                Ok(f) => flavours.push(f),
+                Ok(f) => flavors.push(f),
                 Err(e) => {
                     eprintln!("{e}");
                     return 2;
                 }
             }
         }
-        let found = discover::select(discover::discover(), &flavours);
+        let found = discover::select(discover::discover(), &flavors);
         if found.is_empty() {
             eprintln!(
                 "No TLS library is mapped by any process sipnab can see.\n\
@@ -160,12 +160,12 @@ pub fn uprobe_list(cli: &Cli) -> i32 {
         }
         // Padding baked into the literal rather than applied to literal
         // arguments: the columns match the row format below by construction.
-        println!("FLAVOUR        INODE  PIDS  LIBRARY");
+        println!("FLAVOR        INODE  PIDS  LIBRARY");
         for lib in &found {
             let reachable = lib.probe_path();
             println!(
                 "{:<9} {:>10} {:>5}  {}",
-                lib.flavour.label(),
+                lib.flavor.label(),
                 lib.inode,
                 lib.pids.len(),
                 match &reachable {
@@ -208,14 +208,14 @@ pub fn uprobe_list(cli: &Cli) -> i32 {
 fn plan_uprobe_targets(cli: &Cli) -> Result<Vec<capture::UprobeTarget>, String> {
     use crate::capture::uprobe::discover;
 
-    let mut flavours = Vec::new();
-    for name in &cli.tls_args.uprobe_flavour {
-        flavours.push(discover::parse_flavour(name)?);
+    let mut flavors = Vec::new();
+    for name in &cli.tls_args.uprobe_flavor {
+        flavors.push(discover::parse_flavour(name)?);
     }
     let planned = discover::plan_targets(
         &cli.tls_args.uprobe_library,
         cli.tls_args.uprobe_symbol.as_deref(),
-        &flavours,
+        &flavors,
         discover::discover(),
     )?;
     Ok(planned
@@ -277,7 +277,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // Same shape, same reason: both diagnosers are reached from the TUI, the
     // reports, `--json-dialogs`, the REST layer and the MCP tools, and every
     // one of those sites asked for "the default thresholds". Declared once
-    // here, before any of them runs, so a `[diagnosis]` key cannot be honoured
+    // here, before any of them runs, so a `[diagnosis]` key cannot be honored
     // on one surface and ignored on another.
     crate::sip::diagnosis::set_signaling_thresholds(cli.signaling_thresholds(config));
     crate::rtp::diagnosis::set_asymmetry_thresholds(cli.asymmetry_thresholds(config));
@@ -325,7 +325,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         // read, ordered by when their packets were captured. Resolution
         // happens here rather than in the reader so a bad path fails before
         // any thread starts and the operator sees the count they are about to
-        // analyse.
+        // analyze.
         let resolved = match crate::capture::input_set::resolve(
             &cli.capture_args.input,
             &cli.input_resolve_options(),
@@ -423,7 +423,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // structural (`security::transmit_guard::TransmitPermit` cannot be built
     // from a file source, so the kill worker cannot be spawned and its sends
     // cannot compile), but a structural refusal nobody is told about leaves
-    // someone believing their scanner defence is armed. Said in `plan` rather
+    // someone believing their scanner defense is armed. Said in `plan` rather
     // than at the spawn site because `plan` runs for every mode, including
     // `--cores` and the TUI, which never reach the spawn site at all.
     let kill_requested = cli.security_args.kill_scanner
@@ -451,7 +451,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // refused on a file the way the kill path is — replaying an archive into a
     // collector is a supported workflow. What it owes them is a sentence:
     // pointed at `-I customer.pcap`, the flag forwards that capture's
-    // signalling off the machine, and its name says nothing about files.
+    // signaling off the machine, and its name says nothing about files.
     // Emitted here, beside the refusal above, so the operator reads it before
     // the capture thread opens anything.
     #[cfg(feature = "hep")]
@@ -678,7 +678,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
 
     // Unlike -O, a truncating --snaplen here reaches sipnab's own analysis:
     // --retain-audio buffers RTP payload for export_audio to decode, and a
-    // snaplen tuned for signalling truncates that payload before retention
+    // snaplen tuned for signaling truncates that payload before retention
     // ever sees it.
     if let Some(msg) = snaplen_audio_retention_warning(cli, config) {
         tracing::warn!("{msg}");
@@ -703,7 +703,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // Whether a detector will exist at all is a property of the MODE, so it
     // cannot be answered with the warnings above, which run before the mode is
     // decided. Kept beside the refusal further up for the same reason that one
-    // is here: an operator who believes their scanner defence is armed has to
+    // is here: an operator who believes their scanner defense is armed has to
     // be told before the capture starts, not left to read an empty finding
     // list as quiet.
     // REFUSED, not warned. A warning was the first shape of this, and it is the
@@ -1411,8 +1411,8 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
 ///
 /// # Returns
 ///
-/// `0` when the frame was found (verified, or unverified and labelled as
-/// such), `1` when the pointer could not be honoured, `2` when it did not
+/// `0` when the frame was found (verified, or unverified and labeled as
+/// such), `1` when the pointer could not be honored, `2` when it did not
 /// parse.
 fn show_frame(pointer: &str) -> i32 {
     use crate::capture::resolve::{Resolution, ResolveError, parse_pointer, resolve};
@@ -1662,7 +1662,7 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     // Three caps that reach code no config is threaded to: streams are created
     // by the batch runner, the TUI, every `--cores` shard and the WASM entry
     // point, and both byte ceilings guard free functions the file loaders and
-    // the decryptor call. Declared here, once, so a value cannot be honoured on
+    // the decryptor call. Declared here, once, so a value cannot be honored on
     // one surface and ignored on another.
     //
     // Resolved rather than read straight off the config, because each has a
@@ -1683,7 +1683,7 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     // And the codec impairment table, for the same reason again: `estimate_mos`
     // is a free function the CLI, the REST API, the filter DSL, the Prometheus
     // exporter and the TUI all reach, and none of them is threaded a config. A
-    // declaration honoured on some of those would be two surfaces reporting
+    // declaration honored on some of those would be two surfaces reporting
     // different MOS for one stream.
     crate::rtp::quality::set_codec_ie_table(
         loaded
@@ -2008,7 +2008,7 @@ fn port_pair_at(off: usize, lo: u16, hi: u16) -> String {
 }
 
 /// "An IPv4 or IPv6 datagram starts at `ip_off` and carries UDP or TCP with a
-/// signalling port", as absolute-offset BPF terms.
+/// signaling port", as absolute-offset BPF terms.
 ///
 /// IPv4 is pinned to `0x45` — version 4, header length 5 words — because the
 /// port offset has to be a constant and BPF cannot multiply the IHL nibble
@@ -2038,7 +2038,7 @@ fn ip_and_ports_at(ip_off: usize, lo: u16, hi: u16) -> String {
 ///
 /// # Arguments
 ///
-/// * `lo` / `hi` — the SIP signalling port range (`--portrange`).
+/// * `lo` / `hi` — the SIP signaling port range (`--portrange`).
 /// * `tunnel_ports` — UDP ports to take wholesale (see
 ///   [`TUNNEL_PORTS_DEFAULT`]); empty for the default, narrow filter.
 ///
@@ -2107,7 +2107,7 @@ fn ip_and_ports_at(ip_off: usize, lo: u16, hi: u16) -> String {
 /// any given packet, and get probed anyway. Those probes can only ever fire
 /// on a frame that ALREADY carries one of `ENCAP_ETHERTYPES`, and only if
 /// its bytes at a wrong offset spell a whole IPv4-or-IPv6 header — right
-/// version, UDP or TCP, zero fragment offset — with a port in the signalling
+/// version, UDP or TCP, zero fragment offset — with a port in the signaling
 /// range. Ordinary traffic cannot reach the probes at all, which
 /// `the_outer_link_type_test_keeps_untagged_traffic_out_of_the_encapsulated_arms`
 /// pins with a datagram built to be mistaken for one.
@@ -2179,7 +2179,7 @@ pub fn auto_bpf_filter(lo: u16, hi: u16, tunnel_ports: &[u16]) -> String {
 ///
 /// Returns a `PlanError` (exit code 2) for an empty list or any element that
 /// is not a port number in 1..=65535. Refused rather than skipped: a typo that
-/// silently produced no coverage would leave the operator believing tunnelled
+/// silently produced no coverage would leave the operator believing tunneled
 /// SIP was captured, which is the failure this flag exists to prevent.
 fn resolve_tunnel_ports(cli: &Cli) -> Result<Vec<u16>, PlanError> {
     let Some(ref list) = cli.capture_args.capture_tunnels else {
@@ -2231,7 +2231,7 @@ fn tunnel_omission_notice(tunnel_ports: &[u16]) -> Option<String> {
          MPLS, but NOT SIP inside a UDP tunnel (GTP-U 2152, VXLAN 4789, \
          GENEVE 6081) — BPF cannot reach the inner port, so covering those \
          means capturing every packet on the port. If this link carries \
-         tunnelled signalling, add --capture-tunnels \
+         tunneled signaling, add --capture-tunnels \
          (defaults to {TUNNEL_PORTS_DEFAULT_LIST}) and size the buffer for it."
     ))
 }
@@ -2264,13 +2264,13 @@ fn explicit_filter_encap_notice(filter: &str) -> Option<String> {
          not see SIP inside a VLAN tag, QinQ, PPPoE or MPLS, and the packets \
          are dropped in the kernel where no sipnab counter can report them. \
          Drop the filter to get sipnab's encapsulation-aware one, or add \
-         --capture-tunnels for UDP-tunnelled signalling."
+         --capture-tunnels for UDP-tunneled signaling."
             .to_string(),
     )
 }
 
 /// The message to log when `--cores N` was asked for on a run that cannot use
-/// it, or `None` when the request will be honoured.
+/// it, or `None` when the request will be honored.
 ///
 /// `--cores` selects offline parallel reconstruction: it shards a saved capture
 /// by host pair and rebuilds dialogs per shard, which needs the whole file up
@@ -2283,7 +2283,7 @@ fn explicit_filter_encap_notice(filter: &str) -> Option<String> {
 /// eight and nothing in the run says they did not get them. On a host chosen
 /// for its core count that is a sizing decision made on a false premise.
 ///
-/// Warned rather than refused, and that is the difference from the neighbouring
+/// Warned rather than refused, and that is the difference from the neighboring
 /// `--cores` + `--json`/`-O` check that exits 2. There the combination emits
 /// *nothing* and still exits 0, so the output is a wrong answer and the only
 /// safe response is to refuse. Here the output is complete and correct; only
@@ -2299,7 +2299,7 @@ fn cores_ignored_warning(cli: &Cli) -> Option<String> {
     } else if !cli.has_input() {
         "this run captures live rather than reading a saved file"
     } else {
-        // `--cores N -I file` without --multi-device: honoured, say nothing.
+        // `--cores N -I file` without --multi-device: honored, say nothing.
         return None;
     };
     Some(format!(
@@ -2369,7 +2369,7 @@ fn metrics_ignored_on_cores_warning(cli: &Cli) -> Option<String> {
 /// silently reads on one core is SLOW; a detection run that silently arms
 /// nothing is UNPROTECTED, and both look identical from the outside — an empty
 /// finding list. A warning scrolls off a busy terminal and the operator is left
-/// believing a defence is up.
+/// believing a defense is up.
 ///
 /// It also settles an inconsistency. `--fail2ban` and the other OUTPUT flags
 /// already require `-N`, so asking for fail2ban output without it never
@@ -2469,7 +2469,7 @@ fn snaplen_truncation_warning(cli: &Cli, config: &Config) -> Option<String> {
 /// frame. Unlike [`snaplen_truncation_warning`]'s `-O` case, sipnab's *own*
 /// analysis is affected here: `--retain-audio` buffers RTP payload bytes for
 /// the `export_audio` MCP tool to decode later, and a snaplen sized for
-/// signalling (CT3's own guidance is 200-400 bytes for SIP headers) truncates
+/// signaling (CT3's own guidance is 200-400 bytes for SIP headers) truncates
 /// that payload before it ever reaches the retention buffer. The exported WAV
 /// or Opus audio is then short or corrupted for exactly the packets that were
 /// truncated, with nothing marking which frames those were — the same silent
@@ -2925,7 +2925,7 @@ mod tests {
 
     // ── --cores on a source that cannot use it (G6) ────────────────────
 
-    /// The honoured case says nothing: `--cores N -I file` is exactly what the
+    /// The honored case says nothing: `--cores N -I file` is exactly what the
     /// parallel reader is for.
     #[test]
     fn cores_warning_silent_when_cores_are_actually_used() {
@@ -2949,7 +2949,7 @@ mod tests {
 
     /// The defect: `--cores 8 -d eth0` used to run single-threaded in silence.
     /// The warning must name the count that was discarded and the flag that
-    /// would honour it.
+    /// would honor it.
     #[test]
     fn cores_warning_fires_on_a_live_device() {
         let mut cli = base_cli();
@@ -3094,12 +3094,12 @@ mod tests {
         cli.security_args.fraud_detect = true;
         cli.security_args.reg_flood = true;
         let msg = security_detection_unarmed_refusal(&cli, &Config::default(), &RunMode::Tui)
-            .expect("detection flags the TUI cannot honour must be reported");
+            .expect("detection flags the TUI cannot honor must be reported");
         for flag in ["--kill-scanner", "--fraud-detect", "--reg-flood"] {
             assert!(
                 msg.contains(flag),
                 "the warning must name every flag it is ignoring, or the \
-                 operator cannot tell which defence is not armed: {msg}"
+                 operator cannot tell which defense is not armed: {msg}"
             );
         }
         assert!(
@@ -3286,7 +3286,7 @@ mod tests {
 
     /// A small snaplen with no `-O` truncates only the in-memory capture, which
     /// is the point of setting it — nothing is written, so there is nothing to
-    /// warn about. A warning here would fire on every deliberate signalling
+    /// warn about. A warning here would fire on every deliberate signaling
     /// capture and train operators to ignore it.
     #[test]
     fn snaplen_truncation_warning_silent_without_output() {
@@ -3731,7 +3731,7 @@ mod tests {
         encapsulated_non_sip_frames_on(eth)
     }
 
-    /// Frames of every UDP-tunnel flavour the opt-in flag covers, each an
+    /// Frames of every UDP-tunnel flavor the opt-in flag covers, each an
     /// outer IPv4/UDP datagram on the tunnel port.
     fn udp_tunnel_frames() -> Vec<(&'static str, Vec<u8>)> {
         [("GTP-U", 2152u16), ("VXLAN", 4789), ("GENEVE", 6081)]
@@ -3902,7 +3902,7 @@ mod tests {
     /// A UA sending from an ephemeral port to a proxy on 5060 is the ordinary
     /// case, and the reply comes back the other way round. Checking only the
     /// source (or only the destination) loses half of every call, which on a
-    /// dialog view looks like one-way signalling rather than a filter bug.
+    /// dialog view looks like one-way signaling rather than a filter bug.
     #[test]
     fn encapsulated_arms_check_both_the_source_and_the_destination_port() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3912,7 +3912,7 @@ mod tests {
             (5060, 40000, 1, "reply from the proxy"),
             (5061, 40000, 1, "top of the range, source side"),
             (40000, 5061, 1, "top of the range, destination side"),
-            (40000, 40001, 0, "neither side is signalling"),
+            (40000, 40001, 0, "neither side is signaling"),
             (5059, 40000, 0, "just below the range"),
             (40000, 5062, 0, "just above the range"),
         ] {
@@ -3930,7 +3930,7 @@ mod tests {
     /// An IPv4 header with `proto`, fragment word `frag`, and a payload whose
     /// first four bytes are the port pair 5060/5060.
     ///
-    /// The point is that the port bytes are ALWAYS in signalling range, so the
+    /// The point is that the port bytes are ALWAYS in signaling range, so the
     /// only thing that can decide the match is the field under test.
     fn ipv4_with(proto: u8, frag: u16) -> Vec<u8> {
         let payload: [u8; 12] = [
@@ -3958,7 +3958,7 @@ mod tests {
 
     /// The encapsulated arms check the IP protocol, and it matters: without
     /// it any protocol whose 21st and 23rd payload bytes happen to read as a
-    /// signalling port would be delivered.
+    /// signaling port would be delivered.
     ///
     /// The three frames differ in exactly one byte — the protocol field.
     #[test]
@@ -4469,7 +4469,7 @@ mod tests {
 
     // ── The notices ────────────────────────────────────────────────────
 
-    /// The default path SAYS it does not cover UDP-tunnelled SIP, and names
+    /// The default path SAYS it does not cover UDP-tunneled SIP, and names
     /// the flag that does. A silent omission recreates the bug one level up.
     #[test]
     fn tunnel_omission_notice_fires_by_default_and_names_the_flag() {

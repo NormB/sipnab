@@ -33,7 +33,7 @@ ratio, response-code histogram, codec mix, MOS spread, median post-dial delay.
 
 **Question B: two legs of one call.** *"The customer says we sent a 488. Did we?
 Here is the access-side capture and here is the trunk-side capture."* One call,
-observed twice, at two points in a signalling path. What the operator wants
+observed twice, at two points in a signaling path. What the operator wants
 compared is **one specific call**, message by message, and the interesting output
 is the header that differs between the two observations.
 
@@ -118,7 +118,7 @@ strength:
    transparent proxy and survives many B2BUAs. It does not survive number
    translation, and translation is the case an operator most wants to inspect.
 4. **Media correlation.** Two legs of one call through a media-relaying B2BUA
-   share no SSRC and no ports. Through a signalling-only B2BUA they may share
+   share no SSRC and no ports. Through a signaling-only B2BUA they may share
    both. When they do it is decisive; when they do not, its absence proves
    nothing.
 5. **Duration and outcome.** Weak, and the tiebreaker only.

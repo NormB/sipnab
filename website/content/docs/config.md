@@ -62,8 +62,8 @@ Packet capture defaults.
 |-----|------|---------|-------------|
 | `device` | string | -- | Default network interface |
 | `node_name` | string | hostname | Name this box reports as, in `capture_identity.node` on every MCP and REST answer. Lets an agent querying several servers tell WHICH one saw a given fact. `--node-name` overrides it, so a deployed config can name the box while a one-off command relabels it. The default puts the hostname on the wire. Clipped to 64 characters |
-| `portrange` | string | `"5060-5061"` | SIP **signalling** port range; media is never gated by it. sipnab skips any SIP message with both ports outside the range, and a skipped message reaches no count, no dialog and no output — so this key decides how much of a capture you analyse at all. Widen it (`"1-65535"`) unless you know every port in play. `--portrange` overrides it |
-| `ws_ports` | string | `"80, 443, 8080, 8443"` | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)), as one inclusive `"START-END"` range in the same grammar as `portrange`. The shipped set is the browser's view of the web, not a deployment's: Kamailio, OpenSIPS and Janus each default to WSS outside it, and behind a reverse proxy sipnab sees whichever port the proxy forwards to — on such a capture the entire WebRTC signalling leg stays invisible. A range **replaces** the shipped set, exactly as `portrange` replaces the default signalling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. `--ws-portrange` overrides it |
+| `portrange` | string | `"5060-5061"` | SIP **signaling** port range; media is never gated by it. sipnab skips any SIP message with both ports outside the range, and a skipped message reaches no count, no dialog and no output — so this key decides how much of a capture you analyze at all. Widen it (`"1-65535"`) unless you know every port in play. `--portrange` overrides it |
+| `ws_ports` | string | `"80, 443, 8080, 8443"` | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)), as one inclusive `"START-END"` range in the same grammar as `portrange`. The shipped set is the browser's view of the web, not a deployment's: Kamailio, OpenSIPS and Janus each default to WSS outside it, and behind a reverse proxy sipnab sees whichever port the proxy forwards to — on such a capture the entire WebRTC signaling leg stays invisible. A range **replaces** the shipped set, exactly as `portrange` replaces the default signaling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. `--ws-portrange` overrides it |
 | `snaplen` | integer | `65535` | Snapshot length in bytes |
 | `buffer` | integer | `64` | Kernel capture buffer size in MiB (per device) |
 | `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue. Grows under load up to this budget (capped, never OOM) and shrinks when idle. `--buffer-budget` overrides it |
@@ -127,9 +127,9 @@ SIP protocol handling.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `xcid_headers` | array | `["X-Call-ID"]` | Header names used to correlate B2BUA call legs (sngrep `sip.xcid`). A dialog whose message carries one of these headers pointing at another dialog's Call-ID joins that dialog. Add carrier-specific headers here; an empty/unset list keeps the `X-Call-ID` default |
-| `leg_correlation_window_ms` | integer | `2000` | How far apart, in milliseconds, one call's two legs may start and still correlate on TIMING alone. This is the B2BUA timing heuristic's whole content, and the only strategy left once a B2BUA has rewritten every identifier the other six compare. The shipped two seconds describes a PBX placing the outbound leg immediately, not one doing an LNP or ENUM dip, or walking an LCR cascade, before it places one. Widen it on such a hop; every correlation still reports the strategy that matched, so a guess stays labelled as one. `--leg-correlation-window` overrides it |
+| `leg_correlation_window_ms` | integer | `2000` | How far apart, in milliseconds, one call's two legs may start and still correlate on TIMING alone. This is the B2BUA timing heuristic's whole content, and the only strategy left once a B2BUA has rewritten every identifier the other six compare. The shipped two seconds describes a PBX placing the outbound leg immediately, not one doing an LNP or ENUM dip, or walking an LCR cascade, before it places one. Widen it on such a hop; every correlation still reports the strategy that matched, so a guess stays labeled as one. `--leg-correlation-window` overrides it |
 
-| `active_idle_window_secs` | integer | `3600` | Seconds a dialog may go untouched and still count toward the active-dialog and active-call gauges every surface publishes. The shipped hour is twice RFC 4028's default `Session-Expires`, which grounds it for a trunk carrying session timers and not for a contact centre, where a caller parked on hold past an hour is a channel in use the gauge stops counting. Widening it widens the opposite error -- a call that never sent its BYE keeps counting for longer, and that one never recovers on its own -- so raise it for traffic that genuinely goes quiet. `--active-idle-window` overrides it. `0` fails validation and names the key |
+| `active_idle_window_secs` | integer | `3600` | Seconds a dialog may go untouched and still count toward the active-dialog and active-call gauges every surface publishes. The shipped hour is twice RFC 4028's default `Session-Expires`, which grounds it for a trunk carrying session timers and not for a contact center, where a caller parked on hold past an hour is a channel in use the gauge stops counting. Widening it widens the opposite error -- a call that never sent its BYE keeps counting for longer, and that one never recovers on its own -- so raise it for traffic that genuinely goes quiet. `--active-idle-window` overrides it. `0` fails validation and names the key |
 
 ```toml
 [sip]
@@ -167,7 +167,7 @@ Security detection defaults.
 | `scanner_established_factor` | integer | `4` | How much more evidence `--kill-scanner` needs from a source that has completed a registration or a call. A registered endpoint that starts probing is a compromised phone worth reporting, but it is also the peer whose ordinary working traffic looks most like probing, and the peer a false positive costs most. `--scanner-established-factor` overrides it |
 | `scanner_answer_grace_ms` | integer | `500` | How long a probe may go without a response before `--kill-scanner` counts it as unanswered, in milliseconds. The default is [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261)'s Timer T1, the round-trip estimate at which SIP itself gives up waiting and retransmits. Raise it on a link whose round trip runs longer than that, where the default reports every probe still in flight as one nobody answered. `--scanner-answer-grace` overrides it |
 | `findings_history` | integer | `1000` | Security findings kept in memory for later retrieval. `0` keeps none, which is a real setting rather than a mistake. `--findings-history` overrides it |
-| `hep_hmac_window_secs` | integer | `30` | Seconds either side of now within which sipnab still honours a `--hep-auth-mode hmac` token's timestamp. On an agent/collector pair with poor NTP sipnab turns every packet away as out-of-window, and what the operator sees is a collector receiving NOTHING -- a symptom they attribute to routing, a firewall, or a dead agent long before a clock. Widening it is a security trade rather than a convenience: the window is exactly how long a packet an on-path attacker captured stays acceptable, and it is how far back the receiver's nonce cache must remember. Range 1-300. Past 300 the sender has no working time daemon, which is what to repair, so sipnab refuses the value and names the key. `--hep-hmac-window` overrides it |
+| `hep_hmac_window_secs` | integer | `30` | Seconds either side of now within which sipnab still honors a `--hep-auth-mode hmac` token's timestamp. On an agent/collector pair with poor NTP sipnab turns every packet away as out-of-window, and what the operator sees is a collector receiving NOTHING -- a symptom they attribute to routing, a firewall, or a dead agent long before a clock. Widening it is a security trade rather than a convenience: the window is exactly how long a packet an on-path attacker captured stays acceptable, and it is how far back the receiver's nonce cache must remember. Range 1-300. Past 300 the sender has no working time daemon, which is what to repair, so sipnab refuses the value and names the key. `--hep-hmac-window` overrides it |
 
 Every `scanner_*` key above rejects `0` and names the key. A zero count reports
 the first probe of any kind as a scanner, a zero window resets the counters on
@@ -194,7 +194,7 @@ alert_exec = "/usr/local/bin/sipnab-alert.sh"
 
 ### [diagnosis]
 
-Thresholds the signalling and media checks compare against. A number here
+Thresholds the signaling and media checks compare against. A number here
 decides whether a call that is working gets reported as broken, so the defaults
 are standards figures and a network that knows its own numbers beats a
 recommendation written for the general case. Every value must be a finite
@@ -244,7 +244,7 @@ iLBC = 11.0
 
 ### [quality]
 
-Where the quality colour column turns yellow, and where it turns red. A number
+Where the quality color column turns yellow, and where it turns red. A number
 here decides only what catches an operator's eye during triage, which is a
 different question from `[diagnosis]`: that one decides whether a call that is
 working counts as broken. The defaults suit a general-purpose trunk, and the
@@ -257,10 +257,10 @@ restating the other seven. Every value must be a finite number of zero or more,
 and each warn boundary must leave a reachable middle against its matching bad
 boundary. A set that does not fails validation and names the key. Zero itself
 counts as a real setting: `loss_warn_pct = 0.0` means any loss at all is worth
-a colour.
+a color.
 
 These bands paint the TUI. A `-N` run prints the measurements themselves rather
-than a colour, so sipnab validates a band set on a non-interactive run and then
+than a color, so sipnab validates a band set on a non-interactive run and then
 never consults it.
 
 | Key | Type | Default | Description |
@@ -296,7 +296,7 @@ Resource limits to prevent unbounded memory growth.
 | `mcp_max_rows` | integer | `1000` | Maximum rows in ONE list-style MCP response. Distinct from `dialog_limit` above, which bounds the whole run; these differ by 100x and bound different things. `0` fails validation and names the key |
 | `max_streams` | integer | `50000` | Maximum RTP streams |
 | `max_reassembly` | integer | `10000` | Maximum TCP reassembly sessions |
-| `reassembly_ttl_secs` | integer | `30` | Seconds sipnab holds an incomplete IP datagram or half-read TCP stream before a sweep drops it. `max_reassembly` bounds how MANY entries sipnab holds and says nothing about how long. Thirty seconds describes IP fragments in flight, and the TCP reassembler inherited it: a persistent SIP/TCP or SIP/TLS trunk to a carrier goes quiet for far longer on any ordinary night, and sweeping its half-read stream means the next segment re-initialises mid-message, so the peer that sent a valid message is the one reported broken. Raise it on such a trunk; `max_reassembly` caps the extra state either way. `--reassembly-ttl` overrides it. `0` fails validation and names the key |
+| `reassembly_ttl_secs` | integer | `30` | Seconds sipnab holds an incomplete IP datagram or half-read TCP stream before a sweep drops it. `max_reassembly` bounds how MANY entries sipnab holds and says nothing about how long. Thirty seconds describes IP fragments in flight, and the TCP reassembler inherited it: a persistent SIP/TCP or SIP/TLS trunk to a carrier goes quiet for far longer on any ordinary night, and sweeping its half-read stream means the next segment re-initializes mid-message, so the peer that sent a valid message is the one reported broken. Raise it on such a trunk; `max_reassembly` caps the extra state either way. `--reassembly-ttl` overrides it. `0` fails validation and names the key |
 | `hep_rate_limit` | integer | `50000` | Maximum HEP packets per second |
 | `max_header_line` | integer | `8192` | Maximum bytes in a single SIP header (defense-in-depth) |
 | `max_headers_per_message` | integer | `200` | Maximum SIP headers per message (defense-in-depth) |

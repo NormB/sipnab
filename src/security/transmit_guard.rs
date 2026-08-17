@@ -31,7 +31,7 @@
 //! That is deliberately paired with a wiring-time refusal (`app::bootstrap`
 //! declines to spawn the kill worker at all, and says why): the type is what
 //! makes the guarantee, and the message is what tells the operator their
-//! defence is not armed. Neither substitutes for the other — a type-only guard
+//! defense is not armed. Neither substitutes for the other — a type-only guard
 //! leaves someone believing the kill fired, and a message-only guard is one
 //! forgetful call site away from being no guard at all.
 //!
@@ -84,7 +84,7 @@ impl TransmitPermit {
     /// ([`crate::security::scanner_kill::kill_response_eligible`], which
     /// requires `--hep-allow-kill` because HEP inner addresses are
     /// sender-asserted) stays the control that applies there. `File` is the
-    /// case with no defence: historical addresses, uninvolved third parties.
+    /// case with no defense: historical addresses, uninvolved third parties.
     pub fn for_source(source: &CaptureSource) -> Option<Self> {
         match source {
             CaptureSource::Live { .. } | CaptureSource::Hep { .. } => Some(Self(())),
@@ -104,7 +104,7 @@ impl TransmitPermit {
 /// the run is reading a file.
 ///
 /// It has to name the flag, say what will happen instead, and say how to get
-/// what they asked for — an operator who believes their scanner defence is
+/// what they asked for — an operator who believes their scanner defense is
 /// armed when it is not is the second failure this whole guard exists to
 /// avoid.
 ///

@@ -218,7 +218,7 @@ sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \
 ```
 
 A `signaling_diagnosis` object sits beside `diagnosis` when something is wrong
-with the signalling rather than the media, and **drops out entirely** when
+with the signaling rather than the media, and **drops out entirely** when
 the detections found nothing — so a healthy dialog serializes exactly as before
 the field existed. Eight detections run over every dialog, each naming the
 messages it drew on as indices into the dialog's own message list:
@@ -229,7 +229,7 @@ messages it drew on as indices into the dialog's own message list:
 | `auth_loop` | Three or more `401`/`407` challenges with no `2xx`. `kind` is `credential_failure` when the client answers each challenge and is re-challenged, or `silent_drop` when it never sends `Authorization` at all — different faults with different fixes. |
 | `retransmissions` | A request retransmitted with no response, identified by CSeq plus top-`Via` branch. Reports `method`, `count` and `span_sec`, because "7 INVITEs over 32 seconds" is diagnostic and "retransmissions detected" is not. `icmp_cause` is present only when the capture also held an ICMP error for the dialog, and carries the network's own words for the silence — see below. |
 | `ack_missing` | A `2xx` answer to an `INVITE` that no `ACK` followed, once the observation window passed RFC 3261 Timer H (32 s). Carries `waited_sec` and `answer_transmissions` — a UAS retransmits its answer until Timer H, so a count above one is the peer agreeing the `ACK` never arrived. |
-| `abandoned` | The dialog never reached a final response. `kind` separates the two cases, which are not the same claim: `cancelled` means someone sent a `CANCEL`, `no_final_response` means the wait outlived RFC 3261 Timer C (180 s) — a statement about the capture, **not** a failed call. Carries `elapsed_sec`. |
+| `abandoned` | The dialog never reached a final response. `kind` separates the two cases, which are not the same claim: `canceled` means someone sent a `CANCEL`, `no_final_response` means the wait outlived RFC 3261 Timer C (180 s) — a statement about the capture, **not** a failed call. Carries `elapsed_sec`. |
 | `post_dial_delay` | `INVITE` to first provisional response over 11 s, the ITU-T E.721 Table 2 ninety-fifth-percentile target for an international connection. Carries `delay_sec`, the `threshold_sec` it exceeded, and the `responded_with` code that ended the wait. |
 | `registration_failure` | A `REGISTER` rejected (`kind: rejected`), or granted less time than it asked for (`kind: shortened_expiry`, `code: 200`). Carries `requested_expiry_sec` and `granted_expiry_sec` when the messages said. Kept separate from `final_failure` because "is this phone online?" is a different question from "why did this call fail?". |
 | `icmp_unreachable` | An ICMP or ICMPv6 error quoting one of this dialog's requests. Carries `unreachable_endpoint` (the host that did not answer), `reported_by` (the router or host that sent the error — a *different* machine), `description` of the ICMP cause, the raw `icmp_type` / `icmp_code` bytes, the quoted request's `method`, an exact `errors` count, and `truncated`. |

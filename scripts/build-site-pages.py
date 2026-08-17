@@ -228,7 +228,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
     ),
     # Registered when the conformance linter reached MCP. The page was in
     # build-wiki.py's PAGES and not this one, so `docs/mcp.md`'s link to it
-    # rewrote to a GitHub blob URL: a site reader following the rule catalogue
+    # rewrote to a GitHub blob URL: a site reader following the rule catalog
     # from the tool reference left the site. Weight 23 puts it after the other
     # reference pages (18-22) rather than reordering any of them.
     (

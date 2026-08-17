@@ -104,7 +104,7 @@ fn dialogs(capture: &Path, args: &[&str]) -> Vec<serde_json::Value> {
 
 /// The same run without the exit-code assertion, for the discovery pass: a
 /// corpus root holds files that are not captures at all, and refusing to open
-/// one is correct behaviour, not a test failure.
+/// one is correct behavior, not a test failure.
 ///
 /// # Returns
 /// `(dialogs, stderr, exit_code)`.
@@ -335,7 +335,7 @@ fn documented_fields_select_the_right_rows_on_real_captures() {
         eprintln!("corpus: {name} — {} expressions checked", CASES.len());
     }
 
-    // The gate that the old behaviour could never pass: on real traffic at
+    // The gate that the old behavior could never pass: on real traffic at
     // least some of these expressions must select a PROPER subset. All-or-
     // nothing results everywhere would mean the corpus cannot tell an applied
     // filter from an ignored one.

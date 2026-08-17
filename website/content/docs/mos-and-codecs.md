@@ -148,7 +148,7 @@ G.113 (09/2024) Table IV.3.
 
 Three modes — 19.85, 18.25 and 14.25 — have **no published diotic value**.
 sipnab returns nothing for them rather than interpolating, because the series
-they sit in is not monotonic and neighbours do not bound them.
+they sit in is not monotonic and neighbors do not bound them.
 
 Two things about these tables surprise people, and both are real:
 

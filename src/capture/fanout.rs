@@ -62,7 +62,7 @@ const PACKET_FANOUT: libc::c_int = 18;
 ///
 /// # Errors
 ///
-/// Returns the OS error from `setsockopt`. The ones worth recognising:
+/// Returns the OS error from `setsockopt`. The ones worth recognizing:
 ///
 /// * `ENOPROTOOPT` / `EINVAL` — not an `AF_PACKET` socket. A `-I` file handle,
 ///   the `any` pseudo-device on some kernels, or a non-Linux pcap backend all
@@ -105,7 +105,7 @@ pub fn join_fanout_group(_fd: std::os::fd::RawFd, _group_id: u16) -> std::io::Re
     ))
 }
 
-/// Non-Linux behaviour, which is the whole contract off Linux: report
+/// Non-Linux behavior, which is the whole contract off Linux: report
 /// unsupported so the caller takes its single-socket path.
 ///
 /// Split from the Linux tests because those reach for `FANOUT_HASH_WITH_ROLLOVER`

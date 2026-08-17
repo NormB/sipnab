@@ -20,7 +20,7 @@ Two tools own the ends of this space and neither reaches the middle.
 
 **sngrep** is local. You are logged into one box, you run it, you see that
 box's SIP. Zero infrastructure, seconds to first use, and it stops at the
-machine boundary. It displays; it does not analyse.
+machine boundary. It displays; it does not analyze.
 
 **Homer** is a system. Capture agents feed a collector, the collector feeds a
 database, a web UI queries it. Many nodes, weeks of retention, multiple users —

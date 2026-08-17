@@ -166,12 +166,12 @@ fn udp(sport: u16, dport: u16, payload: &[u8]) -> Vec<u8> {
     d
 }
 
-/// A tunnelled packet reports the marking its own operator set.
+/// A tunneled packet reports the marking its own operator set.
 ///
 /// IP-in-IP with the outer header at `EF` (46) and the inner at `CS3` (24).
 /// The outer marking belongs to whoever runs the tunnel; the inner one is the
 /// fact the operator whose call this is can act on. Reporting the outer value
-/// would tell them their signalling is expedited when their own SBC marked it
+/// would tell them their signaling is expedited when their own SBC marked it
 /// CS3, and no amount of staring at the SBC would explain the number.
 ///
 /// This case also stands in for every other encapsulation sipnab decodes:

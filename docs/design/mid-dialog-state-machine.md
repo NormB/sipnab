@@ -14,7 +14,7 @@ and [`tests/mid_dialog_state_test.rs`](https://github.com/NormB/sipnab/blob/main
 **Read `15b6337`'s commit message before this page.** Its closing sentence is the
 constraint everything below is written under:
 
-> Landing a half-modelled state machine in the code that decides whether a call
+> Landing a half-modeled state machine in the code that decides whether a call
 > is up is worse than the bug it closes.
 
 **One correction to where this lives.** The defect is routinely referred to as
@@ -35,7 +35,7 @@ established the family". It does not, because family is not the coordinate
 those tests were expressing. `INVITE`, `ACK`, `BYE`, `CANCEL` and `PRACK` all
 belong to the INVITE family and four of them carry responses of their own, so a
 family-only dispatch routes `200 OK (CSeq 1 CANCEL)` into the arm that
-establishes a call: a cancelled call then reports `InCall`, counted as a
+establishes a call: a canceled call then reports `InCall`, counted as a
 channel in use. That is strictly worse than the `Trying` it replaces, and it is
 what a reader implementing §3 literally would have built. §5's own `Arrival`
 type carries the CSeq **method**, not its family, so the type was right and the
@@ -98,7 +98,7 @@ INVITE is not.
 
 `update_generic_state` ([`dialog.rs:572-586`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L572-L586)) opens
 with `if !msg.is_request`, so every later *request* is a no-op, and its last arm
-discards `ResponseClass::Cancelled` — a 487 changes nothing. A capture that opens
+discards `ResponseClass::Canceled` — a 487 changes nothing. A capture that opens
 on a CANCEL therefore reports `Trying` forever.
 
 That is most captures on a busy server. Starting a capture while calls are
@@ -122,7 +122,7 @@ growing with uptime; the invisibility to `active_call_count` stands. See §0.*
 
 And two security detectors are **silently off** for every such call.
 `record_if_short_call` — wangiri detection — takes an early `return None` unless
-the dialog is `Completed | Cancelled`
+the dialog is `Completed | Canceled`
 ([`fraud_detect.rs:267-275`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L267-L275)), and
 `record_if_refused_call` — the sequential-scan signal — unless it is `Failed`
 ([`:324`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L324)). A wrong state does not merely
@@ -132,7 +132,7 @@ mislabel a row; it turns off two detectors with no error anywhere.
 
 ```rust
 if dialog.method != crate::sip::SipMethod::Invite
-    || !matches!(dialog.state(), DialogState::Completed | DialogState::Cancelled)
+    || !matches!(dialog.state(), DialogState::Completed | DialogState::Canceled)
 ```
 
 They test `dialog.method` as well as the state.
@@ -141,7 +141,7 @@ Also affected: `Result: Trying` in the text report
 ([`call_report.rs:276-283`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L276-L283)); a dialog counted
 in none of the three outcome buckets in every machine-readable summary
 ([`api.rs:936-938`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L936-L938)); an empty result set for
-`state == "Cancelled"` in the filter DSL
+`state == "Canceled"` in the filter DSL
 ([`dsl.rs:1374-1378`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L1374-L1378)); and an ended call rendering amber
 "in setup" indefinitely in the TUI, where `Trying` shares an arm with `Ringing`
 and `Pending` ([`timeline.rs:472`](https://github.com/NormB/sipnab/blob/main/src/tui/timeline.rs#L472)).
@@ -157,7 +157,7 @@ routing to `update_invite_state` on its own makes things worse.
 and fire from any state ([`dialog.rs:390-395`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L390-L395)):
 
 ```rust
-Some(SipMethod::Cancel) => { dialog.state = DialogState::Cancelled; }
+Some(SipMethod::Cancel) => { dialog.state = DialogState::Canceled; }
 Some(SipMethod::Bye)    => { dialog.state = DialogState::Completed; }
 ```
 
@@ -236,7 +236,7 @@ What §3 got right is the rest of it — that the guards which stay behind in
 those arms are the part that was always the real content, the **state** guards:
 
 ```rust
-matches!(dialog.state, DialogState::Trying | DialogState::Ringing | DialogState::Cancelled)
+matches!(dialog.state, DialogState::Trying | DialogState::Ringing | DialogState::Canceled)
 ```
 
 That is the [RFC 3261 §9](https://www.rfc-editor.org/rfc/rfc3261#section-9)/§15 rule the domain primer already documents
@@ -257,7 +257,7 @@ the guards at the same time.
 matter it barely matters: since the creation branch now applies the creating
 message's own transition ([`dialog_store.rs:654`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L654)),
 a BYE-seeded dialog goes `Trying → Completed` on its own first message, and a
-CANCEL-seeded one goes `Trying → Cancelled`. Which is exactly the outcome the
+CANCEL-seeded one goes `Trying → Canceled`. Which is exactly the outcome the
 pinned defect test is waiting for.
 
 **Two tests must change in the same commit, not afterwards.**
@@ -323,8 +323,8 @@ exactly one response, so `start` is only ever `Trying` or `Pending`
 [`dialog.rs:293-296`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L293-L296)). **The state axis is entirely
 unexercised.** That is not a minor gap: three of the four INVITE response arms are
 *state*-guarded, and the CANCEL-versus-200 race the domain primer documents —
-`Cancelled → InCall` on a 2xx ([`dialog.rs:433-447`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L433-L447)) —
-can never fire in the sweep, because a fresh dialog is never `Cancelled`. A rule
+`Canceled → InCall` on a 2xx ([`dialog.rs:433-447`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L433-L447)) —
+can never fire in the sweep, because a fresh dialog is never `Canceled`. A rule
 this project deliberately implemented and documented has no pairwise coverage at
 all.
 
@@ -418,7 +418,7 @@ asserts **properties of the table** rather than agreement with a second copy of
 it. Properties, each a quantified statement over every cell:
 
 - **Terminal states are absorbing for the wrong family.** No arrival whose family
-  differs from the dialog's may move `Completed`, `Cancelled`, `Failed`,
+  differs from the dialog's may move `Completed`, `Canceled`, `Failed`,
   `Expired` or `Terminated`. This is the rule the four `cseq_method == "INVITE"`
   guards were expressing, stated once instead of four times. *Shipped in a
   sharper form, because family was the wrong unit (§0):
@@ -428,7 +428,7 @@ it. Properties, each a quantified statement over every cell:
 - **No cell moves an answered call back to a pre-answer state.** Nothing may take
   `InCall` to `Trying` or `Ringing`.
 - **The 2xx/CANCEL race resolves one way.** A 2xx in the INVITE family from
-  `Cancelled` reaches `InCall`; no 487 may move `InCall`. [RFC 3261 §9](https://www.rfc-editor.org/rfc/rfc3261#section-9) and §15,
+  `Canceled` reaches `InCall`; no 487 may move `InCall`. [RFC 3261 §9](https://www.rfc-editor.org/rfc/rfc3261#section-9) and §15,
   and [`domain-primer.md:168-180`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L168-L180).
 - **Provisional and Challenge never decide an outcome.**
   `ResponseClass::Provisional` and `ResponseClass::Challenge` may only produce
@@ -461,18 +461,18 @@ identifier derived from it may be committed.
 before and after. The dialog count is identical, no state appears that was not
 there before, and four buckets move:
 
-- 90 dialogs `Completed` → `Cancelled`. A `CANCEL`-seeded dialog used to reach
+- 90 dialogs `Completed` → `Canceled`. A `CANCEL`-seeded dialog used to reach
   the generic handler, where the `200` acknowledging its own `CANCEL` is a
-  plain 2xx and set `Completed`. These are cancelled calls that were reported
+  plain 2xx and set `Completed`. These are canceled calls that were reported
   as calls which finished normally.
-- 8 `Failed` → `Cancelled`. Same seed, but the response to the `CANCEL` was a
+- 8 `Failed` → `Canceled`. Same seed, but the response to the `CANCEL` was a
   4xx, which the generic handler read as the call failing.
-- 2 `Trying` → `Cancelled`. The pinned defect exactly: `CANCEL` then `487`,
+- 2 `Trying` → `Canceled`. The pinned defect exactly: `CANCEL` then `487`,
   with nothing the generic handler had a rule for.
-- 100 arrive in `Cancelled`, which is 90 + 8 + 2.
+- 100 arrive in `Canceled`, which is 90 + 8 + 2.
 
 Every movement is attributable to a declared cell, and every one runs the same
-way — a cancelled call now says it was cancelled. `InCall` does not move, which
+way — a canceled call now says it was canceled. `InCall` does not move, which
 is the number that matters most here: the family-only fix §0 rejects would have
 moved dialogs *into* it.
 
@@ -482,7 +482,7 @@ moved dialogs *into* it.
 `Trying`, and a `continue` that excused the one permutation which leads with a
 non-INVITE request. Both are gone. The XFAIL is now
 `a_capture_beginning_mid_dialog_reports_the_outcome_it_saw`, asserting
-`Cancelled` and asserting it equals what a capture of the whole call reaches;
+`Canceled` and asserting it equals what a capture of the whole call reaches;
 the exemption is gone from
 `arrival_order_converges_for_every_permutation`, which is unconditional.
 

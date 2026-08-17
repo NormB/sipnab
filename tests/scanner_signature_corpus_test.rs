@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A behavioural scanner alert must be supported by an OUTCOME the capture
+//! A behavioral scanner alert must be supported by an OUTCOME the capture
 //! contains, proved against REAL captures.
 //!
 //! The rate and spread signals used to stand on their own, and neither
@@ -14,7 +14,7 @@
 //! Synthetic fixtures reproduce that only once you already know the answer,
 //! because a hand-built message sequence carries whatever outcomes it was
 //! given. Real traffic does not need to be told: these tests replay a corpus
-//! and check every behavioural alert against an INDEPENDENT count of rejected
+//! and check every behavioral alert against an INDEPENDENT count of rejected
 //! and unanswered probe transactions taken from the packets themselves. An
 //! alert no outcome in the capture supports is a false positive, and with
 //! `--kill-scanner` or a fail2ban jail behind it, a false positive is a banned
@@ -51,7 +51,7 @@ use sipnab::sip::{SipMessage, is_sip_message, parser::parse_sip};
 /// not captures, and the pure-Rust reader works from a whole-file slice.
 const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 
-/// The detector's behavioural window, in seconds. Mirrors
+/// The detector's behavioral window, in seconds. Mirrors
 /// `BEHAVIORAL_WINDOW_SECS`, which is private to the detector.
 const WINDOW_SECS: i64 = 5;
 
@@ -351,7 +351,7 @@ fn has_probing_evidence(facts: &SourceFacts, alert_at: DateTime<Utc>) -> bool {
     false
 }
 
-/// Every behavioural scanner alert over the corpus names a source the capture
+/// Every behavioral scanner alert over the corpus names a source the capture
 /// shows being refused, or sending into a hole.
 ///
 /// A source is reported only if, somewhere in the capture, it really did
@@ -401,7 +401,7 @@ fn every_behavioural_alert_is_supported_by_an_outcome_in_the_capture() {
         }
         assert_eq!(
             unsupported, 0,
-            "{name}: {unsupported} of {alerts} behavioural alerts name a source no \
+            "{name}: {unsupported} of {alerts} behavioral alerts name a source no \
              outcome in the capture refuses or ignores — the signature is back to \
              reporting peers for being busy"
         );
@@ -412,7 +412,7 @@ fn every_behavioural_alert_is_supported_by_an_outcome_in_the_capture() {
         }
     }
     eprintln!(
-        "scanner signature: {} captures replayed, {files_with_alerts} raised behavioural \
+        "scanner signature: {} captures replayed, {files_with_alerts} raised behavioral \
          alerts, {alerts_total} alerts over {sources_total} sources, all supported by an \
          outcome in the capture",
         captures.len()

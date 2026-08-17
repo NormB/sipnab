@@ -255,7 +255,7 @@ fn account_ids(name: &str) -> (u32, u32) {
     }
 }
 
-// ── End-to-end: the binary's behaviour around the drop ────────────────────
+// ── End-to-end: the binary's behavior around the drop ────────────────────
 
 /// Running as root with `--user` naming a nonexistent account exits non-zero
 /// with "Failed to drop privileges" — never continues capturing as root.

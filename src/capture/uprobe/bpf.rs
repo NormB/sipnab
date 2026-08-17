@@ -62,7 +62,7 @@ const PROGRAM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sipnab-bpf"));
 fn aligned_program() -> (Vec<u64>, usize) {
     let words = PROGRAM.len().div_ceil(size_of::<u64>());
     let mut buf = vec![0u64; words];
-    // SAFETY: `buf` owns `words * 8` initialised bytes, and a `u64` slice may
+    // SAFETY: `buf` owns `words * 8` initialized bytes, and a `u64` slice may
     // be viewed as bytes — the reverse direction is the one that needs care.
     let bytes = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<u8>(), words * 8) };
     bytes[..PROGRAM.len()].copy_from_slice(PROGRAM);
@@ -132,7 +132,7 @@ impl BpfReader {
             })?;
 
         let (aligned, len) = aligned_program();
-        // SAFETY: `aligned` holds at least `len` initialised bytes, and a
+        // SAFETY: `aligned` holds at least `len` initialized bytes, and a
         // `u64` buffer is readable as bytes.
         let program = unsafe { std::slice::from_raw_parts(aligned.as_ptr().cast::<u8>(), len) };
         let mut bpf = EbpfLoader::new()
@@ -256,7 +256,7 @@ impl BpfReader {
 /// Mirrors the contract every other capture function follows: attach, signal
 /// readiness once actually attached, then loop until shutdown.
 ///
-/// **Readiness is signalled after the programs are attached, not before.** The
+/// **Readiness is signaled after the programs are attached, not before.** The
 /// launch sequence waits on that signal before dropping privileges, and loading
 /// BPF needs them.
 ///

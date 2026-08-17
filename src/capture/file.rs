@@ -170,7 +170,7 @@ pub fn capture_file(
 /// is the whole point: `tcpdump -C -W` splits a busy capture across a ring
 /// buffer, and a call whose INVITE lands in `tg.pcap3` and whose BYE lands in
 /// `tg.pcap4` is only reconstructable if both are read without resetting state
-/// in between. Analysed separately, one file shows a call that never ends and
+/// in between. Analyzed separately, one file shows a call that never ends and
 /// the other a stray BYE, and neither reports the truth.
 ///
 /// `paths` must already be in read order — [`crate::capture::input_set`]
@@ -186,7 +186,7 @@ pub fn capture_file(
 /// * `paths` - capture files, in read order.
 /// * `config` - BPF filter, count/duration limits, and the `replay` flag.
 /// * `tx` - channel the decoded `Packet`s are sent into.
-/// * `ready_tx` - optional one-shot, signalled once the FIRST file is open and
+/// * `ready_tx` - optional one-shot, signaled once the FIRST file is open and
 ///   filtered. Later files cannot report readiness — the consumer is already
 ///   running by then — so a failure to open one of them is logged and skipped.
 ///
@@ -369,7 +369,7 @@ fn read_set(
     };
 
     // The first file owns readiness: opening it is what proves the whole set
-    // is usable, and the consumer starts as soon as it is signalled.
+    // is usable, and the consumer starts as soon as it is signaled.
     if !read_member(first, config, tx, start, &mut state, ready_tx)? {
         return Ok(());
     }
@@ -390,7 +390,7 @@ fn read_set(
 /// a later one is logged and skipped. The set was already probed during
 /// resolution, so a later open failure means something changed underneath us
 /// mid-read — a rotating capture directory being cleaned up while it is
-/// analysed — and losing one file of a set is bad where losing the analysis of
+/// analyzed — and losing one file of a set is bad where losing the analysis of
 /// the other nine is worse.
 ///
 /// A BPF filter that will not compile is treated the same wherever it happens.

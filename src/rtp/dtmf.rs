@@ -15,7 +15,7 @@
 //! A decoded digit is not a diagnostic detail, it is the secret itself. On live
 //! traffic the digit stream after answer is the PIN, the calling-card number,
 //! the account number or the credit-card number the caller keyed in, and it
-//! arrives in the clear regardless of how the signalling was protected. So this
+//! arrives in the clear regardless of how the signaling was protected. So this
 //! module hands out [`MASKED_DIGIT`] as the value any always-on surface may
 //! print, and reserves [`DtmfEvent::digit`] itself for a caller that has an
 //! explicit operator opt-in (`--dtmf-cleartext`) to disclose it.

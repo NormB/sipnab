@@ -558,7 +558,7 @@ impl SipnabMcp {
     /// writes with truncation". That was false of three of the six callers, and
     /// it broke the one that matters most: `show_evidence` exists to follow a
     /// `frame_ref` back to the captured bytes, those pointers name THE CAPTURE
-    /// BEING ANALYSED, and the guard refused exactly that — telling the
+    /// BEING ANALYZED, and the guard refused exactly that — telling the
     /// operator to "choose a different output path" for a call that has no
     /// output path. The same pointer worked whenever the server happened to be
     /// reading some other file, which is why no test caught it.
@@ -609,7 +609,7 @@ impl SipnabMcp {
     ///
     /// An explicit filename wins outright and never falls back to discovery:
     /// naming a file that cannot be read is an error, because a caller that
-    /// pointed at one and got a full-catalogue run would read the result as
+    /// pointed at one and got a full-catalog run would read the result as
     /// "my suppressions matched nothing".
     ///
     /// Discovery starts at the directory holding the capture, and only a file
@@ -1056,10 +1056,15 @@ pub struct TlsCaptureResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct StartTlsCaptureParams {
-    /// Probe only these TLS flavours: "openssl", "wolfssl". Empty means every
+    /// Probe only these TLS flavors: "openssl", "wolfssl". Empty means every
     /// one found, which is the default because an ordinary host runs both.
-    #[serde(default)]
-    pub flavours: Vec<String>,
+    ///
+    /// The field shipped as `flavours` through 0.5.104. The alias keeps an
+    /// agent that already sends the old key working: a JSON field an MCP
+    /// client has been told to send is wire format, and wire format does not
+    /// get to change because the prose around it did.
+    #[serde(default, alias = "flavours")]
+    pub flavors: Vec<String>,
     /// Probe these libraries instead of discovering them. Each must be a path
     /// this server can open — for a containerised process, the
     /// `/proc/PID/root/...` form. Empty means discover.
@@ -1159,7 +1164,7 @@ pub struct LintDialogParams {
     pub call_id: String,
     /// Rule selectors, OR-ed together. Omit for every rule.
     ///
-    /// Either a named subset of the catalogue (`all`, `must`, `rfc`,
+    /// Either a named subset of the catalog (`all`, `must`, `rfc`,
     /// `interop`, `observation`/`observed`, `syntax`) or an RFC the rules read
     /// from (`rfc3261`, `rfc3264`, `rfc4566`, `rfc3551`, `rfc5761`).
     pub rulesets: Option<Vec<String>>,
@@ -1251,15 +1256,15 @@ pub struct ShowEvidenceParams {
 
 /// One entry in the `rulesets` list: a named subset, or an RFC number.
 ///
-/// The catalogue's own vocabulary comes from
+/// The catalog's own vocabulary comes from
 /// [`Ruleset::from_name`](crate::sip::lint::Ruleset::from_name) rather than a
 /// second table here, so a ruleset added to the engine is selectable over MCP
 /// the day it lands. The RFC form exists because an agent that has just read a
 /// citation asks for "the RFC 3264 rules", and `rfc` alone already means
-/// something else in the catalogue — MUST and SHOULD.
+/// something else in the catalog — MUST and SHOULD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuleSelector {
-    /// A named subset of the catalogue.
+    /// A named subset of the catalog.
     Set(crate::sip::lint::Ruleset),
     /// Every rule reading from one RFC.
     Rfc(u32),
@@ -1271,7 +1276,7 @@ impl RuleSelector {
         let lower = name.trim().to_ascii_lowercase();
         // `observed` is the word an agent reaches for after reading a finding
         // whose basis is `observation`. Accepted here rather than in the
-        // engine: the catalogue keeps one spelling per concept, and a
+        // engine: the catalog keeps one spelling per concept, and a
         // convenience alias belongs at the surface that needs it.
         if lower == "observed" {
             return Some(Self::Set(crate::sip::lint::Ruleset::Observation));
@@ -1279,7 +1284,7 @@ impl RuleSelector {
         if let Some(set) = crate::sip::lint::Ruleset::from_name(&lower) {
             return Some(Self::Set(set));
         }
-        // Only an RFC the catalogue really cites. `rfc3621` is one keystroke
+        // Only an RFC the catalog really cites. `rfc3621` is one keystroke
         // from `rfc3261` and would otherwise parse, select nothing, and return
         // an empty finding list — which reads exactly like a clean call. A
         // refusal naming the vocabulary cannot be misread that way.
@@ -1302,7 +1307,7 @@ impl RuleSelector {
 
 /// Every selector name a caller may pass, for help text and error messages.
 ///
-/// The RFC half is derived from the catalogue rather than listed, so a rule
+/// The RFC half is derived from the catalog rather than listed, so a rule
 /// citing a new RFC becomes selectable — and appears in the refusal that names
 /// the vocabulary — without anyone remembering to add it here.
 fn rule_selector_names() -> Vec<String> {
@@ -1321,7 +1326,7 @@ fn rule_selector_names() -> Vec<String> {
 /// Parse the `rulesets` argument, refusing an unknown name by naming the set.
 ///
 /// An unrecognised selector could reasonably be ignored. It must not be: a
-/// caller that asks for `rfc3621` and is handed the full catalogue reads more
+/// caller that asks for `rfc3621` and is handed the full catalog reads more
 /// findings than it selected and believes the filter worked.
 fn parse_rule_selectors(names: Option<&Vec<String>>) -> Result<Vec<RuleSelector>, rmcp::ErrorData> {
     let Some(names) = names else {
@@ -1509,7 +1514,7 @@ pub struct CaptureStatusResponse {
     /// two answers carrying different instances describe different captures
     /// however similar the rest of the fields look.
     pub capture_identity: crate::provenance::CaptureEtag,
-    /// SIP messages seen and NOT analysed because both ports fell outside
+    /// SIP messages seen and NOT analyzed because both ports fell outside
     /// `--portrange`.
     ///
     /// `dialog_count` above answers "how much is held". Without this it also
@@ -1531,7 +1536,7 @@ pub struct CaptureStatusResponse {
     /// Actionable rather than merely alarming: these are the values to pass to
     /// `--portrange`, so the answer names its own remedy.
     pub unanalysed_busiest_ports: Vec<UnanalysedPort>,
-    /// SIP-over-WebSocket (RFC 7118) sipnab recognised and did not analyse
+    /// SIP-over-WebSocket (RFC 7118) sipnab recognized and did not analyze
     /// because neither port was in the WebSocket port set.
     ///
     /// The same defect as `unanalysed_sip_messages` above, one layer down, and
@@ -1542,10 +1547,10 @@ pub struct CaptureStatusResponse {
     /// it — `capture_status` answered `dialog_count: 0`,
     /// `unanalysed_sip_messages: 0` and `degraded: false`: byte-identical to a
     /// perfect read of a capture holding no SIP at all, while an entire WebRTC
-    /// signalling leg went unreported.
+    /// signaling leg went unreported.
     ///
     /// Counted separately from the `--portrange` figure above because it is a
-    /// different loss with a different remedy: that SIP was recognised and
+    /// different loss with a different remedy: that SIP was recognized and
     /// gated, this was wrapped in a WebSocket frame on a port sipnab was not
     /// asked to unwrap. Zero on live capture, for the same reason.
     pub unanalysed_websocket_messages: u64,
@@ -1609,7 +1614,7 @@ pub struct CapabilitiesResponse {
 /// One TLS library in use on this host, as an agent sees it.
 pub struct TlsLibraryEntry {
     /// Which implementation: `OpenSSL` or `wolfSSL`.
-    pub flavour: String,
+    pub flavor: String,
     /// Path as the mapping process sees it.
     pub path: String,
     /// The mapped file's inode, which is its identity — the same path can name
@@ -1732,11 +1737,11 @@ pub fn tls_libraries_response() -> TlsLibrariesResponse {
         let libraries = discover::discover()
             .iter()
             .map(|l| TlsLibraryEntry {
-                flavour: l.flavour.label().to_string(),
+                flavor: l.flavor.label().to_string(),
                 path: l.path.display().to_string(),
                 inode: l.inode,
                 process_count: l.pids.len(),
-                symbol: l.flavour.write_symbol().to_string(),
+                symbol: l.flavor.write_symbol().to_string(),
                 probe_path: l.probe_path().map(|p| p.display().to_string()),
             })
             .collect();
@@ -1830,7 +1835,7 @@ impl From<crate::output::prometheus::CaptureQuality> for CaptureQualityJson {
 }
 
 /// One port carrying SIP that a port set excluded from the analysis —
-/// `--portrange` for plain signalling, `--ws-portrange` for SIP-over-WebSocket.
+/// `--portrange` for plain signaling, `--ws-portrange` for SIP-over-WebSocket.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct UnanalysedPort {
@@ -4021,7 +4026,7 @@ impl SipnabMcp {
             // Read beside the portrange tally, never instead of it: the two
             // name different losses with different remedies, and a client that
             // sees only one is told a capture is complete when a whole
-            // transport's worth of signalling is missing.
+            // transport's worth of signaling is missing.
             let ws_skipped = crate::pipeline::ws_port_skip_report();
             let resp = CaptureStatusResponse {
                 // 2: absorbed the `stats` tool — the counters and
@@ -4160,15 +4165,15 @@ impl SipnabMcp {
             ));
         }
 
-        let mut flavours = Vec::new();
-        for name in &params.flavours {
-            flavours.push(
+        let mut flavors = Vec::new();
+        for name in &params.flavors {
+            flavors.push(
                 discover::parse_flavour(name)
                     .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
             );
         }
         let planned =
-            discover::plan_targets(&params.libraries, None, &flavours, discover::discover())
+            discover::plan_targets(&params.libraries, None, &flavors, discover::discover())
                 .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?;
 
         Ok(planned
@@ -4402,7 +4407,8 @@ impl SipnabMcp {
             ResponseClass::Success => "success",
             ResponseClass::Redirect => "redirect",
             ResponseClass::Challenge => "challenge",
-            ResponseClass::Cancelled => "cancelled",
+            // Wire value, unchanged: an agent matches this string.
+            ResponseClass::Canceled => "cancelled",
             ResponseClass::Declined => "declined",
             ResponseClass::Failure => "failure",
         };
@@ -4674,12 +4680,12 @@ impl SipnabMcp {
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
-    /// First-pass triage: signalling problem, media problem, or neither.
+    /// First-pass triage: signaling problem, media problem, or neither.
     #[tool(
         name = "triage_call",
         description = "First-pass triage for one call: classifies the problem as \
-                       signalling, media, both or none, with the evidence for \
-                       each. Start here — the signalling/media split decides \
+                       signaling, media, both or none, with the evidence for \
+                       each. Start here — the signaling/media split decides \
                        which half of the stack to investigate, and they have \
                        different causes and different fixes.",
         annotations(read_only_hint = true, open_world_hint = false)
@@ -4710,7 +4716,7 @@ impl SipnabMcp {
                 &crate::rtp::diagnosis::AsymmetryThresholds::default(),
             );
 
-            // The split that matters. Signalling decides whether the call
+            // The split that matters. Signaling decides whether the call
             // connects; media decides whether you can hear it. They have
             // different causes and different fixes, and conflating them is the
             // most common wrong turn in VoIP triage — so name which half is
@@ -4719,6 +4725,7 @@ impl SipnabMcp {
             let media_bad = media.one_way_audio || media.nat_mismatch || media.no_media;
             let verdict = match (sig_bad, media_bad) {
                 (true, true) => "both",
+                // Wire value, unchanged for the same reason.
                 (true, false) => "signalling",
                 (false, true) => "media",
                 (false, false) => "none",
@@ -4791,7 +4798,7 @@ impl SipnabMcp {
             // reconfigure a codec list that was already working.
             //
             // `offered` and `answered` keep each side's own spelling: that is
-            // what was on the wire, and normalising it would destroy the
+            // what was on the wire, and normalizing it would destroy the
             // evidence for the mismatch an operator may be chasing. Only the
             // comparison is case-folded, and `common` reports the offer's
             // spelling because the offer is what the answer is matched against.
@@ -4892,7 +4899,7 @@ impl SipnabMcp {
     ///
     /// # Returns
     ///
-    /// The findings exactly as [`crate::sip::lint::Finding`] serialises them —
+    /// The findings exactly as [`crate::sip::lint::Finding`] serializes them —
     /// `rule_id`, `severity`, `basis`, `rfc`, `section`, `message_index`,
     /// `observed`, `expected`, `explanation` — plus severity counts, the
     /// selectors applied, and the rules this run could not settle.
@@ -4916,7 +4923,7 @@ impl SipnabMcp {
                        advertised, sendrecv negotiated with media flowing one \
                        way, packet spacing contradicting a=ptime, a payload size \
                        the negotiated codec cannot produce. sipnab holds the \
-                       signalling and the RTP in one process, so those \
+                       signaling and the RTP in one process, so those \
                        comparisons are available here and are invisible to a \
                        linter that reads message text. The RFC 3261 syntax rules \
                        and the RFC 3264 offer/answer rules run alongside them. \
@@ -4982,7 +4989,7 @@ impl SipnabMcp {
                 })
                 .collect();
 
-            // An empty list runs the whole catalogue, the same as an omitted
+            // An empty list runs the whole catalog, the same as an omitted
             // one — the convention `security_findings.kinds` already follows.
             // What the response must never do is echo `rulesets: []` beside a
             // full run, which reads as a filter that selected nothing and
@@ -5091,22 +5098,22 @@ impl SipnabMcp {
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
-    /// The catalogue entry behind one rule identifier.
+    /// The catalog entry behind one rule identifier.
     ///
     /// # Errors
     ///
-    /// `invalid_params` (-32602) when the identifier is not in the catalogue.
+    /// `invalid_params` (-32602) when the identifier is not in the catalog.
     /// The refusal lists every identifier that is, because the alternative —
     /// an empty answer — reads as "this rule found nothing".
     #[tool(
         name = "explain_rule",
-        description = "Returns the catalogue entry behind one conformance rule \
+        description = "Returns the catalog entry behind one conformance rule \
                        identifier, such as OBS-3264-6.1-PT-UNDECLARED: its \
                        title, severity, basis, the RFC number and section it \
                        reads from, a link to that section on rfc-editor.org, \
                        what the rule has to read before it can run, and every \
                        ruleset selector that reaches it. An unknown identifier \
-                       returns invalid_params listing the whole catalogue.",
+                       returns invalid_params listing the whole catalog.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn explain_rule(
@@ -5117,7 +5124,7 @@ impl SipnabMcp {
             let known: Vec<&str> = crate::sip::lint::RULES.iter().map(|r| r.id).collect();
             rmcp::ErrorData::invalid_params(
                 format!(
-                    "'{}' is not a rule in the catalogue. The {} rules are: {}",
+                    "'{}' is not a rule in the catalog. The {} rules are: {}",
                     params.rule_id,
                     known.len(),
                     known.join(", ")
@@ -5128,7 +5135,7 @@ impl SipnabMcp {
 
         // Every selector that would include this rule, and none that would
         // not, so the field is directly usable as `lint_dialog.rulesets`
-        // rather than being a fact about the catalogue the caller has to
+        // rather than being a fact about the catalog the caller has to
         // translate. `rule_selectors_round_trip` holds it to that contract.
         let rulesets: Vec<String> = rule_selector_names()
             .into_iter()
@@ -5196,7 +5203,7 @@ impl SipnabMcp {
     ///
     /// * The tools that return an index or a Call-ID instead of the thing
     ///   itself: `search_messages`, `search_by_time`, `find_correlated`.
-    /// * The derived verdicts, which summarise many packets rather than cite
+    /// * The derived verdicts, which summarize many packets rather than cite
     ///   one: `triage_call`, `check_codec_negotiation`, `diagnose_registration`,
     ///   `compare_dialogs`, `get_sdp_timeline`.
     /// * The RTCP reception and XR reports filed beside a stream. Those
@@ -5479,14 +5486,14 @@ impl SipnabMcp {
     /// Write the retained packets to a capture file.
     #[tool(
         name = "export_capture",
-        description = "Writes the SIP signalling sipnab is holding to a pcap file \
+        description = "Writes the SIP signaling sipnab is holding to a pcap file \
                        in the configured file root and returns the path. The \
                        file is NOT a copy of the capture: sipnab keeps parsed \
                        messages rather than the original frames, so each message \
                        is written as a re-synthesised Ethernet/IP/UDP frame with \
                        reconstructed link and IP headers. It contains no RTP, no \
                        RTCP and no non-SIP traffic, and a SIP-over-TCP message \
-                       is written as UDP. Use it to preserve signalling before \
+                       is written as UDP. Use it to preserve signaling before \
                        stopping a live capture — otherwise the messages end with \
                        the process.",
         annotations(
@@ -5662,7 +5669,7 @@ impl SipnabMcp {
                     format!(
                         "refusing to open '{}': this server is capturing live from '{}'. \
                          The capture thread never finishes, so loading a file would leave \
-                         two writers on one store. Restart sipnab with -I to analyse files.",
+                         two writers on one store. Restart sipnab with -I to analyze files.",
                         params.filename, c.name
                     ),
                     None,
@@ -6256,7 +6263,7 @@ fn caller_of(extensions: &rmcp::model::Extensions) -> String {
 /// The id arrives from a signed payload, which makes it operator-chosen while
 /// the keys are intact — and an audit log is what gets read when they are not.
 /// Anyone holding a signing key chooses ids, and the audit line is flat text:
-/// the caller is written as `caller="…"` and its neighbours are
+/// the caller is written as `caller="…"` and its neighbors are
 /// space-separated `key=value`. So an id of `x" outcome=ok` closes the quoted
 /// field, an id of `x outcome=ok` does not even need to — every reader in this
 /// repo greps these lines, and a substring search cannot tell a forged
@@ -7056,7 +7063,7 @@ mod tests {
              emit an empty or zero one: {:?}",
             out[1]
         );
-        // An out-of-range index must not borrow a neighbouring frame.
+        // An out-of-range index must not borrow a neighboring frame.
         let stray = findings_with_refs(&[finding(99)], &messages);
         assert!(
             stray[0].get("frame_ref").is_none(),
@@ -7136,7 +7143,7 @@ mod tests {
     /// at that path. Resolving the pointer's own `source` would make
     /// `show_evidence` an arbitrary-file-read primitive wearing a
     /// `readOnlyHint`. The tool takes the final component and pushes it through
-    /// An agent can follow a `frame_ref` back into the capture it is analysing.
+    /// An agent can follow a `frame_ref` back into the capture it is analyzing.
     ///
     /// This is the evidence chain the whole pointer mechanism exists for:
     /// `lint_dialog` and `find_problems` hand back a `frame_ref` INTO THE
@@ -7598,7 +7605,7 @@ mod tests {
              cap is a field nothing reads"
         );
 
-        // And a cap ABOVE the old constant must be honoured, or the setting can
+        // And a cap ABOVE the old constant must be honored, or the setting can
         // only ever tighten — half a knob.
         let wide =
             server_with_simultaneous_dialogs(&["a@h", "b@h", "c@h", "d@h", "e@h"]).with_row_cap(4);
@@ -8995,7 +9002,7 @@ mod tests {
         );
 
         // One RFC 7118 INVITE on 8081, through the real classifier: outside
-        // the shipped set, so it is recognised, declined and tallied.
+        // the shipped set, so it is recognized, declined and tallied.
         let sip = b"INVITE sip:bob@example.com SIP/2.0\r\n\
                     Via: SIP/2.0/WS 10.0.0.1:51000;branch=z9hG4bKmcpws\r\n\
                     From: <sip:alice@example.com>;tag=w1\r\n\
@@ -9462,7 +9469,7 @@ mod tests {
             v["capture_identity"].is_null(),
             "capture_health grew a capture_identity: {v}"
         );
-        // Not a response that failed to serialise: it answered, with content.
+        // Not a response that failed to serialize: it answered, with content.
         assert!(
             v["schema_version"].is_u64(),
             "capture_health did not answer at all: {v}"
@@ -9530,7 +9537,7 @@ mod tests {
     // ── The conformance-linter tools ────────────────────────────────
 
     /// Every selector `rule_selector_names` advertises parses back, and it
-    /// advertises every RFC the catalogue actually cites.
+    /// advertises every RFC the catalog actually cites.
     ///
     /// The RFC half is derived from `RULES` rather than listed, so this is the
     /// gate that keeps the derivation honest: a rule citing a new RFC has to
@@ -9555,7 +9562,7 @@ mod tests {
             );
         }
         assert!(RuleSelector::parse("observed").is_some(), "alias for basis");
-        assert!(RuleSelector::parse("rfc").is_some(), "catalogue name");
+        assert!(RuleSelector::parse("rfc").is_some(), "catalog name");
         assert!(RuleSelector::parse("rfc99x").is_none(), "not a number");
         assert!(RuleSelector::parse("nonsense").is_none());
         // One keystroke from rfc3261, and nothing cites it. Accepting it would
@@ -9599,7 +9606,7 @@ mod tests {
     }
 
     /// An unknown rule identifier is refused, and the refusal names the
-    /// catalogue rather than returning an empty answer that reads as "clean".
+    /// catalog rather than returning an empty answer that reads as "clean".
     #[tokio::test]
     async fn explain_rule_refuses_an_unknown_identifier_by_name() {
         let err = empty_server()
@@ -9618,7 +9625,7 @@ mod tests {
 
     /// An unknown ruleset selector is refused by name.
     ///
-    /// Ignoring it and running the whole catalogue is the dangerous
+    /// Ignoring it and running the whole catalog is the dangerous
     /// alternative: the caller reads more findings than it selected and
     /// believes the filter worked.
     #[test]
@@ -9758,7 +9765,7 @@ mod tests {
         assert!(all["finding_count"].as_u64().unwrap_or(0) > 0);
 
         // Every finding here cites RFC 3261, so RFC 3264 must select none of
-        // them — an empty answer, not the full catalogue.
+        // them — an empty answer, not the full catalog.
         let other_rfc = run(Some(vec!["rfc3264"]), None).await;
         assert_eq!(other_rfc["finding_count"], 0, "{other_rfc}");
         assert_eq!(other_rfc["rulesets"][0], "rfc3264");
@@ -9780,7 +9787,7 @@ mod tests {
         assert_eq!(
             empty["rulesets"],
             serde_json::json!(["all"]),
-            "an empty selector list runs the whole catalogue and must say so: \
+            "an empty selector list runs the whole catalog and must say so: \
              {empty}"
         );
     }
@@ -9887,7 +9894,7 @@ mod tests {
 
     /// A named suppression file that cannot be read is an error.
     ///
-    /// Falling back to a full-catalogue run would hand the caller findings
+    /// Falling back to a full-catalog run would hand the caller findings
     /// their file was meant to silence, and they would read the difference as
     /// "my patterns matched nothing".
     #[tokio::test]
@@ -10026,7 +10033,7 @@ mod tests {
     /// the message's index WITHIN THE DIALOG, so the projection has to be
     /// handed the whole message list: a `slice::from_ref(msg)` would look
     /// right on message 0 and cite nothing from then on, and an index that
-    /// slipped by one would cite a neighbouring frame — which is worse than
+    /// slipped by one would cite a neighboring frame — which is worse than
     /// citing none, because it resolves.
     ///
     /// The third message is the half that matters most. A finding on a message
@@ -10243,7 +10250,7 @@ mod tests {
             // shape, and a default that happened to be all zeros could hide a
             // string field added to this type later.
             clock: crate::clock::ClockDiscipline {
-                synchronised: true,
+                synchronized: true,
                 max_error_us: 16_000,
                 est_error_us: 240,
                 available: true,
@@ -10273,7 +10280,7 @@ mod tests {
         );
         // Pinned so the gate above cannot pass by walking nothing.
         //
-        // Raised 40 -> 44 by `clock`: four leaves (synchronised, max_error_us,
+        // Raised 40 -> 44 by `clock`: four leaves (synchronized, max_error_us,
         // est_error_us, available), all bools and integers, which is why the
         // string check above still passes with the field present.
         assert_eq!(
@@ -11678,7 +11685,7 @@ mod tests {
 
         let clock = &v["clock"];
         assert!(
-            clock["synchronised"].is_boolean(),
+            clock["synchronized"].is_boolean(),
             "clock state must be present"
         );
         assert!(clock["available"].is_boolean());

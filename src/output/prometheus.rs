@@ -325,7 +325,7 @@ impl CaptureQuality {
     /// [`Self::undecodable_frames`] is **excluded on purpose**, and this is a
     /// judgement worth stating rather than a slip. Almost every Ethernet
     /// capture ever taken carries ARP, and ARP is a frame sipnab decodes and
-    /// correctly declines to analyse — so folding undecodable frames in here
+    /// correctly declines to analyze — so folding undecodable frames in here
     /// would make `degraded` true for practically every capture, and a flag
     /// that is always true carries no information at all. The question
     /// "how much of this capture did sipnab actually read" has its own answer
@@ -342,7 +342,7 @@ impl CaptureQuality {
 /// SIP response classes, as label values for `sipnab_responses_total{code}`.
 ///
 /// Closed set (RFC 3261 §7.2), so a scrape can initialize every one of them
-/// to zero. That matters more than it looks: an empty labelled family is
+/// to zero. That matters more than it looks: an empty labeled family is
 /// omitted from the exposition entirely, and a rule over a series that does
 /// not exist is no-data, not zero — an alert on "5xx responses appeared"
 /// would never fire on a proxy that had been healthy up to that point.
@@ -410,7 +410,7 @@ impl PrometheusMetrics {
     /// surface sipnab has.
     ///
     /// Published even though it is derivable, for the reason
-    /// `sipnab_capture_quality_degraded` is: a labelled family with no members
+    /// `sipnab_capture_quality_degraded` is: a labeled family with no members
     /// is omitted from the exposition entirely, so an alert rule over the
     /// per-reason series is no-data — not zero — on every healthy scrape, and
     /// would never fire when a capture first went unreadable.
@@ -1011,7 +1011,7 @@ mod tests {
 
     /// The fraction is the one series that separates "no SIP here" from "read
     /// nothing", so it is emitted on EVERY scrape — including a clean one,
-    /// where an empty labelled family is omitted entirely and an alert over it
+    /// where an empty labeled family is omitted entirely and an alert over it
     /// would be no-data rather than zero.
     #[test]
     fn the_undecoded_fraction_is_always_published() {

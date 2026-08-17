@@ -53,12 +53,12 @@ pub enum TimestampMode {
     /// Time-proportional: insert spacer rows for large timing gaps.
     ///
     /// **Only the call-flow ladder renders this.** It is the one mode whose
-    /// behaviour is not universal, and the declaration is where a reader
+    /// behavior is not universal, and the declaration is where a reader
     /// decides what a mode means, so the exception belongs here rather than
     /// only at the call sites that implement it:
     ///
     /// * `call_flow::prepare` stretches the ladder with spacer rows — the
-    ///   behaviour this doc comment describes.
+    ///   behavior this doc comment describes.
     /// * The call list (`call_list.rs`) has no distinct rendering and falls
     ///   through to [`TimestampMode::DeltaPrev`]. Spacer rows are a ladder
     ///   concern; a dialog list has no gap to stretch.
@@ -247,7 +247,7 @@ pub struct TuiOptions {
     /// `[media] one_way_delay_ms`. `None` means undeclared, which the MOS
     /// resolver treats differently from "declared the default".
     pub declared_one_way_delay_ms: Option<f64>,
-    /// The band set every view in this session colours from, resolved once by
+    /// The band set every view in this session colors from, resolved once by
     /// [`crate::cli::Cli::quality_bands`] from the flags over `[quality]`.
     ///
     /// Carried through here rather than read at each view for the reason the
@@ -641,7 +641,7 @@ pub(in crate::tui) struct CallFlowViewState {
     /// [`Self::raw_preview_pct`] so its arrow labels fit — a good default,
     /// because an unread ladder with truncated labels is harder to use than a
     /// narrow detail pane. Once they press the resize key, the percentage is
-    /// honoured verbatim and labels truncate instead.
+    /// honored verbatim and labels truncate instead.
     ///
     /// Without this flag the widening had no off switch, so ←/→ moved the
     /// percentage while the rendered boundary stayed put: the key registered,

@@ -637,7 +637,7 @@ mod tests {
     }
 
     /// A batch yields its packets one at a time, in order, FIFO with a single
-    /// send that follows it — the receiver cannot tell how packets travelled.
+    /// send that follows it — the receiver cannot tell how packets traveled.
     #[test]
     fn a_batched_send_preserves_order_and_count() {
         let (tx, rx) = packet_channel(16);

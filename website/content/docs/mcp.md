@@ -344,10 +344,10 @@ ordinary update.
 | [`security_findings`](#security-findings) | `kinds?`, `since?`, `limit?` | Recent `scanner` / `fraud` / `digest` / `reg_flood` findings, plus the detectors this server runs |
 | [`capture_status`](#capture-status) | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
 | [`capture_health`](#capture-health) | `sample_seconds` | Capture-path counters read twice: run totals, deltas across the window, `undecoded_fraction`, and undecodable frames by reason |
-| [`triage_call`](#triage-call) | `call_id` | First-pass verdict: signalling problem, media problem, both, or none, with evidence |
+| [`triage_call`](#triage-call) | `call_id` | First-pass verdict: signaling problem, media problem, both, or none, with evidence |
 | [`lint_dialog`](#lint-dialog) | `call_id`, `rulesets?`, `severity_min?`, `suppression_file?` | Conformance findings for one call, declaration against observation included, each with its RFC and section |
 | [`validate_message`](#validate-message) | `call_id`, `index`, `suppression_file?` | Conformance findings for one message, read alone |
-| [`explain_rule`](#explain-rule) | `rule_id` | The catalogue entry behind one rule identifier: citation, basis, scope, selectors |
+| [`explain_rule`](#explain-rule) | `rule_id` | The catalog entry behind one rule identifier: citation, basis, scope, selectors |
 | [`show_evidence`](#show-evidence) | `refs`, `max_bytes?` | Follows frame pointers back to the captured bytes: verified, unverified, or unresolvable with a reason |
 | [`check_codec_negotiation`](#check-codec-negotiation) | `call_id` | Codecs offered vs answered and whether they intersect — for 488s |
 | [`diagnose_registration`](#diagnose-registration) | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
@@ -357,14 +357,14 @@ ordinary update.
 | [`get_sdp_timeline`](#get-sdp-timeline) | `call_id` | SDP offer/answer exchanges in order: codecs, ptime, direction |
 | [`search_by_time`](#search-by-time) | `start`, `end?`, `filter?`, `limit?`, `cursor?` | Dialogs whose first message falls in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) window |
 | [`list_captures`](#list-captures) | -- | Capture files in `--mcp-file-root`, with sizes |
-| [`export_capture`](#export-capture) | `filename` | Writes held SIP signalling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
+| [`export_capture`](#export-capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
 | [`export_audio`](#export-audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
 | [`shutdown_server`](#shutdown-server) | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
 | [`open_capture`](#open-capture) | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
 | [`save_findings`](#save-findings) | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
 | [`server_capabilities`](#server-capabilities) | -- | sipnab version and the optional features this binary carries |
 | [`list_tls_libraries`](#list-tls-libraries) | -- | which TLS libraries this host runs, and whether sipnab could read their plaintext without keys |
-| [`start_tls_capture`](#start-tls-capture) | `flavours`, `libraries` | installs kernel uprobes and reads SIP plaintext with no key; needs `--mcp-allow-tls-capture` |
+| [`start_tls_capture`](#start-tls-capture) | `flavors`, `libraries` | installs kernel uprobes and reads SIP plaintext with no key; needs `--mcp-allow-tls-capture` |
 | [`stop_tls_capture`](#stop-tls-capture) | -- | stops that capture and removes its kernel probes |
 
 ### What changed in 0.5.98
@@ -1397,7 +1397,7 @@ nothing else, so it answers nothing about scanners either way.
 
 **Start here.** The first question in VoIP triage is which half of the stack
 failed.
-Signalling decides whether a call *connects*. RTP decides whether you can
+Signaling decides whether a call *connects*. RTP decides whether you can
 *hear* it. They have different causes and different fixes, and confusing them
 is the most common wrong turn — so ask this before anything else.
 
@@ -1411,7 +1411,7 @@ returned by [`list_dialogs`](#list-dialogs). An unknown one fails with
   "verdict": "media",              // "signalling" | "media" | "both" | "none"
   "state": "InCall",
   "final_status_code": 200,
-  "signalling": { "problem": false, "hints": [] },
+  "signaling": { "problem": false, "hints": [] },
   "media": {
     "problem": true,
     "one_way_audio": true,
@@ -1430,9 +1430,9 @@ Where to go next, by verdict:
 
 | Verdict | Next tool |
 |---|---|
-| `signalling` | [`explain_response_code`](#explain-response-code) on the final code, then [`get_dialog`](#get-dialog) |
+| `signaling` | [`explain_response_code`](#explain-response-code) on the final code, then [`get_dialog`](#get-dialog) |
 | `media` | [`rtp_stats`](#rtp-stats), and [`check_codec_negotiation`](#check-codec-negotiation) if the call failed |
-| `both` | Signalling first — media symptoms are often downstream of a failed negotiation |
+| `both` | Signaling first — media symptoms are often downstream of a failed negotiation |
 | `none` | The call is fine. Check you have the right Call-ID |
 
 ### `check_codec_negotiation`
@@ -1539,7 +1539,7 @@ call can complete over messages that break four MUSTs, and a fully conformant
 call can hit a busy signal.
 
 The rules that earn this tool its place compare the declaration against the
-observation. sipnab holds the signalling and the RTP in one process, so it can
+observation. sipnab holds the signaling and the RTP in one process, so it can
 report that the SDP declared PCMU on payload type 0 while the wire carried
 payload type 8, that RTP arrived on a port no `m=` line advertised, that
 `sendrecv` promised media in both directions and the capture holds it in one,
@@ -1554,11 +1554,11 @@ it, and the suppression syntax.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `call_id` | string | A Call-ID the store holds. | Required — the call fails. |
-| `rulesets` | string[]? | The 15 selectors below, OR-ed together. An unknown one fails with `invalid_params` listing all 15. | The whole catalogue, reported back as `rulesets: ["all"]`. |
+| `rulesets` | string[]? | The 15 selectors below, OR-ed together. An unknown one fails with `invalid_params` listing all 15. | The whole catalog, reported back as `rulesets: ["all"]`. |
 | `severity_min` | string? | `info`, `notice`, `warning` or `error`. Anything else fails with `unknown severity 'x'. Valid values: info, notice, warning, error`. | `info`, so the floor drops nothing. |
 | `suppression_file` | string? | A bare filename inside `--mcp-file-root`. A file sipnab cannot open fails with `invalid_params` rather than linting with every rule on. | sipnab walks for a `.sipnablint` beside the capture and upward to the project root. |
 
-Selectors take two forms — the catalogue's own names, and one per RFC the rules
+Selectors take two forms — the catalog's own names, and one per RFC the rules
 cite:
 
 - **By category:** `all`, `must`, `rfc` (MUST and SHOULD together), `interop`,
@@ -1734,11 +1734,11 @@ message.
 
 ### `explain_rule`
 
-Turns a rule identifier back into its catalogue entry, so an identifier lifted
+Turns a rule identifier back into its catalog entry, so an identifier lifted
 out of a finding, a CI log or a suppression file resolves without a round trip
 to the source.
 
-**Parameters:** `rule_id` (string, required) — one of the 32 catalogue
+**Parameters:** `rule_id` (string, required) — one of the 32 catalog
 identifiers, matched exactly, such as `OBS-3264-6.1-PT-UNDECLARED`. No optional
 parameters, and the tool reads no capture, so it answers the same on any
 server. An unknown identifier fails with `invalid_params` (-32602) **listing all
@@ -1890,7 +1890,7 @@ server holding nothing.
 {
   "schema_version": 1,
   "code": 488,
-  "class": "failure",     // provisional|success|redirect|challenge|cancelled|declined|failure
+  "class": "failure",     // provisional|success|redirect|challenge|canceled|declined|failure
   "explanation": "488 Not Acceptable Here — Codec negotiation failed. Compare the SDP offer against the callee's supported codecs and ptime values.",
   "registered": true
 }
@@ -1964,7 +1964,7 @@ addresses the hop is `related-icid` (§4.6.4.1), and it is optional. Two limits
 worth knowing before you rely on either: the first proxy generates the icid
 (§5.6), so a leg arriving from an endpoint carries none and this is useless at
 the access edge. And §4.6.2.2 lets the next hop *"modify the contents"*, which
-§6.6 calls normal behaviour, so unlike `Session-ID` there is no end-to-end
+§6.6 calls normal behavior, so unlike `Session-ID` there is no end-to-end
 constancy requirement at all. Full argument:
 [`docs/design/icid-correlation.md`](https://github.com/NormB/sipnab/blob/main/docs/design/icid-correlation.md).
 
@@ -2216,8 +2216,8 @@ directory:
 
 ### `export_capture`
 
-Writes the SIP signalling sipnab is holding to a pcap. Use it to preserve
-signalling **before** stopping a live capture — otherwise the messages end with
+Writes the SIP signaling sipnab is holding to a pcap. Use it to preserve
+signaling **before** stopping a live capture — otherwise the messages end with
 the process.
 
 > **The file is not a copy of the capture.** sipnab keeps parsed messages, not
@@ -2258,7 +2258,7 @@ Writes one call's RTP audio to a WAV in the configured root. Fails when the
 call carries no audio it can decode, rather than writing an empty file.
 
 Requires `--retain-audio` on the server command line: call audio is
-content, not signalling, so holding it in memory is an operator decision
+content, not signaling, so holding it in memory is an operator decision
 rather than a side effect of enabling MCP. Without the flag the tool refuses,
 and its refusal reports the media it measured and names the flag — a capture
 setting, not a finding that the call was silent.
@@ -2533,12 +2533,12 @@ The stores fill as the read goes, so dialogs appear before `done`. Wait for
 partial answer looks exactly like a complete one.
 
 Read the two `unanalysed_` pairs before reading anything into `dialog_count`.
-They report SIP that sipnab recognised and did not analyse, and they are the
+They report SIP that sipnab recognized and did not analyze, and they are the
 only way to tell a capture that holds no calls from one whose calls fell
 outside a port setting. They count different losses with different
 remedies, so a non-zero figure names its own flag:
 
-- `unanalysed_sip_messages` / `unanalysed_busiest_ports` — plain SIP signalling
+- `unanalysed_sip_messages` / `unanalysed_busiest_ports` — plain SIP signaling
   with both ports outside `--portrange`. Re-run with a range that covers the
   ports listed.
 - `unanalysed_websocket_messages` / `unanalysed_websocket_ports` —
@@ -2562,7 +2562,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.104",
+  "version": "0.5.105",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -2599,7 +2599,7 @@ No parameters. Returns:
   "privileged": true,         // running as root
   "libraries": [
     {
-      "flavour": "OpenSSL",
+      "flavor": "OpenSSL",
       "path": "/usr/lib/aarch64-linux-gnu/libssl.so.3",
       "inode": 21143,         // the identity; the PATH is not unique
       "process_count": 12,
@@ -2607,7 +2607,7 @@ No parameters. Returns:
       "probe_path": "/proc/954/root/usr/lib/aarch64-linux-gnu/libssl.so.3"
     },
     {
-      "flavour": "wolfSSL",
+      "flavor": "wolfSSL",
       "path": "/usr/lib/aarch64-linux-gnu/libwolfssl.so.42.2.0",
       "inode": 17433084,
       "process_count": 1,
@@ -2650,12 +2650,12 @@ Call [`list_tls_libraries`](#list-tls-libraries) first.
 
 | Parameter | Type | Default | Meaning |
 |---|---|---|---|
-| `flavours` | array of string | every one found | `openssl`, `wolfssl` |
+| `flavors` | array of string | every one found | `openssl`, `wolfssl` |
 | `libraries` | array of string | discover | probe these paths instead of discovering |
 
 ```jsonc
 // start_tls_capture { }                                  // every library found
-// start_tls_capture { "flavours": ["openssl"] }          // one flavour only
+// start_tls_capture { "flavors": ["openssl"] }          // one flavor only
 // start_tls_capture { "libraries": ["/proc/954/root/usr/lib/libssl.so.3"] }
 {
   "schema_version": 1,
@@ -2789,7 +2789,7 @@ Returns:
   "dialogs_tracked": 2411,
   "streams_tracked": 4802,
   "clock": {
-    "synchronised": true,
+    "synchronized": true,
     "max_error_us": 238000,
     "est_error_us": 0,
     "available": true
@@ -2860,7 +2860,7 @@ Divide by `window.observed_ms`, never by `sample_seconds`. A loaded runtime
 wakes the handler late, and the response reports the wall clock precisely so
 that a rate does not inherit that error.
 
-**Clock discipline.** The response carries a `clock` object — `synchronised`,
+**Clock discipline.** The response carries a `clock` object — `synchronized`,
 `max_error_us`, `est_error_us`, `available` — read from `adjtimex(2)` at report
 time rather than cached at startup, since a host can lose its time source while
 sipnab runs.

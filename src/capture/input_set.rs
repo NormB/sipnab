@@ -21,7 +21,7 @@
 //! traffic before the thirty-four seconds preceding it. Every timing
 //! derivation assumes monotonic timestamps — post-dial delay, setup time,
 //! retransmission detection, and the RFC 3261 Timer B/C/H bounds in the
-//! signalling diagnosis — so a mis-ordered set does not merely look odd, it
+//! signaling diagnosis — so a mis-ordered set does not merely look odd, it
 //! produces confident wrong findings.
 //!
 //! # Identifying a capture file
@@ -89,7 +89,7 @@ pub struct ResolveOptions {
     ///
     /// Both defaults are wrong for somebody, so this picks the one whose
     /// failure is loud. Recursing by default can silently pull in an
-    /// `archive/` or `old/` subdirectory and analyse several times the traffic
+    /// `archive/` or `old/` subdirectory and analyze several times the traffic
     /// the operator pointed at, and nothing in the output would say so.
     /// Refusing to recurse produces an obviously short answer instead.
     pub recursive: bool,
@@ -436,7 +436,7 @@ fn name_matches(pat: &glob::Pattern, path: &Path) -> bool {
         .is_some_and(|n| pat.matches(&n.to_string_lossy()))
 }
 
-/// List the files in a directory, honouring recursion and the name glob.
+/// List the files in a directory, honoring recursion and the name glob.
 fn expand_dir(
     dir: &Path,
     opts: &ResolveOptions,

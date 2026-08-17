@@ -271,7 +271,7 @@ fn comm_of(pid: u32) -> String {
 /// resource, signal readiness once it is actually attached, then loop until
 /// shutdown is requested.
 ///
-/// **Readiness is signalled after the probes and rings exist, not before.** The
+/// **Readiness is signaled after the probes and rings exist, not before.** The
 /// launch sequence waits on that signal before dropping privileges, and probes
 /// need root — reporting ready early would drop privileges out from under the
 /// attach.

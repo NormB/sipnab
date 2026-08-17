@@ -229,8 +229,8 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `-S`, `--limitlen` | `<BYTES>` | -- | Parse only the first N bytes of each packet (sipgrep `-S`). Caps what the SIP parser and matchers inspect, independent of `--snaplen` (capture length) and `--payload-limit` (display truncation) |
 | `--no-reassembly` | -- | off | Disable IP-fragment and TCP-segment reassembly; sipnab parses every packet standalone (inverse of sipgrep `-a`). Useful for pure single-packet UDP scanning |
 | `-x`, `--quiet-bad-parse` | -- | off | Suppress the per-packet "SIP parse error" diagnostic emitted when a SIP-looking packet fails to parse (sipgrep `-x`). sipnab drops the packet either way; this only silences the notice on a noisy link |
-| `--portrange` | `<RANGE>` | `5060-5061` | SIP **signalling** port range. Media is never gated — RTP uses SDP-negotiated dynamic ports. The default is narrow and carriers routinely run SIP on 5070, 5080 and elsewhere, so widen it or analyse a fraction of the file — see the note below |
-| `--ws-portrange` | `<RANGE>` | `80, 443, 8080, 8443` | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)), as one inclusive `START-END` range in the same grammar as `--portrange`. The shipped set is the browser's view of the web, not a deployment's: Kamailio, OpenSIPS and Janus each default to WSS outside it, and behind a reverse proxy sipnab sees whichever port the proxy forwards to — so the whole WebRTC signalling leg stays invisible. A range **replaces** the shipped set, exactly as `--portrange` replaces the default signalling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. Config: `[capture] ws_ports` |
+| `--portrange` | `<RANGE>` | `5060-5061` | SIP **signaling** port range. Media is never gated — RTP uses SDP-negotiated dynamic ports. The default is narrow and carriers routinely run SIP on 5070, 5080 and elsewhere, so widen it or analyze a fraction of the file — see the note below |
+| `--ws-portrange` | `<RANGE>` | `80, 443, 8080, 8443` | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)), as one inclusive `START-END` range in the same grammar as `--portrange`. The shipped set is the browser's view of the web, not a deployment's: Kamailio, OpenSIPS and Janus each default to WSS outside it, and behind a reverse proxy sipnab sees whichever port the proxy forwards to — so the whole WebRTC signaling leg stays invisible. A range **replaces** the shipped set, exactly as `--portrange` replaces the default signaling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. Config: `[capture] ws_ports` |
 | `--multi-device` | -- | off | Open one capture per interface named in a comma-separated `-d` list, e.g. `-d eth0,docker0 --multi-device`. It does **not** enumerate interfaces for you: with a single `-d` (or none) it falls back to an ordinary single capture. On Linux the zero-argument default already sniffs every interface via the `any` pseudo-device |
 | `--no-rtp` | -- | off | Disable RTP capture and analysis |
 | `-p`, `--no-promisc` | -- | off | Do not put the interface into promiscuous mode (sipgrep `-p`). Promisc is on by default for a named device; the `any` pseudo-device is never promiscuous |
@@ -256,7 +256,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > The generated filter adds an encapsulated arm instead, covering one VLAN tag
 > (802.1Q, 802.1ad or 0x9100), QinQ, PPPoE Session, VLAN over PPPoE, and one or
 > two MPLS labels, for IPv4 and IPv6, UDP and TCP. The arm still demands a
-> signalling port, so it matches more of the *same* traffic, not a new class of
+> signaling port, so it matches more of the *same* traffic, not a new class of
 > it: VLAN-tagged RTP reaches sipnab no more often than untagged RTP did.
 >
 > **It covers cooked captures too**, so omitting `-d` costs you nothing. The
@@ -286,7 +286,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > against. Seven offsets get probed on every link type, four of which belong to
 > a different link header. Those four can fire only on a frame that already
 > carries one of the six encapsulating protocols, and only if its bytes at the
-> wrong offset spell a complete IPv4-or-IPv6 header with a signalling port —
+> wrong offset spell a complete IPv4-or-IPv6 header with a signaling port —
 > so the worst case is a stray tagged packet reaching userspace, where the
 > parser rejects it. Ordinary traffic never reaches those probes, because the
 > outer `ether proto` test is exact.
@@ -330,7 +330,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > delay, setup time, retransmission detection, and the [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) Timer B/C/H
 > bounds all assume timestamps only move forward.
 >
-> sipnab recognises a capture by **opening it**, not by its extension —
+> sipnab recognizes a capture by **opening it**, not by its extension —
 > `tg.pcap0` has the extension `pcap0`, and plenty of captures have none at
 > all. It decompresses gzip members transparently, so a directory holding both
 > `.pcap` and `.pcap.gz` needs nothing special.
@@ -341,16 +341,16 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 >
 > **Why it matters beyond tidiness:** reading a split capture as a set is the
 > only way to see a call whose INVITE lands in one file and whose BYE lands in
-> the next. Analysed one file at a time, that call appears as one that never
+> the next. Analyzed one file at a time, that call appears as one that never
 > ends plus a stray BYE, and neither half is the truth. On the 10-file, 921 MB
 > set above, 2271 of 20512 calls — **11%** — spanned a boundary.
 
 > **`-I` and `-d` are alternatives, not companions.** sipnab accepts both, and the FILE wins: sipnab reads it, never opens the interface, and the output looks like a normal run. sipnab warns on stderr when you do this. To switch a file command to live capture, **remove `-I`** rather than adding `-d` beside it.
 
-> **`--portrange` decides how much of the file you analyse.** The default,
+> **`--portrange` decides how much of the file you analyze.** The default,
 > `5060-5061`, is narrow. SIP on other ports is ordinary: carriers and SBCs use
 > 5070, 5080 and others routinely, and a capture from a real trunk commonly
-> carries a large share of its signalling outside the default.
+> carries a large share of its signaling outside the default.
 >
 > Reading a file, sipnab skips any SIP message whose source **and** destination
 > ports both fall outside the range. A skipped message reaches no message count,
@@ -360,7 +360,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > ports so there is something to widen to:
 >
 > ```text
-> NOT ANALYSED: 1 further SIP message(s) were seen on ports outside --portrange
+> NOT ANALYZED: 1 further SIP message(s) were seen on ports outside --portrange
 > and are in none of the totals above. Busiest: 8090 (1). Re-run with
 > --portrange 1-65535 to include them.
 > ```
@@ -375,7 +375,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > recovers it.
 
 > **`NOT DECODED` is the other line to read before the totals.** `--portrange`
-> is about SIP sipnab chose not to analyse; this is about frames it could not
+> is about SIP sipnab chose not to analyze; this is about frames it could not
 > read at all — an unsupported link type, an EtherType carrying no IP, an IP
 > protocol that is no transport, a truncated frame, a decode error. Such a
 > frame counts as a packet (it arrived) and reaches no message, dialog or
@@ -410,18 +410,18 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 - `sipnab -N --input capture.pcap --replay --no-rtp` — replay a pcap at its original timing with RTP capture and analysis disabled
 - `sipnab -N --input /var/captures/ --json-dialogs --no-cli-print` — read every capture in a directory as one timeline, so a call split across the ring buffer resolves to one dialog instead of two fragments
 - `sipnab -N --input /var/captures/ --recursive --input-name '*.pcap.gz' --json-dialogs --no-cli-print` — descend into per-day subdirectories and read only the compressed archives
-- `sipnab -N --input 'captures/tg.pcap[0-4]' --report` — analyse the first five members of a ring buffer with a glob sipnab expands itself, no shell needed
+- `sipnab -N --input 'captures/tg.pcap[0-4]' --report` — analyze the first five members of a ring buffer with a glob sipnab expands itself, no shell needed
 - `sipnab -N --input a.pcap --input b.pcap --json-dialogs --no-cli-print` — read two named captures as a single set, ordered by their packets
 - `sipnab -N --input /var/captures/ --input-name 'edge1-*' --recursive --json` — pick one host's captures out of a tree holding several
 - `sipnab -N --input capture.pcap --limitlen 512 --no-reassembly --quiet-bad-parse` — scan a pcap sipgrep-style: parse only the first 512 bytes of each packet, every packet standalone (no reassembly), without parse-error noise
 - `sudo sipnab --device eth0 --bpf-file sip.bpf --no-promisc --duration 5m` — capture for 5 minutes using a BPF filter read from sip.bpf, without putting the interface into promiscuous mode (sipgrep -p)
-- `sudo sipnab -N --device eth0 --capture-tunnels --buffer 64 --duration 5m` — capture SIP travelling inside GTP-U, VXLAN or GENEVE as well as the encapsulations the auto-filter already covers. This takes **every** packet on ports 2152, 4789 and 6081, so the same command widens the kernel buffer; check the drop counters in the summary before trusting a long run
-- `sudo sipnab -N --device eth0 --capture-tunnels=8472 --portrange 5060-5080 --report` — cover a Linux VXLAN fabric on its pre-IANA port 8472 instead of the three defaults, across a widened signalling range
+- `sudo sipnab -N --device eth0 --capture-tunnels --buffer 64 --duration 5m` — capture SIP traveling inside GTP-U, VXLAN or GENEVE as well as the encapsulations the auto-filter already covers. This takes **every** packet on ports 2152, 4789 and 6081, so the same command widens the kernel buffer; check the drop counters in the summary before trusting a long run
+- `sudo sipnab -N --device eth0 --capture-tunnels=8472 --portrange 5060-5080 --report` — cover a Linux VXLAN fabric on its pre-IANA port 8472 instead of the three defaults, across a widened signaling range
 - `sudo sipnab --device eth0 --portrange 5060-5090 --buffer 8 --buffer-budget 256 --duration 1h` — monitor an hour of traffic across a wide SIP port range with enlarged capture buffers
 - `sipnab -N --input capture.pcap --replay --limitlen 1500 --no-rtp` — replay signaling only from a pcap, parsing at most 1500 bytes of each packet
 - `sudo sipnab --device eth0 --bpf-file sip.bpf --no-promisc --snaplen 9000 --count 500` — stop after 500 packets that pass the sip.bpf filter, non-promiscuous, with the snapshot length sized for jumbo frames
 - `sudo sipnab -N --device eth0 --output capture.pcap --autostop duration:60 --no-reassembly` — write a one-minute capture that treats every packet standalone (IP-fragment and TCP-segment reassembly off)
-- `sipnab -N --input webrtc.pcap --ws-portrange 8081-8081 --portrange 1-65535 --json-dialogs --no-cli-print` — a WSS listener behind a reverse proxy that forwards to 8081: without the range the entire WebRTC signalling leg is invisible, and sipnab reports how many messages it skipped and on which port
+- `sipnab -N --input webrtc.pcap --ws-portrange 8081-8081 --portrange 1-65535 --json-dialogs --no-cli-print` — a WSS listener behind a reverse proxy that forwards to 8081: without the range the entire WebRTC signaling leg is invisible, and sipnab reports how many messages it skipped and on which port
 - `sudo sipnab -d eth0 --ws-portrange 1-65535 --portrange 1-65535` — unwrap SIP-over-WebSocket wherever it appears on a box whose WSS port you do not know yet, then read the skip line to learn which ports were carrying it
 
 
@@ -445,7 +445,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 
 **Read this before using `--dtmf-cleartext`.** DTMF digits keyed after answer are
 PINs, calling-card numbers, account numbers and credit-card numbers with their
-CVVs, and [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733) carries them in the clear no matter how well the signalling
+CVVs, and [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733) carries them in the clear no matter how well the signaling
 layer protected the call. So `-t` alone logs everything you diagnose with — that an event
 arrived, its duration, its SSRC, its timestamp — with the digit value replaced by
 `x`:
@@ -603,7 +603,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet | jq -c 'select(.state == "Failed")'` — one line per failed call, each carrying the code that failed it, instead of every message of every failed dialog
 - `sudo sipnab -d eth0 -N --json-dialogs --no-cli-print --line-buffer > calls.ndjson` — record one summary object per call from live traffic, flushed per line for a downstream collector
 - `sudo sipnab -N -d eth0 --node-name sbc-edge-1 --mcp --mcp-transport http` — one node of a federated setup, naming itself so an agent can attribute each answer to this box rather than another
-- `sudo sipnab -N -d eth0 --node-name pbx-core-2 --report` — override the hostname on a box whose real name should not travel, while still labelling the capture
+- `sudo sipnab -N -d eth0 --node-name pbx-core-2 --report` — override the hostname on a box whose real name should not travel, while still labeling the capture
 - `sipnab -N -I capture.pcap --json-pretty --payload-limit 1000 > messages.json` — export every SIP message from a capture as pretty-printed JSON, truncating displayed payloads to 1000 bytes
 - `sudo sipnab -d eth0 -N --json-pretty --group-by method --line-buffer > live.json` — stream live SIP traffic as pretty-printed JSON grouped by method, flushing after each line for downstream tooling
 - `sipnab -N -I capture.pcap --text-dump --hexdump --proto-number --color never` — dump raw SIP text with hex payloads and IANA protocol numbers, uncolored for log archiving
@@ -627,7 +627,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--no-rotate` | -- | off | Disable rotation: drop *new* dialogs at capacity instead of evicting the oldest (inverts the safe default) |
 | `--dialog-track` | `<METHOD>` | `call-id` | Group messages by `call-id` (one unit per dialog) or `branch` (one per SIP transaction) |
 | `--leg-correlation-window` | `<MS>` | `2000` | How far apart one call's two legs may start and still correlate on TIMING alone. The B2BUA timing heuristic's whole content, and the only strategy left once a B2BUA has rewritten every identifier the other six strategies compare. The shipped two seconds describes a PBX placing the outbound leg immediately, not one doing an LNP or ENUM dip, or walking an LCR cascade, before it places one. Every correlation still reports the strategy that matched, so a widened window does not turn a guess into a claim. Config: `[sip] leg_correlation_window_ms` |
-| `--active-idle-window` | `<SECS>` | `3600` | Seconds a dialog may go untouched and still count toward the active-dialog and active-call gauges every surface publishes. The shipped hour is twice RFC 4028's default `Session-Expires`, which grounds it for a trunk carrying session timers and not for a contact centre, where a caller parked on hold past an hour is a channel in use the gauge stops counting. Widening it widens the opposite error -- a call that never sent its BYE keeps counting for longer, and that one never recovers on its own. Config: `[sip] active_idle_window_secs` |
+| `--active-idle-window` | `<SECS>` | `3600` | Seconds a dialog may go untouched and still count toward the active-dialog and active-call gauges every surface publishes. The shipped hour is twice RFC 4028's default `Session-Expires`, which grounds it for a trunk carrying session timers and not for a contact center, where a caller parked on hold past an hour is a channel in use the gauge stops counting. Widening it widens the opposite error -- a call that never sent its BYE keeps counting for longer, and that one never recovers on its own. Config: `[sip] active_idle_window_secs` |
 | `--no-dialog` | -- | off | Disable dialog tracking entirely (message-only mode) |
 | `--tag` | `<TAG>` | -- | Filter dialogs by tag value |
 
@@ -649,7 +649,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sudo sipnab -d eth0 -N --no-dialog` — watch raw live SIP messages on an interface without keeping any per-dialog state
 - `sipnab -N -I sbc.pcap --leg-correlation-window 8000 --mcp` — correlate the two legs of a call across a B2BUA that dips an ENUM or LNP database before placing the outbound leg, which the shipped two seconds cannot reach
 - `sipnab -N -I gateway.pcap --leg-correlation-window 500 --report` — a PBX that places the outbound leg immediately, where a tighter window stops a busy server's unrelated calls turning into one
-- `sudo sipnab -N -d eth0 --metrics 127.0.0.1:9090 --active-idle-window 14400` — a contact centre parking callers on hold for hours: at the shipped hour the active-call gauge stops counting them, and four hours covers the queue
+- `sudo sipnab -N -d eth0 --metrics 127.0.0.1:9090 --active-idle-window 14400` — a contact center parking callers on hold for hours: at the shipped hour the active-call gauge stops counting them, and four hours covers the queue
 - `sudo sipnab -N -d eth0 --metrics 127.0.0.1:9090 --active-idle-window 300` — a trunk where every call refreshes on a short session timer, so five minutes of silence already means the BYE went missing and counting it longer only inflates the gauge
 
 
@@ -664,14 +664,14 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 **Examples**
 
 - `sudo sipnab -d eth0 --quality-threshold 3.5 --max-streams 10000` — monitor live RTP with MOS alerts below 3.5. sipnab reports stream statistics once, at end of capture. There is no periodic interval report
-- `sipnab -N -I capture.pcap --max-streams 100000` — batch-analyse RTP streams with a raised stream cap. The statistics arrive once, when the capture ends
+- `sipnab -N -I capture.pcap --max-streams 100000` — batch-analyze RTP streams with a raised stream cap. The statistics arrive once, when the capture ends
 - `sipnab -N -I long-call.pcap --max-lost-sequences 100000 --json-dialogs --no-cli-print` — keep every loss from a half-hour call that an operator escalated, so the Packet Loss Map covers the whole call and the burst count is the real one rather than the tail's
 - `sudo sipnab -d eth0 --max-lost-sequences 200` — watch a busy trunk on a small box, holding a fifth of the shipped loss history per stream; the map still shows where loss is landing right now and marks itself truncated
 
 
 ## Diagnosis thresholds
 
-The numbers the signalling and media checks compare against. Each decides
+The numbers the signaling and media checks compare against. Each decides
 whether a call that is working gets reported as broken, so the defaults are
 standards figures for the general case and your own network beats them. Every
 flag has a config key under `[diagnosis]`, and the flag wins.
@@ -699,9 +699,9 @@ flag has a config key under `[diagnosis]`, and the flag wins.
 - `sipnab -N -I pbx.pcap --json-dialogs --cn-suppression-ratio 0.05 --no-cli-print` — the opposite, for a LAN PBX where a call carrying any comfort noise at all is still expected to be bidirectional
 
 
-## Quality colour bands
+## Quality color bands
 
-Where the quality colour column turns yellow, and where it turns red. This is
+Where the quality color column turns yellow, and where it turns red. This is
 a different question from the diagnosis thresholds above: those decide whether
 a working call counts as broken, while these decide only what catches an
 operator's eye during triage. Every flag has a config key under `[quality]`,
@@ -713,14 +713,14 @@ PBX, and 1 percent loss is unremarkable on an international one. A column
 tuned for neither is wrong in both directions.
 
 These bands paint the TUI. A `-N` run prints the measurements themselves
-rather than a colour, so sipnab validates a band set on a non-interactive run
+rather than a color, so sipnab validates a band set on a non-interactive run
 and then never consults it.
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--jitter-warn-ms` | `<MS>` | `30.0` | Jitter at or above which the column turns yellow. Config: `[quality] jitter_warn_ms` |
 | `--jitter-bad-ms` | `<MS>` | `50.0` | Jitter at or above which the column turns red. Config: `[quality] jitter_bad_ms` |
-| `--loss-warn-pct` | `<PCT>` | `1.0` | Loss at or above which the column turns yellow. `0` is a legitimate setting: it means any loss at all is worth a colour. Config: `[quality] loss_warn_pct` |
+| `--loss-warn-pct` | `<PCT>` | `1.0` | Loss at or above which the column turns yellow. `0` is a legitimate setting: it means any loss at all is worth a color. Config: `[quality] loss_warn_pct` |
 | `--loss-bad-pct` | `<PCT>` | `5.0` | Loss at or above which the column turns red. Config: `[quality] loss_bad_pct` |
 | `--mos-warn` | `<MOS>` | `4.0` | MOS below which the column turns yellow. MOS bands run downward, so this must sit at or above `--mos-bad`. Config: `[quality] mos_warn` |
 | `--mos-bad` | `<MOS>` | `3.0` | MOS below which the column turns red. Config: `[quality] mos_bad` |
@@ -740,7 +740,7 @@ report a healthy network in the middle of an outage.
 - `sipnab -I lan-pbx.pcap --jitter-warn-ms 10 --jitter-bad-ms 20` — a LAN PBX, where the shipped 30 ms boundary hides a fault worth chasing
 - `sipnab -I wifi-softphone.pcap --jitter-warn-ms 60 --jitter-bad-ms 120` — the other direction, for a Wi-Fi leg where the defaults paint every healthy call yellow
 - `sipnab -I intl-trunk.pcap --loss-warn-pct 2 --loss-bad-pct 8` — an international trunk, where 1 percent loss is a Tuesday rather than an incident
-- `sipnab -I strict-lan.pcap --loss-warn-pct 0 --loss-bad-pct 1` — the strict form: any loss at all takes a colour
+- `sipnab -I strict-lan.pcap --loss-warn-pct 0 --loss-bad-pct 1` — the strict form: any loss at all takes a color
 - `sipnab -I sat-trunk.pcap --rtt-warn-ms 700 --rtt-bad-ms 1200` — a satellite path, where G.114's terrestrial figures report every call as bad
 - `sipnab -I campus.pcap --rtt-warn-ms 50 --rtt-bad-ms 150` — a campus network, where a 300 ms round trip is already an escalation
 - `sipnab -I hd-codec.pcap --mos-warn 4.3 --mos-bad 3.8` — a wideband codec deployment, where 4.0 is not the good score it is on narrowband
@@ -866,7 +866,7 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--hep-auth` | `<KEY>` | -- | Homer authenticate key (HEP `0x000e` chunk). On `--hep-send` sipnab stamps it on every outgoing packet; on `--hep-listen` it **enables receiver-side authentication** — incoming packets must carry a matching key, which sipnab compares in constant time, or it drops them. Also read from `SIPNAB_HEP_AUTH`. **Security note:** the key travels in cleartext inside the HEP datagram, so it defeats blind/off-path spoofing but an on-path sniffer can capture and replay it. Over an untrusted path, tunnel HEP through WireGuard/IPsec/stunnel (the same posture as terminating API TLS in a reverse proxy) rather than relying on the key alone. Feature: `hep` |
 | `--hep-auth-file` | `<FILE>` | -- | Read the HEP shared secret from a file (contents trimmed), keeping it out of the process list. Takes precedence over `--hep-auth`. Feature: `hep` |
 | `--hep-auth-mode` | `<plain\|hmac>` | `plain` | HEP auth mode. `plain` sends/expects the shared secret verbatim in the 0x000e chunk (Homer-compatible, but replayable by an on-path sniffer). `hmac` sends/expects a per-message token (timestamp + nonce + HMAC-SHA256 over the payload) that resists replay — **sipnab-to-sipnab only**; a stock Homer/Kamailio peer does not understand it. Feature: `hep` |
-| `--hep-hmac-window` | `<SECS>` | `30` | Seconds either side of now within which sipnab still honours a `--hep-auth-mode hmac` token's timestamp. On an agent/collector pair with poor NTP sipnab turns every packet away as out-of-window, and what the operator sees is a collector receiving NOTHING -- a symptom they attribute to routing, a firewall, or a dead agent long before a clock. Widening it is a security trade rather than a convenience: the window is exactly how long a packet an on-path attacker captured stays acceptable, and how far back the receiver's nonce cache must remember. Range 1-300. Config: `[security] hep_hmac_window_secs` Feature: `hep` |
+| `--hep-hmac-window` | `<SECS>` | `30` | Seconds either side of now within which sipnab still honors a `--hep-auth-mode hmac` token's timestamp. On an agent/collector pair with poor NTP sipnab turns every packet away as out-of-window, and what the operator sees is a collector receiving NOTHING -- a symptom they attribute to routing, a firewall, or a dead agent long before a clock. Widening it is a security trade rather than a convenience: the window is exactly how long a packet an on-path attacker captured stays acceptable, and how far back the receiver's nonce cache must remember. Range 1-300. Config: `[security] hep_hmac_window_secs` Feature: `hep` |
 | `-E`, `--hep-parse` | -- | off | Parse incoming HEP packets (enable HEP decoding). Feature: `hep` |
 | `--hep-allow` | `<ADDR>` | -- | Allowed source addresses for HEP input (repeatable). Takes CIDR (`10.0.0.0/8`, `2001:db8::/32`) or a **bare address** (`10.0.0.40`), which means that host alone — `/32` for IPv4, `/128` for IPv6. A missing prefix always narrows, never widens: `10.0.0.0` is one host, not `10.0.0.0/8`. sipnab **refuses** a non-loopback `--hep-listen` bind unless you pass either this or `--hep-auth`/`--hep-auth-file`. Feature: `hep` |
 | `--hep-rate-limit` | `<N>` | `50000` | Maximum HEP packets per second (global ceiling across all senders); `0` disables the global ceiling, consistent with `off` on the per-peer knob Feature: `hep` |
@@ -892,7 +892,7 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 - `sudo sipnab -N -d eth0 --hep-send 192.0.2.10:9060 --hep-id 42 --hep-auth s3cr3t-homer-key` — forward captured packets to a Homer collector, stamping capture-agent id 42 and an authenticate key
 - `sudo sipnab -N -d eth0 --hep-send 198.51.100.20:9060 --hep-id 7 --hep-auth homerkey2` — forward to a second collector under a different agent id and auth key
 - `sudo sipnab -N -d eth0 --hep-send 198.51.100.30:9060 --hep-auth-file /etc/sipnab/hep.key --hep-auth-mode hmac` — replay-resistant forwarding to another sipnab: HMAC-token auth over an untrusted path (both ends must set --hep-auth-mode hmac)
-- `sipnab -N -I archive.pcap --hep-send 127.0.0.1:9060 --hep-id 9` — replay an archived capture into a collector on this host. sipnab warns at startup that the file's signalling leaves the machine, then forwards it
+- `sipnab -N -I archive.pcap --hep-send 127.0.0.1:9060 --hep-id 9` — replay an archived capture into a collector on this host. sipnab warns at startup that the file's signaling leaves the machine, then forwards it
 - `sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --hep-auth-mode hmac` — the matching sipnab-to-sipnab HMAC collector: verifies the per-message token and rejects replays
 - `sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-allow 192.0.2.0/24 --hep-allow 198.51.100.20/32 --hep-rate-limit 20000` — run a HEP collector that parses incoming packets, only from two allowed CIDRs, capped at 20k pkts/sec
 - `sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --hep-rate-limit 40000 --hep-rate-limit-per-peer 5000` — authenticated HEP collector on a routable address: incoming packets must carry the shared secret, with a 5k/s per-peer fairness cap
@@ -920,18 +920,18 @@ opposite on both counts, and forwarding it would make this a call recorder
 pointed at the collector.
 
 On `-I <file>` the same sentence carries a sharper meaning. The messages sipnab
-reads come out of the capture file, so that file's signalling leaves the
+reads come out of the capture file, so that file's signaling leaves the
 machine: request lines, headers, URIs, and any message bodies it holds. sipnab
 redacts nothing and drops nothing beyond what `--portrange` and the matching
 flags already exclude. Testing a HEP pipeline against a customer capture
-therefore ships that customer's signalling to whatever `<ADDR>` names.
+therefore ships that customer's signaling to whatever `<ADDR>` names.
 
 sipnab announces this before it reads the first packet:
 
 ```text
 WARN sipnab::app::bootstrap: --hep-send collector.example:9060 forwards every
 SIP message and every RTCP report this run reads to that address, and this run
-is reading a capture FILE (customer.pcap). The signalling in those captures
+is reading a capture FILE (customer.pcap). The signaling in those captures
 leaves this machine ...
 ```
 
@@ -979,7 +979,7 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 | `--mcp-allow-open-capture` | -- | off | Permit the `open_capture` MCP tool to load a different capture from `--mcp-file-root`, discarding every dialog and stream held. Off by default, so a stock server keeps the capture the command line named. The tool refuses while the source is live or still filling the stores, loads in the background, and mints a new capture identity every later answer carries. Feature: `mcp` |
 | `--mcp-allow-tls-capture` | -- | off | Let an agent install kernel uprobes and read TLS plaintext ([`start_tls_capture`](@/docs/mcp.md), `stop_tls_capture`). **The most consequential opt-in on this surface**: it lets an agent read the plaintext of TLS sessions belonging to processes it does not own, needs the server to still be root, and creates kernel state that outlives a crash. `list_tls_libraries` stays available without it, so an agent can always report what a capture WOULD see. Feature: `mcp` |
 | `--mcp-allow-save-findings` | -- | off | Permit the `save_findings` MCP tool to record an agent's conclusion. The only write verb on sipnab's network surface, and off by default. A finding goes to sipnab's log and nowhere else: no tool reads it back, it appears in no query result, and no analysis consumes it, so it cannot return as evidence in a later answer. Clipped at 500 characters of summary and bounded at 1000 findings per process, both reported rather than silent. Feature: `mcp` |
-| `--retain-audio` | -- | off | Retain RTP audio payload in memory so the `export_audio` MCP tool can decode it. Off by default: call audio is content, not signalling, and holding it is an operator decision rather than a side effect of enabling MCP. Requires `--mcp` — the MCP server is the only batch-mode reader of these buffers. Costs a per-packet payload clone, bounded by `[limits] max_audio_frames` per stream across `--max-streams` streams. Without it `export_audio` refuses and names this flag. Feature: `mcp` |
+| `--retain-audio` | -- | off | Retain RTP audio payload in memory so the `export_audio` MCP tool can decode it. Off by default: call audio is content, not signaling, and holding it is an operator decision rather than a side effect of enabling MCP. Requires `--mcp` — the MCP server is the only batch-mode reader of these buffers. Costs a per-packet payload clone, bounded by `[limits] max_audio_frames` per stream across `--max-streams` streams. Without it `export_audio` refuses and names this flag. Feature: `mcp` |
 
 ## TLS / decryption
 
@@ -995,8 +995,8 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 | `--allow-coredump` | -- | off | Allow core dumps (do not call `prctl` to disable them) |
 | `--uprobe-tls` | -- | off | Read SIP plaintext straight out of the TLS libraries this host is running, using kernel uprobes. **No certificate, no private key, no keylog and no restart** of the process it observes. Probes **every** mapped TLS library rather than one, because an ordinary host runs OpenSSL and wolfSSL together. Needs root (or `CAP_SYS_ADMIN` + `CAP_PERFMON`) and a mounted `tracefs`. Linux only. **Read [the walkthrough](@/docs/uprobe-walkthrough.md) before using this**: it reads the plaintext of every SIP session on the host, and states what that means. Feature: `native` |
 | `--uprobe-library` | `<PATH>` | discovered | Probe this library instead of discovering them; repeatable. Bypasses discovery, so it also reaches a library nothing has mapped **yet**. For a process inside a container, give the path as sipnab sees it: `/proc/<pid>/root/usr/lib/libssl.so.3`. Feature: `native` |
-| `--uprobe-symbol` | `<NAME>` | per flavour | Write symbol to probe. Defaults to the one the library's flavour exports — `SSL_write` for OpenSSL, `wolfSSL_write` for wolfSSL — so you need it only for a library sipnab cannot classify by name. Feature: `native` |
-| `--uprobe-flavour` | `<NAME>` | all | Probe only these flavours (`openssl`, `wolfssl`); repeatable. Feature: `native` |
+| `--uprobe-symbol` | `<NAME>` | per flavor | Write symbol to probe. Defaults to the one the library's flavor exports — `SSL_write` for OpenSSL, `wolfSSL_write` for wolfSSL — so you need it only for a library sipnab cannot classify by name. Feature: `native` |
+| `--uprobe-flavor` | `<NAME>` | all | Probe only these flavors (`openssl`, `wolfssl`); repeatable. Feature: `native` |
 | `--uprobe-list` | -- | off | List the TLS libraries sipnab would probe, then exit **without installing anything in the kernel**. Run this first: it answers the question that decides whether the capture is worth starting. Exits `1` when nothing is visible, so a health check does not read "no TLS library" as success. Feature: `native` |
 | `--uprobe-backend` | `<NAME>` | `tracefs` | Which machinery reads the plaintext. `tracefs` works on any Linux with tracefs mounted and sees **no socket**, so its dialogs name a process rather than a peer. `bpf` pairs each write with its `tcp_sendmsg` and so recovers the **real addresses** — but needs a sipnab built with `--features bpf` and a kernel with `CONFIG_DEBUG_INFO_BTF` (BTF is the BPF Type Format, which tells sipnab where the socket's fields sit on *this* kernel). sipnab refuses `bpf` without those rather than quietly downgrading: the addresses are the only reason to ask for it. Feature: `native` |
 
@@ -1028,9 +1028,9 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 - `sudo sipnab -N -d eth0 --keylog-fd 3 --user sipnab 3< /run/sip.keys` — take the secrets on descriptor 3 opened by the shell, then drop to an unprivileged user for the capture itself; the pipe is already open, so nothing has to be reachable from `/run` afterwards
 - `sudo mkfifo -m 600 /run/sip.keys && sudo sipnab -N -d eth0 --keylog /run/sip.keys --keylog-watch` — the same idea through a named pipe rather than a descriptor, for a producer started separately by systemd; sipnab opens the FIFO while still privileged, before it drops to an unprivileged user and can no longer reach `/run`
 - `sudo sipnab --uprobe-list` — **run this first.** Report which TLS libraries processes on this host are actually mapping, and exit without installing a single probe. Answers the only question that matters before starting: is the daemon you care about using a library sipnab can read?
-- `sudo sipnab --uprobe-list --uprobe-flavour wolfssl` — the same listing narrowed to one flavour, so the output says what *this* command would probe rather than what merely exists
+- `sudo sipnab --uprobe-list --uprobe-flavor wolfssl` — the same listing narrowed to one flavor, so the output says what *this* command would probe rather than what merely exists
 - `sudo sipnab -N --uprobe-tls` — read SIP over TLS with **no certificate, no key and no restart of the SIP daemon**. sipnab probes every mapped TLS library, so one command covers a host running OpenSSL for one daemon and wolfSSL for another
-- `sudo sipnab -N --uprobe-tls --uprobe-flavour openssl` — probe only the OpenSSL side on a mixed host, when the wolfSSL processes are something else entirely and their plaintext is not yours to read
+- `sudo sipnab -N --uprobe-tls --uprobe-flavor openssl` — probe only the OpenSSL side on a mixed host, when the wolfSSL processes are something else entirely and their plaintext is not yours to read
 - `sudo sipnab -N --uprobe-tls --uprobe-library /usr/lib/x86_64-linux-gnu/libssl.so.3` — skip discovery and probe one named library, which is how you attach to a daemon that has not started yet: discovery can only see what is already mapped
 - `sudo sipnab -N --uprobe-tls --uprobe-library /proc/$(docker inspect -f '{{.State.Pid}}' opensips)/root/usr/lib/libssl.so.3` — probe the OpenSSL **inside a container**. The path a container process sees names a different file from sipnab's namespace, so the probe must go through `/proc/<pid>/root` or it silently attaches to the host's copy and captures nothing
 - `sudo sipnab -N --uprobe-tls --uprobe-library /opt/vendor/libtls-custom.so --uprobe-symbol vendor_write` — probe a library sipnab cannot classify by name; without `--uprobe-symbol` it refuses rather than guessing which function to attach to
@@ -1064,7 +1064,7 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--max-reassembly` | `<N>` | `10000` | Maximum concurrent TCP/TLS reassembly sessions |
-| `--reassembly-ttl` | `<SECS>` | `30` | Seconds sipnab holds an incomplete IP datagram or half-read TCP stream before a sweep drops it. `--max-reassembly` bounds how MANY entries sipnab holds and says nothing about how long. Thirty seconds describes IP fragments in flight, and the TCP reassembler inherited it: a persistent SIP/TCP or SIP/TLS trunk to a carrier goes quiet for far longer on any ordinary night, and sweeping its half-read stream means the next segment re-initialises mid-message, so the peer that sent a valid message is the one reported broken. Raise it on such a trunk; `--max-reassembly` caps the extra state either way. Config: `[limits] reassembly_ttl_secs` |
+| `--reassembly-ttl` | `<SECS>` | `30` | Seconds sipnab holds an incomplete IP datagram or half-read TCP stream before a sweep drops it. `--max-reassembly` bounds how MANY entries sipnab holds and says nothing about how long. Thirty seconds describes IP fragments in flight, and the TCP reassembler inherited it: a persistent SIP/TCP or SIP/TLS trunk to a carrier goes quiet for far longer on any ordinary night, and sweeping its half-read stream means the next segment re-initializes mid-message, so the peer that sent a valid message is the one reported broken. Raise it on such a trunk; `--max-reassembly` caps the extra state either way. Config: `[limits] reassembly_ttl_secs` |
 | `--lint-max-per-rule` | `<N>` | `25` | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. Needs `--lint`. Config: `[limits] lint_max_per_rule` |
 | `--cores` | `<N>` | `1` | CPU cores for offline pcap reconstruction (`-I`). 1 = single-threaded; >1 shards by host pair for multi-core throughput (dialog+RTP reconstruction, `--report`/`--json`) |
 | `--max-metadata-file-bytes` | `<BYTES>` | `2147483648` | Bytes of pcapng sipnab reads into memory for embedded names and TLS secrets. A `tcpdump -C` or `dumpcap -b` ring member passes 2 GiB on a host with the RAM to spare, and the refusal is fatal. **A memory-exhaustion guard on untrusted input:** raising it to N lets ONE file claim N bytes of this host's RAM, roughly 2N while `--strip-secrets` writes its copy, on nothing but a file size and before sipnab can tell the file is a capture at all. Raise it for captures you produced. Config: `[limits] max_metadata_file_bytes` |

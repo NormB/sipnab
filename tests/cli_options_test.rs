@@ -1138,7 +1138,7 @@ fn cores_with_a_live_device_warns_that_it_is_ignored() {
     );
     assert!(
         stderr.contains("-I"),
-        "the warning must name the flag that would honour it, got: {stderr}"
+        "the warning must name the flag that would honor it, got: {stderr}"
     );
 }
 
@@ -1159,7 +1159,7 @@ fn cores_with_an_input_file_does_not_warn() {
     assert_eq!(code, 0, "parallel offline reconstruction must succeed");
     assert!(
         !stderr.contains("is ignored"),
-        "the honoured case must stay quiet, got: {stderr}"
+        "the honored case must stay quiet, got: {stderr}"
     );
 }
 

@@ -1215,7 +1215,7 @@ fn a_zero_scanner_threshold_is_refused_by_name() {
     }
 }
 
-// ── [diagnosis] signalling thresholds ───────────────────────────────────
+// ── [diagnosis] signaling thresholds ───────────────────────────────────
 
 /// The declared post-dial delay budget is what decides a slow ring-back.
 ///

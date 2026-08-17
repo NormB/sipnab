@@ -317,7 +317,7 @@ not the absence of the verb."* [`mcp/mod.rs:10-12`](https://github.com/NormB/sip
 longer says "read-only"; it says *"No tool changes the analysis without changing
 its identity"*, and names that as *"narrower than 'read-only', which this doc
 used to claim"*. And the *"systemd owns the capture lifecycle"* sentence is gone
-from [`docs/mcp.md`](../mcp.md). All three were wording, not behaviour — the
+from [`docs/mcp.md`](../mcp.md). All three were wording, not behavior — the
 code was doing the right thing and the prose had fallen behind it; it has since
 caught up.
 
@@ -455,7 +455,7 @@ requirement to satisfy rather than a reason to stop.
 [Invariant 7](../internals/invariants.md) says no MCP tool mutates a store, and
 the analysis above establishes that this is still true of the tree. The first
 write-back tool makes it false. Amend it in the same change, rather than leaving
-a stated invariant the code has quietly stopped honouring.
+a stated invariant the code has quietly stopped honoring.
 
 **What shipped**, against those two requirements and that instruction:
 
@@ -861,7 +861,7 @@ strongest: [`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-
 §§2–4. **One exception survives** — scanner-kill, the only component that
 transmits and the only one with no shared state, tracked as **`PI2`** in
 [`backlog.md`](backlog.md) at P5 and conditional on `--kill-scanner` ceasing
-to be niche. That is the whole of the surviving case; it is not a licence to
+to be niche. That is the whole of the surviving case; it is not a license to
 fork anything else. Related history: `implementation-plan-v6.md` D16 specified
 forked children for scanner-kill *and* the REST API, with acceptance gates
 reading "verified by checking PID differs from main". Neither was built; both
@@ -887,7 +887,7 @@ incompatible with sipnab's MIT-OR-Apache-2.0 redistribution.** The build
 `ar -x`s ntop's object files straight into the shared library, so there is no
 "just the open-source part" package to ship, and the EULA reads *"for your own
 personal, non-commercial use"*. That alone makes the Docker image and the
-`.deb` undistributable. ZC mode additionally needs a paid per-MAC licence.
+`.deb` undistributable. ZC mode additionally needs a paid per-MAC license.
 Moot regardless on two technical counts. Full verdict:
 [`backlog.md`](backlog.md) **`CT10`**.
 
@@ -1016,7 +1016,7 @@ than argue against it:
 - **The offsets cannot be copied from `pcap-sip`.** Its `offsets.rs` is
   GPL-3.0-or-later and sipnab is MIT OR Apache-2.0. sipnab needs its own
   derivation.
-- **There is a licence-clean source for them.** OpenSSL 3.x is **Apache-2.0**
+- **There is a license-clean source for them.** OpenSSL 3.x is **Apache-2.0**
   (confirmed from this host's `libssl3t64` copyright), which is compatible, so
   offsets may be derived from OpenSSL's own struct definitions.
 - **No exported symbol hands the secret over.** `SSL_SESSION_get_master_key`

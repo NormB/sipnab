@@ -39,7 +39,7 @@ arrived, and nothing more.
 
 | Machine | Methods | Terminal states |
 |---|---|---|
-| INVITE | `INVITE`, `ACK`, `BYE`, `CANCEL`, `PRACK` | `InCall`, `Completed`, `Cancelled`, `Failed` |
+| INVITE | `INVITE`, `ACK`, `BYE`, `CANCEL`, `PRACK` | `InCall`, `Completed`, `Canceled`, `Failed` |
 | REGISTER | `REGISTER` | `Registered`, `Failed` |
 | SUBSCRIBE | `SUBSCRIBE` | `Active`, `Terminated` |
 | generic | the other seven | `Completed`, `Failed` |

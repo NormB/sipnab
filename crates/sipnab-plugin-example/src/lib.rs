@@ -92,7 +92,7 @@ pub unsafe extern "C" fn sipnab_dealloc(ptr: i32, len: i32) {
     }
 }
 
-/// Analyse one dialog.
+/// Analyze one dialog.
 ///
 /// # Safety
 /// `ptr`/`len` must describe UTF-8 JSON the host wrote into this module's

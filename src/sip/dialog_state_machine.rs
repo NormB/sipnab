@@ -26,7 +26,7 @@
 //! `CANCEL` means "your cancellation was received", and answering a `BYE`
 //! means "the call you already ended is ended". Route by family alone and
 //! `200 OK (CSeq 1 CANCEL)` lands in the arm that establishes a call — so a
-//! cancelled call reports `InCall`, counted as a live channel. The response's
+//! canceled call reports `InCall`, counted as a live channel. The response's
 //! CSeq method names its transaction (RFC 3261 §8.1.1.5) and that is the
 //! coordinate [`Arrival::Response`] carries.
 //!
@@ -154,7 +154,7 @@ fn invite_undecided(state: &DialogState) -> bool {
         DialogState::Trying | DialogState::Ringing => true,
         DialogState::InCall
         | DialogState::Completed
-        | DialogState::Cancelled
+        | DialogState::Canceled
         | DialogState::Failed
         | DialogState::Redirected
         | DialogState::Registered
@@ -178,7 +178,7 @@ fn invite_live(state: &DialogState) -> bool {
         | DialogState::InCall
         | DialogState::Transferring => true,
         DialogState::Completed
-        | DialogState::Cancelled
+        | DialogState::Canceled
         | DialogState::Failed
         | DialogState::Redirected
         | DialogState::Registered
@@ -191,13 +191,13 @@ fn invite_live(state: &DialogState) -> bool {
 
 /// May a final response to the INVITE still decide this call?
 ///
-/// [`invite_undecided`] plus `Cancelled`: a `2xx` beats a `CANCEL` because
+/// [`invite_undecided`] plus `Canceled`: a `2xx` beats a `CANCEL` because
 /// once the UAS has sent a final `2xx` the `CANCEL` has no effect (RFC 3261
 /// §9.1, §15), and a `487` re-confirms a cancellation the `CANCEL` already
 /// recorded.
 fn invite_answerable(state: &DialogState) -> bool {
     match state {
-        DialogState::Trying | DialogState::Ringing | DialogState::Cancelled => true,
+        DialogState::Trying | DialogState::Ringing | DialogState::Canceled => true,
         DialogState::InCall
         | DialogState::Completed
         | DialogState::Failed
@@ -241,7 +241,7 @@ fn request_cell(
             // INVITE. Unconditional — the CANCEL is proof it was asked, and a
             // 2xx that beat it re-establishes the call through the response
             // half of the table.
-            SipMethod::Cancel => Cell::To(DialogState::Cancelled),
+            SipMethod::Cancel => Cell::To(DialogState::Canceled),
             // RFC 3261 §15.1: a BYE terminates the session.
             SipMethod::Bye => Cell::To(DialogState::Completed),
             // RFC 3515 §2: a REFER inside an established call asks for a
@@ -352,7 +352,7 @@ fn response_cell(
                 Cell::Stay("a challenge is intermediate: the client re-registers with credentials")
             }
             ResponseClass::Provisional => Cell::Stay("a provisional response binds nothing yet"),
-            ResponseClass::Cancelled => {
+            ResponseClass::Canceled => {
                 Cell::Stay("a 487 ends an INVITE transaction; a REGISTER has none")
             }
         },
@@ -366,7 +366,7 @@ fn response_cell(
             ResponseClass::Provisional => {
                 Cell::Stay("a provisional response establishes no subscription yet")
             }
-            ResponseClass::Cancelled => {
+            ResponseClass::Canceled => {
                 Cell::Stay("a 487 ends an INVITE transaction; a subscription has none")
             }
         },
@@ -378,7 +378,7 @@ fn response_cell(
                 Cell::Stay("a challenge is intermediate: the client retries with credentials")
             }
             ResponseClass::Provisional => Cell::Stay("a provisional response settles nothing"),
-            ResponseClass::Cancelled => {
+            ResponseClass::Canceled => {
                 Cell::Stay("a 487 ends an INVITE transaction; this dialog has none")
             }
         },
@@ -416,9 +416,9 @@ fn invite_response_cell(class: ResponseClass, code: u16, state: &DialogState) ->
         }
         // RFC 3261 §15.1.2: the 487 is itself proof the INVITE transaction
         // ended, so having captured the CANCEL is not a precondition.
-        ResponseClass::Cancelled => {
+        ResponseClass::Canceled => {
             if invite_answerable(state) {
-                Cell::To(DialogState::Cancelled)
+                Cell::To(DialogState::Canceled)
             } else {
                 Cell::Stay("once a 2xx established the call a late 487 must not un-answer it")
             }
@@ -473,7 +473,7 @@ mod tests {
         DialogState::Ringing,
         DialogState::InCall,
         DialogState::Completed,
-        DialogState::Cancelled,
+        DialogState::Canceled,
         DialogState::Failed,
         DialogState::Redirected,
         DialogState::Registered,
@@ -615,7 +615,7 @@ mod tests {
             DialogState::Ringing,
             DialogState::InCall,
             DialogState::Completed,
-            DialogState::Cancelled,
+            DialogState::Canceled,
             DialogState::Failed,
             DialogState::Redirected,
             DialogState::Registered,
@@ -714,7 +714,7 @@ mod tests {
                 state,
                 DialogState::InCall
                     | DialogState::Completed
-                    | DialogState::Cancelled
+                    | DialogState::Canceled
                     | DialogState::Failed
                     | DialogState::Redirected
                     | DialogState::Transferring
@@ -768,7 +768,7 @@ mod tests {
 
     /// The 2xx-versus-CANCEL race resolves the way RFC 3261 §9.1 says.
     ///
-    /// A `2xx` to the INVITE from `Cancelled` reaches `InCall` — the callee
+    /// A `2xx` to the INVITE from `Canceled` reaches `InCall` — the callee
     /// picked up before the cancellation landed — and no `487` may then move
     /// the answered call.
     #[test]
@@ -781,7 +781,7 @@ mod tests {
                         cseq_method: Some(&SipMethod::Invite),
                         code,
                     },
-                    &DialogState::Cancelled,
+                    &DialogState::Canceled,
                 ),
                 Cell::To(DialogState::InCall),
                 "a {code} to the INVITE must win the race with a CANCEL"
@@ -833,7 +833,7 @@ mod tests {
                     },
                     state,
                 ),
-                Cell::To(DialogState::Cancelled),
+                Cell::To(DialogState::Canceled),
                 "a CANCEL in {state:?} must cancel the call"
             );
         }

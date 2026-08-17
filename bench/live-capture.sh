@@ -230,7 +230,7 @@ corpus_packets()     { printf '%d\n' $(( $1 * (SIP_PER_CALL + $2) )); }   # call
 corpus_sip_records() { printf '%d\n' $(( $1 * SIP_PER_CALL )); }          # calls
 corpus_rtp_records() { printf '%d\n' $(( $1 * $2 )); }                    # calls rtp
 
-# The signalling phases run at a FIXED 1000 pps (carrier.py:64, applied at
+# The signaling phases run at a FIXED 1000 pps (carrier.py:64, applied at
 # :310 and :339), independent of C. This is why the whole-file average rate is
 # far below the media rate, and why comparing tcpreplay's achieved rate against
 # 100*C marks every row saturated and measures nothing.
@@ -246,7 +246,7 @@ media_span_usec() { # <calls> <concurrency> <rtp-per-call>
 # First-to-last-packet span of the generated pcap, exactly as PcapWriter lays
 # it out (carrier.py:210-228): every write emits at the current clock and then
 # advances it, so the span is the total advance minus the last step, and the
-# last packet is a teardown SIP message at the 1000 us signalling step.
+# last packet is a teardown SIP message at the 1000 us signaling step.
 corpus_span_usec() { # <calls> <concurrency> <rtp-per-call>
   local calls="$1" conc="$2" rtp="$3" sig media
   waves_are_full "$calls" "$conc" >/dev/null || return 1
@@ -310,7 +310,7 @@ effective_pairs() { # <flag> <calls>
 # 10000 .. 10000 + 2P - 1 inclusive.
 bpf_for() { # <effective-stream-pairs>
   local p="$1"
-  req_int "$p" 1 "$EXIT_PREFLIGHT" "bpf_for needs the EFFECTIVE stream-pair pool (>= 1); carrier.py:245-248 normalises 0 to --calls, and deriving from the flag value inverts the portrange"
+  req_int "$p" 1 "$EXIT_PREFLIGHT" "bpf_for needs the EFFECTIVE stream-pair pool (>= 1); carrier.py:245-248 normalizes 0 to --calls, and deriving from the flag value inverts the portrange"
   printf 'udp and (port %d or portrange %d-%d)\n' \
     "$SIP_PORT" "$RTP_PORT_BASE" $(( RTP_PORT_BASE + 2 * p - 1 ))
 }
@@ -672,14 +672,14 @@ residual() { # <rx-packets> <packets-total> <kernel-dropped> <interface-dropped>
 }
 
 # The offered rate has to come from the corpus's OWN timestamps, not from
-# 100*C. carrier.py replays the 7 signalling messages per call at a fixed
+# 100*C. carrier.py replays the 7 signaling messages per call at a fixed
 # 1000 pps (carrier.py:64, :310, :339) and only the media phase at 100*C, so
 # the whole-file average is far below the media rate at every rung -- a 100*C
 # comparison marks every row saturated, including the headline, and the
 # benchmark reports nothing.
 #
 # tcpreplay paces from the pcap timestamps, so a shortfall in the whole-file
-# rate is attributable to the media phase: the signalling phase at 1000 pps is
+# rate is attributable to the media phase: the signaling phase at 1000 pps is
 # free. Inverting for that fraction is a tighter instrument than the whole-file
 # percentage, and it is what the saturation gate uses.
 media_achievement_pct() { # <total-packets> <achieved-pps> <sig-span-usec> <media-span-usec>
@@ -687,7 +687,7 @@ media_achievement_pct() { # <total-packets> <achieved-pps> <sig-span-usec> <medi
     if (A + 0 <= 0) { printf "invalid(achieved rate %s is not positive)\n", A; exit }
     wall = P / A; sig = S / 1000000.0; med = M / 1000000.0
     rem = wall - sig
-    if (rem <= 0) { printf "invalid(replay wall clock %.3fs is shorter than the signalling phase alone, %.3fs)\n", wall, sig; exit }
+    if (rem <= 0) { printf "invalid(replay wall clock %.3fs is shorter than the signaling phase alone, %.3fs)\n", wall, sig; exit }
     printf "%.2f\n", 100.0 * med / rem }'
 }
 
@@ -964,7 +964,7 @@ st_span_is_the_achieved_one() {
   st_eq "S11 headline span(100,100,6000) is 60699000 us" "60699000" "$(corpus_span_usec 100 100 6000)"
   st_eq "S11 media span is rtp/100 s at C=100" "60000000" "$(media_span_usec 100 100 6000)"
   st_eq "S11 media span is rtp/100 s at C=10000" "60000000" "$(media_span_usec 10000 10000 6000)"
-  st_eq "S11 signalling span is 7*calls ms" "700000" "$(sig_span_usec 100)"
+  st_eq "S11 signaling span is 7*calls ms" "700000" "$(sig_span_usec 100)"
 }
 
 # ── the BPF ──
@@ -1510,7 +1510,7 @@ st_softnet_is_system_wide() {
   s=$(printf '%s\n' "00000123 00000004 00000000 00000000" "00000456 00000007 00000000 00000000")
   st_eq "S59 column 2 is summed across CPUs" "11" "$(parse_softnet_dropped "$s")"
   block=$(delivered_plane_block 1000000 0 0 0 0 "418 1" 11)
-  st_has "S59 the cell is labelled system-wide" "system-wide" "$block"
+  st_has "S59 the cell is labeled system-wide" "system-wide" "$block"
   st_hasnt "S59 it is never attributed to the interface" "$VETH_RX softnet" "$block"
 }
 
@@ -1588,7 +1588,7 @@ st_refutation_is_a_success() {
 
 st_media_rate_is_derived_from_the_corpus() {
   # The whole reason the nominal cannot be 100*C: carrier.py replays the seven
-  # signalling messages per call at a fixed 1000 pps.
+  # signaling messages per call at a fixed 1000 pps.
   local span pkts nominal pct
   span=$(corpus_span_usec 100 100 6000)
   pkts=$(corpus_packets 100 6000)
@@ -1602,7 +1602,7 @@ st_media_rate_is_derived_from_the_corpus() {
   st_eq "S-rate a half-speed media phase reads 50%" "50.00" "$pct"
   st_has "S-rate a non-positive rate is invalid()" "invalid(" \
     "$(media_achievement_pct 600700 0 700000 60000000)"
-  st_has "S-rate a wall shorter than signalling is invalid()" "invalid(" \
+  st_has "S-rate a wall shorter than signaling is invalid()" "invalid(" \
     "$(media_achievement_pct 600700 999999999 700000 60000000)"
 }
 
@@ -2195,7 +2195,7 @@ run_once() { # <phase-id> <bpf> <duration> <buffer-mb> <budget-mb> <report> <pac
   kill "$SAMPLER_PID" 2>/dev/null; wait "$SAMPLER_PID" 2>/dev/null; SAMPLER_PID=""
 
   # The 1 Hz series is evidence that the plane stayed up for the whole run; the
-  # READING is the quiesce scrape above, and the two are labelled apart.
+  # READING is the quiesce scrape above, and the two are labeled apart.
   RUN_SCRAPE_SAMPLES=$(find "$scrapedir" -name 'scrape.*' ! -name '*.t' -size +0 | wc -l)
 
   # Bounded: sipnab self-terminates on --duration, but a capture that stops
@@ -2279,7 +2279,7 @@ rung_row_block() { # <phase-id> <axis> <C> <verdict> <plan text>
   printf '  tcpreplay successful  %s\n' "$RUN_TCP_OK"
   printf '  tcpreplay failed      %s\n' "$RUN_TCP_FAILED"
   printf '  tcpreplay rated       %s pps\n' "$RUN_TCP_PPS"
-  printf '  offered media rate    %s pps (%s Mbps) -- the media phase only; carrier.py replays signalling at a fixed 1000 pps (carrier.py:64)\n' \
+  printf '  offered media rate    %s pps (%s Mbps) -- the media phase only; carrier.py replays signaling at a fixed 1000 pps (carrier.py:64)\n' \
     "$(rung_rate "$c")" "$(rung_mbps "$c")"
   printf '  media achievement     %s %% of the offered media rate\n' "$RUN_MEDIA_PCT"
   printf '  %s tx_packets      %s\n' "$VETH_TX" "$RUN_TX_PACKETS"
@@ -2334,7 +2334,7 @@ run_phase() { # <phase-id> <axis> <C> <rtp> <call-ids> <stream-pairs> <buffer> <
                 "$packets" "$sipn" "$rtpn" "$CORPUS_REAL_BYTES" "$bytes" "$CORPUS_SHA"
          printf 'corpus argv: %s\n' "$CORPUS_ARGV"
          printf 'generation took %s s (carrier.py is pure-Python struct.pack per packet)\n' "$CORPUS_GEN_S"
-         printf 'span %s us (signalling %s us at a fixed 1000 pps, media %s us), sipnab --duration %ss\n' \
+         printf 'span %s us (signaling %s us at a fixed 1000 pps, media %s us), sipnab --duration %ss\n' \
                 "$span" "$sig" "$med" "$dur"
          printf 'BPF (mandatory, trailing positional): %s\n' "$bpf"
          printf 'method: one discarded warm-up, %s timed runs; rates are the median, drops and peak RSS the maximum\n' "$OPT_RUNS")

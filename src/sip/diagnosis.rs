@@ -1,4 +1,4 @@
-//! Signalling-side problem diagnosis.
+//! Signaling-side problem diagnosis.
 //!
 //! The complement to [`crate::rtp::diagnosis`], which does this job for media.
 //! That module can already say a call had one-way audio or a NAT mismatch; this
@@ -132,7 +132,7 @@ pub struct AckMissing {
 /// Why a dialog never reached a final response.
 ///
 /// The two cases are reported separately because only one of them is a
-/// statement about the call. `Cancelled` is a fact — someone sent a `CANCEL`.
+/// statement about the call. `Canceled` is a fact — someone sent a `CANCEL`.
 /// `NoFinalResponse` is a statement about the *capture*, and conflating them
 /// would turn "the recording stopped" into "the call failed", which is the
 /// specific lie this detection exists to avoid.
@@ -140,7 +140,7 @@ pub struct AckMissing {
 #[serde(rename_all = "snake_case")]
 pub enum AbandonedKind {
     /// A `CANCEL` was sent before any final response — the caller hung up.
-    Cancelled,
+    Canceled,
     /// No final response was observed. **Not a failure.** The capture may have
     /// ended mid-call, or the call may still be ringing.
     NoFinalResponse,
@@ -291,7 +291,7 @@ impl SignalingThresholds {
 /// [`crate::provenance::set_node_name`]: the value is a property of the run.
 static CONFIGURED: std::sync::OnceLock<SignalingThresholds> = std::sync::OnceLock::new();
 
-/// Declare the signalling thresholds for this process. Call once, at startup.
+/// Declare the signaling thresholds for this process. Call once, at startup.
 ///
 /// # Side effects
 ///
@@ -357,7 +357,7 @@ pub struct IcmpUnreachable {
     pub evidence: Vec<usize>,
 }
 
-/// One dialog's signalling diagnosis.
+/// One dialog's signaling diagnosis.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SignalingDiagnosis {
     /// Detection 1 — the dialog ended on a `4xx`/`5xx`/`6xx`.
@@ -368,7 +368,7 @@ pub struct SignalingDiagnosis {
     pub retransmissions: Option<Retransmissions>,
     /// Detection 4 — an answered `INVITE` that was never acknowledged.
     pub ack_missing: Option<AckMissing>,
-    /// Detection 5 — cancelled, or never answered at all.
+    /// Detection 5 — canceled, or never answered at all.
     pub abandoned: Option<Abandoned>,
     /// Detection 6 — slow ring-back.
     pub post_dial_delay: Option<PostDialDelay>,
@@ -434,7 +434,7 @@ const RETRANSMIT_MIN_COUNT: usize = 3;
 /// unreadable in a signature.
 type TransactionKey = (u32, String, String);
 
-/// Diagnose the signalling side of one dialog.
+/// Diagnose the signaling side of one dialog.
 ///
 /// Takes the dialog's messages in capture order; every evidence index returned
 /// points into that slice. Detections 1-7 are pure functions of `messages`,
@@ -460,7 +460,7 @@ pub fn diagnose_signaling(messages: &[SipMessage]) -> SignalingDiagnosis {
     diagnose_signaling_with(messages, &configured())
 }
 
-/// Diagnose the signalling side of one dialog against explicit thresholds.
+/// Diagnose the signaling side of one dialog against explicit thresholds.
 ///
 /// [`diagnose_signaling`] is this with [`configured`], which is what every
 /// surface calls; this exists for a caller who knows their own network's
@@ -773,7 +773,7 @@ fn detect_ack_missing(
     });
 }
 
-/// Detection 5 — cancelled, or never answered at all.
+/// Detection 5 — canceled, or never answered at all.
 ///
 /// The two cases are one detection because they are one question — "why is
 /// there no outcome?" — and two variants because only one of them is an answer.
@@ -823,10 +823,10 @@ fn detect_abandoned(
     let (kind, evidence) = match cancel {
         Some(idx) => {
             diag.hints.push(format!(
-                "Call cancelled by the caller after {:.1}s, before any final response.",
+                "Call canceled by the caller after {:.1}s, before any final response.",
                 elapsed_sec(messages, invite, idx)
             ));
-            (AbandonedKind::Cancelled, vec![idx])
+            (AbandonedKind::Canceled, vec![idx])
         }
         None => {
             let silent_for = elapsed_sec(messages, invite, last);
@@ -858,7 +858,7 @@ fn detect_abandoned(
 /// nothing to suggest the call is progressing, and hangs up — so a network can
 /// score well on answer-seizure ratio while its users believe it is broken.
 ///
-/// `100 Trying` is excluded. It is hop-by-hop acknowledgement that a proxy took
+/// `100 Trying` is excluded. It is hop-by-hop acknowledgment that a proxy took
 /// the request (RFC 3261 §8.2.6), inaudible to the caller, and counting it
 /// would measure the first proxy's responsiveness rather than the call's.
 fn detect_post_dial_delay(
@@ -1800,7 +1800,7 @@ mod tests {
         );
     }
 
-    // -- detection 5: abandoned / cancelled -------------------------------
+    // -- detection 5: abandoned / canceled -------------------------------
 
     fn cancel(cseq: u32) -> String {
         format!(
@@ -1821,10 +1821,10 @@ mod tests {
             msg_at(&response(180, "Ringing", ""), 1),
             msg_at(&cancel(1), 9),
         ]);
-        let a = d.abandoned.expect("cancelled before any final response");
-        assert_eq!(a.kind, AbandonedKind::Cancelled);
+        let a = d.abandoned.expect("canceled before any final response");
+        assert_eq!(a.kind, AbandonedKind::Canceled);
         assert_eq!(a.evidence, vec![2]);
-        assert!(d.hints.iter().any(|h| h.contains("cancelled")));
+        assert!(d.hints.iter().any(|h| h.contains("canceled")));
     }
 
     /// The detection the spec calls "most likely to lie if written carelessly".
@@ -2326,7 +2326,7 @@ mod tests {
 
         let mut d = base.clone();
         d.abandoned = Some(Abandoned {
-            kind: AbandonedKind::Cancelled,
+            kind: AbandonedKind::Canceled,
             elapsed_sec: 9.0,
             evidence: vec![2],
         });

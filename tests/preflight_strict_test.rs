@@ -583,7 +583,7 @@ fn no_git_stops_the_run_rather_than_measuring_the_wrong_tree() {
 }
 
 /// And with git present it still moves to the root, from wherever it was
-/// started — the behaviour the broken guard was hiding.
+/// started — the behavior the broken guard was hiding.
 #[test]
 fn the_run_moves_to_the_repository_root() {
     let run = Case::new(&["repo-root"])

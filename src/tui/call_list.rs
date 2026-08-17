@@ -5,7 +5,7 @@
 //! Displays all tracked SIP dialogs in a table with columns for index,
 //! method, from/to users, source/destination addresses, state, message
 //! count, duration, and PDD. Rows are color-coded by dialog state, and the
-//! State cell carries a `⚠` marker when the dialog has a signalling
+//! State cell carries a `⚠` marker when the dialog has a signaling
 //! diagnosis — a final failure, an authentication loop, or an unanswered
 //! retransmission.
 //!
@@ -487,17 +487,17 @@ pub fn displayed_dialogs<'a>(
 
 /// Render the call list table into the given area.
 ///
-/// The text colour to draw on a filled header band, or `None` when the band
+/// The text color to draw on a filled header band, or `None` when the band
 /// is not filled at all.
 ///
 /// `Color::Reset` means "the terminal's own background", so there is nothing
 /// to contrast against and nothing should be emitted — that is the NO_COLOR
 /// theme, where drawing a foreground would defeat the point.
 ///
-/// For a real colour, black or white is chosen by perceived luminance
+/// For a real color, black or white is chosen by perceived luminance
 /// (Rec. 601 weights: green dominates, blue barely registers), which is the
 /// same rule browsers and terminals use to keep text readable on an arbitrary
-/// swatch. The named ANSI colours are mapped to their conventional sRGB values
+/// swatch. The named ANSI colors are mapped to their conventional sRGB values
 /// rather than guessed, and the bright variants count as light.
 pub(crate) fn header_foreground(bg: Color) -> Option<Color> {
     let (r, g, b) = match bg {
@@ -519,7 +519,7 @@ pub(crate) fn header_foreground(bg: Color) -> Option<Color> {
         Color::LightCyan => (85, 255, 255),
         Color::White => (255, 255, 255),
         Color::Rgb(r, g, b) => (r, g, b),
-        // An indexed colour has no portable RGB here. White-on-dark is the
+        // An indexed color has no portable RGB here. White-on-dark is the
         // safer default for the 16-255 range, which is mostly mid-to-dark.
         Color::Indexed(_) => return Some(Color::White),
     };
@@ -606,18 +606,18 @@ pub fn render_call_list(
     // The entire area is used for the table (no title line)
     let table_area = area;
 
-    // Bold, on the header colour, with a foreground CHOSEN AGAINST IT.
+    // Bold, on the header color, with a foreground CHOSEN AGAINST IT.
     //
     // This used to set a background and no foreground, so the labels inherited
-    // whatever the terminal's default text colour was — light grey on most —
-    // and the header band rendered as near-illegible grey-on-cyan. It is
+    // whatever the terminal's default text color was — light gray on most —
+    // and the header band rendered as near-illegible gray-on-cyan. It is
     // visible in every demo recording on the homepage.
     //
     // The foreground cannot be hardcoded. `theme.header` is user-configurable
-    // and is `Color::Reset` in the NO_COLOR theme, where emitting any colour
+    // and is `Color::Reset` in the NO_COLOR theme, where emitting any color
     // at all would be wrong; a fixed black would also vanish against a dark
     // custom header. So it is derived from the background: no background means
-    // no foreground either (bold alone carries it), and a real colour gets
+    // no foreground either (bold alone carries it), and a real color gets
     // black or white by luminance.
     let header_style = match header_foreground(theme.header) {
         Some(fg) => Style::default()
@@ -836,7 +836,7 @@ pub fn render_call_list(
                             .label_ip(dialog.dst_addr, display.name_mode),
                         laid_out_width(&all_widths, 5),
                     ))),
-                    // State, plus a signalling-diagnosis marker when one fired.
+                    // State, plus a signaling-diagnosis marker when one fired.
                     //
                     // The marker shares the State cell rather than taking a
                     // twelfth column: a new column would mean widening
@@ -852,7 +852,7 @@ pub fn render_call_list(
                     //
                     // Width: State is 12, and the badge costs 2. Every state
                     // except `Transferring` (exactly 12) leaves room; a
-                    // transferring dialog that also has a signalling finding is
+                    // transferring dialog that also has a signaling finding is
                     // the one combination where ratatui will clip the marker.
                     // Accepted over widening every layout for a case that needs a
                     // transfer in flight and a failed transaction at once.
@@ -893,7 +893,7 @@ pub fn render_call_list(
             let row_style = match dialog.state() {
                 DialogState::Failed => Style::default().fg(theme.bad),
                 DialogState::InCall | DialogState::Active => Style::default().fg(theme.good),
-                DialogState::Cancelled => Style::default().fg(theme.warning),
+                DialogState::Canceled => Style::default().fg(theme.warning),
                 _ => Style::default(),
             };
 
@@ -929,7 +929,7 @@ pub fn render_call_list(
 
 // ── Column width calculation ───────────────────────────────────────
 
-/// Whether a dialog has any signalling finding worth marking on its row.
+/// Whether a dialog has any signaling finding worth marking on its row.
 ///
 /// Separate from the diagnosis itself so the render path asks one boolean
 /// question and nothing in the hot loop formats a string it will not use. The
@@ -1124,7 +1124,7 @@ pub(in crate::tui) fn state_display_labeled(
         DialogState::Ringing => "Ringing",
         DialogState::InCall => "InCall",
         DialogState::Completed => "Completed",
-        DialogState::Cancelled => "Cancelled",
+        DialogState::Canceled => "Canceled",
         DialogState::Failed => failed_label,
         DialogState::Redirected => "Redirected",
         DialogState::Registered => "Registered",
@@ -1288,7 +1288,7 @@ fn state_style(state: &DialogState, theme: &super::Theme) -> Style {
     match state {
         DialogState::Failed => Style::default().fg(theme.bad).add_modifier(Modifier::BOLD),
         DialogState::InCall | DialogState::Active => Style::default().fg(theme.good),
-        DialogState::Cancelled => Style::default().fg(theme.warning),
+        DialogState::Canceled => Style::default().fg(theme.warning),
         DialogState::Completed | DialogState::Registered => Style::default().fg(theme.header),
         _ => Style::default(),
     }
@@ -1389,7 +1389,7 @@ mod tests {
     /// `None` drops the column outright — the row loses the header AND reclaims
     /// the spacing — which is why the constraint list is `Option<Constraint>`.
     /// This sweeps every width a terminal can plausibly be, because the defect
-    /// lived in a narrow band nobody had modelled rather than at an obvious
+    /// lived in a narrow band nobody had modeled rather than at an obvious
     /// boundary.
     #[test]
     fn no_terminal_width_produces_a_zero_width_column() {
@@ -1436,18 +1436,18 @@ mod tests {
     /// invariant that makes the request honest, and
     /// `demo_terminal_renders_every_sip_method_whole` in
     /// `tests/site_journey_test.rs` for what actually reaches the screen.
-    /// The header band must never draw text in the terminal's default colour
+    /// The header band must never draw text in the terminal's default color
     /// on top of a filled background.
     ///
     /// It did exactly that: `Style::default().bg(theme.header)` with no `.fg`,
-    /// so the labels inherited the terminal foreground — light grey on most —
-    /// and rendered as grey-on-cyan. Visible in every homepage demo.
+    /// so the labels inherited the terminal foreground — light gray on most —
+    /// and rendered as gray-on-cyan. Visible in every homepage demo.
     ///
     /// Asserts the CHOICE, and the companion below asserts what reaches the
     /// screen; a style that is right in isolation can still be overdrawn.
     #[test]
     fn a_filled_header_band_always_gets_a_foreground() {
-        // A filled band must name its own text colour.
+        // A filled band must name its own text color.
         for bg in [
             Color::Cyan,
             Color::Blue,
@@ -2214,7 +2214,7 @@ mod tests {
         assert_eq!(reloaded.visible_columns, state.visible_columns);
     }
 
-    /// The row marker fires on a signalling finding and stays off otherwise.
+    /// The row marker fires on a signaling finding and stays off otherwise.
     ///
     /// Tested through `signaling_marker` rather than by rendering a frame: what
     /// this owes verifying is the predicate driving the glyph. The snapshot suite

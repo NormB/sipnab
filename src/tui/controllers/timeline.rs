@@ -166,7 +166,7 @@ mod tests {
     /// every field a wheel arm in that dispatcher can write — the four
     /// selections and the five scroll offsets — and requires all of them
     /// unmoved. That is what makes it catch the realistic regression: the arm
-    /// being folded into a neighbour's, or replaced by a `_ =>` catch-all,
+    /// being folded into a neighbor's, or replaced by a `_ =>` catch-all,
     /// scrolls SOMETHING, and it would be another view's state that moved.
     ///
     /// The call-list selection is deliberately moved off row 0 first. Left at

@@ -37,7 +37,7 @@ fn build_example() -> PathBuf {
     //
     // Every test here needs the artifact, and libtest runs them in parallel —
     // so the first version fired five concurrent `cargo build`s at the same
-    // target directory. They serialise on cargo's package-cache lock, but the
+    // target directory. They serialize on cargo's package-cache lock, but the
     // artifact check does not: one test can stat the path while another
     // build is still putting it there, which fails as "build reported success
     // but produced no artifact". It passed on Linux and failed on macOS, which

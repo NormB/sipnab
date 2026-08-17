@@ -84,7 +84,7 @@ fn workflow_step_body(workflow: &str, step_name: &str) -> String {
 /// Run a workflow step's `run:` script against deliberately-wrong input and
 /// assert it exits non-zero.
 ///
-/// This is the only assertion here that tests the behaviour rather than the
+/// This is the only assertion here that tests the behavior rather than the
 /// text. Structural checks — no `continue-on-error`, an `exit 1` present, an
 /// `::error::` followed by an exit — each anchor on a pattern the author can
 /// simply not use: downgrading `::error::` to `::warning::` and dropping the
@@ -509,14 +509,14 @@ fn homepage_mcp_examples_match_their_generated_source() {
 /// Separate from the equality test above on purpose: that one proves the page
 /// matches the generated file, and would stay green if the tool started
 /// answering something else entirely and the file was regenerated to match. A
-/// verdict that stopped saying `signalling`, evidence that stopped reporting
+/// verdict that stopped saying `signaling`, evidence that stopped reporting
 /// `verified`, or a correlation that stopped admitting `heuristic_only` would
 /// each make the surrounding copy false while every file agreed with every
 /// other file.
 #[test]
 fn each_mcp_example_still_carries_the_claim_the_page_makes_about_it() {
     for (name, pointer, want) in [
-        ("triage", "/verdict", "signalling"),
+        ("triage", "/verdict", "signaling"),
         ("lint", "/section", "12.1.1"),
         ("evidence", "/frames/0/status", "verified"),
         ("correlate", "/legs/0/strategy", "timing_heuristic"),
@@ -1111,7 +1111,7 @@ fn published_macos_floors_match_the_toolchain() {
         );
 
         // A pinned floor BELOW the compiler's own default would be a claim the
-        // binary cannot honour: rustc will not emit code for an older OS than it
+        // binary cannot honor: rustc will not emit code for an older OS than it
         // targets, so the tarball would not run where the page says it does.
         // Above the default is legitimate (deliberately dropping old releases).
         let out = std::process::Command::new("rustc")
@@ -2955,9 +2955,9 @@ fn inline_script_edits_require_csp_hash_refresh() {
             // rendered page). That is fine and already the norm — the csp job
             // in pages.yml runs refresh_csp_hashes.py against the deployed
             // artifact, so Cloudflare gets the rendered hash. This pin is only
-            // an acknowledgement gate for template edits.
+            // an acknowledgment gate for template edits.
             "index.html",
-            "sha256-AkpDtXHMdSTftlt8nnI3WVOxg8v9pAfQN/aJ2dj71FA=",
+            "sha256-vH2HCfsVXRYrZJIukQtca0VioLi/kTLNQOdw2o2/axU=",
         ),
         (
             "page.html",
@@ -3062,7 +3062,7 @@ fn hero_swap_keeps_the_static_frame_as_the_lcp_element() {
 
     assert!(
         html.contains("prefers-reduced-motion: reduce"),
-        "the swap must honour prefers-reduced-motion — the animation loops \
+        "the swap must honor prefers-reduced-motion — the animation loops \
          forever, which is what someone setting that asked not to receive"
     );
     assert!(
@@ -4201,7 +4201,7 @@ fn the_analyze_page_accepts_every_capture_the_cli_reads() {
         // Microsoft NetMon 2.0 ("GMBU"). Two such samples are kept as
         // deliberate negative fixtures — libpcap cannot open them either, and
         // pcap_reader.rs asserts sipnab says so clearly. The browser refusing
-        // them is the CLI's behaviour, not a gap.
+        // them is the CLI's behavior, not a gap.
         //
         // Skipped by magic rather than by filename so a third NetMon sample
         // does not silently fail this, and without going through `input_set`,
@@ -4638,7 +4638,7 @@ fn the_csp_refresher_rewrites_the_reference_headers_file_with_hashes_not_unsafe_
     assert!(
         script_src.contains(&csp_token(body).as_str()),
         "the written policy must pin the built site's inline script by hash, \
-         or the host that honours this file blocks it: script-src = {script_src:?}"
+         or the host that honors this file blocks it: script-src = {script_src:?}"
     );
     assert!(
         !script_src.contains(&"'unsafe-inline'"),
@@ -4687,7 +4687,7 @@ fn the_analyze_page_opens_captures_inside_archives() {
 
     assert!(
         js.contains("return \"zip\"") && js.contains("return \"tar\""),
-        "analyze.js no longer recognises zip/tar containers"
+        "analyze.js no longer recognizes zip/tar containers"
     );
     for helper in [
         "function zipEntries",
@@ -4751,7 +4751,7 @@ fn the_analyze_page_asks_for_a_bug_report_only_when_it_earned_one() {
     // Comment lines are stripped first. The fix's own comment quotes the old
     // wording, and scanning the raw file matched THAT — a gate reading prose
     // about the code instead of the code, which is how a gate passes or fails
-    // for reasons unrelated to behaviour.
+    // for reasons unrelated to behavior.
     let js: String = read("website/static/js/analyze.js")
         .lines()
         .filter(|l| !l.trim_start().starts_with("//"))

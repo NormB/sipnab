@@ -441,7 +441,7 @@ fn dialog_rotation_defaults_on_keep_newest() {
 // ---------------------------------------------------------------------------
 // Flags that the coverage ratchet counted as tested because their names
 // appeared in a COMMENT somewhere under tests/. Five flags were covered that
-// way; these are the real behaviour tests that replace the prose.
+// way; these are the real behavior tests that replace the prose.
 // ---------------------------------------------------------------------------
 
 #[path = "support/pcap_build.rs"]
@@ -1094,7 +1094,7 @@ fn startup_failures_after_the_capture_thread_starts_exit_cleanly() {
 /// `--token-scope metrics` mints a token the verifier treats as scrape-only,
 /// and `--token-scope full` (the default) mints one that is not.
 ///
-/// The library tests prove the verifier honours the claim and the API tests
+/// The library tests prove the verifier honors the claim and the API tests
 /// prove the routes demand it; this covers the wiring in between — the CLI flag
 /// reaching `auth::mint`. A flag that never reached it would mint `full` tokens
 /// while the operator believed they were scoping them, which is the failure
@@ -1471,7 +1471,7 @@ fn cores_refuses_the_outputs_it_cannot_produce() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             stderr.contains(flag) && stderr.contains("cannot produce"),
-            "the refusal must name the flag it cannot honour, so the operator \
+            "the refusal must name the flag it cannot honor, so the operator \
              knows which one to drop; got:\n{stderr}"
         );
     }
@@ -1510,7 +1510,7 @@ fn cores_still_produces_the_whole_capture_views() {
 /// run can reach. A flag that parses and silently does nothing is the
 /// `--alert` defect class; clap's `requires = "mcp"` makes the combination
 /// unrepresentable, and this pins the refusal as the process's actual
-/// behaviour — exit non-zero, and an error that names the missing flag so
+/// behavior — exit non-zero, and an error that names the missing flag so
 /// the operator learns the remedy rather than just the rejection.
 #[test]
 fn retain_audio_without_mcp_is_refused_with_the_remedy_named() {

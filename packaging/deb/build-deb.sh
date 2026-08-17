@@ -73,7 +73,7 @@ if [ -z "${SIPNAB_BIN:-}" ]; then
 fi
 cp man/sipnab.1 "$PKG_DIR/usr/share/man/man1/"
 gzip -9 "$PKG_DIR/usr/share/man/man1/sipnab.1"
-# Licence and attribution. MIT and Apache-2.0 both require the notice to travel
+# License and attribution. MIT and Apache-2.0 both require the notice to travel
 # with the binary, and libasound (reached via the audio plugin) is
 # LGPL-2.1-or-later, so the third-party notices are an obligation rather than a
 # nicety. The package shipped none of this before.
@@ -106,7 +106,7 @@ $RECOMMENDS_LINE}
 Maintainer: Norm Brandinger <n.brandinger@gmail.com>
 Description: SIP & RTP capture, analysis, and security
  One static binary that reads a whole estate: Kamailio, OpenSIPS and
- Asterisk mirror their signalling to a sipnab HEP listener, so one
+ Asterisk mirror their signaling to a sipnab HEP listener, so one
  process covers every node with no collector, no database and no web UI.
  Adds first-class RTP support, VoIP diagnosis, security analysis, and
  a declarative filter DSL.

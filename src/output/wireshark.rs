@@ -71,9 +71,9 @@ pub fn dsl_to_wireshark(filter: &str) -> Result<String> {
 
             // Check word boundary on the adjacent *chars*, not raw bytes. The
             // match is ASCII (so `abs_pos`/`end_pos` are char boundaries), but
-            // the neighbours may be multibyte: casting a single byte to `char`
+            // the neighbors may be multibyte: casting a single byte to `char`
             // misreads a UTF-8 continuation/lead byte (e.g. 0x86 of 'φ') and
-            // misclassifies the boundary. Decode the actual neighbouring char.
+            // misclassifies the boundary. Decode the actual neighboring char.
             let before_ok = result[..abs_pos]
                 .chars()
                 .next_back()

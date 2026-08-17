@@ -3,7 +3,7 @@
 //! ICMP evidence, proved against REAL captures.
 //!
 //! The defect this guards was found by counting: `tshark` dissects 2,598 SIP
-//! frames in one corpus file and sipnab analysed 1,902 — a 26.8% deficit that
+//! frames in one corpus file and sipnab analyzed 1,902 — a 26.8% deficit that
 //! matched the file's ICMP count exactly. Every one of those was an ICMP error
 //! quoting a SIP request that sipnab never looked inside, on calls it then
 //! reported as unanswered with no explanation.
@@ -80,7 +80,7 @@ struct Counts {
 /// Read one capture, counting SIP messages exactly as the pipeline does.
 ///
 /// ICMP evidence is recorded as a side effect of `parse_packet`, which is the
-/// behaviour under test — so this deliberately drives the same entry point the
+/// behavior under test — so this deliberately drives the same entry point the
 /// binary drives rather than calling the ICMP parser directly.
 fn read(path: &Path) -> Option<Counts> {
     let data = std::fs::read(path).ok()?;
@@ -190,7 +190,7 @@ fn the_corpus_icmp_errors_quoting_sip_are_read() {
 ///
 /// The feature rests on "a quote is evidence about a message, not a message".
 /// If that ever stops being true, every total sipnab prints inflates and the
-/// `analysed + skipped` reconciliation stops meaning what it says. The check
+/// `analyzed + skipped` reconciliation stops meaning what it says. The check
 /// is direct: count the corpus with the evidence store armed and again with it
 /// cleared, and require the counts to be identical.
 #[test]

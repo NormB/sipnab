@@ -24,7 +24,7 @@ operator's script does, which in practice is a ban.
 
 Everything downstream is unchanged. The only thing that changed is who acts on
 the output, and that single change converts a false positive from a nuisance into
-a severed trunk. The peers a SIP analyser sees most of are, by construction, the
+a severed trunk. The peers a SIP analyzer sees most of are, by construction, the
 ones sending the most traffic — which on a carrier network are the carrier's own
 SBCs, the PBX, and the busiest customer phones. **A signature that ranks by
 volume ranks your own infrastructure first.** Any automated response therefore
@@ -44,7 +44,7 @@ job is to ban what it is given.
 
 Measured on ordinary carrier traffic and recorded in commit `56c6645`: **4,611
 lines naming 180 distinct peers from an 11-second capture** — the carrier's SBCs,
-the PBX, and customer phones. A golden test pinned the behaviour in place,
+the PBX, and customer phones. A golden test pinned the behavior in place,
 expecting a "detection" for a normal call's INVITE, ACK and BYE.
 
 The fix removed per-message emission from both output paths. Today exactly three
@@ -69,12 +69,12 @@ safety.**
 
 ### The scanner signature convicts the PBX
 
-The obvious repair for the above — arm the existing behavioural scanner detector
+The obvious repair for the above — arm the existing behavioral scanner detector
 from `--fail2ban` — was measured before it was made, and the measurement is
 recorded in the tree at [`batch.rs:698-706`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L698-L706):
 
 > on a real carrier trunk […] produces 7008 detections naming 180 peers, because
-> the behavioural signature counts OPTIONS and the busiest "scanners" are the
+> the behavioral signature counts OPTIONS and the busiest "scanners" are the
 > carrier's own PBXes sending keepalives (2713 from one peer in 11 seconds).
 > That is the same mass-ban as the blanket emission this replaced, only wearing
 > the authority of a real detection.
@@ -95,7 +95,7 @@ SBC exactly.
 ## 3. The rule that follows, and it applies now
 
 **A detector may not be wired to an automated response until its false-positive
-behaviour has been measured against real traffic.** Not fixtures. Fixtures
+behavior has been measured against real traffic.** Not fixtures. Fixtures
 contain what their author thought a scanner looks like; they do not contain the
 carrier's keepalives, and both defects above were invisible to the entire test
 suite.
@@ -144,13 +144,13 @@ that particular change lands:
 tests exist ([`tests/scanner_signature_corpus_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/scanner_signature_corpus_test.rs),
 `tests/zz_scanner_measure.rs`), both gated on a `SIPNAB_CORPUS` environment
 variable and skipping silently when it is unset. The first asserts *soundness*:
-no behavioural alert may name a source unless the capture itself shows the
+no behavioral alert may name a source unless the capture itself shows the
 rejections or unanswered probes to support it, and no alert may name a peer that
 completed a registration or a call and whose probes were mostly answered. Those
 are the right assertions and they would have caught both defects in section 2.
 
 They are also **one-sided**. Neither measures recall, because there is no
-labelled corpus of known scanners to measure it against. A signature that
+labeled corpus of known scanners to measure it against. A signature that
 alerted on nothing at all would pass both tests. That is an acceptable state for
 an *alerting* path, where the cost of a miss is a missed alert. It is not
 acceptable as the sole evidence for arming an automated response, because a
@@ -183,7 +183,7 @@ that fires on "more than N in T seconds" is a rule whose correctness depends on
 N and T matching a network nobody measured. `-K/--kill-target`, by contrast, is
 an operator naming an address: the operator supplied the evidence, and the
 detector has no opinion. That is why `-K` is defensible on a signature the
-behavioural detector is not.
+behavioral detector is not.
 
 **(c) The action is proportionate and self-limiting.** The kill path already
 does this and the numbers are the model: a global limiter at
@@ -310,7 +310,7 @@ does not reach the alert path, so the global budget sits at its default and the
 flag stays inert there.
 
 **Do not add new automated-response wiring in the meantime.** Specifically: do
-not arm the behavioural scanner detector from `--fail2ban`, and do not add a
+not arm the behavioral scanner detector from `--fail2ban`, and do not add a
 mitigation hook to the alert engine, until section 4's outcome-gated signature is
 committed *and* measured against a real corpus for both false positives and
 recall. Section 2 is what happens otherwise, twice.
@@ -324,8 +324,8 @@ rate-limited drops, silent exec suppressions and failed hooks. An operator
 reading "no entries" as "nothing was suppressed" would be wrong in exactly the
 case they are investigating.
 
-**What would change this.** A labelled corpus — real traffic with known scanners
+**What would change this.** A labeled corpus — real traffic with known scanners
 marked — measured for both false-positive and false-negative rate against a
-candidate signature. That artefact is the missing prerequisite for every
+candidate signature. That artifact is the missing prerequisite for every
 automated-response decision on this page, and it is worth building before any of
 them.

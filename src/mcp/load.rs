@@ -177,7 +177,7 @@ pub fn spawn(
 ///
 /// Routes through [`crate::pipeline::process_packet`] — the same applier the
 /// live path uses — rather than a second classify-and-store loop, so an opened
-/// capture is analysed exactly as an `-I` one is.
+/// capture is analyzed exactly as an `-I` one is.
 ///
 /// The SIP port gate is off (`sip_portrange: None`), which is what the TUI's
 /// interactive open does. It is also the direction that cannot under-report:

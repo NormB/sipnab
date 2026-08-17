@@ -54,7 +54,7 @@ pub fn deterministic_env(cmd: &mut Command) -> &mut Command {
 /// Nothing is lost: the coverage of a process that is about to be killed is not
 /// meaningful, and the parent test binary still records its own.
 ///
-/// Apply this to every spawn whose child may be signalled, not only the ones
+/// Apply this to every spawn whose child may be signaled, not only the ones
 /// that always are — `parse_path_test` only SIGKILLs on a timeout, so its
 /// corrupt profile appears just on the slow runs that are hardest to reproduce.
 pub fn discard_coverage_profile(cmd: &mut Command) -> &mut Command {

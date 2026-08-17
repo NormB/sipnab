@@ -642,7 +642,7 @@ fn victim_ip() -> IpAddr {
 /// only do that by satisfying whatever arms the detector, so it is worth being
 /// explicit about what that now is.
 ///
-/// A rate alone arms nothing. The behavioural signature reports a source once
+/// A rate alone arms nothing. The behavioral signature reports a source once
 /// the capture shows an OUTCOME: its probes refused, or going unanswered. This
 /// pair takes the refusal route, which needs no clock — every message here
 /// carries the same timestamp, so no window expires and no probe ever ages

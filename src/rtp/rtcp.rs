@@ -270,7 +270,7 @@ pub fn compact_ntp_for_test(at: chrono::DateTime<chrono::Utc>) -> u32 {
 ///   between the two parties, because the leg from the capture point onward is
 ///   not in it.
 ///
-/// Both are why the result is labelled [`RttSource::SenderReportEcho`] rather
+/// Both are why the result is labeled [`RttSource::SenderReportEcho`] rather
 /// than reported as "the" RTT, and why an XR figure wins when one exists.
 ///
 /// # Returns

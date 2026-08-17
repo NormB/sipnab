@@ -490,7 +490,7 @@ fn only_errors_quote_and_a_ping_payload_cannot_forge_one() {
         );
     }
 
-    // ICMPv6 echo (128) and neighbour discovery (135) are likewise not errors.
+    // ICMPv6 echo (128) and neighbor discovery (135) are likewise not errors.
     let src: Ipv6Addr = "2001:db8::10".parse().expect("v6 literal");
     let dst: Ipv6Addr = "2001:db8::20".parse().expect("v6 literal");
     let rtr: Ipv6Addr = "2001:db8::1".parse().expect("v6 literal");
@@ -501,7 +501,7 @@ fn only_errors_quote_and_a_ping_payload_cannot_forge_one() {
         5060,
         &options_keepalive("icmp-forged-2@test"),
     );
-    for (icmp_type, what) in [(128u8, "echo request"), (135, "neighbour solicitation")] {
+    for (icmp_type, what) in [(128u8, "echo request"), (135, "neighbor solicitation")] {
         assert!(
             parse_icmp_error(&icmpv6_error(rtr, src, icmp_type, 0, &forged6)).is_none(),
             "an ICMPv6 {what} (type {icmp_type}) is not a delivery failure"
@@ -542,13 +542,13 @@ fn a_quote_of_non_sip_traffic_is_not_attributed_to_a_dialog() {
 /// counters. The quote is evidence *about* a message, and counting it as one
 /// would inflate every message total sipnab prints.
 ///
-/// Serialised even though it asserts nothing about the store: rejecting the
+/// Serialized even though it asserts nothing about the store: rejecting the
 /// packet is only half of what `parse_packet` does with an ICMP error — it also
 /// FILES the quote in the process-global evidence store on its way to the
 /// `Err`. Unserialised, that write lands inside another test's reset-record-read
 /// window and inflates its totals by one. It did exactly that in CI while
 /// passing locally five runs in a row, because the race needs the right
-/// interleaving and one more serialised test was enough to produce it.
+/// interleaving and one more serialized test was enough to produce it.
 #[test]
 #[serial_test::serial(icmp_evidence)]
 fn an_icmp_error_is_never_a_parsed_packet() {

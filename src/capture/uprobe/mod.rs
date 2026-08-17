@@ -227,7 +227,7 @@ pub fn arg_registers() -> Option<(&'static str, &'static str)> {
 ///
 /// Carries `slot` because one sipnab probes **several libraries at once** — a
 /// host commonly runs OpenSSL and wolfSSL together, and may run several builds
-/// of one flavour. Without it the second install would reuse the first's names
+/// of one flavor. Without it the second install would reuse the first's names
 /// and only one library would ever be captured.
 #[must_use]
 pub fn probe_name(pid: u32, slot: usize, band: usize) -> String {
@@ -622,7 +622,7 @@ mod tests {
             "nor two bands"
         );
         // A host running OpenSSL and wolfSSL is probed on both at once, and a
-        // host running three builds of one flavour on all three. Same pid,
+        // host running three builds of one flavor on all three. Same pid,
         // same band, different library: the name must still differ or the
         // second install overwrites the first and captures only one of them.
         assert_ne!(

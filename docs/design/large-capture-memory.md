@@ -15,7 +15,7 @@ deleted — the reasoning is why the fix has the shape it has.
 `/home/gator/pcaps` — 15 files, 1,383 MB, 4,532,272 packets. Every number below
 was produced by a command reproduced in the appendix.
 
-**Re-verified against:** 0.5.81, 2026-08-05, behaviour only. The memory
+**Re-verified against:** 0.5.81, 2026-08-05, behavior only. The memory
 coefficients were NOT re-measured, so every RSS figure still describes 0.5.71.
 Treat the model as the shape of the cost and not as a current budget.
 
@@ -85,7 +85,7 @@ Of `tg`'s 3,406,114 packets, 2,846,542 (83.6%) classified as RTP and 82,324
 (0.2%) SIP. Capture files are overwhelmingly media, and media is bounded per
 call: G.711 at 8,000 Hz ([RFC 3551 §4.5.14](https://www.rfc-editor.org/rfc/rfc3551#section-4.5.14)) packetised at 20 ms is 50
 packets/second/direction, which is what the `--report` stream table shows —
-1,827 packets over 37 s and 3,407 over 68 s, both 49–50 pps. Signalling is a
+1,827 packets over 37 s and 3,407 over 68 s, both 49–50 pps. Signaling is a
 handful of packets per call regardless of how long the call runs. **Bytes on
 disk measure how long the calls were. Retention measures how many there were.**
 Those are independent, and a pre-flight built on file size is predicting the
@@ -212,7 +212,7 @@ Which is what happened. `apply_audio_retention` in [`src/app/batch.rs`](https://
 retention to `audio_retention_wanted(cli)`, which is `cli.mcp`, so **a `--mcp`
 batch run retains audio.** Its doc comment records why the assignment replaced
 an `if`: the previous one-armed `if` gated the operator *notice* and never the
-behaviour, because `StreamStore::new` arms retention by default for the TUI's
+behavior, because `StreamStore::new` arms retention by default for the TUI's
 sake, so every batch run was buffering audio nothing in it could read.
 
 A batch run without `--mcp` still retains nothing, which is the configuration
@@ -456,7 +456,7 @@ complete analysis.
 
 That was precisely the post-mortem failure: "what happened at 14:00?" answered
 from a dataset whose 14:00 was evicted first, with nothing in the output
-distinguishing "no signalling matched" from "the signalling was thrown away".
+distinguishing "no signaling matched" from "the signaling was thrown away".
 
 **Re-run at 0.5.78**, same 15 files, same `--limit 5000`, `--cores 1`. The store
 still keeps 4,959 dialogs and the summary still reports 84,882 SIP messages,
@@ -492,7 +492,7 @@ countable because the eviction counter exists.
 ### 3.5 A second loss channel: speed-dependent results
 
 **FIXED in 0.5.72.** The finding and its measurement are kept, because this was
-the document's clearest evidence that an offline analyser must not read the wall
+the document's clearest evidence that an offline analyzer must not read the wall
 clock, and because the shipped fix is a type rather than a patch.
 
 **The finding, at 0.5.71.** The batch receive loop set a 5-second
@@ -514,7 +514,7 @@ commit:
 The release run finished before the first sweep. The debug run did not, lost 314
 messages, and its longest ladder was truncated from 44 rungs to 24. **Same
 bytes, same code, different answer, decided by CPU speed and page-cache state.**
-For an offline analyser that is a reproducibility defect independent of
+For an offline analyzer that is a reproducibility defect independent of
 capacity: a colleague re-running the command on a slower laptop got a different
 call flow and had no way to know.
 
@@ -619,7 +619,7 @@ and `capacity_dialogs_evicted` for drop-oldest — with the increment inside
 idiom rather than reinvent it. The shipped code does not reuse the two method
 names, but it does reuse the shape and the discipline behind it — silent on a
 clean run, one sentence naming the numbers, split from the logging so the
-wording itself is under test. The idiom it was modelled on is
+wording itself is under test. The idiom it was modeled on is
 [`src/output/group.rs:172-184`](https://github.com/NormB/sipnab/blob/main/src/output/group.rs#L172-L184):
 
 ```rust
@@ -663,7 +663,7 @@ typed struct or a literal that a new field slots into:
   present-and-zero on the same grounds.
 - REST: the `json!` literal behind `/v1/stats` in [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) — a
   `"dropped"` key inside the existing `"dialogs"` object, beside `total` /
-  `active` / `completed` / `failed` / `cancelled`.
+  `active` / `completed` / `failed` / `canceled`.
 - Prometheus: `PrometheusMetrics` in [`src/output/prometheus.rs`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs), alongside the
   existing `pub capture_backpressure_blocks_total: u64`, which is the same
   species of "we could not keep up" counter. Note this needs the field populated
@@ -743,7 +743,7 @@ memory by window length plus one call duration.
 code: a BPF filter is applied by libpcap before a packet reaches sipnab.
 Measured — `port 5060` on the same 15 files yields all 18,948 dialogs, 0 RTP
 streams, 221,056 KB instead of 303,108 KB, and 0.92 s instead of 3.97 s.
-Twenty-seven percent less memory and four times faster with **zero** signalling
+Twenty-seven percent less memory and four times faster with **zero** signaling
 lost. This should be documented as the first thing to try on a large set, and
 the pre-flight warning in section 5 should say it in words.
 
@@ -821,7 +821,7 @@ that dialog, and two-pass is precisely the change that removes that requirement.
 `--wireshark` and `--tshark-filter` already emit per-dialog filters, which is
 the same index-then-narrow idea expressed for other tools.
 
-**On-disk spill.** Evicted dialogs are serialised to a temp file rather than
+**On-disk spill.** Evicted dialogs are serialized to a temp file rather than
 dropped, and faulted back when the report needs them.
 
 Stitching: preserved in principle, but the store has to be able to *find* a
@@ -842,7 +842,7 @@ handling itself is solved. Reconsider spill if two-pass proves impractical
 because re-reading is too expensive on the target storage; that is an empirical
 question this document has not answered for cold-cache or network storage.
 
-**Bounded time windows with explicit boundaries.** Analyse `[t0, t1)`, report
+**Bounded time windows with explicit boundaries.** Analyze `[t0, t1)`, report
 the boundary, then move on. This is section 4.2's time-windowed policy used as a
 scaling strategy rather than a retention policy.
 
@@ -924,7 +924,7 @@ sequence" warning and would have flagged `/home/gator/pcaps` correctly. Section
 compaction fire on this corpus, so an operator who is not told about the gap is
 not told why 314 messages went either.
 
-**Sampled signalling density, ~20 ms.** Read the first ~2,000 packets of each
+**Sampled signaling density, ~20 ms.** Read the first ~2,000 packets of each
 file instead of one, count SIP-looking packets and distinct Call-IDs, and
 extrapolate. Measured on this set with the page cache warm: reading 30,000
 packets took 0.02 s and 300,000 took 0.24 s, against 3.97 s for the full
@@ -951,7 +951,7 @@ and, when the estimate exceeds the limit or a memory budget:
 > `Estimated 260,000 dialogs against a --limit of 100,000: the oldest ~160,000
 > will be discarded and the report will cover only the end of the capture.
 > Raise --limit, narrow with a BPF filter (e.g. 'port 5060', measured here at
-> 27% less memory with no signalling lost), or analyse a time window.`
+> 27% less memory with no signaling lost), or analyze a time window.`
 
 Both are pre-flight, so they arrive while the operator is still at the keyboard
 and before four seconds — or forty minutes — have been spent producing a wrong

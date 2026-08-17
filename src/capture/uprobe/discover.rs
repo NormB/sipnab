@@ -17,7 +17,7 @@
 //! through a `libssl.so.3` symlink, a versioned real name, and a different
 //! mount path inside a container, and probing each of those separately would
 //! install three probe sets on one function. Conversely two builds of one
-//! flavour genuinely are two targets: their symbol offsets differ, so a probe
+//! flavor genuinely are two targets: their symbol offsets differ, so a probe
 //! computed from one and installed on the other reads the wrong address.
 
 use std::collections::BTreeMap;
@@ -30,18 +30,18 @@ use std::path::{Path, PathBuf};
 /// signature, and classifying it without a verified symbol would install a
 /// probe that reads whatever the second argument register happens to hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Flavour {
+pub enum Flavor {
     /// OpenSSL, and the ABI-compatible forks that keep its symbol names.
     OpenSsl,
     /// wolfSSL, whose native API prefixes the same call.
     WolfSsl,
 }
 
-impl Flavour {
-    /// The write symbol to probe for this flavour.
+impl Flavor {
+    /// The write symbol to probe for this flavor.
     ///
     /// Both take `(ssl, buf, len)`, which is why one banded probe shape serves
-    /// both — the flavour changes the **name**, not the argument positions.
+    /// both — the flavor changes the **name**, not the argument positions.
     #[must_use]
     pub fn write_symbol(self) -> &'static str {
         match self {
@@ -69,7 +69,7 @@ pub struct TlsLibrary {
     /// The mapped file's inode, which is its identity.
     pub inode: u64,
     /// Which implementation it is, and so which symbol to resolve.
-    pub flavour: Flavour,
+    pub flavor: Flavor,
     /// Processes mapping it, ascending. Evidence for the operator, and the
     /// reason a library with an empty list is never returned.
     pub pids: Vec<u32>,
@@ -137,16 +137,13 @@ type FileId = (String, u64);
 /// The prefix must be followed by `.` or `-`, so `libssl.so.3` and
 /// `libssl.so.1.1` classify while `libssl-helper.so` is left alone.
 #[must_use]
-pub fn classify(path: &Path) -> Option<Flavour> {
+pub fn classify(path: &Path) -> Option<Flavor> {
     let name = path.file_name()?.to_str()?;
-    for (prefix, flavour) in [
-        ("libwolfssl", Flavour::WolfSsl),
-        ("libssl", Flavour::OpenSsl),
-    ] {
+    for (prefix, flavor) in [("libwolfssl", Flavor::WolfSsl), ("libssl", Flavor::OpenSsl)] {
         if let Some(rest) = name.strip_prefix(prefix)
             && rest.starts_with(['.', '-'])
         {
-            return Some(flavour);
+            return Some(flavor);
         }
     }
     None
@@ -189,13 +186,13 @@ fn file_mappings(maps: &str) -> Vec<(String, u64, PathBuf)> {
 /// live process table.
 fn absorb(found: &mut BTreeMap<FileId, TlsLibrary>, pid: u32, maps: &str) {
     for (dev, inode, path) in file_mappings(maps) {
-        let Some(flavour) = classify(&path) else {
+        let Some(flavor) = classify(&path) else {
             continue;
         };
         let entry = found.entry((dev, inode)).or_insert_with(|| TlsLibrary {
             path,
             inode,
-            flavour,
+            flavor,
             pids: Vec::new(),
         });
         // Each mapping of one file appears several times per process — the
@@ -256,7 +253,7 @@ pub struct PlannedTarget {
 ///
 /// Two routes, and the first wins. Explicit `--uprobe-library` paths bypass
 /// discovery entirely, which is what reaches a library nothing has mapped yet.
-/// Otherwise the discovered set is narrowed by flavour.
+/// Otherwise the discovered set is narrowed by flavor.
 ///
 /// # Errors
 ///
@@ -268,7 +265,7 @@ pub struct PlannedTarget {
 pub fn plan_targets(
     explicit: &[String],
     symbol: Option<&str>,
-    flavours: &[Flavour],
+    flavors: &[Flavor],
     discovered: Vec<TlsLibrary>,
 ) -> Result<Vec<PlannedTarget>, String> {
     if !explicit.is_empty() {
@@ -295,7 +292,7 @@ pub fn plan_targets(
             .collect();
     }
 
-    let found = select(discovered, flavours);
+    let found = select(discovered, flavors);
     if found.is_empty() {
         return Err(
             "no TLS library is mapped by any process sipnab can see. Either nothing \
@@ -313,7 +310,7 @@ pub fn plan_targets(
             Some(library) => targets.push(PlannedTarget {
                 library,
                 symbol: symbol.map_or_else(
-                    || lib.flavour.write_symbol().to_string(),
+                    || lib.flavor.write_symbol().to_string(),
                     ToString::to_string,
                 ),
             }),
@@ -342,32 +339,32 @@ pub fn plan_targets(
     Ok(targets)
 }
 
-/// Parse an operator's `--uprobe-flavour` value.
+/// Parse an operator's `--uprobe-flavor` value.
 ///
 /// # Errors
 ///
 /// The name, when it is not one sipnab probes.
-pub fn parse_flavour(name: &str) -> Result<Flavour, String> {
+pub fn parse_flavour(name: &str) -> Result<Flavor, String> {
     match name.to_ascii_lowercase().as_str() {
-        "openssl" => Ok(Flavour::OpenSsl),
-        "wolfssl" => Ok(Flavour::WolfSsl),
+        "openssl" => Ok(Flavor::OpenSsl),
+        "wolfssl" => Ok(Flavor::WolfSsl),
         other => Err(format!(
-            "unknown TLS flavour '{other}'. sipnab probes openssl and wolfssl"
+            "unknown TLS flavor '{other}'. sipnab probes openssl and wolfssl"
         )),
     }
 }
 
-/// Narrow a discovered set to the flavours an operator asked for.
+/// Narrow a discovered set to the flavors an operator asked for.
 ///
 /// An empty selection means "whatever is there", which is the default: the
 /// point of discovery is that the operator should not have to know.
 #[must_use]
-pub fn select(libs: Vec<TlsLibrary>, want: &[Flavour]) -> Vec<TlsLibrary> {
+pub fn select(libs: Vec<TlsLibrary>, want: &[Flavor]) -> Vec<TlsLibrary> {
     if want.is_empty() {
         return libs;
     }
     libs.into_iter()
-        .filter(|l| want.contains(&l.flavour))
+        .filter(|l| want.contains(&l.flavor))
         .collect()
 }
 
@@ -395,12 +392,12 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
         absorb(&mut found, 101, WOLFSSL_MAPS);
 
         let libs: Vec<_> = found.into_values().collect();
-        let mut flavours: Vec<_> = libs.iter().map(|l| l.flavour).collect();
-        flavours.sort_unstable();
-        assert_eq!(flavours, vec![Flavour::OpenSsl, Flavour::WolfSsl]);
+        let mut flavors: Vec<_> = libs.iter().map(|l| l.flavor).collect();
+        flavors.sort_unstable();
+        assert_eq!(flavors, vec![Flavor::OpenSsl, Flavor::WolfSsl]);
         assert_eq!(
             libs.iter()
-                .map(|l| l.flavour.write_symbol())
+                .map(|l| l.flavor.write_symbol())
                 .collect::<Vec<_>>()
                 .len(),
             2
@@ -413,11 +410,11 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
     fn a_substring_match_would_misclassify_wolfssl_and_a_prefix_does_not() {
         assert_eq!(
             classify(Path::new("/usr/lib/libwolfssl.so.42.2.0")),
-            Some(Flavour::WolfSsl)
+            Some(Flavor::WolfSsl)
         );
         assert_eq!(
             classify(Path::new("/usr/lib/libssl.so.3")),
-            Some(Flavour::OpenSsl)
+            Some(Flavor::OpenSsl)
         );
         // Both of these CONTAIN "libssl" and neither begins with it. A
         // `contains` rule would return OpenSsl for both.
@@ -428,13 +425,13 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
         );
         assert_eq!(
             classify(Path::new("/opt/vendor/libwolfssl.so")),
-            Some(Flavour::WolfSsl),
+            Some(Flavor::WolfSsl),
             "and would claim this as OpenSSL, probing a symbol it does not export"
         );
         assert_eq!(
-            Flavour::WolfSsl.write_symbol(),
+            Flavor::WolfSsl.write_symbol(),
             "wolfSSL_write",
-            "the flavour decides the symbol, not the argument positions"
+            "the flavor decides the symbol, not the argument positions"
         );
     }
 
@@ -450,7 +447,7 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
         assert_eq!(libs[0].pids.len(), 56, "but every process is recorded");
     }
 
-    /// Two builds of one flavour coexist here (GnuTLS 30.37.1 and 30.40.3 were
+    /// Two builds of one flavor coexist here (GnuTLS 30.37.1 and 30.40.3 were
     /// both mapped). Their symbol offsets differ, so they are two targets.
     #[test]
     fn two_builds_of_one_flavour_are_two_targets() {
@@ -511,9 +508,9 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
         let all: Vec<_> = found.into_values().collect();
 
         assert_eq!(select(all.clone(), &[]).len(), 2, "default is everything");
-        let only = select(all, &[Flavour::WolfSsl]);
+        let only = select(all, &[Flavor::WolfSsl]);
         assert_eq!(only.len(), 1);
-        assert_eq!(only[0].flavour, Flavour::WolfSsl);
+        assert_eq!(only[0].flavor, Flavor::WolfSsl);
     }
 
     /// A `/proc` that yields nothing must yield nothing, not panic — an
@@ -541,7 +538,7 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
         let lib = TlsLibrary {
             path: PathBuf::from("/usr/lib/libssl.so.3"),
             inode: want,
-            flavour: Flavour::OpenSsl,
+            flavor: Flavor::OpenSsl,
             pids: vec![4242],
         };
         assert_eq!(
@@ -565,7 +562,7 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
             path: PathBuf::from("/usr/lib/libssl.so.3"),
             // Deliberately not the inode of anything present.
             inode: u64::MAX,
-            flavour: Flavour::OpenSsl,
+            flavor: Flavor::OpenSsl,
             pids: vec![4242],
         };
         assert_eq!(
@@ -580,15 +577,15 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
     fn planning_with_no_flavour_filter_probes_every_library_found() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let libs = vec![
-            reachable(&tmp, 11, "/usr/lib/libssl.so.3", Flavour::OpenSsl),
-            reachable(&tmp, 12, "/usr/lib/libwolfssl.so.42", Flavour::WolfSsl),
+            reachable(&tmp, 11, "/usr/lib/libssl.so.3", Flavor::OpenSsl),
+            reachable(&tmp, 12, "/usr/lib/libwolfssl.so.42", Flavor::WolfSsl),
         ];
         let planned = plan_targets(&[], None, &[], libs).expect("both are reachable");
         assert_eq!(planned.len(), 2);
         let symbols: Vec<&str> = planned.iter().map(|t| t.symbol.as_str()).collect();
         assert!(
             symbols.contains(&"SSL_write") && symbols.contains(&"wolfSSL_write"),
-            "each library gets the symbol ITS flavour exports: {symbols:?}"
+            "each library gets the symbol ITS flavor exports: {symbols:?}"
         );
     }
 
@@ -596,10 +593,10 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
     fn planning_narrows_to_the_flavour_asked_for() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let libs = vec![
-            reachable(&tmp, 11, "/usr/lib/libssl.so.3", Flavour::OpenSsl),
-            reachable(&tmp, 12, "/usr/lib/libwolfssl.so.42", Flavour::WolfSsl),
+            reachable(&tmp, 11, "/usr/lib/libssl.so.3", Flavor::OpenSsl),
+            reachable(&tmp, 12, "/usr/lib/libwolfssl.so.42", Flavor::WolfSsl),
         ];
-        let planned = plan_targets(&[], None, &[Flavour::WolfSsl], libs).expect("one matches");
+        let planned = plan_targets(&[], None, &[Flavor::WolfSsl], libs).expect("one matches");
         assert_eq!(planned.len(), 1);
         assert_eq!(planned[0].symbol, "wolfSSL_write");
     }
@@ -659,7 +656,7 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
         let lib = TlsLibrary {
             path: PathBuf::from("/usr/lib/libssl.so.3"),
             inode: u64::MAX,
-            flavour: Flavour::OpenSsl,
+            flavor: Flavor::OpenSsl,
             pids: vec![999_999],
         };
         let err = plan_targets(&[], None, &[], vec![lib]).expect_err("unreachable");
@@ -671,13 +668,13 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
 
     #[test]
     fn a_flavour_name_is_parsed_or_refused() {
-        assert_eq!(parse_flavour("OpenSSL"), Ok(Flavour::OpenSsl));
-        assert_eq!(parse_flavour("wolfssl"), Ok(Flavour::WolfSsl));
+        assert_eq!(parse_flavour("OpenSSL"), Ok(Flavor::OpenSsl));
+        assert_eq!(parse_flavour("wolfssl"), Ok(Flavor::WolfSsl));
         assert!(parse_flavour("gnutls").is_err());
     }
 
     /// Build a `TlsLibrary` that really is reachable under a fake `/proc`.
-    fn reachable(tmp: &tempfile::TempDir, pid: u32, path: &str, flavour: Flavour) -> TlsLibrary {
+    fn reachable(tmp: &tempfile::TempDir, pid: u32, path: &str, flavor: Flavor) -> TlsLibrary {
         let on_disk = tmp
             .path()
             .join(pid.to_string())
@@ -690,7 +687,7 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
         TlsLibrary {
             path: on_disk.clone(),
             inode: inode_of(&on_disk).unwrap(),
-            flavour,
+            flavor,
             pids: vec![pid],
         }
     }

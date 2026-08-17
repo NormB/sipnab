@@ -592,7 +592,7 @@ fn capture_live_group(
         // work, and `poll()` is only needed once it is empty.
         //
         // So the wait moved into the `TimeoutExpired` arm, which is exactly the
-        // "nothing available" signal. Idle behaviour is unchanged — a quiet link
+        // "nothing available" signal. Idle behavior is unchanged — a quiet link
         // still blocks up to POLL_INTERVAL and then re-checks
         // shutdown/count/duration at the top — so `--duration` and Ctrl-C stay
         // as responsive as before. A busy link now makes zero poll syscalls.
@@ -993,7 +993,7 @@ mod tests {
         ] {
             assert!(
                 is_permission_error(msg),
-                "libpcap privilege failure not recognised, so the user is shown \
+                "libpcap privilege failure not recognized, so the user is shown \
                  the device list instead of how to grant CAP_NET_RAW: {msg:?}"
             );
         }
@@ -1386,7 +1386,7 @@ mod tests {
         assert_eq!(buffer_ladder(64), vec![64, 32, 16, 8, 4, 2]);
     }
 
-    /// An explicit small request is honoured exactly — never promoted upward,
+    /// An explicit small request is honored exactly — never promoted upward,
     /// and never given extra fallback steps it did not ask for. An operator
     /// who passes `-B 1` on a tiny box means it.
     #[test]

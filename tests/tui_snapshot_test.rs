@@ -512,7 +512,7 @@ mod tui_snapshots {
     /// SAME buffer as rendering with the unshowable ones switched off in the
     /// F10 selector. A zero-width column would still spend its spacing cell
     /// and shift every column after it, so the two buffers could not match —
-    /// which is exactly how this test fails if the behaviour comes back.
+    /// which is exactly how this test fails if the behavior comes back.
     #[test]
     fn narrow_call_list_drops_unshowable_columns_instead_of_laying_them_out_empty() {
         // 62 is the width the ticket named: below it From/To/Source/Dest are

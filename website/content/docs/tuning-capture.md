@@ -110,7 +110,7 @@ instead. This host will tolerate a smaller burst before dropping — watch the
 drop counters, and set -B/--buffer explicitly to pin a size.
 ```
 
-sipnab honours an explicit small `-B` exactly and never promotes it upward: `-B 1` on a
+sipnab honors an explicit small `-B` exactly and never promotes it upward: `-B 1` on a
 constrained box means 1 MiB.
 
 ---
@@ -121,13 +121,13 @@ The cheapest packet is the one the kernel never gives you. A BPF filter runs
 **in the kernel**, before the ring, so filtered traffic costs no buffer space, no
 copy, and no parse.
 
-Only SIP signalling:
+Only SIP signaling:
 
 ```bash
 sudo sipnab -N -d eth0 "port 5060 or port 5061"
 ```
 
-Signalling plus one media range:
+Signaling plus one media range:
 
 ```bash
 sudo sipnab -N -d eth0 "port 5060 or (udp portrange 10000-20000)"
@@ -142,7 +142,7 @@ sudo sipnab -N -d eth0 "host 203.0.113.10"
 This is the correct first response to sustained drops with a busy CPU. Halving
 the traffic that reaches userspace is worth more than any buffer size.
 
-> **Careful with RTP.** Filtering to `port 5060` alone gives you signalling with
+> **Careful with RTP.** Filtering to `port 5060` alone gives you signaling with
 > no media, so every stream turns orphan and every MOS figure disappears. If you
 > want quality metrics, the filter must admit the negotiated media ports too.
 
@@ -212,7 +212,7 @@ clamp. **§5 is the decision guide for the device half of that** — what leavin
 the way.
 
 ```bash
-# Signalling-focused capture: ~36,000 slots in the same 64 MiB
+# Signaling-focused capture: ~36,000 slots in the same 64 MiB
 sudo sipnab -N -d eth0 --snaplen 1600
 ```
 
@@ -422,7 +422,7 @@ a gigabyte — name what you need and no more.
 
 ## 6. Give sipnab less work
 
-- `--no-rtp` — skip RTP/RTCP entirely when you only care about signalling. RTP
+- `--no-rtp` — skip RTP/RTCP entirely when you only care about signaling. RTP
   is ~93% of carrier traffic by packet count, so this is the largest single
   reduction available short of a BPF filter.
 - `--no-dialog` — skip dialog reconstruction.

@@ -316,7 +316,7 @@ fn crate_sources() -> String {
 /// scanner-kill path. The two permits converting into one another would lose
 /// the distinction the same way.
 ///
-/// Verified as source shape rather than behaviour because there is no runtime
+/// Verified as source shape rather than behavior because there is no runtime
 /// signal for a conversion nobody wrote yet.
 #[test]
 fn nothing_can_convert_an_address_or_the_other_permit_into_an_export_permit() {

@@ -13,9 +13,9 @@
 use sipnab::mcp::server::{TlsLibraryEntry, build_tls_libraries_response, tls_libraries_response};
 
 /// A reachable entry, for the branches that need one.
-fn reachable(flavour: &str, symbol: &str, inode: u64) -> TlsLibraryEntry {
+fn reachable(flavor: &str, symbol: &str, inode: u64) -> TlsLibraryEntry {
     TlsLibraryEntry {
-        flavour: flavour.to_string(),
+        flavor: flavor.to_string(),
         path: "/usr/lib/libssl.so.3".to_string(),
         inode,
         process_count: 3,
@@ -119,15 +119,15 @@ fn the_unreachable_count_matches_the_entries_it_summarises() {
     }
 }
 
-/// Every entry must carry the symbol its flavour exports. A wrong pairing here
+/// Every entry must carry the symbol its flavor exports. A wrong pairing here
 /// would have an agent report a probe target that cannot resolve.
 #[test]
 fn every_entry_pairs_its_flavour_with_the_symbol_that_flavour_exports() {
     for lib in tls_libraries_response().libraries {
-        let expected = match lib.flavour.as_str() {
+        let expected = match lib.flavor.as_str() {
             "OpenSSL" => "SSL_write",
             "wolfSSL" => "wolfSSL_write",
-            other => panic!("unexpected flavour {other}: sipnab probes only these two"),
+            other => panic!("unexpected flavor {other}: sipnab probes only these two"),
         };
         assert_eq!(lib.symbol, expected, "for {}", lib.path);
         assert!(!lib.path.is_empty());

@@ -117,7 +117,7 @@ every `()`-suffixed symbol. A moved file, deleted module, or renamed function
 fails the build until the docs are updated. Precise, with no false positives:
 it fires only when a doc has actually become wrong.
 
-**Tier 2 — advisory, at commit time.** A new pre-commit gate, modelled on the
+**Tier 2 — advisory, at commit time.** A new pre-commit gate, modeled on the
 existing `src/wasm.rs` → `website/static/wasm/` gate, notices when a commit
 stages a change to a file the developer docs link to without staging any
 `docs/internals/` change, and prints the symbols that file is cited for.

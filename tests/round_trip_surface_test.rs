@@ -56,13 +56,13 @@ fn unmeasured() -> serde_json::Value {
         round_trip_ms: None,
         round_trip_source: None,
     };
-    serde_json::to_value(s).expect("serialise")
+    serde_json::to_value(s).expect("serialize")
 }
 
 /// An unmeasured round trip is an ABSENT key, never zero.
 ///
-/// The assertion is on the serialised JSON rather than the struct, because the
-/// serialised form is what a client parses and `skip_serializing_if` is the
+/// The assertion is on the serialized JSON rather than the struct, because the
+/// serialized form is what a client parses and `skip_serializing_if` is the
 /// only thing standing between `None` and a `0` that would read as perfect.
 #[test]
 fn an_unmeasured_round_trip_is_absent_and_not_zero() {
@@ -113,13 +113,13 @@ fn a_measured_round_trip_carries_its_provenance() {
         base.clone()
             .with_round_trip(Some((90.0, RttSource::XrVoipMetrics))),
     )
-    .expect("serialise");
+    .expect("serialize");
     assert_eq!(xr["round_trip_ms"], 90.0);
     assert_eq!(xr["round_trip_source"], "xr_voip_metrics");
 
     let echo =
         serde_json::to_value(base.with_round_trip(Some((210.0, RttSource::SenderReportEcho))))
-            .expect("serialise");
+            .expect("serialize");
     assert_eq!(echo["round_trip_ms"], 210.0);
     assert_eq!(
         echo["round_trip_source"], "sender_report_echo",
@@ -153,7 +153,7 @@ fn a_measured_zero_is_reported_rather_than_hidden() {
     }
     .with_round_trip(Some((0.0, RttSource::XrVoipMetrics)));
 
-    let v = serde_json::to_value(s).expect("serialise");
+    let v = serde_json::to_value(s).expect("serialize");
     assert_eq!(
         v["round_trip_ms"], 0.0,
         "a reported 0 ms is a measurement and must survive: {v}"

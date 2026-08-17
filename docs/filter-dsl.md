@@ -6,7 +6,7 @@ sipnab includes a declarative, non-Turing-complete filter language for matching 
 
 ## What a filter narrows
 
-A filter selects **dialogs**, and every output that lists dialogs honours it:
+A filter selects **dialogs**, and every output that lists dialogs honors it:
 
 - The per-message stream (the default output, `--json`, `-T`) emits only
   messages belonging to matching dialogs.
@@ -50,7 +50,7 @@ All 30 addressable fields, organized by type.
 | `rtp.codec` | RTP codec name (matches if ANY linked stream matches) | `"PCMU"`, `"opus"` |
 | `rtp.ssrc` | RTP SSRC in hex format (matches if ANY linked stream matches) | `"0x12345678"` |
 
-**Valid `state` values:** `Trying`, `Ringing`, `InCall`, `Completed`, `Cancelled`, `Failed`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`
+**Valid `state` values:** `Trying`, `Ringing`, `InCall`, `Completed`, `Canceled`, `Failed`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`
 
 > **`payload` vs `-e`/`--match`:** the `payload` field matches per dialog (true
 > if any message matches). The `-e`/`--match` flag is the sngrep/sipgrep-style
@@ -124,7 +124,7 @@ All 30 addressable fields, organized by type.
 > such as T.38 `m=image ... udptl` — so a call held for its whole life is not
 > reported as a media failure.
 >
-> **`no_media` is silent on a capture that holds no RTP.** A signalling-only
+> **`no_media` is silent on a capture that holds no RTP.** A signaling-only
 > tap, a HEP feed or `--no-rtp` cannot show that one call had no audio, because
 > no call in it has any. On such a capture the flag stays false by design rather
 > than selecting every answered dialog. Pair `no_media` with the knowledge of
@@ -265,7 +265,7 @@ these are catalogs to pick a line from, not blocks to copy whole.
 - `from.user =~ '^1001' AND state == 'Failed'`
 - `pdd > 3.0 OR retransmits > 5`
 - `NOT ua =~ 'friendly-scanner'`
-- `(state == 'Failed' OR state == 'Cancelled') AND duration < 1.0`
+- `(state == 'Failed' OR state == 'Canceled') AND duration < 1.0`
 
 ### Real-world diagnostic queries
 
@@ -295,7 +295,7 @@ sipnab -N -I capture.pcap --filter "rtp.mos < 3.0 AND rtp.packets > 0 AND state 
 
 `rtp.packets > 0` is not optional here: without it the `0.0` that a call with no
 RTP reports for `rtp.mos` satisfies the threshold, and the answer is every
-signalling-only dialog in the capture. Only completed calls -- in-progress calls
+signaling-only dialog in the capture. Only completed calls -- in-progress calls
 may not have enough RTP data for an accurate MOS calculation. MOS values follow
 the ITU-T G.107 E-model: 4.0+ is toll quality, 3.5-4.0 is acceptable, below 3.0
 is noticeable degradation.
@@ -331,7 +331,7 @@ Jitter arrives in milliseconds ([RFC 3550](https://www.rfc-editor.org/rfc/rfc355
 ### Failed international calls
 
 ```bash
-sipnab -N -I capture.pcap --filter "from.user =~ '^\+' AND (state == 'Failed' OR state == 'Cancelled')" --json
+sipnab -N -I capture.pcap --filter "from.user =~ '^\+' AND (state == 'Failed' OR state == 'Canceled')" --json
 ```
 
 The `^\+` regex matches E.164 formatted numbers (international prefix).

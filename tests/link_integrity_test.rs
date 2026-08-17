@@ -470,10 +470,10 @@ fn wiki_intra_docs_links_resolve() {
     // — a far end's reported figures never move sipnab's own — is written out.
     // Raised 251 -> 252 when the `lint_dialog` section of `docs/mcp.md` gained
     // a link to `sip-lint-rules.md`: the tool reference names the rule
-    // catalogue rather than restating the rules beside it.
+    // catalog rather than restating the rules beside it.
     // Raised 252 -> 254 when `.sipnablint` was documented on both sides of that
-    // pair — the MCP page's suppression section links to the rule catalogue for
-    // the pattern syntax, and the catalogue links back to the MCP page for the
+    // pair — the MCP page's suppression section links to the rule catalog for
+    // the pattern syntax, and the catalog links back to the MCP page for the
     // response fields that report what a suppression silenced.
     // Raised 254 -> 261 by `tuning-capture.md`, which cross-links the CLI and
     // config references, benchmarks and troubleshooting, and is linked from the

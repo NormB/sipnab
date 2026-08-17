@@ -13,7 +13,7 @@
 //!
 //! # What separates a probe from a request
 //!
-//! Neither behavioural signal is a rate on its own, because rate does not
+//! Neither behavioral signal is a rate on its own, because rate does not
 //! separate reconnaissance from operation. A SIP trunk sends OPTIONS
 //! continuously by design — that is how each end learns the other is alive —
 //! and an SBC fronting a hunt group reaches dozens of distinct extensions a
@@ -30,7 +30,7 @@
 //!   relationship no scanner has, and needs four times the evidence before
 //!   either signal applies to it.
 //!
-//! So both behavioural signals are gated on the same probing test: the rate
+//! So both behavioral signals are gated on the same probing test: the rate
 //! and the spread decide *how much* is happening, and the outcomes decide
 //! *whether any of it is reconnaissance*. Raising the thresholds instead would
 //! have traded these false positives for false negatives on the same axis, and
@@ -113,7 +113,7 @@ const ESTABLISHED_EVIDENCE_FACTOR: u32 = 4;
 ///
 /// `401` and `407` open every registration and most calls, so counting a
 /// challenge as a refusal would make every phone in the building a scanner.
-/// The rest are the ordinary outcomes of a call that rang out, was cancelled,
+/// The rest are the ordinary outcomes of a call that rang out, was canceled,
 /// went to a busy or unavailable extension, or could not agree a codec —
 /// `600` and `603` are the same answers given globally. A `5xx` blames the
 /// server rather than the sender, so that whole class is excluded too, in
@@ -145,7 +145,7 @@ const MAX_TRANSACTIONS_PER_SOURCE: usize = 1024;
 /// Behavioral detection window in seconds.
 const BEHAVIORAL_WINDOW_SECS: u64 = 5;
 
-/// The trigger points of the scanner detector's behavioural signals.
+/// The trigger points of the scanner detector's behavioral signals.
 ///
 /// Every field was a private constant with a comment describing when to change
 /// it and no way to. They are not universal numbers, and the two deployments
@@ -168,7 +168,7 @@ const BEHAVIORAL_WINDOW_SECS: u64 = 5;
 ///
 /// The memory caps (`MAX_BEHAVIORAL_ENTRIES`, `MAX_TARGETS_PER_SOURCE`,
 /// `MAX_TRANSACTIONS_PER_SOURCE`) are deliberately NOT here: they bound
-/// sipnab's own footprint, not the network's behaviour.
+/// sipnab's own footprint, not the network's behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScannerThresholds {
     /// Probe transactions from one source in the window, above which the rate
@@ -184,7 +184,7 @@ pub struct ScannerThresholds {
     /// provided they are also the majority of what it sent — see
     /// the `UNANSWERED_PROBE_MIN` constant.
     pub unanswered_probes: u32,
-    /// How much capture time one behavioural window spans, in seconds.
+    /// How much capture time one behavioral window spans, in seconds.
     ///
     /// The binding constraint on a paced sweep: a source that probes more
     /// slowly than this never has two probes in one window, so its rate and
@@ -542,7 +542,7 @@ impl ScannerDetector {
             msg.method.as_ref().map(|m| m.as_str())
         } else {
             // A response is never itself an alert — it is the OUTCOME of an
-            // earlier probe, and the outcomes are what the behavioural
+            // earlier probe, and the outcomes are what the behavioral
             // signals now rest on.
             self.observe_response(msg);
             return None;
@@ -552,7 +552,7 @@ impl ScannerDetector {
 
         // Check UA pattern match. An absent header matches nothing — the
         // patterns describe what a scanner *says*, and a request that says
-        // nothing is caught by the behavioural analysis below instead.
+        // nothing is caught by the behavioral analysis below instead.
         if let Some(ref ua) = ua
             && !ua.is_empty()
         {
@@ -666,7 +666,7 @@ impl ScannerDetector {
         None
     }
 
-    /// Fold a response into the behavioural state of the peer it answers.
+    /// Fold a response into the behavioral state of the peer it answers.
     ///
     /// The peer is the response's DESTINATION: a response travels back the way
     /// the request came, so `dst_addr` is the source whose probe this settles.
@@ -1035,7 +1035,7 @@ mod tests {
         ts() + chrono::TimeDelta::seconds(secs)
     }
 
-    /// The behavioural window counts what the CAPTURE says, not how long
+    /// The behavioral window counts what the CAPTURE says, not how long
     /// sipnab took to read it.
     ///
     /// A file replayed from disk delivers every packet within milliseconds of

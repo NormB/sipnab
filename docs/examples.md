@@ -24,7 +24,7 @@ are new, recipe 1 is the broadest starting point.
 | Detect and block scanners or fraud | [10. Detect SIP scanners and auto-block via fail2ban](#10-detect-sip-scanners-and-auto-block-via-fail2ban) |
 | Hand someone a written summary of a call | [12. Generate a call report (text / Markdown / JSON)](#12-generate-a-call-report-text--markdown--json) |
 | Listen to the audio | [13. Export RTP audio as WAV](#13-export-rtp-audio-as-wav) |
-| Look at a pcap with nothing installed | [14. Analyse a pcap without installing anything](#14-analyse-a-pcap-without-installing-anything) |
+| Look at a pcap with nothing installed | [14. Analyze a pcap without installing anything](#14-analyze-a-pcap-without-installing-anything) |
 | Just find a command to copy | [Look up a one-liner by task](#look-up-a-one-liner-by-task) |
 
 ### Where a recipe fits
@@ -558,7 +558,7 @@ sudo sipnab --uprobe-list
 ```
 
 ```
-FLAVOUR        INODE  PIDS  LIBRARY
+FLAVOR        INODE  PIDS  LIBRARY
 OpenSSL     14166752     1  /proc/982690/root/usr/lib/aarch64-linux-gnu/libssl.so.3
 wolfSSL     17433084     1  /proc/982702/root/usr/lib/aarch64-linux-gnu/libwolfssl.so.42.2.0
 OpenSSL        21143    12  /usr/lib/aarch64-linux-gnu/libssl.so.3
@@ -575,7 +575,7 @@ sudo sipnab -N --uprobe-tls
 Narrow it if only one stack is yours to read:
 
 ```bash
-sudo sipnab -N --uprobe-tls --uprobe-flavour openssl
+sudo sipnab -N --uprobe-tls --uprobe-flavor openssl
 ```
 
 Or name a library yourself, which is the only way to attach to a daemon that
@@ -941,9 +941,9 @@ sipnab -N -I trunk.pcap --kill-scanner --fail2ban | grep -oE 'src=[^ ]+' | sort 
 
 Every address in that list is one the jail below would ban. Use `ignoreip` in the jail for the peers you already trust.
 
-#### What the behavioural rules actually test
+#### What the behavioral rules actually test
 
-Neither behavioural rule fires on volume, because volume does not separate reconnaissance from operation. A trunk sends OPTIONS keepalives continuously by design — that is how each end learns the other is alive — and an SBC fronting a hunt group reaches dozens of distinct extensions a second. Both rules therefore need an OUTCOME as well as a rate:
+Neither behavioral rule fires on volume, because volume does not separate reconnaissance from operation. A trunk sends OPTIONS keepalives continuously by design — that is how each end learns the other is alive — and an SBC fronting a hunt group reaches dozens of distinct extensions a second. Both rules therefore need an OUTCOME as well as a rate:
 
 | Signal | What it counts | What arms it |
 |---|---|---|
@@ -1180,7 +1180,7 @@ If you've built with the `audio` feature (in default), `P` in the RTP stream vie
 
 ---
 
-## 14. Analyse a pcap without installing anything
+## 14. Analyze a pcap without installing anything
 
 **Problem:** You don't want to install anything. The pcap is on your laptop. You want to look at it.
 

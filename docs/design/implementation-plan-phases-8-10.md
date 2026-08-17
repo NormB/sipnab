@@ -1351,7 +1351,7 @@ Explain *why* sipnab is the way it is. The current docs explain *what* sipnab do
 
 - [ ] **Architecture overview** — `docs/concepts/architecture.md`: high-level diagram of capture → parse → dialog/RTP store → output backends (TUI/CLI/JSON/MCP/REST/event bus). Text walk-through. Cross-links to the source modules.
 - [ ] **Capture pipeline** — `docs/concepts/capture-pipeline.md`: how packets flow from libpcap through the parser into the dialog store. Explains the crossbeam channel, the rendezvous-before-priv-drop pattern, multi-device capture, HEP receiver mode.
-- [ ] **Dialog state machine** — `docs/concepts/dialog-state.md`: the SIP dialog states sipnab tracks (Trying, Proceeding, Early, InCall, Completed, Failed, Cancelled), state transitions, retransmission detection, the eviction policy. Diagram.
+- [ ] **Dialog state machine** — `docs/concepts/dialog-state.md`: the SIP dialog states sipnab tracks (Trying, Proceeding, Early, InCall, Completed, Failed, Canceled), state transitions, retransmission detection, the eviction policy. Diagram.
 - [ ] **RTP quality model** — `docs/concepts/rtp-quality.md`: how sipnab calculates network MOS (E-model G.107), how perceptual MOS (NISQA, Phase 11.2) differs, when each is more trustworthy, the divergence interpretation framework.
 - [ ] **Security model** — `docs/concepts/security-model.md`: privilege drop, process isolation, defense-in-depth limits, decryption material handling, MCP/REST authentication, the redaction options. References D15–D19.
 - [ ] **Design philosophy and non-goals** — `docs/concepts/philosophy.md`: what sipnab is and isn't. Adapted from v6 plan's Non-Goals section, written for a public audience. Why the TUI matters. Why MCP not gRPC. Why open source.

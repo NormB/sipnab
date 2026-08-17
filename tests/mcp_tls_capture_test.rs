@@ -27,7 +27,7 @@ fn server() -> SipnabMcp {
 
 fn no_params() -> StartTlsCaptureParams {
     StartTlsCaptureParams {
-        flavours: Vec::new(),
+        flavors: Vec::new(),
         libraries: Vec::new(),
     }
 }

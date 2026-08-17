@@ -482,7 +482,7 @@ impl StreamStore {
             //
             // `None` when the packet had no origin (live capture, HEP, a
             // synthetic packet). Left `None` rather than filled in from a
-            // neighbour — a stream with no provenance must say so.
+            // neighbor — a stream with no provenance must say so.
             // STREAM, not per packet -- and now the refcount is paid here
             // too, once per stream, rather than once per parsed frame.
             stream.first_frame = parsed.frame.map(|l| l.to_frame_ref());
@@ -1065,7 +1065,7 @@ impl StreamStore {
     /// Tie an ICMP error's quoted datagram to the media this store tracked.
     ///
     /// An ICMP error about media carries no `Call-ID` — a media datagram has
-    /// none to carry — so the signalling side's association key does not exist
+    /// none to carry — so the signaling side's association key does not exist
     /// here. What the quote does carry is the failed datagram's own 5-tuple
     /// and, when the router quoted more than RFC 792's 8-byte minimum, an RTP
     /// or RTCP header with an SSRC. Those are matched here, most specific
@@ -2107,7 +2107,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// An unclaimed stream counts as an orphan from its FIRST packet.
     ///
     /// This replaces `mark_orphaned_flags_unlinked_streams`, which pinned the
-    /// behaviour being fixed: the sweep left a stream unflagged for its first
+    /// behavior being fixed: the sweep left a stream unflagged for its first
     /// 30 seconds of capture time, so every consumer of `orphaned` reported
     /// `false` for a stream no dialog would ever claim. A three-second capture
     /// of nothing but unclaimed media reported no orphans at all.
@@ -2455,7 +2455,7 @@ a=rtpmap:96 H264/90000\r\n";
             "MOS must be computed from what sipnab measured, not from what a \
              datagram asserted"
         );
-        // The claim is not discarded — it is just labelled.
+        // The claim is not discarded — it is just labeled.
         let remote = store.remote_report(&key).expect("claim recorded");
         assert_eq!(remote.cumulative_lost, 100_000);
     }
@@ -2750,7 +2750,7 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(
             stream.payload_buffer.len(),
             1,
-            "default behaviour must keep buffering for TUI export/playback"
+            "default behavior must keep buffering for TUI export/playback"
         );
     }
 

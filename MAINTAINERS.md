@@ -83,5 +83,5 @@ dependency: pin a version, keep a build of it, and read
 [the developer documentation](https://sipnab.com/docs/internals/) — it exists
 so the code is not only in one head.
 
-The licence is MIT OR Apache-2.0. Forking is always available and needs nobody's
+The license is MIT OR Apache-2.0. Forking is always available and needs nobody's
 permission.

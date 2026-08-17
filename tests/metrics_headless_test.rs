@@ -227,7 +227,7 @@ fn scrape_with(extra: &[&str]) -> String {
 }
 
 /// The published histogram buckets are DERIVED from the thresholds this run
-/// diagnoses and colours with, so every boundary sipnab reports on is a
+/// diagnoses and colors with, so every boundary sipnab reports on is a
 /// boundary Grafana can express.
 ///
 /// The shipped sets could not express sipnab's own numbers. The PDD buckets

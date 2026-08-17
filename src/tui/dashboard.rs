@@ -803,7 +803,7 @@ mod tests {
         let _ = render_snapshot(snap, 0, 8, 4);
     }
 
-    /// Build a snapshot with `n` synthetic rows labelled `row-{i}` so the
+    /// Build a snapshot with `n` synthetic rows labeled `row-{i}` so the
     /// rendered worst-streams table can be searched by row identity.
     fn snapshot_with_rows(n: usize) -> DashboardSnapshot {
         let rows = (0..n)

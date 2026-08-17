@@ -78,7 +78,7 @@ fn skipped_ids(payload: &serde_json::Value) -> Vec<String> {
 ///
 /// `sendrecv` in both directions with media in one is invisible to a grammar:
 /// every message here is legal SIP and legal SDP. Only a tool holding the
-/// signalling and the RTP together can report it, and until this test existed
+/// signaling and the RTP together can report it, and until this test existed
 /// nothing proved the MCP surface reached that rule.
 #[test]
 fn lint_dialog_reports_a_defect_that_lives_between_signalling_and_media() {
@@ -168,7 +168,7 @@ fn a_finding_carries_the_citation_as_data_not_prose() {
 /// A ruleset selector narrows the run, and one that matches nothing says so.
 ///
 /// The dangerous alternative is a selector that quietly does nothing: the
-/// caller then reads the whole catalogue believing it read a subset.
+/// caller then reads the whole catalog believing it read a subset.
 #[test]
 fn rulesets_and_severity_narrow_the_run() {
     let mut session = McpSession::start(B2BUA, &[]);
@@ -207,7 +207,7 @@ fn rulesets_and_severity_narrow_the_run() {
     assert_eq!(
         rfc3261["finding_count"], 0,
         "every finding on this call cites RFC 3264, so RFC 3261 must select \
-         none of them rather than falling back to the whole catalogue: {rfc3261}"
+         none of them rather than falling back to the whole catalog: {rfc3261}"
     );
 
     // `severity_min` is the engine's own filter, so a threshold above every
@@ -404,7 +404,7 @@ fn explain_rule_resolves_an_identifier_to_its_real_citation() {
          syntax: {selectors:?}"
     );
 
-    // An unknown identifier refuses and lists the catalogue, because an empty
+    // An unknown identifier refuses and lists the catalog, because an empty
     // answer reads as "that rule found nothing".
     let msg = session.call(
         "explain_rule",
@@ -422,7 +422,7 @@ fn explain_rule_resolves_an_identifier_to_its_real_citation() {
     );
 }
 
-/// Every rule the catalogue holds is explainable through the tool.
+/// Every rule the catalog holds is explainable through the tool.
 ///
 /// A rule reachable by the engine but not by `explain_rule` leaves an agent
 /// holding an identifier it cannot resolve, which is where a hallucinated
@@ -432,7 +432,7 @@ fn every_catalogued_rule_is_explainable() {
     let mut session = McpSession::start(OPTIONS_PING, &[]);
     // Read out of the library so a rule added later has to appear here too.
     let ids: Vec<&'static str> = sipnab::sip::lint::RULES.iter().map(|r| r.id).collect();
-    assert_eq!(ids.len(), 32, "the catalogue size moved: {}", ids.len());
+    assert_eq!(ids.len(), 32, "the catalog size moved: {}", ids.len());
 
     for id in ids {
         let payload = ok_payload(&session.call("explain_rule", serde_json::json!({"rule_id": id})));

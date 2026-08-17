@@ -340,7 +340,7 @@ happen on the same thread:
    alone.
 2. **Bound the pool.** A pool that only grows is the leak again with extra
    steps. Cap it, and fall back to a plain allocation when empty — under
-   backpressure that is the correct behaviour, not a failure.
+   backpressure that is the correct behavior, not a failure.
 3. **Do not hold buffers past the worker.** `Packet::data` is
    `bytes::Bytes`; anything that retains a packet beyond its batch pins that
    buffer, so recycling must happen where the batch is known finished.
@@ -350,7 +350,7 @@ happen on the same thread:
 `_mi_page_malloc_zero` should all collapse. If they do not, the buffers are
 still crossing threads and the pool is not doing its job.
 
-### P3 — Confirm with a causal profiler before optimising further
+### P3 — Confirm with a causal profiler before optimizing further
 
 The `--cores` path is one serial reader feeding N workers. A conventional
 profiler cannot say whether making a worker stage faster changes end-to-end

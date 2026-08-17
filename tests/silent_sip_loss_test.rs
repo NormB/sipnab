@@ -26,7 +26,7 @@
 //!    only on 80, 443, 8080 and 8443, which is the browser's view of the web
 //!    and not a deployment's. Kamailio, OpenSIPS and Janus each default to WSS
 //!    outside that set, and behind a reverse proxy sipnab sees whatever port
-//!    the proxy forwards to — so a whole WebRTC signalling leg vanished. Worse
+//!    the proxy forwards to — so a whole WebRTC signaling leg vanished. Worse
 //!    than case 2, which at least says what it skipped: there was no report of
 //!    any kind. The set is now settable (`--ws-portrange`) and what falls
 //!    outside it is counted and attributed to a port.
@@ -142,7 +142,7 @@ fn extension_methods_generally_survive() {
 /// sniff is also what decides whether an out-of-`--portrange` packet is
 /// recorded as discarded SIP, and there is no parser behind that decision to
 /// catch the mistake. A loose sniff would report an operator's HTTP traffic as
-/// SIP they are failing to analyse.
+/// SIP they are failing to analyze.
 #[test]
 fn extension_method_acceptance_stays_strict() {
     let cases: &[(&str, &[u8])] = &[
@@ -190,7 +190,7 @@ fn extension_method_acceptance_stays_strict() {
     }
 }
 
-/// No message that used to be analysed is lost.
+/// No message that used to be analyzed is lost.
 ///
 /// The precise property, and the one that matters: **anything the old
 /// known-method sniffer accepted and the parser then parsed successfully, the
@@ -388,7 +388,7 @@ fn in_range_and_ungated_traffic_records_no_skips() {
     assert_eq!(
         portrange_skip_report().messages,
         0,
-        "SIP inside the range was analysed AND reported as skipped — the report \
+        "SIP inside the range was analyzed AND reported as skipped — the report \
          would claim a loss that did not happen, and every count would appear \
          to be missing traffic that is right there in the output"
     );
@@ -505,7 +505,7 @@ fn a_declared_ws_range_replaces_the_shipped_set() {
     assert_eq!(
         pipeline::ws_port_skip_report().messages,
         0,
-        "traffic the declared range covers was analysed AND reported as skipped"
+        "traffic the declared range covers was analyzed AND reported as skipped"
     );
 
     let shipped_port = parsed_tcp(ws_frame(&request("INVITE", "ws-443@test")), 51001, 443);

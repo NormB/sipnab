@@ -188,7 +188,7 @@ fn nothing_to_decode(streams: &[&RtpStream]) -> String {
 ///
 /// Opus is matched case-insensitively (SDP `a=rtpmap` casing is not
 /// normalized), consistent with `is_opus_codec` and `decode_stream_pcm` —
-/// otherwise a stream labelled e.g. `OpUs` would decode but be silently
+/// otherwise a stream labeled e.g. `OpUs` would decode but be silently
 /// filtered out of export. G.711 (`PCMU`/`PCMA`) is matched exactly, matching
 /// what `decode_stream_pcm` accepts.
 fn is_exportable_codec(codec: Option<&str>) -> bool {

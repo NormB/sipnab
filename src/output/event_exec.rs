@@ -845,7 +845,7 @@ mod tests {
         assert_eq!(bad.succeeded, 0, "no `exit 7` may be booked as a success");
     }
 
-    /// A failing hook must not change capture behaviour: it is not retried, and
+    /// A failing hook must not change capture behavior: it is not retried, and
     /// it does not stop later hooks from running.
     #[test]
     fn failing_hook_does_not_disarm_later_hooks() {
@@ -925,7 +925,7 @@ mod tests {
             engine.fire_dialog_event(&dialog);
         }
         let counts = engine.outcomes();
-        assert_eq!(counts.spawned, 2, "the limit of 2 per second is honoured");
+        assert_eq!(counts.spawned, 2, "the limit of 2 per second is honored");
         assert_eq!(
             counts.rate_limited, 3,
             "the other 3 events are on the books"

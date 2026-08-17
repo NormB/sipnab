@@ -15,7 +15,7 @@ the artifacts either link from the host or compile in. Dev-dependencies are
 excluded: test harnesses are not part of any distributed artifact.
 
 Each entry gives the SPDX expression the crate declares in its own manifest.
-Full licence texts are published at <https://spdx.org/licenses/> under those
+Full license texts are published at <https://spdx.org/licenses/> under those
 identifiers.
 
 
@@ -23,15 +23,15 @@ identifiers.
 
 Libraries cargo does not resolve. Most are provided by the host and linked at runtime, which redistributes nothing. The static musl artifacts are the exception: they compile libpcap — and, inside it, netmap — into the binary, so those two are genuinely redistributed there and their BSD notices are reproduced below for that reason. The last column says which case each library falls under.
 
-| Library | Licence | How sipnab uses it |
+| Library | License | How sipnab uses it |
 |---|---|---|
 | libpcap | BSD-3-Clause | Packet capture; required by every build, since they all include the `native` feature. The gnu builds and the `.deb` link the host's shared libpcap and redistribute nothing. The static musl builds compile libpcap from source (see `docker/cross/`) and link it statically, so those artifacts do carry a copy of it — which is what BSD-3-Clause's binary-distribution clause covers. |
 | netmap | BSD-2-Clause | Kernel-bypass capture backend, reached only as a libpcap capture module for `netmap:<ifname>` device names. It is header-only, so there is no netmap library to link: three headers from `luigirizzo/netmap` are compiled into libpcap's `pcap-netmap.o`. That object is inside the statically linked libpcap in the **musl artifacts only**, so netmap code is redistributed there and BSD-2-Clause requires this notice to accompany it. The gnu builds use the host's libpcap and carry no netmap code of sipnab's making. |
 | libasound (alsa-lib) | LGPL-2.1-or-later | ALSA playback, reached only through the separately compiled `libsipnab_audio` plugin, which the binary `dlopen`s lazily. sipnab does not link it at load time, does not statically link it, and does not redistribute it — the `.deb` declares it as a Recommends and the static musl builds omit audio entirely. Dynamic linking against a system-provided copy is what keeps LGPL-2.1 section 6 satisfied without any obligation reaching sipnab's own source. |
 
-## Multi-licensed crates and the licence elected
+## Multi-licensed crates and the license elected
 
-These offer a copyleft option alongside permissive ones. sipnab elects the permissive licence named here.
+These offer a copyleft option alongside permissive ones. sipnab elects the permissive license named here.
 
 | Crate | Offered | Elected |
 |---|---|---|
@@ -40,7 +40,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 
 ## Rust crates (393)
 
-| Crate | Version | Licence |
+| Crate | Version | License |
 |---|---|---|
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 |
 | aes | 0.9.2 | MIT OR Apache-2.0 |

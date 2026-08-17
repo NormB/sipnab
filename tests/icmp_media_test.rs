@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! ICMP errors that quote MEDIA rather than signalling.
+//! ICMP errors that quote MEDIA rather than signaling.
 //!
 //! An ICMP port-unreachable quoting an RTP packet is the direct answer to the
 //! commonest complaint this tool exists to explain: "the call connected and
@@ -530,7 +530,7 @@ fn a_quote_stopping_before_the_ports_is_counted_as_unkeyed() {
 
 /// A quote is evidence ABOUT media, never media. It must not create a stream,
 /// move a stream count, or enter the SIP evidence report — the same line the
-/// signalling side holds, on the media side.
+/// signaling side holds, on the media side.
 #[test]
 #[serial_test::serial(icmp_evidence)]
 fn a_media_quote_never_becomes_a_stream_or_a_sip_message() {

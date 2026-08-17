@@ -235,7 +235,7 @@ fn plugin_filename() -> String {
 /// Environment variable naming an alternate plugin to load.
 ///
 /// A development aid, not a configuration knob: see [`env_override_candidate`]
-/// for why it is tried last and what has to hold before it is honoured at all.
+/// for why it is tried last and what has to hold before it is honored at all.
 const PLUGIN_OVERRIDE_ENV: &str = "SIPNAB_AUDIO_PLUGIN";
 
 /// Trusted plugin locations, in the order they are tried:
@@ -293,7 +293,7 @@ enum OverrideRefusal {
     #[cfg(unix)]
     SwappableLocation(u32),
     /// This platform cannot check ownership or process credentials, so the
-    /// override is never honoured on it.
+    /// override is never honored on it.
     #[cfg(not(unix))]
     Unsupported,
 }
@@ -337,7 +337,7 @@ impl fmt::Display for OverrideRefusal {
 /// installs.
 ///
 /// This is the case the override gate exists for. A privileged sipnab inherits
-/// the environment of an unprivileged invoker, so honouring an env-var plugin
+/// the environment of an unprivileged invoker, so honoring an env-var plugin
 /// path there would hand that invoker native code execution inside a process
 /// holding TLS key material, bearer tokens and the capture handle.
 #[cfg(unix)]
@@ -364,7 +364,7 @@ fn started_privileged() -> bool {
     }
 }
 
-/// Decide whether the override may be honoured for `path`.
+/// Decide whether the override may be honored for `path`.
 ///
 /// "The environment is trusted" only holds while the file it names is trusted
 /// too, so ownership and mode are checked as well as process credentials: a
@@ -424,7 +424,7 @@ fn vet_override(_path: &Path) -> Result<(), OverrideRefusal> {
 /// unsandboxed code in a process that holds TLS key material, bearer tokens and
 /// the capture handle. This path is the only candidate an outside party can
 /// influence, so it is deliberately tried **last**: a trusted plugin, when one
-/// is installed, always wins and the variable cannot preempt it. It is honoured
+/// is installed, always wins and the variable cannot preempt it. It is honored
 /// at all only for a genuinely unprivileged process pointing at a file that
 /// nobody else can rewrite — and it says so loudly when it is used, because a
 /// developer override that goes unnoticed in production is the same bug again.
@@ -672,7 +672,7 @@ mod tests {
     impl Drop for EnvGuard {
         /// Restores the variable to whatever it was before `set`.
         fn drop(&mut self) {
-            // SAFETY: same as `set` — serialised against other env readers.
+            // SAFETY: same as `set` — serialized against other env readers.
             unsafe {
                 match self.prev.take() {
                     Some(v) => std::env::set_var(PLUGIN_OVERRIDE_ENV, v),

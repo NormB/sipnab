@@ -39,7 +39,7 @@ above it.
 
 | I want to… | Go to |
 |---|---|
-| Analyse a pcap with an agent on this same machine | [Analyse a capture file you already have](#analyse-a-capture-file-you-already-have) |
+| Analyze a pcap with an agent on this same machine | [Analyze a capture file you already have](#analyze-a-capture-file-you-already-have) |
 | Watch live traffic on the machine I am sitting at | [Watch live traffic on the machine you are sitting at](#watch-live-traffic-on-the-machine-you-are-sitting-at) |
 | **Run sipnab on a remote server and drive it from Claude Code on my laptop** | [Connect Claude Code on your laptop to sipnab on a server](#connect-claude-code-on-your-laptop-to-sipnab-on-a-server) |
 | Keep a capture running between agent sessions | [Keep a capture running between agent sessions](#keep-a-capture-running-between-agent-sessions) |
@@ -125,7 +125,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.104 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
+   # sipnab 0.5.105 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -180,7 +180,7 @@ this process cannot also be your TUI — run a second one if you want both.
 Same Vale misfire as the numbered sections in examples.md. -->
 <!-- vale sipnab.Headings = NO -->
 
-### Analyse a capture file you already have
+### Analyze a capture file you already have
 
 1. **[laptop]** Do [Step 0](#step-0-install-sipnab-every-server-once) on
    this machine (here the "server" is your laptop).
@@ -324,7 +324,7 @@ token to manage, and when the session ends nothing keeps running.
 
 #### Live traffic instead of a capture file
 
-The steps above analyse a **pcap that already exists**. To watch **live
+The steps above analyze a **pcap that already exists**. To watch **live
 traffic** on the server instead, swap the input flag:
 
 | You want | Flag | Meaning |
@@ -877,7 +877,7 @@ For the 2A stdio shape, `ssh -J bastion.example.net sbc-edge-1.example.net
 > **Not measured.** Everything in this subsection above the `--node-name` line
 > is the same wiring the 2A/2B/2C sections document, applied three times. The
 > tunnel, NAT and `ProxyJump` commands were **not** run against three real
-> hosts for this page: there was one machine available. The behaviour that
+> hosts for this page: there was one machine available. The behavior that
 > *was* measured — on three sipnab servers on one host, each with its own
 > `--node-name` and its own capture — is everything below, and the transcripts
 > say which build produced them.
@@ -953,10 +953,10 @@ The window is two seconds unless `--leg-correlation-window` says otherwise, and
 the failure is silent in both directions: a fast clock misses legs that belong
 together, a slow one pulls unrelated calls in.
 `timing_clock` reports the answering node's NTP discipline at the moment of the
-query (`synchronised`, `max_error_us`, `est_error_us`, `available`), and
+query (`synchronized`, `max_error_us`, `est_error_us`, `available`), and
 `capture_health` reports the same under `clock` for any node you want to check
-without running a correlation. `synchronised: false` means treat the tree as a
-hypothesis. `synchronised: true` with a `max_error_us` approaching the two-second
+without running a correlation. `synchronized: false` means treat the tree as a
+hypothesis. `synchronized: true` with a `max_error_us` approaching the two-second
 window means the same thing — the flag says a time daemon is disciplining the
 clock, not that the clock is accurate to within the window you are matching in.
 
@@ -987,7 +987,7 @@ from a 3 ms gap and a shared endpoint — no identifier crossed the box:
   b2bua-caller-synth@203.0.113.1
       via timing_heuristic [GUESS] score 50, gap 3ms
   !! every leg was a timing guess, not an identifier match.
-     clock on sbc: synchronised=True max_error_us=295000
+     clock on sbc: synchronized=True max_error_us=295000
      The window is 2s. Skew larger than that invents legs and hides legs.
 ```
 
@@ -1000,7 +1000,7 @@ that looks exactly like this.
 Now read `max_error_us`, and do not read it once. It is a live reading, not a
 constant, and on this one host it has reported **0.295 s** (the run above),
 **1.944 s** and **2.38 s** — an order of magnitude apart, all three while
-saying `synchronised=True`, and the last of them past the 2 s correlation
+saying `synchronized=True`, and the last of them past the 2 s correlation
 window entirely. At the high end the clock could account for the entire match
 on its own; at the low end it could not. Nothing in the output tells you which
 run you are looking at except the number itself, so read yours each time. A
@@ -1010,7 +1010,7 @@ about your box.
 ### Check what federation cannot prove
 
 If the box emits no `Session-ID` and no `X-Call-ID`, and re-originates SDP, then
-**nothing in the signalling proves the two legs are one call**. The honest answer
+**nothing in the signaling proves the two legs are one call**. The honest answer
 is that they may be, and sipnab says so rather than drawing a tree on a timing
 guess. Configuring the box to insert a correlation identifier is the fix —
 [Choose a correlation identifier](#choose-a-correlation-identifier) covers the
@@ -1063,7 +1063,7 @@ rather than the dialog, so it goes away the moment anything re-originates SDP;
 back-to-back user agent opens a new transaction by definition; and
 `charging_vector_icid` is the weaker of the two charging strategies for the same
 reason the note below gives — a conformant B2BUA gives each of its two dialogs
-its own icid, so plain equality across one is a vendor behaviour rather than
+its own icid, so plain equality across one is a vendor behavior rather than
 something the RFC promises.
 
 **3. Have sipnab compute its own identical id on each node. Do not.** The
@@ -1074,7 +1074,7 @@ Across a re-originating B2BUA there is no guaranteed invariant to compute it
 from. Call-ID, From tag, Via branch, Contact and usually the SDP are all
 legitimately new on the far side — that is what re-origination *means*, not a
 defect to work around. Any id derived from the remainder is a heuristic dressed
-as an identifier, and that is worse than the labelled heuristic already in the
+as an identifier, and that is worse than the labeled heuristic already in the
 output: `timing_heuristic` announces itself as a guess and sets
 `heuristic_only`, whereas a computed id would arrive looking like proof and
 correlate two unrelated calls with no field left to catch it.
@@ -1105,7 +1105,7 @@ identity the wire never established.
 > The first proxy generates the icid (§5.6), so the leg arriving from an
 > endpoint carries none and this is useless at the access edge. And §4.6.2.2
 > permits the next hop to *"modify the contents"*, which §6.6 calls normal
-> behaviour — there is no end-to-end constancy requirement of any kind, so this
+> behavior — there is no end-to-end constancy requirement of any kind, so this
 > is not a substitute for `Session-ID`. Full argument, including what is still
 > unverified: [`docs/design/icid-correlation.md`](https://github.com/NormB/sipnab/blob/main/docs/design/icid-correlation.md).
 
@@ -1210,7 +1210,7 @@ python3 contrib/mcp/trace-call.py \
   b2bua-caller-synth@203.0.113.1
       via timing_heuristic [GUESS] score 50, gap 3ms
   !! every leg was a timing guess, not an identifier match.
-     clock on sbc: synchronised=True max_error_us=295000
+     clock on sbc: synchronized=True max_error_us=295000
      The window is 2s. Skew larger than that invents legs and hides legs.
 ```
 
@@ -1282,7 +1282,7 @@ Then send `notifications/initialized` (a notification: no `id`, and the server
 answers `202` with an empty body) before calling tools. The protocol version is
 `2025-06-18`. On 0.5.87 a `tools/list` sent *before* the notification was still
 answered — but that is leniency in one build, not a promise, and a client that
-skips the notification is relying on behaviour no server owes it.
+skips the notification is relying on behavior no server owes it.
 
 The full sequence, which is what the script does:
 
@@ -1509,7 +1509,7 @@ rules as scenarios 2B and 4.
 <pre class="mermaid">
 flowchart TD
     Q["A call is bad"] --&gt; T["triage_call"]
-    T --&gt;|verdict: signalling| S["The failure is in SIP"]
+    T --&gt;|verdict: signaling| S["The failure is in SIP"]
     T --&gt;|verdict: media| M["The failure is in RTP"]
     S --&gt; S1["explain_response_code&lt;br/&gt;check_codec_negotiation&lt;br/&gt;diagnose_registration"]
     M --&gt; M1["rtp_stats&lt;br/&gt;get_sdp_timeline"]
@@ -1527,7 +1527,7 @@ JSON. You can reproduce any of them.
 
 You do not type these calls. You ask your agent the question in the heading and
 it selects the tools. The calls appear here so you can tell whether it picked
-well, and so you can recognise the answer when it comes back. The full
+well, and so you can recognize the answer when it comes back. The full
 per-tool reference is in [MCP server](@/docs/mcp.md).
 
 ### Find out why a single call failed
@@ -1544,7 +1544,7 @@ You have a Call-ID from a complaint or a billing record. Start with the split:
   "final_status_code": 200,
   "state": "Completed",
   "verdict": "media",
-  "signalling": { "problem": false, "hints": [] },
+  "signaling": { "problem": false, "hints": [] },
   "media": {
     "problem": true,
     "one_way_audio": true,
@@ -1555,7 +1555,7 @@ You have a Call-ID from a complaint or a billing record. Start with the split:
 ```
 
 Read the `verdict` before anything else. This call **answered 200 OK** — the
-signalling is clean and a SIP-side investigation would find nothing. The
+signaling is clean and a SIP-side investigation would find nothing. The
 problem is one-way audio, and the hint names the direction that is missing.
 
 ### Confirm whether a codec mismatch caused a 488
@@ -1751,7 +1751,7 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
-  "version": "0.5.104",
+  "version": "0.5.105",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,

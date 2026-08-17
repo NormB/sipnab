@@ -210,7 +210,7 @@ fn kill_spoof_raw_on_a_capture_file_transmits_nothing() {
 }
 
 /// The refusal must be visible: an operator who asked for a kill and got
-/// analysis instead has to be told, or they will believe the defence is armed.
+/// analysis instead has to be told, or they will believe the defense is armed.
 ///
 /// Asserted against the exact phrase the refusal uses, not a loose keyword —
 /// a substring like "offline" appears in unrelated log lines and would let

@@ -5,7 +5,7 @@
 //!
 //! Both surfaces build their exposition from `PrometheusMetrics`, and both
 //! used to start from `Default` — so both published `sipnab_capture_packets_total 0`
-//! against a running capture and dropped the labelled families entirely. The
+//! against a running capture and dropped the labeled families entirely. The
 //! REST API side is covered in `metrics_wiring_test.rs`; this drives the
 //! standalone server, which has no HTTP framework and a separate collector.
 #![cfg(feature = "metrics")]

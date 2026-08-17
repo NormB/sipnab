@@ -113,7 +113,7 @@ fn code(rel: &str) -> String {
 }
 
 /// The REST API's exposed surface: its handlers PLUS the shared projection
-/// they serialise through.
+/// they serialize through.
 ///
 /// `api.rs` deliberately names almost no field. It builds its stream and dialog
 /// responses out of `crate::output::model::{StreamSummary, DialogSummary}` —
@@ -141,7 +141,7 @@ fn rest_surface() -> String {
 }
 
 /// The MCP surface's exposed shape: its tools PLUS the shared stream renderer
-/// they serialise through.
+/// they serialize through.
 ///
 /// The same lesson as [`rest_surface`], learned the same way and by the same
 /// file. `src/mcp` named `loss_pct` only inside its own copy of "derive the
@@ -178,7 +178,7 @@ const QUALITY_METRICS: &[Metric] = &[
     // Latency needs an alias list where the others do not, because it is the
     // one metric no surface can name the same way twice. `round_trip_delay` is
     // the XR wire field; `round_trip_ms` is the resolved figure MCP and REST
-    // serialise; `round_trip_for` is the store accessor the TUI renders
+    // serialize; `round_trip_for` is the store accessor the TUI renders
     // through, since a terminal shows a value rather than a JSON key.
     //
     // Tracking one spelling made this gate wrong in both directions on the
@@ -190,7 +190,7 @@ const QUALITY_METRICS: &[Metric] = &[
         aliases: &["round_trip_delay", "round_trip_ms", "round_trip_for"],
     },
     // Burst/gap needs one for the same reason latency does: `burst_gap` is the
-    // JSON key both APIs serialise, and `burst_gap_analysis` is the accessor
+    // JSON key both APIs serialize, and `burst_gap_analysis` is the accessor
     // the TUI's loss map renders through — a terminal shows "Bursty / 3 bursts
     // / avg 60ms", not a key. Whole-identifier matching does not see one in the
     // other, so tracking the key alone reported the analysis as unreachable in
@@ -207,7 +207,7 @@ const QUALITY_METRICS: &[Metric] = &[
     // packets were in is reporting the symptom and withholding the cause.
     //
     // It needs an alias list for the same reason latency does. `dscp` is the
-    // JSON key both APIs serialise; the stream carries the pair
+    // JSON key both APIs serialize; the stream carries the pair
     // `dscp_first`/`dscp_last` because a re-marking is the finding and
     // overwriting the original would hide it; and the TUI renders through
     // those and through `dscp_remarked`, since a terminal shows "46 (EF)"
@@ -331,10 +331,10 @@ fn metrics_the_apis_report_are_reachable_in_the_tui() {
 /// min(jitter,100) - 2.5*loss_pct`, no codec term, no delay term — while the
 /// detail view used the G.107 E-model. Identical streams scored up to 1.7 MOS
 /// apart, so `--filter "rtp.mos < 3.0"` selected calls the detail view showed
-/// as fine. Behavioural tests now pin the two together, but nothing stopped a
+/// as fine. Behavioral tests now pin the two together, but nothing stopped a
 /// THIRD scorer appearing beside them, which is how the second one arrived.
 ///
-/// So this reads the source rather than the behaviour: the E-model's R0
+/// So this reads the source rather than the behavior: the E-model's R0
 /// anchor may appear only where the model itself lives.
 #[test]
 fn only_one_place_in_the_tree_scores_a_mos() {
@@ -411,7 +411,7 @@ fn only_one_place_in_the_tree_scores_a_mos() {
 /// wrong by more than a FULL MOS point — worst case reading 4.36 where the
 /// truth is 1.00. Those calls reported as excellent everywhere but one pane.
 ///
-/// So the rule is structural, not behavioural: a production caller must supply
+/// So the rule is structural, not behavioral: a production caller must supply
 /// the delay, either through [`MosDelay`](sipnab::rtp::quality::MosDelay) or by
 /// naming it in `estimate_mos_with_delay`. `estimate_mos` itself survives as
 /// the documented assumption and the reference the model is pinned against —
@@ -491,7 +491,7 @@ fn no_surface_scores_a_mos_on_the_assumed_delay() {
 ///
 /// Four views did, and disagreed: 25 ms jitter was Good in the stream list and
 /// Warning on the dashboard; 0.8% loss was Good in the list and Warning in the
-/// loss map. The colour column is the TUI's primary triage signal, so an
+/// loss map. The color column is the TUI's primary triage signal, so an
 /// operator scanning for yellow found a different set of calls depending on
 /// which pane they were looking at.
 ///
@@ -509,9 +509,9 @@ fn no_surface_scores_a_mos_on_the_assumed_delay() {
 /// that called the same 25 ms sample Good. The gate passed, in the same file,
 /// while one pane contradicted another. So the second question is not what the
 /// comparison is NAMED but what its branch PRODUCES: a band ends in a severity
-/// colour, and a scale — `jitter_to_block`, `mos_to_block` — ends in a glyph.
-/// Only the colour is a triage verdict an operator can find disagreeing with
-/// itself, and only the colour is caught here.
+/// color, and a scale — `jitter_to_block`, `mos_to_block` — ends in a glyph.
+/// Only the color is a triage verdict an operator can find disagreeing with
+/// itself, and only the color is caught here.
 #[test]
 fn no_view_carries_its_own_quality_bands() {
     // The literals that used to be band boundaries. A number here is only a
@@ -593,7 +593,7 @@ fn no_view_carries_its_own_quality_bands() {
             };
             comparisons_seen += 1;
             // Either tell is enough. The name catches a style function whose
-            // branch is a `Style` rather than a bare colour; the branch catches
+            // branch is a `Style` rather than a bare color; the branch catches
             // the sparkline loops, where the value is called `j` or `m` and the
             // name says nothing at all.
             let about_quality = ["jitter", "loss", "mos"]
@@ -625,7 +625,7 @@ fn no_view_carries_its_own_quality_bands() {
     );
     assert!(
         severity_seen >= 1,
-        "no severity colour ({SEVERITY:?}) appears anywhere in src/tui/ — the \
+        "no severity color ({SEVERITY:?}) appears anywhere in src/tui/ — the \
          theme fields were renamed and the branch half of this gate now finds \
          nothing"
     );

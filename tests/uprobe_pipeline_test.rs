@@ -6,7 +6,7 @@
 //! captured packets, counted them, and produced **zero SIP messages**: the
 //! processor routes every TCP packet through the segment reassembler, a uprobe
 //! packet carries no sequence number, and every message was held forever for
-//! neighbours that could not arrive. The capture summary said "6 packets
+//! neighbors that could not arrive. The capture summary said "6 packets
 //! captured, 0 SIP messages" — which reads exactly like a trunk carrying
 //! nothing.
 //!

@@ -343,7 +343,7 @@ def call_frames(call_id: str, caller: str, callee: str, epoch: float):
     answer = sdp(callee, CALLEE_RTP, 202)
 
     # (offset seconds, from-caller?, payload)
-    signalling = [
+    signaling = [
         (0.000, True, request("INVITE", 1, to_plain, offer)),
         (0.010, False, response(100, "Trying", 1, "INVITE", to_plain)),
         (0.120, False, response(180, "Ringing", 1, "INVITE", to_tagged)),
@@ -354,7 +354,7 @@ def call_frames(call_id: str, caller: str, callee: str, epoch: float):
     ]
 
     ident = 1
-    for offset, from_caller, payload in signalling:
+    for offset, from_caller, payload in signaling:
         src, dst = (caller, callee) if from_caller else (callee, caller)
         sport, dport = (
             (CALLER_PORT, CALLEE_PORT) if from_caller else (CALLEE_PORT, CALLER_PORT)

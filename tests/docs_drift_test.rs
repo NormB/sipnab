@@ -1056,7 +1056,7 @@ fn docs_current_version_markers_match_cargo() {
         // ungated and were still naming 0.5.63 while the gated line moved. Same
         // section, same copy-paste, same 404; the gate simply could not see two
         // thirds of it. The arch and variant are alternations so a new package
-        // flavour is covered the day it is documented.
+        // flavor is covered the day it is documented.
         (
             "docs/install.md",
             include_str!("../docs/install.md"),
@@ -1076,7 +1076,7 @@ fn docs_current_version_markers_match_cargo() {
         // Each entry below pins one exact variant, so the loop's "expected at
         // least one" assertion fires the moment a recipe disappears -- and each
         // still tracks published_version like every other download marker. Add
-        // one whenever the release workflow grows a package flavour, and add the
+        // one whenever the release workflow grows a package flavor, and add the
         // `rpm -i` line it gates.
         //
         // Only docs/install.md is listed: website/content/docs/install.md is
@@ -1187,13 +1187,13 @@ fn docs_current_version_markers_match_cargo() {
         // it up.
         //
         // The paragraph now describes what the metric does and dates the old
-        // behaviour as history ("up to 0.5.74"), which must NOT track
+        // behavior as history ("up to 0.5.74"), which must NOT track
         // Cargo.toml. Nothing on that page names a current version any more, so
         // nothing there belongs in this list.
         // The `server_capabilities` sample in the diagnostic cookbook. It is
         // real captured output, so it names the build that produced it — which
         // is exactly why it needs gating rather than trusting: the recipes are
-        // there to be recognised mid-incident, and a reader comparing their own
+        // there to be recognized mid-incident, and a reader comparing their own
         // output against a version three releases stale has to work out whether
         // the difference matters.
         //
@@ -1298,7 +1298,7 @@ fn response_class_matches_the_documented_table() {
             "2xx success" => Some(ResponseClass::Success),
             "3xx redirect" => Some(ResponseClass::Redirect),
             "Challenge" => Some(ResponseClass::Challenge),
-            "Cancelled" => Some(ResponseClass::Cancelled),
+            "Canceled" => Some(ResponseClass::Canceled),
             "Declined" => Some(ResponseClass::Declined),
             "Failure" => Some(ResponseClass::Failure),
             _ => None,
@@ -1356,7 +1356,7 @@ fn documented_dialog_states_cover_the_enum() {
         "Ringing",
         "InCall",
         "Completed",
-        "Cancelled",
+        "Canceled",
         "Failed",
         "Redirected",
         "Registered",
@@ -1821,7 +1821,7 @@ fn theme_slots_are_documented_and_counted_correctly() {
 /// dependency graph today.
 ///
 /// MIT and Apache-2.0 both require the notice to travel with the binary, and
-/// libasound is LGPL-2.1-or-later, so this file is a licence obligation rather
+/// libasound is LGPL-2.1-or-later, so this file is a license obligation rather
 /// than a courtesy. Hand-maintained it would go stale on the first
 /// `cargo update` with nothing to notice — the same shape as every other gap
 /// this suite exists for, except the consequence is legal rather than cosmetic.
@@ -1856,7 +1856,7 @@ fn third_party_notices_are_current() {
 }
 
 /// The notices name every system library the released binaries link, with the
-/// licence that actually applies.
+/// license that actually applies.
 ///
 /// These are resolved by the host's package manager, never by cargo, so they
 /// cannot be derived from the lockfile and cannot be caught by the currency
@@ -1868,7 +1868,7 @@ fn third_party_notices_cover_system_libraries() {
     let notices = std::fs::read_to_string(repo.join("THIRD-PARTY-NOTICES.md"))
         .expect("THIRD-PARTY-NOTICES.md must exist — it ships in every release artifact");
 
-    for (lib, licence) in [
+    for (lib, license) in [
         ("libpcap", "BSD-3-Clause"),
         ("libasound", "LGPL-2.1-or-later"),
     ] {
@@ -1878,8 +1878,8 @@ fn third_party_notices_cover_system_libraries() {
              binaries link at runtime"
         );
         assert!(
-            notices.contains(licence),
-            "THIRD-PARTY-NOTICES.md does not state {licence} (for {lib})"
+            notices.contains(license),
+            "THIRD-PARTY-NOTICES.md does not state {license} (for {lib})"
         );
     }
 
@@ -2016,7 +2016,7 @@ const SHELL_LANGS: &[&str] = &["bash", "sh", "shell", "console", "zsh"];
 // Scanning them by heuristic was rejected: "starts with a command-looking
 // word" also matches terminal transcripts and output samples, and a gate that
 // cries wolf gets muted, which is worse than one with a stated limit. Closing
-// this properly means labelling those fences, which is a remediation of its
+// this properly means labeling those fences, which is a remediation of its
 // own, not a condition of this gate.
 
 /// First line of a block that declares itself one ordered procedure.
@@ -2341,8 +2341,8 @@ fn sequence_marker_admits_a_declared_procedure() {
 /// No documentation table repeats a row.
 ///
 /// `THIRD-PARTY-NOTICES.md` listed `r-efi` twice under "Multi-licensed crates
-/// and the licence elected". The generator deduplicated with
-/// `set((name, version, licence))` and then emitted a row *without* the
+/// and the license elected". The generator deduplicated with
+/// `set((name, version, license))` and then emitted a row *without* the
 /// version, so a crate vendored at two versions — r-efi at 5.3.0 and 6.0.0 —
 /// passed the set as two distinct tuples and printed one identical row twice.
 ///
@@ -2584,9 +2584,9 @@ fn no_documentation_table_repeats_a_row() {
         // deciding whether to upgrade needs to know `sender_report_echo` is a
         // lower bound on most topologies, not just that latency "works now".
         // One file, one table, diffed against HEAD before the number moved.
-        // Raised 505 -> 509 by the quality colour bands, which take the same
+        // Raised 505 -> 509 by the quality color bands, which take the same
         // shape the `[diagnosis]` wiring did at 498 -> 502: a new `[quality]`
-        // table in docs/config-reference.md and a new "Quality colour bands"
+        // table in docs/config-reference.md and a new "Quality color bands"
         // table in docs/cli-reference.md, each mirrored once under
         // website/content/docs/. Two written tables, four pages. Every staged
         // .md was diffed against HEAD first: exactly those four gained one
@@ -2695,7 +2695,7 @@ fn how_to_headings_stay_task_first() {
     /// verb only ever understates the score, which the ratchet tolerates.
     const GOAL_VERBS: &[&str] = &[
         "alert",
-        "analyse",
+        "analyze",
         "analyze",
         "ask",
         "block",
@@ -2832,7 +2832,7 @@ fn device_default_is_documented_per_platform() {
         assert!(
             text.contains("one interface"),
             "{page}: must say macOS/BSD gets a single interface, or a mac \
-             reader assumes the Linux behaviour"
+             reader assumes the Linux behavior"
         );
         assert!(
             !text.contains("Auto-detects the default interface"),
@@ -2986,7 +2986,7 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() {
         missing_example.is_empty(),
         "these MCP tools have a section but no fenced example: {missing_example:?}. \
          Show real output — an operator reaching for a tool mid-incident needs to \
-         recognise the answer, not infer its shape."
+         recognize the answer, not infer its shape."
     );
 }
 
@@ -3073,8 +3073,8 @@ fn a_documented_alias_expands_to_what_the_code_expands_it_to() {
     let want =
         sipnab::sip::dsl::expand_alias("problems", &sipnab::sip::dsl::AliasThresholds::default())
             .expect("the problems alias exists");
-    let normalise = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
-    let want = normalise(&want);
+    let normalize = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let want = normalize(&want);
 
     let mut checked = 0;
     for rel in ["docs/examples.md", "website/content/docs/cookbook.md"] {
@@ -3100,7 +3100,7 @@ fn a_documented_alias_expands_to_what_the_code_expands_it_to() {
             });
 
         assert_eq!(
-            normalise(found),
+            normalize(found),
             want,
             "{rel} documents the `problems` alias as expanding differently from \
              `expand_alias`. A reader building on the quoted expression gets a \

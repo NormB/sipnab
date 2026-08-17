@@ -170,7 +170,7 @@ pub struct StreamSummary {
     /// [`Self::round_trip_source`] says whose.
     ///
     /// **Absent means not measured, and never zero.** Like [`Self::frame`],
-    /// the key is omitted rather than serialised as `null` or `0`. A stream
+    /// the key is omitted rather than serialized as `null` or `0`. A stream
     /// with clean jitter, no loss and no round-trip figure is not a healthy
     /// stream; it is a stream with one unanswered question, and writing 0 ms
     /// there turns the question into a pass.

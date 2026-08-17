@@ -42,8 +42,8 @@ pub enum PhaseKind {
     Teardown,
     /// Terminal marker for a call that failed before it was answered.
     Failed,
-    /// Terminal marker for a call cancelled before it was answered.
-    Cancelled,
+    /// Terminal marker for a call canceled before it was answered.
+    Canceled,
 }
 
 /// One labeled phase on the horizontal timeline.
@@ -69,7 +69,7 @@ pub struct TimelineSegment {
 /// milestone timestamps at all) — the renderer shows a placeholder in that
 /// case. Missing intermediate milestones are simply skipped, so a call that
 /// was never answered yields only its setup/ringing phases plus a terminal
-/// failed/cancelled marker, with no in-call segment.
+/// failed/canceled marker, with no in-call segment.
 ///
 /// # Arguments
 ///
@@ -79,7 +79,7 @@ pub struct TimelineSegment {
 ///
 /// Segments in chronological order with `start_ms` offsets relative to
 /// the first milestone; empty when no milestone was ever recorded.
-/// Terminal failed/cancelled markers appear as zero-length segments at
+/// Terminal failed/canceled markers appear as zero-length segments at
 /// the end of the bar.
 pub fn timeline_segments(dialog: &SipDialog) -> Vec<TimelineSegment> {
     let t = &dialog.timing;
@@ -134,11 +134,11 @@ pub fn timeline_segments(dialog: &SipDialog) -> Vec<TimelineSegment> {
     }
 
     // A call that never reached the answered milestone gets a terminal
-    // marker so the failed/cancelled outcome is visible without an in-call
+    // marker so the failed/canceled outcome is visible without an in-call
     // phase. Markers are zero-length: they annotate the end of the bar.
     if t.answered_at.is_none() {
         let marker = match dialog.state() {
-            DialogState::Cancelled => Some(("Cancelled", PhaseKind::Cancelled)),
+            DialogState::Canceled => Some(("Canceled", PhaseKind::Canceled)),
             DialogState::Failed | DialogState::Expired | DialogState::Terminated => {
                 Some(("Failed", PhaseKind::Failed))
             }
@@ -432,7 +432,7 @@ fn render_placeholder(f: &mut Frame, area: Rect, block: Block<'static>, theme: &
 /// Whether a phase kind is a zero-length terminal annotation rather than a
 /// real interval on the bar.
 fn is_marker(kind: PhaseKind) -> bool {
-    matches!(kind, PhaseKind::Failed | PhaseKind::Cancelled)
+    matches!(kind, PhaseKind::Failed | PhaseKind::Canceled)
 }
 
 /// Stable color for each phase kind, shared by the bar, labels and legend.
@@ -443,7 +443,7 @@ fn phase_color(kind: PhaseKind, theme: &Theme) -> ratatui::style::Color {
         PhaseKind::InCall => theme.good,
         PhaseKind::Teardown => theme.muted,
         PhaseKind::Failed => theme.bad,
-        PhaseKind::Cancelled => theme.header,
+        PhaseKind::Canceled => theme.header,
     }
 }
 
@@ -455,7 +455,7 @@ fn kind_name(kind: PhaseKind) -> &'static str {
         PhaseKind::InCall => "In-Call",
         PhaseKind::Teardown => "Teardown",
         PhaseKind::Failed => "Failed",
-        PhaseKind::Cancelled => "Cancelled",
+        PhaseKind::Canceled => "Canceled",
     }
 }
 
@@ -470,7 +470,7 @@ fn state_color(state: &DialogState, theme: &Theme) -> ratatui::style::Color {
     match state {
         DialogState::InCall | DialogState::Completed | DialogState::Active => theme.good,
         DialogState::Ringing | DialogState::Trying | DialogState::Pending => theme.warning,
-        DialogState::Failed | DialogState::Cancelled | DialogState::Expired => theme.bad,
+        DialogState::Failed | DialogState::Canceled | DialogState::Expired => theme.bad,
         _ => theme.foreground,
     }
 }

@@ -46,7 +46,7 @@ const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 /// neither substitutes for the other: the media-carrying captures are the only
 /// place `nat_mismatch` can fire, and the RTP-free ones are the only place the
 /// capture-level `no_media` guard is under any pressure. Taking the first N
-/// files in path order filled the whole budget with signalling-only captures
+/// files in path order filled the whole budget with signaling-only captures
 /// and left the flag under test never exercised — passing, and proving
 /// nothing.
 const WANT_PER_KIND: usize = 4;
@@ -281,7 +281,7 @@ fn corpus_nat_mismatch_fires_and_agrees_with_the_rendered_sdp() {
 
 /// A capture that recorded no RTP at all reports no `no_media`.
 ///
-/// Every answered call in a signalling-only capture has zero RTP, so without
+/// Every answered call in a signaling-only capture has zero RTP, so without
 /// the capture-level guard the flag selects all of them and describes where
 /// the tap sits rather than what happened on any call.
 #[test]
@@ -308,7 +308,7 @@ fn corpus_signalling_only_captures_report_no_no_media() {
     }
 
     eprintln!(
-        "corpus signalling-only captures: {checked} checked, {answered_in_them} answered calls \
+        "corpus signaling-only captures: {checked} checked, {answered_in_them} answered calls \
          in them, 0 no_media claims"
     );
     assert!(

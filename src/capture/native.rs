@@ -96,7 +96,7 @@ pub enum UprobeBackend {
 /// One TLS library to probe, and the symbol to probe in it.
 ///
 /// Carries the symbol per library rather than once for the capture, because
-/// the flavours do not share a name: OpenSSL exports `SSL_write` and wolfSSL
+/// the flavors do not share a name: OpenSSL exports `SSL_write` and wolfSSL
 /// `wolfSSL_write`. They do share argument positions, which is why one probe
 /// shape serves both.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,7 +137,7 @@ pub enum CaptureSource {
         /// Every library to probe, because a host commonly runs more than one.
         ///
         /// A list rather than a single path: OpenSSL and wolfSSL coexist on an
-        /// ordinary host, as do several builds of one flavour, and probing the
+        /// ordinary host, as do several builds of one flavor, and probing the
         /// one an operator happened to name captures that one and silently
         /// misses the rest. See [`crate::capture::uprobe::discover`].
         targets: Vec<UprobeTarget>,

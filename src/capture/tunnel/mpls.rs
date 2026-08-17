@@ -33,7 +33,7 @@
 //! The discrimination rule implemented here is the one the deployed MPLS data
 //! plane already runs on, and the reason the IETF made it safe to run on:
 //!
-//! * RFC 4928 §2 records the existing hardware behaviour — "by inspecting the
+//! * RFC 4928 §2 records the existing hardware behavior — "by inspecting the
 //!   first nibble beyond the label stack, existing equipment infers that a
 //!   packet is not IPv4 or IPv6 if the value of the nibble ... is not 0x4 or
 //!   0x6 respectively", and "most deployed LSRs will treat a packet whose
@@ -50,7 +50,7 @@
 //!
 //! What is deliberately **not** attempted: guessing the payload of a
 //! pseudowire. A PW carries Ethernet, ATM, Frame Relay, HDLC or TDM depending
-//! on a PW type that is signalled by LDP and never appears on the wire. Every
+//! on a PW type that is signaled by LDP and never appears on the wire. Every
 //! one of those would produce a different — and, for four of the five,
 //! fictional — inner packet. They are reported as [`Inner::Opaque`] instead,
 //! which is a diagnosis the operator can act on rather than a flow that never
@@ -296,7 +296,7 @@ fn ipv6_header_captured(d: &[u8], at: usize) -> Option<()> {
 /// the control word actually having been captured.
 ///
 /// What follows the control word is not knowable here: RFC 4385 §2 has the PW
-/// set-up protocol decide the payload type, and LDP signalling is not in the
+/// set-up protocol decide the payload type, and LDP signaling is not in the
 /// capture. Returning [`Inner::Opaque`] says precisely that.
 fn pw_control_word(d: &[u8], at: usize) -> Option<Inner> {
     let end = at.checked_add(LABEL_STACK_ENTRY)?;
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn pseudowire_control_word_is_opaque_not_ip() {
-        // RFC 4385 §3: first nibble 0000. The PW type is signalled by LDP,
+        // RFC 4385 §3: first nibble 0000. The PW type is signaled by LDP,
         // never on the wire, so the payload is undecodable — but it is
         // emphatically not an IP packet.
         let mut cw = vec![0x00u8, 0x00, 0x00, 0x01];

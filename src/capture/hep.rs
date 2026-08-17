@@ -108,7 +108,7 @@ const HEP2_MIN_HEADER: usize = 16;
 /// rather than the listener that received it.
 ///
 /// The listener used to record its own bind address, so a collector fed by an
-/// SBC and two PBXes labelled every dialog `hep:0.0.0.0:9060`. Every node
+/// SBC and two PBXes labeled every dialog `hep:0.0.0.0:9060`. Every node
 /// collapsed into one identity, and "which node did this leg come from" had no
 /// answer even though the answer arrived in the packet: HEP chunk 0x000c
 /// carries the sender's capture-agent id (`--hep-id`), and the datagram's peer
@@ -942,7 +942,7 @@ pub struct HepEndpoint {
     /// was written as a literal 17, so SIP captured over TCP — and SIP
     /// recovered from TLS, which the pipeline goes out of its way to stamp as
     /// [`TransportProto::Tls`] "so the pipeline parses (and reports) the true
-    /// transport origin" — both reached the collector labelled UDP.
+    /// transport origin" — both reached the collector labeled UDP.
     pub transport: TransportProto,
 }
 
@@ -1814,8 +1814,8 @@ impl HepExportPermit {
     }
 }
 
-/// How many capture file names the export notice lists before summarising the
-/// rest. Enough to recognise the input at a glance, few enough that a
+/// How many capture file names the export notice lists before summarizing the
+/// rest. Enough to recognize the input at a glance, few enough that a
 /// `tcpdump -C -W` ring of forty files does not bury the sentence that matters.
 const NOTICE_MAX_NAMED_FILES: usize = 3;
 
@@ -1873,13 +1873,13 @@ pub fn file_export_notice(
     };
     Some(format!(
         "{} {} forwards every SIP message and every RTCP report this run reads \
-         to that address, and this run is reading {files}. The signalling in \
+         to that address, and this run is reading {files}. The signaling in \
          those captures leaves this machine: request lines, headers, URIs, and \
          any message bodies they hold. The RTCP carries the media quality \
          summary alongside it — SSRCs, loss, jitter and the endpoints \
          reporting them — but not the audio, which is never forwarded. sipnab \
          forwards what it does send as it was recorded and redacts nothing. \
-         Point {} at a collector you control, or drop it to analyse the \
+         Point {} at a collector you control, or drop it to analyze the \
          captures without forwarding them.",
         destination.flag(),
         destination.as_str(),
@@ -2088,7 +2088,7 @@ impl HepSender {
 
     /// Forward one RTCP datagram, verbatim, as HEP protocol type 5.
     ///
-    /// Signalling alone is half an answer. A remote viewer that receives only
+    /// Signaling alone is half an answer. A remote viewer that receives only
     /// SIP can say a call connected and nothing about whether it sounded like
     /// anything — no MOS, no jitter, no loss — which makes it *worse* than
     /// running sngrep on the box, because sngrep at least sees the media.
@@ -2568,7 +2568,7 @@ mod tests {
     /// It was a literal `17`. Every SIP captured over TCP — and every SIP
     /// recovered from TLS, which `try_tls_decrypt` deliberately stamps as
     /// `Tls` "so the pipeline parses (and reports) the true transport origin" —
-    /// reached the collector labelled UDP. A Homer filter on transport was
+    /// reached the collector labeled UDP. A Homer filter on transport was
     /// given a wrong answer with nothing to indicate it.
     ///
     /// Asserted against the wire bytes rather than through `parse_hep`: the
@@ -2755,7 +2755,7 @@ mod tests {
         );
     }
 
-    /// A `tcpdump -C -W` ring is summarised rather than listed in full: the
+    /// A `tcpdump -C -W` ring is summarized rather than listed in full: the
     /// count is exact, the first few names are shown, and the sentence stays
     /// readable.
     #[test]
@@ -2773,7 +2773,7 @@ mod tests {
         assert!(msg.contains("tg.pcap0"), "must name the first files: {msg}");
         assert!(
             msg.contains("and 37 more"),
-            "must summarise the remainder rather than list 40 names: {msg}"
+            "must summarize the remainder rather than list 40 names: {msg}"
         );
         assert!(
             !msg.contains("tg.pcap39"),

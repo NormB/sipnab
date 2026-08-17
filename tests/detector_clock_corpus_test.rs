@@ -50,7 +50,7 @@ use sipnab::sip::{SipMessage, is_sip_message, parser::parse_sip};
 /// not captures, and the pure-Rust reader works from a whole-file slice.
 const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 
-/// The scanner detector's behavioural/enumeration window, in seconds.
+/// The scanner detector's behavioral/enumeration window, in seconds.
 /// Mirrors `BEHAVIORAL_WINDOW_SECS`, which is private to the detector.
 const SCANNER_WINDOW_SECS: i64 = 5;
 
@@ -453,7 +453,7 @@ fn every_wangiri_alert_is_backed_by_calls_that_really_ended_short() {
             let terminal = matches!(
                 dialog.state(),
                 sipnab::sip::dialog::DialogState::Completed
-                    | sipnab::sip::dialog::DialogState::Cancelled
+                    | sipnab::sip::dialog::DialogState::Canceled
                     | sipnab::sip::dialog::DialogState::Failed
                     | sipnab::sip::dialog::DialogState::Redirected
             );

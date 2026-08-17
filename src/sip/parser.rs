@@ -79,7 +79,7 @@ const fn is_token_byte(b: u8) -> bool {
 /// [`parse_sip_bytes`] — which handles them correctly, keeping the token in
 /// [`SipMethod::Custom`] — ever saw them.
 ///
-/// Recognising a method is not the discriminator here and never was; the
+/// Recognizing a method is not the discriminator here and never was; the
 /// ` SIP/2.0` version token terminating the first line is. So this checks the
 /// shape RFC 3261 §7.1 actually specifies, `Method SP Request-URI SP
 /// SIP-Version`, and requires:

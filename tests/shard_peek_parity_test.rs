@@ -451,7 +451,7 @@ struct Case {
 }
 
 // Built section by section rather than as one `vec![]` literal: the sections
-// are the taxonomy this gate is organised around, and a single 400-line
+// are the taxonomy this gate is organized around, and a single 400-line
 // expression would hide it.
 #[allow(clippy::vec_init_then_push)]
 fn cases() -> Vec<Case> {

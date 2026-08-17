@@ -76,7 +76,7 @@ pub enum CorrelationReason {
     /// purpose is surviving intermediaries and whose match is symmetric set
     /// intersection; `X-Call-ID` only exists because an operator deliberately
     /// configured a header to mean "this is the other leg". `related-icid` is
-    /// standardised, which beats a vendor convention, but it is optional, it is
+    /// standardized, which beats a vendor convention, but it is optional, it is
     /// a one-way pointer, and it lives in a header §4.6.2.2 explicitly permits
     /// the next hop to modify.
     ChargingVectorRelatedIcid,
@@ -88,7 +88,7 @@ pub enum CorrelationReason {
     /// CONFORMANT one emits two different icids and this strategy is silent
     /// across it. Equality across two differing Call-IDs therefore means some
     /// intermediary copied a per-dialog identifier onto a second dialog: useful
-    /// where it happens, and a vendor behaviour rather than anything an RFC
+    /// where it happens, and a vendor behavior rather than anything an RFC
     /// grants.
     ///
     /// Scored 85, between [`Self::SdpOrigin`] (90) and [`Self::ViaBranch`]
@@ -198,7 +198,7 @@ pub struct DialogStore {
     rotate: bool,
     /// Lifetime count of messages dropped by [`compact_idle`]
     /// (DialogStore::compact_idle) — observability for long-run memory
-    /// behaviour.
+    /// behavior.
     idle_messages_evicted: u64,
     /// Lifetime count of NEW dialogs REJECTED because the store was at
     /// capacity with `rotate` disabled — the observability sibling of
@@ -316,7 +316,7 @@ pub fn set_keep_messages_per_idle_dialog(keep: usize) {
 /// Twice RFC 4028's default `Session-Expires` of 1800 s. A call using session
 /// timers refreshes at half its interval, so a healthy one is seen again inside
 /// 900 s and never approaches this; a call that is genuinely up but silent for
-/// a full hour is indistinguishable, from signalling alone, from one whose BYE
+/// a full hour is indistinguishable, from signaling alone, from one whose BYE
 /// was lost.
 ///
 /// Both errors are possible and they are not symmetric. Counting a dead dialog
@@ -326,7 +326,7 @@ pub fn set_keep_messages_per_idle_dialog(keep: usize) {
 /// until it speaks again. The second is recoverable; the first is not, because
 /// nothing ever brings the figure back down.
 ///
-/// That reasoning grounds the DEFAULT, not a fixed number. A contact centre
+/// That reasoning grounds the DEFAULT, not a fixed number. A contact center
 /// parks callers on hold past an hour and its gauge then under-reports every
 /// one of them, so the window is settable with `--active-idle-window` or
 /// `[sip] active_idle_window_secs`; widening it moves the figure back toward
@@ -349,9 +349,9 @@ pub fn active_idle_window() -> chrono::TimeDelta {
 
 /// Set the active-dialog idle window from configuration. Call once at startup.
 ///
-/// Process-wide for the reason its two neighbours above are: a `DialogStore` is
+/// Process-wide for the reason its two neighbors above are: a `DialogStore` is
 /// built by the batch runner, the TUI and every `--cores` shard, and a window
-/// threaded to some of them is a setting honoured on some surfaces and ignored
+/// threaded to some of them is a setting honored on some surfaces and ignored
 /// on others — while every one of those surfaces publishes the same gauge.
 ///
 /// # Arguments
@@ -957,7 +957,7 @@ impl DialogStore {
     /// lists are concatenated in capture-timestamp order and the state machine
     /// is re-run over the result, reproducing what the single-threaded path
     /// built from the same packets. Picking the longer fragment as a "base" —
-    /// which is what this used to do — discarded the other leg's signalling
+    /// which is what this used to do — discarded the other leg's signaling
     /// outright, and because `merge` is Call-ID-keyed the loss was invisible in
     /// every dialog *count* the tool prints.
     ///
@@ -1526,7 +1526,7 @@ impl CapturedObservation {
 ///
 /// The two fragments are one call seen on two host pairs, so their message
 /// lists are disjoint halves of the same reconstruction. Keeping one and
-/// dropping the other loses real signalling.
+/// dropping the other loses real signaling.
 ///
 /// # What counts as a duplicate
 ///
@@ -1815,7 +1815,7 @@ mod tests {
     /// keeps an RTP stream whole but says nothing about SIP: a call through a
     /// proxy is captured on two host pairs and lands on two workers. The merge
     /// used to keep whichever fragment had more messages, so the other leg's
-    /// signalling was discarded — on a 100 MB carrier capture that halved the
+    /// signaling was discarded — on a 100 MB carrier capture that halved the
     /// message count of 1173 of 2311 dialogs, with the Call-ID set unchanged.
     #[test]
     fn merge_reconstructs_a_proxied_call_from_both_legs() {
@@ -2548,7 +2548,7 @@ mod tests {
     /// tells retention-by-meaning from retention-by-position.
     #[test]
     fn compact_idle_keeps_a_cancelled_calls_outcome() {
-        let call_id = "cancelled-1";
+        let call_id = "canceled-1";
         let mut store = DialogStore::new(100, false);
         let t0 = base_ts();
         store.process_message(make_invite_msg(call_id, t0));
@@ -2574,7 +2574,7 @@ mod tests {
         assert_eq!(
             d.final_status_code(),
             Some(487),
-            "a cancelled call must still report 487"
+            "a canceled call must still report 487"
         );
         assert!(
             d.messages

@@ -213,10 +213,10 @@ fn codec_comparison_ignores_case_because_rfc_4855_does() {
     );
 }
 
-/// The signalling/media split is the first triage decision, so it must be right.
+/// The signaling/media split is the first triage decision, so it must be right.
 ///
-/// This capture has clean signalling (200 OK) and one-way audio, so the verdict
-/// must be "media". Calling it "signalling" would send an operator to the SIP
+/// This capture has clean signaling (200 OK) and one-way audio, so the verdict
+/// must be "media". Calling it "signaling" would send an operator to the SIP
 /// side of a problem that is entirely in RTP.
 #[test]
 fn triage_calls_one_way_audio_a_media_problem() {
@@ -225,14 +225,14 @@ fn triage_calls_one_way_audio_a_media_problem() {
 
     assert_eq!(
         v["verdict"], "media",
-        "clean signalling with one-way audio is a MEDIA problem: {v}"
+        "clean signaling with one-way audio is a MEDIA problem: {v}"
     );
     assert_eq!(v["signalling"]["problem"], false);
     assert_eq!(v["media"]["problem"], true);
     assert_eq!(v["media"]["one_way_audio"], true);
 }
 
-/// A failed call with no media must land on the signalling side.
+/// A failed call with no media must land on the signaling side.
 #[test]
 fn triage_calls_a_failed_call_a_signalling_problem() {
     const FAIL: &str = "tests/pcap-samples/sip-auth-failure.pcapng";
@@ -240,7 +240,7 @@ fn triage_calls_a_failed_call_a_signalling_problem() {
     let v = call_tool(FAIL, "triage_call", serde_json::json!({"call_id": call_id}));
     assert_eq!(
         v["verdict"], "signalling",
-        "a 403 with no streams is a signalling problem: {v}"
+        "a 403 with no streams is a signaling problem: {v}"
     );
     assert_eq!(v["signalling"]["problem"], true);
 }
@@ -347,7 +347,7 @@ fn capture_status_names_the_real_source() {
 // ── file tools and shutdown ──────────────────────────────────────────
 //
 // These write to disk and stop processes, so "it returned something" is not
-// evidence. Each test asserts the artefact exists and is right, or that the
+// evidence. Each test asserts the artifact exists and is right, or that the
 // refusal actually refused.
 
 // The stdio session harness, `call_tool_with_args` and `ok_payload` moved to
@@ -390,7 +390,7 @@ fn export_capture_writes_a_real_pcap() {
         "pcap is only {bytes} bytes — header but no packets"
     );
 
-    // Prove the artefact is usable, not merely present: sipnab must read back
+    // Prove the artifact is usable, not merely present: sipnab must read back
     // the dialogs it just wrote. A file that only *looks* like a pcap is the
     // failure this catches.
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))

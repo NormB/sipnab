@@ -150,7 +150,7 @@ fn names_path_from(
 /// it did nothing at all. The same class of defect took out every `[limits]`
 /// key once — parsed, validated, documented, never read. A store built here
 /// with a knob dropped looks exactly like one built with it applied, which is
-/// why the tests below assert the store's *behaviour* rather than its
+/// why the tests below assert the store's *behavior* rather than its
 /// construction.
 ///
 /// # Returns

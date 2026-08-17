@@ -165,7 +165,7 @@ impl Default for AsymmetryThresholds {
     /// parameter to all nine leaves nine chances for one to keep its own
     /// answer, which is the defect this type already had in a different form:
     /// the struct was public and tunable and no caller ever supplied a value,
-    /// so `[diagnosis] late_media_ms` would have been honoured on some
+    /// so `[diagnosis] late_media_ms` would have been honored on some
     /// surfaces and ignored on others.
     ///
     /// `default()` means "what sipnab uses when nobody said otherwise", and an
@@ -179,10 +179,10 @@ impl Default for AsymmetryThresholds {
 /// Whether the capture as a whole recorded any RTP.
 ///
 /// A run-level fact, not a per-call one, and the difference matters: on a
-/// signalling-only capture — a proxy tap that never sees media, a HEP feed,
+/// signaling-only capture — a proxy tap that never sees media, a HEP feed,
 /// `--no-rtp` — *every* answered call has zero RTP, and a `no_media` flag
 /// computed without this would describe where the capture was taken rather
-/// than what happened on the call. Measured on one signalling-only corpus
+/// than what happened on the call. Measured on one signaling-only corpus
 /// capture, the guard is the difference between 338 no-media claims and none.
 ///
 /// It is an enum rather than a `bool` so the call sites read as a statement
@@ -522,7 +522,7 @@ pub fn diagnose_media(dialog_streams: &[&RtpStream], media: &MediaContext) -> Me
         // `AsymmetryThresholds::default()` rather than a parameter, for the
         // reason recorded on that impl: `diagnose_media` is called from the
         // batch runner, the filter DSL, the REST layer and the MCP tools, and
-        // a threshold threaded to some of those is one honoured on some
+        // a threshold threaded to some of those is one honored on some
         // surfaces and ignored on others.
         let suppression_ratio = AsymmetryThresholds::default().cn_suppression_ratio;
         let cn_suppressed = if total_cn > 0 && total_packets > 0 {
@@ -754,7 +754,7 @@ pub fn diagnose_asymmetry(
             });
             diag.hints.push(format!(
                 "Late media: RTP started {delay_ms} ms after 200 OK — far end \
-                 was slow to send, or the media path wasn't ready when signalling \
+                 was slow to send, or the media path wasn't ready when signaling \
                  completed."
             ));
         }
@@ -1095,7 +1095,7 @@ mod tests {
 
     /// A side that sends from the port it advertised gets no port comparison.
     ///
-    /// Symmetric RTP is the correct behaviour; printing "advertised 16384 and
+    /// Symmetric RTP is the correct behavior; printing "advertised 16384 and
     /// sends from 16384" on every healthy leg is noise that buries the case
     /// where the two disagree.
     #[test]

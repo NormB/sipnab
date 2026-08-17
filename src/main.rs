@@ -147,7 +147,7 @@ fn main() {
             Some(sipnab::capture::CaptureSource::File { ref paths }) => paths,
             // `CoresFile` is only chosen when `-I` was given, so the source is
             // always `File`. An empty slice makes `run_cores_file` fail loudly
-            // rather than silently analysing nothing if that ever changes.
+            // rather than silently analyzing nothing if that ever changes.
             _ => &[],
         };
         batch::run_cores_file(

@@ -183,7 +183,7 @@ impl FindingsLog {
     /// is deliberately no way out.
     ///
     /// Returns `None` when the process cap is reached, so the caller refuses
-    /// out loud rather than accepting a write it will not honour.
+    /// out loud rather than accepting a write it will not honor.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::mcp) fn record(
         &mut self,

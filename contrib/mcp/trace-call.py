@@ -142,7 +142,7 @@ class Node:
         )
         # The protocol requires this before the client starts calling tools.
         # Send it even where a server is lenient -- a client that skips it is
-        # relying on behaviour no server promises.
+        # relying on behavior no server promises.
         self._post("notifications/initialized", notify=True)
         # Ask the node who it is. `capture_status` is one of the responses that
         # carries `capture_identity`; `get_dialog` is NOT, so attribution has
@@ -218,7 +218,7 @@ def trace(nodes: list[Node], call_id: str) -> int:
         clock = correlated.get("timing_clock") or {}
         print("  !! every leg was a timing guess, not an identifier match.")
         print(
-            f"     clock on {edge.name}: synchronised={clock.get('synchronised')}"
+            f"     clock on {edge.name}: synchronized={clock.get('synchronized')}"
             f" max_error_us={clock.get('max_error_us')}"
         )
         print("     The window is 2s. Skew larger than that invents legs and hides legs.")

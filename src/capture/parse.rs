@@ -150,7 +150,7 @@ pub struct ParsedPacket {
     /// ECN bits.
     ///
     /// Read from the header the packet actually carried, and read innermost,
-    /// so a tunnelled call reports the marking its own operator set rather
+    /// so a tunneled call reports the marking its own operator set rather
     /// than the carrier's outer marking.
     ///
     /// `None` is not "unmarked" — 0 is unmarked, and it is the default PHB
@@ -330,7 +330,7 @@ struct QuotedDatagram<'a> {
     dst: IpAddr,
     /// IP protocol number.
     protocol: u8,
-    /// Transport, when recognised.
+    /// Transport, when recognized.
     transport: Option<TransportProto>,
     /// Source port, when the quote reached it.
     src_port: Option<u16>,
@@ -344,7 +344,7 @@ struct QuotedDatagram<'a> {
 
 /// Map an ICMP type to the error class it reports, or `None` when the message
 /// is not an error that quotes a datagram (echo, router advertisement,
-/// neighbour discovery, redirect).
+/// neighbor discovery, redirect).
 fn icmp_error_kind(icmp_type: u8, v6: bool) -> Option<IcmpErrorKind> {
     if v6 {
         return match icmp_type {
@@ -629,12 +629,12 @@ fn net_addresses(net: &NetSlice<'_>) -> Option<(IpAddr, IpAddr)> {
 /// packets with [`CaptureError::Icmp`]: an ICMP error is evidence ABOUT a
 /// message, so it must never become a `ParsedPacket` and inflate a message
 /// count. Encapsulation (IP-in-IP, 6in4, GRE) is stripped the same way
-/// `parse_packet` strips it, so a tunnelled ICMP error is read too.
+/// `parse_packet` strips it, so a tunneled ICMP error is read too.
 ///
 /// # Returns
 ///
 /// `None` for a non-ICMP packet, for an ICMP message that is not an error
-/// (echo, neighbour discovery), for ICMPv4 Redirect (a routing hint, not a
+/// (echo, neighbor discovery), for ICMPv4 Redirect (a routing hint, not a
 /// failure), for a pre-parsed HEP packet (which carries no IP header to read),
 /// and for a quote too short to name both endpoints.
 ///
@@ -801,7 +801,7 @@ enum LinkType {
 }
 
 impl LinkType {
-    /// Recognise a captured frame's libpcap link-type number.
+    /// Recognize a captured frame's libpcap link-type number.
     ///
     /// `None` for a link type this parser does not decode; the full parse
     /// turns that into [`CaptureError::UnsupportedLinkType`] and the shard
@@ -958,7 +958,7 @@ const ETHERTYPE_PBB_ITAG: u16 = 0x88E7;
 /// What an unreadable MACsec frame is called in the diagnosis.
 ///
 /// Phrased as a noun so [`CaptureError::NotIp`]'s "{what} has no IP layer"
-/// reads as a sentence an operator can act on. The frame was recognised and
+/// reads as a sentence an operator can act on. The frame was recognized and
 /// its SecTAG validated; what is missing is the key, not the decoder.
 const MACSEC_OPAQUE: &str = "MACsec-encrypted frame";
 
@@ -1152,7 +1152,7 @@ enum EthPayload {
     /// [`crate::capture::FrameFacts`] — takes its numbers from the error path,
     /// and a field nobody reads is a field nobody keeps true.
     Other,
-    /// The encapsulation was recognised and its header validated, and the
+    /// The encapsulation was recognized and its header validated, and the
     /// payload still cannot be read.
     ///
     /// Deliberately not an error: "MACsec-encrypted frame" is a diagnosis an
@@ -1180,7 +1180,7 @@ impl EthPayload {
 ///
 /// 802.1Q / 802.1ad / legacy-0x9100 tags are skipped four bytes at a time, up
 /// to [`MAX_VLAN_TAGS`] of them; a deeper stack yields `None` rather than
-/// being followed. Every other recognised EtherType hands off to the
+/// being followed. Every other recognized EtherType hands off to the
 /// decapsulator in [`crate::capture::tunnel`] that owns it, spending one unit
 /// of `budget` first — so a frame cannot buy extra walk depth by varying which
 /// encapsulation it stacks.
@@ -1433,7 +1433,7 @@ fn eth_inner(d: &[u8], inner: Inner, budget: &mut Budget) -> Option<EthPayload> 
 /// traffic through one tunnel lands on one worker, because every frame of it
 /// shares the tunnel endpoints. That is a load-balance loss, not a correctness
 /// one — the worker that receives them does the full decapsulation and owns
-/// its own reassembly state — and it is the same behaviour `--cores` has
+/// its own reassembly state — and it is the same behavior `--cores` has
 /// always had for GRE.
 ///
 /// # A payload the walk cannot name yields NO key, never a guessed offset
@@ -2033,7 +2033,7 @@ fn slice_link_layer<'a>(
                         source: Box::new(e),
                     })
                 }
-                // Recognised and unreadable. Named, so the report can say
+                // Recognized and unreadable. Named, so the report can say
                 // *which* encapsulation the operator is looking at rather
                 // than counting another anonymous non-IP frame.
                 Some(EthPayload::Opaque(what)) => Err(CaptureError::NotIp { what }),
@@ -2279,7 +2279,7 @@ fn parse_packet_unstamped(packet: &Packet) -> Result<ParsedPacket, CaptureError>
             // pointer -- it is the only thing that says which process the
             // bytes came out of -- and a HEP packet's pointer is equally
             // meaningful. `frame_locator` yields None when either half is
-            // missing, which is the old behaviour for sources that set neither.
+            // missing, which is the old behavior for sources that set neither.
             frame: packet.frame_locator(),
             timestamp: packet.timestamp,
             src_addr: meta.src_addr,
@@ -2684,7 +2684,7 @@ fn ah_payload(ah: &[u8]) -> Option<(u8, &[u8])> {
 /// AH provides "connectionless integrity, data origin authentication, and an
 /// optional anti-replay service" (RFC 4302 §1) and **no confidentiality**, so
 /// unlike ESP the protected payload is sitting in the capture in plain text.
-/// Throwing it away loses signalling that is legible.
+/// Throwing it away loses signaling that is legible.
 ///
 /// Both IPsec modes are handled, because they put different things behind the
 /// header. In tunnel mode the payload is a whole IP packet and the addresses
@@ -2761,7 +2761,7 @@ fn parse_after_ah(
 ///
 /// Factored out of [`parse_gre`] because the ICMP walker needs to reach the
 /// same inner packet, and two copies of this arithmetic would be two places
-/// for a tunnelled packet's start offset to drift.
+/// for a tunneled packet's start offset to drift.
 ///
 /// # Errors
 ///
@@ -2948,7 +2948,7 @@ fn extract_parsed_packet(
         NetSlice::Arp(_) => return Err(CaptureError::NotIp { what: "ARP packet" }),
     };
 
-    // The DSCP the network was asked to honour for this packet.
+    // The DSCP the network was asked to honor for this packet.
     //
     // Read here rather than in the tuple above because it is the only field
     // whose IPv4 and IPv6 accessors carry different names for the same six
@@ -4733,7 +4733,7 @@ mod tests {
         assert_eq!(parsed.ip_protocol, 17);
     }
 
-    /// A pre-parsed packet from a uprobe must NOT be labelled HEP. Both are
+    /// A pre-parsed packet from a uprobe must NOT be labeled HEP. Both are
     /// pre-parsed -- neither has an IP header -- so the branch cannot assume
     /// HEP any more. Getting this wrong would let `--hep-allow-kill` re-enable
     /// transmission for input that carries no address at all.
@@ -4754,7 +4754,7 @@ mod tests {
         assert_eq!(
             parse_packet(&pkt).unwrap().input_origin,
             InputOrigin::Uprobe,
-            "a uprobe read must never be labelled HEP: it has no address at \
+            "a uprobe read must never be labeled HEP: it has no address at \
              all, so no opt-in may make it transmit-eligible"
         );
     }
@@ -5146,7 +5146,7 @@ mod tests {
         assert_eq!(&parsed.payload[..], INVITE);
     }
 
-    /// EtherType 0x8847: an MPLS-labelled frame yields the labelled packet's
+    /// EtherType 0x8847: an MPLS-labeled frame yields the labeled packet's
     /// own five-tuple, not silence.
     #[test]
     fn parse_mpls_unicast_recovers_invite() {
@@ -5176,7 +5176,7 @@ mod tests {
     }
 
     /// MPLS behind a VLAN tag — the ordinary shape on a carrier access port —
-    /// still reaches the labelled packet.
+    /// still reaches the labeled packet.
     #[test]
     fn parse_vlan_then_mpls_recovers_invite() {
         let mpls = splice_after_macs(&invite_frame(), 0x8847, &mpls_label(16_000, true));
@@ -5543,7 +5543,7 @@ mod tests {
     }
 
     /// UDP 2152: a GTP-U G-PDU carries a bare IP packet, which is how VoLTE
-    /// signalling crosses S1-U / N3.
+    /// signaling crosses S1-U / N3.
     #[test]
     fn parse_gtpu_recovers_invite() {
         let inner = invite_packet();

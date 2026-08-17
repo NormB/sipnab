@@ -36,7 +36,7 @@ and its method. The method requirement is the less obvious one, and it exists
 because [`SipDialog::method`](../../src/sip/dialog.rs) takes its value once at creation
 and never corrected. A response derives it from CSeq, so a malformed response —
 Call-ID present, CSeq absent — used to create a dialog under that Call-ID
-labelled with an invented method, and the genuine INVITE arriving afterwards
+labeled with an invented method, and the genuine INVITE arriving afterwards
 matched that entry instead of creating its own. The label then outlived the
 capture. Such a message now creates no dialog. It is still captured, counted, and
 searchable, and the INVITE that follows creates the dialog correctly.
@@ -173,10 +173,10 @@ CANCEL asks to abandon an INVITE with no final response yet. If the callee's
 
 The transition table in
 [`dialog_state_machine.rs`](../../src/sip/dialog_state_machine.rs) resolves this
-by CSeq method: a CANCEL request moves the dialog to `Cancelled`, and so does
+by CSeq method: a CANCEL request moves the dialog to `Canceled`, and so does
 the 487 on its own. Either is sufficient, because a CANCEL can travel a
 different path from the response and a capture can begin mid-dialog — requiring
-both once left a cancelled call sitting in `Ringing` forever. The 487 is the
+both once left a canceled call sitting in `Ringing` forever. The 487 is the
 reported outcome. The 200 that merely acknowledged the CANCEL transaction drops
 out, because it belongs to a different CSeq.
 
@@ -202,7 +202,7 @@ sequenceDiagram
     Note over UAC,UAS: this 200 answers the CANCEL, not the INVITE
     UAS-->>UAC: 487 Request Terminated (CSeq 1 INVITE)
     UAC->>UAS: ACK
-    Note over UAC,UAS: outcome is 487 Cancelled — filtering by CSeq method is what gets this right
+    Note over UAC,UAS: outcome is 487 Canceled — filtering by CSeq method is what gets this right
 ```
 
 ### Multi-leg correlation
@@ -325,7 +325,7 @@ The delay term is the one input a passive tap cannot measure, so
 [`MosDelay`](../../src/rtp/quality.rs) resolves it per stream and every surface
 scores through that: what the operator declared, then what an endpoint reported
 in an RTCP XR VoIP-metrics block, then what sipnab derives from a receiver
-report's sender-report echo, then a labelled assumption. Score a stream any
+report's sender-report echo, then a labeled assumption. Score a stream any
 other way and two surfaces report two numbers for one call — G.107's delay
 penalty has a knee at 177.3 ms, and a call past it reads more than a full MOS
 point too high on the assumption.

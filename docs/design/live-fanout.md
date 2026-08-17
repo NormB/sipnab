@@ -85,7 +85,7 @@ Three things decide it.
 
 **Nothing breaks, because the flag is currently inert live.** Today
 `sipnab -d eth0 --cores 8` prints a warning and captures on one socket. There is
-no live behaviour to preserve. Reuse is a strict widening of a flag that already
+no live behavior to preserve. Reuse is a strict widening of a flag that already
 does nothing on this path — the rarest and cheapest kind of flag change.
 
 **The module already assumes it.** `capture_live_fanout`'s own fallback warning
@@ -254,7 +254,7 @@ The three shapes a live processing pool could take, and what each costs:
   rule exists to avoid ([`docs/internals/invariants.md`](../internals/invariants.md)),
   and it is the arrangement `--cores` was built to escape.
 - **Partition so a dialog never crosses a worker.** Refuted by the 1173/2311
-  measurement above: a proxied call's signalling is already on two host pairs
+  measurement above: a proxied call's signaling is already on two host pairs
   before any hashing choice is made.
 
 **Recommendation: do not attempt live processing fan-out as a follow-on to CT4.**
@@ -332,7 +332,7 @@ today it cannot read the two that decide this question.
 
 CT11 proposes a hand-written cBPF program passed to `fanout_set_data_cbpf()`
 that returns a worker index, pinning ports 5060/5061 to worker 0 so all
-signalling is co-located with nothing having to hash it. Its stated condition:
+signaling is co-located with nothing having to hash it. Its stated condition:
 *"Worth doing only after CT4 ships and only if cross-worker call correlation is
 measured to be a real cost."*
 
@@ -348,14 +348,14 @@ Two further reasons not to reach for it even then:
   media on one worker. It does nothing for the proxied-dialog split — one
   Call-ID on two host pairs — which `parallel.rs` measured at 1173 of 2311
   dialogs and which `DialogStore::merge` exists to repair.
-- **Worker 0 becomes the signalling hotspot.** All 5060/5061 on one core is a new
-  serial stage on a signalling-heavy link, which is the load a SIP capture tool
+- **Worker 0 becomes the signaling hotspot.** All 5060/5061 on one core is a new
+  serial stage on a signaling-heavy link, which is the load a SIP capture tool
   most often meets.
 
 CT11's own unverified caveat also stands and should be carried forward verbatim:
 that `bpf_prog_create_from_user()` contains no capability check beyond
 `SOCK_FILTER_LOCKED` is *"unverified — confirm in `net/core/filter.c` before
-relying on the 'no CAP_BPF' claim."* The neighbouring claim about
+relying on the 'no CAP_BPF' claim."* The neighboring claim about
 `fanout_add()` was verified by running it
 ([`fanout.rs:183`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L183)); this one has not been, and
 reading kernel source is not the same as running against the kernel that is

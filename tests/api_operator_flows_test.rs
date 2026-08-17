@@ -124,7 +124,7 @@ fn every_stream_the_list_returns_can_be_fetched_by_its_own_id() {
 ///
 /// `/v1/streams` names an owning dialog in `associated_dialog`. That id must be
 /// fetchable on the dialog route — the two collections have to describe one
-/// world, or a client walking from media to signalling lands on a 404.
+/// world, or a client walking from media to signaling lands on a 404.
 #[test]
 fn a_stream_owning_dialog_is_fetchable_on_the_dialog_route() {
     let srv = ApiServer::spawn_with_pcap(G711, &[]);
@@ -140,7 +140,7 @@ fn a_stream_owning_dialog_is_fetchable_on_the_dialog_route() {
         assert_eq!(
             resp.status, 200,
             "a stream says it belongs to dialog '{owner}', and GET {path} \
-             answered {}. Media and signalling must describe one capture.",
+             answered {}. Media and signaling must describe one capture.",
             resp.status
         );
         checked += 1;

@@ -114,7 +114,7 @@ pub fn set_node_name(name: &str) {
     }
 }
 
-/// Normalise an operator-supplied node name, or reject it.
+/// Normalize an operator-supplied node name, or reject it.
 ///
 /// Split out from [`set_node_name`] because that writes a process-global
 /// `OnceLock`: a test that sets it changes the whole process, so "the default
@@ -442,7 +442,7 @@ mod tests {
     #[test]
     fn etag_serialises_with_named_fields() {
         let tag = CaptureIdentity::new().etag(5, 6);
-        let v = serde_json::to_value(&tag).expect("serialise");
+        let v = serde_json::to_value(&tag).expect("serialize");
         assert_eq!(v["instance"], tag.instance);
         assert_eq!(v["dialog_generation"], 5);
         assert_eq!(v["stream_generation"], 6);

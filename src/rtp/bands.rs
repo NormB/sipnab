@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! One set of quality bands, for every view that colours a number.
+//! One set of quality bands, for every view that colors a number.
 //!
 //! Four views banded jitter, loss and MOS independently, and disagreed:
 //!
@@ -10,7 +10,7 @@
 //! | 0.8 % loss | Good (< 1.0) | — | **Warning** (>= 0.5) | — |
 //!
 //! So one stream rendered green in the list and yellow in the detail view of
-//! that same stream, in the same session. The colour column is the TUI's
+//! that same stream, in the same session. The color column is the TUI's
 //! primary triage signal, which makes this worse than a tuning disagreement:
 //! an operator scanning for yellow finds a different set of calls depending on
 //! which pane they happen to be looking at.
@@ -22,7 +22,7 @@
 //!
 //! The bands live here rather than in `tui/` because they are a judgement about
 //! MEDIA, not about rendering: the same question a report, an alert or an
-//! export answers when it calls a stream bad. `tui/` decides the colour.
+//! export answers when it calls a stream bad. `tui/` decides the color.
 
 /// Where "good" becomes "warning", and "warning" becomes "bad".
 ///
@@ -66,7 +66,7 @@ impl Default for QualityBands {
             // Doubling is an approximation and worth stating: real paths are
             // asymmetric, so an 800 ms round trip may be 700 ms one way and
             // 100 ms the other. It is the right approximation for a triage
-            // colour, and the wrong one to quote as a one-way figure.
+            // color, and the wrong one to quote as a one-way figure.
             rtt_warn_ms: 300.0,
             rtt_bad_ms: 800.0,
         }
@@ -125,7 +125,7 @@ impl QualityBands {
     ///
     /// Only ever called with a figure somebody actually reported — a missing
     /// round trip has no band, because "not measured" is not a quality verdict
-    /// and colouring it green would be the whole defect this was added to fix.
+    /// and coloring it green would be the whole defect this was added to fix.
     #[must_use]
     pub fn rtt(&self, ms: f64) -> Band {
         if ms >= self.rtt_bad_ms {
@@ -137,7 +137,7 @@ impl QualityBands {
         }
     }
 
-    /// Reject a band set that cannot be honoured.
+    /// Reject a band set that cannot be honored.
     ///
     /// A warn boundary above its bad boundary is not a stricter setting, it is
     /// an unreachable middle: nothing would ever render as a warning, and the
@@ -148,7 +148,7 @@ impl QualityBands {
     /// and for a worse reason: every comparison against `NaN` is false, so a
     /// single `nan` here paints the whole column green and reports a healthy
     /// network. Zero itself is allowed — `loss_warn_pct = 0.0` means "any loss
-    /// at all is worth a colour", which is a real setting on a strict network.
+    /// at all is worth a color", which is a real setting on a strict network.
     ///
     /// This is the ONLY validator for a band set. `[quality]` keys are checked
     /// through it rather than beside it, because a warn boundary can arrive
@@ -313,7 +313,7 @@ mod tests {
         );
     }
 
-    /// Zero is a setting, not a mistake: "any loss at all is worth a colour".
+    /// Zero is a setting, not a mistake: "any loss at all is worth a color".
     #[test]
     fn a_zero_boundary_is_accepted_and_bands_from_zero() {
         let b = QualityBands {

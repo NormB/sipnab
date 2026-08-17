@@ -29,15 +29,15 @@
 //!
 //! Measured, not assumed: every permutation below produces a store
 //! **identical** to timestamp order — same state, same message count, same
-//! responses — for answered, cancelled and failed calls alike.
+//! responses — for answered, canceled and failed calls alike.
 //!
 //! The reason is that the advancing transitions in the INVITE family of
 //! `sip::dialog_state_machine` are guarded by a precondition on the *current*
 //! state, while only the terminal ones are unconditional:
 //!
 //! * `180`/`183` advance only from `Trying` or `Ringing`.
-//! * A 2xx to INVITE advances only from `Trying`, `Ringing` or `Cancelled`.
-//! * `BYE` → `Completed` and `CANCEL` → `Cancelled` are unconditional.
+//! * A 2xx to INVITE advances only from `Trying`, `Ringing` or `Canceled`.
+//! * `BYE` → `Completed` and `CANCEL` → `Canceled` are unconditional.
 //!
 //! So a late provisional or a late 2xx arriving *after* the call already ended
 //! cannot pull a terminal state backwards — which is exactly the reordering a
@@ -72,7 +72,7 @@ enum Shape {
     /// INVITE, 100, 180, 200, ACK, BYE, 200 — answered, then hung up.
     Answered,
     /// INVITE, 100, 180, CANCEL, 487 — caller gave up while it rang.
-    Cancelled,
+    Canceled,
     /// INVITE, 100, 486, ACK — callee was busy.
     Failed,
 }
@@ -81,7 +81,7 @@ impl Shape {
     fn call_id(self) -> &'static str {
         match self {
             Shape::Answered => "answered-parity@192.0.2.10",
-            Shape::Cancelled => "cancelled-parity@192.0.2.10",
+            Shape::Canceled => "canceled-parity@192.0.2.10",
             Shape::Failed => "failed-parity@192.0.2.10",
         }
     }
@@ -92,7 +92,7 @@ impl Shape {
     fn expected_state(self) -> DialogState {
         match self {
             Shape::Answered => DialogState::Completed,
-            Shape::Cancelled => DialogState::Cancelled,
+            Shape::Canceled => DialogState::Canceled,
             Shape::Failed => DialogState::Failed,
         }
     }
@@ -176,7 +176,7 @@ fn call_messages(shape: Shape) -> Vec<(i64, bool, String)> {
                 ),
             ),
         ],
-        Shape::Cancelled => vec![
+        Shape::Canceled => vec![
             invite,
             trying,
             ringing,
@@ -307,7 +307,7 @@ fn permutations(n: usize) -> Vec<(&'static str, Vec<usize>)> {
 /// reach the outcome the call actually had.
 #[test]
 fn timestamp_order_reaches_the_real_outcome() {
-    for shape in [Shape::Answered, Shape::Cancelled, Shape::Failed] {
+    for shape in [Shape::Answered, Shape::Canceled, Shape::Failed] {
         let n = call_messages(shape).len();
         let got = observe(shape, &(0..n).collect::<Vec<_>>());
         assert_eq!(
@@ -337,7 +337,7 @@ fn timestamp_order_reaches_the_real_outcome() {
 /// backwards.
 #[test]
 fn arrival_order_converges_for_every_permutation() {
-    for shape in [Shape::Answered, Shape::Cancelled, Shape::Failed] {
+    for shape in [Shape::Answered, Shape::Canceled, Shape::Failed] {
         let n = call_messages(shape).len();
         let baseline = observe(shape, &(0..n).collect::<Vec<_>>());
 
@@ -368,30 +368,30 @@ fn arrival_order_converges_for_every_permutation() {
 /// This test replaces the XFAIL that pinned that defect. The fix is not the
 /// dispatch change on its own — routing a `CANCEL`-seeded dialog into the
 /// INVITE machine also hands it the arm that answers a call, and the `200 OK`
-/// acknowledging the `CANCEL` then reports the cancelled call as `InCall`. The
-/// third message below is that `200`, and it is why this asserts `Cancelled`
+/// acknowledging the `CANCEL` then reports the canceled call as `InCall`. The
+/// third message below is that `200`, and it is why this asserts `Canceled`
 /// rather than merely "not `Trying`".
 #[test]
 fn a_capture_beginning_mid_dialog_reports_the_outcome_it_saw() {
     // Only the ending: CANCEL, then its 487. The INVITE was before the capture.
-    let msgs = parsed_call(Shape::Cancelled);
+    let msgs = parsed_call(Shape::Canceled);
     let mut store = DialogStore::new(64, false);
     for i in [3usize, 4] {
         store.process_message(msgs[i].clone());
     }
     let dialog = store
-        .get(Shape::Cancelled.call_id())
+        .get(Shape::Canceled.call_id())
         .expect("a mid-dialog capture still yields a dialog");
     assert_eq!(
         *dialog.state(),
-        DialogState::Cancelled,
-        "a capture opening on the CANCEL must report the call as cancelled, \
+        DialogState::Canceled,
+        "a capture opening on the CANCEL must report the call as canceled, \
          not as still being set up. Got {:?}",
         dialog.state()
     );
     assert_eq!(
         *dialog.state(),
-        Shape::Cancelled.expected_state(),
+        Shape::Canceled.expected_state(),
         "and it must reach the same outcome a capture of the whole call does"
     );
 }
@@ -403,7 +403,7 @@ fn a_capture_beginning_mid_dialog_reports_the_outcome_it_saw() {
 /// two readers finishing and their results being combined.
 #[test]
 fn merge_recovers_timestamp_order_from_permuted_stores() {
-    for shape in [Shape::Answered, Shape::Cancelled, Shape::Failed] {
+    for shape in [Shape::Answered, Shape::Canceled, Shape::Failed] {
         let msgs = parsed_call(shape);
         let n = msgs.len();
         let baseline = observe(shape, &(0..n).collect::<Vec<_>>());

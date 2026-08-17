@@ -256,10 +256,10 @@ pub fn render_stream_detail(
 
     // QoS marking. A terminal shows a value rather than a JSON key, so this
     // renders the codepoint's standard name beside the number — an operator
-    // recognises "EF" faster than 46, and "not observed" is a finding rather
+    // recognizes "EF" faster than 46, and "not observed" is a finding rather
     // than a missing row.
     //
-    // Coloured because it is actionable at a glance: unmarked media on a
+    // Colored because it is actionable at a glance: unmarked media on a
     // congested link is a configuration fault, and a stream re-marked in
     // flight is a policy boundary the operator may not know they crossed.
     let (marking, marking_style) = match stream.dscp_first {
@@ -574,7 +574,7 @@ pub fn render_stream_detail(
 /// Render an endpoint-reported MOS, or `n/a` when the endpoint marked it
 /// unavailable.
 ///
-/// Deliberately not styled by [`MosBand`]: that colouring belongs to the MOS
+/// Deliberately not styled by [`MosBand`]: that coloring belongs to the MOS
 /// sipnab estimated, and painting an endpoint's claim in the same green would
 /// invite reading the two as one number. The band's remedy is also wrong here
 /// — a bad score from the far end points at the far end, not at the capture.
@@ -620,11 +620,11 @@ enum MosBand {
 impl MosBand {
     /// Classify a MOS score into its band (closed lower bounds).
     ///
-    /// Four labels where the colour views use three, and that is deliberate: a
-    /// detail pane can afford to separate Fair from Poor where a colour column
+    /// Four labels where the color views use three, and that is deliberate: a
+    /// detail pane can afford to separate Fair from Poor where a color column
     /// cannot. Only the OUTER boundaries are shared, so this stays finer
     /// without being able to disagree — a score this view calls Good can never
-    /// be one the dashboard colours yellow.
+    /// be one the dashboard colors yellow.
     fn of(mos: f64, bands: &crate::rtp::bands::QualityBands) -> Self {
         if mos >= bands.mos_warn {
             Self::Good
@@ -673,7 +673,7 @@ fn section_header<'a>(title: &'a str, theme: &Theme) -> Line<'a> {
     ])
 }
 
-/// Theme colour for a shared-band verdict. Pure.
+/// Theme color for a shared-band verdict. Pure.
 ///
 /// One mapping for the whole view, so a pane that asks the shared bands for a
 /// verdict cannot also invent what that verdict looks like. Every caller here
@@ -697,7 +697,7 @@ fn jitter_style(jitter_ms: f64, theme: &Theme, bands: &crate::rtp::bands::Qualit
 ///
 /// Takes a measured value only. There is no style for "not measured" because
 /// that is not a quality verdict — the caller renders it as `n/a` in the muted
-/// colour, which is neither green nor red on purpose.
+/// color, which is neither green nor red on purpose.
 fn rtt_style(rtt_ms: f64, theme: &Theme, bands: &crate::rtp::bands::QualityBands) -> Style {
     Style::default().fg(band_color(bands.rtt(rtt_ms), theme))
 }
@@ -796,7 +796,7 @@ mod tests {
 
     use ratatui::style::Color;
 
-    /// `jitter_style` colours at the SHARED boundaries, not its own.
+    /// `jitter_style` colors at the SHARED boundaries, not its own.
     ///
     /// This asserted 20/50 while the stream list used 30/50, and passed —
     /// which is how a stream stayed green in the list and yellow in its own
@@ -856,7 +856,7 @@ mod tests {
         }
     }
 
-    /// `loss_style` colours at the SHARED boundaries.
+    /// `loss_style` colors at the SHARED boundaries.
     #[test]
     fn loss_style_follows_the_shared_bands() {
         let theme = Theme::default();
@@ -1383,7 +1383,7 @@ mod tests {
         assert!(jitter_row.contains("avg:"));
     }
 
-    /// The jitter sparkline gives a sample the same colour the numbers do.
+    /// The jitter sparkline gives a sample the same color the numbers do.
     ///
     /// The sparkline banded `if j < 20.0 { good } else if j < 50.0 { warning }`
     /// inline, three hundred lines above the `jitter_style` that reads the
@@ -1450,7 +1450,7 @@ mod tests {
             })
             .unwrap();
 
-        // The jitter trend row is the one labelled "Jitter:" whose average is
+        // The jitter trend row is the one labeled "Jitter:" whose average is
         // reported in ms; the MOS row above it carries block glyphs too.
         let buf = terminal.backend().buffer();
         let area = buf.area;

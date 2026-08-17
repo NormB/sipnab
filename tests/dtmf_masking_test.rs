@@ -6,7 +6,7 @@
 //! A DTMF digit decoded after answer is not a diagnostic detail, it is the
 //! caller's secret — voicemail PINs, calling-card numbers, account numbers and
 //! card numbers are all keyed in as telephone-events, in the clear, however
-//! well the signalling itself was protected. sipnab used to write those values
+//! well the signaling itself was protected. sipnab used to write those values
 //! to the log at `info`, which is the widest surface it has: the terminal, a
 //! redirected file, journald, and every aggregator that ships journald onward.
 //!
@@ -50,7 +50,7 @@ const SSRC: u32 = 0xdead_beef;
 /// again digit-free apart from `2` and `0`.
 const DURATION_TS: u16 = 1600;
 
-/// Signalling source, media source: 10.0.0.1. Media flows toward 10.0.0.2.
+/// Signaling source, media source: 10.0.0.1. Media flows toward 10.0.0.2.
 const CALLER: [u8; 4] = [10, 0, 0, 1];
 
 /// Callee address; the SDP `c=` line and the RTP destination.
@@ -63,7 +63,7 @@ const MEDIA_PORT: u16 = 40000;
 const TE_PAYLOAD_TYPE: u8 = 101;
 
 /// An INVITE whose SDP negotiates `telephone-event/8000` on
-/// [`TE_PAYLOAD_TYPE`], so the RTP that follows is resolved from signalling
+/// [`TE_PAYLOAD_TYPE`], so the RTP that follows is resolved from signaling
 /// rather than guessed by the heuristic (the heuristic path deliberately does
 /// no DTMF decode at all, which would make these tests vacuous).
 fn invite_with_telephone_event_sdp() -> Vec<u8> {

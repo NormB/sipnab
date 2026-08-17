@@ -10,7 +10,7 @@
 //! server asks it about tool calls from a caller. Written twice, the two
 //! copies drift: one grows the memory bound the other lacks, one fixes an
 //! off-by-one at the boundary and the other keeps it, and the deployment that
-//! reads the same knob on two surfaces gets two behaviours. This tree has
+//! reads the same knob on two surfaces gets two behaviors. This tree has
 //! already paid for one concept with two implementations more than once, so
 //! the counting lives here and the callers keep only what is genuinely theirs
 //! — the wording of their own log lines and the shape of their own refusal.
@@ -90,7 +90,7 @@ pub const MIN_TRACKED_PEERS: usize = crate::config::MIN_TRACKED_PEERS as usize;
 ///
 /// An operator who wants a different rate changes the cap. A surface that
 /// genuinely needs a different window wants its own limiter, with the window
-/// named in its own knob, so the flag and the behaviour still agree.
+/// named in its own knob, so the flag and the behavior still agree.
 ///
 /// Public so the `[limits]` wiring probes in `tests/config_wiring_test.rs` can
 /// assert their own premise against it — those probes send a burst and read the
@@ -319,7 +319,7 @@ mod tests {
     }
 
     /// Zero disables a cap rather than refusing everything — the property both
-    /// CLI knobs document, pinned here where the behaviour actually lives.
+    /// CLI knobs document, pinned here where the behavior actually lives.
     #[test]
     fn zero_disables_a_cap_rather_than_refusing_everything() {
         let mut lim = FixedWindowLimiter::new(0, 0, DEFAULT_MAX_TRACKED_PEERS);

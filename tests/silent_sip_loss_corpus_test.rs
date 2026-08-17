@@ -2,7 +2,7 @@
 
 //! The two silent-loss fixes, held against REAL captures.
 //!
-//! The synthetic tests in `silent_sip_loss_test.rs` prove the behaviour on
+//! The synthetic tests in `silent_sip_loss_test.rs` prove the behavior on
 //! hand-built packets. These prove it on the traffic the defects were found
 //! in, because both defects are of the kind a fixture only reproduces once you
 //! already know the answer — nobody writes a `KDMQ` fixture before discovering
@@ -96,7 +96,7 @@ fn classify_file(path: &Path, portrange: Option<(u16, u16)>) -> Option<Tally> {
     let reader = PcapReader::new(&inflated).ok()?;
 
     let opts = PipelineOptions {
-        // Media tracking off: these tests are about signalling, and the RTP
+        // Media tracking off: these tests are about signaling, and the RTP
         // path is the slowest part of a 100 MB capture.
         no_rtp: true,
         sip_portrange: portrange,
@@ -135,7 +135,7 @@ fn classify_file(path: &Path, portrange: Option<(u16, u16)>) -> Option<Tally> {
     Some(tally)
 }
 
-/// Requests using an RFC 3261 extension method are analysed, not deleted.
+/// Requests using an RFC 3261 extension method are analyzed, not deleted.
 ///
 /// Before the fix the first-line sniffer knew fourteen method names and every
 /// other request failed it, so the message never reached the parser and
@@ -180,7 +180,7 @@ fn extension_method_requests_are_analysed_across_the_corpus() {
     );
     assert!(
         total_extension >= 11_623,
-        "extension-method requests analysed dropped to {total_extension} across \
+        "extension-method requests analyzed dropped to {total_extension} across \
          {files} file(s) ({distinct} distinct method token(s), {total_sip} SIP \
          messages). More is fine — bump this. FEWER means the first-line sniff \
          narrowed again and real requests are being discarded before any output \
@@ -192,8 +192,8 @@ fn extension_method_requests_are_analysed_across_the_corpus() {
 ///
 /// The identity that has to hold on every capture:
 ///
-/// > analysed under the default range + reported as skipped
-/// >   == analysed with no port gate at all
+/// > analyzed under the default range + reported as skipped
+/// >   == analyzed with no port gate at all
 ///
 /// That is the whole reporting fix stated as an equation. If the left side is
 /// short, SIP is being dropped that the report does not mention — which is the
@@ -226,7 +226,7 @@ fn every_message_the_port_gate_discards_is_reported() {
         assert_eq!(
             gated.sip + skipped.messages,
             ungated.sip,
-            "{name}: {} analysed under --portrange {}-{} plus {} reported \
+            "{name}: {} analyzed under --portrange {}-{} plus {} reported \
              skipped does not equal the {} analysable with no port gate — the \
              gate is losing SIP the report does not account for",
             gated.sip,
@@ -248,7 +248,7 @@ fn every_message_the_port_gate_discards_is_reported() {
 
     let pct = 100.0 * sum_skipped as f64 / sum_ungated.max(1) as f64;
     eprintln!(
-        "corpus: {files} file(s), {sum_gated} analysed under --portrange \
+        "corpus: {files} file(s), {sum_gated} analyzed under --portrange \
          {}-{}, {sum_skipped} skipped and reported, {sum_ungated} analysable \
          ({pct:.1}% skipped)",
         DEFAULT_RANGE.0, DEFAULT_RANGE.1
@@ -269,7 +269,7 @@ fn every_message_the_port_gate_discards_is_reported() {
     assert!(
         sum_skipped >= 46_421,
         "the default --portrange skipped {sum_skipped} SIP message(s) across \
-         {files} file(s) ({sum_gated} analysed, {sum_ungated} analysable). More \
+         {files} file(s) ({sum_gated} analyzed, {sum_ungated} analysable). More \
          is fine — bump this. FEWER means skipped SIP stopped being counted."
     );
 }

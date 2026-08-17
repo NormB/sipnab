@@ -216,7 +216,7 @@ mod tests {
     /// carrying two `src=` values, the second attacker-chosen. In a fail2ban
     /// pipeline that is an attacker-chosen ban target.
     /// Split a log line into `key=value` fields the way a correct reader must:
-    /// honouring the quotes, so text inside a quoted value is one token and not
+    /// honoring the quotes, so text inside a quoted value is one token and not
     /// a field of its own.
     ///
     /// Counting substrings would NOT do here — quoting delimits the injected

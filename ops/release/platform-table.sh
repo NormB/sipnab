@@ -6,7 +6,7 @@
 # Rows are derived from the artifacts that ACTUALLY EXIST in the directory, not
 # from a hand-kept list, so the table cannot advertise a build that failed or
 # omit one that was added. An artifact whose platform this script does not
-# recognise is a hard error rather than a blank row: a silently unmapped target
+# recognize is a hard error rather than a blank row: a silently unmapped target
 # would publish a table that looks complete while missing a platform.
 #
 # It exists because `x86_64-unknown-linux-gnu` is not self-explanatory. The

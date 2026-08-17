@@ -70,7 +70,7 @@ reports the channel itself as a race — the noise that gets a race detector
 switched off.
 
 **The scope is a sample, and the workflow says so.** Five suites run: the REST
-API and its token path, HEP, MCP stdio, and the CLI behaviour tests. Nothing
+API and its token path, HEP, MCP stdio, and the CLI behavior tests. Nothing
 finds a race in a path outside that list. Add the suite rather than assuming
 coverage.
 
@@ -198,7 +198,7 @@ is why this section exists.
 
 One caveat on `rmcp` specifically: a major bump can be genuinely wide and still
 touch nothing sipnab uses. Diff the actual MCP wire traffic rather than reading
-the changelog, because that is what tells you whether behaviour moved.
+the changelog, because that is what tells you whether behavior moved.
 
 Branch protection sets `required_status_checks.strict: true`, so a green pull
 request shows `BEHIND` whenever `main` moves. Arm auto-merge per pull request
@@ -436,10 +436,10 @@ inherits release and restores `panic = "unwind"`.
 
 That also settles the question of a subset. At 87 s for everything, dropping a
 binary saves seconds and gives up a whole class of real-capture regression:
-diagnosis claims and message retention, ICMP evidence for signalling and for
+diagnosis claims and message retention, ICMP evidence for signaling and for
 media separately, conformance-rule hit rates, `nat_mismatch` and `no_media`
 firing only where the capture supports them, detector clocks against the
-capture's own timeline, every documented filter field and alias, behavioural
+capture's own timeline, every documented filter field and alias, behavioral
 scanner alerts backed by an outcome, the two silent-loss fixes, `-I` input-set
 accounting, and RTP-quality provenance. Losing any one of those is how the
 failure above survived for weeks.

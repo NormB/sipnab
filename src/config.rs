@@ -42,7 +42,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
         ]
         .as_slice(),
     );
-    // [quality] holds the boundaries the COLOUR COLUMN paints from, which is a
+    // [quality] holds the boundaries the COLOR COLUMN paints from, which is a
     // third question again: not "is this traffic hostile" ([security]), not
     // "how much may this run hold" ([limits]), and not "report this call as
     // faulty" ([diagnosis]). A number here decides only what an operator's eye
@@ -309,13 +309,13 @@ pub struct Config {
     /// Security detection settings.
     #[serde(default)]
     pub security: SecurityConfig,
-    /// Thresholds the signalling and media diagnosers compare against.
+    /// Thresholds the signaling and media diagnosers compare against.
     #[serde(default)]
     pub diagnosis: DiagnosisConfig,
     /// Properties of the observed media path — see [`MediaConfig`].
     #[serde(default)]
     pub media: MediaConfig,
-    /// Boundaries the quality colour column paints from — see
+    /// Boundaries the quality color column paints from — see
     /// [`QualityConfig`].
     #[serde(default)]
     pub quality: QualityConfig,
@@ -360,7 +360,7 @@ pub struct SipConfig {
     ///
     /// The shipped hour is twice RFC 4028's default `Session-Expires`, which
     /// grounds it for a trunk carrying session timers. It does not describe a
-    /// contact centre, where a caller parked on hold past an hour is a channel
+    /// contact center, where a caller parked on hold past an hour is a channel
     /// in use that the gauge stops counting. Widening it also widens the
     /// opposite error — a call whose BYE was lost is counted for longer — so
     /// this is the trade an operator makes for their own traffic.
@@ -369,7 +369,7 @@ pub struct SipConfig {
 }
 
 impl SipConfig {
-    /// Reject SIP values a run cannot honour.
+    /// Reject SIP values a run cannot honor.
     ///
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the key, when
@@ -425,7 +425,7 @@ pub struct CaptureConfig {
     /// browser's view of the web and not the deployment's. Kamailio, OpenSIPS
     /// and Janus all ship WSS on other ports, and behind a reverse proxy the
     /// port sipnab sees is whichever one the proxy forwards to. On such a
-    /// deployment the whole WebRTC signalling leg is invisible, so sipnab now
+    /// deployment the whole WebRTC signaling leg is invisible, so sipnab now
     /// tallies the SIP-over-WebSocket it declined to unwrap and reports the
     /// ports it was on. `--ws-portrange` overrides this.
     pub ws_ports: Option<String>,
@@ -629,7 +629,7 @@ pub struct SecurityConfig {
 }
 
 impl SecurityConfig {
-    /// Reject security values a run cannot honour.
+    /// Reject security values a run cannot honor.
     ///
     /// `kill_response` is range-checked here because `--kill-response` is
     /// range-checked by clap, and a config key must not be the lenient way in.
@@ -668,7 +668,7 @@ impl SecurityConfig {
             )));
         }
         // A zero threshold is refused for every detector below rather than
-        // read as "default" or "off". Both readings are silent behaviour the
+        // read as "default" or "off". Both readings are silent behavior the
         // operator did not ask for, and for a detector the wrong one is a run
         // that believes it is watching.
         if let Some(0) = self.reg_flood_threshold {
@@ -697,7 +697,7 @@ impl SecurityConfig {
             parse_business_hours(spec)?;
         }
         // Zero is refused for every scanner key too, and for the same reason it
-        // is refused above: each reading of it is silent behaviour nobody
+        // is refused above: each reading of it is silent behavior nobody
         // asked for. A zero count reports the first probe of any kind as a
         // scanner; a zero window resets the counters on every packet, so
         // nothing ever accumulates and the detector reports nothing at all; a
@@ -803,7 +803,7 @@ pub fn parse_portrange(s: &str) -> Result<(u16, u16), String> {
     Ok((start, end))
 }
 
-/// Thresholds the signalling and media diagnosers compare against.
+/// Thresholds the signaling and media diagnosers compare against.
 ///
 /// Separate from `[security]`, which decides whether traffic is hostile, and
 /// from `[limits]`, which bounds what one run may hold: a number here decides
@@ -846,7 +846,7 @@ pub struct DiagnosisConfig {
 }
 
 impl DiagnosisConfig {
-    /// Reject diagnosis thresholds a run cannot honour.
+    /// Reject diagnosis thresholds a run cannot honor.
     ///
     /// Every value is a duration or a percentage, so `0`, a negative, and a
     /// non-finite float are all refused, naming the key. A zero threshold
@@ -972,7 +972,7 @@ impl MediaConfig {
     }
 }
 
-/// Where the quality colour column turns yellow, and where it turns red.
+/// Where the quality color column turns yellow, and where it turns red.
 ///
 /// Every key is an override for one boundary of
 /// [`crate::rtp::bands::QualityBands`], which is the single place any view
@@ -983,7 +983,7 @@ impl MediaConfig {
 /// These are the numbers a site actually disagrees about. The defaults suit a
 /// general-purpose trunk: on a LAN PBX 30 ms of jitter is already a fault
 /// worth chasing, and on an international trunk 1 % loss is unremarkable. A
-/// colour column tuned for neither is wrong in both directions, and it is the
+/// color column tuned for neither is wrong in both directions, and it is the
 /// first thing an operator's eye lands on.
 ///
 /// Validation is deliberately NOT here. A warn boundary may be typed in the
@@ -1074,7 +1074,7 @@ pub struct LimitsConfig {
     /// nothing about how long. Thirty seconds describes fragments in flight;
     /// a persistent SIP/TCP trunk to a carrier goes quiet for far longer on
     /// any ordinary night, and sweeping its half-read stream means the next
-    /// segment re-initialises mid-message — so the peer that sent a valid
+    /// segment re-initializes mid-message — so the peer that sent a valid
     /// message is the one reported broken.
     pub reassembly_ttl_secs: Option<u64>,
     /// HEP rate limit.
@@ -1217,7 +1217,7 @@ impl LimitsConfig {
             ));
         }
         // Rejected rather than read as "unlimited" or "default": both would
-        // turn a typo into silent behaviour the operator did not ask for.
+        // turn a typo into silent behavior the operator did not ask for.
         if let Some(0) = self.mcp_max_rows {
             return Err(crate::Error::ConfigInvalid(
                 "[limits] mcp_max_rows must be > 0".into(),
@@ -1547,6 +1547,11 @@ pub fn parse_color(s: &str) -> Option<ratatui::style::Color> {
         "blue" => Some(Color::Blue),
         "magenta" => Some(Color::Magenta),
         "cyan" => Some(Color::Cyan),
+        // Both spellings, deliberately: this is a value an operator TYPES into
+        // a config file, so it is input format rather than prose. The
+        // US-English sweep rewrote the second arm and clippy caught it as an
+        // unreachable duplicate — which is the only reason a config saying
+        // `grey` did not silently stop being understood.
         "gray" | "grey" => Some(Color::Gray),
         "dark_gray" | "dark_grey" | "darkgray" | "darkgrey" => Some(Color::DarkGray),
         "reset" | "default" => Some(Color::Reset),
@@ -2532,7 +2537,7 @@ filter = "/"
         assert_eq!(loaded.config.capture.device.as_deref(), Some("lo"));
     }
 
-    /// `parse_color` maps names, grey/gray variants, reset, and hex RGB;
+    /// `parse_color` maps names, gray/gray variants, reset, and hex RGB;
     /// unknown names yield `None`.
     #[cfg(feature = "tui")]
     #[test]

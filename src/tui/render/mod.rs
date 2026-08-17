@@ -29,7 +29,7 @@ pub(in crate::tui) struct RenderFeedback {
     pub(in crate::tui) flow_detail_scroll: Option<u16>,
     /// Clamped horizontal scroll of the call-flow detail pane.
     pub(in crate::tui) flow_detail_hscroll: Option<u16>,
-    /// Largest horizontal offset the call-flow detail pane could honour at
+    /// Largest horizontal offset the call-flow detail pane could honor at
     /// the geometry it just rendered at (`0` = the message fits, so ←/→
     /// have nowhere to move it). Only the render knows the pane width; the
     /// controller needs it to explain a press that can't move anything
@@ -573,7 +573,7 @@ pub(in crate::tui) fn statistics_text(ds: &DialogStore, ss: &StreamStore) -> Str
             DialogState::Ringing => "Ringing",
             DialogState::InCall => "InCall",
             DialogState::Completed => "Completed",
-            DialogState::Cancelled => "Cancelled",
+            DialogState::Canceled => "Canceled",
             DialogState::Failed => "Failed",
             DialogState::Redirected => "Redirected",
             DialogState::Registered => "Registered",

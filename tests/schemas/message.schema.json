@@ -53,7 +53,7 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 63,
-      "description": "DSCP of the frame that carried this message (RFC 2474), the queue the network was asked to put this signalling in. Optional, and absent rather than null when no IP header was observed (a HEP-fed message) — so an absent key means the marking is unknown and 0 means it was observed and is best effort, which is itself a frequent fault."
+      "description": "DSCP of the frame that carried this message (RFC 2474), the queue the network was asked to put this signaling in. Optional, and absent rather than null when no IP header was observed (a HEP-fed message) — so an absent key means the marking is unknown and 0 means it was observed and is best effort, which is itself a frequent fault."
     }
   }
 }

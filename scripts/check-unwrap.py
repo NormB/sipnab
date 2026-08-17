@@ -241,7 +241,7 @@ for src_root in ROOTS:
           rel = os.path.join(root, f).replace(os.sep, '/')
           # A dev-only fixture generator, never shipped and never on a request
           # path; a panic there fails the person regenerating a fixture, loudly,
-          # which is the correct behaviour for that tool.
+          # which is the correct behavior for that tool.
           if rel == 'src/bin/gen_fixture.rs':
               continue
           scanned += 1

@@ -33,7 +33,7 @@ default stays readable on both dark and light terminals.
 
 ### Named colors
 
-`black`, `white`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray` (or `grey`), `dark_gray` (or `dark_grey`, `darkgray`, `darkgrey`), `reset` (or `default`)
+`black`, `white`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray` (or `gray`), `dark_gray` (or `dark_grey`, `darkgray`, `darkgrey`), `reset` (or `default`)
 
 ### Hex RGB
 

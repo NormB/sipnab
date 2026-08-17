@@ -104,7 +104,7 @@ packets to a pcap/pcapng on the server and returns the path.
 export_capture(path?, format?: "pcap" | "pcapng") -> { path, packets, bytes }
 ```
 
-Worth having independently of shutdown: right now an agent can *analyse* a live
+Worth having independently of shutdown: right now an agent can *analyze* a live
 capture but cannot preserve it, so anything it finds dies with the process.
 
 #### `shutdown_server` (destructive, opt-in, off by default)

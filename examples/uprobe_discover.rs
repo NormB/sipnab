@@ -35,13 +35,13 @@ fn main() {
 
     println!("{} TLS librar(y|ies) in use:\n", libs.len());
     for lib in &libs {
-        println!("  {} — {}", lib.flavour.label(), lib.path.display());
+        println!("  {} — {}", lib.flavor.label(), lib.path.display());
         println!(
             "    inode  {} (this, not the path, is its identity)",
             lib.inode
         );
         println!("    pids   {} mapping it", lib.pids.len());
-        println!("    symbol {}", lib.flavour.write_symbol());
+        println!("    symbol {}", lib.flavor.write_symbol());
 
         // The fact that matters. A path from /proc/<pid>/maps was resolved in
         // the MAPPING process's mount namespace; a uprobe is installed with a

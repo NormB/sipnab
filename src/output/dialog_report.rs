@@ -390,7 +390,7 @@ fn state_str(state: &DialogState) -> &'static str {
         DialogState::Ringing => "Ringing",
         DialogState::InCall => "InCall",
         DialogState::Completed => "Completed",
-        DialogState::Cancelled => "Cancelled",
+        DialogState::Canceled => "Canceled",
         DialogState::Failed => "Failed",
         DialogState::Redirected => "Redirected",
         DialogState::Registered => "Registered",
@@ -559,7 +559,7 @@ mod tests {
     }
 
     /// Build an INVITE dialog and drive it with the given follow-up messages
-    /// (each: start-line + CSeq), so we can craft Failed/Cancelled outcomes.
+    /// (each: start-line + CSeq), so we can craft Failed/Canceled outcomes.
     fn make_dialog(call_id: &str, followups: &[(&str, &str, bool)]) -> SipDialog {
         let t0 = base_ts();
         let raw_invite = build_sip(
@@ -664,10 +664,10 @@ mod tests {
         );
     }
 
-    /// A cancelled INVITE shows state Cancelled with code 487.
+    /// A canceled INVITE shows state Canceled with code 487.
     #[test]
     fn cancelled_dialog_shows_487() {
-        // INVITE cancelled before answer -> State Cancelled, Code 487.
+        // INVITE canceled before answer -> State Canceled, Code 487.
         let dialog = make_dialog(
             "cxl@example.com",
             &[
@@ -680,13 +680,10 @@ mod tests {
             ],
         );
         let report = print_dialog_report(&[&dialog], &[]);
-        assert!(
-            report.contains("Cancelled"),
-            "should be Cancelled: {report}"
-        );
+        assert!(report.contains("Canceled"), "should be Canceled: {report}");
         assert!(
             report.contains("487"),
-            "cancelled dialog should show its 487 code: {report}"
+            "canceled dialog should show its 487 code: {report}"
         );
     }
 

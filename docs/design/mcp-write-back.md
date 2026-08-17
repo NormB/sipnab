@@ -152,7 +152,7 @@ concrete rather than theoretical:
   wire, unmodified.
 
 A `From:` display name is a string a stranger chose. sipnab returning it verbatim
-is the tool working correctly; there is no version of a SIP analyser that
+is the tool working correctly; there is no version of a SIP analyzer that
 withholds the From header. So the model driving the tools reads
 attacker-authored text on every call, by design, and will continue to.
 
@@ -224,10 +224,10 @@ with a comment noting that `--mcp-file-root` and `-I` routinely name the same
 directory, so "an export named after an input is one autocompletion away".)
 
 Read those two fixes together and they say one thing. **Both failures were
-authorised.** Nobody bypassed a check. The operator typed the flag; the agent
+authorized.** Nobody bypassed a check. The operator typed the flag; the agent
 called the tool with a plausible filename. What went wrong was that a write was
 permitted to land somewhere the caller had no way to know was precious. The
-defences that worked were the ones that removed the possibility — a type with a
+defenses that worked were the ones that removed the possibility — a type with a
 private constructor, a precondition evaluated before the open — and the ones
 that would not have worked are exactly the ones proposed for write-back:
 a flag, a confirmation, a documented convention.
@@ -305,7 +305,7 @@ against — not a reason to stop.
 
 The reasoning as it stood, in one paragraph. Guards work here when they make
 a failure impossible rather than unlikely, and the two failures fixed this
-session were both *authorised* actions that landed somewhere precious — which is
+session were both *authorized* actions that landed somewhere precious — which is
 why the fixes were a type with a private constructor and a precondition
 evaluated before the open, not a flag and not a prompt. Write-back cannot be
 given a guard of that kind, because the thing it must prevent is not a
@@ -356,7 +356,7 @@ in section 6B: the flag is not what makes that tool safe.
 ## 8. Two documentation defects found while verifying this
 
 Neither is fixed here. Both are recorded so the next person does not re-derive
-them. Neither is a behaviour change.
+them. Neither is a behavior change.
 
 **The read-only claim in [`docs/mcp.md:1205`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md#L1205) is now imprecise, and its second
 sentence is ungrammatical and false.** "No tool mutates the dialog/stream/alert

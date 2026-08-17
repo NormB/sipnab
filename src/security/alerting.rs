@@ -607,7 +607,7 @@ impl AlertEngine {
             });
         if !reached {
             // Counted, not fired. The threshold is the operator's statement of
-            // how much evidence is worth an alert, and honouring it is the
+            // how much evidence is worth an alert, and honoring it is the
             // whole point of the field.
             return false;
         }
@@ -1443,7 +1443,7 @@ mod tests {
             "one allowed-but-unbooked event fills a limit of 1"
         );
 
-        // Declaring nothing is exactly the old behaviour.
+        // Declaring nothing is exactly the old behavior.
         let mut plain = TumblingWindow::new(2, 1);
         assert!(plain.allows_with_reserved(at(0), 0));
         plain.record();

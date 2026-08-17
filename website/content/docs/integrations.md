@@ -86,7 +86,7 @@ is never quoted: it holds a parsed IP address, not text from the wire.
 
 The detectors suit a honeypot or an edge box, and a carrier trunk is neither —
 [the Cookbook](/docs/cookbook/#10b-wire-to-fail2ban) sets out exactly what the
-behavioural rules test. Point sipnab at a capture of an ordinary hour and count
+behavioral rules test. Point sipnab at a capture of an ordinary hour and count
 who it would have banned:
 
 ```bash

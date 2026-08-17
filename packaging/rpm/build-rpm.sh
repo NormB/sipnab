@@ -85,7 +85,7 @@ Recommends:     alsa-lib
 
 %description
 One static binary that reads a whole estate: Kamailio, OpenSIPS and
-Asterisk mirror their signalling to a sipnab HEP listener, so one
+Asterisk mirror their signaling to a sipnab HEP listener, so one
 process covers every node with no collector, no database and no web UI.
 Adds first-class RTP support, VoIP diagnosis, security analysis, and
 a declarative filter DSL.

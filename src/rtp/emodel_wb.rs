@@ -52,7 +52,7 @@
 ///
 /// This is an explicit input with no default on purpose. At 6.6 kbit/s the two
 /// tables differ by 15 R-points — about 0.59 MOS — so silently assuming one
-/// would be a larger error than most of the impairments being modelled.
+/// would be a larger error than most of the impairments being modeled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListeningContext {
     /// Handset or monaural headset — G.113 Table IV.1.
@@ -77,7 +77,7 @@ pub const AMR_WB_MODES_KBPS: [f64; 9] =
 /// slip. Do not "correct" it, and do not rank modes by impairment.
 ///
 /// Three modes — 19.85, 18.25 and 14.25 — have no diotic value at all.
-/// Interpolating them from their neighbours is not defensible when the series
+/// Interpolating them from their neighbors is not defensible when the series
 /// they sit in is not even monotonic.
 #[must_use]
 pub fn amr_wb_ie(kbps: f64, context: ListeningContext) -> Option<f64> {
@@ -153,7 +153,7 @@ pub fn ie_eff_wb(ie_wb: f64, loss_pct: f64, bpl: f64) -> f64 {
 ///
 /// `Is,WB` is 0 by Eq (7-3) and `A` is 0 by Eq (7-16), both of which G.107.1
 /// gives as the wideband defaults — the simultaneous-impairment and advantage
-/// terms have not been analysed for the wideband case. `Id,WB` is 0 here
+/// terms have not been analyzed for the wideband case. `Id,WB` is 0 here
 /// because the delay, talker-echo and listener-echo terms of Eq (7-4) need
 /// RLR, TELR, WEPL and absolute delay, none of which are recoverable from a
 /// passive capture. A capture measures the codec and the loss; it does not

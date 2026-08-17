@@ -441,7 +441,7 @@
     "signaling_diagnosis": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Signalling-side diagnosis. Every detection is optional and absent means checked-and-not-detected; the whole object is omitted when nothing fired.",
+      "description": "Signaling-side diagnosis. Every detection is optional and absent means checked-and-not-detected; the whole object is omitted when nothing fired.",
       "required": [
         "hints"
       ],
@@ -605,7 +605,7 @@
               "properties": {
                 "kind": {
                   "enum": [
-                    "cancelled",
+                    "canceled",
                     "no_final_response"
                   ]
                 },

@@ -70,7 +70,7 @@ $PERF record --call-graph dwarf -F 999 -o p.data -- \
   target/profiling/sipnab -N -I corpus.pcap --cores 2 --report --no-cli-print
 ```
 
-- `--call-graph dwarf` — optimised aarch64 builds omit frame pointers, so `fp`
+- `--call-graph dwarf` — optimized aarch64 builds omit frame pointers, so `fp`
   unwinding produces truncated stacks. DWARF unwinding is slower to
   *report* but is the only thing that gives usable callers here.
 - `-F 999` — samples per second. The default is often too coarse for a run that
@@ -142,7 +142,7 @@ An `Arc` clone costs a few nanoseconds, which is nothing until it happens
 | **valgrind `callgrind`** | Exact instruction counts, deterministic, no sampling noise | Comparing two builds where the difference is small enough that sampling noise hides it. 20-50× slowdown; use the small corpus |
 | **valgrind `cachegrind`** | Cache-miss and branch-prediction simulation | When the profile is flat but the work is memory-bound |
 | `dhat` / `heaptrack` / `bytehound` | Heap allocation sites, peak usage, leaks | When the allocator is hot — which, given the finding above, is the likely next question |
-| `coz` (`coz-rs`) | Causal profiling: predicts the end-to-end speedup from optimising a given function | When a pipeline has several hot spots and you need to know which one actually gates throughput |
+| `coz` (`coz-rs`) | Causal profiling: predicts the end-to-end speedup from optimizing a given function | When a pipeline has several hot spots and you need to know which one actually gates throughput |
 
 The reference host carries neither valgrind nor coz as of 2026-08-09.
 

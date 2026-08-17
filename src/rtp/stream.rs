@@ -55,7 +55,7 @@ const BURST_WINDOW_SEQ_SPACE: usize = u16::MAX as usize + 1;
 /// [`crate::sip::dialog_store::set_max_messages_per_dialog`] and for the same
 /// reason: streams are created on four independent paths — the batch runner,
 /// the TUI, each `--cores` shard and the WASM entry point — and a value
-/// threaded to some of them is a setting honoured on some surfaces and
+/// threaded to some of them is a setting honored on some surfaces and
 /// ignored on others.
 static LOST_SEQ_LOG_CAP: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(DEFAULT_LOST_SEQ_LOG_CAP);
@@ -471,7 +471,7 @@ impl RtpStream {
     ///
     /// Derived rather than stored, for the reason
     /// [`orphaned`](Self::orphaned) spells out: a stored flag can drift from
-    /// the two values it summarises, and here the drift would be a re-marking
+    /// the two values it summarizes, and here the drift would be a re-marking
     /// reported on a stream whose bytes say otherwise.
     #[must_use]
     pub fn dscp_remarked(&self) -> bool {
@@ -610,7 +610,7 @@ impl RtpStream {
     /// most `lost_seq_cap` losses, and at the shipped one-loss-in-ten this is
     /// the 10 000 sequence numbers that ratio implies. Without the derivation,
     /// raising the log to 10 000 losses would retain ten times the history and
-    /// then analyse the same 10 000-sequence tail of it.
+    /// then analyze the same 10 000-sequence tail of it.
     ///
     /// Clamped to one lap of the 16-bit sequence counter, past which a serial
     /// span repeats itself and a wider bitmap would allocate for nothing.
@@ -761,7 +761,7 @@ impl RtpStream {
             // variation being measured is itself sub-millisecond, so truncating
             // to whole milliseconds quantises away the entire signal and reports
             // jitter far above what the packets show. `num_microseconds` returns
-            // None only past ~292,000 years, where the old behaviour is fine.
+            // None only past ~292,000 years, where the old behavior is fine.
             let since = timestamp.signed_duration_since(prev_arrival);
             let arrival_diff = since
                 .num_microseconds()

@@ -232,7 +232,7 @@ fn grow_detail(app: &mut App) {
     if app.flow.raw_preview {
         // Set before the range check: pressing the key IS the operator taking
         // the split over, even at the end of the range, and from then on the
-        // percentage is honoured rather than overridden by the label fit (#184).
+        // percentage is honored rather than overridden by the label fit (#184).
         app.flow.raw_preview_pct_user_set = true;
         if app.flow.raw_preview_pct < 80 {
             app.flow.raw_preview_pct = (app.flow.raw_preview_pct + 5).min(80);

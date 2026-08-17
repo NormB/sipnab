@@ -411,7 +411,7 @@ fn direction_name(direction: SdpDirection) -> &'static str {
     }
 }
 
-/// RFC 3264 §8.4 — hold signalled by blanking the connection address.
+/// RFC 3264 §8.4 — hold signaled by blanking the connection address.
 ///
 /// §8.4 keeps one legitimate use: an *initial* offer from an agent that does not
 /// yet know its own address. The first SDP in the dialog is therefore exempt,

@@ -11,7 +11,7 @@
 //! cannot be opened.
 //!
 //! Belt and suspenders: after emitting OSC 52 (fire-and-forget — there
-//! is no acknowledgement), the platform helper is also tried silently,
+//! is no acknowledgment), the platform helper is also tried silently,
 //! for local terminals without OSC 52 support. A missing helper is not
 //! reported as a failure, because the OSC 52 write likely worked.
 

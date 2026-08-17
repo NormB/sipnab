@@ -108,7 +108,7 @@ impl SipnabSession {
             let link_type = pkt.link_type as i32;
             let capture_pkt = Packet::new(ts, pkt.data, caplen, orig_len, pkt.interface, link_type);
 
-            // The browser analyser counts undecodable frames like every other
+            // The browser analyzer counts undecodable frames like every other
             // entry point. A user who drags in a capture sipnab cannot read
             // must not be shown an empty result that looks like a clean one.
             let parsed = match parse_packet(&capture_pkt) {

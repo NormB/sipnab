@@ -152,7 +152,7 @@ fn bpf_autogeneration_rules() {
     assert_eq!(
         bpf_for(&["-d", "eth0", "--capture-tunnels=8472"]).as_deref(),
         Some(bootstrap::auto_bpf_filter(5060, 5061, &[8472]).as_str()),
-        "a custom tunnel port list is honoured verbatim"
+        "a custom tunnel port list is honored verbatim"
     );
 
     // Positional trailing args are the explicit BPF filter (tcpdump-style).

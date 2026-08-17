@@ -31,7 +31,7 @@ use sipnab::mcp::shape::{DEFAULT_LIMIT, HARD_LIMIT, resolve_limit, resolve_limit
 fn the_default_cap_is_still_the_old_constant() {
     assert_eq!(
         HARD_LIMIT, 1000,
-        "the default ceiling moved; that is a behaviour change"
+        "the default ceiling moved; that is a behavior change"
     );
     let cli = Cli::parse_from_args(["sipnab"]);
     assert_eq!(
@@ -50,7 +50,7 @@ fn a_request_over_the_cap_is_clamped_to_the_configured_cap() {
         10,
         "under the cap passes through"
     );
-    // A cap ABOVE the old constant must actually be honoured -- the point of
+    // A cap ABOVE the old constant must actually be honored -- the point of
     // the setting is to allow more, not only less.
     assert_eq!(resolve_limit_with_cap(Some(5_000), 10_000), 5_000);
 }
@@ -79,11 +79,7 @@ fn the_flag_wins_over_config_which_wins_over_the_default() {
     cfg.limits.mcp_max_rows = Some(200);
 
     let from_config = Cli::parse_from_args(["sipnab"]);
-    assert_eq!(
-        from_config.mcp_row_cap(&cfg),
-        200,
-        "config must be honoured"
-    );
+    assert_eq!(from_config.mcp_row_cap(&cfg), 200, "config must be honored");
 
     let from_flag = Cli::parse_from_args(["sipnab", "--mcp-max-rows", "75"]);
     assert_eq!(

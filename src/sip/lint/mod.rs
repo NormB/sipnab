@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! SIP conformance linting: what the signalling promised, and what the wire did.
+//! SIP conformance linting: what the signaling promised, and what the wire did.
 //!
 //! # The rule class only this tool can run
 //!
 //! Every other SIP linter reads text against a grammar. It can tell you the
 //! `Contact` header is missing its angle brackets. It cannot tell you that the
 //! SDP offered PCMU on payload type 0 and the far end then sent payload type 8,
-//! because it never sees the RTP. sipnab holds signalling and media in one
+//! because it never sees the RTP. sipnab holds signaling and media in one
 //! process, so the [`media`] rules compare the declaration against the
 //! observation — a class of defect that is invisible to a grammar and obvious
 //! on a capture.
@@ -217,7 +217,7 @@ pub struct LintOutcome {
     pub withheld: WithheldCounts,
 }
 
-/// A named subset of the catalogue.
+/// A named subset of the catalog.
 ///
 /// Selecting by name is what lets one repository run `must` in CI and
 /// `observation` in a triage session without maintaining two suppression lists.
@@ -299,7 +299,7 @@ pub const DEFAULT_MAX_PER_RULE: usize = 25;
 /// Which rules run, how loud they have to be, and what to stay quiet about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LintConfig {
-    /// The selected subset of the catalogue.
+    /// The selected subset of the catalog.
     ruleset: Ruleset,
     /// Findings quieter than this are dropped.
     min_severity: Severity,
@@ -327,7 +327,7 @@ impl LintConfig {
         Self::default()
     }
 
-    /// Select a named subset of the catalogue.
+    /// Select a named subset of the catalog.
     #[must_use]
     pub fn with_ruleset(mut self, ruleset: Ruleset) -> Self {
         self.ruleset = ruleset;
@@ -467,7 +467,7 @@ fn suppression_matches(pattern: &str, rule_id: &str) -> bool {
 /// Collects findings, applying the configuration as they arrive.
 ///
 /// Rules push through this rather than into a bare `Vec` so suppression and the
-/// per-rule cap cannot be forgotten by one rule and honoured by the rest.
+/// per-rule cap cannot be forgotten by one rule and honored by the rest.
 pub(crate) struct FindingSink<'a> {
     /// The configuration deciding what survives.
     config: &'a LintConfig,
@@ -585,7 +585,7 @@ impl<'a> FindingSink<'a> {
 
 /// The conformance linter.
 ///
-/// Holds a [`LintConfig`] and runs the catalogue against a message, a dialog,
+/// Holds a [`LintConfig`] and runs the catalog against a message, a dialog,
 /// or a dialog and the media observed for it.
 #[derive(Debug, Clone, Default)]
 pub struct Linter {
@@ -751,7 +751,7 @@ mod tests {
         }
     }
 
-    /// An exact suppression silences one rule and leaves its neighbours alone.
+    /// An exact suppression silences one rule and leaves its neighbors alone.
     #[test]
     fn exact_suppression_silences_one_rule() {
         let config = LintConfig::new().suppress(BRANCH_COOKIE.id);
@@ -804,7 +804,7 @@ mod tests {
         }
     }
 
-    /// The sink honours the per-rule cap and reports nothing beyond it.
+    /// The sink honors the per-rule cap and reports nothing beyond it.
     #[test]
     fn sink_caps_repeated_findings() {
         let config = LintConfig::new().with_max_per_rule(2);

@@ -524,7 +524,7 @@ def build_sip_sdp_example(path: str) -> None:
 
     Load-bearing: it must open cleanly through the TUI file-open path, and the
     answered-to-BYE span stays under five seconds so the documented plugin
-    behaviour (docs/design/wasm-plugin-api.md) still holds.
+    behavior (docs/design/wasm-plugin-api.md) still holds.
     """
     caller, callee = "192.0.2.101", "192.0.2.100"
     call_id = "sdp-example-synth@192.0.2.101"
@@ -647,9 +647,9 @@ def build_sip_auth_failure(path: str) -> None:
     Load-bearing properties:
     * the FIRST dialog emitted must be the one carrying the 403, because
       `mcp_diagnostic_tools_test` triages `first_call_id(...)` and asserts the
-      verdict is `signalling`;
+      verdict is `signaling`;
     * ZERO RTP packets in the whole capture -- with a stream store that saw no
-      media, sipnab withholds `no_media`, and the verdict stays `signalling`
+      media, sipnab withholds `no_media`, and the verdict stays `signaling`
       rather than becoming `both`;
     * a >= 400 final response, which is what makes `signaling_diagnosis`
       non-null; `json_schema_test` requires at least one such line to
@@ -877,7 +877,7 @@ def build_sip_488_codec_reject(path: str) -> None:
       the codec requires the RFC 3551 static payload table -- payload type 0
       is permanently PCMU. An extractor that only reads rtpmap lines reports
       "the caller offered nothing" here, which is a different diagnosis;
-    * the call's final response is 488, and it carries a signalling
+    * the call's final response is 488, and it carries a signaling
       diagnosis, which is the shape `call_report.schema.json` needs
       validated;
     * the third keepalive's request has no `Max-Forwards` and a branch with
