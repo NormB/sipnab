@@ -56,6 +56,7 @@ pub mod names;
 pub mod net;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pipeline;
+pub mod stun;
 
 /// WASM plugin host — third-party dialog detections.
 ///

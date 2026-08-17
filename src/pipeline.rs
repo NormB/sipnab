@@ -1992,6 +1992,23 @@ pub fn classify_packet(
         return PacketAction::None;
     }
 
+    // STUN: the endpoint asking the network who it is. Checked BEFORE RTP/RTCP
+    // because ICE multiplexes STUN and media on one port, and `stun::parse`
+    // rejects RTP outright (RTP's version bits are 0b10; STUN's top two bits
+    // are always zero), so this cannot swallow media.
+    //
+    // Consumed and stopped: a STUN message is not SIP and not media, and
+    // letting it fall through made a capture of nothing but failed NAT
+    // discovery report as "no SIP traffic found".
+    if let Some(stun_msg) = crate::stun::parse(&pp.payload) {
+        crate::stun::note_message(
+            &stun_msg,
+            std::net::SocketAddr::new(pp.src_addr, pp.src_port),
+            std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
+        );
+        return PacketAction::None;
+    }
+
     if is_rtcp_packet(&pp.payload, pp.dst_port) {
         let rtcp_packets = rtp::rtcp::parse_rtcp(&pp.payload);
         if rtcp_packets.is_empty() {

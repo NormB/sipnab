@@ -74,6 +74,15 @@ pub struct MediaDiagnosis {
     pub sdp_media: Option<String>,
     /// Observed RTP source address string.
     pub actual_media: Option<String>,
+    /// True when the dialog advertised a PRIVATE media address to a peer that
+    /// is not itself private — an RFC 1918 / RFC 4193 / link-local `c=` line
+    /// offered across the public internet, which the peer cannot route back to.
+    ///
+    /// A warning and not an error: it is perfectly correct inside one LAN, and
+    /// correct behind an SBC or ALG that rewrites the SDP downstream. It is
+    /// wrong when nothing rewrites it, and that case is a silent one — the call
+    /// signals cleanly, answers 200, and carries audio in one direction only.
+    pub private_media_address: bool,
     /// Human-readable diagnostic hints.
     pub hints: Vec<String>,
 
@@ -463,6 +472,26 @@ pub enum MediaOrigin {
     Rewritten,
 }
 
+/// Whether an address is one nothing on the public internet can route back to:
+/// RFC 1918 v4, RFC 4193 unique-local v6, link-local, or loopback.
+///
+/// Carrier-grade NAT space (RFC 6598, `100.64.0.0/10`) is deliberately NOT
+/// here. It is routable within the carrier that assigned it, an endpoint given
+/// one is often reachable from its own SBC, and flagging it would fire on every
+/// call from a large share of mobile networks — a warning that cries wolf on
+/// working calls is one operators learn to skip.
+fn is_unroutable_publicly(addr: IpAddr) -> bool {
+    match addr {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local() || v4.is_loopback(),
+        IpAddr::V6(v6) => {
+            // `is_unique_local` and `is_unicast_link_local` are unstable, so the
+            // prefixes are tested directly: fc00::/7 and fe80::/10.
+            let seg = v6.segments();
+            v6.is_loopback() || (seg[0] & 0xfe00) == 0xfc00 || (seg[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
 /// Judge one stream's source address against the dialog's advertised set.
 ///
 /// Addresses only, never ports, matching [`diagnose_media`] exactly — and the
@@ -684,6 +713,38 @@ pub fn diagnose_media(dialog_streams: &[&RtpStream], media: &MediaContext) -> Me
             }
             break;
         }
+    }
+
+    // A private `c=` address offered to a peer that is not itself private.
+    //
+    // Warning, not error: inside one LAN this is correct, and behind an SBC or
+    // ALG that rewrites the SDP downstream it is also correct. It is wrong when
+    // nothing rewrites it, and that failure is silent — the call signals
+    // cleanly, answers 200, and carries audio one way. Seen in the field as a
+    // private `c=` line offered to a public peer, with hundreds of RTP packets
+    // leaving and none returning.
+    //
+    // The peer check is what keeps this quiet on a LAN-only capture: a private
+    // address advertised to another private address routes fine.
+    let peer_is_public = dialog_streams
+        .iter()
+        .any(|s| !is_unroutable_publicly(s.key.dst.ip()));
+    if peer_is_public
+        && let Some(private) = media
+            .advertised
+            .iter()
+            .find(|a| is_unroutable_publicly(**a))
+    {
+        diag.private_media_address = true;
+        let offered = advertised_endpoint_label(media, *private);
+        diag.hints.push(format!(
+            "SDP offered the private media address {offered} to a peer on the \
+                 public internet, which cannot route back to it. This is correct \
+                 only if something downstream rewrites the SDP (an SBC, an ALG, \
+                 or a media proxy); if nothing does, the far end sends audio to \
+                 an address that does not exist and the call is one-way while \
+                 signaling looks healthy."
+        ));
     }
 
     // Combine one-way + NAT hint

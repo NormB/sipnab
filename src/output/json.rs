@@ -163,6 +163,10 @@ struct DiagnosisJson {
     nat_mismatch: bool,
     /// No RTP observed for an answered call.
     no_media: bool,
+    /// SDP advertised a private media address to a public peer. A warning
+    /// rather than a fault: correct on one LAN, and correct behind something
+    /// that rewrites the SDP downstream.
+    private_media_address: bool,
     /// Human-readable findings.
     hints: Vec<String>,
 }
@@ -663,6 +667,7 @@ pub fn dialog_to_json(
         one_way_audio: diagnosis.one_way_audio,
         nat_mismatch: diagnosis.nat_mismatch,
         no_media: diagnosis.no_media,
+        private_media_address: diagnosis.private_media_address,
         hints: diagnosis.hints.clone(),
     };
 

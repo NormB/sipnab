@@ -24,6 +24,11 @@ Tiers:
   dependency order, outside the P0-P5 scale for the same reason `PA` is — but
   `TK1`–`TK3` are P0/P1-severity defects that exist today, and the section says
   so rather than letting the placement quietly downgrade them.
+- **NAT — STUN/TURN visibility**: the 2026-08-17 answer to a one-way-audio
+  investigation whose root cause was a filtering appliance dropping UDP.
+  Outside the P0-P5 scale because it is a capability sipnab lacked rather than
+  a defect in one it had; `NAT1`/`NAT2` shipped the day the section was
+  written, and `NAT3`/`NAT4` are what they left open.
 - **P0 — panics & security**: crashes reachable from real input,
   injection, auth/limit bypass, key-material hygiene.
 - **P1 — wrong results in real use**: incorrect exports/metrics/state,
@@ -2436,6 +2441,71 @@ neither visible to `--features full`:**
 
 There is no `hex` crate in this tree — neither a regular nor a dev dependency —
 so tests that need hex encode it by hand.
+
+## NAT — STUN/TURN visibility (added 2026-08-17)
+
+Raised by two field captures of a one-way-audio complaint, whose root cause was
+a web-filtering appliance silently discarding UDP. sipnab read one of them as
+*"No SIP traffic found"*, which was true and useless: the capture held the cause.
+
+- [x] **NAT1 — STUN and TURN are invisible, so a NAT-discovery failure reads as
+  an empty capture.** A capture of nothing but two unanswered Binding Requests
+  is not an empty capture — it is the reason a call carried audio one way. The
+  chain is: the endpoint asks for its reflexive address, gets no reply, falls
+  back to advertising its PRIVATE address in SDP, and the far end then sends
+  media somewhere unroutable while signaling looks perfect.
+
+  **Done 2026-08-17.** `crate::stun` parses RFC 5389 (header, cookie,
+  transaction ID, `XOR-MAPPED-ADDRESS`, `ERROR-CODE`, `SOFTWARE`) and tracks
+  transactions, so a request that never came back is reported with the number of
+  attempts — a retransmission counted as one unanswered question, not several.
+  An ERROR response counts as ANSWERED: the server was reachable and refused,
+  which points somewhere else entirely.
+
+  TURN came mostly free, and the exceptions are the point: RFC 5766 reuses the
+  STUN header, so `Allocate` parses without the parser knowing TURN exists, but
+  its attributes (`XOR-RELAYED-ADDRESS`, `XOR-PEER-ADDRESS`, `LIFETIME`) did
+  not, an unanswered `Allocate` is a different fault from an unanswered
+  `Binding` and is labelled as such, and **ChannelData is not STUN-shaped at
+  all** — no cookie, no transaction ID — so it is recognised by its channel
+  number instead. The three multiplexed protocols separate cleanly on their high
+  bits: STUN `00`, ChannelData `01`, RTP `10`.
+
+  The reports name the likely cause rather than only the symptom. Silence rather
+  than a refusal points at something in the path dropping the packets, and on
+  school, campus and corporate networks that is most often a security
+  appliance — web filter, secure web gateway, firewall or IPS — discarding UDP
+  it does not recognise. That is the answer the originating investigation
+  reached, generalised.
+
+- [x] **NAT2 — a private media address offered to a public peer is not
+  flagged.** An SDP `c=` line carrying an RFC 1918 / RFC 4193 / link-local
+  address is correct inside one LAN, and correct behind an SBC or ALG that
+  rewrites it downstream. It is wrong when nothing rewrites it, and that failure
+  is silent: the call answers `200` and carries audio one way.
+
+  **Done 2026-08-17** as `MediaDiagnosis::private_media_address`, a WARNING
+  rather than a fault, with a hint that says which of those two situations the
+  reader should check for. Raised only when the peer is itself public, so a
+  LAN-only capture stays quiet. Carrier-grade NAT space (RFC 6598) is
+  deliberately excluded: it is routable within the carrier that assigned it, and
+  flagging it would fire on a large share of working mobile calls.
+
+- [ ] **NAT3 — the STUN/TURN findings reach the batch summary only.** The
+  unanswered-transaction report is a `warn` on the headless path. It is not in
+  `/v1/stats`, not a Prometheus counter, and not an MCP tool, so an agent or a
+  dashboard cannot see the one signal that explains a one-way-audio complaint.
+  `private_media_address` IS exported (Prometheus and `--json-dialogs`), so the
+  two halves of one diagnosis are surfaced unevenly. Close it the way `G1`
+  closed the capture-quality block: one place, every surface.
+
+- [ ] **NAT4 — TURN relayed media is parsed as nothing.** `is_channel_data`
+  recognises the framing, and the pipeline then drops it. Media relayed through
+  TURN is therefore invisible to reconstruction — the RTP inside a ChannelData
+  wrapper is never unwrapped, so a call whose media goes through a relay reports
+  as having no media at all. Unwrapping it would make relayed calls readable,
+  and is the difference between "this call had no audio" and "this call's audio
+  went through a relay".
 
 ## P5 — features & long-term / exploratory
 

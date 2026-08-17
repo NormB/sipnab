@@ -469,6 +469,7 @@ impl PrometheusMetrics {
             one_way_audio,
             nat_mismatch,
             no_media,
+            private_media_address,
             sdp_media: _,
             actual_media: _,
             hints: _,
@@ -482,6 +483,10 @@ impl PrometheusMetrics {
             (one_way_audio, "one_way_audio"),
             (nat_mismatch, "nat_mismatch"),
             (no_media, "no_media"),
+            // Counted, not merely hinted: a fleet advertising private media
+            // addresses is a misconfiguration with a shape, and one call
+            // showing it is far less interesting than the rate.
+            (private_media_address, "private_media_address"),
         ] {
             if *raised {
                 *self.diagnosis_total.entry(kind.to_string()).or_insert(0) += 1;

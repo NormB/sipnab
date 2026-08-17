@@ -1045,10 +1045,66 @@ fn retention_summary(dialogs: &DialogStore) -> Option<String> {
 ///
 /// Silent when the capture was clean, so a good run stays quiet — the same rule
 /// [`retention_summary`] follows.
+/// Report Binding Requests that never came back.
+///
+/// Separate from `capture_quality`, which is about what sipnab RECEIVED. This
+/// is about what the NETWORK did: the frames arrived perfectly, and the answer
+/// to them did not. Reported even when the capture holds no SIP at all, which
+/// is the case that most needs it — a capture of nothing but failed NAT
+/// discovery used to read as "no SIP traffic found", which is true and useless.
+fn report_stun_failures() {
+    let (unanswered, answered) = crate::stun::unanswered_requests();
+    if unanswered.is_empty() {
+        return;
+    }
+    let total = unanswered.len() as u64 + answered;
+    for req in unanswered.iter().take(5) {
+        let who = req
+            .software
+            .as_deref()
+            .map(|s| format!(" ({s})"))
+            .unwrap_or_default();
+        tracing::warn!(
+            "STUN/TURN: {} sent {} to {} {} time(s) and got no reply{who}. \
+             An endpoint that cannot learn its reflexive address falls back to \
+             advertising its PRIVATE address in SDP, which the far end cannot route \
+             back to — the usual cause of a call that signals cleanly and carries \
+             audio one way. Note WHAT is missing: no reply at all, rather than a \
+             refusal. Silence points at something dropping the packets in the path \
+             rather than at the server refusing them, and on school, campus and \
+             corporate networks the usual culprit is a security appliance — web \
+             filter, secure web gateway, firewall or IPS — discarding UDP it does \
+             not recognise. Check whether such a device sits in this path and \
+             whether it permits UDP to the STUN/TURN port before suspecting the \
+             server.",
+            req.from,
+            req.method,
+            req.to,
+            req.attempts,
+        );
+    }
+    if unanswered.len() > 5 {
+        tracing::warn!(
+            "STUN: {} further unanswered binding request(s) not listed.",
+            unanswered.len() - 5
+        );
+    }
+    tracing::warn!(
+        "STUN/TURN: {} of {total} transaction(s) went unanswered.",
+        unanswered.len()
+    );
+}
+
+/// Print the capture-quality line and the STUN/TURN failures beside it.
+///
+/// Two different claims, reported together because an operator reads them
+/// together: capture quality is about what sipnab RECEIVED, and the STUN line
+/// is about what the NETWORK did with what it sent.
 fn report_capture_quality() {
     if let Some(msg) = capture_quality_summary() {
         tracing::warn!("{msg}");
     }
+    report_stun_failures();
 }
 
 /// The capture-quality sentence, or `None` when nothing was lost.
@@ -1280,6 +1336,40 @@ fn no_sip_guidance(
             ),
             "Fix the decode before reading anything into the zero above: convert the \
              capture (editcap -T ether) or open an issue naming the number(s) reported."
+                .to_string(),
+        ];
+    }
+
+    // STUN was decoded, so this capture is not empty — it is a NAT-discovery
+    // failure. Saying "no SIP traffic found, check for SIP packets" here is
+    // true and useless: it sends the operator looking for a capture problem
+    // when the capture already holds the answer.
+    let (unanswered, answered) = crate::stun::unanswered_requests();
+    if !unanswered.is_empty() {
+        let first = &unanswered[0];
+        return vec![
+            format!(
+                "No SIP traffic found, but this capture is not empty: {} of {} STUN/TURN \
+                 transaction(s) went unanswered — {} sent {} to {} {} time(s) and got \
+                 nothing back.",
+                unanswered.len(),
+                unanswered.len() as u64 + answered,
+                first.from,
+                first.method,
+                first.to,
+                first.attempts,
+            ),
+            "That is a NAT-discovery failure, not a missing capture. An endpoint that \
+             cannot learn its reflexive address advertises its PRIVATE address in SDP, \
+             and the far end then sends media to somewhere it cannot reach — a call \
+             that signals cleanly and carries audio one way."
+                .to_string(),
+            "The requests drew no reply at all rather than a refusal, which points at \
+             something in the path discarding them rather than at the server. On \
+             school, campus and corporate networks that is most often a security \
+             appliance — web filter, secure web gateway, firewall or IPS — dropping \
+             UDP it does not recognise. Confirm whether one sits in this path and \
+             whether it permits UDP to the STUN/TURN port."
                 .to_string(),
         ];
     }

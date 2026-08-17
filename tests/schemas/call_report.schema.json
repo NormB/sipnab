@@ -327,6 +327,7 @@
         "one_way_audio",
         "nat_mismatch",
         "no_media",
+        "private_media_address",
         "hints"
       ],
       "properties": {
@@ -337,6 +338,9 @@
           "type": "boolean"
         },
         "no_media": {
+          "type": "boolean"
+        },
+        "private_media_address": {
           "type": "boolean"
         },
         "hints": {
