@@ -1812,6 +1812,18 @@ pub struct CaptureQualityJson {
     /// `degraded`: ordinary ARP is an undecodable frame on almost every
     /// capture, so a flag including it would always be true.
     pub undecodable_frames: u64,
+    /// Frames the capture's snaplen cut short (`caplen < origlen`). Neither
+    /// loss nor a decode failure: they arrived and mostly decoded, and the
+    /// payload is what is missing. An agent reading "no RTP payload" needs
+    /// this to tell a silent call from a headers-only capture.
+    pub snapped_frames: u64,
+    /// STUN/TURN transactions sent with no reply.
+    ///
+    /// The only field here about the NETWORK rather than the capture: these
+    /// frames arrived perfectly and the answer to them did not. It is the
+    /// signal behind a one-way-audio complaint, and an agent asked to explain
+    /// one has no other way to reach it.
+    pub unanswered_nat_requests: u64,
     /// `true` when any of the three LOSS counters above is non-zero.
     ///
     /// Named for the direction there is evidence for. `false` means nothing
@@ -1829,6 +1841,8 @@ impl From<crate::output::prometheus::CaptureQuality> for CaptureQualityJson {
             interface_dropped_packets: q.interface_dropped_packets,
             invalid_timestamps: q.invalid_timestamps,
             undecodable_frames: q.undecodable_frames,
+            snapped_frames: q.snapped_frames,
+            unanswered_nat_requests: q.unanswered_nat_requests,
             degraded: q.degraded(),
         }
     }
@@ -9104,6 +9118,13 @@ mod tests {
             // dialog_count of 0 that means "none" from one that means
             // "sipnab could not read this capture".
             "undecodable_frames",
+            // A snaplen cut these short: they arrived, and the payload did
+            // not. Distinct from loss, and from a decode failure.
+            "snapped_frames",
+            // About the NETWORK, not the capture: STUN/TURN transactions sent
+            // with no reply. An agent reading a one-way-audio complaint needs
+            // this, and it used to exist only as a log line.
+            "unanswered_nat_requests",
         ] {
             assert!(
                 q[field].is_u64(),

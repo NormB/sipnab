@@ -1027,6 +1027,8 @@ async fn get_stats(
             "interface_dropped_packets": quality.interface_dropped_packets,
             "invalid_timestamps": quality.invalid_timestamps,
             "undecodable_frames": quality.undecodable_frames,
+            "snapped_frames": quality.snapped_frames,
+            "unanswered_nat_requests": quality.unanswered_nat_requests,
             "degraded": quality.degraded(),
         },
     })))
@@ -1454,6 +1456,13 @@ mod tests {
             // Frames that arrived intact and decoded to nothing. A zero
             // dialog count means opposite things with and without this.
             "undecodable_frames",
+            // A snaplen cut these short: they arrived, and the payload did
+            // not. Distinct from loss, and from a decode failure.
+            "snapped_frames",
+            // About the NETWORK, not the capture: STUN/TURN transactions sent
+            // with no reply. An agent reading a one-way-audio complaint needs
+            // this, and it used to exist only as a log line.
+            "unanswered_nat_requests",
         ] {
             assert!(
                 q[field].is_u64(),

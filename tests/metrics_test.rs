@@ -65,6 +65,13 @@ fn metrics_expose_expected_families_with_types() {
         ("sipnab_capture_kernel_dropped_packets_total", "counter"),
         ("sipnab_capture_interface_dropped_packets_total", "counter"),
         ("sipnab_capture_invalid_timestamps_total", "counter"),
+        // Frames a snaplen cut short. Not loss and not a decode failure: the
+        // frames arrived, and the payload did not.
+        ("sipnab_capture_snapped_frames_total", "counter"),
+        // The only one here about the NETWORK rather than the capture: STUN
+        // and TURN transactions that were sent and never answered, which is
+        // the signal behind a one-way-audio complaint.
+        ("sipnab_nat_unanswered_requests", "gauge"),
         ("sipnab_capture_quality_degraded", "gauge"),
         ("sipnab_pdd_seconds", "histogram"),
         ("sipnab_mos", "histogram"),

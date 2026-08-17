@@ -279,6 +279,20 @@ pub struct CaptureQuality {
     ///
     /// Deliberately **not** part of [`Self::degraded`] — see that method.
     pub undecodable_frames: u64,
+    /// Frames the capture's snaplen cut short (`caplen < origlen`).
+    ///
+    /// Not loss and not a decode failure: the frames arrived and mostly
+    /// decoded, and what is missing is payload. Reported because the
+    /// `--snaplen` warnings fire once per run and cannot say how MUCH of a
+    /// capture came in truncated.
+    pub snapped_frames: u64,
+    /// STUN/TURN transactions that were sent and never answered.
+    ///
+    /// The only counter here that is about the NETWORK rather than about the
+    /// capture: these frames arrived perfectly, and the reply to them did not.
+    /// It is the signal behind a one-way-audio complaint, and it belonged
+    /// beside the others rather than in a log line only a headless run prints.
+    pub unanswered_nat_requests: u64,
 }
 
 impl CaptureQuality {
@@ -300,12 +314,16 @@ impl CaptureQuality {
                 invalid_timestamps: crate::capture::live::INVALID_PCAP_TIMESTAMPS
                     .load(std::sync::atomic::Ordering::Relaxed),
                 undecodable_frames: crate::capture::undecodable_frames(),
+                snapped_frames: crate::capture::snapped_frames(),
+                unanswered_nat_requests: crate::stun::unanswered_requests().0.len() as u64,
             }
         }
         #[cfg(not(feature = "native"))]
         {
             Self {
                 undecodable_frames: crate::capture::undecodable_frames(),
+                snapped_frames: crate::capture::snapped_frames(),
+                unanswered_nat_requests: crate::stun::unanswered_requests().0.len() as u64,
                 ..Self::default()
             }
         }
@@ -685,6 +703,33 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
         out,
         "sipnab_capture_invalid_timestamps_total {}",
         metrics.capture_quality.invalid_timestamps
+    );
+    out.push('\n');
+    write_help_type(
+        &mut out,
+        "sipnab_capture_snapped_frames_total",
+        "Frames the capture's snaplen cut short (caplen < origlen)",
+        "counter",
+    );
+    let _ = writeln!(
+        out,
+        "sipnab_capture_snapped_frames_total {}",
+        metrics.capture_quality.snapped_frames
+    );
+    out.push('\n');
+    // A GAUGE, not a counter: this is the number of transactions still
+    // outstanding, and an answer that arrives late removes one. A counter
+    // would have to be monotonic and could never record the answer.
+    write_help_type(
+        &mut out,
+        "sipnab_nat_unanswered_requests",
+        "STUN/TURN transactions sent with no reply -- the signal behind one-way audio",
+        "gauge",
+    );
+    let _ = writeln!(
+        out,
+        "sipnab_nat_unanswered_requests {}",
+        metrics.capture_quality.unanswered_nat_requests
     );
     out.push('\n');
     // Derivable from the three counters above, and published anyway: this is
@@ -1280,6 +1325,8 @@ mod tests {
                 interface_dropped_packets: 22,
                 invalid_timestamps: 33,
                 undecodable_frames: 0,
+                snapped_frames: 44,
+                unanswered_nat_requests: 55,
             },
             ..Default::default()
         };
