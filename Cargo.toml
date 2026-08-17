@@ -30,7 +30,7 @@ workspace = true
 
 [package]
 name = "sipnab"
-version = "0.5.107"
+version = "0.5.108"
 edition = "2024"
 rust-version = "1.97"
 authors = ["Norm Brandinger"]
@@ -99,6 +99,7 @@ toml = "1"
 # (updates the [names.manual] table without clobbering comments/other sections).
 toml_edit = "0.25"
 pcap-file = { version = "2", optional = true }
+memmap2 = { version = "0.9", optional = true }
 nom = "8"
 indexmap = "2"
 bytes = "1"
@@ -222,7 +223,7 @@ harness = false
 [features]
 default = ["native", "tui", "audio", "metrics"]
 # Native platform deps (not available in WASM)
-native = ["dep:pcap", "dep:clap", "dep:clap_complete", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file", "dep:tracing-subscriber", "dep:tracing-log", "dep:tempfile"]
+native = ["dep:pcap", "dep:clap", "dep:clap_complete", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file", "dep:memmap2", "dep:tracing-subscriber", "dep:tracing-log", "dep:tempfile"]
 tui = ["native", "dep:ratatui", "dep:crossterm", "dep:unicode-width", "dep:base64"]
 tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base64", "dep:rsa", "dep:libc"]
 hep = ["native", "dep:hmac", "dep:sha2"]

@@ -38,7 +38,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | r-efi | MIT OR Apache-2.0 OR LGPL-2.1-or-later | **Apache-2.0** |
 | termina | MIT OR MPL-2.0 | **MIT** |
 
-## Rust crates (393)
+## Rust crates (394)
 
 | Crate | Version | License |
 |---|---|---|
@@ -216,6 +216,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | matchers | 0.2.0 | MIT |
 | matchit | 0.8.4 | MIT AND BSD-3-Clause |
 | memchr | 2.8.3 | Unlicense OR MIT |
+| memmap2 | 0.9.11 | MIT OR Apache-2.0 |
 | memmem | 0.1.1 | MIT/Apache-2.0 |
 | memoffset | 0.9.1 | MIT |
 | mimalloc | 0.1.52 | MIT |

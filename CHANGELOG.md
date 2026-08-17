@@ -10,6 +10,52 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.108] - 2026-08-17
+
+### Changed
+
+- **Offline reads map the capture file instead of streaming it through
+  libpcap: 37% more throughput at four cores and 51% at eight.** The `--cores`
+  reader is one serial thread doing read, copy and host-pair-peek for every
+  packet while the workers wait, and reading through libpcap charged it a
+  `read` into libpcap's buffer *and* a copy out of it. Mapping the file drops
+  the first: records are parsed in place out of page cache. Measured on the
+  535,000-packet corpus, median-of-7 on an idle host, same binary either way —
+  3.27M against 2.38M packets/second at four cores, 3.30M against 2.18M at
+  eight. Two cores is within the noise floor, and the gain arrives at four,
+  where the serial reader is what the workers are waiting on. Peak resident
+  memory stays within ~10 MiB of the old path, because the read hands pages
+  back to the kernel as it passes them.
+
+  **This applies to `--cores 2` and above only.** `--cores 1`, and a run with
+  no `--cores` at all, use the single-threaded reader, which still goes through
+  libpcap and is unchanged by this release — so the default offline read is no
+  faster. Teaching that reader to map as well is the obvious next step and is
+  not part of this change.
+
+  Classic uncompressed pcap only. pcapng, gzip, anything that is not a regular
+  file, and any read with a BPF filter set all fall back to libpcap
+  unchanged — a filter is libpcap's to apply, and bypassing it would silently
+  widen the capture. `SIPNAB_NO_MMAP=1` forces the fallback everywhere, for a
+  filesystem where mapping misbehaves.
+
+  Worth recording that the obvious version of this change is a *regression*:
+  handing each frame out as a refcounted slice of the mapping, copying nothing
+  at all, measures 1.88M at four cores — well under libpcap. One mapping means
+  one atomic refcount, and 535k frames cloned by the reader and dropped by the
+  workers drive ~1M atomic updates through a single cache line: free on one
+  core, 21% on four. Keeping the block copy is what makes the mapping pay.
+  `docs/internals/zero-copy-payloads.md` has the failed hypotheses too.
+
+### Fixed
+
+- **A truncated capture is still reported as truncated on the mapped path.**
+  A file cut off mid-record is missing the end of whatever it was recording,
+  so stopping quietly at the cut would report "read in full" over an
+  incomplete capture. Found by comparing both readers across 62 real captures
+  rather than against fixtures; the byte counts now match libpcap's own
+  message exactly.
+
 ## [0.5.107] - 2026-08-17
 
 ### Added

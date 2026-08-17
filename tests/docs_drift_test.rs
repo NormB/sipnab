@@ -2685,8 +2685,8 @@ fn no_documentation_table_repeats_a_row() {
         // against what sipnab already does, so neither is rebuilt by mistake.
         // Not doubled by a site mirror — docs/design/ is not published.
         tables,
-        566,
-        "walked {tables} tables, expected 566. More is fine — bump this. FEWER \
+        568,
+        "walked {tables} tables, expected 568. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

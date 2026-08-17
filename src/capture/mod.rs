@@ -35,6 +35,8 @@ pub mod keylog_source;
 #[cfg(feature = "native")]
 pub mod live;
 #[cfg(feature = "native")]
+pub mod mapped;
+#[cfg(feature = "native")]
 pub mod output_guard;
 pub mod packet;
 pub mod parse;
