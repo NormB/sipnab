@@ -1436,6 +1436,9 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
     // regression bisected to 0.5.84 was partly fixed: 2.06 -> 1.89M pkts/s and
     // 11.1 -> 9.9x sngrep. Updated here and on the benchmarks page in the same
     // commit, which is what this gate exists to force.
+    // Re-measured on the released 0.5.104 artifact, 2026-08-17: 2.31M at four
+    // cores (replicates 2.31/2.31/2.26M), updated together with the page —
+    // again in one commit, again because this gate forces it.
     // The second tile used to read "12.2x sngrep". It was dropped on
     // 2026-08-10: it argued sipnab's headline claim as a RATIO AGAINST A
     // COMPETITOR, which both advertised that competitor on the most-visited
@@ -1450,7 +1453,7 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
     // One tile now, where there were two. Written as a binding rather than a
     // one-element loop because clippy::single_element_loop rejects the latter;
     // if a second throughput tile ever returns, restore the loop.
-    let (count, suffix) = ("2.32", "M pkts/s");
+    let (count, suffix) = ("2.31", "M pkts/s");
     let tile = format!(r#"data-count="{count}" data-suffix="{suffix}""#);
     assert!(
         idx.contains(&tile),

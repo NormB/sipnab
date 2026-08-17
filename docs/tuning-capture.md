@@ -455,8 +455,8 @@ sipnab -N -I /var/captures/ --cores 4 --report
 ```
 
 Measured on the reference corpus ([benchmarks](benchmarks.md)), throughput peaks
-at **four** cores and then declines: 1.07M pkts/s at 1, 2.21M at 2, 2.32M at 4,
-2.13M at 8. The limit is still the single sequential pcap reader, not the core
+at **four** cores and then declines: 1.28M pkts/s at 1, 2.17M at 2, 2.31M at 4,
+2.16M at 8. The limit is still the single sequential pcap reader, not the core
 count — that is why 8 cores is slower than 4 rather than faster — so
 **`--cores 4` is the sweet spot and higher values buy nothing.**
 
