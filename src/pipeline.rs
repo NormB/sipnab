@@ -1992,6 +1992,20 @@ pub fn classify_packet(
         return PacketAction::None;
     }
 
+    // TURN ChannelData: the media is four bytes in, behind a channel number
+    // and a length. Unwrap and classify what is inside, or a call whose audio
+    // went through a relay reports as a call with NO MEDIA — the same finding
+    // sipnab gives for a call that genuinely carried nothing, which are
+    // opposite conclusions rendered identically (backlog NAT4).
+    //
+    // Recursion terminates because the inner payload is strictly shorter than
+    // the wrapper that carried it.
+    if let Some(inner) = crate::stun::channel_data_payload(&pp.payload) {
+        let mut unwrapped = pp.clone();
+        unwrapped.payload = bytes::Bytes::copy_from_slice(inner);
+        return classify_packet(&unwrapped, rtp_heuristic, opts, decrypt);
+    }
+
     // STUN: the endpoint asking the network who it is. Checked BEFORE RTP/RTCP
     // because ICE multiplexes STUN and media on one port, and `stun::parse`
     // rejects RTP outright (RTP's version bits are 0b10; STUN's top two bits
@@ -2217,6 +2231,55 @@ mod quiet_bad_parse_tests {
         let mut heur = crate::rtp::heuristic::RtpHeuristic::new();
         let mut decrypt = MediaDecrypt::default();
         classify_packet(pp, &mut heur, opts, &mut decrypt)
+    }
+
+    /// RTP relayed through TURN must reach reconstruction.
+    ///
+    /// The wrapper puts the media four bytes in. Without unwrapping, the
+    /// classifier sees a payload whose first two bits are `01` — not RTP, not
+    /// SIP, not STUN — and drops it, so a call whose audio went through a relay
+    /// reports as having NO MEDIA. That is the same answer sipnab gives for a
+    /// call that genuinely carried nothing, and they are opposite findings.
+    ///
+    /// Asserts the ACTION, not the unwrap helper: a test that only checked the
+    /// bytes came back out would pass even with the pipeline still dropping
+    /// them.
+    #[test]
+    fn rtp_relayed_through_turn_is_classified_as_media() {
+        let mut rtp = vec![0x80, 0x00, 0x00, 0x01];
+        rtp.extend_from_slice(&[0x00, 0x00, 0x10, 0x00]); // timestamp
+        rtp.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]); // ssrc
+        rtp.extend_from_slice(&[0xaa; 160]); // G.711-sized payload
+
+        // Bare RTP is the control: whatever the classifier does with it, the
+        // wrapped form must do the same.
+        let mut bare = packet(&rtp);
+        bare.src_port = 40000;
+        bare.dst_port = 40002;
+        let opts = PipelineOptions::default();
+        let bare_action = classify(&bare, &opts);
+
+        let mut wrapped_bytes = vec![0x40, 0x01];
+        wrapped_bytes.extend_from_slice(&(rtp.len() as u16).to_be_bytes());
+        wrapped_bytes.extend_from_slice(&rtp);
+        let mut wrapped = packet(&wrapped_bytes);
+        wrapped.src_port = 40000;
+        wrapped.dst_port = 40002;
+        let wrapped_action = classify(&wrapped, &opts);
+
+        assert_eq!(
+            std::mem::discriminant(&bare_action),
+            std::mem::discriminant(&wrapped_action),
+            "relayed media must classify as the same thing as direct media"
+        );
+        assert!(
+            !matches!(wrapped_action, PacketAction::None),
+            "TURN-relayed RTP was dropped, so a relayed call reports as having no media"
+        );
+        assert!(
+            !matches!(bare_action, PacketAction::None),
+            "the control must itself be media, or this test proves nothing"
+        );
     }
 
     /// A DNS exchange must not be reported as an RTP stream.

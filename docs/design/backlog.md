@@ -2491,7 +2491,7 @@ a web-filtering appliance silently discarding UDP. sipnab read one of them as
   deliberately excluded: it is routable within the carrier that assigned it, and
   flagging it would fire on a large share of working mobile calls.
 
-- [ ] **NAT3 — the STUN/TURN findings reach the batch summary only.** The
+- [x] **NAT3 — the STUN/TURN findings reach the batch summary only.** The
   unanswered-transaction report is a `warn` on the headless path. It is not in
   `/v1/stats`, not a Prometheus counter, and not an MCP tool, so an agent or a
   dashboard cannot see the one signal that explains a one-way-audio complaint.
@@ -2499,13 +2499,27 @@ a web-filtering appliance silently discarding UDP. sipnab read one of them as
   two halves of one diagnosis are surfaced unevenly. Close it the way `G1`
   closed the capture-quality block: one place, every surface.
 
-- [ ] **NAT4 — TURN relayed media is parsed as nothing.** `is_channel_data`
+  **Done 2026-08-17, that way.** `sipnab_nat_unanswered_requests` (a gauge, not
+  a counter — a late answer removes a transaction, which a monotonic counter
+  could never record) and `sipnab_capture_snapped_frames_total` now sit in the
+  capture-quality block on all three surfaces: Prometheus, `/v1/stats` and the
+  MCP `capture_status` tool. Written test-first, each key declared in its gate
+  and watched failing before the code emitted it.
+
+- [x] **NAT4 — TURN relayed media is parsed as nothing.** `is_channel_data`
   recognises the framing, and the pipeline then drops it. Media relayed through
   TURN is therefore invisible to reconstruction — the RTP inside a ChannelData
   wrapper is never unwrapped, so a call whose media goes through a relay reports
   as having no media at all. Unwrapping it would make relayed calls readable,
   and is the difference between "this call had no audio" and "this call's audio
   went through a relay".
+
+  **Done 2026-08-17.** `channel_data_payload` unwraps the frame and the
+  classifier recurses on what was inside, so relayed RTP reaches reconstruction
+  exactly as direct RTP does. The test asserts the classifier's ACTION against a
+  bare-RTP control rather than checking the bytes came back out — an unwrap
+  helper can be correct while the pipeline still drops what it returns — and is
+  mutation-checked by disabling the unwrap, which fails it.
 
 ## P5 — features & long-term / exploratory
 

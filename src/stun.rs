@@ -128,6 +128,26 @@ impl StunMessage {
 /// TURN `Allocate`, the method that asks a relay for an address.
 pub const METHOD_ALLOCATE: u16 = 0x003;
 
+/// The application data inside a TURN **ChannelData** wrapper, or `None` if
+/// this is not one.
+///
+/// # Why unwrapping matters
+///
+/// Media relayed through TURN arrives wrapped: the RTP an endpoint sent is not
+/// the first byte of the datagram, it sits four bytes in, behind a channel
+/// number and a length. A reader that does not unwrap it sees no RTP at all,
+/// and a call whose audio went through a relay therefore reports as a call with
+/// NO MEDIA — which is the same thing sipnab says about a call that genuinely
+/// carried nothing. Those are opposite findings and they were rendered
+/// identically.
+pub fn channel_data_payload(payload: &[u8]) -> Option<&[u8]> {
+    if !is_channel_data(payload) {
+        return None;
+    }
+    let declared = u16::from_be_bytes([payload[2], payload[3]]) as usize;
+    payload.get(4..4 + declared)
+}
+
 /// Whether a payload is a TURN **ChannelData** message rather than anything
 /// STUN-shaped.
 ///
@@ -693,5 +713,52 @@ mod turn_tests {
         );
         assert_eq!(answered, 1);
         reset();
+    }
+}
+
+#[cfg(test)]
+mod channel_unwrap_tests {
+    use super::*;
+
+    /// The RTP inside a ChannelData wrapper must come back out, or a relayed
+    /// call reports as having no media — indistinguishable from a call that
+    /// carried none.
+    #[test]
+    fn the_media_inside_a_channel_wrapper_is_recovered() {
+        // A minimal RTP packet: version 2, PT 0, seq 1.
+        let mut rtp = vec![0x80, 0x00, 0x00, 0x01];
+        rtp.extend_from_slice(&[0x00, 0x00, 0x10, 0x00]); // timestamp
+        rtp.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]); // ssrc
+        rtp.extend_from_slice(&[0xaa; 160]); // payload
+
+        let mut wrapped = vec![0x40, 0x01];
+        wrapped.extend_from_slice(&(rtp.len() as u16).to_be_bytes());
+        wrapped.extend_from_slice(&rtp);
+
+        let inner = channel_data_payload(&wrapped).expect("a wrapper must unwrap");
+        assert_eq!(
+            inner,
+            &rtp[..],
+            "the recovered bytes must be the RTP verbatim"
+        );
+        // And the unwrapped bytes must look like RTP to the rest of the stack.
+        assert_eq!(inner[0] >> 6, 2, "RTP version 2 survives the unwrap");
+    }
+
+    /// Anything that is not a wrapper yields nothing, so this cannot invent a
+    /// payload out of ordinary media or signaling.
+    #[test]
+    fn nothing_else_unwraps() {
+        assert!(channel_data_payload(b"INVITE sip:a@b SIP/2.0\r\n").is_none());
+        let mut rtp = vec![0x80, 0x00, 0x00, 0x01];
+        rtp.extend_from_slice(&[0u8; 20]);
+        assert!(
+            channel_data_payload(&rtp).is_none(),
+            "plain RTP is not wrapped"
+        );
+        assert!(
+            channel_data_payload(&[0x40, 0x01, 0xff, 0xff, 0x00]).is_none(),
+            "a wrapper claiming more than it holds yields nothing rather than a short read"
+        );
     }
 }
