@@ -85,8 +85,9 @@ pub struct MappedFrame {
     /// timestamp resolution.
     pub timestamp: DateTime<Utc>,
     /// The frame, a refcounted slice of a shared block — NOT of the mapping.
-    /// It outlives the mapped pages it was read from, which is what lets
-    /// [`MappedPcap::release_behind`] give them back mid-read.
+    /// It outlives the mapped pages it was read from, which is what lets the
+    /// reader hand those pages back to the kernel while the read is still
+    /// going.
     pub data: Bytes,
     /// Bytes actually captured. Always equal to `data.len()`.
     pub caplen: usize,
