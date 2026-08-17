@@ -10,6 +10,51 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.106] - 2026-08-17
+
+### Added
+
+- **A published WASM plugins page.** The homepage advertised plugins as a
+  capability and the only WASM documentation was a design specification on
+  GitHub, which that spec's own "Not done yet" already admitted. The page is
+  written for someone deciding whether to load one: when a plugin is the right
+  answer against a filter or a `jq` pipeline, what the sandbox does and does
+  **not** bound — it bounds CPU, memory, output size and blast radius, and it
+  does not bound what a plugin reads — and the worked example from crate to
+  finding.
+
+- **A published authentication page.** The site's API and MCP pages name bearer
+  tokens seventeen times between them and sent the reader to GitHub to learn
+  how to mint one. Minting a token is an operator task, so it now lives with
+  the other operator tasks: token format, audience binding, signing keys,
+  expiry and rotation.
+
+  Both gaps are the same shape as the eBPF one 0.5.102 fixed: a capability that
+  ships, works and is written up somewhere a reader on the site never reaches.
+
+### Fixed
+
+- **The benchmarks page claimed its tables came from a release that did not
+  exist when they were measured.** The 0.5.105 bump swept
+  `sipnab 0.5.104 (` to `sipnab 0.5.105 (` across the docs to move the
+  `--version` examples, and the benchmarks method block carries a line in
+  exactly that shape. The page shipped naming 0.5.104 in its header and
+  0.5.105 in its method block, and nothing caught it: every other version
+  marker here tracks the crate or the last published release, and this one
+  tracks neither — it records what a measurement was taken against, which a
+  later release does not change.
+
+  Restored to 0.5.104, and a gate now asserts the page agrees with **itself**
+  rather than with `Cargo.toml`, so it stays right when the crate moves on and
+  fails when a sweep drags the line along. Reintroducing the corruption fails
+  it; that is checked rather than assumed.
+
+### Changed
+
+- **The build table and the next-steps list name `plugins` and `bpf`.** Both
+  are non-default features an operator chooses deliberately, and neither
+  appeared in the table that tells a reader what is in their binary.
+
 ## [0.5.105] - 2026-08-17
 
 ### Changed

@@ -279,14 +279,14 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
           <tr><td><a href="{{ get_url(path='@/docs/filter-dsl.md') }}">Filter DSL</a></td><td>30 fields, 7 operators, boolean combinators. Named aliases for common queries.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}#10-detect-sip-scanners-and-auto-block-via-fail2ban">Security</a></td><td>Scanner detection, toll fraud, digest leak, registration flood. Fail2ban output.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/cookbook.md') }}#7-decrypt-sip-tls-via-sslkeylogfile">TLS/SRTP decryption</a></td><td>TLS 1.2 + 1.3 via SSLKEYLOGFILE. SRTP auth verification (SDES key extraction).</td></tr>
-          <tr><td><a href="https://github.com/NormB/sipnab/blob/main/docs/design/wasm-plugin-api.md">WASM plugins</a></td><td>Load third-party dialog detections as sandboxed WebAssembly (<code>--plugin</code>). Off by default, so a stock binary carries no interpreter.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/plugins.md') }}">WASM plugins</a></td><td>Load third-party dialog detections as sandboxed WebAssembly (<code>--plugin</code>). Off by default, so a stock binary carries no interpreter.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}">eBPF TLS capture <em>(root, same host)</em></a></td><td><strong>This does not break TLS.</strong> It decrypts nothing, reads no other machine and recovers no key. On a host you already have root on, kernel uprobes read the SIP plaintext where the daemon hands it to OpenSSL or wolfSSL — before encryption — so no key, certificate or restart is needed. The eBPF backend additionally reports the real peer addresses. Needs Linux with uprobes, and BTF for the eBPF backend. <a href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}">Read the security implications first</a>.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/output-formats.md') }}">Export formats</a></td><td>PCAP, PCAP-NG, TXT, JSON, NDJSON, CSV, HTML, Markdown, WAV audio, SIPp XML, RTP JSON.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/integrations.md') }}#hep-protocol">HEP v2/v3</a></td><td>HEP v3 send, HEP v2/v3 receive. Feed Homer/SIPCAPTURE, or point Kamailio, OpenSIPS and Asterisk at a sipnab listener and read a whole estate from one box &mdash; the proxies already speak HEP, so nothing goes on them.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/api.md') }}">REST API + Prometheus</a></td><td>Query dialogs, streams, stats via HTTP. Prometheus metrics endpoint.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. 32 tools cover dialogs, RTP, diagnostics, and security findings. 27 are read-only; the five that write — file export, capture swap, findings, shutdown — each stay off until you enable them server-side.</td></tr>
           <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Memory-safe by construction. 5131 automated tests. Under 12 MB static binary.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Memory-safe by construction. 5132 automated tests. Under 12 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -372,7 +372,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
         <span class="arch-label">Headroom to take a whole estate's HEP feed on one box, with no collector tier &mdash; offline reconstruction, four cores (measured v0.5.104)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
-        <span class="arch-stat" data-count="5131" data-suffix="">5131</span>
+        <span class="arch-stat" data-count="5132" data-suffix="">5132</span>
         <span class="arch-label">Automated tests</span>
       </a>
     </div>

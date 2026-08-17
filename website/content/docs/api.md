@@ -75,7 +75,7 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/v1/dialogs
 There are **two kinds of credential**, and the server accepts either. For the
 full lifecycle of the signed kind — minting with `--mint-token`, TTLs,
 signing-key rotation, and revocation denylists — see
-[Bearer-token authentication](https://github.com/NormB/sipnab/blob/main/docs/auth.md).
+[Bearer-token authentication](@/docs/auth.md).
 
 ### Method 1 — static API key
 

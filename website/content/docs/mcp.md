@@ -2562,7 +2562,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.105",
+  "version": "0.5.106",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -2974,7 +2974,7 @@ it, so any number it gave would describe a moment that has passed.
   via the shared `crypto::constant_time_eq` helper (through
   `auth::TokenVerifier`), sharing the same code path as the REST API.
   Signed tokens with expiry / rotation / revocation are also supported —
-  see [auth.md](https://github.com/NormB/sipnab/blob/main/docs/auth.md).
+  see [auth.md](@/docs/auth.md).
 - **Host header allowlist.** rmcp's DNS-rebind protection runs by
   default (`localhost`/`127.0.0.1`/`::1`); extend with
   `--mcp-allowed-host` for non-loopback clients.

@@ -52,7 +52,22 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/uprobe-walkthrough.md",
             "docs/cli-reference.md",
             "website/content/docs/cli.md",
+            // The plugins page tells a reader to BUILD a plugin, so the whole
+            // cargo invocation has to be runnable as written.
+            "docs/plugins.md",
+            "website/content/docs/plugins.md",
         ],
+    ),
+    // `--release` and `--target` are cargo's too, and appear for the same
+    // reason: `cargo build --release --target wasm32-unknown-unknown` is what
+    // produces a loadable plugin, and a half-quoted command is not runnable.
+    (
+        "release",
+        &["docs/plugins.md", "website/content/docs/plugins.md"],
+    ),
+    (
+        "target",
+        &["docs/plugins.md", "website/content/docs/plugins.md"],
     ),
     // `--undefined-only` is binutils' `nm`, not sipnab's. The cookbook names it
     // because a reader whose daemon calls `SSL_write_ex` rather than
@@ -2386,8 +2401,8 @@ fn no_documentation_table_repeats_a_row() {
     // one. Also from a failing run.
     assert_eq!(
         files.len(),
-        141,
-        "found {} tracked markdown files, expected 141. More is fine — bump \
+        144,
+        "found {} tracked markdown files, expected 144. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2654,8 +2669,8 @@ fn no_documentation_table_repeats_a_row() {
         // against what sipnab already does, so neither is rebuilt by mistake.
         // Not doubled by a site mirror — docs/design/ is not published.
         tables,
-        558,
-        "walked {tables} tables, expected 558. More is fine — bump this. FEWER \
+        562,
+        "walked {tables} tables, expected 562. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
@@ -3110,4 +3125,68 @@ fn a_documented_alias_expands_to_what_the_code_expands_it_to() {
     }
 
     assert_eq!(checked, 2, "both the doc and its site mirror must be read");
+}
+
+/// The benchmarks page names ONE measured release, and says so consistently.
+///
+/// This gate exists because a version bump broke it and nothing noticed. The
+/// 0.5.105 bump ran a blanket `sipnab 0.5.104 (` -> `sipnab 0.5.105 (` sweep
+/// across the docs to move the `--version` examples, and the benchmarks page
+/// carries a line in exactly that shape:
+///
+/// ```text
+/// - **Version:** sipnab 0.5.104 (release artifact). **Date:** 2026-08-17.
+/// ```
+///
+/// So the page shipped claiming its tables came from a release that had not
+/// existed when they were measured, while its own header still named the real
+/// one. Every other version marker in this repo tracks the crate or the last
+/// published release; this one tracks NEITHER. It records what a measurement
+/// was taken against, which is a historical fact that a later release does not
+/// change — the same reason the A/B table keeps its own date.
+///
+/// Asserts the page agrees with itself rather than with `Cargo.toml`, so the
+/// gate stays right when the crate moves on and fails when a sweep drags this
+/// line along with it.
+#[test]
+fn the_benchmarks_page_names_one_measured_release_throughout() {
+    let pages = [
+        ("docs/benchmarks.md", include_str!("../docs/benchmarks.md")),
+        (
+            "website/content/docs/benchmarks.md",
+            include_str!("../website/content/docs/benchmarks.md"),
+        ),
+    ];
+    let ver = regex::Regex::new(r"(\d+\.\d+\.\d+)").unwrap();
+    for (name, doc) in pages {
+        // Every sentence that states what was measured, by the phrasing each
+        // copy actually uses.
+        let claims: Vec<String> = doc
+            .lines()
+            .filter(|l| {
+                l.contains("comes from one run")
+                    || l.starts_with("on 0.5.")
+                    || l.contains("Measured against")
+                    || l.contains("Measured on the released")
+                    || l.contains("Taken on the released")
+                    || l.contains("**Version:** sipnab")
+            })
+            .filter_map(|l| ver.captures(l).map(|c| c[1].to_string()))
+            .collect();
+        assert!(
+            claims.len() >= 2,
+            "{name}: found {} version claim(s); the page must state the release \
+             it measured in its header AND in its method block, or this gate is \
+             checking nothing",
+            claims.len()
+        );
+        let first = &claims[0];
+        assert!(
+            claims.iter().all(|c| c == first),
+            "{name}: the page names more than one measured release {claims:?}. \
+             A blanket version bump most likely dragged `**Version:** sipnab X` \
+             along with the `--version` examples. This line records what the \
+             tables were measured against, which a later release does not change."
+        );
+    }
 }

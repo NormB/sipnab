@@ -69,7 +69,7 @@ discover:
   G.711 PCMU at 20 ms, 93.5% RTP by packet count.
 - **Method:** offline pcap reconstruction (`-I file`), median-of-5 after one
   discarded warmup. `pkts/s = packets ÷ wall-clock seconds`, startup included.
-- **Version:** sipnab 0.5.105 (release artifact). **Date:** 2026-08-17.
+- **Version:** sipnab 0.5.104 (release artifact). **Date:** 2026-08-17.
 
 ## Multi-core offline reconstruction
 

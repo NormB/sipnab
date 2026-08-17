@@ -125,7 +125,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.105 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
+   # sipnab 0.5.106 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -1751,7 +1751,7 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
-  "version": "0.5.105",
+  "version": "0.5.106",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -1861,7 +1861,7 @@ What remains **your** call:
   TLS with a token.
 - **Token hygiene.** Use `--mcp-token-file` (0600, root-owned) rather than
   `--mcp-token`/env — flags and environments leak via `ps` and unit files.
-  Rotation/expiry via signed tokens is available ([auth.md](https://github.com/NormB/sipnab/blob/main/docs/auth.md)).
+  Rotation/expiry via signed tokens is available ([auth.md](@/docs/auth.md)).
 - **Contain the process.** Run as a dedicated user with the systemd
   hardening shown above (`NoNewPrivileges`, `ProtectSystem`); HEP ingest
   needs no capabilities at all.

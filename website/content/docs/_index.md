@@ -110,6 +110,8 @@ supports depends on how someone built it:
 | Official Linux (glibc) and macOS releases | Everything: TUI, TLS/SRTP decryption, HEP, REST API, MCP (stdio + HTTP), Prometheus metrics, audio playback |
 | Static musl binaries and the `-noaudio` `.deb` / `.rpm` | The same, **minus** audio playback. Everything else, WAV export included, stays the same |
 | `cargo build` from source with no flags | TUI, audio, and metrics only — **no** TLS decryption, HEP, REST API, or MCP. Use `--features full` for everything |
+| Any build, plus `--features plugins` | WASM plugin host (`--plugin`). Off by default so a stock binary carries no interpreter — see [WASM plugins](/docs/plugins/) |
+| A build with `--features bpf`, on a BTF kernel | eBPF TLS capture, which reads plaintext with no key and no certificate — see the [uprobe walkthrough](/docs/uprobe-walkthrough/) |
 
 `sipnab --version` prints the feature list compiled into your binary.
 
@@ -123,3 +125,4 @@ supports depends on how someone built it:
   [filter DSL](/docs/filter-dsl/), and [output formats](/docs/output-formats/).
 - Something misbehaves: [Troubleshooting](/docs/troubleshooting/).
 - Automating it: the [REST API](/docs/api/) and [MCP server](/docs/mcp/).
+- Extending it: [WASM plugins](/docs/plugins/) add your own detections.

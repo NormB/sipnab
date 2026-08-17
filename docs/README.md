@@ -51,6 +51,10 @@ you want.
   aliases (`--filter codec-asym`).
 - **[Set up authentication](auth.md)** — minting signed bearer tokens, TTLs,
   signing-key rotation, and revocation for the API and MCP.
+- **[Write a WASM plugin](plugins.md)** — add your own detection to sipnab's
+  diagnosis without forking it: what the sandbox does and does not bound,
+  what trusting a `.wasm` costs you, and a worked example from crate to
+  finding.
 - **[Recolor the TUI](theme-guide.md)** — colors and preset palettes.
 
 ## Reference

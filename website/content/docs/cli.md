@@ -853,7 +853,7 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--api-tls-cert` | `<FILE>` | -- | **Not yet implemented** — nothing wires up built-in API TLS, and sipnab exits when you pass this. Terminate TLS at a reverse proxy instead. Feature: `api` |
 | `--api-tls-key` | `<FILE>` | -- | **Not yet implemented** — see `--api-tls-cert`; terminate TLS at a reverse proxy. Feature: `api` |
 | `--api-max-conn` | `<N>` | `100` | Maximum concurrent API connections Feature: `api` |
-| `--api-signing-key` | `<KEY>` | -- | HMAC signing key for self-describing bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first mints, verification accepts every one, so keys can rotate with overlap. Also reads `$SIPNAB_API_SIGNING_KEY`. See [`auth.md`](https://github.com/NormB/sipnab/blob/main/docs/auth.md). Feature: `api` |
+| `--api-signing-key` | `<KEY>` | -- | HMAC signing key for self-describing bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first mints, verification accepts every one, so keys can rotate with overlap. Also reads `$SIPNAB_API_SIGNING_KEY`. See [`auth.md`](@/docs/auth.md). Feature: `api` |
 | `--api-signing-key-file` | `<FILE>` | -- | Read an API signing key from a file (contents trimmed); it becomes the minting key. Feature: `api` |
 | `--api-revoked-file` | `<FILE>` | -- | Revocation denylist: one revoked token `id` per line; reloaded on mtime change. Feature: `api` |
 | `--api-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting API tokens with `--mint-token`. Feature: `api` |
@@ -873,7 +873,7 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--hep-rate-limit-per-peer` | `<N\|auto\|off>` | `off` | Maximum HEP packets/second from any single source IP: a number, `off` (the default), or `auto`. Adds fairness so one flooding peer cannot exhaust the global `--hep-rate-limit`. `auto` divides the global ceiling evenly across the `--hep-allow` sources (stays off without an allowlist). The listener logs its active limiters at startup. Feature: `hep` |
 | `--hep-allow-kill` | -- | off | Allow scanner-kill to send active responses for packets received via HEP. **Off by default**: a HEP sender asserts the inner src/dst, so absent `--hep-auth` an attacker could aim the kill at a victim of their choosing. Only enable with authenticated, trusted HEP input. Feature: `hep` |
 | `--syslog` | -- | off | Send alerts to syslog |
-| `--mint-token` | -- | off | Mint a signed bearer token from the first configured signing key (API or MCP), print it to stdout, and exit (no capture/servers). See [`auth.md`](https://github.com/NormB/sipnab/blob/main/docs/auth.md). |
+| `--mint-token` | -- | off | Mint a signed bearer token from the first configured signing key (API or MCP), print it to stdout, and exit (no capture/servers). See [`auth.md`](@/docs/auth.md). |
 | `--token-id` | `<ID>` | -- | Token id (`jti`) for `--mint-token`, used for revocation. Defaults to a generated id. |
 | `--token-scope` | `<full\|metrics\|read>` | `full` | Scope for `--mint-token`. `metrics` reaches `GET /metrics` and returns `401` everywhere else — mint one for a scrape job rather than a credential that also reads `/v1/dialogs` and the message bodies underneath. `read` is the MCP counterpart: it reaches the read-only tools and refuses the five that write. A cross-surface mint fails at mint time, so `metrics` with MCP and `read` with the REST API are both refused rather than issued and then rejected. |
 
@@ -963,7 +963,7 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 | `--mcp-bind` | `<ADDR>` | -- (defaults to `127.0.0.1:8731` at runtime when `--mcp-transport http` appears without an explicit bind) | HTTP MCP bind address. Non-loopback requires `--mcp-token`. Feature: `mcp-http` |
 | `--mcp-token` | `<TOKEN>` | -- | Bearer token for HTTP MCP; required for non-loopback binds. Also reads `$SIPNAB_MCP_TOKEN`. Feature: `mcp-http` |
 | `--mcp-token-file` | `<FILE>` | -- | Read bearer token from file (preferred over env in systemd units). Feature: `mcp-http` |
-| `--mcp-signing-key` | `<KEY>` | -- | HMAC signing key for MCP bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first mints, verification accepts every one. Also reads `$SIPNAB_MCP_SIGNING_KEY`. See [`auth.md`](https://github.com/NormB/sipnab/blob/main/docs/auth.md). Feature: `mcp-http` |
+| `--mcp-signing-key` | `<KEY>` | -- | HMAC signing key for MCP bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first mints, verification accepts every one. Also reads `$SIPNAB_MCP_SIGNING_KEY`. See [`auth.md`](@/docs/auth.md). Feature: `mcp-http` |
 | `--mcp-signing-key-file` | `<FILE>` | -- | Read an MCP signing key from a file (contents trimmed); it becomes the minting key. Feature: `mcp-http` |
 | `--mcp-revoked-file` | `<FILE>` | -- | MCP revocation denylist (one token `id` per line; reloaded on mtime change). Feature: `mcp-http` |
 | `--mcp-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting MCP tokens with `--mint-token`. Feature: `mcp-http` |
