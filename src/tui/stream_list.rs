@@ -166,6 +166,11 @@ pub struct StreamListDisplay<'a> {
     pub displayed: &'a [crate::rtp::stream::StreamKey],
     /// The session's quality bands, resolved once at startup.
     pub quality_bands: &'a crate::rtp::bands::QualityBands,
+    /// Dialogs, so each row can show the media endpoint its call advertised
+    /// beside the source the media actually came from. Without this the stream
+    /// list is the one surface that cannot show diagnosis evidence, which is
+    /// what `DH1` in the backlog is about.
+    pub dialogs: &'a DialogStore,
 }
 
 // Same "derived once per tick" property as the call list (thread-local so
@@ -283,6 +288,63 @@ pub fn displayed_streams<'a>(
         .collect()
 }
 
+/// Whether this stream's media came from an address its dialog advertised.
+///
+/// # Why a flag and not the hint text
+///
+/// The other four surfaces render `MediaDiagnosis::hints`, which are sentences.
+/// A sentence in a table cell is prose where a value belongs, and copying it
+/// here is how two surfaces start describing one call differently. The verdict
+/// comes from [`crate::rtp::diagnosis::media_origin`] — the same function
+/// `diagnose_media` reaches `nat_mismatch` through — so the column and the hint
+/// cannot disagree.
+///
+/// # Why five columns and not the endpoint
+///
+/// `DH1` proposed showing the advertised-versus-actual endpoint pair. The table
+/// already filled its width exactly, so spending 22 columns on the advertised
+/// endpoint truncated `Source` and `Destination`: `10.0.0.2:30000` rendered as
+/// `10.0.0.2:3000`, a wrong port that reads as a real one. Silently corrupting
+/// the addresses to make room for evidence about the addresses is a bad trade,
+/// so the list carries the VERDICT and the endpoint stays in the stream detail
+/// view, which has the room to print it whole.
+///
+/// # Why the address decides it
+///
+/// `media_origin` compares addresses only, never ports, and the reasoning lives
+/// there: NAT and RTP proxies rewrite the port on a large share of working
+/// calls, so flagging a port difference would mark healthy media as faulty.
+fn advertised_cell(
+    stream: &RtpStream,
+    dialogs: &DialogStore,
+    theme: &super::Theme,
+) -> (&'static str, Style) {
+    use crate::rtp::diagnosis::{CaptureMedia, MediaContext, MediaOrigin, media_origin};
+
+    let plain = Style::default();
+    // A stream with no dialog has nothing that could have advertised it.
+    let Some(call_id) = stream.associated_dialog.as_deref() else {
+        return ("-", plain);
+    };
+    let Some(dialog) = dialogs.get(call_id) else {
+        return ("-", plain);
+    };
+
+    // Holding the stream IS the capture having observed RTP -- the same reading
+    // `displayed_streams` takes above.
+    let media = MediaContext::for_dialog(dialog, CaptureMedia::Observed);
+    match media_origin(stream.key.src.ip(), &media) {
+        // Not "clean": nothing was advertised, so there is no verdict to give.
+        // An empty cell would read as "no problem here".
+        MediaOrigin::Unadvertised => ("-", plain),
+        MediaOrigin::AsAdvertised => ("ok", plain),
+        MediaOrigin::Rewritten => (
+            "NAT",
+            Style::default().fg(theme.bad).add_modifier(Modifier::BOLD),
+        ),
+    }
+}
+
 /// Render the RTP stream list table into the given area.
 ///
 /// Uses sngrep-style: borderless, bold-on-cyan header, reverse-video highlight.
@@ -314,6 +376,7 @@ pub fn render_stream_list(
         name_mode,
         displayed,
         quality_bands,
+        dialogs,
     } = *display;
     // The entire area is used for the table (no title line)
     let table_area = area;
@@ -333,6 +396,7 @@ pub fn render_stream_list(
         Cell::from("Loss"),
         Cell::from("Duration"),
         Cell::from("Dialog"),
+        Cell::from("SDP"),
         Cell::from("Status"),
     ])
     .style(header_style)
@@ -389,7 +453,7 @@ pub fn render_stream_list(
             .as_deref()
             .unwrap_or("-")
             .chars()
-            .take(16)
+            .take(11)
             .collect::<String>();
 
         let status_label = match health {
@@ -398,6 +462,8 @@ pub fn render_stream_list(
             StreamHealth::Bad => "BAD",
             StreamHealth::Orphaned => "ORPHAN",
         };
+
+        let (sdp_media, sdp_style) = advertised_cell(stream, dialogs, theme);
 
         let row = Row::new(vec![
             Cell::from(Span::raw(format!("{:08X}", stream.key.ssrc))),
@@ -409,6 +475,7 @@ pub fn render_stream_list(
             Cell::from(Span::raw(format!("{:.1}%", loss_pct))),
             Cell::from(Span::raw(duration)),
             Cell::from(Span::raw(dialog_id)),
+            Cell::from(Span::styled(sdp_media, sdp_style)),
             Cell::from(Span::styled(status_label, health_style(health, theme))),
         ]);
 
@@ -424,7 +491,8 @@ pub fn render_stream_list(
         Constraint::Length(9),  // Jitter
         Constraint::Length(7),  // Loss
         Constraint::Length(9),  // Duration
-        Constraint::Length(18), // Dialog
+        Constraint::Length(13), // Dialog
+        Constraint::Length(5),  // SDP
         Constraint::Length(7),  // Status
     ];
 

@@ -160,6 +160,7 @@ pub(in crate::tui) fn render_app(
                     name_mode: app.name_mode,
                     displayed: &app.stream_displayed.keys,
                     quality_bands: &app.quality_bands,
+                    dialogs: ds,
                 },
             );
         }

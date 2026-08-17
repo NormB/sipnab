@@ -1,11 +1,12 @@
 ---
 source: tests/tui_snapshot_test.rs
+assertion_line: 584
 expression: output
 ---
  Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
  Match Expression:     BPF Filter:
  Display Filter:
-SSRC    Codec   Source   Destina Pkts    Jitter  Loss    Duratio Dialog  Status
+SSRC    Codec  Source  Destina Pkts   Jitter  Loss    Durati Dialog  SDP   Statu
 
 
 

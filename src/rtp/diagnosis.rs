@@ -442,6 +442,55 @@ fn advertised_endpoint_label(ctx: &MediaContext, addr: IpAddr) -> String {
     }
 }
 
+/// Where one stream's media actually came from, judged against what its dialog
+/// advertised.
+///
+/// This is the per-stream half of [`MediaDiagnosis::nat_mismatch`], split out
+/// so a surface that renders streams one at a time can ask the question
+/// directly instead of re-deriving it. [`diagnose_media`] reaches its verdict
+/// through this same function, which is the point: the TUI stream list and the
+/// hint text cannot disagree about a call, because only one of them decides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaOrigin {
+    /// No SDP in the dialog advertised a connection address, so there is
+    /// nothing to compare against and no verdict to reach. NOT the same as
+    /// "fine" — it is "unknowable from this capture".
+    Unadvertised,
+    /// The source address is one the dialog advertised.
+    AsAdvertised,
+    /// No exchange in the dialog advertised this source address. This is the
+    /// evidence behind `nat_mismatch`.
+    Rewritten,
+}
+
+/// Judge one stream's source address against the dialog's advertised set.
+///
+/// Addresses only, never ports, matching [`diagnose_media`] exactly — and the
+/// reasoning is recorded there rather than repeated: NAT and RTP proxies
+/// rewrite the port on a large share of ordinary calls without breaking
+/// anything, so a port comparison reports working calls as faults.
+pub fn media_origin(src: IpAddr, media: &MediaContext) -> MediaOrigin {
+    if media.advertised.is_empty() {
+        return MediaOrigin::Unadvertised;
+    }
+    if media.advertised.contains(&src) {
+        MediaOrigin::AsAdvertised
+    } else {
+        MediaOrigin::Rewritten
+    }
+}
+
+/// The endpoint a dialog advertised for media, as a label a reader can compare
+/// against a stream's actual source.
+///
+/// `None` when the dialog advertised nothing. When it advertised several, the
+/// one reported is the first — the same choice `diagnose_media` makes when it
+/// names the offered endpoint in a hint.
+pub fn advertised_media_label(media: &MediaContext) -> Option<String> {
+    let first = media.advertised.first()?;
+    Some(advertised_endpoint_label(media, *first))
+}
+
 /// Diagnose media path issues for a dialog's associated RTP streams.
 ///
 /// Examines the stream list and the dialog's negotiated media to detect:
@@ -607,7 +656,10 @@ pub fn diagnose_media(dialog_streams: &[&RtpStream], media: &MediaContext) -> Me
     if !media.advertised.is_empty() {
         for stream in dialog_streams {
             let actual_src = stream.key.src.ip();
-            if media.advertised.contains(&actual_src) {
+            // Through `media_origin`, not a second `contains` call: the TUI
+            // stream list renders the same judgement per row, and two copies of
+            // this test are how the surfaces start disagreeing about one call.
+            if media_origin(actual_src, media) != MediaOrigin::Rewritten {
                 continue;
             }
             diag.nat_mismatch = true;
@@ -1183,6 +1235,58 @@ mod tests {
             "a non-RTP transport advertises no RTP receive port: {:?}",
             ctx.advertised_endpoints()
         );
+    }
+
+    /// Every surface reaches the NAT verdict through ONE function.
+    ///
+    /// `diagnose_media` sets `nat_mismatch`, and the TUI stream list renders a
+    /// per-row column; both call `media_origin`. This asserts they agree on
+    /// the same dialog rather than merely each looking correct in isolation —
+    /// two independently-correct implementations of the same test are exactly
+    /// how `DH1` describes the surfaces drifting apart.
+    #[test]
+    fn the_per_stream_origin_and_the_dialog_verdict_cannot_disagree() {
+        let dialog = two_party_dialog("192.168.1.100", 16384, "203.0.113.9", 16386);
+        let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
+
+        // A rewritten source: no SDP advertised 198.51.100.7.
+        let rewritten = make_stream([198, 51, 100, 7], [203, 0, 113, 9], 41002, 16386);
+        // An advertised source, on a port nobody advertised. The port is NOT
+        // the test, so this must not read as rewritten.
+        let odd_port = make_stream([192, 168, 1, 100], [203, 0, 113, 9], 59999, 16386);
+
+        assert_eq!(
+            media_origin(rewritten.key.src.ip(), &ctx),
+            MediaOrigin::Rewritten
+        );
+        assert_eq!(
+            media_origin(odd_port.key.src.ip(), &ctx),
+            MediaOrigin::AsAdvertised,
+            "a rewritten PORT on an advertised address is not a NAT mismatch"
+        );
+
+        // The dialog verdict follows the per-stream one, both ways round.
+        let only_rewritten: Vec<&RtpStream> = vec![&rewritten];
+        assert!(diagnose_media(&only_rewritten, &ctx).nat_mismatch);
+
+        let only_advertised: Vec<&RtpStream> = vec![&odd_port];
+        assert!(
+            !diagnose_media(&only_advertised, &ctx).nat_mismatch,
+            "the verdict disagreed with media_origin on the same stream"
+        );
+    }
+
+    /// A dialog that advertised nothing is UNKNOWABLE, not clean. The column
+    /// renders that distinction, so the enum has to carry it.
+    #[test]
+    fn a_dialog_that_advertised_nothing_is_not_reported_as_matching() {
+        let ctx = MediaContext::default();
+        let s = make_stream([198, 51, 100, 7], [203, 0, 113, 9], 41002, 16386);
+        assert_eq!(
+            media_origin(s.key.src.ip(), &ctx),
+            MediaOrigin::Unadvertised
+        );
+        assert_eq!(advertised_media_label(&ctx), None);
     }
 
     /// The NAT hint carries the ports its boolean verdict rests on.
