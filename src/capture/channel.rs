@@ -18,6 +18,21 @@
 //! and reasonable fairness — without a hand-rolled `Condvar`. A *count* cap makes
 //! every packet cost exactly one permit, so packet size never matters and there
 //! is no oversized-packet deadlock.
+//!
+//! # Two shapes, one channel
+//!
+//! A LIVE source uses [`packet_channel`]: one slot per packet, every packet
+//! visible the moment it is sent — the kill path reacts to single packets,
+//! so nothing may sit between a live NIC and the consumer.
+//!
+//! A FILE source uses [`packet_channel_batched`]: its reader sends whole
+//! batches ([`FILE_BATCH`] packets per channel item), because the per-packet
+//! slot claim, storage send and receiver wake-up measured as ~35% of a
+//! single-core reconstruction's wall time — against ~9% for the SIP/RTP
+//! analysis itself. There a slot stands for one batch and the pool is divided
+//! by [`FILE_BATCH`], so the in-flight PACKET bound the capacity names still
+//! holds. The receiver is oblivious: batches are unpacked into a local buffer
+//! and handed out one packet at a time through the same API.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -94,12 +109,39 @@ impl CaptureMeter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Closed;
 
+/// Packets one file-reader batch carries, and the divisor
+/// [`packet_channel_batched`] applies to its slot pool.
+///
+/// 128 divides the per-packet channel cost — the slot claim, the storage
+/// send and the receiver wake-up — by 128, which took that machinery from
+/// the single largest line in a single-core reconstruction profile (~35% of
+/// wall time, against ~9% for the SIP/RTP analysis itself) to noise. Larger
+/// buys nothing further; the residual cost is already below the profiler's
+/// floor. Smaller starts giving the win back at 32.
+pub const FILE_BATCH: usize = 128;
+
+/// What actually travels through the storage channel.
+///
+/// Live captures send [`Item::One`] — no allocation, no latency: every packet
+/// is visible to the receiver the moment it is sent, which the kill path
+/// depends on. The offline file reader sends [`Item::Many`], because a file
+/// has no latency requirement and 535k per-packet channel operations were
+/// most of what a single-core reconstruction paid for.
+enum Item {
+    /// One packet, sent as itself.
+    One(Packet),
+    /// A batch from the file reader. Never empty: [`PacketTx::send_many`]
+    /// refuses to enqueue an empty batch, so the receiver can treat every
+    /// arriving batch as carrying at least one packet.
+    Many(Vec<Packet>),
+}
+
 /// Sending half. `Clone` (each capture device/thread gets its own handle); all
 /// clones share one permit pool and meter.
 #[derive(Clone)]
 pub struct PacketTx {
     /// Unbounded storage channel the packets actually travel through.
-    data_tx: Sender<Packet>,
+    data_tx: Sender<Item>,
     /// "In-flight slots": a `bounded(capacity)` channel used as a semaphore.
     /// `send` fills a slot (blocks when full = at cap); `recv` frees one.
     slot_tx: Sender<()>,
@@ -108,14 +150,22 @@ pub struct PacketTx {
 }
 
 /// Receiving half (single consumer in both TUI and batch modes).
+///
+/// **Single consumer is now load-bearing, not just descriptive**: the local
+/// buffer below is a `RefCell`, so sharing a `&PacketRx` across threads no
+/// longer compiles — which is the honest expression of what was always true.
 pub struct PacketRx {
     /// Unbounded storage channel the packets actually travel through.
-    data_rx: Receiver<Packet>,
-    /// Receiving side of the permit pool; one token is drained per packet
-    /// received, freeing a slot for a blocked sender.
+    data_rx: Receiver<Item>,
+    /// Receiving side of the permit pool; one token is drained per ITEM
+    /// dequeued, freeing a slot for a blocked sender.
     slot_rx: Receiver<()>,
     /// Shared load counters updated on every receive.
     meter: CaptureMeter,
+    /// Packets from a partially-consumed batch, drained before the channel
+    /// is touched again. [`Self::is_empty`] must account for this buffer or
+    /// the batch loop would flush its sink in the middle of a burst.
+    buffered: std::cell::RefCell<std::collections::VecDeque<Packet>>,
 }
 
 /// Create a capped, auto-shrinking packet channel holding at most `capacity`
@@ -129,10 +179,32 @@ pub struct PacketRx {
 ///
 /// The `(PacketTx, PacketRx)` pair sharing one permit pool and one meter.
 pub fn packet_channel(capacity: usize) -> (PacketTx, PacketRx) {
-    let capacity = capacity.max(1);
-    let (data_tx, data_rx) = unbounded::<Packet>();
-    // Starts empty; becomes full when `capacity` packets are in flight.
-    let (slot_tx, slot_rx) = bounded::<()>(capacity);
+    channel_with_slots(capacity.max(1))
+}
+
+/// Like [`packet_channel`], for a sender that batches via
+/// [`PacketTx::send_many`] — the offline file reader.
+///
+/// One slot stands for one BATCH of up to [`FILE_BATCH`] packets, so the slot
+/// pool is `capacity / FILE_BATCH` and the in-flight PACKET bound the caller
+/// asked for still holds (to within one partial batch). Dividing rather than
+/// keeping per-packet slots is the point: claiming 128 slots one `try_send`
+/// at a time would hand back most of the per-packet cost batching removes.
+///
+/// A single-packet [`PacketTx::send`] on this channel still works — it just
+/// spends a whole batch slot on one packet, tightening the cap rather than
+/// loosening it, which is the safe direction for the FIFO-shaped inputs that
+/// fall back to it.
+pub fn packet_channel_batched(capacity: usize) -> (PacketTx, PacketRx) {
+    channel_with_slots(capacity.max(1).div_ceil(FILE_BATCH))
+}
+
+/// The one constructor both public shapes share: `slots` is the semaphore
+/// size, whatever a slot stands for.
+fn channel_with_slots(slots: usize) -> (PacketTx, PacketRx) {
+    let (data_tx, data_rx) = unbounded::<Item>();
+    // Starts empty; becomes full when `slots` items are in flight.
+    let (slot_tx, slot_rx) = bounded::<()>(slots.max(1));
     let meter = CaptureMeter::new();
     (
         PacketTx {
@@ -144,6 +216,7 @@ pub fn packet_channel(capacity: usize) -> (PacketTx, PacketRx) {
             data_rx,
             slot_rx,
             meter,
+            buffered: std::cell::RefCell::new(std::collections::VecDeque::new()),
         },
     )
 }
@@ -164,11 +237,39 @@ impl PacketTx {
     /// `in_flight` counter once a slot is claimed (decremented again if
     /// the receiver disappears before the packet is enqueued).
     pub fn send(&self, packet: Packet) -> Result<(), Closed> {
-        // Claim an in-flight slot (one per packet). Fast path is a non-blocking
-        // try_send; only when the cap is reached do we count a capacity hit,
-        // wait, and time the wait to decide whether it was a genuine block.
-        // A dropped receiver drops `slot_rx`, so the wait/try ends in
-        // `Disconnected` and we surface `Err` (capture loop breaks).
+        self.send_item(Item::One(packet), 1)
+    }
+
+    /// Enqueue a whole batch as ONE channel item, blocking at the cap exactly
+    /// as [`Self::send`] does. An empty batch is a no-op.
+    ///
+    /// For the offline file reader only: a batch is invisible to the receiver
+    /// until the whole thing is sent, which a live capture must never accept —
+    /// the kill path reacts to single packets. Batching divides the per-packet
+    /// slot/send/wake cost by the batch length, which a single-core
+    /// reconstruction profile put at ~35% of wall time before this existed.
+    ///
+    /// # Errors
+    ///
+    /// `Err(Closed)` when the receiver is gone; the batch is dropped with it,
+    /// exactly as `send` drops its packet — the capture loop is breaking
+    /// either way.
+    pub fn send_many(&self, packets: Vec<Packet>) -> Result<(), Closed> {
+        let n = packets.len();
+        if n == 0 {
+            return Ok(());
+        }
+        self.send_item(Item::Many(packets), n)
+    }
+
+    /// Claim one slot, count `n` packets in flight, enqueue the item.
+    ///
+    /// Fast path is a non-blocking try_send; only when the cap is reached do
+    /// we count a capacity hit, wait, and time the wait to decide whether it
+    /// was a genuine block. A dropped receiver drops `slot_rx`, so the
+    /// wait/try ends in `Disconnected` and we surface `Err` (capture loop
+    /// breaks).
+    fn send_item(&self, item: Item, n: usize) -> Result<(), Closed> {
         match self.slot_tx.try_send(()) {
             Ok(()) => {}
             Err(TrySendError::Full(())) => {
@@ -185,12 +286,12 @@ impl PacketTx {
             }
             Err(TrySendError::Disconnected(())) => return Err(Closed),
         }
-        self.meter.in_flight.fetch_add(1, Ordering::Relaxed);
-        match self.data_tx.send(packet) {
+        self.meter.in_flight.fetch_add(n, Ordering::Relaxed);
+        match self.data_tx.send(item) {
             Ok(()) => Ok(()),
             Err(crossbeam_channel::SendError(_)) => {
                 // Receiver gone between claiming the slot and enqueueing.
-                self.meter.in_flight.fetch_sub(1, Ordering::Relaxed);
+                self.meter.in_flight.fetch_sub(n, Ordering::Relaxed);
                 Err(Closed)
             }
         }
@@ -221,12 +322,36 @@ impl PacketRx {
     /// Blocks up to `timeout`. On success, decrements the meter's `in_flight`
     /// counter and drains one permit token so a blocked sender can proceed.
     pub fn recv_timeout(&self, timeout: Duration) -> Result<Packet, RecvTimeoutError> {
-        let pkt = self.data_rx.recv_timeout(timeout)?;
-        self.meter.in_flight.fetch_sub(1, Ordering::Relaxed);
-        // Free the slot this packet occupied so a blocked sender can proceed.
-        // There is exactly one slot token per in-flight packet, so this never
+        // A partially-consumed batch is drained before the channel is touched
+        // again — including after every sender has disconnected, so a batch
+        // that made it into this buffer cannot be lost to the shutdown race.
+        if let Some(pkt) = self.buffered.borrow_mut().pop_front() {
+            self.meter.in_flight.fetch_sub(1, Ordering::Relaxed);
+            return Ok(pkt);
+        }
+        let item = self.data_rx.recv_timeout(timeout)?;
+        // Free the slot this item occupied so a blocked sender can proceed.
+        // There is exactly one slot token per in-flight item, so this never
         // blocks; ignore the error that arises only if all senders are gone.
         let _ = self.slot_rx.try_recv();
+        let pkt = match item {
+            Item::One(pkt) => pkt,
+            Item::Many(batch) => {
+                let mut buf = self.buffered.borrow_mut();
+                buf.extend(batch);
+                match buf.pop_front() {
+                    Some(pkt) => pkt,
+                    // Unreachable while send_many refuses empty batches, but
+                    // a recursive retry is the honest fallback: the item
+                    // carried nothing, so keep waiting as if it never arrived.
+                    None => {
+                        drop(buf);
+                        return self.recv_timeout(timeout);
+                    }
+                }
+            }
+        };
+        self.meter.in_flight.fetch_sub(1, Ordering::Relaxed);
         Ok(pkt)
     }
 
@@ -242,9 +367,33 @@ impl PacketRx {
     /// counter and drains one permit token (effects happen lazily as the
     /// iterator is advanced, not when `try_iter` is called).
     pub fn try_iter(&self) -> impl Iterator<Item = Packet> + '_ {
-        self.data_rx.try_iter().inspect(move |_pkt| {
-            self.meter.in_flight.fetch_sub(1, Ordering::Relaxed);
-            let _ = self.slot_rx.try_recv();
+        std::iter::from_fn(move || {
+            // Buffer first, for the same shutdown-race reason recv_timeout
+            // drains it first.
+            if let Some(pkt) = self.buffered.borrow_mut().pop_front() {
+                self.meter.in_flight.fetch_sub(1, Ordering::Relaxed);
+                return Some(pkt);
+            }
+            loop {
+                let item = self.data_rx.try_recv().ok()?;
+                let _ = self.slot_rx.try_recv();
+                match item {
+                    Item::One(pkt) => {
+                        self.meter.in_flight.fetch_sub(1, Ordering::Relaxed);
+                        return Some(pkt);
+                    }
+                    Item::Many(batch) => {
+                        let mut buf = self.buffered.borrow_mut();
+                        buf.extend(batch);
+                        // Loop rather than return on the (unreachable) empty
+                        // batch, so an empty item reads as "nothing arrived".
+                        if let Some(pkt) = buf.pop_front() {
+                            self.meter.in_flight.fetch_sub(1, Ordering::Relaxed);
+                            return Some(pkt);
+                        }
+                    }
+                }
+            }
         })
     }
 
@@ -257,7 +406,7 @@ impl PacketRx {
     /// this to flush its buffered output sink exactly when the pipeline goes
     /// idle (lock-free peek at the underlying channel).
     pub fn is_empty(&self) -> bool {
-        self.data_rx.is_empty()
+        self.buffered.borrow().is_empty() && self.data_rx.is_empty()
     }
 }
 
@@ -485,5 +634,120 @@ mod tests {
         tx.send(pkt(8)).unwrap(); // cap clamped to >=1, so one send succeeds
         assert_eq!(tx.meter().in_flight(), 1);
         rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    }
+
+    /// A batch yields its packets one at a time, in order, FIFO with a single
+    /// send that follows it — the receiver cannot tell how packets travelled.
+    #[test]
+    fn a_batched_send_preserves_order_and_count() {
+        let (tx, rx) = packet_channel(16);
+        tx.send_many(vec![pkt(1), pkt(2), pkt(3)]).unwrap();
+        tx.send(pkt(4)).unwrap();
+        let sizes: Vec<usize> = (0..4)
+            .map(|_| rx.recv_timeout(Duration::from_secs(1)).unwrap().caplen)
+            .collect();
+        assert_eq!(sizes, vec![1, 2, 3, 4]);
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_millis(10)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+    }
+
+    /// Packets already pulled into the receiver's local buffer must survive
+    /// every sender disconnecting: disconnect is reported only after the last
+    /// buffered packet is drained, exactly as the raw channel drains itself.
+    #[test]
+    fn buffered_packets_survive_sender_disconnect() {
+        let (tx, rx) = packet_channel(16);
+        tx.send_many(vec![pkt(1), pkt(2), pkt(3)]).unwrap();
+        // Pull one: the other two now sit in the local buffer.
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        drop(tx);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap().caplen, 2);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap().caplen, 3);
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_millis(10)),
+            Err(RecvTimeoutError::Disconnected)
+        ));
+    }
+
+    /// The idle check must see locally-buffered packets. The batch loop keys
+    /// its flush-on-idle on `is_empty`, and a buffer invisible to it would
+    /// flush the sink in the middle of a burst that is still being drained.
+    #[test]
+    fn is_empty_sees_locally_buffered_packets() {
+        let (tx, rx) = packet_channel(16);
+        tx.send_many(vec![pkt(1), pkt(2)]).unwrap();
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(
+            !rx.is_empty(),
+            "one packet is still buffered locally; idle would flush mid-burst"
+        );
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(rx.is_empty());
+        drop(tx);
+    }
+
+    /// The in-flight meter counts PACKETS, not channel items — the TUI load
+    /// figure and the capacity math both read it in packets.
+    #[test]
+    fn in_flight_counts_packets_not_batches() {
+        let (tx, rx) = packet_channel(16);
+        tx.send_many(vec![pkt(1), pkt(2), pkt(3)]).unwrap();
+        assert_eq!(tx.meter().in_flight(), 3);
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(tx.meter().in_flight(), 2);
+    }
+
+    /// A batched channel still enforces its packet cap: the slot pool is
+    /// divided by the batch size, so in-flight packets stay bounded by the
+    /// capacity the caller asked for, and a sender past it parks until the
+    /// receiver dequeues.
+    #[test]
+    fn a_batched_channel_still_applies_backpressure() {
+        // capacity 2*FILE_BATCH => exactly 2 slots.
+        let (tx, rx) = packet_channel_batched(2 * FILE_BATCH);
+        tx.send_many(vec![pkt(1); FILE_BATCH]).unwrap();
+        tx.send_many(vec![pkt(2); FILE_BATCH]).unwrap();
+
+        let tx2 = tx.clone();
+        let h = std::thread::spawn(move || tx2.send_many(vec![pkt(3); FILE_BATCH]));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !h.is_finished(),
+            "a third batch must park at the packet cap"
+        );
+
+        // Dequeuing the first batch frees its slot and unblocks the sender.
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(h.join().unwrap().is_ok());
+        drop(rx);
+    }
+
+    /// `try_iter` drains the local buffer first, then the channel, and its
+    /// per-packet meter effects still happen lazily as items are yielded.
+    #[test]
+    fn try_iter_drains_buffer_then_channel() {
+        let (tx, rx) = packet_channel(16);
+        tx.send_many(vec![pkt(1), pkt(2)]).unwrap();
+        rx.recv_timeout(Duration::from_secs(1)).unwrap(); // pkt(2) now buffered
+        tx.send(pkt(3)).unwrap();
+        let sizes: Vec<usize> = rx.try_iter().map(|p| p.caplen).collect();
+        assert_eq!(sizes, vec![2, 3]);
+        assert_eq!(tx.meter().in_flight(), 0);
+        assert!(rx.is_empty());
+    }
+
+    /// An empty batch is a no-op, not a slot leak: it claims nothing, sends
+    /// nothing, and the receiver never sees an item for it.
+    #[test]
+    fn an_empty_batch_claims_no_slot() {
+        let (tx, rx) = packet_channel_batched(FILE_BATCH);
+        tx.send_many(Vec::new()).unwrap();
+        assert_eq!(tx.meter().in_flight(), 0);
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_millis(10)),
+            Err(RecvTimeoutError::Timeout)
+        ));
     }
 }

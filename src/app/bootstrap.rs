@@ -916,7 +916,17 @@ pub fn launch(
     // 14. Create the packet channel: a capped, auto-shrinking queue. Occupancy
     //     grows under load up to the cap and the (unbounded) storage frees its
     //     segments when idle. Capacity is derived from the memory budget.
-    let (tx, rx) = capture::channel::packet_channel(capture_config.channel_capacity());
+    //
+    //     A file source gets the batched shape: its reader sends whole batches
+    //     (one channel item per FILE_BATCH packets), so the slot pool is
+    //     divided to keep the in-flight PACKET bound the capacity names. A
+    //     live source keeps per-packet slots — its packets must be visible
+    //     the moment they arrive, so nothing batches them.
+    let capacity = capture_config.channel_capacity();
+    let (tx, rx) = match &source {
+        CaptureSource::File { .. } => capture::channel::packet_channel_batched(capacity),
+        _ => capture::channel::packet_channel(capacity),
+    };
 
     // 15. Start the capture thread (multi-device aware).
     //     Use a rendezvous channel so the capture thread can signal that the

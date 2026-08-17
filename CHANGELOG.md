@@ -10,6 +10,39 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.104] - 2026-08-17
+
+### Changed
+
+- **Offline file reads are 29% faster on one core.** A file source now hands
+  the capture channel batches of 128 packets instead of one packet at a time.
+  Measured against the released 0.5.103 artifact, checksum-verified, on an
+  idle host, median-of-5 across three interleaved replicates: **1.00M to 1.29M
+  packets/s at `--cores 1`**, with four-core throughput unchanged (2.31M vs
+  2.30M, inside the run-to-run spread) and RSS 3 MiB lower.
+
+  A profiler found it, after a bisect-style reading of the code did not. On a
+  single-core reconstruction the channel machinery — the per-packet slot
+  claim, the storage send and the receiver wake-up — was **~35% of wall time**,
+  against ~9% for the SIP and RTP analysis the tool exists to do. At four
+  cores that cost hides behind the parallel analysis, which is why the same
+  profile at `--cores 4` shows nothing worth fixing and why the win here is
+  one-core-shaped.
+
+  A live capture is deliberately excluded and still sends one packet per
+  channel item: batching would hold a packet back until its batch filled, and
+  the scanner-kill path reacts to single packets. Replay is excluded for the
+  same reason at a different timescale — it reproduces inter-packet gaps, so a
+  packet has to be visible when its moment arrives. Non-regular inputs (a
+  FIFO) keep the per-packet send too, because a trickling producer would leave
+  up to a batch parked in the reader.
+
+  The batched channel divides its slot pool by the batch size, so the
+  in-flight PACKET cap an operator asks for still means what it said, and
+  backpressure still blocks the reader at that cap. Analysis output is
+  unchanged: the same corpus produces a byte-identical report through either
+  shape.
+
 ## [0.5.103] - 2026-08-16
 
 ### Fixed

@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use super::channel::PacketTx;
+use super::channel::{self, PacketTx};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
@@ -581,6 +581,68 @@ struct FileRead {
     span: Option<(DateTime<Utc>, DateTime<Utc>)>,
 }
 
+/// Accumulates a regular file's packets into channel batches.
+///
+/// One [`PacketTx::send_many`] per [`FILE_BATCH`](channel::FILE_BATCH) packets
+/// instead of one `send` per packet: the per-packet slot claim, storage send
+/// and receiver wake-up were ~35% of a single-core reconstruction's wall time,
+/// against ~9% for the analysis itself. A batch costs one of each.
+///
+/// Only the non-replay regular-file read uses this. Replay reproduces
+/// inter-packet timing, so each packet must be visible the moment its moment
+/// arrives; and a FIFO or other non-regular path can trickle, which would
+/// leave up to a batch of packets parked here while the producer stalls.
+/// Both keep the per-packet send.
+struct SendBatcher<'a> {
+    /// The channel these batches are sent on.
+    tx: &'a PacketTx,
+    /// Packets accumulated toward the next batch; flushed at
+    /// [`FILE_BATCH`](channel::FILE_BATCH) and at every exit from the read loop.
+    buf: Vec<Packet>,
+}
+
+impl<'a> SendBatcher<'a> {
+    /// A batcher sending on `tx`, its buffer sized to one batch.
+    fn new(tx: &'a PacketTx) -> Self {
+        Self {
+            tx,
+            buf: Vec::with_capacity(channel::FILE_BATCH),
+        }
+    }
+
+    /// Buffer one packet, flushing when the batch is full.
+    ///
+    /// # Errors
+    ///
+    /// `Err(n)` when the receiver is gone: `n` packets (this one included)
+    /// were dropped with the dead channel, so the caller can keep its
+    /// delivered-count honest before it stops.
+    fn push(&mut self, packet: Packet) -> Result<(), u64> {
+        self.buf.push(packet);
+        if self.buf.len() >= channel::FILE_BATCH {
+            self.flush()
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Send whatever is buffered. Called at every exit from the read loop —
+    /// EOF, shutdown, `--count`/`--duration` limits, and read errors — so a
+    /// packet that was read is never quietly left behind in this buffer.
+    ///
+    /// # Errors
+    ///
+    /// `Err(n)`: the receiver is gone and `n` buffered packets went with it.
+    fn flush(&mut self) -> Result<(), u64> {
+        if self.buf.is_empty() {
+            return Ok(());
+        }
+        let n = self.buf.len() as u64;
+        let batch = std::mem::replace(&mut self.buf, Vec::with_capacity(channel::FILE_BATCH));
+        self.tx.send_many(batch).map_err(|_| n)
+    }
+}
+
 /// The read loop itself.
 ///
 /// Separate from [`read_opened`] only so its [`FileRead`] is available to
@@ -624,15 +686,28 @@ fn read_opened_inner(
         tracing::info!("Reading from '{}'", path.display());
     }
 
+    // Batch sends for the plain read of a regular file; see [`SendBatcher`]
+    // for why replay and non-regular paths keep the per-packet send.
+    let is_regular = path.metadata().map(|m| m.is_file()).unwrap_or(false);
+    let mut batcher = (!replay && is_regular).then(|| SendBatcher::new(tx));
+
     // The read stopped short of this file's end. The span it did cover is
     // still reported: it is real, and it is what the overlap check must use.
+    // Buffered packets go out first — they were read, so they are owed to the
+    // consumer — and a flush the dead channel refuses is subtracted from the
+    // delivered count it was optimistically added to.
     macro_rules! stopped {
-        () => {
+        () => {{
+            if let Some(b) = batcher.as_mut()
+                && let Err(lost) = b.flush()
+            {
+                *count = count.saturating_sub(lost);
+            }
             return Ok(FileRead {
                 reached_eof: false,
                 span,
-            })
-        };
+            });
+        }};
     }
 
     loop {
@@ -706,22 +781,51 @@ fn read_opened_inner(
                 });
                 ordinal += 1;
 
-                if tx.send(packet).is_err() {
-                    tracing::debug!("Receiver dropped, stopping file reader");
-                    stopped!();
+                match batcher.as_mut() {
+                    Some(b) => {
+                        // Counted at read time, so the `--count` check at the
+                        // loop top sees packets still sitting in the batch and
+                        // the limit stays exact. A flush the dead channel
+                        // refuses subtracts what it dropped.
+                        *count += 1;
+                        if let Err(lost) = b.push(packet) {
+                            *count = count.saturating_sub(lost);
+                            tracing::debug!("Receiver dropped, stopping file reader");
+                            stopped!();
+                        }
+                    }
+                    None => {
+                        if tx.send(packet).is_err() {
+                            tracing::debug!("Receiver dropped, stopping file reader");
+                            stopped!();
+                        }
+                        *count += 1;
+                    }
                 }
-
-                *count += 1;
             }
             Err(pcap::Error::NoMorePackets) => {
                 tracing::debug!("End of file reached");
                 break;
             }
             Err(e) => {
+                // The packets read before the error are real and already
+                // counted; they go out before the error does.
+                if let Some(b) = batcher.as_mut()
+                    && let Err(lost) = b.flush()
+                {
+                    *count = count.saturating_sub(lost);
+                }
                 tracing::error!("Error reading pcap file '{}': {e}", path.display());
                 return Err(e).context("Error reading pcap file");
             }
         }
+    }
+
+    // EOF: the last partial batch goes out before this file is declared done.
+    if let Some(b) = batcher.as_mut()
+        && let Err(lost) = b.flush()
+    {
+        *count = count.saturating_sub(lost);
     }
 
     tracing::info!(

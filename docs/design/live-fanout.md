@@ -63,13 +63,13 @@ wrong at once, and one of them is a test that pins the *complement*:
   pcap reconstruction (`-I`) … Advanced features (live capture, per-message
   output ordering, security detectors, SRTP decrypt) use the single-threaded
   path regardless."*
-- `cores_ignored_warning` ([`bootstrap.rs:2277`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2277)),
+- `cores_ignored_warning` ([`bootstrap.rs:2293`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2293)),
   whose live-capture branch says *"this run captures live rather than reading a
   saved file … parallel reconstruction is offline-only — it shards a capture
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_parallel_path`
-  ([`bootstrap.rs:2977`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2977)), which asserts the warning
+  ([`bootstrap.rs:2993`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2993)), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N
@@ -107,7 +107,7 @@ that is a log line and a help-text sentence, not a second noun.
    thread either way, live".
 2. **`cores_ignored_warning` loses its live branch and keeps its
    `--multi-device` branch.** The `--multi-device` reason
-   ([`bootstrap.rs:2977`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2977)) stays true; see §2.1.
+   ([`bootstrap.rs:2993`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2993)) stays true; see §2.1.
    `cores_warning_is_the_exact_complement_of_the_parallel_path` must be rewritten
    in the same commit, not after — it is currently the gate that would catch the
    two conditions drifting, and a half-updated complement is worse than none.
@@ -174,7 +174,7 @@ That is the correct fix for a drainer-bound capture, and it is the only thing
 `PACKET_FANOUT` is for.
 
 **It buys nothing if the consumer is the limit.** `packet_channel`
-([`channel.rs:131`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L131)) is an unbounded data queue
+([`channel.rs:181`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L181)) is an unbounded data queue
 plus a bounded slot semaphore, so `send` blocks once `capacity` packets are in
 flight. When the processing loop cannot keep up, the channel saturates and the
 capture threads block in `send` — and a blocked capture thread is a thread not

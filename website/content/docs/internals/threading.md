@@ -211,7 +211,7 @@ flow's packets share a host pair and therefore a worker.
 
 | Edge | Flavor |
 |---|---|
-| capture → processing | [`capture::channel`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs) — a count-capped permit pool over an unbounded crossbeam channel, so idle memory returns to ~0 while backpressure still blocks the sender |
+| capture → processing | [`capture::channel`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs) — a count-capped permit pool over an unbounded crossbeam channel, so idle memory returns to ~0 while backpressure still blocks the sender. A live source pays one channel item per packet (the kill path reacts to single packets); a file source sends batches of 128 through the same channel, one item per batch, with the slot pool divided to keep the same in-flight packet cap |
 | batch main loop | the same [`capture::channel`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs) wrapper, not a bare bounded channel: [`batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs) receives on a `capture::channel::PacketRx` exactly as the TUI processor does |
 | `--cores` dispatcher → workers, channel-fed | crossbeam `bounded::<Packet>(8192)` ([`run_offline_parallel()`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs)) |
 | `--cores` reader → workers, file input | crossbeam `bounded::<Vec<Packet>>(64)` carrying batches of 128 ([`run_offline_parallel_file()`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs)) — same ~8192 in-flight packet cap, one channel hop per 128 packets instead of per packet |
