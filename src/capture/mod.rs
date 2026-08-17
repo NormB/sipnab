@@ -286,6 +286,21 @@ static NOT_IP: NumTally = NumTally::new();
 static NO_TRANSPORT: NumTally = NumTally::new();
 /// Frames shorter than the header they claim.
 static TRUNCATED_FRAMES: AtomicU64 = AtomicU64::new(0);
+
+/// Frames the CAPTURE truncated: `caplen < origlen`, meaning a snaplen cut the
+/// frame short before sipnab ever saw it.
+///
+/// Deliberately NOT part of the undecodable tally, and deliberately not
+/// [`TRUNCATED_FRAMES`], which counts a frame shorter than the header it
+/// claims — a malformed frame. A snapped frame is not malformed and not an
+/// error: it usually decodes perfectly, because a small snaplen keeps every
+/// header and drops the payload, which is exactly what a signaling capture
+/// wants. It is a FACT ABOUT THE CAPTURE, and the operator needs it because
+/// the existing `--snaplen` warnings fire once per run and so cannot say how
+/// MUCH of a capture arrived cut short. A run that decoded every packet and
+/// truncated 94% of them is not a clean capture, and without this counter it
+/// reported as one.
+static SNAPPED_FRAMES: AtomicU64 = AtomicU64::new(0);
 /// Frames a decoder rejected outright.
 static DECODE_ERRORS: AtomicU64 = AtomicU64::new(0);
 
@@ -399,6 +414,28 @@ pub fn undecodable_frames() -> u64 {
     UNDECODABLE_FRAMES.load(Ordering::Relaxed)
 }
 
+/// Frames a snaplen cut short before sipnab saw them (`caplen < origlen`).
+///
+/// # Returns
+///
+/// Monotonic count since the process started or the last
+/// [`reset_undecodable_frames`].
+#[must_use]
+pub fn snapped_frames() -> u64 {
+    SNAPPED_FRAMES.load(Ordering::Relaxed)
+}
+
+/// Record that one frame arrived cut short by the capture's snaplen.
+///
+/// The compare is on the caller's hot path, so this is written as a branch the
+/// common case does not pay for: an unsnapped capture performs one integer
+/// comparison per frame and never touches the atomic. Only a capture that IS
+/// being truncated pays the increment, and on that capture the information is
+/// worth more than the relaxed add costs.
+pub fn note_snapped_frame() {
+    SNAPPED_FRAMES.fetch_add(1, Ordering::Relaxed);
+}
+
 /// The full undecodable breakdown for this run.
 ///
 /// # Returns
@@ -469,6 +506,7 @@ pub fn undecodable_report() -> UndecodableReport {
 /// tables.
 pub fn reset_undecodable_frames() {
     UNDECODABLE_FRAMES.store(0, Ordering::Relaxed);
+    SNAPPED_FRAMES.store(0, Ordering::Relaxed);
     TRUNCATED_FRAMES.store(0, Ordering::Relaxed);
     DECODE_ERRORS.store(0, Ordering::Relaxed);
     UNSUPPORTED_LINK_TYPE.reset();

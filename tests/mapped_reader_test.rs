@@ -203,3 +203,48 @@ fn a_truncated_file_stops_at_the_last_whole_frame() {
         }
     }
 }
+
+/// A snapped capture is COUNTED as snapped, not merely read.
+///
+/// `--snaplen` warnings fire once per run, so an operator could not see how
+/// much of a capture arrived cut short. This is the counter behind the
+/// capture-quality line (backlog CT3): it must move for a frame whose
+/// `caplen < origlen`, and must NOT move for an intact one, or a clean capture
+/// reports as truncated.
+#[test]
+fn a_snapped_frame_is_counted_and_an_intact_one_is_not() {
+    use sipnab::capture::packet::Packet;
+
+    sipnab::capture::reset_undecodable_frames();
+    let before = sipnab::capture::snapped_frames();
+
+    // Intact: caplen == origlen.
+    let _intact = Packet::from_bytes(
+        chrono::Utc::now(),
+        bytes::Bytes::from_static(&[0u8; 64]),
+        64,
+        64,
+        None,
+        1,
+    );
+    assert_eq!(
+        sipnab::capture::snapped_frames(),
+        before,
+        "an intact frame must not count as truncated"
+    );
+
+    // Snapped: 64 captured of a 1500-byte frame.
+    let _snapped = Packet::from_bytes(
+        chrono::Utc::now(),
+        bytes::Bytes::from_static(&[0u8; 64]),
+        64,
+        1500,
+        None,
+        1,
+    );
+    assert_eq!(
+        sipnab::capture::snapped_frames(),
+        before + 1,
+        "a frame cut short by the snaplen must be counted"
+    );
+}

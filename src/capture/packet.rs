@@ -412,6 +412,13 @@ impl Packet {
             "Packet::from_bytes: caplen ({caplen}) must equal data.len() ({})",
             data.len(),
         );
+        // Counted HERE because every reader — mapped, libpcap, live and the
+        // single-threaded offline path — builds its packets through this one
+        // constructor, so a new reader cannot forget to report it. The common
+        // case pays one comparison and never touches the atomic.
+        if caplen < origlen {
+            crate::capture::note_snapped_frame();
+        }
         Self {
             timestamp,
             data,

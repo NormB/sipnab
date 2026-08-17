@@ -1065,7 +1065,13 @@ fn capture_quality_summary() -> Option<String> {
     // decoder here could read it. Omitting it meant a capture sipnab
     // understood 0% of reported its quality as "fine".
     let undecodable = crate::capture::undecodable_report();
-    if dropped == 0 && if_dropped == 0 && bad_ts == 0 && undecodable.frames == 0 {
+    // A fifth channel, and the only one that is neither loss nor a decode
+    // failure: frames the capture's snaplen cut short before sipnab saw them.
+    // The `--snaplen` warnings elsewhere fire once per run and so cannot say
+    // how MUCH of a capture arrived truncated; a run that decoded every packet
+    // and snapped 94% of them is not a clean capture (CT3).
+    let snapped = crate::capture::snapped_frames();
+    if dropped == 0 && if_dropped == 0 && bad_ts == 0 && undecodable.frames == 0 && snapped == 0 {
         return None;
     }
 
@@ -1098,6 +1104,17 @@ fn capture_quality_summary() -> Option<String> {
              nothing in them was analyzed (see the NOT DECODED line above for which \
              link types, EtherTypes and IP protocols)",
             undecodable.frames
+        ));
+    }
+
+    if snapped > 0 {
+        // Named as truncation, not loss: the frames arrived and mostly decoded.
+        // What is missing is payload, which is why the remedy is a snaplen and
+        // not a buffer.
+        parts.push(format!(
+            "{snapped} frame(s) arrived truncated by the capture's snaplen \
+             (headers kept, payload cut short — raise --snaplen if you need RTP \
+             payload, audio export or a faithful -O re-emit)"
         ));
     }
 
