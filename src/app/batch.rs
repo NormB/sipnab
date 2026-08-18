@@ -1093,6 +1093,20 @@ fn report_stun_failures() {
         "STUN/TURN: {} of {total} transaction(s) went unanswered.",
         unanswered.len()
     );
+    let challenges = crate::stun::auth_challenges();
+    if challenges > 0 {
+        // Said separately because it points somewhere else entirely: the path
+        // works and the server answered, so nothing here is a firewall
+        // problem. An operator who reads only the line above goes hunting a
+        // dropped packet that was never dropped.
+        tracing::warn!(
+            "STUN/TURN: {challenges} transaction(s) were answered with an \
+             AUTHENTICATION challenge (a realm was offered). Those are not a \
+             blocked path -- the server was reachable and asked for \
+             credentials. Check the endpoint's STUN/TURN username and password \
+             rather than the network."
+        );
+    }
 }
 
 /// Print the capture-quality line and the STUN/TURN failures beside it.

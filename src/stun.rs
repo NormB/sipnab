@@ -30,10 +30,24 @@
 //! * `SOFTWARE`, because it names the stack and is what distinguishes one
 //!   vendor's retransmission pattern from another's
 //!
-//! Not parsed: `MESSAGE-INTEGRITY` (no credentials to verify it with in a
-//! passive capture), `FINGERPRINT`, and the TURN and ICE extensions. Those
-//! decide whether a message is *authentic*, which a passive observer cannot
-//! establish, and this module's claims are about what was *seen*.
+//! Not parsed: `MESSAGE-INTEGRITY` and `MESSAGE-INTEGRITY-SHA256`. Those decide
+//! whether a message is *authentic*, which needs credentials a passive observer
+//! does not have — and reporting anything about them would claim a verification
+//! that never happened.
+//!
+//! `FINGERPRINT` is the opposite case and IS checked, correcting what this
+//! comment said when the module landed: it is a CRC-32 over the message with no
+//! key involved, so a passive reader can verify it honestly. It is also what
+//! separates a real STUN message from a payload that merely happened to carry
+//! the cookie bytes.
+//!
+//! `REALM`, `NONCE` and `USERNAME` are read for what they SAY — that a server
+//! asked for credentials, which is a different fault from a path that drops
+//! packets — never as evidence that authentication succeeded.
+//!
+//! sipnab is not an ICE agent. It reports the ICE attributes that explain a
+//! media path (who was controlling, which candidate was nominated) and does not
+//! compute priorities, form candidate pairs, or decide nominations.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -57,6 +71,19 @@ pub enum StunClass {
     SuccessResponse,
     /// The answer, carrying `ERROR-CODE`.
     ErrorResponse,
+}
+
+/// Which side of an ICE exchange drives nomination.
+///
+/// Reported, not decided: sipnab is an observer. Its value is that a capture
+/// where BOTH sides claim `Controlling` is a role conflict — a real
+/// misconfiguration whose only other symptom is media that never starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IceRole {
+    /// This agent picks the pair. `ICE-CONTROLLING` (0x802A).
+    Controlling,
+    /// This agent accepts the other's choice. `ICE-CONTROLLED` (0x8029).
+    Controlled,
 }
 
 /// One parsed STUN message.
@@ -86,6 +113,51 @@ pub struct StunMessage {
     /// TURN `LIFETIME`, in seconds. A zero lifetime on a Refresh is a
     /// deliberate teardown, not a failure.
     pub lifetime: Option<u32>,
+    /// The `REALM` a server challenged with.
+    ///
+    /// Read for what it SAYS, never as evidence that anyone authenticated: a
+    /// realm means the server asked for credentials, which is a different
+    /// fault from a path that drops packets and is fixed somewhere else
+    /// entirely. Whether the credentials were then correct is a question
+    /// `MESSAGE-INTEGRITY` answers, and a passive observer cannot check it.
+    pub realm: Option<String>,
+    /// Whether a `NONCE` was present. The value itself is not kept — it is a
+    /// server-chosen opaque string that says nothing to an observer, and
+    /// storing it would only invite someone to treat it as identifying.
+    pub nonce_present: bool,
+    /// `ALTERNATE-SERVER`: where a `300` redirect points.
+    ///
+    /// Without it a redirect reads as a dead end, because the error code alone
+    /// says the request did not succeed and not that somewhere else would.
+    pub alternate_server: Option<SocketAddr>,
+    /// Whether the message's `FINGERPRINT` checked out.
+    ///
+    /// `Some(true)` verified, `Some(false)` present and WRONG, `None` absent.
+    /// The three are deliberately distinct: `None` means sipnab did not check,
+    /// and reporting that as `false` would accuse a message nobody examined.
+    ///
+    /// Unlike `MESSAGE-INTEGRITY`, this needs no credentials — it is a CRC-32
+    /// over the message — so it is a claim a passive observer can honestly
+    /// make, and it is what tells a real STUN message from a payload that
+    /// merely happened to carry the cookie bytes.
+    pub fingerprint_valid: Option<bool>,
+    /// `USE-CANDIDATE`: this check nominates its pair for media.
+    ///
+    /// The nomination is the finding. Without it, a capture of an ICE exchange
+    /// that converged and one that never did look alike.
+    pub use_candidate: bool,
+    /// `PRIORITY` of the candidate this check is for.
+    pub priority: Option<u32>,
+    /// Which role the sender claimed, when it claimed one.
+    pub ice_role: Option<IceRole>,
+    /// TURN `CHANNEL-NUMBER`: which channel carries relayed media.
+    pub channel_number: Option<u16>,
+    /// TURN `REQUESTED-TRANSPORT`, as an IP protocol number (17 is UDP).
+    pub requested_transport: Option<u8>,
+    /// Whether [`Self::mapped_address`] came from the XOR form. Tracked so a
+    /// legacy `MAPPED-ADDRESS` arriving AFTER the XOR one cannot overwrite it,
+    /// whichever order a server sends them in.
+    pub mapped_address_is_xor: bool,
 }
 
 impl StunMessage {
@@ -93,6 +165,17 @@ impl StunMessage {
     /// request report is about.
     pub fn is_binding_request(&self) -> bool {
         self.class == StunClass::Request && self.method == 0x001
+    }
+
+    /// Whether this response is an AUTHENTICATION challenge rather than a
+    /// refusal or a failure.
+    ///
+    /// The distinction directs the work: a challenge means the server was
+    /// reachable and wants credentials, so nothing in the network path is at
+    /// fault. `401` (unauthorized) and `438` (stale nonce) are the two the RFC
+    /// defines for this, and a realm is what makes the challenge answerable.
+    pub fn is_auth_challenge(&self) -> bool {
+        matches!(self.error_code, Some(401) | Some(438)) && self.realm.is_some()
     }
 
     /// Whether this is a TURN Allocate Request.
@@ -229,10 +312,23 @@ pub fn parse(payload: &[u8]) -> Option<StunMessage> {
         relayed_address: None,
         peer_address: None,
         lifetime: None,
+        realm: None,
+        nonce_present: false,
+        alternate_server: None,
+        use_candidate: false,
+        priority: None,
+        ice_role: None,
+        channel_number: None,
+        requested_transport: None,
+        mapped_address_is_xor: false,
+        fingerprint_valid: None,
     };
 
     // Attributes: 2-byte type, 2-byte length, value, padded to 4 bytes.
     while body.len() >= 4 {
+        // Where this attribute starts within the whole message, which is what
+        // FINGERPRINT's CRC span is defined against.
+        let attr_start = payload.len() - body.len();
         let attr_type = u16::from_be_bytes([body[0], body[1]]);
         let attr_len = u16::from_be_bytes([body[2], body[3]]) as usize;
         let value_end = 4usize.saturating_add(attr_len);
@@ -241,7 +337,55 @@ pub fn parse(payload: &[u8]) -> Option<StunMessage> {
         }
         let value = &body[4..value_end];
         match attr_type {
-            0x0020 => msg.mapped_address = xor_mapped_address(value, &transaction_id),
+            0x0020 => {
+                // Unconditional, unlike the legacy arm below: if both are
+                // present the XOR form wins whichever order they arrive in.
+                if let Some(a) = xor_mapped_address(value, &transaction_id) {
+                    msg.mapped_address = Some(a);
+                    msg.mapped_address_is_xor = true;
+                }
+            }
+            // MAPPED-ADDRESS, the pre-RFC5389 form, NOT XOR'd. Servers that
+            // predate the cookie still answer with it, and RFC 5389 servers
+            // often send both. Taken only when the XOR form has not already
+            // been read: that one is the answer a NAT cannot rewrite on the
+            // way back, which is the whole reason the XOR form exists.
+            0x0001 if !msg.mapped_address_is_xor => {
+                msg.mapped_address = plain_address(value);
+            }
+            // ALTERNATE-SERVER is a plain address too: it is not obfuscated,
+            // because it names a server rather than the client's own address.
+            0x8023 => msg.alternate_server = plain_address(value),
+            0x0014 => {
+                msg.realm = Some(
+                    String::from_utf8_lossy(value)
+                        .trim_matches(|c: char| c.is_whitespace() || c == '\0')
+                        .to_string(),
+                );
+            }
+            0x0015 => msg.nonce_present = true,
+            // ICE (RFC 8445). Reported, never acted on: these say what the
+            // agents decided, and sipnab's job is to show that decision.
+            0x0025 => msg.use_candidate = true,
+            0x0024 if value.len() >= 4 => {
+                msg.priority = Some(u32::from_be_bytes([value[0], value[1], value[2], value[3]]));
+            }
+            0x802A => msg.ice_role = Some(IceRole::Controlling),
+            0x8029 => msg.ice_role = Some(IceRole::Controlled),
+            // TURN channel and transport: what a relay path is made of.
+            0x000C if value.len() >= 2 => {
+                msg.channel_number = Some(u16::from_be_bytes([value[0], value[1]]));
+            }
+            0x0019 if !value.is_empty() => msg.requested_transport = Some(value[0]),
+            // FINGERPRINT (RFC 5389 §15.5): CRC-32 of everything preceding
+            // this attribute, XOR 0x5354554e. `attr_start` is where this
+            // attribute begins in the whole message, which is exactly the
+            // span the CRC covers.
+            0x8028 if value.len() >= 4 => {
+                let claimed = u32::from_be_bytes([value[0], value[1], value[2], value[3]]);
+                let covered = &payload[..attr_start];
+                msg.fingerprint_valid = Some(crc32_ieee(covered) ^ 0x5354_554e == claimed);
+            }
             // TURN attributes. Same XOR scheme as XOR-MAPPED-ADDRESS, which is
             // why they share the decoder rather than getting a second copy.
             0x0016 => msg.relayed_address = xor_mapped_address(value, &transaction_id),
@@ -278,6 +422,48 @@ pub fn parse(payload: &[u8]) -> Option<StunMessage> {
     }
 
     Some(msg)
+}
+
+/// CRC-32 (IEEE 802.3), for `FINGERPRINT`.
+///
+/// Written out rather than pulled in as a dependency: it is fifteen lines, it
+/// is used in exactly one place, and a checksum whose polynomial is visible in
+/// the source is one a reader can check against the RFC without leaving the
+/// file.
+fn crc32_ieee(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for b in data {
+        crc ^= u32::from(*b);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+/// Decode a plain (non-XOR) address attribute: `MAPPED-ADDRESS` and
+/// `ALTERNATE-SERVER` share the layout, minus the obfuscation.
+fn plain_address(value: &[u8]) -> Option<SocketAddr> {
+    if value.len() < 4 {
+        return None;
+    }
+    let port = u16::from_be_bytes([value[2], value[3]]);
+    match value[1] {
+        0x01 if value.len() >= 8 => Some(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(value[4], value[5], value[6], value[7])),
+            port,
+        )),
+        0x02 if value.len() >= 20 => {
+            let mut o = [0u8; 16];
+            o.copy_from_slice(&value[4..20]);
+            Some(SocketAddr::new(IpAddr::V6(Ipv6Addr::from(o)), port))
+        }
+        _ => None,
+    }
 }
 
 /// Decode `XOR-MAPPED-ADDRESS` (RFC 5389 §15.2), whose address is XOR'd with
@@ -328,7 +514,7 @@ mod tests {
     /// The bytes are synthetic. The structure is what was observed on a real
     /// capture; the transaction ID and addresses are not, because a capture's
     /// identifiers do not belong in source.
-    const FIELD_SHAPED_REQUEST: [u8; 44] = [
+    pub(super) const FIELD_SHAPED_REQUEST: [u8; 44] = [
         0x00, 0x01, 0x00, 0x18, // Binding Request, 24 bytes of attributes
         0x21, 0x12, 0xa4, 0x42, // magic cookie
         0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, // txn id
@@ -469,6 +655,9 @@ struct Tracker {
     /// Outstanding requests. An answer removes its entry, so what remains at
     /// the end of a capture is exactly the set that went unanswered.
     pending: HashMap<[u8; 12], UnansweredRequest>,
+    /// Answers that were AUTHENTICATION challenges rather than plain
+    /// refusals. See `note_message`.
+    challenged: u64,
     /// Requests that WERE answered, counted only. Kept because "3 of 40 went
     /// unanswered" and "3 of 3" are different findings, and a bare list of
     /// three cannot tell them apart.
@@ -519,10 +708,26 @@ pub fn note_message(msg: &StunMessage, src: SocketAddr, dst: SocketAddr) {
             // be reported as one.
             if tracker.pending.remove(&msg.transaction_id).is_some() {
                 tracker.answered += 1;
+                if msg.is_auth_challenge() {
+                    // Counted apart because it is the most actionable answer of
+                    // all: the path works and the credentials are the problem,
+                    // which sends the operator somewhere completely different
+                    // from a dropped-packet hunt.
+                    tracker.challenged += 1;
+                }
             }
         }
         StunClass::Indication => {}
     }
+}
+
+/// How many answers were authentication challenges.
+pub fn auth_challenges() -> u64 {
+    TRACKER
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|t| t.challenged))
+        .unwrap_or(0)
 }
 
 /// Binding Requests that never got an answer, busiest first, with the number
@@ -760,5 +965,262 @@ mod channel_unwrap_tests {
             channel_data_payload(&[0x40, 0x01, 0xff, 0xff, 0x00]).is_none(),
             "a wrapper claiming more than it holds yields nothing rather than a short read"
         );
+    }
+}
+
+#[cfg(test)]
+mod attribute_coverage_tests {
+    use super::*;
+
+    fn msg(msg_type: u16, attrs: &[(u16, Vec<u8>)]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (t, v) in attrs {
+            body.extend_from_slice(&t.to_be_bytes());
+            body.extend_from_slice(&(v.len() as u16).to_be_bytes());
+            body.extend_from_slice(v);
+            while body.len() % 4 != 0 {
+                body.push(0);
+            }
+        }
+        let mut m = Vec::new();
+        m.extend_from_slice(&msg_type.to_be_bytes());
+        m.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        m.extend_from_slice(&MAGIC_COOKIE.to_be_bytes());
+        m.extend_from_slice(&[0x5a; 12]);
+        m.extend_from_slice(&body);
+        m
+    }
+
+    /// A 401 with a REALM is an AUTHENTICATION challenge, not a blocked path.
+    /// Without the realm the two read alike, and they are fixed in different
+    /// places: one needs credentials, the other needs a firewall rule.
+    #[test]
+    fn an_auth_challenge_is_distinguishable_from_a_blocked_path() {
+        let m = msg(
+            0x0111, // Binding error
+            &[
+                (0x0009, vec![0, 0, 0x04, 0x01]),       // ERROR-CODE 401
+                (0x0014, b"example.org".to_vec()),      // REALM
+                (0x0015, b"dcd98b7102dd2f0e".to_vec()), // NONCE
+            ],
+        );
+        let parsed = parse(&m).expect("parses");
+        assert_eq!(parsed.error_code, Some(401));
+        assert_eq!(parsed.realm.as_deref(), Some("example.org"));
+        assert!(parsed.nonce_present, "a nonce means a challenge to answer");
+        assert!(
+            parsed.is_auth_challenge(),
+            "401 plus a realm is a challenge, and must not read as silence"
+        );
+    }
+
+    /// A 400 is not a challenge: no realm, nothing to answer.
+    #[test]
+    fn a_plain_error_is_not_an_auth_challenge() {
+        let m = msg(0x0111, &[(0x0009, vec![0, 0, 0x04, 0x00])]);
+        let parsed = parse(&m).expect("parses");
+        assert_eq!(parsed.error_code, Some(400));
+        assert!(!parsed.is_auth_challenge());
+        assert_eq!(parsed.realm, None);
+    }
+
+    /// Legacy MAPPED-ADDRESS: pre-RFC5389 servers still answer with it, and
+    /// without it a SUCCESSFUL response reads as "no address returned".
+    #[test]
+    fn a_legacy_mapped_address_is_still_an_answer() {
+        // Not XOR'd: family 0x01, port and address in the clear.
+        let mut v = vec![0, 0x01];
+        v.extend_from_slice(&8080u16.to_be_bytes());
+        v.extend_from_slice(&[203, 0, 113, 9]);
+        let m = msg(0x0101, &[(0x0001, v)]);
+        let parsed = parse(&m).expect("parses");
+        assert_eq!(
+            parsed.mapped_address.map(|a| a.to_string()),
+            Some("203.0.113.9:8080".to_string()),
+            "a legacy server's answer must not read as no answer at all"
+        );
+    }
+
+    /// XOR-MAPPED-ADDRESS wins when both are present: RFC 5389 servers send
+    /// both for compatibility, and the XOR one is the one NAT cannot corrupt.
+    #[test]
+    fn the_xor_form_wins_when_both_are_present() {
+        let cookie = MAGIC_COOKIE.to_be_bytes();
+        let mut xor = vec![0, 0x01];
+        xor.extend_from_slice(&(9000u16 ^ ((MAGIC_COOKIE >> 16) as u16)).to_be_bytes());
+        for (i, o) in [198u8, 51, 100, 7].iter().enumerate() {
+            xor.push(o ^ cookie[i]);
+        }
+        let mut legacy = vec![0, 0x01];
+        legacy.extend_from_slice(&8080u16.to_be_bytes());
+        legacy.extend_from_slice(&[203, 0, 113, 9]);
+
+        let m = msg(0x0101, &[(0x0001, legacy), (0x0020, xor)]);
+        let parsed = parse(&m).expect("parses");
+        assert_eq!(
+            parsed.mapped_address.map(|a| a.to_string()),
+            Some("198.51.100.7:9000".to_string()),
+            "the XOR form is the one a NAT cannot rewrite, so it must win"
+        );
+    }
+
+    /// ALTERNATE-SERVER: a redirect, which without parsing reads as a failure.
+    #[test]
+    fn a_redirect_names_where_it_points() {
+        let mut v = vec![0, 0x01];
+        v.extend_from_slice(&3478u16.to_be_bytes());
+        v.extend_from_slice(&[192, 0, 2, 50]);
+        let m = msg(0x0111, &[(0x0009, vec![0, 0, 0x03, 0x00]), (0x8023, v)]);
+        let parsed = parse(&m).expect("parses");
+        assert_eq!(parsed.error_code, Some(300));
+        assert_eq!(
+            parsed.alternate_server.map(|a| a.to_string()),
+            Some("192.0.2.50:3478".to_string()),
+            "a redirect that does not name its target reads as a dead end"
+        );
+    }
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::*;
+
+    /// FINGERPRINT is CRC-32 of the message XOR 0x5354554e, over a header
+    /// whose length field counts the attribute itself. Verifiable with NO
+    /// credentials, which is what separates it from MESSAGE-INTEGRITY.
+    fn with_fingerprint(msg_type: u16, mut body: Vec<u8>) -> Vec<u8> {
+        let mut m = Vec::new();
+        // Length must already include the 8-byte FINGERPRINT attribute.
+        let total = body.len() + 8;
+        m.extend_from_slice(&msg_type.to_be_bytes());
+        m.extend_from_slice(&(total as u16).to_be_bytes());
+        m.extend_from_slice(&MAGIC_COOKIE.to_be_bytes());
+        m.extend_from_slice(&[0x77; 12]);
+        m.append(&mut body);
+        let crc = crc32(&m) ^ 0x5354_554e;
+        m.extend_from_slice(&0x8028u16.to_be_bytes());
+        m.extend_from_slice(&4u16.to_be_bytes());
+        m.extend_from_slice(&crc.to_be_bytes());
+        m
+    }
+
+    /// Reference CRC-32 (IEEE), so the test does not depend on the parser's.
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for b in data {
+            crc ^= u32::from(*b);
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    /// A correct fingerprint verifies, and that is a claim sipnab can honestly
+    /// make: it needs no key, so it is not the unverifiable case.
+    #[test]
+    fn a_correct_fingerprint_verifies() {
+        let m = with_fingerprint(0x0001, Vec::new());
+        let parsed = parse(&m).expect("parses");
+        assert_eq!(
+            parsed.fingerprint_valid,
+            Some(true),
+            "a fingerprint sipnab can check must report as checked and good"
+        );
+    }
+
+    /// A corrupted one reports FALSE, not None. None means "absent"; false
+    /// means "present and wrong", and conflating them would turn a corrupt
+    /// message into a message with nothing to say.
+    #[test]
+    fn a_corrupt_fingerprint_reports_false_not_absent() {
+        let mut m = with_fingerprint(0x0001, Vec::new());
+        let n = m.len();
+        m[n - 1] ^= 0xFF;
+        let parsed = parse(&m).expect("parses");
+        assert_eq!(parsed.fingerprint_valid, Some(false));
+    }
+
+    /// No FINGERPRINT at all is None: sipnab did not check, and must not imply
+    /// it did.
+    #[test]
+    fn an_absent_fingerprint_is_none() {
+        let parsed = parse(&super::tests::FIELD_SHAPED_REQUEST).expect("parses");
+        assert_eq!(parsed.fingerprint_valid, None);
+    }
+}
+
+#[cfg(test)]
+mod ice_and_turn_attribute_tests {
+    use super::*;
+
+    fn msg(msg_type: u16, attrs: &[(u16, Vec<u8>)]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (t, v) in attrs {
+            body.extend_from_slice(&t.to_be_bytes());
+            body.extend_from_slice(&(v.len() as u16).to_be_bytes());
+            body.extend_from_slice(v);
+            while body.len() % 4 != 0 {
+                body.push(0);
+            }
+        }
+        let mut m = Vec::new();
+        m.extend_from_slice(&msg_type.to_be_bytes());
+        m.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        m.extend_from_slice(&MAGIC_COOKIE.to_be_bytes());
+        m.extend_from_slice(&[0x31; 12]);
+        m.extend_from_slice(&body);
+        m
+    }
+
+    /// USE-CANDIDATE is the nomination: it says THIS pair is the one media
+    /// will use. Without it a capture of a working ICE exchange and a capture
+    /// of one that never converged look the same.
+    #[test]
+    fn a_nominated_candidate_is_reported() {
+        let m = msg(
+            0x0001,
+            &[
+                (0x0025, Vec::new()),
+                (0x0024, 0x7E00_00FFu32.to_be_bytes().to_vec()),
+            ],
+        );
+        let parsed = parse(&m).expect("parses");
+        assert!(parsed.use_candidate, "the nomination is the whole finding");
+        assert_eq!(parsed.priority, Some(0x7E00_00FF));
+    }
+
+    /// The controlling/controlled roles say which side drives nomination, and
+    /// a capture where BOTH claim controlling is a role conflict -- a real
+    /// misconfiguration that otherwise shows up only as media never starting.
+    #[test]
+    fn the_ice_role_is_reported_for_both_sides() {
+        let controlling = parse(&msg(0x0001, &[(0x802A, vec![0; 8])])).expect("parses");
+        assert_eq!(controlling.ice_role, Some(IceRole::Controlling));
+        let controlled = parse(&msg(0x0001, &[(0x8029, vec![0; 8])])).expect("parses");
+        assert_eq!(controlled.ice_role, Some(IceRole::Controlled));
+        let neither = parse(&msg(0x0001, &[])).expect("parses");
+        assert_eq!(neither.ice_role, None, "not an ICE exchange, so no role");
+    }
+
+    /// TURN CHANNEL-NUMBER and REQUESTED-TRANSPORT explain a relay path: which
+    /// channel carries the media, and over what transport it was asked for.
+    #[test]
+    fn turn_channel_and_transport_are_reported() {
+        let m = msg(
+            0x0009, // ChannelBind
+            &[
+                (0x000C, vec![0x40, 0x02, 0, 0]), // CHANNEL-NUMBER 0x4002
+                (0x0019, vec![17, 0, 0, 0]),      // REQUESTED-TRANSPORT UDP
+            ],
+        );
+        let parsed = parse(&m).expect("parses");
+        assert_eq!(parsed.method_name(), "ChannelBind");
+        assert_eq!(parsed.channel_number, Some(0x4002));
+        assert_eq!(parsed.requested_transport, Some(17), "17 is UDP");
     }
 }

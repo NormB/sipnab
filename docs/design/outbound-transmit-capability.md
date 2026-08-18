@@ -46,7 +46,7 @@ it is not the same guarantee:
    ([`process_isolation.rs:156`, `:193`, `:229`, `:242`](../../src/process_isolation.rs))
    and `KillUdpSocket::send_to` ([`:273`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L273)) — plus
    `spawn_scanner_kill_worker` ([`:1009`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1009)) and
-   `BatchRunner::new` ([`batch.rs:1460`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1460)) by value, and the
+   `BatchRunner::new` ([`batch.rs:1591`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1591)) by value, and the
    worker holds one in a field ([`:801`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L801)). A new
    send that forgets it does not compile.
 3. **A refusal the operator can read.** `offline_refusal`
