@@ -25,6 +25,7 @@
 //! surface for the rest of the crate.
 
 #[cfg(feature = "api")]
+pub mod analysis_report;
 pub mod api;
 pub mod call_report;
 pub mod cli_print;
@@ -39,9 +40,11 @@ pub mod prometheus;
 #[cfg(feature = "metrics")]
 pub mod prometheus_server;
 pub mod sink;
+pub mod stun_report;
 pub mod synthetic;
 pub mod wireshark;
 
+pub use analysis_report::{print_analysis_report, print_analysis_report_as};
 pub use call_report::{ReportFormat, generate_call_report};
 pub use cli_print::{ColorMode, OutputOptions, print_sip_message};
 pub use dialog_report::{print_dialog_report, print_dialog_report_as};
@@ -50,6 +53,7 @@ pub use fail2ban::{format_reg_flood_event, format_scanner_event, render_absent};
 pub use hexdump::hexdump;
 pub use json::{dialog_to_json, dialog_to_ndjson, message_to_json, stream_to_json};
 pub use sink::BatchSink;
+pub use stun_report::{print_stun_report, print_stun_report_as, stun_report_ndjson};
 
 /// Parse a CLI listen-address string into a `SocketAddr`, shared by the two
 /// output backends that open a TCP listener — the REST API server (`api`

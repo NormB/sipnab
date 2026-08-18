@@ -72,6 +72,9 @@ fn metrics_expose_expected_families_with_types() {
         // and TURN transactions that were sent and never answered, which is
         // the signal behind a one-way-audio complaint.
         ("sipnab_nat_unanswered_requests", "gauge"),
+        // A relay torn down mid-call. A gauge for the same reason its
+        // neighbour is: a late Refresh unsays it, which no counter could.
+        ("sipnab_nat_lapsed_turn_allocations", "gauge"),
         ("sipnab_capture_quality_degraded", "gauge"),
         ("sipnab_pdd_seconds", "histogram"),
         ("sipnab_mos", "histogram"),

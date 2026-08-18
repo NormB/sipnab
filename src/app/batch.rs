@@ -831,7 +831,8 @@ pub fn run_cores_file(
             // The return value is the "report could not be produced" signal and
             // was dropped here, so an unknown --call-report id or an unwritable
             // stdout exited 0 on the --cores path while exiting 1 elsewhere.
-            let reports_ok = generate_reports(cli, &r.dialog_store, &r.stream_store, filter);
+            let reports_ok =
+                generate_reports(cli, &r.dialog_store, &r.stream_store, filter, r.total_count);
             if !cli.mode_args.quiet {
                 tracing::info!(
                     "sipnab: {} packets, {} SIP messages, {} RTP packets across {} streams ({} cores)",
@@ -846,6 +847,7 @@ pub fn run_cores_file(
                 report_impossible_rates(&r.stream_store);
                 report_retention_losses(&r.dialog_store);
                 report_capture_quality();
+                report_llmnr_summary();
             }
             // Same linter, same catalog, same exit code as the batch path.
             // Wired here because a gate that silently passes under `--cores` is
@@ -1119,6 +1121,62 @@ fn report_capture_quality() {
         tracing::warn!("{msg}");
     }
     report_stun_failures();
+    // Called here rather than inside `report_stun_failures`, which returns
+    // early on a capture with nothing unanswered: an allocation can lapse on a
+    // capture where every transaction was answered promptly, and that is in
+    // fact the ordinary shape of it — the Allocate succeeded, the Refresh was
+    // never sent, and nothing ever went unanswered.
+    report_lapsed_allocations();
+}
+
+/// Report TURN allocations that were still carrying traffic after the lifetime
+/// they were last granted had run out.
+///
+/// The one condition sipnab reports that has NO other symptom: a TURN server
+/// tears an allocation down when its lifetime lapses, and the relayed media
+/// stops with it — mid-call, with no SIP message anywhere to explain why. A
+/// reader looking at the signaling sees a healthy call that went quiet.
+///
+/// Stated as "no Refresh was SEEN" rather than "no Refresh was sent": a
+/// capture that started late or lost a packet cannot tell those apart, and
+/// claiming the second would blame the client for the capture's gap.
+///
+/// # Side effects
+///
+/// Writes warnings to the tracing log; silent when nothing lapsed.
+fn report_lapsed_allocations() {
+    let report = crate::stun::report();
+    let lapsed: Vec<&crate::stun::TurnAllocation> = report.lapsed_allocations().collect();
+    if lapsed.is_empty() {
+        return;
+    }
+    tracing::warn!(
+        "TURN: {} allocation(s) were still carrying traffic after the lifetime they were \
+         last granted had run out, with no Refresh seen in between. A relay tears an \
+         allocation down when its lifetime lapses and the media stops with it, mid-call, \
+         with no SIP message to say why.",
+        lapsed.len()
+    );
+    for alloc in lapsed.iter().take(5) {
+        tracing::warn!(
+            "TURN:   {} -> {}: {} lifetime, {} refresh(es) seen, traffic continued {}s past \
+             expiry",
+            alloc.client,
+            alloc.server,
+            alloc
+                .lifetime_secs
+                .map(|s| format!("{s}s"))
+                .unwrap_or_else(|| "unknown".to_string()),
+            alloc.refreshes,
+            alloc.seconds_past_expiry().unwrap_or_default(),
+        );
+    }
+    if lapsed.len() > 5 {
+        tracing::warn!(
+            "TURN:   ... and {} further lapsed allocation(s) not listed.",
+            lapsed.len() - 5
+        );
+    }
 }
 
 /// The capture-quality sentence, or `None` when nothing was lost.
@@ -1212,12 +1270,7 @@ const BLIND_RUN_SHARE: f64 = 50.0;
 /// converts it. "Unknown EtherType" names nothing; "0x8847" names MPLS on the
 /// span port.
 fn reason_list(report: &crate::capture::UndecodableReport) -> String {
-    report
-        .reasons
-        .iter()
-        .map(|t| format!("{} ({})", t.reason, t.frames))
-        .collect::<Vec<_>>()
-        .join(", ")
+    report.reason_list()
 }
 
 /// What this run could not decode, as the line a summary prints — or `None`
@@ -1414,6 +1467,101 @@ fn report_undecodable(frames_read: u64) {
     }
 }
 
+/// Print the LLMNR host inventory for a finished run.
+///
+/// Called from all three batch summary sites for the reason
+/// [`report_icmp_summary`] is: a notice that exists on one path and not the
+/// others makes `--cores N` and `--cores 1` disagree about the same capture.
+///
+/// This says nothing about any call, and must never start to. LLMNR is not a
+/// VoIP protocol and sipnab is not a general dissector — it is decoded because
+/// a Windows name lookup is a DNS-format message whose transaction ID supplies
+/// the RTP version bits one time in four, and real captures produced phantom
+/// RTP streams from exactly that. Having claimed the packet, keeping what it
+/// says costs nothing and answers a question a capture taken to diagnose a
+/// phone happens to contain the answer to: whose LAN is this. LLMNR being
+/// enabled at all is the second half of the finding — it is the protocol
+/// Responder abuses to harvest NTLM credentials.
+///
+/// # Side effects
+///
+/// Writes to stderr only when the run saw LLMNR; a capture without it stays
+/// byte-identical to one from before this existed.
+fn report_llmnr_summary() {
+    let llmnr = crate::llmnr::store::llmnr_report();
+    if llmnr.is_empty() {
+        return;
+    }
+    eprintln!(
+        "LLMNR: {} packet(s) from {} host(s) — Windows name resolution is active on this \
+         segment. It is the protocol Responder abuses to harvest NTLM credentials, and is \
+         normally disabled by policy.",
+        llmnr.packets,
+        llmnr.hosts.len()
+    );
+
+    // Names a host answered for identify that host; names nothing answered for
+    // are lookups that failed on this segment. Two different findings, so two
+    // different lines.
+    let claimed = llmnr.claimed_names();
+    if !claimed.is_empty() {
+        eprintln!(
+            "LLMNR: hostname(s) claimed on this segment: {}.",
+            join_capped(&claimed, 8)
+        );
+    }
+    let unresolved = llmnr.unresolved_names();
+    if !unresolved.is_empty() {
+        eprintln!(
+            "LLMNR: name(s) queried that nothing answered for: {}.",
+            join_capped(&unresolved, 8)
+        );
+    }
+    for host in llmnr.hosts.iter().take(8) {
+        if host.names_queried.is_empty() {
+            continue;
+        }
+        eprintln!(
+            "LLMNR:   {} looked up {}",
+            host.addr,
+            join_capped(
+                &host
+                    .names_queried
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                8
+            )
+        );
+    }
+    if llmnr.hosts.len() > 8 {
+        eprintln!("LLMNR:   ... and {} more host(s).", llmnr.hosts.len() - 8);
+    }
+    // A cap that silently swallowed evidence would make the roster above read
+    // as complete when it is not.
+    if llmnr.dropped_hosts > 0 || llmnr.dropped_names > 0 {
+        eprintln!(
+            "LLMNR: {} host(s) and {} name(s) were not retained (tracking caps); the packet \
+             count above stays exact.",
+            llmnr.dropped_hosts, llmnr.dropped_names
+        );
+    }
+}
+
+/// Join at most `max` items, saying how many were withheld. Shared by the
+/// LLMNR lines above, which each need the same "show some, count the rest"
+/// treatment.
+fn join_capped(items: &[&str], max: usize) -> String {
+    if items.len() <= max {
+        return items.join(", ");
+    }
+    format!(
+        "{}, and {} more",
+        items[..max].join(", "),
+        items.len() - max
+    )
+}
+
 /// Print the ICMP evidence summary for a finished run.
 ///
 /// Called from all three batch summary sites rather than written inline,
@@ -1528,6 +1676,7 @@ pub fn run(
             &result.dialog_store,
             &result.stream_store,
             batch.filter_expr.as_ref(),
+            result.total_count,
         );
         if !cli.mode_args.quiet {
             tracing::info!(
@@ -1543,6 +1692,7 @@ pub fn run(
             report_impossible_rates(&result.stream_store);
             report_retention_losses(&result.dialog_store);
             report_capture_quality();
+            report_llmnr_summary();
         }
         if !reports_ok {
             std::process::exit(1);
@@ -2753,7 +2903,13 @@ impl BatchRunner {
         {
             let ds_guard = dialog_store.read();
             let ss_guard = stream_store.read();
-            if !generate_reports(&cli, &ds_guard, &ss_guard, filter_expr.as_ref()) {
+            if !generate_reports(
+                &cli,
+                &ds_guard,
+                &ss_guard,
+                filter_expr.as_ref(),
+                total_count,
+            ) {
                 std::process::exit(1);
             }
         }
@@ -2885,6 +3041,7 @@ impl BatchRunner {
             report_impossible_rates(&stream_store.read());
             report_retention_losses(&dialog_store.read());
             report_capture_quality();
+            report_llmnr_summary();
 
             // Guidance when no SIP signaling was found — and, when the
             // capture did not decode, a refusal to state that absence as a
@@ -3734,6 +3891,7 @@ pub fn generate_reports(
     dialog_store: &DialogStore,
     stream_store: &StreamStore,
     filter: Option<&FilterExpr>,
+    frames_read: u64,
 ) -> bool {
     // SNB-0015 probe: set SIPNAB_PERF_STATS=1 to surface the per-run work that
     // scales with call count. `endpoint_link_scan_visits` is the cost that was
@@ -3827,6 +3985,76 @@ pub fn generate_reports(
         // (`| head`) stays fine.
         if !write_stdout(&out) {
             return false;
+        }
+    }
+
+    // --stun: the STUN/TURN transaction and allocation tables. Read from the
+    // process-global store rather than taken as an argument, for the reason the
+    // ICMP section of `print_dialog_report` is: a STUN transaction is neither a
+    // `SipDialog` nor an `RtpStream`, so it cannot arrive through either slice.
+    //
+    // Not narrowed by `--filter`: the DSL selects dialogs, and a NAT-discovery
+    // probe belongs to no dialog. Filtering it by a dialog filter would drop
+    // exactly the evidence that explains why those dialogs have no media.
+    if cli.output_args.stun && cli.mode_args.no_tui {
+        let report = output::print_stun_report_as(
+            &crate::stun::report(),
+            if cli.output_args.markdown {
+                output::ReportFormat::Markdown
+            } else {
+                output::ReportFormat::Text
+            },
+        );
+        if !write_stdout(&report) {
+            return false;
+        }
+    }
+
+    // --json-stun: one NDJSON object per transaction, then one per allocation.
+    if cli.output_args.json_stun && cli.mode_args.no_tui {
+        let out = output::stun_report_ndjson(&crate::stun::report());
+        if !write_stdout(&out) {
+            return false;
+        }
+    }
+
+    // --analyze / --json-analyze: every problem in the capture, worst first.
+    //
+    // Computed once and rendered twice: asking for both forms must not be able
+    // to produce two different answers, and `analyze` reads process-global
+    // stores whose contents a second call has no reason to change but no
+    // guarantee not to.
+    //
+    // `--filter` narrows the DIALOG selection, exactly as `--report` does, and
+    // narrows nothing else. See `crate::analysis::analyze` for why the
+    // capture-level findings are deliberately not filtered.
+    if (cli.output_args.analyze || cli.output_args.json_analyze) && cli.mode_args.no_tui {
+        let analysis = crate::analysis::analyze(dialog_store, stream_store, filter, frames_read);
+        if cli.output_args.analyze {
+            let report = output::print_analysis_report_as(
+                &analysis,
+                if cli.output_args.markdown {
+                    output::ReportFormat::Markdown
+                } else {
+                    output::ReportFormat::Text
+                },
+            );
+            if !write_stdout(&report) {
+                return false;
+            }
+        }
+        if cli.output_args.json_analyze {
+            match serde_json::to_string(&analysis) {
+                Ok(mut line) => {
+                    line.push('\n');
+                    if !write_stdout(&line) {
+                        return false;
+                    }
+                }
+                // An analysis that will not serialize is a bug in the type, not
+                // a reason to fail the whole run silently.
+                Err(e) => tracing::error!("analysis serialization failed: {e}"),
+            }
         }
     }
 
@@ -4858,12 +5086,12 @@ mod tests {
         // Empty --report summary path.
         let mut cli = base_cli();
         cli.output_args.report = true;
-        generate_reports(&cli, &dialog_store, &stream_store, None);
+        generate_reports(&cli, &dialog_store, &stream_store, None, 0);
 
         // --call-report for an unknown Call-ID hits the "not found" warn arm.
         let mut cli = base_cli();
         cli.output_args.call_report = Some("does-not-exist".to_string());
-        generate_reports(&cli, &dialog_store, &stream_store, None);
+        generate_reports(&cli, &dialog_store, &stream_store, None, 0);
 
         // Insert a dialog, then --call-report finds it across all formats.
         let call_id = "report-1@example.com";
@@ -4890,7 +5118,7 @@ mod tests {
             let mut cli = base_cli();
             cli.output_args.call_report = Some(call_id.to_string());
             setup(&mut cli);
-            generate_reports(&cli, &dialog_store, &stream_store, None);
+            generate_reports(&cli, &dialog_store, &stream_store, None, 0);
         }
     }
 

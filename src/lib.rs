@@ -40,6 +40,8 @@
 #![warn(clippy::missing_docs_in_private_items)]
 #![warn(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub mod analysis;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod app;
 #[cfg(any(feature = "api", feature = "mcp"))]
 pub mod auth;
@@ -52,6 +54,7 @@ pub mod config;
 pub mod crash;
 pub mod crypto;
 pub mod error;
+pub mod llmnr;
 pub mod names;
 pub mod net;
 #[cfg(not(target_arch = "wasm32"))]

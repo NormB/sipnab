@@ -268,6 +268,45 @@ held 433 host-unreachable, 262 administratively prohibited and 63
 port-unreachable errors, so one sentence for all three would have been wrong
 for most of them.
 
+### STUN evidence inside the media diagnosis
+
+`diagnosis.private_media_address` is a warning: the SDP `c=` line names an
+RFC 1918 / RFC 4193 / link-local address, and the peer is not itself private, so
+the far end cannot route back to it. It is correct inside one LAN, and correct
+behind an SBC, ALG or media proxy that rewrites the SDP downstream — which is
+why the hint asks the reader to check which of those they are in.
+
+`diagnosis.stun_sdp_mismatch` is the evidence that settles it, and it is
+**omitted** on any capture with no STUN in it, so a consumer written before it
+existed sees no change. It is never present without `private_media_address` also
+being `true`: one address, one problem, with STUN as the corroboration rather
+than as a second finding.
+
+| Field | Meaning |
+|---|---|
+| `reason` | `ignored` — STUN told the client a public address and the SDP advertised the private one anyway. `relay_ignored` — a TURN server allocated the client a relayed address and the SDP advertised the private one anyway. `unanswered` — the client's request drew nothing, so it never learned a public address to advertise. |
+| `client` | The socket the STUN request left from, `ip:port`. |
+| `server` | The STUN or TURN server it went to. The box to check when the reason is `unanswered`. |
+| `mapped_address` / `relayed_address` | The reachable address the client was handed and did not use. Absent on `unanswered`, where there is none — that is the point of it. |
+| `advertised` | The unroutable address the SDP named instead. |
+| `request_count` | Requests sent for that transaction. Above one is a retransmission, which [RFC 5389 §7.2.1](https://www.rfc-editor.org/rfc/rfc5389#section-7.2.1) sends only on timeout — so it is itself proof the earlier attempts drew silence. |
+| `observed_offset_secs` | Seconds from the start of this dialog to the STUN evidence; negative when the probe came first, which is the ordinary case. Absent when either time is unknown. |
+
+`observed_offset_secs` exists because the correlation is by **client IP alone**.
+Nothing in a Binding Request names a Call-ID, so a probe from the right address
+matches this dialog whether it happened during setup or an hour earlier. Inside
+a two-minute window the finding is an observation of this call; well outside it,
+the same finding is an inference that the client's NAT-discovery failure
+persisted — usually true, and not the same claim. Past that window the hint
+appends a note saying so, and inside it says nothing, because a caveat printed
+every time is one nobody reads.
+
+A `relay_ignored` or `ignored` finding raises `private_media_address` on its own,
+with no observed stream needed: a public mapped or relayed address is proof the
+client's traffic reaches the internet. `unanswered` does so only when the server
+it asked is itself public — silence from a STUN server on the same LAN proves
+nothing, and flagging it would fire on every LAN-only capture.
+
 ### When ICMP and retransmissions both fire
 
 `retransmissions` and `icmp_unreachable` frequently appear on the same dialog,
@@ -297,6 +336,78 @@ The same document is what you get from:
 
 `--on-quality-exec` is separate: it passes the stream object on its own,
 under its own variable name — `SIPNAB_STREAM_JSON`, **not** `SIPNAB_JSON`.
+
+## STUN / TURN JSON (`--json-stun`)
+
+NDJSON, emitted after capture: one object per STUN or TURN transaction, then one
+per TURN allocation. Every line carries a `record` field naming its kind, so a
+consumer never has to infer the shape from which keys happen to be present.
+
+```bash
+sipnab -N -I capture.pcap --json-stun --no-cli-print \
+  | jq -c 'select(.record == "transaction" and .responded_at == null)
+           | {client, server, method_name, request_count}'
+```
+
+A `transaction` carries the hex `transaction_id`, `client` and `server` sockets,
+`method` and `method_name`, `first_request` / `last_request` / `responded_at`
+timestamps, `request_count`, `rtt_ms`, and whatever the exchange produced:
+`mapped_address`, `relayed_address`, `peer_address`, `lifetime_secs`,
+`channel_number`, `error_code`, `auth_challenge`, `software`, `ice_role`,
+`use_candidate` and `fingerprint_valid`.
+
+`responded_at: null` is the finding: nothing answered. `request_count` above one
+is a retransmission, which is itself proof the earlier attempts drew silence.
+`auth_challenge: true` says the opposite — the server was reachable and asked
+for credentials, so nothing in the network path is at fault.
+`fingerprint_valid` is three-valued on purpose: `true` verified, `false` present
+and WRONG, `null` absent — sipnab did not check, and reporting that as `false`
+would accuse a message nobody examined.
+
+A `turn_allocation` carries `client`, `server`, `relayed_address`,
+`lifetime_secs`, `allocated_at`, `refreshed_at`, `refreshes`, `last_activity`,
+`released`, and the derived `lapsed`:
+
+```bash
+sipnab -N -I relay.pcap --json-stun --no-cli-print | jq 'select(.lapsed == true)'
+```
+
+`lapsed: true` means traffic was still crossing the relay after the lifetime the
+server last granted had run out, with no Refresh seen in between. A TURN server
+tears an allocation down the moment its lifetime lapses and the media stops with
+it, mid-call, with **no SIP message anywhere to explain it** — the signaling
+shows a healthy call that went quiet. A deliberate release (a Refresh with
+`LIFETIME` 0) sets `released` and is never `lapsed`: the client asked for the
+teardown.
+
+## Capture analysis (`--json-analyze`)
+
+One JSON object for the whole run, not a line per finding: `frames_read`,
+`dialogs_examined` and `streams_examined` are properties of the run rather than
+of any finding, and a clean capture must still serialize to something that
+states them.
+
+```bash
+sipnab -N -I capture.pcap --json-analyze --no-cli-print \
+  | jq '.findings[] | select(.severity == "critical") | {kind, occurrences}'
+```
+
+`findings` is ranked worst first. Each carries a stable `kind`, a `severity`, an
+exact `occurrences` count, a `summary`, and an `evidence` array pointing back at
+the capture with Call-IDs, endpoints, timestamps and counts.
+
+`complete` is the field to read first. It is `false` when the run did not decode
+everything it was given — undecodable frames, SIP a port gate discarded, records
+a retention cap dropped — and then every count below it is a **floor**. The
+analysis refuses a clean verdict over a capture it could not fully read:
+
+```bash
+sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.complete'
+```
+
+Nothing here is derived anew. `--analyze` aggregates the per-dialog diagnosis
+sipnab already computes and the capture-level evidence it already holds; it
+ranks and counts them, and adds no judgement of its own.
 
 ## pcap / pcapng
 

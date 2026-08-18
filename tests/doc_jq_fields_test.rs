@@ -40,6 +40,10 @@ enum Mode {
     Messages,
     /// `--json-dialogs`: one object per dialog.
     Dialogs,
+    /// `--json-stun`: one object per STUN/TURN transaction or TURN allocation.
+    Stun,
+    /// `--json-analyze`: one object for the whole capture analysis.
+    Analyze,
 }
 
 /// Fields that are legitimately absent from a flat key scan.
@@ -57,6 +61,7 @@ const NESTED_OR_DERIVED: &[&str] = &[
     "associated_dialog", // stream-scoped
     "duration_sec",      // dialog-scoped, name varies by surface
     "from_user",         // dialog-scoped
+    "severity",          // inside .findings[] of --json-analyze, an ARRAY element
     "to_user",           // dialog-scoped
     "state",             // dialog-scoped
 ];
@@ -77,10 +82,17 @@ fn recipes() -> Vec<Recipe> {
             if !block.contains("sipnab") || !block.contains("jq") {
                 continue;
             }
-            // `--json-dialogs` must be tested before `--json`, since it
-            // contains it as a prefix.
+            // Every longer flag must be tested before `--json`, which is a
+            // prefix of all of them. Getting this order wrong is not a
+            // near-miss: a `--json-stun` recipe checked against `--json`'s key
+            // set reports every one of its real fields as missing, which is
+            // how this gate first met `--json-stun` and `--json-analyze`.
             let mode = if block.contains("--json-dialogs") {
                 Mode::Dialogs
+            } else if block.contains("--json-stun") {
+                Mode::Stun
+            } else if block.contains("--json-analyze") {
+                Mode::Analyze
             } else if block.contains("--json") {
                 Mode::Messages
             } else {
@@ -134,17 +146,33 @@ const FIXTURES: &[&str] = &[
     "tests/pcap-samples/sip-register.pcap", // non-INVITE dialog
 ];
 
+/// Captures that actually hold STUN and TURN. The SIP fixtures above carry
+/// none, so `--json-stun` over them emits nothing and the gate would pass
+/// vacuously — which is the failure mode its own assertion below guards.
+const STUN_FIXTURES: &[&str] = &[
+    "tests/fixtures/stun_nat_probe.pcap", // an unanswered probe and an answered one
+    "tests/fixtures/turn_relay.pcap",     // an Allocate, a ChannelBind, a lapsed allocation
+];
+
 /// Top-level keys the given mode emits across every fixture.
 fn keys_for(mode: Mode) -> BTreeSet<String> {
     let flag = match mode {
         Mode::Messages => "--json",
         Mode::Dialogs => "--json-dialogs",
+        Mode::Stun => "--json-stun",
+        Mode::Analyze => "--json-analyze",
+    };
+    // `--json-analyze` emits one object per RUN, so it needs a capture with
+    // findings in it; `--json-stun` needs one with STUN in it.
+    let fixtures: &[&str] = match mode {
+        Mode::Messages | Mode::Dialogs => FIXTURES,
+        Mode::Stun | Mode::Analyze => STUN_FIXTURES,
     };
     let mut keys = BTreeSet::new();
-    for pcap in FIXTURES {
+    for pcap in fixtures {
         assert!(Path::new(pcap).exists(), "fixture missing: {pcap}");
         let mut args = vec!["-N", "-I", *pcap, flag];
-        if mode == Mode::Dialogs {
+        if mode != Mode::Messages {
             args.push("--no-cli-print");
         }
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
@@ -170,7 +198,7 @@ fn keys_for(mode: Mode) -> BTreeSet<String> {
         !keys.is_empty(),
         "{flag} produced no JSON objects across {} fixtures; the gate would \
          pass vacuously",
-        FIXTURES.len()
+        fixtures.len()
     );
     keys
 }
@@ -188,12 +216,16 @@ fn documented_jq_fields_exist_in_the_output() {
 
     let messages = keys_for(Mode::Messages);
     let dialogs = keys_for(Mode::Dialogs);
+    let stun = keys_for(Mode::Stun);
+    let analyze = keys_for(Mode::Analyze);
 
     let mut bad = Vec::new();
     for r in &recipes {
         let keys = match r.mode {
             Mode::Messages => &messages,
             Mode::Dialogs => &dialogs,
+            Mode::Stun => &stun,
+            Mode::Analyze => &analyze,
         };
         for f in &r.fields {
             if !keys.contains(f) {
@@ -203,6 +235,8 @@ fn documented_jq_fields_exist_in_the_output() {
                     match r.mode {
                         Mode::Messages => "--json",
                         Mode::Dialogs => "--json-dialogs",
+                        Mode::Stun => "--json-stun",
+                        Mode::Analyze => "--json-analyze",
                     }
                 ));
             }

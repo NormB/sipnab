@@ -1029,6 +1029,7 @@ async fn get_stats(
             "undecodable_frames": quality.undecodable_frames,
             "snapped_frames": quality.snapped_frames,
             "unanswered_nat_requests": quality.unanswered_nat_requests,
+            "lapsed_turn_allocations": quality.lapsed_turn_allocations,
             "degraded": quality.degraded(),
         },
     })))
@@ -1463,6 +1464,9 @@ mod tests {
             // with no reply. An agent reading a one-way-audio complaint needs
             // this, and it used to exist only as a log line.
             "unanswered_nat_requests",
+            // Also about the NETWORK: a relay torn down mid-call, which has no
+            // other symptom anywhere — no SIP message says the media stopped.
+            "lapsed_turn_allocations",
         ] {
             assert!(
                 q[field].is_u64(),

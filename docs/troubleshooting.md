@@ -469,6 +469,32 @@ traffic found".
 `sipnab_nat_unanswered_requests` carries the same signal for a dashboard. See
 [Prometheus Metrics](prometheus-metrics.md).
 
+`sipnab --stun` prints the whole exchange as a table: one row per transaction,
+what came back, and how long it took. `--json-stun` is the same thing as NDJSON.
+
+### A relayed call that went quiet halfway through
+
+A TURN allocation has a lifetime, and the client must Refresh it before that
+lifetime runs out. When it does not -- or when its Refresh never reaches the
+server -- the relay tears the allocation down and the media stops **mid-call**.
+
+This is the only fault sipnab reports that has no other symptom anywhere. No
+SIP message says the audio stopped; the signaling shows a healthy call that
+went quiet, and both endpoints are still happily sending into a relay that no
+longer exists.
+
+sipnab flags it wherever the run reports anything: on stderr as `TURN: N
+allocation(s) were still carrying traffic after the lifetime they were last
+granted had run out`, as `LAPSED` in the `--stun` allocations table, as
+`lapsed: true` in `--json-stun`, as a `turn_allocation_lapsed` finding in
+`--analyze`, and as `sipnab_nat_lapsed_turn_allocations` for a dashboard,
+`/v1/stats` and the MCP `capture_status` tool.
+
+Two things it deliberately does **not** claim. It says no Refresh was *seen*,
+never that none was *sent* -- a capture that started late or lost a packet
+cannot tell those apart. And a Refresh carrying `LIFETIME` 0 is a deliberate
+release, which is never reported: the client asked for the teardown.
+
 ---
 
 ## SIP scanner detection

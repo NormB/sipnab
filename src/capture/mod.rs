@@ -400,6 +400,24 @@ pub struct UndecodableReport {
     pub reasons_dropped: u64,
 }
 
+impl UndecodableReport {
+    /// The per-reason breakdown as one comma-separated line, most frames
+    /// first: `"linktype 143 (49), ethertype 0x88a8 (3)"`.
+    ///
+    /// A method rather than a helper beside each caller, because three
+    /// surfaces render this list — the batch NOT DECODED notice, the no-SIP
+    /// guidance, and the `--analyze` finding — and three copies of the same
+    /// `join` is three chances for them to describe one capture differently.
+    #[must_use]
+    pub fn reason_list(&self) -> String {
+        self.reasons
+            .iter()
+            .map(|t| format!("{} ({})", t.reason, t.frames))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 /// Frames this run could not decode, as one number.
 ///
 /// The cheap read for a `/metrics` scrape: a single relaxed load, where

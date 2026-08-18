@@ -293,6 +293,24 @@ pub struct CaptureQuality {
     /// It is the signal behind a one-way-audio complaint, and it belonged
     /// beside the others rather than in a log line only a headless run prints.
     pub unanswered_nat_requests: u64,
+    /// TURN allocations still carrying traffic past the lifetime they were
+    /// last granted, with no Refresh seen.
+    ///
+    /// The second counter here about the NETWORK rather than about the
+    /// capture, and the one with no other symptom at all: the relay tore the
+    /// allocation down, the media stopped mid-call, and no SIP message
+    /// anywhere says why. It sits beside `unanswered_nat_requests` because a
+    /// NAT finding that reaches only the batch summary is a finding a
+    /// dashboard and an agent cannot see (backlog NAT3).
+    pub lapsed_turn_allocations: u64,
+}
+
+/// How many TURN allocations lapsed while traffic was still using them.
+///
+/// A free function rather than a method so both `current()` arms read it the
+/// same way, and so the STUN store is touched in exactly one place here.
+fn lapsed_turn_allocations() -> u64 {
+    crate::stun::report().lapsed_allocations().count() as u64
 }
 
 impl CaptureQuality {
@@ -316,6 +334,7 @@ impl CaptureQuality {
                 undecodable_frames: crate::capture::undecodable_frames(),
                 snapped_frames: crate::capture::snapped_frames(),
                 unanswered_nat_requests: crate::stun::unanswered_requests().0.len() as u64,
+                lapsed_turn_allocations: lapsed_turn_allocations(),
             }
         }
         #[cfg(not(feature = "native"))]
@@ -324,6 +343,7 @@ impl CaptureQuality {
                 undecodable_frames: crate::capture::undecodable_frames(),
                 snapped_frames: crate::capture::snapped_frames(),
                 unanswered_nat_requests: crate::stun::unanswered_requests().0.len() as u64,
+                lapsed_turn_allocations: lapsed_turn_allocations(),
                 ..Self::default()
             }
         }
@@ -488,6 +508,7 @@ impl PrometheusMetrics {
             nat_mismatch,
             no_media,
             private_media_address,
+            stun_sdp_mismatch,
             sdp_media: _,
             actual_media: _,
             hints: _,
@@ -509,6 +530,18 @@ impl PrometheusMetrics {
             if *raised {
                 *self.diagnosis_total.entry(kind.to_string()).or_insert(0) += 1;
             }
+        }
+        // The escalation, as its own series rather than as a second metric
+        // name: `private_media_address` says an unroutable `c=` line was
+        // offered where it cannot work, and this subset says STUN is on record
+        // proving nothing rewrote it. A dashboard that wants "how many calls
+        // are DEFINITELY broken this way" reads this one; the ratio between
+        // the two is how much of the fleet's warning is confirmed.
+        if stun_sdp_mismatch.is_some() {
+            *self
+                .diagnosis_total
+                .entry("private_media_address_confirmed".to_string())
+                .or_insert(0) += 1;
         }
     }
 }
@@ -730,6 +763,20 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
         out,
         "sipnab_nat_unanswered_requests {}",
         metrics.capture_quality.unanswered_nat_requests
+    );
+    out.push('\n');
+    // A gauge for the same reason: an allocation that is refreshed after the
+    // fact stops being lapsed, and a monotonic counter could never unsay it.
+    write_help_type(
+        &mut out,
+        "sipnab_nat_lapsed_turn_allocations",
+        "TURN allocations still carrying traffic past their granted lifetime, no Refresh seen",
+        "gauge",
+    );
+    let _ = writeln!(
+        out,
+        "sipnab_nat_lapsed_turn_allocations {}",
+        metrics.capture_quality.lapsed_turn_allocations
     );
     out.push('\n');
     // Derivable from the three counters above, and published anyway: this is
@@ -1327,6 +1374,7 @@ mod tests {
                 undecodable_frames: 0,
                 snapped_frames: 44,
                 unanswered_nat_requests: 55,
+                lapsed_turn_allocations: 66,
             },
             ..Default::default()
         };

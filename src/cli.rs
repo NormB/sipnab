@@ -835,6 +835,57 @@ pub struct OutputArgs {
     #[arg(help_heading = "Output", long)]
     pub report: bool,
 
+    /// Report the STUN and TURN activity in the capture, with what it achieved.
+    ///
+    /// One row per transaction — Binding, Allocate, Refresh, ChannelBind and
+    /// the rest — naming the method, how many requests it took, whether
+    /// anything answered, and the reflexive or relayed address the server
+    /// reported back. The row that matters is the unanswered one: a client
+    /// whose Binding Request draws no reply never learns its public address,
+    /// so it advertises the private one in its SDP and the media never
+    /// arrives.
+    ///
+    /// TURN adds an allocations section when a relay is in the capture, with
+    /// the lifetime that decides when each one lapses — a relay torn down
+    /// mid-call takes the media with it and no SIP message says so.
+    ///
+    /// Silent when the capture holds no STUN and no TURN.
+    #[arg(help_heading = "Output", long)]
+    pub stun: bool,
+
+    /// Output NDJSON: one JSON object per STUN/TURN transaction and per TURN
+    /// allocation, emitted after capture. Each carries a `record` field naming
+    /// which of the two it is. The machine-readable form of `--stun`.
+    #[arg(help_heading = "Output", long)]
+    pub json_stun: bool,
+
+    /// Analyze the capture and print every problem in it, worst first.
+    ///
+    /// One ranked list instead of one dialog at a time: one-way audio, media
+    /// that never arrived, an SDP address STUN contradicts, ICMP saying the
+    /// destination was unreachable, failed and unacknowledged calls, codec and
+    /// framing asymmetry — everything sipnab already diagnoses, aggregated by
+    /// kind, counted exactly, and evidenced with Call-IDs, addresses,
+    /// timestamps and packet counts.
+    ///
+    /// Also reports what sipnab did NOT read — frames that failed to decode,
+    /// SIP a port gate discarded, records a retention cap dropped — at the top
+    /// of the list, because those make every count below them a floor. A
+    /// capture that could not be read is never reported as a clean one.
+    ///
+    /// Prints a single honest line when there is nothing to report.
+    #[arg(help_heading = "Output", long)]
+    pub analyze: bool,
+
+    /// Output the `--analyze` result as one JSON object, emitted after
+    /// capture.
+    ///
+    /// One object rather than one line per finding: the frames read and the
+    /// dialogs examined are properties of the run and not of any finding, and
+    /// a clean capture must still serialize to something that states them.
+    #[arg(help_heading = "Output", long)]
+    pub json_analyze: bool,
+
     /// Generate a detailed report for a specific Call-ID.
     #[arg(help_heading = "Output", long, value_name = "CALL-ID")]
     pub call_report: Option<String>,
@@ -3688,6 +3739,10 @@ impl Cli {
             (self.output_args.json_dialogs, "--json-dialogs"),
             (self.output_args.json_pretty, "--json-pretty"),
             (self.output_args.report, "--report"),
+            (self.output_args.stun, "--stun"),
+            (self.output_args.json_stun, "--json-stun"),
+            (self.output_args.analyze, "--analyze"),
+            (self.output_args.json_analyze, "--json-analyze"),
             (self.output_args.hexdump, "--hexdump"),
             (self.output_args.fail2ban, "--fail2ban"),
             (self.output_args.group_by.is_some(), "--group-by"),
@@ -3726,6 +3781,10 @@ impl Cli {
                 (self.output_args.json, "--json"),
                 (self.output_args.json_pretty, "--json-pretty"),
                 (self.output_args.report, "--report"),
+                (self.output_args.stun, "--stun"),
+                (self.output_args.json_stun, "--json-stun"),
+                (self.output_args.analyze, "--analyze"),
+                (self.output_args.json_analyze, "--json-analyze"),
                 (self.output_args.hexdump, "--hexdump"),
                 (self.output_args.wireshark, "--wireshark"),
                 (self.output_args.call_report.is_some(), "--call-report"),

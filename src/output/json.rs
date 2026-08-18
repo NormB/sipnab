@@ -167,6 +167,11 @@ struct DiagnosisJson {
     /// rather than a fault: correct on one LAN, and correct behind something
     /// that rewrites the SDP downstream.
     private_media_address: bool,
+    /// The STUN evidence behind `private_media_address`, when the run held
+    /// any. Absent from the object entirely on a capture with no STUN in it,
+    /// so a consumer written before this existed sees no change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stun_sdp_mismatch: Option<crate::rtp::diagnosis::StunSdpMismatch>,
     /// Human-readable findings.
     hints: Vec<String>,
 }
@@ -668,6 +673,7 @@ pub fn dialog_to_json(
         nat_mismatch: diagnosis.nat_mismatch,
         no_media: diagnosis.no_media,
         private_media_address: diagnosis.private_media_address,
+        stun_sdp_mismatch: diagnosis.stun_sdp_mismatch.clone(),
         hints: diagnosis.hints.clone(),
     };
 

@@ -2684,9 +2684,16 @@ fn no_documentation_table_repeats_a_row() {
         // the `TK` section's comparison of what sngrep's eBPF commits changed
         // against what sipnab already does, so neither is rebuilt by mistake.
         // Not doubled by a site mirror — docs/design/ is not published.
+        // Raised 573 -> 575 by the STUN/SDP evidence table in
+        // docs/output-formats.md — the field-by-field reading of
+        // `diagnosis.stun_sdp_mismatch` — doubled by its site mirror. ONE
+        // written table, two pages. Every other changed .md was diffed against
+        // HEAD first: cli-reference.md, prometheus-metrics.md and
+        // troubleshooting.md gained rows and prose inside EXISTING tables, and
+        // held their table counts.
         tables,
-        573,
-        "walked {tables} tables, expected 573. More is fine — bump this. FEWER \
+        575,
+        "walked {tables} tables, expected 575. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

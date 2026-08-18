@@ -1970,6 +1970,46 @@ pub fn classify_packet(
         }
     }
 
+    // LLMNR, claimed on sight and BEFORE any media check.
+    //
+    // LLMNR is NOT a VoIP protocol and sipnab is NOT a general dissector. It is
+    // claimed here for one reason: a Windows name lookup is a DNS-format
+    // message whose first two bytes are a random transaction ID, and one ID in
+    // four carries `0b10` in the top two bits — the RTP version. The rest of
+    // the strict RTP pre-filter (12+ bytes, a payload type outside the RTCP
+    // range) a 23-byte query passes trivially. That is not hypothetical: two
+    // such queries became two phantom RTP streams, SSRC 0x00000000, two packets
+    // each, in a real capture. The same collision is documented below for DNS
+    // from port 53, and that guard only covers ports under 1024 — LLMNR sits at
+    // 5355. Claiming the packet here removes the whole class by construction
+    // rather than by tuning a heuristic.
+    //
+    // Ahead of the `no_rtp` guard on purpose, so `--no-rtp` (which opts out of
+    // MEDIA analysis) does not also empty the host roster below.
+    //
+    // The CONTENTS are kept for a reason unrelated to any call: a query names a
+    // machine looking for a hostname and a response names the machine that owns
+    // one, so the messages are the segment's host roster — and LLMNR being
+    // enabled at all is the exposure the Responder tool abuses to harvest NTLM
+    // credentials. It feeds nothing in the media path or in call diagnosis, and
+    // it must never start to.
+    if pp.transport == TransportProto::Udp
+        && crate::llmnr::is_llmnr_packet(&pp.payload, pp.src_port, pp.dst_port)
+    {
+        match crate::llmnr::parser::parse_llmnr(&pp.payload) {
+            Ok(msg) => crate::llmnr::store::record_llmnr(&msg, pp.src_addr, pp.timestamp),
+            Err(e) => {
+                if !opts.quiet_bad_parse {
+                    tracing::debug!("LLMNR parse error: {e}");
+                }
+            }
+        }
+        // Consumed either way: a datagram on the LLMNR port whose header passed
+        // the structural checks is LLMNR, and a later parse failure makes it
+        // MALFORMED LLMNR, not media.
+        return PacketAction::None;
+    }
+
     // RTP/RTCP detection
     if opts.no_rtp || pp.transport != TransportProto::Udp {
         return PacketAction::None;
@@ -2001,6 +2041,19 @@ pub fn classify_packet(
     // Recursion terminates because the inner payload is strictly shorter than
     // the wrapper that carried it.
     if let Some(inner) = crate::stun::channel_data_payload(&pp.payload) {
+        // Recorded before the recursion, and only against an allocation that
+        // was actually granted: relayed media IS the traffic that kept flowing
+        // past an allocation's expiry, and an activity clock that only ever
+        // advanced on signaling could never show a relay torn down mid-call
+        // (see `TurnAllocation::expired_before_last_activity`). The call is
+        // guarded by a relaxed atomic inside, so a capture that never touched
+        // a relay pays a load and no lock.
+        crate::stun::note_channel_data(
+            std::net::SocketAddr::new(pp.src_addr, pp.src_port),
+            std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
+            inner.len(),
+            pp.timestamp,
+        );
         let mut unwrapped = pp.clone();
         unwrapped.payload = bytes::Bytes::copy_from_slice(inner);
         return classify_packet(&unwrapped, rtp_heuristic, opts, decrypt);
@@ -2019,6 +2072,7 @@ pub fn classify_packet(
             &stun_msg,
             std::net::SocketAddr::new(pp.src_addr, pp.src_port),
             std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
+            pp.timestamp,
         );
         return PacketAction::None;
     }
@@ -2231,6 +2285,54 @@ mod quiet_bad_parse_tests {
         let mut heur = crate::rtp::heuristic::RtpHeuristic::new();
         let mut decrypt = MediaDecrypt::default();
         classify_packet(pp, &mut heur, opts, &mut decrypt)
+    }
+
+    /// A Windows LLMNR query must never be classified as media.
+    ///
+    /// This is the whole reason sipnab decodes a protocol that has nothing to
+    /// do with VoIP. The query's first two bytes are a random transaction ID,
+    /// and `0x80` is also the RTP version-2 bit pattern; the rest of the strict
+    /// RTP pre-filter a 23-byte query passes trivially. Two such queries became
+    /// two phantom RTP streams, SSRC `0x00000000`, in a real capture. The DNS
+    /// guard elsewhere in this file only covers ports below 1024, and LLMNR
+    /// sits at 5355.
+    ///
+    /// Asserts the classifier's ACTION rather than the parser's opinion: a
+    /// correct `is_llmnr_packet` proves nothing if the branch runs after the
+    /// media checks.
+    #[test]
+    #[serial_test::serial(llmnr_store)]
+    fn an_llmnr_query_is_claimed_before_any_media_check() {
+        crate::llmnr::store::reset_llmnr();
+        // The byte-exact query from the capture that motivated the module,
+        // transaction ID 0x8006 — the ID that collided with the RTP version.
+        let query: &[u8] = &[
+            0x80, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, b'G',
+            b'H', b'S', b'0', b'8', 0x00, 0x00, 0x01, 0x00, 0x01,
+        ];
+        assert_eq!(query[0] >> 6, 2, "the ID really does carry RTP's version");
+
+        let mut pp = packet(query);
+        pp.src_port = 55000;
+        pp.dst_port = 5355;
+        let action = classify(&pp, &PipelineOptions::default());
+        assert!(
+            matches!(action, PacketAction::None),
+            "LLMNR must be consumed, not turned into a stream"
+        );
+
+        // And the contents are kept: the roster is the only reason to decode
+        // anything past the port check.
+        let report = crate::llmnr::store::llmnr_report();
+        assert_eq!(report.packets, 1);
+        assert!(
+            report.hosts.iter().any(|h| h
+                .names_queried
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case("GHS08"))),
+            "the queried name belongs in the roster: {report:?}"
+        );
+        crate::llmnr::store::reset_llmnr();
     }
 
     /// RTP relayed through TURN must reach reconstruction.

@@ -49,7 +49,6 @@
 //! media path (who was controlling, which candidate was nominated) and does not
 //! compute priorities, form candidate pairs, or decide nominations.
 
-use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Mutex;
 
@@ -78,7 +77,8 @@ pub enum StunClass {
 /// Reported, not decided: sipnab is an observer. Its value is that a capture
 /// where BOTH sides claim `Controlling` is a role conflict — a real
 /// misconfiguration whose only other symptom is media that never starts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum IceRole {
     /// This agent picks the pair. `ICE-CONTROLLING` (0x802A).
     Controlling,
@@ -154,6 +154,38 @@ pub struct StunMessage {
     pub channel_number: Option<u16>,
     /// TURN `REQUESTED-TRANSPORT`, as an IP protocol number (17 is UDP).
     pub requested_transport: Option<u8>,
+    /// TURN `REQUESTED-ADDRESS-FAMILY` (0x0017): `0x01` IPv4, `0x02` IPv6.
+    ///
+    /// Reported because asking for a family the relay cannot allocate draws a
+    /// `440`, and on a dual-stack network that is an allocation failure whose
+    /// only other symptom is media that never starts.
+    pub requested_address_family: Option<u8>,
+    /// TURN `EVEN-PORT` (0x0018), as the R bit alone.
+    ///
+    /// `Some(true)` asks the server to reserve the next-higher port as well,
+    /// which is how a client asks for the RFC 3550 RTP/RTCP port pair;
+    /// `Some(false)` asks only that the relayed port be even. `None` means the
+    /// attribute was absent, which is a different claim from either.
+    pub even_port: Option<bool>,
+    /// TURN `DONT-FRAGMENT` (0x001a): the client asked the relay to set DF on
+    /// relayed datagrams. A zero-length flag, so presence is the whole value.
+    pub dont_fragment: bool,
+    /// TURN `RESERVATION-TOKEN` (0x0022): the token claiming a port that an
+    /// earlier `EVEN-PORT` allocation reserved.
+    pub reservation_token: Option<u64>,
+    /// TURN `DATA` (0x0013): where the relayed payload sits WITHIN the payload
+    /// this message was parsed from, as a byte range.
+    ///
+    /// A range rather than a copy, because the payload is a whole relayed RTP
+    /// packet and the caller already owns the buffer it came in — handing back
+    /// offsets lets it re-slice its own `Bytes` with no allocation.
+    ///
+    /// Decoded but deliberately not yet consumed: unwrapping relayed media out
+    /// of Send and Data indications is the pre-channel twin of what
+    /// [`channel_data_payload`] does for ChannelData, and it is a separate
+    /// change from decoding the attribute. Locating it is what makes that
+    /// change a pipeline edit rather than a parser one.
+    pub data: Option<std::ops::Range<usize>>,
     /// Whether [`Self::mapped_address`] came from the XOR form. Tracked so a
     /// legacy `MAPPED-ADDRESS` arriving AFTER the XOR one cannot overwrite it,
     /// whichever order a server sends them in.
@@ -211,6 +243,10 @@ impl StunMessage {
 /// TURN `Allocate`, the method that asks a relay for an address.
 pub const METHOD_ALLOCATE: u16 = 0x003;
 
+/// TURN `Refresh`, the method that extends an allocation — or releases it
+/// outright with a `LIFETIME` of zero.
+pub const METHOD_REFRESH: u16 = 0x004;
+
 /// The application data inside a TURN **ChannelData** wrapper, or `None` if
 /// this is not one.
 ///
@@ -224,7 +260,29 @@ pub const METHOD_ALLOCATE: u16 = 0x003;
 /// carried nothing. Those are opposite findings and they were rendered
 /// identically.
 pub fn channel_data_payload(payload: &[u8]) -> Option<&[u8]> {
-    if !is_channel_data(payload) {
+    channel_data_payload_framed(payload, ChannelDataFraming::Datagram)
+}
+
+/// How the enclosing transport delimits a ChannelData frame.
+///
+/// The distinction is not cosmetic: it is the whole of what separates a real
+/// relay frame from a stray datagram whose first two bytes happened to land in
+/// the channel-number window. See [`is_channel_data_framed`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelDataFraming {
+    /// UDP: one frame per datagram. RFC 5766 §11.5 makes the padding to a
+    /// four-byte boundary optional over a datagram transport, so the frame is
+    /// required to end either exactly at the data or exactly at the padded end
+    /// of it — and either way to account for the WHOLE datagram.
+    Datagram,
+    /// TCP or TLS: frames are concatenated on a byte stream, so every frame is
+    /// padded to a four-byte boundary and more data may follow it.
+    Stream,
+}
+
+/// [`channel_data_payload`], told how the transport delimits the frame.
+pub fn channel_data_payload_framed(payload: &[u8], framing: ChannelDataFraming) -> Option<&[u8]> {
+    if !is_channel_data_framed(payload, framing) {
         return None;
     }
     let declared = u16::from_be_bytes([payload[2], payload[3]]) as usize;
@@ -232,7 +290,15 @@ pub fn channel_data_payload(payload: &[u8]) -> Option<&[u8]> {
 }
 
 /// Whether a payload is a TURN **ChannelData** message rather than anything
-/// STUN-shaped.
+/// STUN-shaped, assuming the datagram framing UDP gives it.
+///
+/// See [`is_channel_data_framed`] for what is checked and why.
+pub fn is_channel_data(payload: &[u8]) -> bool {
+    is_channel_data_framed(payload, ChannelDataFraming::Datagram)
+}
+
+/// Whether a payload is a TURN **ChannelData** message rather than anything
+/// STUN-shaped, given how its transport delimits a frame.
 ///
 /// This is the one part of TURN the STUN parser genuinely cannot reach.
 /// ChannelData has no magic cookie and no transaction ID — it is a 4-byte
@@ -245,7 +311,32 @@ pub fn channel_data_payload(payload: &[u8]) -> Option<&[u8]> {
 /// version field is `10`. So media relayed through TURN can be told apart from
 /// media sent directly, which is otherwise indistinguishable from a capture
 /// holding no media at all.
-pub fn is_channel_data(payload: &[u8]) -> bool {
+///
+/// # Why the length must account for the WHOLE datagram
+///
+/// The high bits alone are sixteen thousand of the sixty-five thousand values
+/// a first-two-byte pair can take: one arbitrary UDP payload in four lands in
+/// the window. This check used to accept `payload.len() >= 4 + declared` — a
+/// floor — so a stray datagram in the window carrying any small length field
+/// passed, and the pipeline then RE-CLASSIFIED whatever the first four bytes
+/// happened to precede. That is the same false-positive class that turned
+/// Windows LLMNR queries into phantom RTP streams, arrived at from the other
+/// side.
+///
+/// Requiring the frame to account for the entire datagram (padded or not, per
+/// RFC 5766 §11.5) removes it by construction: a stray packet now has to land
+/// in the window AND carry a length field that describes its own size. A
+/// declared length of zero is refused for the same reason — it is the one
+/// shape where any four-byte datagram in the window would otherwise satisfy
+/// every check, and a relay frame carrying no application data is not
+/// something a TURN client sends.
+///
+/// Upstream's recursion-terminates reasoning is unaffected and strengthened:
+/// the unwrapped payload is `declared` bytes out of a datagram of at least
+/// `4 + declared`, so it is still strictly shorter than the frame that carried
+/// it — and now it is strictly shorter by at least four bytes rather than
+/// possibly by zero.
+pub fn is_channel_data_framed(payload: &[u8], framing: ChannelDataFraming) -> bool {
     if payload.len() < 4 {
         return false;
     }
@@ -253,11 +344,20 @@ pub fn is_channel_data(payload: &[u8]) -> bool {
     if !(0x4000..=0x7FFF).contains(&channel) {
         return false;
     }
-    // The declared length must fit what is present, allowing for the 4-byte
-    // header. Over UDP the padding to a 4-byte boundary is not sent on the
-    // final message, so this is a floor rather than an equality.
     let declared = u16::from_be_bytes([payload[2], payload[3]]) as usize;
-    payload.len() >= 4 + declared
+    if declared == 0 {
+        return false;
+    }
+    let unpadded = 4 + declared;
+    let padded = 4 + declared.next_multiple_of(4);
+    match framing {
+        // One frame per datagram, with the optional padding either present in
+        // full or absent — never a frame that leaves bytes unaccounted for.
+        ChannelDataFraming::Datagram => payload.len() == unpadded || payload.len() == padded,
+        // On a byte stream the padding is mandatory and the next frame may
+        // follow, so what is required is that the padded frame FITS.
+        ChannelDataFraming::Stream => payload.len() >= padded,
+    }
 }
 
 /// Parse a UDP payload as STUN, or `None` if it is not one.
@@ -320,6 +420,11 @@ pub fn parse(payload: &[u8]) -> Option<StunMessage> {
         ice_role: None,
         channel_number: None,
         requested_transport: None,
+        requested_address_family: None,
+        even_port: None,
+        dont_fragment: false,
+        reservation_token: None,
+        data: None,
         mapped_address_is_xor: false,
         fingerprint_valid: None,
     };
@@ -377,6 +482,36 @@ pub fn parse(payload: &[u8]) -> Option<StunMessage> {
                 msg.channel_number = Some(u16::from_be_bytes([value[0], value[1]]));
             }
             0x0019 if !value.is_empty() => msg.requested_transport = Some(value[0]),
+            // REQUESTED-ADDRESS-FAMILY: which family the relayed address
+            // should be. A family the relay cannot allocate draws a 440, and
+            // on a dual-stack network that is an allocation failure whose only
+            // other symptom is media that never starts.
+            0x0017 if !value.is_empty() => msg.requested_address_family = Some(value[0]),
+            // EVEN-PORT: the R bit is the most significant bit of the single
+            // value byte. Recorded as the bit rather than as presence, because
+            // "an even port" and "an even port with its pair reserved" are
+            // different asks and the second is what an RTP/RTCP pair needs.
+            0x0018 if !value.is_empty() => msg.even_port = Some(value[0] & 0x80 != 0),
+            // DONT-FRAGMENT: zero-length by definition, so presence is the
+            // value and there is nothing to bounds-check.
+            0x001a => msg.dont_fragment = true,
+            // RESERVATION-TOKEN: 64 bits, and refused rather than padded when
+            // short, for the reason LIFETIME is — a token read from four bytes
+            // is not the token the sender sent.
+            0x0022 if value.len() >= 8 => {
+                let mut t = [0u8; 8];
+                t.copy_from_slice(&value[..8]);
+                msg.reservation_token = Some(u64::from_be_bytes(t));
+            }
+            // DATA: the relayed payload of a Send or Data indication. Located,
+            // never copied — see the field docs. `attr_start` is where this
+            // attribute's type field begins in the whole payload, so the value
+            // begins four bytes later. An empty DATA relays nothing and stays
+            // `None`, so a caller never re-slices a zero-length range.
+            0x0013 if !value.is_empty() => {
+                let start = attr_start + 4;
+                msg.data = Some(start..start + attr_len);
+            }
             // FINGERPRINT (RFC 5389 §15.5): CRC-32 of everything preceding
             // this attribute, XOR 0x5354554e. `attr_start` is where this
             // attribute begins in the whole message, which is exactly the
@@ -390,6 +525,12 @@ pub fn parse(payload: &[u8]) -> Option<StunMessage> {
             // why they share the decoder rather than getting a second copy.
             0x0016 => msg.relayed_address = xor_mapped_address(value, &transaction_id),
             0x0012 => msg.peer_address = xor_mapped_address(value, &transaction_id),
+            // LIFETIME. The length guard is load-bearing rather than defensive:
+            // a short value falls through to the catch-all and stays `None`,
+            // which is refusal. Zero-extending two bytes into a u32 would
+            // invent a short expiry the sender never claimed — and an expiry is
+            // exactly what [`TurnAllocation::expired_before_last_activity`]
+            // draws a conclusion from.
             0x000D if value.len() >= 4 => {
                 msg.lifetime = Some(u32::from_be_bytes([value[0], value[1], value[2], value[3]]));
             }
@@ -626,7 +767,7 @@ mod tests {
     }
 }
 
-// ── Unanswered-request tracking ─────────────────────────────────────
+// ── Transaction, allocation and unanswered-request tracking ─────────
 
 /// One Binding Request that was sent and never answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -649,89 +790,625 @@ pub struct UnansweredRequest {
     pub method: String,
 }
 
-/// Requests seen, keyed by transaction ID, with their answers struck off.
+/// One STUN or TURN transaction: a request, however many times it was sent,
+/// and the answer if one ever came.
+///
+/// The richer sibling of [`UnansweredRequest`], which is a projection of this.
+/// Both exist because they answer different questions: `UnansweredRequest` is
+/// "what got no reply", which every surface already reports, while this is
+/// "what the exchange achieved" — the reflexive or relayed address a server
+/// handed back, and when. That second question is what
+/// [`crate::rtp::diagnosis`] needs to connect a failed probe to a call, and it
+/// cannot be answered from a list of failures alone.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct StunTransaction {
+    /// The 96-bit transaction ID, hex-encoded for display and JSON.
+    pub transaction_id: String,
+    /// The socket the request left from. On a response whose request predates
+    /// the capture, the socket the response was sent TO.
+    pub client: SocketAddr,
+    /// The socket the request was sent to.
+    pub server: SocketAddr,
+    /// Method number: `0x001` Binding, `0x003` Allocate, and so on.
+    pub method: u16,
+    /// The method's name, rendered once at insertion because it is what both
+    /// the table and the NDJSON print.
+    pub method_name: String,
+    /// Timestamp of the first request seen for this transaction.
+    pub first_request: chrono::DateTime<chrono::Utc>,
+    /// Timestamp of the most recent request seen.
+    pub last_request: chrono::DateTime<chrono::Utc>,
+    /// How many requests were seen. Greater than one means retransmission,
+    /// which by itself proves the earlier attempts went unanswered. Zero means
+    /// only the response was captured.
+    pub request_count: u32,
+    /// When a response arrived, if one did.
+    pub responded_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Round-trip time from the last request to the response, in milliseconds.
+    pub rtt_ms: Option<f64>,
+    /// The reflexive address the server reported back.
+    pub mapped_address: Option<SocketAddr>,
+    /// The relayed transport address a TURN server allocated.
+    pub relayed_address: Option<SocketAddr>,
+    /// The peer a CreatePermission, ChannelBind or Send concerns.
+    pub peer_address: Option<SocketAddr>,
+    /// `LIFETIME` in seconds, from an Allocate or Refresh.
+    pub lifetime_secs: Option<u32>,
+    /// `CHANNEL-NUMBER` from a ChannelBind request.
+    pub channel_number: Option<u16>,
+    /// The error code an error response carried.
+    pub error_code: Option<u16>,
+    /// Whether the answer was an AUTHENTICATION challenge rather than a
+    /// refusal — see [`StunMessage::is_auth_challenge`].
+    pub auth_challenge: bool,
+    /// The client's `SOFTWARE` string, when it advertised one.
+    pub software: Option<String>,
+    /// Which role the requester claimed, when it claimed one.
+    pub ice_role: Option<IceRole>,
+    /// Whether any message in this transaction nominated its candidate pair.
+    pub use_candidate: bool,
+    /// Whether a `FINGERPRINT` was checked, and whether it held.
+    ///
+    /// `Some(false)` is the reportable state: a message that carried a
+    /// fingerprint and got it wrong. `None` means nobody checked, and must
+    /// never render as a failure.
+    pub fingerprint_valid: Option<bool>,
+}
+
+impl StunTransaction {
+    /// Whether this transaction never received a response.
+    pub fn is_unanswered(&self) -> bool {
+        self.responded_at.is_none()
+    }
+
+    /// Whether the client had to retransmit, which means at least one request
+    /// went unanswered even if a later one succeeded.
+    pub fn was_retransmitted(&self) -> bool {
+        self.request_count > 1
+    }
+
+    /// Whether this is one of the two requests whose SILENCE is a reportable
+    /// fault: `Binding` (nobody told the endpoint its own address) or
+    /// `Allocate` (the relay would not give it one).
+    ///
+    /// The other TURN methods are deliberately excluded. A CreatePermission or
+    /// ChannelBind rides an allocation that already succeeded, so its silence
+    /// is a consequence rather than a cause, and reporting it would bury the
+    /// request that actually failed under the ones that followed it.
+    pub fn silence_is_a_fault(&self) -> bool {
+        self.method == 0x001 || self.method == METHOD_ALLOCATE
+    }
+}
+
+/// A TURN allocation: a relayed transport address with a lifetime.
+///
+/// Keyed by the client/server socket pair rather than by transaction ID,
+/// because the Refresh that keeps it alive is a DIFFERENT transaction from the
+/// Allocate that created it — and the whole reason to track an allocation is
+/// to see whether those refreshes kept up.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct TurnAllocation {
+    /// The client socket that holds the allocation.
+    pub client: SocketAddr,
+    /// The TURN server socket that granted it.
+    pub server: SocketAddr,
+    /// The relayed transport address the server allocated, when the success
+    /// response carried one.
+    pub relayed_address: Option<SocketAddr>,
+    /// Lifetime in seconds as most recently granted.
+    pub lifetime_secs: Option<u32>,
+    /// When the allocation was first seen granted.
+    pub allocated_at: chrono::DateTime<chrono::Utc>,
+    /// When it was most recently refreshed, if it ever was.
+    pub refreshed_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// How many Refresh transactions succeeded.
+    pub refreshes: u32,
+    /// The most recent traffic seen on this client/server pair — a STUN
+    /// message or a relayed ChannelData frame. What the expiry is measured
+    /// against.
+    pub last_activity: chrono::DateTime<chrono::Utc>,
+    /// Whether the client released it explicitly (a Refresh with `LIFETIME` 0).
+    pub released: bool,
+}
+
+impl TurnAllocation {
+    /// When this allocation lapses, given the last lifetime the server granted
+    /// and the last refresh observed.
+    pub fn expires_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        let secs = self.lifetime_secs?;
+        let from = self.refreshed_at.unwrap_or(self.allocated_at);
+        from.checked_add_signed(chrono::TimeDelta::seconds(i64::from(secs)))
+    }
+
+    /// Whether traffic was still using this allocation after the point the
+    /// last observed grant could have sustained it.
+    ///
+    /// The operational shape of a call that dies partway through: the client
+    /// stopped refreshing (or its Refresh never reached the server), the
+    /// server tore the allocation down, and the media stopped with it — with
+    /// no SIP message anywhere to explain why. Stated as "no Refresh was seen"
+    /// rather than "no Refresh was sent", because a capture that started late
+    /// or missed a packet cannot tell those apart.
+    ///
+    /// A deliberate release (`LIFETIME` 0) is never this: the client asked for
+    /// the teardown, so the teardown is not a fault.
+    pub fn expired_before_last_activity(&self) -> bool {
+        if self.released {
+            return false;
+        }
+        self.expires_at()
+            .is_some_and(|expiry| expiry < self.last_activity)
+    }
+
+    /// How long traffic continued past the expiry, in seconds, or `None` when
+    /// no lifetime was ever granted.
+    pub fn seconds_past_expiry(&self) -> Option<i64> {
+        let expiry = self.expires_at()?;
+        Some((self.last_activity - expiry).num_seconds())
+    }
+}
+
+/// Transaction retention cap. STUN transactions are short-lived and small;
+/// this is generous for an ICE-heavy capture while staying far below the point
+/// where the map costs meaningful memory (D17 — every store is bounded).
+pub const MAX_TRANSACTIONS: usize = 10_000;
+
+/// Allocation retention cap. One entry per client/server socket pair.
+pub const MAX_ALLOCATIONS: usize = 2_048;
+
+/// Requests seen, keyed by transaction ID, with their answers folded in.
 #[derive(Debug, Default)]
 struct Tracker {
-    /// Outstanding requests. An answer removes its entry, so what remains at
-    /// the end of a capture is exactly the set that went unanswered.
-    pending: HashMap<[u8; 12], UnansweredRequest>,
-    /// Answers that were AUTHENTICATION challenges rather than plain
-    /// refusals. See `note_message`.
-    challenged: u64,
-    /// Requests that WERE answered, counted only. Kept because "3 of 40 went
-    /// unanswered" and "3 of 3" are different findings, and a bare list of
-    /// three cannot tell them apart.
-    answered: u64,
+    /// Every transaction in insertion order, so eviction is oldest-first
+    /// rather than arbitrary. An answer folds into its entry rather than
+    /// removing it: what went unanswered is a QUERY over this table, and
+    /// keeping the answered ones is what lets a report say "3 of 40" instead
+    /// of listing three failures with no scale.
+    transactions: indexmap::IndexMap<[u8; 12], StunTransaction>,
+    /// Transactions evicted to stay inside [`MAX_TRANSACTIONS`].
+    dropped: u64,
+    /// TURN allocations, keyed by the client/server socket pair.
+    allocations: indexmap::IndexMap<(SocketAddr, SocketAddr), TurnAllocation>,
+    /// Allocations evicted to stay inside [`MAX_ALLOCATIONS`].
+    allocations_dropped: u64,
+    /// STUN messages processed, including retransmissions and the ones whose
+    /// transaction was later evicted. Exact where `transactions` is capped.
+    packets: u64,
+    /// Indications processed. Counted rather than tracked: RFC 5766 §10 sends
+    /// them fire-and-forget, so a transaction row for one would read as a
+    /// failure that never happened.
+    indications: u64,
+    /// Relayed ChannelData frames seen. Not STUN messages, and counted apart
+    /// from them for that reason.
+    channel_data_frames: u64,
+    /// Relayed application bytes across those frames, framing excluded.
+    channel_data_bytes: u64,
 }
 
 /// Process-global, for the same reason the capture-quality counters are: the
 /// pipeline sees packets one at a time and the report is assembled at the end.
+///
+/// And for one more, which `--cores` makes unavoidable: a NAT-discovery
+/// probe's host pair is (client, STUN server), never the pair of the SIP
+/// dialog the probe was run for. Per-worker state would file the evidence
+/// under a worker holding none of the calls it explains.
 static TRACKER: Mutex<Option<Tracker>> = Mutex::new(None);
+
+/// Whether any STUN message has been recorded, readable without the lock.
+///
+/// The fast path for [`transactions_from`], which the media diagnosis calls
+/// once per dialog that advertised an unroutable address — a shape that is
+/// EVERY dialog on a LAN-only capture. A run that saw no STUN answers with one
+/// relaxed load and never takes the mutex.
+static STUN_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether any TURN allocation has been granted, readable without the lock.
+///
+/// The hot-path guard for [`note_channel_data`], which fires once per relayed
+/// MEDIA packet rather than once per signaling packet. A capture with no TURN
+/// allocation in it — which is every capture that never touched a relay —
+/// answers with one relaxed load and never takes the mutex.
+static ALLOCATION_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Record one observed STUN message.
 ///
-/// A request is remembered; a response of either kind strikes its transaction
-/// off. Repeating a transaction ID counts an attempt rather than adding a
-/// second entry — a phone that retries five times has one unanswered question,
-/// not five.
-pub fn note_message(msg: &StunMessage, src: SocketAddr, dst: SocketAddr) {
+/// A request is remembered; a response of either kind folds its answer into
+/// the transaction it belongs to. Repeating a transaction ID counts an attempt
+/// rather than adding a second entry — a phone that retries five times has one
+/// unanswered question, not five.
+pub fn note_message(
+    msg: &StunMessage,
+    src: SocketAddr,
+    dst: SocketAddr,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) {
     let Ok(mut guard) = TRACKER.lock() else {
         return; // a poisoned lock must not take the capture down
     };
     let tracker = guard.get_or_insert_with(Tracker::default);
+    tracker.packets += 1;
+    // Release, paired with the Acquire in `transactions_from`: the insertion
+    // below must be visible to any thread that observes the flag.
+    STUN_SEEN.store(true, std::sync::atomic::Ordering::Release);
     match msg.class {
         StunClass::Request => {
-            // Binding and Allocate: the two requests whose silence ends in the
-            // same symptom. The other TURN methods are deliberately not tracked
-            // — a CreatePermission or ChannelBind rides an allocation that has
-            // already succeeded, so its silence is a consequence rather than a
-            // cause, and reporting it would bury the request that actually
-            // failed under the ones that followed it.
-            if !msg.is_binding_request() && !msg.is_allocate_request() {
+            tracker.touch_allocation(src, dst, timestamp);
+            if let Some(tx) = tracker.transactions.get_mut(&msg.transaction_id) {
+                tx.request_count += 1;
+                tx.last_request = timestamp;
                 return;
             }
-            tracker
-                .pending
-                .entry(msg.transaction_id)
-                .and_modify(|e| e.attempts += 1)
-                .or_insert(UnansweredRequest {
-                    from: src,
-                    to: dst,
-                    attempts: 1,
-                    software: msg.software.clone(),
-                    method: msg.method_name(),
-                });
+            tracker.evict_transaction_if_full();
+            let tx = StunTransaction {
+                transaction_id: hex_transaction_id(&msg.transaction_id),
+                client: src,
+                server: dst,
+                method: msg.method,
+                method_name: msg.method_name(),
+                first_request: timestamp,
+                last_request: timestamp,
+                request_count: 1,
+                responded_at: None,
+                rtt_ms: None,
+                mapped_address: None,
+                relayed_address: None,
+                peer_address: msg.peer_address,
+                lifetime_secs: msg.lifetime,
+                channel_number: msg.channel_number,
+                error_code: None,
+                auth_challenge: false,
+                software: msg.software.clone(),
+                ice_role: msg.ice_role,
+                use_candidate: msg.use_candidate,
+                fingerprint_valid: msg.fingerprint_valid,
+            };
+            tracker.transactions.insert(msg.transaction_id, tx);
         }
         StunClass::SuccessResponse | StunClass::ErrorResponse => {
-            // An ERROR response is still an answer: the server was reachable
-            // and said no, which is a different fault from silence and must not
-            // be reported as one.
-            if tracker.pending.remove(&msg.transaction_id).is_some() {
-                tracker.answered += 1;
-                if msg.is_auth_challenge() {
-                    // Counted apart because it is the most actionable answer of
-                    // all: the path works and the credentials are the problem,
-                    // which sends the operator somewhere completely different
-                    // from a dropped-packet hunt.
-                    tracker.challenged += 1;
+            tracker.touch_allocation(src, dst, timestamp);
+            // On a response the server is the source and the client the
+            // destination — the mirror of a request.
+            if let Some(tx) = tracker.transactions.get_mut(&msg.transaction_id) {
+                // An ERROR response is still an ANSWER: the server was
+                // reachable and said no, which is a different fault from
+                // silence and must not be reported as one.
+                if tx.responded_at.is_none() {
+                    tx.responded_at = Some(timestamp);
+                    tx.rtt_ms = Some(
+                        (timestamp - tx.last_request)
+                            .num_microseconds()
+                            .unwrap_or(0) as f64
+                            / 1000.0,
+                    );
                 }
+                if msg.mapped_address.is_some() {
+                    tx.mapped_address = msg.mapped_address;
+                }
+                if msg.relayed_address.is_some() {
+                    tx.relayed_address = msg.relayed_address;
+                }
+                if msg.lifetime.is_some() {
+                    tx.lifetime_secs = msg.lifetime;
+                }
+                if msg.error_code.is_some() {
+                    tx.error_code = msg.error_code;
+                }
+                tx.auth_challenge |= msg.is_auth_challenge();
+                if msg.fingerprint_valid.is_some() {
+                    tx.fingerprint_valid = msg.fingerprint_valid;
+                }
+            } else {
+                // A response whose request predates the capture. Filed as
+                // answered with no request count, so it neither vanishes nor
+                // reads as a failure.
+                tracker.evict_transaction_if_full();
+                let tx = StunTransaction {
+                    transaction_id: hex_transaction_id(&msg.transaction_id),
+                    client: dst,
+                    server: src,
+                    method: msg.method,
+                    method_name: msg.method_name(),
+                    first_request: timestamp,
+                    last_request: timestamp,
+                    request_count: 0,
+                    responded_at: Some(timestamp),
+                    rtt_ms: None,
+                    mapped_address: msg.mapped_address,
+                    relayed_address: msg.relayed_address,
+                    peer_address: msg.peer_address,
+                    lifetime_secs: msg.lifetime,
+                    channel_number: msg.channel_number,
+                    error_code: msg.error_code,
+                    auth_challenge: msg.is_auth_challenge(),
+                    software: msg.software.clone(),
+                    ice_role: msg.ice_role,
+                    use_candidate: msg.use_candidate,
+                    fingerprint_valid: msg.fingerprint_valid,
+                };
+                tracker.transactions.insert(msg.transaction_id, tx);
             }
+            tracker.apply_turn_response(msg, src, dst, timestamp);
         }
-        StunClass::Indication => {}
+        StunClass::Indication => {
+            tracker.indications += 1;
+            tracker.touch_allocation(src, dst, timestamp);
+        }
+    }
+}
+
+/// Record one relayed TURN ChannelData frame.
+///
+/// `bytes` is the relayed application data only — the four-byte header is
+/// framing, not payload, and counting it would overstate the media.
+///
+/// The point of recording it is [`TurnAllocation::expired_before_last_activity`]:
+/// relayed media IS the traffic that kept flowing past the expiry, and an
+/// allocation whose activity clock only ever advanced on signaling could never
+/// show that.
+///
+/// # Cost
+///
+/// This is the one entry point here that fires per MEDIA packet, so it is
+/// guarded by a relaxed atomic: until a TURN allocation has actually been
+/// granted there is nothing for a frame to advance, and the mutex is never
+/// taken. A capture that never touched a relay pays one load per relayed
+/// frame, and a capture with no relayed frames pays nothing at all.
+pub fn note_channel_data(
+    src: SocketAddr,
+    dst: SocketAddr,
+    bytes: usize,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) {
+    if !ALLOCATION_SEEN.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let Ok(mut guard) = TRACKER.lock() else {
+        return;
+    };
+    let tracker = guard.get_or_insert_with(Tracker::default);
+    tracker.channel_data_frames += 1;
+    tracker.channel_data_bytes += bytes as u64;
+    tracker.touch_allocation(src, dst, timestamp);
+}
+
+impl Tracker {
+    /// Drop the oldest transaction when the table is at capacity.
+    fn evict_transaction_if_full(&mut self) {
+        if self.transactions.len() >= MAX_TRANSACTIONS {
+            self.transactions.shift_remove_index(0);
+            self.dropped += 1;
+        }
+    }
+
+    /// Fold a TURN success response into the allocation table.
+    fn apply_turn_response(
+        &mut self,
+        msg: &StunMessage,
+        src: SocketAddr,
+        dst: SocketAddr,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) {
+        if msg.class != StunClass::SuccessResponse {
+            return;
+        }
+        let (client, server) = (dst, src);
+        match msg.method {
+            METHOD_ALLOCATE => self.upsert_allocation(client, server, timestamp, |alloc| {
+                if msg.relayed_address.is_some() {
+                    alloc.relayed_address = msg.relayed_address;
+                }
+                if msg.lifetime.is_some() {
+                    alloc.lifetime_secs = msg.lifetime;
+                }
+            }),
+            METHOD_REFRESH => self.upsert_allocation(client, server, timestamp, |alloc| {
+                alloc.refreshes += 1;
+                alloc.refreshed_at = Some(timestamp);
+                if msg.lifetime.is_some() {
+                    alloc.lifetime_secs = msg.lifetime;
+                }
+                // LIFETIME 0 is how RFC 5766 §7 releases an allocation. A
+                // released allocation is not an expired one.
+                if msg.lifetime == Some(0) {
+                    alloc.released = true;
+                }
+            }),
+            _ => {}
+        }
+    }
+
+    /// Create or update the allocation for a client/server pair.
+    fn upsert_allocation(
+        &mut self,
+        client: SocketAddr,
+        server: SocketAddr,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        update: impl FnOnce(&mut TurnAllocation),
+    ) {
+        let key = (client, server);
+        if !self.allocations.contains_key(&key) {
+            if self.allocations.len() >= MAX_ALLOCATIONS {
+                self.allocations.shift_remove_index(0);
+                self.allocations_dropped += 1;
+            }
+            self.allocations.insert(
+                key,
+                TurnAllocation {
+                    client,
+                    server,
+                    relayed_address: None,
+                    lifetime_secs: None,
+                    allocated_at: timestamp,
+                    refreshed_at: None,
+                    refreshes: 0,
+                    last_activity: timestamp,
+                    released: false,
+                },
+            );
+            // Release, paired with the Acquire in `note_channel_data`: the
+            // insertion must be visible to any thread that observes the flag.
+            ALLOCATION_SEEN.store(true, std::sync::atomic::Ordering::Release);
+        }
+        if let Some(alloc) = self.allocations.get_mut(&key) {
+            alloc.last_activity = alloc.last_activity.max(timestamp);
+            update(alloc);
+        }
+    }
+
+    /// Advance an allocation's activity clock when traffic is seen on its
+    /// socket pair, in either direction.
+    ///
+    /// Never CREATES an allocation: an allocation exists because an Allocate
+    /// succeeded, and inventing one from a stray packet would put a lifetime
+    /// on something that was never granted.
+    fn touch_allocation(
+        &mut self,
+        a: SocketAddr,
+        b: SocketAddr,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) {
+        if self.allocations.is_empty() {
+            return;
+        }
+        // Written as two lookups rather than an `or_else` chain: the closure
+        // form needs a second unique borrow of the map while the first is
+        // still live, which the borrow checker refuses.
+        let key = if self.allocations.contains_key(&(a, b)) {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        if let Some(alloc) = self.allocations.get_mut(&key) {
+            alloc.last_activity = alloc.last_activity.max(timestamp);
+        }
+    }
+}
+
+/// Hex-encode a transaction ID for display and JSON.
+fn hex_transaction_id(bytes: &[u8; 12]) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(24);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+/// Everything the STUN and TURN tracking saw during this run.
+///
+/// A snapshot rather than a live view: every surface that reports it does so
+/// once, at the end, and handing out a borrow of the process-global table
+/// would mean holding its lock across a whole report.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct StunReport {
+    /// Every tracked transaction, oldest first.
+    pub transactions: Vec<StunTransaction>,
+    /// Every tracked TURN allocation, oldest first.
+    pub allocations: Vec<TurnAllocation>,
+    /// STUN messages classified, retransmissions and evicted transactions
+    /// included. Stays exact where `transactions` does not.
+    pub packets: u64,
+    /// Transactions evicted at the retention cap. Non-zero means
+    /// `transactions` is a sample, not the whole capture.
+    pub dropped: u64,
+    /// Allocations evicted at the retention cap.
+    pub allocations_dropped: u64,
+    /// Indications seen. Counted, never tracked as transactions.
+    pub indications: u64,
+    /// Relayed ChannelData frames seen on a tracked allocation.
+    pub channel_data_frames: u64,
+    /// Relayed application bytes across those frames, framing excluded.
+    pub channel_data_bytes: u64,
+}
+
+impl StunReport {
+    /// Transactions that never drew a response AND whose silence is a fault.
+    ///
+    /// A retransmitted request that was eventually answered is NOT here — it
+    /// succeeded, however slowly; [`StunTransaction::was_retransmitted`] is
+    /// the weaker signal for that.
+    pub fn unanswered(&self) -> impl Iterator<Item = &StunTransaction> {
+        self.transactions
+            .iter()
+            .filter(|t| t.is_unanswered() && t.silence_is_a_fault())
+    }
+
+    /// Allocations that were still carrying traffic after the last lifetime
+    /// they were granted had run out.
+    pub fn lapsed_allocations(&self) -> impl Iterator<Item = &TurnAllocation> {
+        self.allocations
+            .iter()
+            .filter(|a| a.expired_before_last_activity())
+    }
+
+    /// Whether the run saw no STUN and no TURN at all.
+    pub fn is_empty(&self) -> bool {
+        self.packets == 0 && self.channel_data_frames == 0
+    }
+}
+
+/// Every transaction whose CLIENT socket carries this address, cloned.
+///
+/// The targeted read [`crate::rtp::diagnosis`] needs, and the reason it is not
+/// a filter over [`report`]: that call clones the whole table, and the media
+/// diagnosis asks this question once per dialog that advertised an unroutable
+/// address — which on a LAN-only capture is every dialog it has. Cloning ten
+/// thousand transactions per call would make the finding quadratic in the size
+/// of the capture. This locks once and clones only what matched, which on a
+/// healthy dialog is nothing.
+///
+/// Answered from a relaxed atomic, with no lock taken at all, when the run has
+/// seen no STUN.
+pub fn transactions_from(client_ip: IpAddr) -> Vec<StunTransaction> {
+    if !STUN_SEEN.load(std::sync::atomic::Ordering::Acquire) {
+        return Vec::new();
+    }
+    let Ok(guard) = TRACKER.lock() else {
+        return Vec::new();
+    };
+    let Some(tracker) = guard.as_ref() else {
+        return Vec::new();
+    };
+    tracker
+        .transactions
+        .values()
+        .filter(|t| t.client.ip() == client_ip)
+        .cloned()
+        .collect()
+}
+
+/// Everything STUN and TURN said during this run.
+pub fn report() -> StunReport {
+    let Ok(guard) = TRACKER.lock() else {
+        return StunReport::default();
+    };
+    let Some(tracker) = guard.as_ref() else {
+        return StunReport::default();
+    };
+    StunReport {
+        transactions: tracker.transactions.values().cloned().collect(),
+        allocations: tracker.allocations.values().cloned().collect(),
+        packets: tracker.packets,
+        dropped: tracker.dropped,
+        allocations_dropped: tracker.allocations_dropped,
+        indications: tracker.indications,
+        channel_data_frames: tracker.channel_data_frames,
+        channel_data_bytes: tracker.channel_data_bytes,
     }
 }
 
 /// How many answers were authentication challenges.
 pub fn auth_challenges() -> u64 {
-    TRACKER
-        .lock()
-        .ok()
-        .and_then(|g| g.as_ref().map(|t| t.challenged))
-        .unwrap_or(0)
+    let Ok(guard) = TRACKER.lock() else {
+        return 0;
+    };
+    guard.as_ref().map_or(0, |t| {
+        t.transactions.values().filter(|x| x.auth_challenge).count() as u64
+    })
 }
 
-/// Binding Requests that never got an answer, busiest first, with the number
-/// that DID get one for scale.
+/// Binding and Allocate requests that never got an answer, busiest first, with
+/// the number that DID get one for scale.
 pub fn unanswered_requests() -> (Vec<UnansweredRequest>, u64) {
     let Ok(guard) = TRACKER.lock() else {
         return (Vec::new(), 0);
@@ -739,7 +1416,30 @@ pub fn unanswered_requests() -> (Vec<UnansweredRequest>, u64) {
     let Some(tracker) = guard.as_ref() else {
         return (Vec::new(), 0);
     };
-    let mut out: Vec<UnansweredRequest> = tracker.pending.values().cloned().collect();
+    let mut out: Vec<UnansweredRequest> = Vec::new();
+    let mut answered = 0u64;
+    for tx in tracker.transactions.values() {
+        if !tx.silence_is_a_fault() {
+            continue;
+        }
+        // A transaction filed from a response alone had its request before the
+        // capture began. It is not evidence that anything worked HERE, so it
+        // is left out of the denominator rather than inflating it.
+        if tx.request_count == 0 {
+            continue;
+        }
+        if tx.is_unanswered() {
+            out.push(UnansweredRequest {
+                from: tx.client,
+                to: tx.server,
+                attempts: tx.request_count,
+                software: tx.software.clone(),
+                method: tx.method_name.clone(),
+            });
+        } else {
+            answered += 1;
+        }
+    }
     // Most-retried first, then by address so two runs over one capture print
     // the same order.
     out.sort_by(|a, b| {
@@ -747,7 +1447,7 @@ pub fn unanswered_requests() -> (Vec<UnansweredRequest>, u64) {
             .cmp(&a.attempts)
             .then_with(|| a.from.to_string().cmp(&b.from.to_string()))
     });
-    (out, tracker.answered)
+    (out, answered)
 }
 
 /// Clear the tracker, for a process that analyses several captures in sequence
@@ -756,16 +1456,19 @@ pub fn reset() {
     if let Ok(mut guard) = TRACKER.lock() {
         *guard = None;
     }
+    STUN_SEEN.store(false, std::sync::atomic::Ordering::Release);
+    ALLOCATION_SEEN.store(false, std::sync::atomic::Ordering::Release);
 }
 
 #[cfg(test)]
 mod turn_tests {
     use super::*;
 
-    /// The tracker is process-global, so the two tests that assert on its exact
-    /// contents must not run at the same time — one's `reset` is the other's
-    /// missing request. Same reason the capture-drop counters serialize.
-    static TRACKER_LOCK: Mutex<()> = Mutex::new(());
+    /// A fixed capture timestamp `ms` milliseconds into an imaginary capture,
+    /// so the timing assertions do not depend on when the test ran.
+    pub(super) fn ts(ms: i64) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp_millis(1_700_000_000_000 + ms).expect("valid timestamp")
+    }
 
     fn message(msg_type: u16, txn: [u8; 12], attrs: &[(u16, Vec<u8>)]) -> Vec<u8> {
         let mut body = Vec::new();
@@ -863,21 +1566,21 @@ mod turn_tests {
     /// directions asserted, because a tracker that never records and a tracker
     /// that never clears both report zero unanswered on a healthy capture.
     #[test]
+    #[serial_test::serial(stun_store)]
     fn an_answered_request_is_struck_off_and_an_unanswered_one_stands() {
-        let _guard = TRACKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         let src: SocketAddr = "192.0.2.10:5060".parse().unwrap();
         let dst: SocketAddr = "198.51.100.1:3478".parse().unwrap();
 
         let asked = parse(&message(0x0001, [0xAA; 12], &[])).unwrap();
         let ignored = parse(&message(0x0001, [0xBB; 12], &[])).unwrap();
-        note_message(&asked, src, dst);
-        note_message(&ignored, src, dst);
+        note_message(&asked, src, dst, ts(0));
+        note_message(&ignored, src, dst, ts(0));
         // The ignored one is retransmitted: one question, two attempts.
-        note_message(&ignored, src, dst);
+        note_message(&ignored, src, dst, ts(500));
 
         let answer = parse(&message(0x0101, [0xAA; 12], &[])).unwrap();
-        note_message(&answer, dst, src);
+        note_message(&answer, dst, src, ts(30));
 
         let (unanswered, answered) = unanswered_requests();
         assert_eq!(answered, 1, "the answered transaction must be counted");
@@ -894,13 +1597,13 @@ mod turn_tests {
     /// which is a different fault from silence and points somewhere else — so
     /// it must not be reported as unanswered.
     #[test]
+    #[serial_test::serial(stun_store)]
     fn an_error_response_counts_as_answered() {
-        let _guard = TRACKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         let src: SocketAddr = "192.0.2.10:5060".parse().unwrap();
         let dst: SocketAddr = "198.51.100.1:3478".parse().unwrap();
         let asked = parse(&message(0x0001, [0xCC; 12], &[])).unwrap();
-        note_message(&asked, src, dst);
+        note_message(&asked, src, dst, ts(0));
         let refused = parse(&message(
             0x0111,
             [0xCC; 12],
@@ -908,7 +1611,7 @@ mod turn_tests {
         ))
         .unwrap();
         assert_eq!(refused.error_code, Some(401));
-        note_message(&refused, dst, src);
+        note_message(&refused, dst, src, ts(10));
 
         let (unanswered, answered) = unanswered_requests();
         assert!(
@@ -1222,5 +1925,422 @@ mod ice_and_turn_attribute_tests {
         assert_eq!(parsed.method_name(), "ChannelBind");
         assert_eq!(parsed.channel_number, Some(0x4002));
         assert_eq!(parsed.requested_transport, Some(17), "17 is UDP");
+    }
+}
+
+#[cfg(test)]
+mod turn_allocation_attribute_tests {
+    use super::*;
+
+    fn msg(msg_type: u16, attrs: &[(u16, Vec<u8>)]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (t, v) in attrs {
+            body.extend_from_slice(&t.to_be_bytes());
+            body.extend_from_slice(&(v.len() as u16).to_be_bytes());
+            body.extend_from_slice(v);
+            while body.len() % 4 != 0 {
+                body.push(0);
+            }
+        }
+        let mut m = Vec::new();
+        m.extend_from_slice(&msg_type.to_be_bytes());
+        m.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        m.extend_from_slice(&MAGIC_COOKIE.to_be_bytes());
+        m.extend_from_slice(&[0x6b; 12]);
+        m.extend_from_slice(&body);
+        m
+    }
+
+    /// The four attributes an Allocate request uses to SHAPE the allocation.
+    /// Without them a request for an IPv6 relay and one for an IPv4 relay are
+    /// the same row, and a `440` refusal has no visible cause.
+    #[test]
+    fn an_allocate_request_reports_the_shape_it_asked_for() {
+        let m = msg(
+            0x0003, // Allocate request
+            &[
+                (0x0019, vec![17, 0, 0, 0]),   // REQUESTED-TRANSPORT UDP
+                (0x0017, vec![0x02, 0, 0, 0]), // REQUESTED-ADDRESS-FAMILY IPv6
+                (0x0018, vec![0x80]),          // EVEN-PORT, R bit set
+                (0x001a, Vec::new()),          // DONT-FRAGMENT
+            ],
+        );
+        let parsed = parse(&m).expect("parses");
+        assert_eq!(parsed.requested_transport, Some(17));
+        assert_eq!(parsed.requested_address_family, Some(0x02), "IPv6");
+        assert_eq!(
+            parsed.even_port,
+            Some(true),
+            "the R bit is the ask that reserves the RTCP port beside the RTP one"
+        );
+        assert!(parsed.dont_fragment);
+    }
+
+    /// EVEN-PORT without the R bit is a DIFFERENT ask, and absent is a third
+    /// state. Collapsing any two of the three would misreport the request.
+    #[test]
+    fn even_port_distinguishes_asked_asked_with_reservation_and_absent() {
+        let with_r = parse(&msg(0x0003, &[(0x0018, vec![0x80])])).expect("parses");
+        assert_eq!(with_r.even_port, Some(true));
+        let without_r = parse(&msg(0x0003, &[(0x0018, vec![0x00])])).expect("parses");
+        assert_eq!(without_r.even_port, Some(false));
+        let absent = parse(&msg(0x0003, &[])).expect("parses");
+        assert_eq!(
+            absent.even_port, None,
+            "absent is not the same as not asked"
+        );
+    }
+
+    /// RESERVATION-TOKEN is what claims the port an earlier EVEN-PORT
+    /// reserved, so a capture where the second Allocate carries no token
+    /// explains why the pair was not honoured.
+    #[test]
+    fn a_reservation_token_survives_as_all_sixty_four_bits() {
+        let token: u64 = 0x0123_4567_89ab_cdef;
+        let m = msg(0x0003, &[(0x0022, token.to_be_bytes().to_vec())]);
+        assert_eq!(parse(&m).expect("parses").reservation_token, Some(token));
+        // A short token is refused rather than padded: half a token is not a
+        // token, and reporting one would name a reservation nobody made.
+        let short = msg(0x0003, &[(0x0022, vec![0x01, 0x23, 0x45, 0x67])]);
+        assert_eq!(parse(&short).expect("parses").reservation_token, None);
+    }
+
+    /// DATA locates the relayed payload inside the message rather than copying
+    /// it, so a caller can re-slice its own buffer.
+    #[test]
+    fn a_data_attribute_locates_the_relayed_payload() {
+        let payload: Vec<u8> = (0u8..16).collect();
+        let m = msg(0x0016, &[(0x0013, payload.clone())]); // Send indication
+        let parsed = parse(&m).expect("parses");
+        let range = parsed.data.expect("DATA must be located");
+        assert_eq!(
+            &m[range],
+            &payload[..],
+            "the range must name the relayed bytes exactly"
+        );
+        // An empty DATA relays nothing and must not produce a zero-length
+        // range for a caller to slice with.
+        let empty = msg(0x0016, &[(0x0013, Vec::new())]);
+        assert_eq!(parse(&empty).expect("parses").data, None);
+    }
+
+    /// A truncated LIFETIME must be REFUSED, never zero-extended. Reading two
+    /// bytes as a u32 invents a short expiry the sender never claimed — and
+    /// `expired_before_last_activity` draws a conclusion from exactly that
+    /// number, so a fabricated one produces a fabricated finding.
+    #[test]
+    fn a_truncated_lifetime_is_refused_rather_than_zero_extended() {
+        let full = msg(0x0103, &[(0x000D, 600u32.to_be_bytes().to_vec())]);
+        assert_eq!(parse(&full).expect("parses").lifetime, Some(600));
+        for short in [vec![0x02u8], vec![0x02, 0x58], vec![0x00, 0x02, 0x58]] {
+            let m = msg(0x0103, &[(0x000D, short.clone())]);
+            assert_eq!(
+                parse(&m).expect("parses").lifetime,
+                None,
+                "a {}-byte LIFETIME must not become a number",
+                short.len()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod channel_framing_tests {
+    use super::*;
+
+    /// The tightened rule. A stray datagram whose first two bytes land in the
+    /// channel-number window and whose length field describes only part of it
+    /// is NOT a relay frame — and the old floor (`len >= 4 + declared`)
+    /// accepted it, then let the pipeline re-classify whatever followed. That
+    /// is the phantom-stream class arrived at from the other side.
+    #[test]
+    fn a_datagram_the_frame_does_not_account_for_is_not_channel_data() {
+        let mut stray = vec![0x40, 0x01, 0x00, 0x08];
+        stray.extend_from_slice(&[0xaa; 8]);
+        assert!(is_channel_data(&stray), "the exact frame is one");
+        stray.extend_from_slice(&[0xbb; 9]); // nine trailing bytes, unaccounted
+        assert!(
+            !is_channel_data(&stray),
+            "over UDP the frame must account for the whole datagram"
+        );
+        assert!(channel_data_payload(&stray).is_none());
+    }
+
+    /// The optional padding RFC 5766 §11.5 allows over a datagram transport
+    /// must still be accepted, or a conformant sender's media disappears.
+    #[test]
+    fn the_optional_datagram_padding_is_accepted() {
+        let mut unpadded = vec![0x40, 0x02, 0x00, 0x0d];
+        unpadded.extend_from_slice(&[0xaa; 13]);
+        assert!(is_channel_data(&unpadded));
+        let mut padded = unpadded.clone();
+        padded.extend_from_slice(&[0x00; 3]);
+        assert!(is_channel_data(&padded));
+        assert_eq!(
+            channel_data_payload(&padded).expect("unwraps").len(),
+            13,
+            "the padding is framing, not payload"
+        );
+    }
+
+    /// On a byte stream the padding is mandatory and the next frame may
+    /// follow, so the rule is "the padded frame fits" rather than "the frame
+    /// is the whole buffer".
+    #[test]
+    fn stream_framing_allows_a_following_frame() {
+        let mut data = vec![0x40, 0x03, 0x00, 0x0d];
+        data.extend_from_slice(&[0xaa; 13]);
+        data.extend_from_slice(&[0x00; 3]); // padding
+        data.extend_from_slice(&[0xbb; 8]); // the next frame
+        assert!(is_channel_data_framed(&data, ChannelDataFraming::Stream));
+        assert!(
+            !is_channel_data_framed(&data, ChannelDataFraming::Datagram),
+            "the datagram rule refuses a frame that leaves bytes over"
+        );
+        assert_eq!(
+            channel_data_payload_framed(&data, ChannelDataFraming::Stream)
+                .expect("unwraps")
+                .len(),
+            13
+        );
+    }
+
+    /// A zero-length frame carries nothing, and accepting it would let ANY
+    /// four-byte datagram starting in the window be claimed as relayed media —
+    /// the one shape where every other check passes for free.
+    #[test]
+    fn a_zero_length_frame_is_refused() {
+        assert!(!is_channel_data(&[0x40, 0x01, 0x00, 0x00]));
+        assert!(!is_channel_data_framed(
+            &[0x40, 0x01, 0x00, 0x00],
+            ChannelDataFraming::Stream
+        ));
+    }
+
+    /// No input of any length may panic: this runs on the first four bytes of
+    /// arbitrary UDP.
+    #[test]
+    fn arbitrary_input_never_panics() {
+        let mut seed: u32 = 0x1234_5678;
+        for len in 0..64usize {
+            let mut buf = vec![0u8; len];
+            for b in buf.iter_mut() {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *b = (seed >> 24) as u8;
+            }
+            let _ = is_channel_data(&buf);
+            let _ = is_channel_data_framed(&buf, ChannelDataFraming::Stream);
+            let _ = channel_data_payload(&buf);
+        }
+    }
+}
+
+#[cfg(test)]
+mod allocation_tracking_tests {
+    use super::turn_tests::ts;
+    use super::*;
+
+    fn message(msg_type: u16, txn: [u8; 12], attrs: &[(u16, Vec<u8>)]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (t, v) in attrs {
+            body.extend_from_slice(&t.to_be_bytes());
+            body.extend_from_slice(&(v.len() as u16).to_be_bytes());
+            body.extend_from_slice(v);
+            while body.len() % 4 != 0 {
+                body.push(0);
+            }
+        }
+        let mut m = Vec::new();
+        m.extend_from_slice(&msg_type.to_be_bytes());
+        m.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        m.extend_from_slice(&MAGIC_COOKIE.to_be_bytes());
+        m.extend_from_slice(&txn);
+        m.extend_from_slice(&body);
+        m
+    }
+
+    fn xor_v4(ip: [u8; 4], port: u16) -> Vec<u8> {
+        let cookie = MAGIC_COOKIE.to_be_bytes();
+        let mut v = vec![0, 0x01];
+        v.extend_from_slice(&(port ^ ((MAGIC_COOKIE >> 16) as u16)).to_be_bytes());
+        for (i, o) in ip.iter().enumerate() {
+            v.push(o ^ cookie[i]);
+        }
+        v
+    }
+
+    fn client() -> SocketAddr {
+        "192.0.2.10:50000".parse().expect("valid addr")
+    }
+    fn server() -> SocketAddr {
+        "198.51.100.20:3478".parse().expect("valid addr")
+    }
+
+    /// Grant an allocation with `lifetime` seconds at t=0.
+    fn allocate(lifetime: u32) {
+        let req = parse(&message(0x0003, [0x11; 12], &[])).expect("parses");
+        note_message(&req, client(), server(), ts(0));
+        let resp = parse(&message(
+            0x0103,
+            [0x11; 12],
+            &[
+                (0x0016, xor_v4([198, 51, 100, 77], 49160)),
+                (0x000D, lifetime.to_be_bytes().to_vec()),
+            ],
+        ))
+        .expect("parses");
+        note_message(&resp, server(), client(), ts(10));
+    }
+
+    /// The finding: traffic still crossing the relay after the last granted
+    /// lifetime could have sustained it, with no Refresh in between. The
+    /// operational shape of a call that dies partway through with no SIP
+    /// message anywhere to explain it.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn an_allocation_still_carrying_traffic_past_its_lifetime_is_lapsed() {
+        reset();
+        allocate(60);
+        // Relayed media a minute and a half in, long after the 60s grant.
+        note_channel_data(client(), server(), 172, ts(90_000));
+
+        let report = report();
+        assert_eq!(report.allocations.len(), 1);
+        let lapsed: Vec<_> = report.lapsed_allocations().collect();
+        assert_eq!(lapsed.len(), 1, "the relay was torn down under the media");
+        assert_eq!(
+            lapsed[0].relayed_address.map(|a| a.to_string()).as_deref(),
+            Some("198.51.100.77:49160")
+        );
+        // 29 rather than 30: the grant is timed from the response at t=10ms,
+        // so the expiry lands at 60.010s and 90s is 29.99s past it.
+        assert_eq!(lapsed[0].seconds_past_expiry(), Some(29));
+        assert_eq!(report.channel_data_frames, 1);
+        reset();
+    }
+
+    /// A Refresh that arrives in time moves the expiry, so the same traffic is
+    /// no longer past it. Without this the finding would fire on every healthy
+    /// long call.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn a_refresh_that_kept_up_is_not_a_lapse() {
+        reset();
+        allocate(60);
+        let req = parse(&message(0x0004, [0x22; 12], &[])).expect("parses");
+        note_message(&req, client(), server(), ts(50_000));
+        let resp = parse(&message(
+            0x0104,
+            [0x22; 12],
+            &[(0x000D, 600u32.to_be_bytes().to_vec())],
+        ))
+        .expect("parses");
+        note_message(&resp, server(), client(), ts(50_010));
+        note_channel_data(client(), server(), 172, ts(90_000));
+
+        assert_eq!(report().lapsed_allocations().count(), 0);
+        assert_eq!(report().allocations[0].refreshes, 1);
+        reset();
+    }
+
+    /// A Refresh with `LIFETIME` 0 is a deliberate RELEASE (RFC 5766 §7). The
+    /// client asked for the teardown, so the teardown is not a fault — and a
+    /// stray packet arriving afterwards must not turn it into one.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn a_released_allocation_is_never_reported_as_lapsed() {
+        reset();
+        allocate(60);
+        let req = parse(&message(0x0004, [0x33; 12], &[])).expect("parses");
+        note_message(&req, client(), server(), ts(20_000));
+        let resp = parse(&message(
+            0x0104,
+            [0x33; 12],
+            &[(0x000D, 0u32.to_be_bytes().to_vec())],
+        ))
+        .expect("parses");
+        note_message(&resp, server(), client(), ts(20_010));
+        note_channel_data(client(), server(), 172, ts(90_000));
+
+        assert!(report().allocations[0].released);
+        assert_eq!(
+            report().lapsed_allocations().count(),
+            0,
+            "a release the client asked for is not a relay that lapsed under it"
+        );
+        reset();
+    }
+
+    /// Relayed media must never CREATE an allocation. Inventing one from a
+    /// stray frame would put a lifetime on something no server ever granted.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn relayed_media_without_an_allocation_records_nothing() {
+        reset();
+        note_channel_data(client(), server(), 172, ts(1_000));
+        let report = report();
+        assert!(report.allocations.is_empty());
+        assert_eq!(
+            report.channel_data_frames, 0,
+            "the relaxed-atomic fast path must skip the store entirely"
+        );
+        reset();
+    }
+
+    /// The transaction table keeps ANSWERED transactions too, which is what
+    /// lets a report say "1 of 3" rather than listing one failure with no
+    /// scale — and what lets the SDP diagnosis find the address a client was
+    /// handed and did not use.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn answered_transactions_stay_in_the_table_with_their_addresses() {
+        reset();
+        let req = parse(&message(0x0001, [0x44; 12], &[])).expect("parses");
+        note_message(&req, client(), server(), ts(0));
+        let resp = parse(&message(
+            0x0101,
+            [0x44; 12],
+            &[(0x0020, xor_v4([203, 0, 113, 5], 12262))],
+        ))
+        .expect("parses");
+        note_message(&resp, server(), client(), ts(7));
+
+        let report = report();
+        assert_eq!(report.transactions.len(), 1);
+        let tx = &report.transactions[0];
+        assert_eq!(
+            tx.mapped_address.map(|a| a.to_string()).as_deref(),
+            Some("203.0.113.5:12262")
+        );
+        assert_eq!(tx.rtt_ms, Some(7.0));
+        assert!(!tx.is_unanswered());
+        assert_eq!(report.unanswered().count(), 0);
+        reset();
+    }
+
+    /// A CreatePermission that goes unanswered is NOT reported as a failed
+    /// probe. It rides an allocation that already succeeded, so its silence is
+    /// a consequence, and listing it would bury the request that actually
+    /// failed under the ones that followed it.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn only_binding_and_allocate_silence_counts_as_a_fault() {
+        reset();
+        let perm = parse(&message(0x0008, [0x55; 12], &[])).expect("parses");
+        note_message(&perm, client(), server(), ts(0));
+        let bind = parse(&message(0x0001, [0x66; 12], &[])).expect("parses");
+        note_message(&bind, client(), server(), ts(1));
+
+        let report = report();
+        assert_eq!(report.transactions.len(), 2, "both are tracked");
+        assert_eq!(
+            report.unanswered().count(),
+            1,
+            "only the Binding's silence is a fault"
+        );
+        let (unanswered, _) = unanswered_requests();
+        assert_eq!(unanswered.len(), 1);
+        assert_eq!(unanswered[0].method, "Binding");
+        reset();
     }
 }

@@ -338,8 +338,8 @@ Tiers:
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:3874`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3874)) currently takes
-  nowhere; `security_findings` ([`src/mcp/server.rs:3874`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3874)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:3902`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3902)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:3902`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3902)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -493,8 +493,8 @@ Tiers:
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:3971`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3971),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:3971`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3971),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:3999`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3999),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:3999`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3999),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The

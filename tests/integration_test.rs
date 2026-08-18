@@ -296,7 +296,25 @@ fn can_live_capture() -> Option<bool> {
 /// probed capability, never "either is fine".
 #[test]
 fn no_source_auto_detects_device() {
-    let (_stdout, stderr, code) = run_sipnab(&["-N", "-F"]);
+    // `--duration 1s` is load-bearing, not tidiness. Without a bound this test
+    // is `sipnab -N -F` against an auto-detected LIVE device: on a host that
+    // holds capture rights it opens the interface and follows it forever,
+    // blocked in pcap waiting for a packet that an idle link never sends. CI
+    // never saw it because an unprivileged Linux runner fails to open the
+    // device and exits 1 immediately — the hang needs permission to succeed,
+    // so it reproduces only on a developer machine (any macOS host with BPF
+    // access, i.e. anywhere Wireshark has been installed).
+    //
+    // This is the wedge the pre-commit hook's watchdog was built for: "~0% CPU
+    // with every thread sleeping", once for 20 minutes and once for 1d17h,
+    // cause recorded as unknown. It is this test. The guard below cannot help,
+    // because it runs after the call that never returns.
+    //
+    // A duration bound rather than `--count`: a count limit still waits for
+    // packets that may never arrive, which is the same hang with extra steps.
+    // Both assertions survive — with capture rights the run now ends by
+    // timeout and exits 0, without them it still fails to open and exits 1.
+    let (_stdout, stderr, code) = run_sipnab(&["-N", "-F", "--duration", "1s"]);
     // With auto-detection, sipnab should NOT print the old "no capture source"
     // message. It either succeeds (has permissions) or fails on permission/open.
     assert!(

@@ -1824,6 +1824,14 @@ pub struct CaptureQualityJson {
     /// signal behind a one-way-audio complaint, and an agent asked to explain
     /// one has no other way to reach it.
     pub unanswered_nat_requests: u64,
+    /// TURN allocations still carrying traffic past the lifetime they were
+    /// last granted, with no Refresh seen.
+    ///
+    /// Also about the NETWORK, and the one condition here with no other
+    /// symptom at all: the relay tore the allocation down, the media stopped
+    /// mid-call, and no SIP message anywhere explains it. An agent asked why a
+    /// call went quiet halfway through has nowhere else to look.
+    pub lapsed_turn_allocations: u64,
     /// `true` when any of the three LOSS counters above is non-zero.
     ///
     /// Named for the direction there is evidence for. `false` means nothing
@@ -1843,6 +1851,7 @@ impl From<crate::output::prometheus::CaptureQuality> for CaptureQualityJson {
             undecodable_frames: q.undecodable_frames,
             snapped_frames: q.snapped_frames,
             unanswered_nat_requests: q.unanswered_nat_requests,
+            lapsed_turn_allocations: q.lapsed_turn_allocations,
             degraded: q.degraded(),
         }
     }
@@ -9125,6 +9134,9 @@ mod tests {
             // with no reply. An agent reading a one-way-audio complaint needs
             // this, and it used to exist only as a log line.
             "unanswered_nat_requests",
+            // Also about the NETWORK: a relay torn down mid-call, which has no
+            // other symptom anywhere — no SIP message says the media stopped.
+            "lapsed_turn_allocations",
         ] {
             assert!(
                 q[field].is_u64(),

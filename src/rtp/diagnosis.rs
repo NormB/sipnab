@@ -61,6 +61,178 @@ pub struct LateMedia {
     pub delay_after_200_ok_ms: i64,
 }
 
+/// Why the unroutable address a client advertised is one it had no excuse for.
+///
+/// Each variant is a different sentence about the SAME condition
+/// [`MediaDiagnosis::private_media_address`] raises — never a second condition.
+/// See [`StunSdpMismatch`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StunSdpMismatchReason {
+    /// STUN answered with a public address and the client advertised a private
+    /// one regardless. The client HAD the right answer and did not use it,
+    /// which points at the phone's NAT settings rather than at the network.
+    Ignored,
+    /// A TURN server allocated this client a relayed transport address and the
+    /// client advertised a private one regardless. The same fault as
+    /// [`StunSdpMismatchReason::Ignored`] and worse: the client did not merely
+    /// LEARN a reachable address, it went to the trouble of reserving one on a
+    /// relay and then left it out of the SDP.
+    RelayIgnored,
+    /// The client's Binding Request drew no response at all, so it never
+    /// learned a public address to advertise. RFC 5389 §7.2.1 retransmits only
+    /// on timeout, so a retransmitted request is itself proof of the silence —
+    /// the shape a firewall dropping UDP to the STUN port makes.
+    Unanswered,
+}
+
+impl StunSdpMismatchReason {
+    /// A short tag for reports and tests.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ignored => "ignored",
+            Self::RelayIgnored => "relay_ignored",
+            Self::Unanswered => "unanswered",
+        }
+    }
+
+    /// Whether this reason names an address the client could have advertised
+    /// and did not.
+    ///
+    /// `Unanswered` does not: there is no such address, which is the whole
+    /// point of it. See [`StunSdpMismatch::corroborates`], which needs a
+    /// different piece of evidence for that shape.
+    pub fn names_a_reachable_address(self) -> bool {
+        matches!(self, Self::Ignored | Self::RelayIgnored)
+    }
+}
+
+/// The STUN evidence behind [`MediaDiagnosis::private_media_address`].
+///
+/// # Why this is not a finding of its own
+///
+/// It describes the same condition `private_media_address` already raises — an
+/// SDP `c=` line naming an address the far end cannot route to — and it is
+/// only ever populated on a diagnosis where that flag is set. Reported as a
+/// second, parallel finding it would read as two independent problems about
+/// one address; carried here it does the one thing it is actually good for,
+/// which is to move the reader from "check whether something downstream
+/// rewrites this" to "nothing rewrote it, and here is the proof".
+///
+/// It also WIDENS the flag. `private_media_address` on its own needs an
+/// observed stream aimed at a public peer, so a call whose media never arrived
+/// at all — the worst case, and the one most likely to be captured — had no
+/// peer to test and stayed silent. A mapped or relayed address in public space
+/// settles the same question without needing a stream, so this evidence raises
+/// the flag on its own when it names one. See
+/// [`StunSdpMismatchReason::names_a_reachable_address`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct StunSdpMismatch {
+    /// The socket the client's STUN request left from, `ip:port`.
+    pub client: String,
+    /// The public address STUN reported back, when a response arrived. `None`
+    /// is the [`StunSdpMismatchReason::Unanswered`] case, where there is no
+    /// such address to name — the whole point of that reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mapped_address: Option<String>,
+    /// The relayed transport address a TURN server allocated this client, when
+    /// one was allocated. Present on the
+    /// [`StunSdpMismatchReason::RelayIgnored`] shape, and the whole of its
+    /// evidence: the address existed, was reachable, and was not used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relayed_address: Option<String>,
+    /// The STUN or TURN server the request went to, `ip:port`.
+    ///
+    /// Evidence in its own right — it names the box to check, and a reader
+    /// chasing silence needs it — and load-bearing for
+    /// [`Self::corroborates`]: a probe sent to a server on the public internet
+    /// is proof this client's traffic leaves the LAN, and a probe to a server
+    /// on the LAN is not.
+    pub server: String,
+    /// The unroutable address the dialog then advertised in its SDP.
+    pub advertised: String,
+    /// How many requests the client sent for that transaction. Greater than
+    /// one is a retransmission, which proves the earlier attempts drew nothing.
+    pub request_count: u32,
+    /// Which of the three shapes this is.
+    pub reason: StunSdpMismatchReason,
+    /// Seconds between the STUN evidence and the start of this dialog —
+    /// negative when the probe came first, which is the ordinary case.
+    ///
+    /// `None` when either time is unknown. Present because the correlation
+    /// between the two is by client IP alone: nothing in a Binding Request
+    /// names a Call-ID, so a probe from the right address matches this dialog
+    /// whether it happened during setup or an hour earlier. Within a call the
+    /// finding is an OBSERVATION; far outside it, the same finding is an
+    /// INFERENCE that the client's NAT-discovery failure persisted — still
+    /// usually true, and not the same claim. Reporting the distance is what
+    /// lets a reader tell which one they are being handed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_offset_secs: Option<i64>,
+}
+
+/// How far STUN evidence may sit from a dialog before the report stops
+/// presenting the correlation as if it had been observed within the call.
+///
+/// Two minutes: a client's NAT discovery for a call runs at registration or at
+/// setup, so evidence inside that window belongs to this call's establishment.
+/// Beyond it the probe is a separate event, and the finding rests on the
+/// failure having persisted rather than on anything seen during the call.
+pub const STUN_CORRELATION_WINDOW_SECS: i64 = 120;
+
+impl StunSdpMismatch {
+    /// Whether this evidence is enough, ON ITS OWN, to raise
+    /// [`MediaDiagnosis::private_media_address`] — with no observed stream to
+    /// prove the peer is on the public internet.
+    ///
+    /// It matters because the stream-based test cannot fire on the worst case
+    /// there is: a call whose media never arrived has no peer to examine, so
+    /// the finding that explains it would go unstated exactly when it is most
+    /// needed.
+    ///
+    /// Two shapes qualify, for one reason each:
+    ///
+    /// * A mapped or relayed address in PUBLIC space. A NAT told this client
+    ///   what the internet sees it as, so its private `c=` line cannot be
+    ///   reached from the far end. Nothing else is needed.
+    /// * Silence — but only from a server that is itself public. A probe that
+    ///   left the LAN and drew nothing says the client was trying to reach the
+    ///   internet and could not. A probe to a STUN server ON the LAN says no
+    ///   such thing, and raising a fault on it would fire on every LAN-only
+    ///   capture, which is the false positive `private_media_address` was
+    ///   written to avoid in the first place.
+    pub fn corroborates(&self) -> bool {
+        if self.reason.names_a_reachable_address() {
+            return true;
+        }
+        self.server
+            .parse::<std::net::SocketAddr>()
+            .is_ok_and(|s| !is_unroutable_publicly(s.ip()))
+    }
+
+    /// The disclosure sentence to append when the evidence sits outside
+    /// [`STUN_CORRELATION_WINDOW_SECS`], or `None` when it does not.
+    ///
+    /// `None` is the common case and must stay silent: a probe seen during
+    /// setup needs no caveat, and one printed anyway would train readers to
+    /// skip the caveat that matters.
+    pub fn correlation_caveat(&self) -> Option<String> {
+        let offset = self.observed_offset_secs?;
+        if offset.abs() <= STUN_CORRELATION_WINDOW_SECS {
+            return None;
+        }
+        let mins = offset.abs() / 60;
+        let when = if offset < 0 { "before" } else { "after" };
+        Some(format!(
+            "the STUN evidence was seen {mins} minute(s) {when} this call, not during it, \
+             and is matched to the dialog by the client's IP address alone — so this \
+             attributes a NAT-discovery failure that persisted, rather than one observed \
+             during setup. Confirm the address names the same host if the captures came \
+             from different files or networks."
+        ))
+    }
+}
+
 /// Result of diagnosing media conditions for a dialog's RTP streams.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct MediaDiagnosis {
@@ -83,6 +255,12 @@ pub struct MediaDiagnosis {
     /// wrong when nothing rewrites it, and that case is a silent one — the call
     /// signals cleanly, answers 200, and carries audio in one direction only.
     pub private_media_address: bool,
+    /// The STUN evidence behind [`Self::private_media_address`], when the run
+    /// held any. Never populated without that flag also being set — see
+    /// [`StunSdpMismatch`] for why this is evidence rather than a second
+    /// finding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stun_sdp_mismatch: Option<StunSdpMismatch>,
     /// Human-readable diagnostic hints.
     pub hints: Vec<String>,
 
@@ -285,6 +463,17 @@ pub struct MediaContext {
     established: bool,
     /// What the capture as a whole saw.
     capture: CaptureMedia,
+    /// When this dialog started, when it came from one.
+    ///
+    /// Carried solely so a finding can say how far its evidence sits from the
+    /// call it is attributed to. STUN evidence is process-global and is
+    /// correlated to a dialog by the client's IP — not by time and not by any
+    /// identifier the two share — so a probe seen an hour before the call
+    /// matches exactly as strongly as one seen during setup. That is usually
+    /// right, because a NAT-discovery failure is a persistent condition rather
+    /// than a per-call event, but it is an INFERENCE and the report must not
+    /// present it as an observation of this call.
+    dialog_start: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Default for MediaContext {
@@ -303,6 +492,7 @@ impl Default for MediaContext {
             expects_media: false,
             established: false,
             capture: CaptureMedia::Absent,
+            dialog_start: None,
         }
     }
 }
@@ -313,6 +503,7 @@ impl MediaContext {
         let mut ctx = MediaContext {
             capture,
             established: matches!(dialog.final_status_code(), Some(200..=299)),
+            dialog_start: dialog.messages.first().map(|m| m.timestamp),
             ..MediaContext::default()
         };
 
@@ -574,6 +765,12 @@ pub fn diagnose_media(dialog_streams: &[&RtpStream], media: &MediaContext) -> Me
                 )
             });
         }
+        // Before the return, not after it. A call with no streams at all is
+        // the worst case there is, and the private-address finding — with the
+        // STUN evidence that can settle it without any stream to look at — is
+        // exactly what explains one. Leaving it downstream of this return kept
+        // it silent precisely when it mattered most.
+        apply_private_media_address(&mut diag, dialog_streams, media);
         return diag;
     }
 
@@ -715,37 +912,7 @@ pub fn diagnose_media(dialog_streams: &[&RtpStream], media: &MediaContext) -> Me
         }
     }
 
-    // A private `c=` address offered to a peer that is not itself private.
-    //
-    // Warning, not error: inside one LAN this is correct, and behind an SBC or
-    // ALG that rewrites the SDP downstream it is also correct. It is wrong when
-    // nothing rewrites it, and that failure is silent — the call signals
-    // cleanly, answers 200, and carries audio one way. Seen in the field as a
-    // private `c=` line offered to a public peer, with hundreds of RTP packets
-    // leaving and none returning.
-    //
-    // The peer check is what keeps this quiet on a LAN-only capture: a private
-    // address advertised to another private address routes fine.
-    let peer_is_public = dialog_streams
-        .iter()
-        .any(|s| !is_unroutable_publicly(s.key.dst.ip()));
-    if peer_is_public
-        && let Some(private) = media
-            .advertised
-            .iter()
-            .find(|a| is_unroutable_publicly(**a))
-    {
-        diag.private_media_address = true;
-        let offered = advertised_endpoint_label(media, *private);
-        diag.hints.push(format!(
-            "SDP offered the private media address {offered} to a peer on the \
-                 public internet, which cannot route back to it. This is correct \
-                 only if something downstream rewrites the SDP (an SBC, an ALG, \
-                 or a media proxy); if nothing does, the far end sends audio to \
-                 an address that does not exist and the call is one-way while \
-                 signaling looks healthy."
-        ));
-    }
+    apply_private_media_address(&mut diag, dialog_streams, media);
 
     // Combine one-way + NAT hint
     if diag.one_way_audio && diag.nat_mismatch {
@@ -757,6 +924,280 @@ pub fn diagnose_media(dialog_streams: &[&RtpStream], media: &MediaContext) -> Me
     }
 
     diag
+}
+
+/// Raise [`MediaDiagnosis::private_media_address`], with the STUN evidence for
+/// it when the run holds any.
+///
+/// A function rather than an inline block because [`diagnose_media`] returns
+/// EARLY for a dialog with no streams, and that early return is the worst case
+/// there is: a call whose media never arrived is exactly the one this explains.
+/// Leaving the check downstream of that return meant the finding was silent
+/// precisely when it was most needed.
+fn apply_private_media_address(
+    diag: &mut MediaDiagnosis,
+    dialog_streams: &[&RtpStream],
+    media: &MediaContext,
+) {
+    // A private `c=` address offered to a peer that is not itself private.
+    //
+    // Warning, not error: inside one LAN this is correct, and behind an SBC or
+    // ALG that rewrites the SDP downstream it is also correct. It is wrong when
+    // nothing rewrites it, and that failure is silent — the call signals
+    // cleanly, answers 200, and carries audio one way. Seen in the field as a
+    // private `c=` line offered to a public peer, with hundreds of RTP packets
+    // leaving and none returning.
+    //
+    // The peer check is what keeps this quiet on a LAN-only capture: a private
+    // address advertised to another private address routes fine.
+    //
+    // STUN is the second half of the same question, and is folded in here
+    // rather than raised beside it. A separate `stun_sdp_mismatch` finding
+    // would describe this exact condition a second time, and one capture
+    // would then report two independent-looking problems about one address.
+    // What STUN adds is CONFIDENCE, and one case of coverage: it can prove
+    // the client's traffic reaches the internet without needing an observed
+    // stream, which is what lets this fire on a call whose media never
+    // arrived at all.
+    let peer_is_public = dialog_streams
+        .iter()
+        .any(|s| !is_unroutable_publicly(s.key.dst.ip()));
+    if let Some(private) = media
+        .advertised
+        .iter()
+        .find(|a| is_unroutable_publicly(**a))
+        .copied()
+    {
+        let stun = stun_sdp_mismatch(media);
+        // Either half raises the flag: a peer observed on public space (this
+        // dialog's own packets), or STUN naming a routable address this client
+        // was handed and did not use (evidence from outside the dialog, which
+        // is why it carries a temporal caveat). Silence alone raises nothing —
+        // see `names_a_reachable_address`.
+        let stun_confirms = stun.as_ref().is_some_and(StunSdpMismatch::corroborates);
+        if peer_is_public || stun_confirms {
+            diag.private_media_address = true;
+            let offered = advertised_endpoint_label(media, private);
+            match &stun {
+                // Nothing corroborates it: the original WARNING, which names
+                // the two situations in which this is correct and asks the
+                // reader to check which one they are in.
+                None => diag.hints.push(format!(
+                    "SDP offered the private media address {offered} to a peer on the \
+                     public internet, which cannot route back to it. This is correct \
+                     only if something downstream rewrites the SDP (an SBC, an ALG, \
+                     or a media proxy); if nothing does, the far end sends audio to \
+                     an address that does not exist and the call is one-way while \
+                     signaling looks healthy."
+                )),
+                // Corroborated: the same condition, stated as a cause rather
+                // than as something to check.
+                Some(finding) => {
+                    diag.hints.push(stun_hint(finding, &offered));
+                    if let (Some(hint), Some(caveat)) =
+                        (diag.hints.last_mut(), finding.correlation_caveat())
+                    {
+                        hint.push_str(" Note: ");
+                        hint.push_str(&caveat);
+                    }
+                }
+            }
+            // Attached only where the flag was raised, so the evidence can
+            // never stand on its own as a finding.
+            diag.stun_sdp_mismatch = stun;
+        }
+    }
+}
+
+/// The STUN evidence about the address a dialog advertised, when there is any
+/// and when it amounts to a fault.
+///
+/// # What is compared, and why by IP
+///
+/// A transaction's `client` is the source socket a request left from;
+/// `media.advertised()` is what the dialog put in its `c=`/`m=` lines. A phone
+/// probing from `192.168.10.50:5060` and then writing `192.168.10.50` into its
+/// SDP is one host, so the IP is the join key. The PORT is not: a phone probes
+/// from its signaling port and receives media on a different one by design, so
+/// requiring the ports to agree would suppress every real finding. The port is
+/// carried into the report as evidence instead.
+///
+/// # What is deliberately NOT flagged
+///
+/// A transaction whose mapped OR relayed address IS the advertised one. That
+/// is a client on a public address, or behind a full-cone NAT that STUN saw
+/// through, or one correctly advertising the relay it reserved — all doing
+/// exactly the right thing. It is the false positive that would make this
+/// worthless, because it is the common case on any capture from a network that
+/// does not NAT.
+///
+/// # Side effects
+///
+/// Reads the process-global STUN store ([`crate::stun::transactions_from`]),
+/// and only for an advertised address that is itself unroutable — the cheap
+/// half of the test is made first, so an ordinary healthy dialog never touches
+/// the store's lock. The targeted read matters: this runs once per dialog, and
+/// on a LAN-only capture EVERY dialog advertises a private address, so copying
+/// the whole transaction table here would make the finding quadratic in the
+/// size of the capture.
+pub fn stun_sdp_mismatch(media: &MediaContext) -> Option<StunSdpMismatch> {
+    for advertised in &media.advertised {
+        // Only an unroutable advertised address can be a fault: a client that
+        // advertised a public one has nothing to answer for, whatever STUN
+        // said. Tested BEFORE the store is touched, so an ordinary healthy
+        // dialog costs one range check.
+        if !is_unroutable_publicly(*advertised) {
+            continue;
+        }
+        // Only this host's transactions, fetched with one lock and no whole-
+        // table copy — see `stun::transactions_from`. Usually empty, and on a
+        // capture with no STUN at all this does not even take the lock.
+        let matched = crate::stun::transactions_from(*advertised);
+        if matched.is_empty() {
+            continue;
+        }
+        let probes = || matched.iter();
+        // The false-positive guard, applied before any of the findings.
+        if probes().any(|t| {
+            t.mapped_address.is_some_and(|m| m.ip() == *advertised)
+                || t.relayed_address.is_some_and(|r| r.ip() == *advertised)
+        }) {
+            continue;
+        }
+
+        // The stronger finding first: the client was handed a reachable
+        // address and advertised the unreachable one regardless.
+        if let Some(tx) = probes().find(|t| {
+            t.mapped_address
+                .is_some_and(|m| !is_unroutable_publicly(m.ip()))
+        }) {
+            return Some(mismatch(
+                tx,
+                *advertised,
+                StunSdpMismatchReason::Ignored,
+                media,
+            ));
+        }
+
+        // Then the relay: an Allocate succeeded, the server handed back a
+        // routable relayed address, and the SDP named a private one anyway.
+        // Checked after the reflexive case only because that one is the older
+        // and more common shape, not because it is the less serious.
+        if let Some(tx) = probes().find(|t| {
+            t.relayed_address
+                .is_some_and(|r| !is_unroutable_publicly(r.ip()))
+        }) {
+            return Some(mismatch(
+                tx,
+                *advertised,
+                StunSdpMismatchReason::RelayIgnored,
+                media,
+            ));
+        }
+
+        // Otherwise: nothing ever answered, so there was no public address to
+        // advertise. Prefer the transaction that had to retransmit, because
+        // the retransmission is the part that proves the silence.
+        if let Some(tx) = probes()
+            .filter(|t| t.is_unanswered() && t.silence_is_a_fault())
+            .max_by_key(|t| t.request_count)
+        {
+            return Some(mismatch(
+                tx,
+                *advertised,
+                StunSdpMismatchReason::Unanswered,
+                media,
+            ));
+        }
+    }
+    None
+}
+
+/// Build one [`StunSdpMismatch`] from the transaction that evidences it.
+///
+/// One constructor for all three reasons, so the evidence fields cannot drift
+/// apart between them — the `Unanswered` shape carries no address by
+/// construction rather than by each call site remembering to omit it.
+fn mismatch(
+    tx: &crate::stun::StunTransaction,
+    advertised: IpAddr,
+    reason: StunSdpMismatchReason,
+    media: &MediaContext,
+) -> StunSdpMismatch {
+    let names_address = reason.names_a_reachable_address();
+    StunSdpMismatch {
+        client: tx.client.to_string(),
+        mapped_address: names_address
+            .then(|| tx.mapped_address.map(|m| m.to_string()))
+            .flatten(),
+        relayed_address: names_address
+            .then(|| tx.relayed_address.map(|r| r.to_string()))
+            .flatten(),
+        server: tx.server.to_string(),
+        advertised: advertised.to_string(),
+        request_count: tx.request_count,
+        reason,
+        observed_offset_secs: offset_from_dialog(media, tx),
+    }
+}
+
+/// Seconds from the start of `media`'s dialog to the STUN transaction's first
+/// request. Negative when the probe preceded the call, which is ordinary.
+///
+/// `None` when either end is unknown — a bare [`MediaContext`] built from a
+/// session has no dialog, and reporting a distance from an unknown point would
+/// be worse than reporting none.
+fn offset_from_dialog(media: &MediaContext, tx: &crate::stun::StunTransaction) -> Option<i64> {
+    let start = media.dialog_start?;
+    Some((tx.first_request - start).num_seconds())
+}
+
+/// The hint for a corroborated private media address, per reason.
+///
+/// `offered` is the endpoint label the dialog advertised, rendered the same way
+/// the uncorroborated hint renders it so the two read as one finding.
+fn stun_hint(finding: &StunSdpMismatch, offered: &str) -> String {
+    match finding.reason {
+        StunSdpMismatchReason::Ignored => {
+            let mapped = finding.mapped_address.as_deref().unwrap_or("?");
+            format!(
+                "STUN told {} its public address is {mapped}, and this dialog advertised \
+                 {offered} anyway — an address the far end cannot route to, so media aimed \
+                 at it is discarded before it arrives. The client HAD the reachable answer \
+                 and did not use it, so look at the phone's NAT settings rather than at \
+                 the network.",
+                finding.client
+            )
+        }
+        StunSdpMismatchReason::RelayIgnored => {
+            let relayed = finding.relayed_address.as_deref().unwrap_or("?");
+            format!(
+                "A TURN server allocated {} the relayed address {relayed}, and this dialog \
+                 advertised {offered} anyway — the relay was set up and then not used, so \
+                 media aimed at the advertised address is discarded before it arrives.",
+                finding.client
+            )
+        }
+        StunSdpMismatchReason::Unanswered => {
+            let retransmitted = if finding.request_count > 1 {
+                format!(
+                    " ({} requests, retransmitted, which by itself proves the first went \
+                     unanswered)",
+                    finding.request_count
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                "{}'s STUN request drew no response{retransmitted}, so it never learned a \
+                 public address and this dialog advertised {offered} — an address the far \
+                 end cannot route to, so media aimed at it is discarded before it arrives. \
+                 Silence rather than a refusal points at something in the path dropping \
+                 the packets, not at the server ({}).",
+                finding.client, finding.server
+            )
+        }
+    }
 }
 
 /// Phase 8.7 — per-call asymmetry checks comparing the two RTP legs of a
@@ -1874,5 +2315,492 @@ mod tests {
         assert!(diag.payload_type_asymmetry.is_none());
         assert!(diag.duration_asymmetry.is_none());
         assert!(diag.late_media.is_none());
+    }
+}
+
+/// STUN evidence folded into the private-media-address finding.
+///
+/// Every test here writes the PROCESS-GLOBAL STUN store, so each one resets it
+/// first and they are serialized against each other on the `stun_store` key —
+/// the same discipline the tracker's own tests keep.
+#[cfg(test)]
+mod stun_sdp_mismatch_tests {
+    use super::*;
+    use crate::sip::sdp::{SdpConnection, SdpDirection, SdpMedia, SdpSession};
+
+    /// The transaction ID the fixtures share. Its value is arbitrary; what
+    /// matters is that a request and its response carry the same one.
+    const TXID: [u8; 12] = [
+        0xc5, 0x3a, 0x26, 0xa8, 0x09, 0x5c, 0x16, 0x7e, 0xe1, 0x32, 0x07, 0x00,
+    ];
+
+    /// Build a STUN message on the wire and parse it back, so these tests
+    /// exercise the same decoder the pipeline does rather than a struct
+    /// literal that could drift from it.
+    fn wire(msg_type: u16, attrs: &[(u16, Vec<u8>)]) -> crate::stun::StunMessage {
+        let mut body = Vec::new();
+        for (t, v) in attrs {
+            body.extend_from_slice(&t.to_be_bytes());
+            body.extend_from_slice(&(v.len() as u16).to_be_bytes());
+            body.extend_from_slice(v);
+            while body.len() % 4 != 0 {
+                body.push(0);
+            }
+        }
+        let mut m = Vec::new();
+        m.extend_from_slice(&msg_type.to_be_bytes());
+        m.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        m.extend_from_slice(&crate::stun::MAGIC_COOKIE.to_be_bytes());
+        m.extend_from_slice(&TXID);
+        m.extend_from_slice(&body);
+        crate::stun::parse(&m).expect("the fixture must be well-formed STUN")
+    }
+
+    /// An XOR'd IPv4 address attribute value.
+    fn xor_v4(ip: [u8; 4], port: u16) -> Vec<u8> {
+        let cookie = crate::stun::MAGIC_COOKIE.to_be_bytes();
+        let mut v = vec![0, 0x01];
+        v.extend_from_slice(&(port ^ ((crate::stun::MAGIC_COOKIE >> 16) as u16)).to_be_bytes());
+        for (i, o) in ip.iter().enumerate() {
+            v.push(o ^ cookie[i]);
+        }
+        v
+    }
+
+    fn stun_request() -> crate::stun::StunMessage {
+        wire(0x0001, &[(0x8022, b"traversal-2.1.0 45".to_vec())])
+    }
+
+    fn stun_success(ip: [u8; 4], port: u16) -> crate::stun::StunMessage {
+        wire(0x0101, &[(0x0020, xor_v4(ip, port))])
+    }
+
+    fn allocate_request() -> crate::stun::StunMessage {
+        wire(0x0003, &[(0x0019, vec![17, 0, 0, 0])])
+    }
+
+    fn allocate_success(ip: [u8; 4], port: u16) -> crate::stun::StunMessage {
+        wire(
+            0x0103,
+            &[
+                (0x0016, xor_v4(ip, port)),
+                (0x000D, 600u32.to_be_bytes().to_vec()),
+            ],
+        )
+    }
+
+    /// Record one STUN packet against the global store.
+    fn record(msg: &crate::stun::StunMessage, src: &str, dst: &str, ms: i64) {
+        crate::stun::note_message(
+            msg,
+            src.parse().expect("valid source"),
+            dst.parse().expect("valid destination"),
+            chrono::DateTime::from_timestamp_millis(1_700_000_000_000 + ms).expect("valid"),
+        );
+    }
+
+    fn sdp(addr: &str) -> SdpSession {
+        SdpSession {
+            origin: None,
+            session_name: None,
+            connection: Some(SdpConnection {
+                addr: addr.to_string(),
+            }),
+            media: vec![SdpMedia {
+                media_type: "audio".to_string(),
+                port: 40000,
+                proto: "RTP/AVP".to_string(),
+                formats: vec!["0".to_string()],
+                connection: None,
+                direction: SdpDirection::SendRecv,
+                rtpmap: Vec::new(),
+                fmtp: Vec::new(),
+                ptime: None,
+                crypto: Vec::new(),
+                ice_candidates: Vec::new(),
+                rtcp_mux: false,
+                rtcp_port: None,
+            }],
+        }
+    }
+
+    /// A dialog that advertised exactly `addr` for media, and nothing else.
+    fn advertising(addr: &str) -> MediaContext {
+        MediaContext::from_session(&sdp(addr), CaptureMedia::Absent)
+    }
+
+    /// As [`advertising`], for a dialog that started `ms` after the same epoch
+    /// `record` uses — so a test can place the STUN evidence a chosen distance
+    /// from the call.
+    fn advertising_at(addr: &str, ms: i64) -> MediaContext {
+        let mut ctx = advertising(addr);
+        ctx.dialog_start = chrono::DateTime::from_timestamp_millis(1_700_000_000_000 + ms);
+        ctx
+    }
+
+    /// The case in the motivating capture: the phone's probe drew nothing, so
+    /// it never learned a public address and its SDP carries the LAN one. The
+    /// retransmission is named because it is the proof.
+    ///
+    /// No stream is passed, which is the point: `private_media_address` alone
+    /// needs an observed public peer, and a call whose media never arrived has
+    /// none. The STUN evidence raises the flag anyway.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn an_unanswered_probe_explains_a_private_sdp_address() {
+        crate::stun::reset();
+        record(
+            &stun_request(),
+            "192.168.10.50:5060",
+            "198.51.100.20:3478",
+            0,
+        );
+        record(
+            &stun_request(),
+            "192.168.10.50:5060",
+            "198.51.100.20:3478",
+            500,
+        );
+
+        let diag = diagnose_media(&[], &advertising("192.168.10.50"));
+        let finding = diag
+            .stun_sdp_mismatch
+            .as_ref()
+            .expect("an unanswered probe against a private SDP address is the finding");
+        assert_eq!(finding.reason, StunSdpMismatchReason::Unanswered);
+        assert_eq!(finding.client, "192.168.10.50:5060");
+        assert_eq!(finding.server, "198.51.100.20:3478");
+        assert_eq!(finding.advertised, "192.168.10.50");
+        assert_eq!(finding.request_count, 2);
+        assert!(finding.mapped_address.is_none());
+        assert!(
+            diag.private_media_address,
+            "the evidence is evidence FOR that flag and must raise it"
+        );
+        assert!(
+            diag.hints.iter().any(|h| h.contains("no response")
+                && h.contains("192.168.10.50")
+                && h.contains("retransmitted")),
+            "the hint must state the silence and the retransmit: {:?}",
+            diag.hints
+        );
+        crate::stun::reset();
+    }
+
+    /// STUN answered with a routable address and the SDP advertised the LAN
+    /// one regardless. Both addresses belong in the hint: one is what the far
+    /// end was told, the other is what it should have been told.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn a_mapped_address_disagreeing_with_the_sdp_is_reported() {
+        crate::stun::reset();
+        record(
+            &stun_request(),
+            "192.168.10.50:5060",
+            "198.51.100.20:3478",
+            0,
+        );
+        record(
+            &stun_success([203, 0, 113, 5], 12262),
+            "198.51.100.20:3478",
+            "192.168.10.50:5060",
+            7,
+        );
+
+        let diag = diagnose_media(&[], &advertising("192.168.10.50"));
+        let finding = diag
+            .stun_sdp_mismatch
+            .as_ref()
+            .expect("a known public address against a private SDP address is the finding");
+        assert_eq!(finding.reason, StunSdpMismatchReason::Ignored);
+        assert_eq!(finding.mapped_address.as_deref(), Some("203.0.113.5:12262"));
+        assert!(diag.private_media_address);
+        assert!(
+            diag.hints
+                .iter()
+                .any(|h| h.contains("203.0.113.5:12262") && h.contains("192.168.10.50")),
+            "the hint must carry both addresses: {:?}",
+            diag.hints
+        );
+        crate::stun::reset();
+    }
+
+    /// The relay case, and the reason XOR-RELAYED-ADDRESS is decoded at all:
+    /// the client allocated a relayed address on a TURN server and then
+    /// advertised its LAN address anyway. Same fault as the reflexive one, and
+    /// caught by the same finding rather than by a second, parallel one.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn a_relayed_address_the_sdp_ignored_is_the_same_finding() {
+        crate::stun::reset();
+        record(
+            &allocate_request(),
+            "192.168.10.50:5060",
+            "198.51.100.20:3478",
+            0,
+        );
+        record(
+            &allocate_success([198, 51, 100, 77], 49160),
+            "198.51.100.20:3478",
+            "192.168.10.50:5060",
+            12,
+        );
+
+        let diag = diagnose_media(&[], &advertising("192.168.10.50"));
+        let finding = diag
+            .stun_sdp_mismatch
+            .as_ref()
+            .expect("an allocated relay against a private SDP address is the finding");
+        assert_eq!(finding.reason, StunSdpMismatchReason::RelayIgnored);
+        assert_eq!(
+            finding.relayed_address.as_deref(),
+            Some("198.51.100.77:49160")
+        );
+        assert!(
+            diag.hints
+                .iter()
+                .any(|h| h.contains("TURN") && h.contains("198.51.100.77:49160")),
+            "the hint must name the relay it allocated: {:?}",
+            diag.hints
+        );
+        crate::stun::reset();
+    }
+
+    /// The false-positive guard. STUN reported the address the SDP then
+    /// advertised, so the client did exactly the right thing — and this is the
+    /// common shape on any capture taken inside a network that does not NAT,
+    /// which is what would make a finding here worthless.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn a_mapped_address_matching_the_sdp_reports_nothing() {
+        crate::stun::reset();
+        record(
+            &stun_request(),
+            "192.168.10.50:5060",
+            "198.51.100.20:3478",
+            0,
+        );
+        record(
+            &stun_success([192, 168, 10, 50], 16384),
+            "198.51.100.20:3478",
+            "192.168.10.50:5060",
+            7,
+        );
+
+        let diag = diagnose_media(&[], &advertising("192.168.10.50"));
+        assert!(
+            diag.stun_sdp_mismatch.is_none(),
+            "STUN agreed with the SDP; there is no fault to report: {:?}",
+            diag.stun_sdp_mismatch
+        );
+        assert!(!diag.private_media_address);
+        crate::stun::reset();
+    }
+
+    /// A client that advertised the address its RELAY allocated is doing
+    /// exactly the right thing. A private TURN server is a real deployment,
+    /// and flagging it would be the false positive that makes the whole
+    /// finding worthless on any capture holding TURN.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn advertising_the_relayed_address_is_not_a_finding() {
+        crate::stun::reset();
+        record(
+            &allocate_request(),
+            "192.168.10.50:5060",
+            "198.51.100.20:3478",
+            0,
+        );
+        record(
+            &allocate_success([192, 168, 10, 50], 49160),
+            "198.51.100.20:3478",
+            "192.168.10.50:5060",
+            12,
+        );
+
+        let diag = diagnose_media(&[], &advertising("192.168.10.50"));
+        assert!(
+            diag.stun_sdp_mismatch.is_none(),
+            "the SDP names the address the relay allocated: {:?}",
+            diag.stun_sdp_mismatch
+        );
+        crate::stun::reset();
+    }
+
+    /// A client that advertised a ROUTABLE address has nothing to answer for,
+    /// whatever became of its probe.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn an_unanswered_probe_from_a_public_address_reports_nothing() {
+        crate::stun::reset();
+        record(&stun_request(), "203.0.113.5:5060", "198.51.100.20:3478", 0);
+
+        let diag = diagnose_media(&[], &advertising("203.0.113.5"));
+        assert!(diag.stun_sdp_mismatch.is_none());
+        assert!(diag.hints.is_empty(), "{:?}", diag.hints);
+        crate::stun::reset();
+    }
+
+    /// A probe from some OTHER host says nothing about this dialog: the join
+    /// key is the client's own address, not "some STUN failed somewhere".
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn a_probe_from_a_different_host_is_not_attributed_to_this_dialog() {
+        crate::stun::reset();
+        record(
+            &stun_request(),
+            "192.168.10.99:5060",
+            "198.51.100.20:3478",
+            0,
+        );
+
+        let diag = diagnose_media(&[], &advertising("192.168.10.50"));
+        assert!(diag.stun_sdp_mismatch.is_none());
+        assert!(diag.hints.is_empty(), "{:?}", diag.hints);
+        crate::stun::reset();
+    }
+
+    /// Silence from a STUN server ON the LAN proves nothing about whether this
+    /// client's traffic reaches the internet, so it must not raise a fault on
+    /// its own. This is the LAN-only capture `private_media_address`
+    /// deliberately stays quiet about, and the STUN half must not undo that.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn silence_from_a_lan_stun_server_raises_nothing_on_its_own() {
+        crate::stun::reset();
+        record(
+            &stun_request(),
+            "192.168.10.50:5060",
+            "192.168.10.1:3478",
+            0,
+        );
+
+        let diag = diagnose_media(&[], &advertising("192.168.10.50"));
+        assert!(
+            !diag.private_media_address,
+            "a LAN probe to a LAN server is not evidence of anything: {:?}",
+            diag.hints
+        );
+        assert!(diag.stun_sdp_mismatch.is_none());
+        crate::stun::reset();
+    }
+
+    /// A capture with no STUN in it must diagnose exactly as it did before
+    /// this evidence existed — no field, no hint, not even a lock taken.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn no_stun_in_the_capture_produces_no_finding() {
+        crate::stun::reset();
+        let diag = diagnose_media(&[], &advertising("192.168.10.50"));
+        assert!(diag.stun_sdp_mismatch.is_none());
+        assert!(diag.hints.is_empty(), "{:?}", diag.hints);
+        assert!(stun_sdp_mismatch(&advertising("192.168.10.50")).is_none());
+    }
+
+    /// A probe seen during call setup needs no qualification, and must not get
+    /// one. A caveat printed on every finding is a caveat nobody reads, which
+    /// would cost the one case below its only warning.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn stun_evidence_from_during_the_call_carries_no_caveat() {
+        crate::stun::reset();
+        record(
+            &stun_request(),
+            "192.168.10.50:5060",
+            "198.51.100.20:3478",
+            0,
+        );
+
+        let diag = diagnose_media(&[], &advertising_at("192.168.10.50", 3_000));
+        let finding = diag.stun_sdp_mismatch.as_ref().expect("the finding stands");
+        assert_eq!(finding.observed_offset_secs, Some(-3));
+        assert!(
+            !diag.hints.iter().any(|h| h.contains("not during it")),
+            "evidence from inside the call must not be qualified: {:?}",
+            diag.hints
+        );
+        crate::stun::reset();
+    }
+
+    /// The merged-capture case. The switch-side pcap and the phone-side pcap
+    /// were taken forty minutes apart, and the finding correlates them by the
+    /// client's RFC 1918 address alone. That is still a sound inference — a
+    /// NAT-discovery failure persists — but it is an INFERENCE, and reporting
+    /// it as though the probe were seen during setup overstates it.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn stun_evidence_from_long_before_the_call_is_disclosed_as_such() {
+        crate::stun::reset();
+        record(
+            &stun_request(),
+            "192.168.10.50:5060",
+            "198.51.100.20:3478",
+            0,
+        );
+
+        // Dialog starts 40 minutes BEFORE the probe.
+        let diag = diagnose_media(&[], &advertising_at("192.168.10.50", -2_400_000));
+        let finding = diag.stun_sdp_mismatch.as_ref().expect("the finding stands");
+        assert_eq!(finding.observed_offset_secs, Some(2_400));
+        let hint = diag
+            .hints
+            .iter()
+            .find(|h| h.contains("not during it"))
+            .unwrap_or_else(|| panic!("the caveat must appear: {:?}", diag.hints));
+        assert!(hint.contains("40 minute(s) after"), "{hint}");
+        assert!(
+            hint.contains("IP address alone"),
+            "the caveat must name how the correlation was made: {hint}"
+        );
+        crate::stun::reset();
+    }
+
+    /// Without a dialog there is no point to measure from, and the report says
+    /// nothing rather than measuring from a guess.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn no_dialog_time_means_no_offset_and_no_caveat() {
+        crate::stun::reset();
+        record(
+            &stun_request(),
+            "192.168.10.50:5060",
+            "198.51.100.20:3478",
+            0,
+        );
+
+        let diag = diagnose_media(&[], &advertising("192.168.10.50"));
+        let finding = diag.stun_sdp_mismatch.as_ref().expect("the finding stands");
+        assert_eq!(finding.observed_offset_secs, None);
+        assert!(!diag.hints.iter().any(|h| h.contains("not during it")));
+        crate::stun::reset();
+    }
+
+    /// One condition, one hint. The corroborated wording REPLACES the
+    /// check-this-yourself wording rather than joining it — two sentences
+    /// about one address read as two problems.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn the_corroborated_hint_replaces_the_uncorroborated_one() {
+        crate::stun::reset();
+        record(
+            &stun_request(),
+            "192.168.10.50:5060",
+            "198.51.100.20:3478",
+            0,
+        );
+
+        let diag = diagnose_media(&[], &advertising("192.168.10.50"));
+        assert_eq!(
+            diag.hints.len(),
+            1,
+            "one address, one sentence: {:?}",
+            diag.hints
+        );
+        assert!(
+            !diag.hints[0].contains("This is correct only if something downstream rewrites"),
+            "{:?}",
+            diag.hints
+        );
+        crate::stun::reset();
     }
 }
