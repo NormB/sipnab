@@ -2417,8 +2417,8 @@ fn no_documentation_table_repeats_a_row() {
     // one. Also from a failing run.
     assert_eq!(
         files.len(),
-        146,
-        "found {} tracked markdown files, expected 146. More is fine — bump \
+        148,
+        "found {} tracked markdown files, expected 148. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()

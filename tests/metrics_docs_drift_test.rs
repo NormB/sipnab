@@ -17,7 +17,12 @@ mod source_scan;
 const SOURCE: &str = include_str!("../src/output/prometheus.rs");
 
 /// The operator-facing page that tables those names.
-const PAGE: &str = include_str!("../docs/rest-api.md");
+// The metric table moved out of `rest-api.md` and into its own page: a scrape
+// target's reader needs none of the endpoint schemas, and the table sat 86% of
+// the way down a 1,195-line page. This gate follows the CONTENT, not the old
+// filename — pointing it at the page that no longer holds the table would have
+// left it passing while documenting nothing.
+const PAGE: &str = include_str!("../docs/prometheus-metrics.md");
 
 /// Metric family names appearing in `text`, in first-seen order.
 ///
@@ -85,7 +90,7 @@ fn every_emitted_metric_is_documented() {
 
     assert!(
         missing.is_empty(),
-        "src/output/prometheus.rs emits metrics that docs/rest-api.md never \
+        "src/output/prometheus.rs emits metrics that docs/prometheus-metrics.md never \
          mentions: {missing:?} — a scrape carries a series no operator has \
          been told about"
     );
@@ -113,7 +118,7 @@ fn every_documented_metric_is_emitted() {
 
     assert!(
         phantom.is_empty(),
-        "docs/rest-api.md documents metrics the exposition never emits: \
+        "docs/prometheus-metrics.md documents metrics the exposition never emits: \
          {phantom:?} — an alert rule written from the page would go no-data \
          forever"
     );
@@ -132,7 +137,7 @@ fn the_wired_metrics_stay_documented() {
     ] {
         assert!(
             PAGE.contains(name),
-            "{name} must stay documented in docs/rest-api.md"
+            "{name} must stay documented in docs/prometheus-metrics.md"
         );
         assert!(
             emitted_families().iter().any(|e| e == name),

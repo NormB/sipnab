@@ -164,6 +164,7 @@ SRC_TO_SLUG = {src: slug for src, slug, _, _, _ in PAGES}
 # which was false for exactly that one and checked by nothing.
 DOCS_TO_SITE = {
     "install.md": "install.md",
+    "prometheus-metrics.md": "metrics.md",
     "examples.md": "cookbook.md",
     "troubleshooting.md": "troubleshooting.md",
     "tui-walkthrough.md": "tui.md",

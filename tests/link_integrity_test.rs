@@ -586,7 +586,9 @@ fn wiki_intra_docs_links_resolve() {
     // links into the section documenting it, exactly as every other row does.
     // 406 -> 412: the plugins and authentication pages 0.5.107 published.
     // 412 -> 426: the TLS capture chooser, which links every method it lists.
-    const EXPECTED_WIKI_LINKS: usize = 426;
+    // 426 -> 431: prometheus-metrics.md, split out of rest-api.md, plus the
+    // cross-links the two pages now need to point at each other.
+    const EXPECTED_WIKI_LINKS: usize = 431;
     // 385: `docs/mos-and-codecs.md` +1. The new "Declaring an impairment factor
     // sipnab does not have" section points at "AMR-WB — published, and
     // mode-dependent" further down the same page rather than restating why a
@@ -1040,10 +1042,11 @@ fn every_docs_page_is_linked_from_the_index() {
     // count. Adding a docs page fails this once, deliberately: bump the number.
     // Raised 34 -> 35 by `tuning-capture.md`, 37 -> 38 by
     // `internals/uprobe-capture.md`, 39 -> 40 by `plugins.md` — the published
-    // WASM plugins page 0.5.107 added.
+    // WASM plugins page 0.5.107 added, and 41 -> 42 by
+    // `prometheus-metrics.md`, split out of the REST API page.
     assert_eq!(
-        checked, 41,
-        "docs-page walk saw {checked} pages, expected 41. More is fine — bump \
+        checked, 42,
+        "docs-page walk saw {checked} pages, expected 42. More is fine — bump \
          this. FEWER means the walk stopped reading part of docs/ and every \
          reachability assertion above it silently narrowed."
     );

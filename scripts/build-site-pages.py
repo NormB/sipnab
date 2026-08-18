@@ -47,6 +47,23 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "export.",
     ),
     (
+        "docs/prometheus-metrics.md",
+        "metrics.md",
+        "Prometheus metrics",
+        "Prometheus Metrics",
+        # 34, not 12: weight only has to be UNIQUE
+        # (`docs_page_weights_are_unique_and_descriptions_present`), and 12 is
+        # api-clients.md. Sidebar order comes from the explicit path lists in
+        # the nav_group macros, where this sits between the REST API and
+        # Integrations -- next to HEP, because both are how sipnab plugs into a
+        # monitoring estate, while staying separate pages because one carries
+        # SIP and the other carries numbers.
+        34,
+        "Every metric family sipnab emits, what each one means, which are "
+        "counters and which are gauges, and the scrape config -- split out of "
+        "the REST API page, which a scrape target's reader never needs.",
+    ),
+    (
         "docs/rest-api.md",
         "api.md",
         "REST API & metrics",

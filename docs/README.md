@@ -84,8 +84,13 @@ through.
   parameter and option tag in the IANA registry, and which sipnab parses.
 - [SIP conformance rules](sip-lint-rules.md) — every linter rule, the RFC
   section behind it, and how to suppress it in CI.
-- [REST API & Metrics](rest-api.md) — every endpoint and its response shape,
-  status codes, Prometheus, curl recipes.
+- [REST API](rest-api.md) — every endpoint and its response shape, status
+  codes, authentication, curl recipes.
+- [Prometheus Metrics](prometheus-metrics.md) — every metric family sipnab
+  emits, what each one means, which are counters and which are gauges, and the
+  scrape config. Split from the REST API page: a scrape target's reader needs
+  none of the endpoint schemas, and this table sat 86% of the way down a
+  1,195-line page.
 - [MCP server](mcp.md) — every tool, both transports, client configuration.
 - [Library API](library.md) — using sipnab as a Rust crate.
 
