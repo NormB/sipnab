@@ -10,6 +10,89 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.111] - 2026-08-18
+
+### Added
+
+- **STUN evidence now settles the private-SDP-address question instead of only
+  raising it.** `private_media_address` flags a `c=` line the far end cannot
+  route to, but it needed an observed stream aimed at a public peer — so a call
+  whose media never arrived had no peer to test and stayed silent, which is the
+  worst case and the one most likely to be captured. A mapped or relayed
+  address in public space settles the same question without a stream and raises
+  the flag on its own. Silence counts too, but only from a STUN server that is
+  itself public: a probe to a server on the LAN proves nothing about internet
+  reachability, and treating it as a fault would fire on every LAN-only
+  capture.
+
+  Carried as `diagnosis.stun_sdp_mismatch`, evidence on the existing flag
+  rather than a second finding. It describes one condition — an unroutable
+  address in the SDP — and reported twice it would read as two independent
+  problems about one address. The correlation is by client IP with nothing
+  shared between the STUN exchange and the dialog, so evidence from outside the
+  call says so rather than presenting an inference as an observation.
+
+- **`--analyze` / `--json-analyze`: every problem in a capture, worst first,
+  with the frames behind each finding.** It aggregates the per-dialog diagnosis
+  already computed and the capture-level evidence already held — it derives
+  nothing new — and refuses to report a clean verdict over a capture that did
+  not fully decode.
+
+- **`--stun` / `--json-stun`: the STUN and TURN transactions, and what each one
+  learned.** Method, client, server, attempts, response, RTT, mapped and
+  relayed addresses, plus the TURN allocation and channel tables.
+
+- **A lapsed TURN allocation is a finding.** An allocation still carrying
+  traffic past the lifetime it was last granted, with no Refresh seen, means
+  the relay tore down and the media stopped mid-call with no SIP message to
+  explain it. Reported on stderr, as `LAPSED` in the `--stun` table, as
+  `lapsed: true` in `--json-stun`, as `turn_allocation_lapsed` in `--analyze`,
+  and as `sipnab_nat_lapsed_turn_allocations` for a dashboard.
+
+- **The TURN attributes that change a diagnosis but were not read**: `DATA`,
+  `REQUESTED-ADDRESS-FAMILY`, `EVEN-PORT`, `DONT-FRAGMENT`,
+  `RESERVATION-TOKEN`. A truncated `LIFETIME` is refused rather than
+  zero-extended — reading it short invents an expiry the sender never claimed.
+
+- **The LLMNR host roster.** Queries name hosts that are looking, responses
+  name hosts that own a hostname, and a name nothing on the segment answers for
+  is reported as unresolved. LLMNR being enabled at all is the exposure the
+  Responder tool abuses.
+
+### Fixed
+
+- **Windows name lookups were becoming phantom RTP streams.** An LLMNR query is
+  a DNS-format message whose random transaction ID supplies the RTP version
+  bits one time in four, and the rest of the strict RTP pre-filter a 23-byte
+  query passes trivially — two of them appeared as one-packet streams with SSRC
+  `0x00000000` in a real capture. The existing guard for this collision only
+  covers ports below 1024 and LLMNR is at 5355. LLMNR is now claimed during
+  classification, before any media check, which removes the class by
+  construction rather than by tuning the heuristic. sipnab is not becoming a
+  general dissector: the packet is claimed because it corrupts media analysis,
+  and nothing here feeds call diagnosis.
+
+- **TURN ChannelData framing was too permissive.** Accepting any frame whose
+  declared length merely fit let a stray datagram with the right two leading
+  bytes be unwrapped and re-classified. The frame must now account for the
+  whole datagram, padded or not.
+
+- **The test that wedged the suite for 20 minutes once and 1d17h once**, cause
+  recorded as unknown in the pre-commit hook. It is
+  `no_source_auto_detects_device`: with no source, auto-detection opens a live
+  device and follows it forever, and on an idle link pcap never returns. CI
+  never saw it because an unprivileged runner fails to open the device and
+  exits 1 in milliseconds, so it reproduces only where the user holds capture
+  rights — on macOS, anywhere BPF access is granted. The capture is bounded
+  now; both assertions are unchanged.
+
+### Changed
+
+- **`docs/troubleshooting.md` no longer says sipnab "cannot tell those apart
+  from one capture"** about an SDP address something downstream may or may not
+  rewrite. The STUN evidence separates them, and the page now gives the three
+  cases and what each proves — including the one that proves nothing.
+
 ## [0.5.110] - 2026-08-18
 
 ### Added
