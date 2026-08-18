@@ -10,6 +10,43 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.112] - 2026-08-18
+
+### Changed
+
+- **The MCP documentation is four pages instead of one.** `docs/mcp.md` was
+  3435 lines and changed kind four times — introduction, how-to, 2639 lines of
+  tool reference, protocol contract, then how-to again. A reader met "Choosing
+  a transport" at line 64 and "Token bootstrap" at 232 before seeing a single
+  tool return a single result. It is now `mcp.md` (what it is, one working
+  example, where to go next), `mcp-deploy.md` (deployment scenarios),
+  `mcp-tools.md` (every tool, its arguments and its response) and
+  `mcp-protocol.md` (security model, write verbs, the stdio invariant). First
+  real output in the introduction is now at line 32.
+
+  This partly reverses the 0.5.15-era merge, which consolidated three MCP pages
+  because each restated the `--mcp` requires `-N` boilerplate. That reason was
+  about duplication, not page count, and the duplication had already partly
+  returned on its own — two pages, three mentions, before anything was split.
+  After the split the total is unchanged and the introduction is down to one,
+  with `mcp-protocol.md` owning the normative statement.
+
+  Existing links keep working: `mcp.md` is still `mcp.md`, and the anchors that
+  moved are repointed. `docs/mcp-walkthrough.md` is now `docs/mcp-deploy.md`.
+
+- **`docs/design/documentation-pattern.md`** records how prose docs are
+  organised: pages split by task rather than reader skill, depth collapsed into
+  `<details>` on the page it belongs to, and one owner per topic.
+
+### Fixed
+
+- **A macOS developer could not push at all.** Two intra-doc links pointed at
+  `capture::uprobe`, which is Linux-only, so `RUSTDOCFLAGS="-D warnings" cargo
+  doc` failed on any other host — and that is what the pre-push hook runs. CI
+  stayed green throughout, because CI is Linux. The failure named a doc link
+  rather than a platform, so it read as a broken reference instead of an
+  unpassable gate.
+
 ## [0.5.111] - 2026-08-18
 
 ### Added
