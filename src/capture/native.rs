@@ -132,14 +132,20 @@ pub enum CaptureSource {
     ///
     /// Unlike every other source this one observes no wire at all: the bytes
     /// are taken where an application hands them to its TLS library, so there
-    /// is no addressing and no frame. See [`crate::capture::uprobe`].
+    /// is no addressing and no frame. See `crate::capture::uprobe`.
     Uprobe {
         /// Every library to probe, because a host commonly runs more than one.
         ///
         /// A list rather than a single path: OpenSSL and wolfSSL coexist on an
         /// ordinary host, as do several builds of one flavor, and probing the
         /// one an operator happened to name captures that one and silently
-        /// misses the rest. See [`crate::capture::uprobe::discover`].
+        /// misses the rest. See `crate::capture::uprobe::discover`.
+        ///
+        // Deliberately NOT an intra-doc link. `capture::uprobe` is
+        // `#[cfg(target_os = "linux")]`, so on any other host the link target
+        // does not exist and `RUSTDOCFLAGS="-D warnings"` fails — which is
+        // what the pre-push hook runs, making every push from a macOS
+        // developer machine impossible while CI stayed green on Linux.
         targets: Vec<UprobeTarget>,
         /// Which machinery reads them.
         backend: UprobeBackend,

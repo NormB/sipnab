@@ -127,7 +127,7 @@ capture is not getting.
 
 **`buffer_mb` is per handle.** `capture_live_group` applies
 `config.buffer_mb` to each socket it opens, and the default is 64 MiB since CT2
-(`DEFAULT_BUFFER_MB`, [`native.rs:241`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L241)). So
+(`DEFAULT_BUFFER_MB`, [`native.rs:261`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L261)). So
 `--cores 8` on a live interface asks the kernel for **512 MiB of ring**, from a
 flag that yesterday allocated nothing.
 
