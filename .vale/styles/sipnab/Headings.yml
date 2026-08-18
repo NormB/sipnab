@@ -80,6 +80,11 @@ exceptions:
   - SSRC
   - STIR
   - SHAKEN
+  # NAT traversal, in the same family as the media acronyms above: STUN asks
+  # the network for the endpoint's reflexive address, TURN relays media when
+  # it cannot be sent directly.
+  - STUN
+  - TURN
   - UA
 
   # --- Transport, wire formats and interfaces ---

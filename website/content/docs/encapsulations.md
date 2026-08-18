@@ -186,6 +186,45 @@ arm, an IPv4 header carrying **options** stays unmatched, because a BPF index
 has to be constant and the arm cannot multiply the IHL nibble. The untagged arm
 handles those.
 
+## STUN and TURN
+
+sipnab reads STUN ([RFC 5389](https://www.rfc-editor.org/rfc/rfc5389)) and TURN
+([RFC 5766](https://www.rfc-editor.org/rfc/rfc5766)) because they are the first
+link in a one-way-audio chain, not because it is an ICE agent. What it takes
+from them is what changes a diagnosis: whether an endpoint asked, whether
+anything answered, and which address the answer named.
+
+Three protocols share these ports, and they separate cleanly on the two high
+bits of the first byte — STUN `00`, TURN ChannelData `01`, RTP `10` — so
+checking STUN before RTP cannot swallow media.
+
+| Read | Why |
+|---|---|
+| Header: type, length, magic cookie, transaction ID | The parser checks the cookie before believing anything else, which is what makes it safe to offer it every UDP payload |
+| Class and method | `Binding` and TURN's `Allocate`, `Refresh`, `Send`, `Data`, `CreatePermission`, `ChannelBind`. An unknown method reports as its number rather than as "unknown", because the number is the thing to look up |
+| `XOR-MAPPED-ADDRESS` | The answer the endpoint asked for, and what it then writes into its SDP |
+| `XOR-RELAYED-ADDRESS`, `XOR-PEER-ADDRESS`, `LIFETIME` | The TURN equivalents: the address a relay allocated, who a permission is about, and how long it lasts |
+| `ERROR-CODE` | So a refusal reads as a refusal. A server that says no is reachable, which is a different fault from silence |
+| `SOFTWARE` | Names the stack, which tells one vendor's retransmission pattern from the next |
+| ChannelData framing | sipnab recognises **and unwraps** it, so RTP relayed through TURN reaches reconstruction. Without that a relayed call reports as having no media — the same answer sipnab gives for a call that carried none, which are opposite findings |
+
+sipnab tracks transactions, so it reports a request that never came back along
+with the number of attempts. A retransmission is one unanswered question, not
+several. An error response counts as ANSWERED.
+
+### What is deliberately not read
+
+`MESSAGE-INTEGRITY` and `MESSAGE-INTEGRITY-SHA256` decide whether a message is
+**authentic**, and a passive observer has no credentials to check them with.
+Reading them and reporting anything about them would be claiming a verification
+that did not happen — the same confident-wrong-answer this codebase refuses
+elsewhere. sipnab reads `USERNAME`, `REALM` and `NONCE` for what they SAY — an
+authentication challenge is a different fault from a blocked path — never as
+evidence that authentication succeeded.
+
+sipnab is not an ICE agent and does not evaluate candidate pairs, compute
+priorities, or decide nominations. It reports what it saw on the wire.
+
 ## What "not supported" means here
 
 sipnab drops nothing on this page silently. An encapsulation sipnab does not

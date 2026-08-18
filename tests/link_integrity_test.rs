@@ -588,7 +588,9 @@ fn wiki_intra_docs_links_resolve() {
     // 412 -> 426: the TLS capture chooser, which links every method it lists.
     // 426 -> 431: prometheus-metrics.md, split out of rest-api.md, plus the
     // cross-links the two pages now need to point at each other.
-    const EXPECTED_WIKI_LINKS: usize = 431;
+    // 431 -> 433: the STUN/TURN sections in troubleshooting.md and
+    // encapsulations.md, each linking on to the metrics page.
+    const EXPECTED_WIKI_LINKS: usize = 433;
     // 385: `docs/mos-and-codecs.md` +1. The new "Declaring an impairment factor
     // sipnab does not have" section points at "AMR-WB — published, and
     // mode-dependent" further down the same page rather than restating why a

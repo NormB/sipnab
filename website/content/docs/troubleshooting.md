@@ -414,8 +414,65 @@ sipnab -N -I capture.pcap --nat-issues
 **Next steps:**
 
 1. **Proxy-side:** Enable `fix_nated_contact` and `fix_nated_register` (OpenSIPS/Kamailio) to rewrite Contact headers with the observed source address.
-2. **Endpoint-side:** Configure STUN/TURN on the phone or softclient so it discovers its public address.
+2. **Endpoint-side:** Configure STUN/TURN on the phone or softclient so it discovers its public address. **Check that it worked** -- see [NAT discovery went unanswered](#nat-discovery-went-unanswered) below. A phone configured with a STUN server it cannot reach behaves exactly like a phone with no STUN at all.
 3. **Network-side:** Disable SIP ALG on every NAT device in the path. SIP ALGs almost always make things worse.
+
+### The SDP offered a private address
+
+`private_media_address == true` means the dialog advertised an RFC 1918,
+RFC 4193 or link-local address in its `c=` line to a peer that is not itself
+private. sipnab raises this as a **warning, not a fault**, because there are
+two situations and only one of them fails:
+
+- Something downstream rewrites the SDP -- an SBC, an ALG, or a media proxy --
+  and the address the far end finally sees is routable. Correct, common, and
+  nothing to do.
+- Nothing rewrites it, and the far end sends media to an address the internet
+  cannot route. The call still signals cleanly and answers `200`, and the audio
+  is one-way.
+
+sipnab cannot tell those apart from one capture, which is why it reports the
+evidence rather than a verdict. Carrier-grade NAT space (RFC 6598,
+`100.64.0.0/10`) is deliberately NOT flagged: it is routable inside the carrier
+that assigned it, so flagging it would fire on a large share of working mobile
+calls.
+
+### NAT discovery went unanswered
+
+sipnab reads STUN and TURN, and reports transactions that went out and never
+came back:
+
+```
+STUN/TURN: 192.0.2.10:5060 sent Binding to 198.51.100.1:3478 2 time(s) and got
+no reply. An endpoint that cannot learn its reflexive address falls back to
+advertising its PRIVATE address in SDP ...
+```
+
+**Why a SIP tool reports this.** It is the first link in the one-way-audio
+chain above. The phone asks the network what address the outside world sees it
+as, gets nothing, and falls back to the only address it knows -- its private
+one -- which it then writes into its SDP. Everything after that looks healthy.
+
+**Read what is MISSING, not just that something is.** A reply that never comes
+is a different fault from a reply that says no:
+
+| What you see | What it means |
+|---|---|
+| No reply at all | Something in the path is discarding the packets. On school, campus and corporate networks that is most often a security appliance -- web filter, secure web gateway, firewall or IPS -- dropping UDP it does not recognise. Check whether one sits in this path and whether it permits UDP to the STUN/TURN port **before** suspecting the server. |
+| An error response | The server was reachable and refused. sipnab counts this as ANSWERED, because chasing a blocked path here would waste the effort. Look at the code: `401`/`438` are authentication, not connectivity. |
+| A reply arrives, media still one-way | STUN worked. The fault is downstream -- check the SDP the far end actually received, and see the private-address section above. |
+
+A retransmission counts as **one** unanswered question with N attempts, not N
+questions: a phone that retries five times has asked once, and nothing answered it
+five times.
+
+**A capture holding nothing else is still worth reading.** Two unanswered
+Binding Requests and no SIP at all is not an empty capture -- it is the cause
+of a one-way-audio complaint, and sipnab says so rather than reporting "no SIP
+traffic found".
+
+`sipnab_nat_unanswered_requests` carries the same signal for a dashboard. See
+[Prometheus Metrics](@/docs/metrics.md).
 
 ---
 
