@@ -270,7 +270,13 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Version 0 (e.g. STUN or garbage traffic) is rejected with an error.
+    /// Version 0 is rejected with an error.
+    ///
+    /// Version 0 is where STUN would land, since its two leading bits are
+    /// always zero — but no STUN reaches here any more: `classify_packet`
+    /// claims it, along with TURN ChannelData and LLMNR, before the media
+    /// checks run. This test guards the parser's own contract against
+    /// garbage traffic, not against a protocol sipnab now decodes.
     #[test]
     fn version_0_returns_error() {
         let mut data = build_rtp(1, 1, 1, 0, &[0; 10]);

@@ -2415,10 +2415,13 @@ fn no_documentation_table_repeats_a_row() {
     // its site mirror (an internals page IS mirrored, so it costs two), plus
     // docs/design/packet-path-allocation.md, which is a design doc and costs
     // one. Also from a failing run.
+    // Raised 148 -> 149 by `docs/design/documentation-pattern.md`, the record
+    // of how prose docs are organised (split by task, depth in `<details>`).
+    // A design doc, so one file and not two. Also from a failing run.
     assert_eq!(
         files.len(),
-        148,
-        "found {} tracked markdown files, expected 148. More is fine — bump \
+        149,
+        "found {} tracked markdown files, expected 149. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2687,13 +2690,28 @@ fn no_documentation_table_repeats_a_row() {
         // Raised 573 -> 575 by the STUN/SDP evidence table in
         // docs/output-formats.md — the field-by-field reading of
         // `diagnosis.stun_sdp_mismatch` — doubled by its site mirror. ONE
-        // written table, two pages. Every other changed .md was diffed against
+        // written table, two pages.
+        //
+        // Raised 575 -> 577 by the "what STUN shows / what it means" table in
+        // docs/troubleshooting.md, under "The SDP offered a private address".
+        // Same arithmetic: one written table, doubled by its site mirror. It
+        // replaced the claim that sipnab "cannot tell those apart from one
+        // capture", which the STUN evidence made false.
+        //
+        // Raised 577 -> 579 by the two tables in
+        // docs/design/documentation-pattern.md — the four page kinds, and the
+        // MCP split. A design doc, so no site mirror doubles them; two written
+        // tables, two counted. Worth noting for the next person: this gate
+        // walks TRACKED files, so a new page's tables do not appear in the
+        // count until it is `git add`ed, and a standalone run before staging
+        // will pass while the pre-commit hook fails.
+        // Every other changed .md was diffed against
         // HEAD first: cli-reference.md, prometheus-metrics.md and
         // troubleshooting.md gained rows and prose inside EXISTING tables, and
         // held their table counts.
         tables,
-        575,
-        "walked {tables} tables, expected 575. More is fine — bump this. FEWER \
+        579,
+        "walked {tables} tables, expected 579. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

@@ -2544,6 +2544,20 @@ a web-filtering appliance silently discarding UDP. sipnab read one of them as
   number instead. The three multiplexed protocols separate cleanly on their high
   bits: STUN `00`, ChannelData `01`, RTP `10`.
 
+  **Widened 2026-08-18.** The attribute list above was the subset that shipped
+  first; `DATA`, `REQUESTED-ADDRESS-FAMILY`, `EVEN-PORT`, `DONT-FRAGMENT` and
+  `RESERVATION-TOKEN` are now read as well, and a truncated `LIFETIME` is
+  refused rather than zero-extended — reading it short invents an expiry the
+  sender never claimed. `LIFETIME` also earned a finding of its own: an
+  allocation still carrying traffic past the lifetime it was last granted, with
+  no Refresh seen, means the relay tore down and the media stopped mid-call with
+  no SIP message to say why.
+
+  The ChannelData check was also tightened. Recognising a frame whose declared
+  length merely *fits* let a stray datagram with the right two leading bytes be
+  unwrapped and re-classified; the frame must now account for the whole
+  datagram, padded or not.
+
   The reports name the likely cause rather than only the symptom. Silence rather
   than a refusal points at something in the path dropping the packets, and on
   school, campus and corporate networks that is most often a security

@@ -431,11 +431,32 @@ two situations and only one of them fails:
   cannot route. The call still signals cleanly and answers `200`, and the audio
   is one-way.
 
-sipnab cannot tell those apart from one capture, which is why it reports the
-evidence rather than a verdict. Carrier-grade NAT space (RFC 6598,
+Without more to go on, sipnab cannot tell those apart from one capture, so it
+reports the evidence rather than a verdict. Carrier-grade NAT space (RFC 6598,
 `100.64.0.0/10`) is deliberately NOT flagged: it is routable inside the carrier
 that assigned it, so flagging it would fire on a large share of working mobile
 calls.
+
+**Unless STUN settles it.** When the capture also holds the client's STUN or
+TURN exchange, the two situations stop being indistinguishable, and the
+`stun_sdp_mismatch` object on the diagnosis carries the proof:
+
+| What STUN shows | What it means |
+|---|---|
+| A mapped or relayed address in public space, and the SDP named the private one anyway | Nothing rewrote it. The client *knew* its routable address and did not use it. |
+| The probe drew no reply, and the STUN server is itself public | The client tried to reach the internet and could not, so it fell back to the private address. |
+| The probe drew no reply, but the STUN server is on the LAN | Nothing is proven — a LAN-only exchange says nothing about internet reachability, and sipnab stays quiet. |
+
+The first two raise `private_media_address` **on their own**, with no observed
+stream needed. That matters for the worst case: a call whose media never
+arrived at all has no peer to examine, so the stream-based test could not fire
+exactly when the finding was most needed.
+
+The correlation is by the client's IP address, with nothing shared between the
+STUN exchange and the dialog. Where the evidence sits well outside the call —
+merged captures, or a probe from an earlier registration — the finding says so,
+because a persistent NAT-discovery failure is an inference about the client
+rather than an observation of this call.
 
 ### NAT discovery went unanswered
 
