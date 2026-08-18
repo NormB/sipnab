@@ -201,6 +201,12 @@ checking STUN before RTP cannot swallow media.
 | `XOR-RELAYED-ADDRESS`, `XOR-PEER-ADDRESS`, `LIFETIME` | The TURN equivalents: the address a relay allocated, who a permission is about, and how long it lasts |
 | `ERROR-CODE` | So a refusal reads as a refusal. A server that says no is reachable, which is a different fault from silence |
 | `SOFTWARE` | Names the stack, which tells one vendor's retransmission pattern from the next |
+| `MAPPED-ADDRESS` (legacy) | The pre-RFC5389 form. Servers older than the cookie still answer with it, and without reading it their successful response reads as no answer at all. When both forms arrive the XOR one wins, whatever order they come in |
+| `ALTERNATE-SERVER` | So a `300` redirect names where it points instead of reading as a dead end |
+| `REALM`, `NONCE` | A `401` with a realm is an authentication challenge, not a blocked path, and each sends you somewhere different. sipnab records the nonce as present only: its value is a server-chosen opaque string that means nothing to an observer |
+| `FINGERPRINT` | Verified. A CRC-32 over the message with no key involved, so a passive reader can check it honestly -- and it is what separates a real STUN message from a payload that merely carried the cookie bytes. Reported as verified, present-and-wrong, or absent, which stay distinct |
+| ICE `USE-CANDIDATE`, `PRIORITY`, `ICE-CONTROLLING`/`ICE-CONTROLLED` | The nomination is the finding: without it, an ICE exchange that converged and one that never did look alike. Both sides claiming controlling is a role conflict whose only other symptom is media that never starts |
+| TURN `CHANNEL-NUMBER`, `REQUESTED-TRANSPORT` | So sipnab can describe a relay path, not merely detect one |
 | ChannelData framing | sipnab recognises **and unwraps** it, so RTP relayed through TURN reaches reconstruction. Without that a relayed call reports as having no media — the same answer sipnab gives for a call that carried none, which are opposite findings |
 
 sipnab tracks transactions, so it reports a request that never came back along
