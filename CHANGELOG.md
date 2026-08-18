@@ -10,6 +10,74 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.110] - 2026-08-18
+
+### Added
+
+- **STUN and TURN parsing reads every attribute that changes a diagnosis.**
+  0.5.109 read enough to say a request went unanswered. This reads enough to
+  say what the answer meant, and three of the additions fixed a WRONG reading
+  rather than a missing one:
+
+  - **`MAPPED-ADDRESS`** (the pre-RFC5389 form). Servers older than the magic
+    cookie still answer with it, and without reading it their *successful*
+    response reported as no answer at all. When both forms arrive the XOR one
+    wins whatever order they come in, because it is the one a NAT cannot
+    rewrite on the way back.
+  - **`REALM` / `NONCE`.** A `401` with a realm is an **authentication
+    challenge, not a blocked path**, and each sends you somewhere completely
+    different. The run now says so on its own line rather than letting
+    "answered" read as "fine". The nonce is recorded as present only — its
+    value is a server-chosen opaque string that means nothing to an observer.
+  - **`ALTERNATE-SERVER`**, so a `300` redirect names where it points instead
+    of reading as a dead end.
+
+- **`FINGERPRINT` is verified**, which corrects what the module said when it
+  landed. It grouped `FINGERPRINT` with `MESSAGE-INTEGRITY` as unverifiable and
+  that was wrong: it is a CRC-32 over the message with no key involved, so a
+  passive reader can check it honestly. Verified, present-and-wrong, and absent
+  stay three distinct states — reporting absent as wrong would accuse a message
+  nobody examined. It is also what separates a real STUN message from a payload
+  that merely happened to carry the cookie bytes.
+
+- **ICE attributes**: `USE-CANDIDATE`, `PRIORITY`, and the
+  controlling/controlled roles. The nomination is the finding — without it, an
+  ICE exchange that converged and one that never did look alike — and a capture
+  where *both* sides claim controlling is a role conflict whose only other
+  symptom is media that never starts. Reported, never decided: sipnab is not an
+  ICE agent.
+
+- **TURN `CHANNEL-NUMBER` and `REQUESTED-TRANSPORT`**, so a relay path can be
+  described rather than merely detected.
+
+  `MESSAGE-INTEGRITY` and `MESSAGE-INTEGRITY-SHA256` stay deliberately unread.
+  They decide whether a message is *authentic*, which needs credentials a
+  passive observer does not have, and claiming a verification that never
+  happened is worse than not checking.
+
+### Changed
+
+- **Prometheus has its own page.** The homepage said "REST API + Prometheus"
+  and led to a 1,195-line page whose Prometheus content started at line 1021 —
+  86% of the way down, under the endpoint reference. They are different
+  surfaces for different readers: everything else on that page returns what
+  sipnab *saw*, while `/metrics` returns numbers *about* sipnab, polled on a
+  timer and authenticated differently. Now [Prometheus
+  Metrics](https://sipnab.com/docs/metrics/), sitting beside Integrations in
+  the nav — next to HEP, because both are how sipnab plugs into a monitoring
+  estate, and **not merged with it**, because HEP is a transport for SIP
+  messages while a scrape carries no SIP at all.
+
+### Fixed
+
+- **STUN and TURN are documented at all.** 0.5.109 shipped the parsing with no
+  user-facing documentation: the only `STUN` mention was troubleshooting advice
+  to *configure* it on the phone, written before sipnab could read it.
+  Troubleshooting now carries the diagnosis — leading with the distinction that
+  directs the work, that a reply which never comes is a different fault from a
+  reply that says no — and the encapsulations page carries the coverage table,
+  including what is deliberately not read.
+
 ## [0.5.109] - 2026-08-17
 
 ### Added
