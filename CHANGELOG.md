@@ -10,6 +10,95 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.109] - 2026-08-17
+
+### Added
+
+- **sipnab reads STUN and TURN, and says when a NAT question went
+  unanswered.** Raised by two field captures of a one-way-audio complaint.
+  sipnab read one of them as *"No SIP traffic found. Check that the capture
+  contains SIP packets"* — true, useless, and pointing the operator at a
+  capture problem when the capture already held the cause.
+
+  It held two STUN Binding Requests, the same transaction sent twice, and no
+  reply. That is the whole failure: an endpoint that cannot learn its
+  reflexive address falls back to advertising its **private** address in SDP,
+  and the far end then sends media to an address the internet cannot route,
+  while the call signals cleanly and answers `200`.
+
+  A retransmission counts as one unanswered question with N attempts, not N
+  questions. An **error response counts as answered** — the server was
+  reachable and refused, which is a different fault pointing somewhere else,
+  and reporting it as silence would send someone hunting a blocked path that
+  is not there.
+
+  The reports name the likely cause, not only the symptom: silence rather than
+  a refusal points at something in the path discarding the packets, and on
+  school, campus and corporate networks that is most often a security
+  appliance — web filter, secure web gateway, firewall or IPS — dropping UDP
+  it does not recognise.
+
+- **TURN, including the parts that do not come free.** RFC 5766 reuses the
+  STUN header, so `Allocate` parses without the parser knowing TURN exists.
+  Its attributes did not (`XOR-RELAYED-ADDRESS`, `XOR-PEER-ADDRESS`,
+  `LIFETIME`), an unanswered `Allocate` is a different fault from an
+  unanswered `Binding` and is labelled so, and **ChannelData is not
+  STUN-shaped at all** — no cookie, no transaction ID — so it is recognised by
+  channel number. The three multiplexed protocols separate on their high bits:
+  STUN `00`, ChannelData `01`, RTP `10`.
+
+- **`--capture-profile signaling|full`**, which picks a `--snaplen` by purpose
+  instead of by hand. `signaling` uses 1500: one INVITE carrying a full
+  `Record-Route` set, ISUP encapsulation or a fat SDP offer passes 400 bytes
+  routinely, and a snaplen that cuts a HEADER is far worse than one that keeps
+  some payload — the message stops parsing and the peer that sent a valid
+  message is the one reported as broken. A named profile rather than a smaller
+  default, because truncation breaks `--retain-audio`, WAV export and Opus
+  decode and degrades `-O` re-emit. An explicit `--snaplen` overrides it.
+
+- **`sipnab_capture_snapped_frames_total`** and
+  **`sipnab_nat_unanswered_requests`**, in the capture-quality block on all
+  three surfaces (Prometheus, `/v1/stats`, MCP `capture_status`). The NAT one
+  is a **gauge**, not a counter: a late answer removes a transaction, which a
+  monotonic counter could never record.
+
+### Changed
+
+- **The stream list shows the media verdict every other surface already had.**
+  Media hints were produced once and consumed by the text report, `--json`,
+  MCP and REST — 9 references in `src/output/` and `src/mcp/`, and 0 in
+  `src/tui/`. `media_origin` is now split out of `diagnose_media`, which
+  reaches its own `nat_mismatch` verdict *through* it, and the stream list
+  calls the same function per row, so the column and the hint cannot disagree.
+
+- **`--cores` reaches live capture.** `PACKET_FANOUT` was implemented, tested
+  and wired into `live.rs`, and `capture_live_fanout` had no caller outside its
+  own module — built, tested and unreachable. `--cores N` on a live device now
+  asks the kernel for N capture sockets. **Processing stays on one thread**, so
+  it buys ring capacity against a dropping interface, not cores of analysis.
+  `--cores 1` and every non-Linux host still capture on exactly one socket.
+
+### Fixed
+
+- **A private media address offered to a public peer is flagged.** An SDP `c=`
+  line carrying an RFC 1918 / RFC 4193 / link-local address is correct inside
+  one LAN and correct behind an SBC that rewrites it downstream — and wrong
+  when nothing rewrites it, silently. Raised only when the peer is itself
+  public, and carrier-grade NAT space is deliberately excluded: it is routable
+  within the carrier that assigned it, and flagging it would fire on a large
+  share of working mobile calls.
+
+- **TURN-relayed media reaches reconstruction.** The RTP inside a ChannelData
+  wrapper was recognised and then dropped, so a call whose audio went through a
+  relay reported as having **no media** — the same answer sipnab gives for a
+  call that genuinely carried nothing. Opposite conclusions, rendered
+  identically.
+
+- **A truncating snaplen says how much it cut.** The `--snaplen` warnings fire
+  once per run, so a run that decoded every packet and truncated 94% of them
+  reported as clean. Counted in `Packet::from_bytes`, the one constructor every
+  reader passes through.
+
 ## [0.5.108] - 2026-08-17
 
 ### Changed
