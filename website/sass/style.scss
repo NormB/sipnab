@@ -1162,7 +1162,11 @@ input:focus-visible,
 // =============================================================================
 
 .doc-layout {
-  max-width: 1220px;
+  // Fluid, not a fixed 1220px. The old cap left a 1920px window with ~700px of
+  // empty margin while the text column wrapped early — the same on every page,
+  // because it is one number. `min()` keeps a ceiling so an ultrawide monitor
+  // does not stretch the layout to absurdity.
+  max-width: min(94vw, 1700px);
   margin: 0 auto;
   padding: 2.5rem 1.5rem 5rem;
   display: grid;
@@ -1175,7 +1179,15 @@ input:focus-visible,
 
 .doc-content {
   min-width: 0;
-  max-width: $doc-width;
+  // 100%, so the column is whatever `.doc-layout`'s grid gives it. The prose
+  // inside is still held to a 70ch reading measure by `.doc-body`, so a wider
+  // column widens TABLES and code blocks — the things that were cramped — and
+  // leaves line length alone. Measured at 1920px: content 820 -> 1352px, and
+  // the first table's cells stop wrapping (2 lines -> 1).
+  //
+  // `$doc-width` still sizes the homepage's centred blocks, which want a fixed
+  // measure and are not in this grid.
+  max-width: 100%;
   font-size: 1rem;
 
   // Heading anchors: offset for sticky nav
@@ -1214,8 +1226,18 @@ input:focus-visible,
   .doc-header h1 { margin: 0; }
 
   // -- Body measure --
+  //
+  // 70ch is a reading measure: ~70 characters is the line length prose is
+  // comfortable at, and it applies to text a reader consumes line by line.
+  //
+  // It does NOT apply to tables. A table is scanned, not read, and its width is
+  // set by what its columns have to hold — capping it at a prose measure
+  // squeezes the columns until cells wrap while the space beside the table
+  // sits empty. Measured on the live site: a two-column table pinned to 618px
+  // inside an 820px column, every cell wrapping to two lines. `table` and
+  // `.table-wrapper` were in this list and are deliberately not any more.
   .doc-body {
-    p, ul, ol, blockquote, table, .table-wrapper {
+    p, ul, ol, blockquote {
       max-width: 70ch;
     }
   }
@@ -1389,14 +1411,7 @@ input:focus-visible,
 
   // -- Tables --
   table {
-    // `auto`, not `100%`. Forcing a table to fill the text column makes the
-    // auto layout algorithm distribute the surplus across every column, so a
-    // two- or three-column reference table wraps its short key column onto
-    // several lines while slack sits unused in the wide one. Sizing to content
-    // and capping at the container wraps only when the content genuinely does
-    // not fit.
-    width: auto;
-    max-width: 100%;
+    width: 100%;
     border-collapse: separate;
     border-spacing: 0;
     margin-bottom: 1.6rem;
