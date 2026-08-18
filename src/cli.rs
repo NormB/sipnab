@@ -381,6 +381,26 @@ pub struct CaptureArgs {
     #[arg(help_heading = "Capture", long, value_name = "BYTES")]
     pub snaplen: Option<u32>,
 
+    /// Named capture profile, which picks a `--snaplen` for you.
+    ///
+    /// `signaling` keeps every SIP header and drops the media payload — the
+    /// saving that matters, because a large snaplen is paid on EVERY packet in
+    /// the kernel copy and in ring occupancy, and that is what makes a busy
+    /// server drop. `full` keeps the whole frame.
+    ///
+    /// A profile rather than a smaller default, because truncation is not
+    /// free: it breaks `--retain-audio`, WAV export and Opus decode (they need
+    /// RTP payload, not just headers) and degrades `-O` re-emit to truncated
+    /// frames. Naming the trade is what makes it safe to offer.
+    ///
+    /// An explicit `--snaplen` wins over it.
+    #[arg(
+        help_heading = "Capture",
+        long = "capture-profile",
+        value_name = "PROFILE"
+    )]
+    pub capture_profile: Option<CaptureProfile>,
+
     /// Parse only the first N bytes of each packet (sipgrep -S). Caps what the
     /// SIP parser and matchers inspect, independent of the capture snaplen
     /// (`--snaplen`) and the display truncation (`--payload-limit`).
@@ -2597,6 +2617,36 @@ pub struct ConfigArgs {
     pub completions: Option<clap_complete::Shell>,
 }
 
+/// A named capture profile: a snaplen chosen for a purpose rather than a
+/// number chosen by hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CaptureProfile {
+    /// Keep every SIP header, drop the media payload.
+    Signaling,
+    /// Keep the whole frame, which is what sipnab has always done.
+    Full,
+}
+
+impl CaptureProfile {
+    /// The snaplen this profile asks for.
+    ///
+    /// 1500 for `signaling`, not the 200-400 the backlog first suggested. One
+    /// SIP INVITE carrying a full `Record-Route` set, a long `Contact`, ISUP
+    /// encapsulation or a fat SDP offer passes 400 bytes routinely, and a
+    /// snaplen that cuts a header is far worse than one that keeps some
+    /// payload: the message stops parsing, and the peer that sent a perfectly
+    /// valid message is the one reported as broken. One MTU keeps every
+    /// realistic signaling message whole while still dropping the bulk of an
+    /// RTP stream, which is where the saving actually is.
+    #[must_use]
+    pub fn snaplen(self) -> u32 {
+        match self {
+            CaptureProfile::Signaling => 1500,
+            CaptureProfile::Full => 65535,
+        }
+    }
+}
+
 /// Source-address strategy for the scanner-kill response packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum KillSpoof {
@@ -4097,6 +4147,48 @@ mod tests {
         let path = std::path::Path::new("/nonexistent/sipnab/secret");
         let err = resolve_file_or_inline_secret(None, Some(path), "--x").unwrap_err();
         assert!(err.contains("--x"), "error names the flag, got: {err}");
+    }
+
+    /// `--capture-profile signaling` picks a snaplen that keeps every SIP
+    /// header and drops the media payload; `full` keeps the whole frame.
+    ///
+    /// A named profile rather than a moved default (backlog CT3): truncation
+    /// breaks `--retain-audio`, WAV export, Opus decode and a faithful `-O`
+    /// re-emit, so lowering the bare default would quietly damage those for
+    /// everyone. A profile makes the trade explicit and reversible.
+    #[test]
+    fn capture_profile_resolves_to_a_snaplen() {
+        use crate::cli::CaptureProfile;
+        assert_eq!(CaptureProfile::Full.snaplen(), 65535);
+        let signaling = CaptureProfile::Signaling.snaplen();
+        assert!(
+            (200..=1500).contains(&signaling),
+            "a signaling profile must keep whole SIP headers and still be a \
+             real saving; got {signaling}"
+        );
+        assert!(
+            signaling < CaptureProfile::Full.snaplen(),
+            "the point of the profile is that it truncates"
+        );
+    }
+
+    /// An explicit `--snaplen` beats the profile. The profile is a convenience
+    /// for people who do not want to pick a number; someone who picked one has
+    /// already answered the question it asks.
+    #[test]
+    fn an_explicit_snaplen_overrides_the_profile() {
+        let cli = Cli::parse_from_args([
+            "sipnab",
+            "--capture-profile",
+            "signaling",
+            "--snaplen",
+            "9000",
+        ]);
+        assert_eq!(cli.capture_args.snaplen, Some(9000));
+        assert_eq!(
+            cli.capture_args.capture_profile,
+            Some(crate::cli::CaptureProfile::Signaling)
+        );
     }
 
     /// `--cores N` parses into the offline reconstruction core count.

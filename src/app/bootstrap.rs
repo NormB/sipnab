@@ -1865,9 +1865,15 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
 /// invalid `--duration`. Returning (rather than exiting) keeps planning
 /// testable and composable.
 fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, PlanError> {
+    // Precedence: an explicit --snaplen, then --capture-profile, then the
+    // config file, then the full frame. The profile sits BELOW the explicit
+    // number on purpose — someone who typed a snaplen has already answered the
+    // question the profile asks — and ABOVE the config default, because it was
+    // typed on this invocation and the config file was not (CT3).
     let snaplen = cli
         .capture_args
         .snaplen
+        .or_else(|| cli.capture_args.capture_profile.map(|p| p.snaplen()))
         .or(config.capture.snaplen)
         .unwrap_or(65535);
 
@@ -4636,5 +4642,42 @@ mod cores_live_meaning_tests {
             msg.contains("--multi-device"),
             "warning names the reason: {msg}"
         );
+    }
+}
+
+#[cfg(test)]
+mod capture_profile_tests {
+    use super::*;
+
+    /// The profile must actually reach the capture, and an explicit number
+    /// must beat it. A profile that resolves correctly in isolation but never
+    /// reaches `CaptureConfig` is the same as no profile at all.
+    #[test]
+    fn the_profile_reaches_the_capture_and_an_explicit_snaplen_wins() {
+        let config = Config::default();
+
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.capture_args.capture_profile = Some(crate::cli::CaptureProfile::Signaling);
+        let cc = build_capture_config(&cli, &config).expect("builds");
+        assert_eq!(
+            cc.snaplen,
+            crate::cli::CaptureProfile::Signaling.snaplen(),
+            "the profile must reach the capture config"
+        );
+
+        cli.capture_args.snaplen = Some(9000);
+        let cc = build_capture_config(&cli, &config).expect("builds");
+        assert_eq!(
+            cc.snaplen, 9000,
+            "an explicit --snaplen must beat the profile"
+        );
+    }
+
+    /// No profile and no flag is unchanged: the whole frame, as always.
+    #[test]
+    fn without_a_profile_the_default_is_still_the_full_frame() {
+        let cli = Cli::parse_from_args(["sipnab"]);
+        let cc = build_capture_config(&cli, &Config::default()).expect("builds");
+        assert_eq!(cc.snaplen, 65535);
     }
 }

@@ -507,7 +507,7 @@ Tiers:
   covers). The prose above describes three because three is what this pass
   shipped; the block is no longer three wide, and `degraded` is no longer a
   rollup of all of it. See CT1.
-- [ ] **CT3 — `--snaplen` defaults to 65535, so every packet is copied whole
+- [x] **CT3 — `--snaplen` defaults to 65535, so every packet is copied whole
   even for SIP-only work.** [`src/app/bootstrap.rs:1357`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1357) —
   `cli.snaplen.or(config.capture.snaplen).unwrap_or(65535)`. The flag exists
   ([`src/cli.rs:293-295`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L293-L295)) and reaches `.snaplen(config.snaplen as i32)`
@@ -519,7 +519,7 @@ Tiers:
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2446`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2446),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2465`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2465),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -533,9 +533,21 @@ Tiers:
   snapped frame is neither malformed nor lost, it usually decodes perfectly,
   and merging the two would report a correct capture configuration as
   corruption. Counted in `Packet::from_bytes`, the one constructor every reader
-  passes through, so a new reader cannot forget it. Still open: named capture
-  profiles (`--profile signaling` → small snaplen, `--profile full` → 65535)
-  rather than moving the bare default.
+  passes through, so a new reader cannot forget it. **Closed 2026-08-17** by
+  `--capture-profile signaling|full`, which picks a snaplen rather than moving
+  the bare default. Precedence is explicit `--snaplen`, then the profile, then
+  the config file, then 65535: someone who typed a number has already answered
+  the question the profile asks, and the profile was typed on this invocation
+  where the config file was not.
+
+  `signaling` resolves to 1500, not the 200-400 this entry first suggested. One
+  INVITE carrying a full `Record-Route` set, a long `Contact`, ISUP
+  encapsulation or a fat SDP offer passes 400 bytes routinely, and a snaplen
+  that cuts a HEADER is far worse than one that keeps some payload — the
+  message stops parsing, and the peer that sent a perfectly valid message is
+  the one reported as broken. One MTU keeps every realistic signaling message
+  whole and still drops the bulk of an RTP stream, which is where the saving
+  actually is.
 - [x] **CT4 — No `PACKET_FANOUT`, so live capture cannot use more than one core.**
   `grep -rn 'FANOUT\|fanout' src/` matches nothing. `--cores N` is offline-only
   (`RunMode::CoresFile` requires `-I`, [`src/app/bootstrap.rs:71`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L71)), so on a busy
