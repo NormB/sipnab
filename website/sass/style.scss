@@ -1389,7 +1389,14 @@ input:focus-visible,
 
   // -- Tables --
   table {
-    width: 100%;
+    // `auto`, not `100%`. Forcing a table to fill the text column makes the
+    // auto layout algorithm distribute the surplus across every column, so a
+    // two- or three-column reference table wraps its short key column onto
+    // several lines while slack sits unused in the wide one. Sizing to content
+    // and capping at the container wraps only when the content genuinely does
+    // not fit.
+    width: auto;
+    max-width: 100%;
     border-collapse: separate;
     border-spacing: 0;
     margin-bottom: 1.6rem;

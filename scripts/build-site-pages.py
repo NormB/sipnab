@@ -70,13 +70,20 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         # Title and weight are the site's originals: they set the sidebar
         # label and its position, so changing them here silently reorders the
         # docs nav. The description is deliberately not the original — the
-        # page now covers far more than "REST API endpoints and Prometheus
-        # metrics" and that string is what search results and cards show.
-        "REST API & Metrics",
+        # page now covers far more than "REST API endpoints" and that string is
+        # what search results and cards show.
+        #
+        # No longer "REST API & Metrics". Prometheus got its own page, so a
+        # label and description promising metrics here sent a reader looking
+        # for them to the wrong page, and competed with the Prometheus Metrics
+        # entry directly below in the same nav group. The `/metrics` endpoint
+        # is still documented here because the `api` feature is what serves it;
+        # what the metric NAMES mean lives on the metrics page.
+        "REST API",
         11,
-        "REST API and Prometheus metrics: authentication, every endpoint with "
-        "its response shape, status codes, curl recipes, and the security "
-        "model.",
+        "sipnab's REST API: authentication, every endpoint with its response "
+        "shape, status codes, curl recipes, and the security model. Metric "
+        "names and their meaning are on the Prometheus metrics page.",
     ),
     (
         "docs/mcp.md",

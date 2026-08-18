@@ -24,8 +24,8 @@
 //! The `pub use` re-exports below form the module's stable convenience
 //! surface for the rest of the crate.
 
-#[cfg(feature = "api")]
 pub mod analysis_report;
+#[cfg(feature = "api")]
 pub mod api;
 pub mod call_report;
 pub mod cli_print;
