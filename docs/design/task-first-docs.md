@@ -21,7 +21,7 @@ this line instead of a reminder.
 
 **Trigger.** A user looking for "run sipnab on a remote server, drive it from
 Claude Code on my laptop" could not find the instructions. They exist, in
-`mcp-walkthrough.md`, under the heading:
+`mcp-deploy.md`, under the heading:
 
 > ### Scenario 2A — SSH-launched stdio: ad-hoc, zero server configuration
 
@@ -40,7 +40,7 @@ their own goal. Counting `##`/`###` headings, ignoring leading numbering:
 |---|---|---|
 | `tui-walkthrough.md` | 9/10 | **90%** |
 | `examples.md` (cookbook) | 27/43 | 62% |
-| `mcp-walkthrough.md` | 2/24 | **8%** |
+| `mcp-deploy.md` | 2/24 | **8%** |
 
 **The problem is not that sipnab does not know how to write headings.** The TUI
 walkthrough is almost perfectly task-first — "Open a capture", "Measure the
@@ -79,7 +79,7 @@ sipnab has both and does not distinguish them:
 
 - `tui-walkthrough.md` is a **tutorial** — sequential, teaches the tool, read
   start to finish.
-- `mcp-walkthrough.md` is a **collection of how-tos** wearing a tutorial's name.
+- `mcp-deploy.md` is a **collection of how-tos** wearing a tutorial's name.
   Nobody reads scenarios 1 through 6 in order. They want exactly one.
 
 That mismatch explains the numbering. "Scenario 2A" implies a sequence that does
@@ -116,7 +116,7 @@ Three supporting rules:
    but it must never be the only handle on a section.
 2. **Tutorials and how-tos get different pages, and say which they are.** A
    walkthrough is read once, in order. A cookbook entry is landed on from a
-   search. `mcp-walkthrough.md` is currently the second wearing the name of the
+   search. `mcp-deploy.md` is currently the second wearing the name of the
    first.
 3. **Every how-to page opens with a goal index** — a table mapping "I want to…"
    to the section, so the reader's first scan is over goals.
@@ -146,7 +146,7 @@ subtitle in every case; nothing accurate is lost.
 | 11. Per-call asymmetry diagnosis | Find calls where the two directions disagree |
 | 14. Browser pcap analysis (no install) | Analyze a pcap in a browser, with nothing installed |
 
-`mcp-walkthrough.md` also needs a goal index at the top — the "Choosing a
+`mcp-deploy.md` also needs a goal index at the top — the "Choosing a
 scenario" table already exists and is genuinely good, but it is keyed on
 topology. Re-key it on "I want to…".
 
@@ -154,7 +154,7 @@ topology. Re-key it on "I want to…".
 
 Four steps, each independently shippable, in value order:
 
-1. **`mcp-walkthrough.md`** — the page that failed the user, and the worst
+1. **`mcp-deploy.md`** — the page that failed the user, and the worst
    measured (8%). Renames, goal-keyed index, and an explicit note that it is a
    collection of how-tos rather than a sequence to read through.
 2. **[`docs/mcp.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md)** — already partly fixed today (a transport-choice table and

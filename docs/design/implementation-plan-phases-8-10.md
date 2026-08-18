@@ -387,7 +387,7 @@ Land the feature flags, module skeleton, and stdio MCP server with the three hig
 **Docs — 8.1 deliverables:**
 - [ ] Rustdoc on `src/mcp/{mod,server,tools,transport}.rs`
 - [ ] `docs/mcp-overview.md` — what MCP is, why sipnab supports it, security model, transport choices
-- [ ] `docs/mcp-tools.md` — tool reference for `list_dialogs`, `get_dialog_report`, `find_problems`: parameters, return shape, examples
+- [ ] [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) — tool reference for `list_dialogs`, `get_dialog_report`, `find_problems`: parameters, return shape, examples
 - [ ] Update [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md) with the new `--mcp*` flags
 - [ ] Update [`README.md`](https://github.com/NormB/sipnab/blob/main/README.md) Features section: "MCP server mode — drive sipnab from an AI agent"
 
@@ -522,7 +522,7 @@ Add the remaining read-only tools that round out the agent's debugging vocabular
 - [ ] `tests/mcp/no_key_material_leak.rs` — runs against a fixture pcap with `--tls-key`; greps every tool response for any byte sequence in the keylog; asserts zero matches (D19 enforcement)
 
 **Docs — 8.3 deliverables:**
-- [ ] Update `docs/mcp-tools.md` with all eight new tools
+- [ ] Update [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) with all eight new tools
 - [ ] `docs/mcp-agent-cookbook.md` — recipes for common debugging workflows: "find calls with one-way audio in the last 5 minutes", "extract pcap for a specific Call-ID and download it", "tail problems as they happen", "diagnose a customer's complaint by Call-ID"
 - [ ] Update `docs/security-model.md` (or create) with the snapshot path allowlist semantics
 
@@ -633,7 +633,7 @@ Three consumer surfaces wired to the 8.4a substrate. Each sink is a thin wrapper
 
 **Docs — 8.4b deliverables:**
 - [ ] Extend `docs/event-bus.md` (created in 8.4a) with the comparison table: MCP / WebSocket / SSE / `--on-dialog-exec` — when to use which
-- [ ] Update `docs/mcp-tools.md` with the resource URI scheme and subscription flow
+- [ ] Update [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) with the resource URI scheme and subscription flow
 - [ ] `docs/mcp-notifications.md` — push vs poll, when to use which
 - [ ] `docs/websocket-stream.md` — endpoint reference, filter syntax, example clients (wscat, JavaScript, Python `websockets`)
 - [ ] `docs/sse-stream.md` — endpoint reference, browser EventSource example, curl pipeline examples, nginx config notes
@@ -730,7 +730,7 @@ Wrap-up tasks tying Phase 8 into the v0.4.0 release. Two ★ priority items adde
 - [ ] `tests/mcp/inspector_e2e_full.rs` — extended version of 8.1's smoke test covering all advertised tools (post-8.3) including `snapshot_pcap` and the new `open_project`
 
 **Docs — 8.6 deliverables:**
-- [ ] `docs/mcp-overview.md`, `docs/mcp-tools.md`, `docs/mcp-deployment.md`, `docs/mcp-agent-cookbook.md`, `docs/mcp-notifications.md`, `docs/mcp-hep-deployment.md` all complete and cross-linked
+- [ ] `docs/mcp-overview.md`, [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md), `docs/mcp-deployment.md`, `docs/mcp-agent-cookbook.md`, `docs/mcp-notifications.md`, `docs/mcp-hep-deployment.md` all complete and cross-linked
 - [ ] **★** `docs/sipnab-project-format.md` — `.sipnab` directory layout, manifest schema, schema versioning policy, sharing analyses across machines
 - [ ] CHANGELOG entry for v0.4.0
 - [ ] Updated man page
@@ -800,7 +800,7 @@ Six new diagnostic checks comparing the two RTP legs of a SIP call to flag asymm
 **Docs — 8.7 deliverables:**
 - [ ] `docs/diagnostic-aliases.md` — extend with the six new aliases, threshold meanings, when each is triggered, common root causes (e.g., codec asymmetry usually means a transcoding B2BUA on the path)
 - [ ] Update [`docs/filter-dsl.md`](https://github.com/NormB/sipnab/blob/main/docs/filter-dsl.md) with the new field names (`codec_asymmetry`, `ptime_asymmetry`, etc.) for direct DSL use
-- [ ] Update `docs/mcp-tools.md` `find_problems` entry to list the new `kinds` values
+- [ ] Update [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) `find_problems` entry to list the new `kinds` values
 - [ ] Add an `examples/diagnostic-recipes.md` cookbook entry: "diagnose a customer complaint about choppy audio" → walkthrough using the new checks plus existing RTP quality data
 
 ---
@@ -1058,7 +1058,7 @@ Treat the capture as a dataset and ask which network features predict perceived 
 
 **Docs — 11.1 deliverables:**
 - [ ] `docs/statistical-analysis.md` — feature list with definitions, regression methodology, interpretation guide, subnet partitioning use cases
-- [ ] Update `docs/mcp-tools.md` with the `analyze_features` tool entry
+- [ ] Update [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) with the `analyze_features` tool entry
 - [ ] Example workflow in `examples/stats-recipes.md`: "find the network feature most correlated with bad calls in last week's capture corpus"
 
 ---
@@ -1124,7 +1124,7 @@ Add a perceptual quality score derived from decoded audio, complementary to the 
 **Docs — 11.2 deliverables:**
 - [ ] `docs/perceptual-mos.md` — what NISQA is, how it differs from E-model, when each is more trustworthy, model download instructions, performance characteristics, divergence interpretation
 - [ ] Update `docs/rtp-quality.md` (Phase 5 doc) with the dual-MOS framework
-- [ ] Update `docs/mcp-tools.md` `rtp_stats` entry to document the new `perceptual_mos` field
+- [ ] Update [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) `rtp_stats` entry to document the new `perceptual_mos` field
 
 ---
 
@@ -1327,7 +1327,7 @@ Three audience-targeted tutorials, each completable in under 15 minutes by someo
 Make every flag, every tool, every config option, every endpoint reference-documented. **The CI coverage gates that enforce 100% coverage land with 12.1**, not here — 12.4 is the content-completion sub-phase that the gates already in place will accept. By the time 12.4 starts, the gates are red on every gap; 12.4's job is to fill the gaps and turn the gates green.
 
 - [ ] **CLI reference content** — current [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md) is 218 lines, well-structured, but missing the new flags from Phases 8–11. Audit-and-fill: every flag in `cli.rs` must appear in the reference. (The CLI-flag-coverage CI gate already enforces this from 12.1 onward; 12.4 closes the existing gap.)
-- [ ] **MCP tool reference content** — `docs/reference/mcp-tools.md` (consolidated from Phase 8's `docs/mcp-tools.md`): one section per tool with parameters, return shape, examples, errors. (The MCP-tool-coverage CI gate from 12.1 enforces presence; 12.4 fills in the per-tool detail.)
+- [ ] **MCP tool reference content** — `docs/reference/mcp-tools.md` (consolidated from Phase 8's [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md)): one section per tool with parameters, return shape, examples, errors. (The MCP-tool-coverage CI gate from 12.1 enforces presence; 12.4 fills in the per-tool detail.)
 - [ ] **REST API reference** — `docs/reference/rest-api.md` is now Swagger UI rendered from Phase 9.1's `openapi.json`. Static page links to the live Swagger UI with a "for offline reference, see openapi.json" link.
 - [ ] **Config reference** — current [`docs/config-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/config-reference.md) extended with new `[limits.asymmetry]` section from Phase 8.7, snapshot resource limits from 8.3, etc. (NATS config dropped — Phase 10 deferred.)
 - [ ] **Filter DSL reference** — current [`docs/filter-dsl.md`](https://github.com/NormB/sipnab/blob/main/docs/filter-dsl.md) extended with the six new asymmetry fields from Phase 8.7

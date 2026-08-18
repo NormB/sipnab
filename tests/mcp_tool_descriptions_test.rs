@@ -198,7 +198,7 @@ fn the_cited_description_gate_actually_exists() {
 }
 
 /// Every tool the server registers has BOTH a call example and a response
-/// example in `docs/mcp.md`.
+/// example in `docs/mcp-tools.md`.
 ///
 /// A response example alone is half a specification. `capture_health` showed
 /// what comes back and never showed a call — and it takes a REQUIRED
@@ -216,9 +216,9 @@ fn every_mcp_tool_documents_a_call_and_a_response() {
     )
     .expect("read src/mcp/server.rs");
     let doc = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/mcp.md"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/mcp-tools.md"),
     )
-    .expect("read docs/mcp.md");
+    .expect("read docs/mcp-tools.md");
 
     const FENCE: &str = "```";
     let tools = tool_descriptions(&src);
@@ -233,7 +233,9 @@ fn every_mcp_tool_documents_a_call_and_a_response() {
     for (name, _) in &tools {
         let heading = format!("### `{name}`");
         let Some(start) = doc.find(&heading) else {
-            problems.push(format!("{name}: no `{heading}` section in docs/mcp.md"));
+            problems.push(format!(
+                "{name}: no `{heading}` section in docs/mcp-tools.md"
+            ));
             continue;
         };
         let after = &doc[start + heading.len()..];

@@ -1,6 +1,6 @@
 +++
 title = "Benchmarks"
-weight = 17
+weight = 19
 description = "Reproducible throughput and memory benchmarks, and what the headroom buys: how much of an estate one sipnab can take at once, multi-core scaling, a controlled version A/B, and the cost of full SIP + RTP reconstruction at carrier scale."
 +++
 

@@ -129,7 +129,7 @@ expanding beyond their evidence.
 **Evidence:** [`website/content/docs/_index.md:18`](https://github.com/NormB/sipnab/blob/main/website/content/docs/_index.md#L18) advertises `sipnab --mcp`.
 The canonical reference requires headless mode and demonstrates `--mcp -N`
 ([`docs/mcp.md:34-41`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md#L34-L41)); the walkthrough explicitly says `--mcp` requires `-N`
-([`docs/mcp-walkthrough.md:93-96`](https://github.com/NormB/sipnab/blob/main/docs/mcp-walkthrough.md#L93-L96)).
+([`docs/mcp-deploy.md:93-96`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L93-L96)).
 
 **Impact:** the prominent entry-point command fails instead of starting the
 workflow it advertises.
@@ -197,9 +197,9 @@ binary” outside a musl-specific context.
 
 **Priority / type / effort:** P2 / verified usability and freshness gap / L
 
-**Evidence:** [`docs/mcp-walkthrough.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-walkthrough.md) is 1,868 lines and [`docs/mcp.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md) is 3,301
+**Evidence:** [`docs/mcp-deploy.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md) is 1,868 lines and [`docs/mcp.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md) is 3,301
 lines. The walkthrough warns that most transcripts were last run at 0.5.20 and
-are illustrative ([`docs/mcp-walkthrough.md:10-18`](https://github.com/NormB/sipnab/blob/main/docs/mcp-walkthrough.md#L10-L18)), yet the docs index presents
+are illustrative ([`docs/mcp-deploy.md:10-18`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L10-L18)), yet the docs index presents
 it as a first-day tutorial ([`docs/README.md:30-31`](https://github.com/NormB/sipnab/blob/main/docs/README.md#L30-L31)).
 
 **Impact:** beginners encounter a large, partly stale reference instead of a

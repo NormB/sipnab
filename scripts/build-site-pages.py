@@ -58,7 +58,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         # Integrations -- next to HEP, because both are how sipnab plugs into a
         # monitoring estate, while staying separate pages because one carries
         # SIP and the other carries numbers.
-        34,
+        36,
         "Every metric family sipnab emits, what each one means, which are "
         "counters and which are gauges, and the scrape config -- split out of "
         "the REST API page, which a scrape target's reader never needs.",
@@ -87,9 +87,9 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "MCP server",
         "MCP Server",
         14,
-        "Drive sipnab from an AI agent over the Model Context Protocol: "
-        "stdio and HTTP transports, every tool, the security model, and "
-        "client configuration.",
+        "Drive sipnab from an AI agent over the Model Context Protocol: what "
+        "it is, a first working example, and where to go for deployment, the "
+        "tool reference, and the protocol contract.",
     ),
     # The remaining ten operator pages, merged and registered together. Each
     # was two hand-maintained copies holding content the other did not, which
@@ -166,7 +166,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "sip-header-fields.md",
         "SIP header fields",
         "Header Fields",
-        20,
+        22,
         "Every SIP header field in the IANA registry, its compact form, and the "
         "RFC that defines it.",
     ),
@@ -175,7 +175,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "sip-methods.md",
         "SIP request methods",
         "Request Methods",
-        19,
+        21,
         "Every SIP method in the IANA registry, the RFC section defining it, and "
         "which dialog state machine sipnab runs it through.",
     ),
@@ -184,7 +184,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "sip-parameters.md",
         "SIP parameters",
         "Parameters",
-        21,
+        23,
         "Every SIP URI parameter, header-field parameter and option tag in the "
         "IANA registry, with the RFC that defines it.",
     ),
@@ -193,7 +193,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "mos-and-codecs.md",
         "MOS and codecs",
         "MOS & Codecs",
-        22,
+        24,
         "Where the quality score comes from, which codecs have a published "
         "impairment factor behind it, and which report a placeholder.",
     ),
@@ -202,7 +202,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "sip-response-codes.md",
         "SIP response codes",
         "Response Codes",
-        18,
+        20,
         "Every SIP response code in the IANA registry, the RFC section that "
         "defines it, and whether it means the call failed.",
     ),
@@ -228,20 +228,38 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "uprobe-walkthrough.md",
         "Reading SIP over TLS without keys — step by step",
         "TLS Without Keys",
-        26,
+        28,
         "What uprobe and eBPF capture is and is NOT, its security "
         "implications, whether your kernel supports it at all, and how to "
         "run both backends step by step.",
     ),
     (
-        "docs/mcp-walkthrough.md",
-        "mcp-walkthrough.md",
+        "docs/mcp-deploy.md",
+        "mcp-deploy.md",
         "MCP walkthrough — every deployment scenario, step by step",
-        "MCP Walkthrough",
+        "MCP Deployment",
         15,
         "Step-by-step MCP deployment scenarios: same-box stdio, remote "
         "production servers over SSH or HTTP, HEP capture hosts, TLS "
         "endpoints, fleets, and headless automation.",
+    ),
+    (
+        "docs/mcp-tools.md",
+        "mcp-tools.md",
+        "MCP tool reference",
+        "MCP Tools",
+        16,
+        "Every MCP tool sipnab exposes, what question each answers, and the "
+        "fields it returns.",
+    ),
+    (
+        "docs/mcp-protocol.md",
+        "mcp-protocol.md",
+        "MCP protocol",
+        "MCP Protocol",
+        17,
+        "The MCP wire contract: security model, what the write verbs may do, "
+        "untrusted capture text, the stdio invariant, and error semantics.",
     ),
     # Registered when the conformance linter reached MCP. The page was in
     # build-wiki.py's PAGES and not this one, so `docs/mcp.md`'s link to it
@@ -253,7 +271,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "sip-lint-rules.md",
         "SIP conformance rules",
         "SIP Conformance Rules",
-        23,
+        25,
         "Every rule the SIP conformance linter runs, the RFC section behind "
         "it, the severity and basis it reports under, and how to suppress it "
         "in CI.",
@@ -272,7 +290,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         # `docs_page_weights_are_unique_and_descriptions_present` requires it to
         # be unique. Ordering in the sidebar comes from the explicit path lists
         # in the nav_group macros, not from this number.
-        24,
+        26,
         "Size the kernel capture ring, read the kernel and interface drop "
         "counters, tell the two apart, and decide between the `any` device "
         "and a named interface.",
@@ -285,7 +303,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         # 25: the next free weight. `docs_page_weights_are_unique_and_
         # descriptions_present` requires uniqueness; sidebar order comes from
         # the nav_group path lists, not from this number.
-        25,
+        27,
         "Which link types, EtherTypes and tunnels sipnab can read a SIP dialog "
         "out of, which it cannot, and what it reports when a frame does not "
         "decode.",

@@ -27,7 +27,7 @@ nothing and they tell you what you should see at each step.
    `sipnab -I capture.pcap`, or watch an interface live with
    `sudo sipnab -d eth0`. Both open the TUI; the walkthrough takes you through
    your first analysis step by step.
-3. **[Drive sipnab from an AI agent](mcp-walkthrough.md)** — deployment
+3. **[Drive sipnab from an AI agent](mcp-deploy.md)** — deployment
 - [Reading SIP over TLS without keys](uprobe-walkthrough.md) — what uprobe and eBPF capture is and is **not**, its security implications, whether your kernel supports it at all, and both backends step by step.
    scenarios in order, from same-box stdio to a remote production server.
 
@@ -91,7 +91,10 @@ through.
   scrape config. Split from the REST API page: a scrape target's reader needs
   none of the endpoint schemas, and this table sat 86% of the way down a
   1,195-line page.
-- [MCP server](mcp.md) — every tool, both transports, client configuration.
+- [MCP server](mcp.md) — what it is, and a first working example.
+- [MCP deployment](mcp-deploy.md) — remote servers, live captures, running it as a service.
+- [MCP tool reference](mcp-tools.md) — every tool, its arguments and its response.
+- [MCP protocol](mcp-protocol.md) — the wire contract, security model and error semantics.
 - [Library API](library.md) — using sipnab as a Rust crate.
 
 ## Explanation

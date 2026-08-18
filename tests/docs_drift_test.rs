@@ -246,28 +246,19 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // contrib/mcp/trace-call.py's own flags, in the "Drive it from a script"
     // section. That script is an MCP *client*: it never launches sipnab, so
     // these are argparse options belonging to the example, not sipnab's CLI.
-    // Scoped to the two mcp-walkthrough surfaces so the same names anywhere
+    // Scoped to the two mcp-deploy surfaces so the same names anywhere
     // else still fail the gate.
     (
         "node",
-        &[
-            "docs/mcp-walkthrough.md",
-            "website/content/docs/mcp-walkthrough.md",
-        ],
+        &["docs/mcp-deploy.md", "website/content/docs/mcp-deploy.md"],
     ),
     (
         "call-id",
-        &[
-            "docs/mcp-walkthrough.md",
-            "website/content/docs/mcp-walkthrough.md",
-        ],
+        &["docs/mcp-deploy.md", "website/content/docs/mcp-deploy.md"],
     ),
     (
         "token-file",
-        &[
-            "docs/mcp-walkthrough.md",
-            "website/content/docs/mcp-walkthrough.md",
-        ],
+        &["docs/mcp-deploy.md", "website/content/docs/mcp-deploy.md"],
     ),
     // bench/carrier.py and bench/scaling.sh flags, in the reproduce recipes.
     // These belong to the benchmark harness, not to sipnab's CLI.
@@ -305,8 +296,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/_index.md",
             "docs/examples.md",
             "website/content/docs/mcp.md",
-            "docs/mcp-walkthrough.md",
-            "website/content/docs/mcp-walkthrough.md",
+            "docs/mcp-deploy.md",
+            "website/content/docs/mcp-deploy.md",
             "CONTRIBUTING.md",
         ],
     ),
@@ -330,45 +321,27 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // wiki and the site with this suite green.
     (
         "system",
-        &[
-            "docs/mcp-walkthrough.md",
-            "website/content/docs/mcp-walkthrough.md",
-        ],
+        &["docs/mcp-deploy.md", "website/content/docs/mcp-deploy.md"],
     ),
     (
         "home",
-        &[
-            "docs/mcp-walkthrough.md",
-            "website/content/docs/mcp-walkthrough.md",
-        ],
+        &["docs/mcp-deploy.md", "website/content/docs/mcp-deploy.md"],
     ),
     (
         "shell",
-        &[
-            "docs/mcp-walkthrough.md",
-            "website/content/docs/mcp-walkthrough.md",
-        ],
+        &["docs/mcp-deploy.md", "website/content/docs/mcp-deploy.md"],
     ),
     (
         "no-pager",
-        &[
-            "docs/mcp-walkthrough.md",
-            "website/content/docs/mcp-walkthrough.md",
-        ],
+        &["docs/mcp-deploy.md", "website/content/docs/mcp-deploy.md"],
     ),
     (
         "nginx",
-        &[
-            "docs/mcp-walkthrough.md",
-            "website/content/docs/mcp-walkthrough.md",
-        ],
+        &["docs/mcp-deploy.md", "website/content/docs/mcp-deploy.md"],
     ),
     (
         "allowedTools",
-        &[
-            "docs/mcp-walkthrough.md",
-            "website/content/docs/mcp-walkthrough.md",
-        ],
+        &["docs/mcp-deploy.md", "website/content/docs/mcp-deploy.md"],
     ),
     // The benchmark harness flags were excused for docs/benchmarks.md but not
     // for its hand-maintained site twin, which is deliberately not generated.
@@ -629,8 +602,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/mcp.md",
             "website/content/docs/mcp.md",
-            "docs/mcp-walkthrough.md",
-            "website/content/docs/mcp-walkthrough.md",
+            "docs/mcp-deploy.md",
+            "website/content/docs/mcp-deploy.md",
         ],
     ),
     // voipmonitor (benchmark comparison command lines)
@@ -644,8 +617,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/mcp.md",
             "website/content/docs/mcp.md",
-            "docs/mcp-walkthrough.md",
-            "website/content/docs/mcp-walkthrough.md",
+            "docs/mcp-deploy.md",
+            "website/content/docs/mcp-deploy.md",
         ],
     ),
     (
@@ -653,8 +626,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/mcp.md",
             "website/content/docs/mcp.md",
-            "docs/mcp-walkthrough.md",
-            "website/content/docs/mcp-walkthrough.md",
+            "docs/mcp-deploy.md",
+            "website/content/docs/mcp-deploy.md",
         ],
     ),
 ];
@@ -793,7 +766,7 @@ fn published_markdown() -> Vec<(String, String)> {
 fn readme_long_flags_exist_in_cli() {
     // Derived from the tree, not hand-listed. The old list held 34
     // include_str! entries and missed three published pages:
-    // docs/mcp-walkthrough.md carried 21 long-flag tokens and is rendered on
+    // docs/mcp-deploy.md carried 21 long-flag tokens and is rendered on
     // both the wiki and the site, so a renamed --mcp-* flag could ship live on
     // two surfaces with this suite green. Demonstrated: a phantom flag added
     // there passed 85 tests, while the same string in a listed page failed.
@@ -1195,13 +1168,13 @@ fn docs_current_version_markers_match_cargo() {
         // for a no-paren pattern to guard. Do not reintroduce a bare
         // `sipnab <version> features:` sample without gating it.
         (
-            "docs/mcp-walkthrough.md",
-            include_str!("../docs/mcp-walkthrough.md"),
+            "docs/mcp-deploy.md",
+            include_str!("../docs/mcp-deploy.md"),
             r"sipnab (\d+\.\d+\.\d+) \(",
         ),
         (
-            "website/content/docs/mcp-walkthrough.md",
-            include_str!("../website/content/docs/mcp-walkthrough.md"),
+            "website/content/docs/mcp-deploy.md",
+            include_str!("../website/content/docs/mcp-deploy.md"),
             r"sipnab (\d+\.\d+\.\d+) \(",
         ),
         // `website/content/docs/api.md` used to be gated here on an
@@ -1233,13 +1206,13 @@ fn docs_current_version_markers_match_cargo() {
         // listed here rather than left to rot the way the bare
         // `sipnab 0.5.20 features:` sample did for 23 releases.
         (
-            "docs/mcp-walkthrough.md",
-            include_str!("../docs/mcp-walkthrough.md"),
+            "docs/mcp-deploy.md",
+            include_str!("../docs/mcp-deploy.md"),
             r#""version": "(\d+\.\d+\.\d+)""#,
         ),
         (
-            "website/content/docs/mcp-walkthrough.md",
-            include_str!("../website/content/docs/mcp-walkthrough.md"),
+            "website/content/docs/mcp-deploy.md",
+            include_str!("../website/content/docs/mcp-deploy.md"),
             r#""version": "(\d+\.\d+\.\d+)""#,
         ),
         // The same server_capabilities sample appears in the MCP reference.
@@ -1247,13 +1220,13 @@ fn docs_current_version_markers_match_cargo() {
         // 0.5.69 after the crate moved to 0.5.70, in the same release that
         // added the gate. Two copies of one sample, one of them watched.
         (
-            "docs/mcp.md",
-            include_str!("../docs/mcp.md"),
+            "docs/mcp-tools.md",
+            include_str!("../docs/mcp-tools.md"),
             r#""version": "(\d+\.\d+\.\d+)""#,
         ),
         (
-            "website/content/docs/mcp.md",
-            include_str!("../website/content/docs/mcp.md"),
+            "website/content/docs/mcp-tools.md",
+            include_str!("../website/content/docs/mcp-tools.md"),
             r#""version": "(\d+\.\d+\.\d+)""#,
         ),
     ];
@@ -1971,10 +1944,10 @@ fn mcp_tool_table_lists_every_registered_tool() {
         registered.len()
     );
 
-    let doc = std::fs::read_to_string("docs/mcp.md").expect("docs/mcp.md");
+    let doc = std::fs::read_to_string("docs/mcp-tools.md").expect("docs/mcp-tools.md");
     let table = doc
         .split_once("| Tool | Parameters | Returns |")
-        .expect("docs/mcp.md has no tool table")
+        .expect("docs/mcp-tools.md has no tool table")
         .1;
     let table = &table[..table.find("\n\n").unwrap_or(table.len())];
     // The name may be plain (`get_message`) or a link into its own section
@@ -2007,12 +1980,12 @@ fn mcp_tool_table_lists_every_registered_tool() {
     assert!(
         missing.is_empty(),
         "these MCP tools are registered but absent from the table in \
-         docs/mcp.md: {missing:?}"
+         docs/mcp-tools.md: {missing:?}"
     );
     let phantom: Vec<_> = documented.difference(&registered).collect();
     assert!(
         phantom.is_empty(),
-        "docs/mcp.md documents MCP tools the server does not register: \
+        "docs/mcp-tools.md documents MCP tools the server does not register: \
          {phantom:?}"
     );
 }
@@ -2418,10 +2391,16 @@ fn no_documentation_table_repeats_a_row() {
     // Raised 148 -> 149 by `docs/design/documentation-pattern.md`, the record
     // of how prose docs are organised (split by task, depth in `<details>`).
     // A design doc, so one file and not two. Also from a failing run.
+    // Raised 149 -> 153 by the MCP split: docs/mcp-walkthrough.md became
+    // docs/mcp-deploy.md (a rename, no change), and docs/mcp.md shed its tool
+    // reference and protocol contract into docs/mcp-tools.md and
+    // docs/mcp-protocol.md. Two new operator pages, each mirrored, so four
+    // files — and the page that was 3435 lines is now 112. Also from a
+    // failing run.
     assert_eq!(
         files.len(),
-        149,
-        "found {} tracked markdown files, expected 149. More is fine — bump \
+        153,
+        "found {} tracked markdown files, expected 153. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2490,7 +2469,7 @@ fn no_documentation_table_repeats_a_row() {
     // tool-table row it also adds grew a table that already existed, which
     // this gate does not count.
     // Raised 460 -> 462 by the "three shapes" table in
-    // `docs/mcp-walkthrough.md`, counted rather than guessed: one table there
+    // `docs/mcp-deploy.md`, counted rather than guessed: one table there
     // and one in the generated site mirror — the same page twice, which is what
     // a mirrored page costs this counter, exactly as the entries above record.
     // It replaced a bullet list with a table so each shape could link to the
@@ -2501,7 +2480,7 @@ fn no_documentation_table_repeats_a_row() {
     // Raised 464 -> 466 by `find_correlated`'s strategy table in docs/mcp.md:
     // one there and one in the site mirror, the same page twice.
     // Raised 466 -> 470 by the federated-tracing section in
-    // docs/mcp-walkthrough.md: a strategy table and a federated-vs-centralised
+    // docs/mcp-deploy.md: a strategy table and a federated-vs-centralised
     // table, each doubled by the site mirror.
     // Raised 470 -> 472 by the untrusted-capture-text section in docs/mcp.md
     // (#139): one fenced/verbatim table per surface, doubled by the site mirror.
@@ -2526,7 +2505,7 @@ fn no_documentation_table_repeats_a_row() {
     // every how-to page. That page HAS a site mirror, so one authored table
     // counts twice.
     // Raised 487 -> 493 by the B2BUA-correlation and scripted-client work in
-    // docs/mcp-walkthrough.md, taken from this gate's own count rather than
+    // docs/mcp-deploy.md, taken from this gate's own count rather than
     // added up: three NEW tables (the four fields to read off `find_correlated`,
     // which responses carry `capture_identity`, and the HTTP-status decoder for
     // the script), each doubled by the site mirror. The strategy table on that
@@ -2653,7 +2632,7 @@ fn no_documentation_table_repeats_a_row() {
         // (2 tables x 2 pages). Attributed per file against HEAD before this
         // number moved — every other .md this change touched
         // (`docs/rest-api.md`, `docs/filter-dsl.md`,
-        // `docs/mcp-walkthrough.md`, `CHANGELOG.md`, and their mirrors) held
+        // `docs/mcp-deploy.md`, `CHANGELOG.md`, and their mirrors) held
         // its table count. The "Four tools are exceptions" table in
         // `docs/mcp.md` lost two ROWS and stayed a table, which this gate does
         // not count either way.
@@ -2808,7 +2787,7 @@ fn how_to_headings_stay_task_first() {
     // (page, floor) — the measured ratio at the time of writing, as a percent.
     const PAGES: &[(&str, usize)] = &[
         ("docs/tui-walkthrough.md", 90),
-        ("docs/mcp-walkthrough.md", 64),
+        ("docs/mcp-deploy.md", 64),
         ("docs/examples.md", 93),
     ];
 
@@ -2989,7 +2968,8 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let server =
         std::fs::read_to_string(repo.join("src/mcp/server.rs")).expect("read src/mcp/server.rs");
-    let page = std::fs::read_to_string(repo.join("docs/mcp.md")).expect("read docs/mcp.md");
+    let page =
+        std::fs::read_to_string(repo.join("docs/mcp-tools.md")).expect("read docs/mcp-tools.md");
 
     let name_re = regex::Regex::new(r#"name\s*=\s*"([a-z_]+)""#).unwrap();
     let tools: std::collections::BTreeSet<String> = name_re
@@ -3034,7 +3014,7 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() {
 
     assert!(
         missing_section.is_empty(),
-        "these MCP tools have no `### ` section in docs/mcp.md: {missing_section:?}. \
+        "these MCP tools have no `### ` section in docs/mcp-tools.md: {missing_section:?}. \
          A table row says a tool exists; it does not say how to call it or how to \
          read the answer. Give each one a heading naming it."
     );

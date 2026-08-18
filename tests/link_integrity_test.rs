@@ -590,7 +590,10 @@ fn wiki_intra_docs_links_resolve() {
     // cross-links the two pages now need to point at each other.
     // 431 -> 433: the STUN/TURN sections in troubleshooting.md and
     // encapsulations.md, each linking on to the metrics page.
-    const EXPECTED_WIKI_LINKS: usize = 433;
+    // Raised 433 -> 441 by the MCP split: mcp.md shed its tool reference and
+    // protocol contract into two new pages, and the four-page set cross-links
+    // where one page used to link internally.
+    const EXPECTED_WIKI_LINKS: usize = 441;
     // 385: `docs/mos-and-codecs.md` +1. The new "Declaring an impairment factor
     // sipnab does not have" section points at "AMR-WB — published, and
     // mode-dependent" further down the same page rather than restating why a
@@ -872,12 +875,32 @@ fn template_docs_links_and_anchors_resolve() {
 // 5. No references to the merged-away MCP pages
 // ---------------------------------------------------------------------------
 
-/// `mcp-overview.md`, `mcp-setup.md`, `mcp-tools.md` were merged into
-/// `mcp.md` in the docs restructure; nothing in either tree may still point
-/// at them (or a reader lands on a 404 / dead wiki page).
+/// `mcp-overview.md` and `mcp-setup.md` were merged into `mcp.md` in the docs
+/// restructure; nothing in either tree may still point at them (or a reader
+/// lands on a 404 / dead wiki page).
+///
+/// # Why `mcp-tools.md` is no longer on this list
+///
+/// It was, and it has been deliberately taken off. The merge (#145) removed
+/// three pages for ONE stated reason: each restated the `--mcp` requires `-N`
+/// / stdout-is-the-wire boilerplate, and consolidating gave that invariant a
+/// single owner. That was about duplication, not about page count.
+///
+/// By 0.5.111 `mcp.md` had reached 3435 lines, 2639 of them tool reference,
+/// and the boilerplate had already partly returned: `mcp.md` stated the
+/// invariant twice and `mcp-walkthrough.md` a third time — two pages, three
+/// mentions, before anything was split. Splitting the reference back out to
+/// `mcp-tools.md` left the total at three and reduced the introduction to one,
+/// with `mcp-protocol.md` owning the normative statement. The measurement is
+/// in the commit that made the change.
+///
+/// So the condition #145 protected is not violated by a page of that name
+/// existing, and the guard would now block the fix rather than the defect.
+/// `mcp-overview.md` and `mcp-setup.md` stay listed: nothing brought them
+/// back, and a stale link to either is still a 404.
 #[test]
 fn no_references_to_merged_away_mcp_pages() {
-    const GONE: &[&str] = &["mcp-overview.md", "mcp-setup.md", "mcp-tools.md"];
+    const GONE: &[&str] = &["mcp-overview.md", "mcp-setup.md"];
     let mut offenders = Vec::new();
     // The published surface, not every markdown file on disk. Two changes
     // from the old `md_files_recursive("docs")`:
@@ -1045,10 +1068,13 @@ fn every_docs_page_is_linked_from_the_index() {
     // Raised 34 -> 35 by `tuning-capture.md`, 37 -> 38 by
     // `internals/uprobe-capture.md`, 39 -> 40 by `plugins.md` — the published
     // WASM plugins page 0.5.107 added, and 41 -> 42 by
-    // `prometheus-metrics.md`, split out of the REST API page.
+    // `prometheus-metrics.md`, split out of the REST API page. Raised 42 -> 44
+    // by the MCP split: `mcp-walkthrough.md` became `mcp-deploy.md` (no
+    // change), and `mcp.md` shed its tool reference and protocol contract into
+    // `mcp-tools.md` and `mcp-protocol.md`.
     assert_eq!(
-        checked, 42,
-        "docs-page walk saw {checked} pages, expected 42. More is fine — bump \
+        checked, 44,
+        "docs-page walk saw {checked} pages, expected 44. More is fine — bump \
          this. FEWER means the walk stopped reading part of docs/ and every \
          reachability assertion above it silently narrowed."
     );
@@ -1070,7 +1096,7 @@ fn every_docs_page_is_linked_from_the_index() {
 /// generous: Zola is the only thing that will ever render those files, so an
 /// anchor that is merely valid on GitHub is a dead link on the site.
 ///
-/// That gap shipped a broken deploy. `docs/mcp-walkthrough.md` writes its
+/// That gap shipped a broken deploy. `docs/mcp-deploy.md` writes its
 /// same-page anchors in GitHub's spelling (`#step-0--install-...`, two hyphens
 /// because GitHub drops the em dash and keeps its spaces); Zola collapses the
 /// run to one hyphen. When the page joined the generated set, the whole test

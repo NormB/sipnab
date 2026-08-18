@@ -1,6 +1,6 @@
 +++
 title = "Capture SIP over TLS"
-weight = 27
+weight = 29
 description = "Pick the right method for reading SIP over TLS: a key log from the endpoint, plaintext read out of the process with no keys at all, eBPF with peer addresses, or eCapture — chosen by what access you have, plus what does not work and why."
 +++
 

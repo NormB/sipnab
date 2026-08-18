@@ -8,12 +8,41 @@ document has to serve both a first-time reader and someone writing a client
 against the protocol, what do you split, and where does the depth go?* — and
 the answer is meant to be applied to every page, not only the MCP ones.
 
+## What this repo had already decided
+
+This question was not open when this record was written, and the first draft
+was written as though it were. Two prior decisions bear on it, and both were
+found only after the MCP split was already under way:
+
+- **`task-first-docs.md`** (DONE, released in 0.5.70) settled that how-to
+  headings name the reader's GOAL, not the mechanism, and left a per-page
+  ratchet — `how_to_headings_stay_task_first` — enforcing it. The pattern below
+  does not replace that; it assumes it.
+- **#145 merged three MCP pages into one.** `mcp-overview.md`, `mcp-setup.md`
+  and `mcp-tools.md` became [`docs/mcp.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md), and a gate was added to stop them
+  coming back. The stated reason was narrow: each page restated the `--mcp`
+  requires `-N` / stdout-is-the-wire boilerplate, and consolidating gave that
+  invariant one owner.
+
+That second decision is the one this record reverses in part, so it is worth
+being exact about why. #145 removed a duplication problem. By 0.5.111 the
+merged page had reached 3435 lines — 2639 of them tool reference — and the
+duplication had already partly returned anyway: `mcp.md` stated the invariant
+twice and `mcp-walkthrough.md` a third time. Splitting the reference back out
+left the total unchanged at three mentions and reduced the introduction to one.
+The problem #145 solved is not re-created by splitting; it is re-created by
+splitting *without* giving one page ownership, which rule 3 below forbids.
+
+**The lesson for anyone applying this pattern further: read `docs/design/`
+first.** A page that looks badly organised may be the deliberate outcome of a
+decision that is still sound.
+
 ## The problem, in numbers
 
 [`docs/mcp.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md) is 3435 lines. The tool reference is roughly 2600 of them: 75% of
 the page is material nobody reads linearly. A reader arriving for the first
 time meets "Choosing a transport" at line 64 and "Token bootstrap" at line 232
-before they have seen a single tool return a single result. `mcp-walkthrough.md`
+before they have seen a single tool return a single result. `mcp-deploy.md`
 adds another 1878 lines and re-covers installation and quick-start, so the two
 pages already disagree in the way duplicated content always eventually does.
 
@@ -30,7 +59,7 @@ each has been observed rather than theorised:
   week takes the advanced page and bounces off it. The label sorts by ego, not
   by need.
 - **It duplicates, and duplicates drift.** Both pages need install, both need a
-  first example. `mcp.md` and `mcp-walkthrough.md` are already a live instance
+  first example. `mcp.md` and `mcp-deploy.md` are already a live instance
   of this, split by no principle at all.
 - **Experts need the simple page too.** Someone fluent in the tool but new to
   *this* task needs the five-minute version, and a page labelled for beginners
@@ -80,7 +109,7 @@ and "Advanced" gives them nothing to decide with.
 ### 3. Nothing is duplicated between pages, only linked
 
 If two pages need the same install steps, one page owns them and the other
-links. The duplication in `mcp.md` and `mcp-walkthrough.md` is what this rule
+links. The duplication in `mcp.md` and `mcp-deploy.md` is what this rule
 exists to prevent.
 
 ### 4. Reference material is uniform before it is good
@@ -113,7 +142,7 @@ The MCP set becomes four pages:
 | Page | Kind | From |
 |---|---|---|
 | `mcp.md` | Introduction | first ~60 lines, one example, transport table |
-| `mcp-deploy.md` | How-to | `mcp-walkthrough.md`, install de-duplicated |
+| `mcp-deploy.md` | How-to | `mcp-deploy.md`, install de-duplicated |
 | `mcp-tools.md` | Reference | the ~2600-line tool section, templated |
 | `mcp-protocol.md` | Protocol | security model, error model, response bounding, stdio invariant, untrusted text, raw JSON-RPC |
 
