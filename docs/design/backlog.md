@@ -1714,10 +1714,19 @@ implementation.
 - [ ] **PB16 — "Since version" column in the MCP tool table.** The surface is
   versioned in the wild now, and this review misread the tool set from the
   published site — which is precisely the error the column prevents.
-- [ ] **PB17 — `P-Charging-Vector` correlation: `related-icid` first, then
+- [x] **PB17 — `P-Charging-Vector` correlation: `related-icid` first, then
   `icid-value`.** `find_correlated` matches on `session_id`, `x_call_id`,
   `sdp_origin`, `via_branch` and `timing_heuristic`;
-  `grep -rin 'icid\|charging-vector' src/` matches nothing. In IMS and carrier
+  `grep -rin 'icid\|charging-vector' src/` matched nothing when this was
+  written and has not since: **done, verified 2026-08-17.**
+  [`src/sip/charging_vector.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/charging_vector.rs) reads both parameters per RFC 7315, and
+  `find_correlated` carries `CorrelationReason::ChargingVectorRelatedIcid` —
+  `related-icid` first, exactly as the heading asks, because a conformant B2BUA
+  makes two dialogs with two different icids and plain equality cannot cross
+  that hop. Tested in both query directions, and the parser is tested against
+  the near-misses that make a naive `contains` wrong: a parameter whose name
+  merely ends in `icid-value`, and an icid-looking string inside another
+  parameter's quoted text. In IMS and carrier
   networks the operator's own equipment already generates and carries these, so
   they correlate a call across nodes with **no configuration change from the
   user** — unlike Session-ID, which is the durable fix but requires touching the
@@ -1829,6 +1838,46 @@ authoritative; the PB text above adds only what they do not already say.
   What is left is a design change, not a tweak: carry the frame bytes forward
   (`bytes::Bytes` is refcounted, so the clone is O(1)) so the retention sites
   can hash on demand. Spec it before building it.
+
+  **Re-measured 2026-08-17 on 0.5.109, and the prize is larger than this entry
+  estimated — but only where it was not looking.** Ablation, same binary with
+  `stamp_digest` computing nothing, 535k corpus, median-of-5, idle host:
+
+  | cores | stamped | ablated |       |
+  |------:|--------:|--------:|------:|
+  | 2     | 2.19M   | 3.07M   | +40%  |
+  | 4     | 3.27M   | 3.63M   | +11%  |
+  | 8     | 3.30M   | 3.29M   | —     |
+
+  So the ~20% this entry predicted is +40% at TWO cores and nothing at eight.
+  That shape matters: two cores is exactly where 0.5.109's mapped reader gave
+  nothing, so this is the missing half of that curve rather than more of the
+  same. At eight cores something else is already the ceiling, and removing the
+  digest there buys zero — a fix aimed at eight-core throughput would be aimed
+  at the wrong stage.
+
+  **The design, specced.** The digest is needed only where a pointer is KEPT:
+  `sip_msg.frame` (pipeline), `stream.first_frame` (stream store) — about 35k
+  of 535k frames on this corpus, which is the 93% this entry names.
+
+  The obvious move — put the bytes in `FrameLocator` — is wrong twice over.
+  `FrameLocator` is `Copy` precisely so the parser touches no refcount, and its
+  own doc records that building an owned pointer per packet cost ~40% of the
+  packet path in atomics. Adding `Bytes` to it makes it non-`Copy` and
+  reinstates exactly that.
+
+  What works instead: carry the frame `Bytes` on `ParsedPacket` and hash at
+  materialisation. `pp.payload` is already `data.slice(..)` of the same
+  allocation, so the frame is retained for every packet either way — the added
+  cost is one more refcount increment on a counter the packet already holds,
+  against ~240 bytes of dependent FNV multiplies saved on 93% of frames.
+
+  **Blast radius, counted before starting: 63 `ParsedPacket` literal
+  construction sites** across `src/` and `tests/`. That is what makes this a
+  planned change rather than an afternoon's edit, and it is why the ablation is
+  recorded here first: the number above is worth having even if nobody builds
+  the change for a while, and it is now measured on the current build rather
+  than inferred from 0.5.88.
 
   **Separately, ~12% is NOT the digest, and it is NOT where this entry first
   said.** A digest-removed build measures 2.05M at 2 cores against 0.5.83's
@@ -2038,7 +2087,7 @@ treats as critical.
   running the replacement test 40 times: 0 failures, where the stat-only version
   failed intermittently on the same machine.
 
-- [ ] **TK4 — No way to feed secrets in without writing them to disk.**
+- [x] **TK4 — No way to feed secrets in without writing them to disk.**
   `--keylog` takes a path and nothing else, so a sibling eBPF producer must
   persist master secrets to a file that then has to be protected and deleted.
   **Do:** `--keylog-fd <N>` reading NSS keylog lines from an inherited
@@ -2049,6 +2098,18 @@ treats as critical.
   hooks in [`cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md). The producer is a sibling started
   independently. A FIFO path must be opened **before** the privilege drop,
   alongside capture devices, or a `--chroot`ed run cannot reach `/run`.
+
+  **Done, and verified 2026-08-17 rather than assumed.** `--keylog-fd <N>`
+  reads NSS keylog lines from an inherited descriptor (`KeylogSource::from_fd`)
+  and `--keylog` autodetects a FIFO (`KeylogSource::is_fifo`), so a sibling
+  producer can hand secrets over without either of them touching disk. The
+  constraint this entry set is met: `open_privileged_keylog_source` is called
+  before `privilege::drop_privileges`, so a FIFO under `/run` is opened while
+  the process can still reach it. Eleven tests cover it, including
+  `secrets_sent_down_a_pipe_reach_the_decryptor`, `a_fifo_delivers_keys_a_size_check_could_never_see`
+  (the case a length check cannot see, because a pipe has no length),
+  `a_line_split_across_polls_is_delivered_exactly_once`, and
+  `from_fd_does_not_change_the_callers_descriptor_flags`.
 
 - [x] **TK8 — TLS 1.3 SIP was not surfaced even with the correct secrets loaded.**
   **Fixed by [`42b464d6`](https://github.com/NormB/sipnab/blob/main/src/crypto.rs) ("Derive the TLS hash and the HEP transport instead of
