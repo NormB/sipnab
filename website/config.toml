@@ -48,7 +48,7 @@ version = "0.5.110"
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.109"
+published_version = "0.5.110"
 # Release date of `published_version` above -- NOT of `version`, further up.
 # `download.html` renders this beside `published_version` in a single sentence,
 # so the date belongs to the release a reader can actually download.
@@ -57,7 +57,7 @@ published_version = "0.5.109"
 # untagged version is the conflation the published_version split exists to
 # prevent. `site_release_date_matches_changelog` reads `published_version` and
 # enforces this.
-release_date = "2026-08-17"
+release_date = "2026-08-18"
 # Minimum glibc of the released -gnu binaries and .debs. This is NOT a free
 # choice: it is whatever the "Enforce glibc floor" step in release.yml admits,
 # and it must equal SIPNAB_GLIBC_FLOOR in static/install.sh, which decides
