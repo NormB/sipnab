@@ -440,7 +440,7 @@ TURN exchange, the two situations stop being indistinguishable, and the
 |---|---|
 | A mapped or relayed address in public space, and the SDP named the private one anyway | Nothing rewrote it. The client *knew* its routable address and did not use it. |
 | The probe drew no reply, and the STUN server is itself public | The client tried to reach the internet and could not, so it fell back to the private address. |
-| The probe drew no reply, but the STUN server is on the LAN | Nothing is proven — a LAN-only exchange says nothing about internet reachability, and sipnab stays quiet. |
+| The probe drew no reply, but the STUN server is on the LAN | This proves nothing — a LAN-only exchange says nothing about internet reachability, and sipnab stays quiet. |
 
 The first two raise `private_media_address` **on their own**, with no observed
 stream needed. That matters for the worst case: a call whose media never
@@ -500,7 +500,7 @@ lifetime runs out. When it does not -- or when its Refresh never reaches the
 server -- the relay tears the allocation down and the media stops **mid-call**.
 
 This is the only fault sipnab reports that has no other symptom anywhere. No
-SIP message says the audio stopped; the signaling shows a healthy call that
+SIP message says the audio stopped. The signaling shows a healthy call that
 went quiet, and both endpoints are still happily sending into a relay that no
 longer exists.
 

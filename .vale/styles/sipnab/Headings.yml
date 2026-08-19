@@ -39,6 +39,10 @@ exceptions:
   - macOS
   - Marketplace
   - MongoDB
+  # Python: a proper noun, and the same class as TypeScript directly below —
+  # Google's list simply omits it. Added when "Drive it from Python" failed
+  # while "Drive it from TypeScript" passed.
+  - Python
   - REPL
   - Studio
   - TypeScript

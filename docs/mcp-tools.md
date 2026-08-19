@@ -2,10 +2,11 @@
 
 Every tool the MCP server exposes, what it answers, and what it returns.
 
-This is lookup material, not reading material. For what MCP is and a first
-working example see [MCP server](mcp.md); for deployment shapes see
-[MCP deployment](mcp-deploy.md); for the wire contract, security model and
-error semantics see [MCP protocol](mcp-protocol.md).
+This is lookup material, not reading material.
+
+- [MCP server](mcp.md) — what MCP is, and a first working example.
+- [MCP deployment](mcp-deploy.md) — the deployment shapes.
+- [MCP protocol](mcp-protocol.md) — the wire contract, security model and error semantics.
 
 
 The v0.5 sipnab MCP tool surface. No tool edits the analysis in place, and

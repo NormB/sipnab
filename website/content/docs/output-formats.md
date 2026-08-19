@@ -292,7 +292,7 @@ than as a second finding.
 | `reason` | `ignored` — STUN told the client a public address and the SDP advertised the private one anyway. `relay_ignored` — a TURN server allocated the client a relayed address and the SDP advertised the private one anyway. `unanswered` — the client's request drew nothing, so it never learned a public address to advertise. |
 | `client` | The socket the STUN request left from, `ip:port`. |
 | `server` | The STUN or TURN server it went to. The box to check when the reason is `unanswered`. |
-| `mapped_address` / `relayed_address` | The reachable address the client was handed and did not use. Absent on `unanswered`, where there is none — that is the point of it. |
+| `mapped_address` / `relayed_address` | The reachable address the server returned and the client did not use. Absent on `unanswered`, where there is none — that is the point of it. |
 | `advertised` | The unroutable address the SDP named instead. |
 | `request_count` | Requests sent for that transaction. Above one is a retransmission, which [RFC 5389 §7.2.1](https://www.rfc-editor.org/rfc/rfc5389#section-7.2.1) sends only on timeout — so it is itself proof the earlier attempts drew silence. |
 | `observed_offset_secs` | Seconds from the start of this dialog to the STUN evidence; negative when the probe came first, which is the ordinary case. Absent when either time is unknown. |
@@ -300,7 +300,7 @@ than as a second finding.
 `observed_offset_secs` exists because the correlation is by **client IP alone**.
 Nothing in a Binding Request names a Call-ID, so a probe from the right address
 matches this dialog whether it happened during setup or an hour earlier. Inside
-a two-minute window the finding is an observation of this call; well outside it,
+a two-minute window the finding is an observation of this call. Well outside it,
 the same finding is an inference that the client's NAT-discovery failure
 persisted — usually true, and not the same claim. Past that window the hint
 appends a note saying so, and inside it says nothing, because a caveat printed
@@ -397,12 +397,12 @@ sipnab -N -I capture.pcap --json-analyze --no-cli-print \
   | jq '.findings[] | select(.severity == "critical") | {kind, occurrences}'
 ```
 
-`findings` is ranked worst first. Each carries a stable `kind`, a `severity`, an
+`findings` ranks worst first. Each carries a stable `kind`, a `severity`, an
 exact `occurrences` count, a `summary`, and an `evidence` array pointing back at
 the capture with Call-IDs, endpoints, timestamps and counts.
 
 `complete` is the field to read first. It is `false` when the run did not decode
-everything it was given — undecodable frames, SIP a port gate discarded, records
+everything it received — undecodable frames, SIP a port gate discarded, records
 a retention cap dropped — and then every count below it is a **floor**. The
 analysis refuses a clean verdict over a capture it could not fully read:
 
@@ -410,8 +410,8 @@ analysis refuses a clean verdict over a capture it could not fully read:
 sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.complete'
 ```
 
-Nothing here is derived anew. `--analyze` aggregates the per-dialog diagnosis
-sipnab already computes and the capture-level evidence it already holds; it
+`--analyze` derives nothing new. `--analyze` aggregates the per-dialog diagnosis
+sipnab already computes and the capture-level evidence it already holds. It
 ranks and counts them, and adds no judgement of its own.
 
 ## pcap / pcapng

@@ -1,7 +1,7 @@
 # MCP protocol
 
-The contract an MCP client is held to, and what an auditor needs: the security
-model, what the write verbs may do, how untrusted capture text is handled, the
+What an MCP client must honour, and what an auditor needs: the security model,
+what the write verbs may do, how sipnab treats untrusted capture text, the
 stdio invariant, and the error and bounding semantics.
 
 For the tools themselves see [MCP tool reference](mcp-tools.md).

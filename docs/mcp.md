@@ -10,8 +10,8 @@ an agent sees exactly what the other modes see.
 
 ## See it work
 
-Point sipnab at a pcap. Stdio is the default transport, so nothing else is
-needed:
+Point sipnab at a pcap. Stdio is the default transport, so nothing else
+applies:
 
 ```bash
 sipnab --mcp -N -I capture.pcap
@@ -78,12 +78,11 @@ sudo sipnab --mcp -N -d eth0
 
 `--mcp` requires `-N`/`--no-tui` because **stdout is the JSON-RPC wire**. sipnab
 refuses the TUI and every stdout-writing flag (`--json`, `--report`, …) rather
-than corrupting the wire with report text, so a combination that would break the
-protocol is rejected at startup instead of producing a confusing client error
-later.
+than corrupting the wire with report text. sipnab rejects such a combination at
+startup instead of leaving the client to fail on malformed JSON-RPC later.
 
 Stdio needs no token — it is a private pipe between client and server. A
-listening transport does need one; see [MCP protocol](mcp-protocol.md).
+listening transport does need one. See [MCP protocol](mcp-protocol.md).
 
 </details>
 
@@ -97,9 +96,9 @@ transport:
 cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http
 ```
 
-The default build excludes `mcp`, so an operator who will never expose the MCP
-surface pays no binary size for it. `sipnab --version` prints the features a
-binary was built with.
+The default build excludes `mcp`, so an operator who never exposes the MCP
+surface pays no binary size for it. `sipnab --version` prints the features of
+the binary.
 
 </details>
 
