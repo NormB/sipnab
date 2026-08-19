@@ -10,6 +10,28 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.113] - 2026-08-19
+
+### Fixed
+
+- **`scripts/rfc-links.py` did nothing anywhere but one machine.** It
+  hardcoded `root = /home/gator/Development/sipnab`, so everywhere else the
+  glob matched no files and it reported "0 section citations across 0 files"
+  and exited 0. A no-op that reports success is worse than a crash, because the
+  gate that points contributors at this script kept pointing them at one that
+  could not act. The root now comes from `__file__`, as in every sibling
+  script. It immediately finds 13 unlinked RFC first mentions across 6 files
+  that it had been skipping.
+
+- **The pre-push hook ran whichever Vale was on `PATH`.** `Vale.Spelling`
+  consults a dictionary that changes between releases, so a different binary
+  answers a different question: on identical committed bytes, the 3.16.0 CI
+  pins reported 0 errors while Homebrew's 3.17.1 reported 475. The hook blocked
+  pushes while CI was green, and could equally have passed something CI
+  rejects. It now checks the version against the pin, declines to run on a
+  mismatch while naming both versions, and accepts `VALE_BIN` — the convention
+  `CODESPELL_BIN` already established beside it.
+
 ## [0.5.112] - 2026-08-19
 
 ### Changed
