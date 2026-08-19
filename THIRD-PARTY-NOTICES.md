@@ -167,7 +167,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | getrandom | 0.3.4 | MIT OR Apache-2.0 |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 |
 | glob | 0.3.4 | MIT OR Apache-2.0 |
-| h2 | 0.4.14 | MIT |
+| h2 | 0.4.16 | MIT |
 | hashbrown | 0.15.5 | MIT OR Apache-2.0 |
 | hashbrown | 0.16.1 | MIT OR Apache-2.0 |
 | hashbrown | 0.17.0 | MIT OR Apache-2.0 |
