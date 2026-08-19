@@ -331,7 +331,7 @@ and line.
 
 It runs **rustdoc** over that shim tree as well as clippy, and that half covers
 a gap neither CI nor a Linux developer can reach. Broken intra-doc links never
-fire under build or clippy, and the Docs step in `ci.yml` is guarded
+fire under build or clippy, and `ci.yml` guards its Docs step with
 `if: runner.os == 'Linux'` — so a doc link into a `#[cfg(target_os = "linux")]`
 module was visible to exactly one kind of machine: a Mac, at push time, as a
 hard block on every push including the one that would have fixed it. Links to
