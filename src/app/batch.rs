@@ -1127,6 +1127,11 @@ fn report_capture_quality() {
     // fact the ordinary shape of it — the Allocate succeeded, the Refresh was
     // never sent, and nothing ever went unanswered.
     report_lapsed_allocations();
+    // Its own call rather than a tail of the one above, which returns early
+    // on a capture where nothing lapsed: a role conflict is routinely the
+    // only NAT finding a capture holds, and hanging it off an unrelated
+    // early return would have silenced it on exactly those captures.
+    report_ice_role_conflicts(&crate::stun::report());
 }
 
 /// Report TURN allocations that were still carrying traffic after the lifetime
@@ -1170,11 +1175,67 @@ fn report_lapsed_allocations() {
             alloc.refreshes,
             alloc.seconds_past_expiry().unwrap_or_default(),
         );
+        // The media that was on the relay when it was torn down. Without it
+        // the warning names an allocation and an operator has no way to reach
+        // the call that went quiet, which is the only reason they are reading
+        // it. Silent when no relayed frame was seen on the allocation — that
+        // is a real and different answer, not a zero worth printing.
+        if let Some(label) = alloc.relayed_media_label() {
+            tracing::warn!("TURN:     media on it: {label}");
+        }
     }
     if lapsed.len() > 5 {
         tracing::warn!(
             "TURN:   ... and {} further lapsed allocation(s) not listed.",
             lapsed.len() - 5
+        );
+    }
+}
+
+/// Report candidate pairs where the two ICE agents disagreed about which of
+/// them was in charge.
+///
+/// Reported beside the lapsed allocations rather than under `--stun` alone for
+/// the reason that finding is: a capture read WITHOUT the flag must still say
+/// it. RFC 8445 §7.3.1.1 lets ICE resolve a role conflict itself, so this is
+/// not always fatal — and the line says which of the two it was, because
+/// warning at full weight about a conflict the agents fixed in one round trip
+/// is how a reader learns to skip the warning that matters.
+///
+/// # Side effects
+///
+/// Writes warnings to the tracing log; silent when no conflict was seen.
+fn report_ice_role_conflicts(report: &crate::stun::StunReport) {
+    let ice = report.ice_summary();
+    if ice.role_conflicts_total == 0 {
+        return;
+    }
+    tracing::warn!(
+        "ICE: {} candidate pair(s) show a role conflict -- both agents claimed the same \
+         role, or one answered 487 Role Conflict (RFC 8445 section 7.3.1.1). The usual \
+         source is two endpoints configured with the same role, or a B2BUA relaying one \
+         side's role attribute to the other.",
+        ice.role_conflicts_total
+    );
+    for conflict in ice.role_conflicts.iter().take(5) {
+        tracing::warn!(
+            "ICE:   {} <-> {}: {} 487 response(s){}",
+            conflict.a,
+            conflict.b,
+            conflict.role_conflict_responses,
+            if conflict.resolved {
+                ", resolved -- a pair between them was nominated anyway, so it cost a round \
+                 trip of repeated checks rather than the call"
+            } else {
+                ", UNRESOLVED -- no pair between them was ever nominated, so this is a \
+                 candidate cause of media that never started"
+            }
+        );
+    }
+    if ice.role_conflicts.len() > 5 {
+        tracing::warn!(
+            "ICE:   ... and {} further conflicted pair(s) not listed.",
+            ice.role_conflicts.len() - 5
         );
     }
 }

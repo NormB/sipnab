@@ -2048,10 +2048,14 @@ pub fn classify_packet(
         // (see `TurnAllocation::expired_before_last_activity`). The call is
         // guarded by a relaxed atomic inside, so a capture that never touched
         // a relay pays a load and no lock.
+        // The WHOLE frame, not the unwrapped payload: the channel number is in
+        // the header and the SSRC is inside the payload, and those two
+        // together are what attribute the stream this recursion is about to
+        // create back to the allocation that carried it.
         crate::stun::note_channel_data(
             std::net::SocketAddr::new(pp.src_addr, pp.src_port),
             std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
-            inner.len(),
+            &pp.payload,
             pp.timestamp,
         );
         let mut unwrapped = pp.clone();

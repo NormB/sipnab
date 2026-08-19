@@ -2688,9 +2688,16 @@ fn no_documentation_table_repeats_a_row() {
         // HEAD first: cli-reference.md, prometheus-metrics.md and
         // troubleshooting.md gained rows and prose inside EXISTING tables, and
         // held their table counts.
+        //
+        // Raised 579 -> 581 by the ICE work: ONE written table, the fields of
+        // the `--json-stun` `ice` record in docs/output-formats.md, doubled by
+        // its site mirror. Attributed per file before the number moved:
+        // prometheus-metrics.md and its mirror gained two ROWS in the existing
+        // metrics table, and troubleshooting.md gained two prose sections with
+        // no table in either, so all three held their counts.
         tables,
-        579,
-        "walked {tables} tables, expected 579. More is fine — bump this. FEWER \
+        581,
+        "walked {tables} tables, expected 581. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

@@ -82,6 +82,7 @@ pub fn print_stun_report_as(report: &StunReport, format: crate::output::ReportFo
         );
     }
 
+    ice_prose(report, &mut out);
     lapsed_allocation_prose(report, &mut out);
     unanswered_prose(report, &mut out);
     out
@@ -239,6 +240,43 @@ fn allocation_table(report: &StunReport, md: bool, out: &mut String) {
              appears in the stream list rather than as a call with no media.",
             report.channel_data_frames, report.channel_data_bytes
         );
+        relayed_media_prose(report, out);
+    }
+}
+
+/// Say which media crossed which allocation, on which channel.
+///
+/// The line that closes the gap between the two halves of a relayed call. The
+/// stream list already shows the media — that is what unwrapping ChannelData
+/// achieved — but it shows it as packets between a phone and some socket, with
+/// nothing saying that socket is a relay or which allocation was carrying
+/// them. An SSRC is what both sides have in common, so naming it here is what
+/// lets a reader move between the two tables.
+fn relayed_media_prose(report: &StunReport, out: &mut String) {
+    for alloc in &report.allocations {
+        let Some(label) = alloc.relayed_media_label() else {
+            continue;
+        };
+        let _ = writeln!(out, "  {} -> {}: {label}", alloc.client, alloc.server);
+        for channel in &alloc.channels {
+            if let Some(peer) = channel.peer {
+                let _ = writeln!(
+                    out,
+                    "    channel 0x{:04x} is bound to peer {peer}",
+                    channel.channel
+                );
+            } else if !channel.bound {
+                // Not a fault, and said so: a capture that started after the
+                // ChannelBind is the ordinary case, and leaving the line out
+                // would make the missing peer look like missing data.
+                let _ = writeln!(
+                    out,
+                    "    channel 0x{:04x}: no ChannelBind for it appears in this capture, so \
+                     the peer behind the relay is not known",
+                    channel.channel
+                );
+            }
+        }
     }
 }
 
@@ -269,9 +307,96 @@ fn lapsed_allocation_prose(report: &StunReport, out: &mut String) {
             alloc.refreshes,
             alloc.seconds_past_expiry().unwrap_or_default()
         );
+        // What died with it. The finding is about a relay being torn down;
+        // this is the audio that was on the relay when it happened, and
+        // without it a reader has no route from the allocation to the call.
+        if let Some(label) = alloc.relayed_media_label() {
+            let _ = writeln!(out, "    media on it: {label}");
+        }
     }
     if lapsed.len() > 5 {
         let _ = writeln!(out, "  ... and {} more.", lapsed.len() - 5);
+    }
+}
+
+/// Say what ICE achieved: which pair won, and whether the agents agreed about
+/// who was choosing.
+///
+/// Silent on a capture with no ICE in it, the same rule the rest of this
+/// report follows. A capture holding plain STUN probes to a server has no
+/// connectivity checks in it and gains no section.
+fn ice_prose(report: &StunReport, out: &mut String) {
+    let ice = report.ice_summary();
+    if ice.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "\nICE: {} connectivity check(s), {} answered.",
+        ice.checks, ice.checks_answered
+    );
+    // The ICE reading of a silence every unanswered row below already lists
+    // one by one. Stated as a CONSEQUENCE and not as a second finding: what
+    // is new here is not that the checks went unanswered, it is that these
+    // particular unanswered requests were checks, so ICE never completed and
+    // the call has no media path at all.
+    if ice.checks > 0 && ice.checks_answered == 0 {
+        let _ = writeln!(
+            out,
+            "  Not one check was answered, so ICE never completed and no candidate pair was \
+             ever validated — the call has no media path. The individual transactions are \
+             listed under the unanswered transactions below."
+        );
+    }
+    for pair in &ice.nominated {
+        let mut line = format!("  nominated {} -> {}", pair.local, pair.remote);
+        if let Some(role) = pair.role {
+            line.push_str(&format!(" (nominated by the {} agent", role.label()));
+            match pair.priority {
+                Some(p) => line.push_str(&format!(", priority {p})")),
+                None => line.push(')'),
+            }
+        }
+        if let Some(rtt) = pair.rtt_ms {
+            line.push_str(&format!(", {rtt:.1} ms"));
+        }
+        let _ = writeln!(out, "{line}");
+    }
+    if ice.nominated_dropped() > 0 {
+        let _ = writeln!(
+            out,
+            "  ... and {} further nominated pair(s) not retained (the capture held more than \
+             the tracking cap); the counts above stay exact.",
+            ice.nominated_dropped()
+        );
+    }
+    for conflict in &ice.role_conflicts {
+        let mut line = format!("  ROLE CONFLICT {} <-> {}", conflict.a, conflict.b);
+        if let Some(role) = conflict.role {
+            line.push_str(&format!(": both claimed {}", role.label()));
+        }
+        if conflict.role_conflict_responses > 0 {
+            line.push_str(&format!(
+                ", {} x 487 Role Conflict",
+                conflict.role_conflict_responses
+            ));
+        }
+        line.push_str(if conflict.resolved {
+            ". ICE resolved it and a pair between them was nominated anyway, so it cost a \
+             round trip of repeated checks rather than the call."
+        } else {
+            ". No pair between them was ever nominated, so this is a candidate cause of media \
+             that never started."
+        });
+        let _ = writeln!(out, "{line}");
+    }
+    if ice.role_conflicts_dropped() > 0 {
+        let _ = writeln!(
+            out,
+            "  ... and {} further role conflict(s) not retained (the capture held more than \
+             the tracking cap); the counts above stay exact.",
+            ice.role_conflicts_dropped()
+        );
     }
 }
 
@@ -405,6 +530,18 @@ pub fn stun_report_ndjson(report: &StunReport) -> String {
             let _ = writeln!(out, "{v}");
         }
     }
+    // One `ice` record rather than one per pair: the counts and the lists are
+    // one answer to one question, and splitting them would make a consumer
+    // rebuild the denominator from the rows it happened to receive.
+    let ice = report.ice_summary();
+    if !ice.is_empty()
+        && let Ok(mut v) = serde_json::to_value(&ice)
+    {
+        if let Some(map) = v.as_object_mut() {
+            map.insert("record".to_string(), "ice".into());
+        }
+        let _ = writeln!(out, "{v}");
+    }
     out
 }
 
@@ -439,6 +576,7 @@ mod tests {
             software: None,
             ice_role: None,
             use_candidate: false,
+            priority: None,
             fingerprint_valid: None,
         }
     }
@@ -463,6 +601,8 @@ mod tests {
             refreshes: u32::from(refreshed_ms.is_some()),
             last_activity: ts(last_ms),
             released: false,
+            channels: Vec::new(),
+            unattributed_frames: 0,
         }
     }
 
@@ -663,5 +803,75 @@ mod tests {
             "the derived verdict must ride along: {}",
             lines[1]
         );
+    }
+
+    /// An ICE check, which is a Binding Request carrying the attributes RFC
+    /// 8445 §7.2.1 requires. Built as a modification of `tx` so the two cannot
+    /// drift apart in any field the ICE code does not care about.
+    fn ice_check(id: &str, answered: bool, nominates: bool) -> StunTransaction {
+        StunTransaction {
+            priority: Some(2_130_706_431),
+            ice_role: Some(crate::stun::IceRole::Controlling),
+            use_candidate: nominates,
+            ..tx(id, answered, 1)
+        }
+    }
+
+    /// Every check going unanswered is ICE never completing, and the report
+    /// says so as a CONSEQUENCE of the unanswered rows below rather than as a
+    /// second finding over the same transactions.
+    #[test]
+    fn an_ice_exchange_where_nothing_answered_says_ice_never_completed() {
+        let report = StunReport {
+            packets: 3,
+            transactions: vec![
+                ice_check("a1", false, false),
+                ice_check("a2", false, false),
+                ice_check("a3", false, true),
+            ],
+            ..StunReport::default()
+        };
+        let out = print_stun_report(&report);
+        assert!(
+            out.contains("ICE: 3 connectivity check(s), 0 answered."),
+            "{out}"
+        );
+        assert!(out.contains("Not one check was answered"), "{out}");
+        assert!(
+            out.contains("listed under the unanswered transactions below"),
+            "the silence must be reported once, not twice: {out}"
+        );
+        assert!(
+            !out.contains("nominated "),
+            "an unanswered USE-CANDIDATE nominated nothing: {out}"
+        );
+    }
+
+    /// A capture holding plain NAT probes has no ICE in it and must gain no
+    /// ICE section — the quiet-run rule the whole report follows.
+    #[test]
+    fn a_capture_without_ice_gains_no_ice_section() {
+        let report = report_of(vec![tx("nn", true, 1)], 2, 0);
+        let out = print_stun_report(&report);
+        assert!(!out.contains("ICE:"), "{out}");
+    }
+
+    /// The `ice` record rides the same NDJSON stream, tagged like the others,
+    /// and appears exactly once.
+    #[test]
+    fn ndjson_carries_one_tagged_ice_record() {
+        let report = StunReport {
+            packets: 2,
+            transactions: vec![ice_check("i1", true, true), ice_check("i2", true, false)],
+            ..StunReport::default()
+        };
+        let ndjson = stun_report_ndjson(&report);
+        let ice: Vec<&str> = ndjson
+            .lines()
+            .filter(|l| l.contains("\"record\":\"ice\""))
+            .collect();
+        assert_eq!(ice.len(), 1, "one ice record, not one per pair");
+        assert!(ice[0].contains("\"checks\":2"), "{}", ice[0]);
+        assert!(ice[0].contains("\"nominated_total\":1"), "{}", ice[0]);
     }
 }

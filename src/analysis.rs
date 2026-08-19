@@ -198,6 +198,8 @@ pub enum FindingKind {
     /// A TURN allocation that was still carrying traffic after the lifetime it
     /// was last granted had run out.
     TurnAllocationLapsed,
+    /// Two ICE agents on one pair claimed the same role, or answered `487`.
+    IceRoleConflict,
     /// ICMP named an endpoint unreachable and the quote reached no dialog.
     IcmpUnreachableEndpoint,
 
@@ -403,6 +405,19 @@ impl FindingKind {
                  allocation down the moment its lifetime lapses, and the media stops with it — \
                  mid-call, with no SIP message to explain it. Check that the client's Refresh \
                  transactions are reaching the server, and that the capture covers them.",
+            ),
+            Self::IceRoleConflict => m(
+                "ice_role_conflict",
+                Severity::Major,
+                "ICE agents disagreed about who was controlling",
+                "pair",
+                "Both agents on a candidate pair claimed the same ICE role, or one answered 487 \
+                 Role Conflict (RFC 8445 §7.3.1.1). ICE resolves this itself — the losing agent \
+                 switches role and repeats every check it had already sent — so a conflict that \
+                 resolved cost a round trip and nothing else. One that did NOT resolve is a \
+                 candidate cause of media that never started, and the evidence says which of \
+                 the two this is. The usual source is two endpoints configured with the same \
+                 role, or a B2BUA relaying one side's role attribute to the other.",
             ),
             Self::IcmpUnreachableEndpoint => m(
                 "icmp_unreachable_endpoint",
@@ -1164,12 +1179,56 @@ fn collect_capture_level(acc: &mut Accumulator, facts: &CaptureFacts) {
         if let Some(relayed) = alloc.relayed_address {
             ev = ev.endpoint(format!("relayed {relayed}"));
         }
+        // Which media died with it. The finding could always say an
+        // allocation lapsed and could never say what was ON it, so an
+        // operator had no way to get from "a relay was torn down" to the call
+        // that went quiet. The streams are named by SSRC because that is the
+        // key the stream list is sorted by, and the channel because that is
+        // what a follow-up capture has to filter on.
+        let streams = alloc.relayed_ssrcs();
+        if !streams.is_empty() {
+            ev = ev.count("relayed_streams", streams.len() as u64);
+        }
+        if let Some(label) = alloc.relayed_media_label() {
+            ev = ev.endpoint(format!("media {label}"));
+        }
         acc.add(
             FindingKind::TurnAllocationLapsed,
             ev.note(
                 "traffic continued on this relay after the lifetime it was last granted had \
                  run out, with no Refresh seen in between",
             ),
+        );
+    }
+
+    // ── ICE: the two agents disagreed about who was in charge ────────
+    //
+    // Only the role conflict is raised here. The other two things ICE says
+    // are deliberately not findings: a NOMINATED pair is an answer rather
+    // than a problem (it belongs in `--stun`, beside the mapped address it is
+    // the ICE analogue of), and connectivity checks that all went unanswered
+    // are ALREADY reported one by one as `unanswered_stun_probe` — a second
+    // finding over the same transactions would report one silence twice.
+    for conflict in &facts.stun.ice_summary().role_conflicts {
+        let mut ev = Evidence::default()
+            .endpoint(conflict.a.to_string())
+            .endpoint(conflict.b.to_string())
+            .count(
+                "role_conflict_responses",
+                u64::from(conflict.role_conflict_responses),
+            );
+        if let Some(role) = conflict.role {
+            ev = ev.endpoint(format!("both claimed {}", role.label()));
+        }
+        acc.add(
+            FindingKind::IceRoleConflict,
+            ev.note(if conflict.resolved {
+                "ICE resolved this itself and a pair was nominated anyway, so it cost a round \
+                 trip of repeated checks rather than the call"
+            } else {
+                "no candidate pair between these two was ever nominated, so this is a \
+                 candidate cause of media that never started"
+            }),
         );
     }
 
@@ -1424,6 +1483,8 @@ mod tests {
             FindingKind::AckMissing,
             FindingKind::RegistrationFailure,
             FindingKind::UnansweredStunProbe,
+            FindingKind::TurnAllocationLapsed,
+            FindingKind::IceRoleConflict,
             FindingKind::IcmpUnreachableEndpoint,
             FindingKind::RequestFailure,
             FindingKind::Abandoned,
@@ -1629,6 +1690,7 @@ mod tests {
             software: None,
             ice_role: None,
             use_candidate: false,
+            priority: None,
             fingerprint_valid: None,
         };
         let facts = CaptureFacts {

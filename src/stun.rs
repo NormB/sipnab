@@ -86,6 +86,18 @@ pub enum IceRole {
     Controlled,
 }
 
+impl IceRole {
+    /// The role in the words RFC 8445 uses for it, for a report a human
+    /// reads. One place rather than a `Debug` cast at each surface, which is
+    /// how `Controlling` reached operator-facing output with a capital C.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Controlling => "controlling",
+            Self::Controlled => "controlled",
+        }
+    }
+}
+
 /// One parsed STUN message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StunMessage {
@@ -246,6 +258,14 @@ pub const METHOD_ALLOCATE: u16 = 0x003;
 /// TURN `Refresh`, the method that extends an allocation — or releases it
 /// outright with a `LIFETIME` of zero.
 pub const METHOD_REFRESH: u16 = 0x004;
+
+/// TURN `ChannelBind`, the method that binds a channel number to a peer.
+///
+/// The one message that names both halves of a relayed media path, and it
+/// names them in the REQUEST — the success response carries neither. That is
+/// why the binding is folded in from the transaction rather than from the
+/// response ([`Tracker::apply_turn_response`]).
+pub const METHOD_CHANNEL_BIND: u16 = 0x009;
 
 /// The application data inside a TURN **ChannelData** wrapper, or `None` if
 /// this is not one.
@@ -847,6 +867,16 @@ pub struct StunTransaction {
     pub ice_role: Option<IceRole>,
     /// Whether any message in this transaction nominated its candidate pair.
     pub use_candidate: bool,
+    /// The `PRIORITY` the request carried, when it carried one.
+    ///
+    /// Kept because it is half of what separates an ICE CONNECTIVITY CHECK
+    /// from a plain server-reflexive probe: RFC 8445 §7.2.1 requires a check
+    /// to carry `PRIORITY` and a role attribute, and a Binding Request sent to
+    /// a STUN server to learn a reflexive address carries neither. See
+    /// [`Self::is_ice_check`] — without that discriminator, "ICE never
+    /// completed" and "the STUN server did not answer" are the same sentence,
+    /// and they are fixed in different places.
+    pub priority: Option<u32>,
     /// Whether a `FINGERPRINT` was checked, and whether it held.
     ///
     /// `Some(false)` is the reportable state: a message that carried a
@@ -878,6 +908,88 @@ impl StunTransaction {
     pub fn silence_is_a_fault(&self) -> bool {
         self.method == 0x001 || self.method == METHOD_ALLOCATE
     }
+
+    /// Whether this is an ICE CONNECTIVITY CHECK rather than a plain
+    /// server-reflexive probe.
+    ///
+    /// RFC 8445 §7.2.1 requires a check to carry `PRIORITY` and one of
+    /// `ICE-CONTROLLING`/`ICE-CONTROLLED`; a Binding Request aimed at a STUN
+    /// server carries neither. That is the whole discriminator, and it needs
+    /// no SDP to apply — which matters, because the two failures look
+    /// identical in a transaction table and are fixed in different places.
+    ///
+    /// `USE-CANDIDATE` alone qualifies: a nomination is a check by
+    /// definition, whatever else the message carried.
+    pub fn is_ice_check(&self) -> bool {
+        self.method == 0x001
+            && (self.priority.is_some() || self.ice_role.is_some() || self.use_candidate)
+    }
+
+    /// Whether this check nominated its candidate pair AND the peer agreed.
+    ///
+    /// Both halves are required. A `USE-CANDIDATE` that drew no reply
+    /// nominated nothing — the pair was never validated — and an error
+    /// response is a refusal rather than an agreement. Reporting either as
+    /// the path media took would name a path that carried none.
+    pub fn nominated_pair(&self) -> bool {
+        self.use_candidate
+            && self.method == 0x001
+            && self.responded_at.is_some()
+            && self.error_code.is_none()
+    }
+}
+
+/// One TURN channel, and the media that crossed it.
+///
+/// # Why an allocation has to record this
+///
+/// ChannelData is unwrapped and the RTP inside reaches the stream store as an
+/// ordinary stream, which is the whole point — otherwise a relayed call
+/// reports as a call with no media. But the stream that comes out is addressed
+/// CLIENT-to-RELAY, so nothing in it says it was relayed, which channel
+/// carried it, or which allocation it belonged to.
+///
+/// The cost of not recording it was not cosmetic. An allocation that lapsed
+/// mid-call could be reported as lapsed and could not name one packet that
+/// died with it — so the one finding sipnab makes that has no other symptom
+/// anywhere also had no evidence attached to it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RelayChannel {
+    /// The channel number, always within `0x4000..=0x7FFF`.
+    pub channel: u16,
+    /// The peer this channel was bound to, when a ChannelBind for it was seen
+    /// to succeed.
+    ///
+    /// `None` on a capture that started after the bind. Absent means unknown,
+    /// never "no peer": the frames still attribute to the allocation, and the
+    /// far side of the relay is simply not in this file.
+    pub peer: Option<SocketAddr>,
+    /// Whether a ChannelBind for this channel was SEEN to succeed here.
+    ///
+    /// Separates a channel this capture watched being set up from one inferred
+    /// from its frames alone. The second is not a fault — a capture that
+    /// starts mid-call is the ordinary case — and rendering it as one would
+    /// blame the client for when the capture began.
+    pub bound: bool,
+    /// Relayed frames seen on this channel.
+    pub frames: u64,
+    /// Relayed application bytes across them, the four-byte framing excluded.
+    pub bytes: u64,
+    /// When the first frame on this channel was seen.
+    pub first_seen: chrono::DateTime<chrono::Utc>,
+    /// When the most recent one was.
+    pub last_seen: chrono::DateTime<chrono::Utc>,
+    /// RTP SSRCs observed inside this channel's frames, first-seen order,
+    /// capped at [`MAX_SSRCS_PER_CHANNEL`].
+    ///
+    /// This is the join to the stream store: a stream carries an SSRC and a
+    /// socket pair, and so does a channel — so a relayed stream can be told
+    /// which allocation carried it without the media path having to know that
+    /// TURN exists. See [`relay_path_for`].
+    pub ssrcs: Vec<u32>,
+    /// SSRCs beyond the cap. Exact where [`Self::ssrcs`] is not, so a report
+    /// can say the list is a sample instead of implying it is the whole of it.
+    pub ssrcs_dropped: u32,
 }
 
 /// A TURN allocation: a relayed transport address with a lifetime.
@@ -909,6 +1021,19 @@ pub struct TurnAllocation {
     pub last_activity: chrono::DateTime<chrono::Utc>,
     /// Whether the client released it explicitly (a Refresh with `LIFETIME` 0).
     pub released: bool,
+    /// The channels seen on this allocation and the media that crossed them,
+    /// capped at [`MAX_CHANNELS_PER_ALLOCATION`].
+    pub channels: Vec<RelayChannel>,
+    /// Relayed frames on this allocation whose channel was not retained,
+    /// because [`MAX_CHANNELS_PER_ALLOCATION`] was already full.
+    ///
+    /// Counted in FRAMES rather than in channels because frames are what can
+    /// be counted exactly: knowing how many DISTINCT channels were shed would
+    /// need a record of every channel number ever seen, which is the unbounded
+    /// table the cap exists to prevent. Non-zero means [`Self::channels`] is a
+    /// sample of what crossed this allocation, and every surface that prints
+    /// the channels says so when it is.
+    pub unattributed_frames: u64,
 }
 
 impl TurnAllocation {
@@ -946,6 +1071,102 @@ impl TurnAllocation {
         let expiry = self.expires_at()?;
         Some((self.last_activity - expiry).num_seconds())
     }
+
+    /// Relayed frames across every channel on this allocation.
+    pub fn relayed_frames(&self) -> u64 {
+        self.channels.iter().map(|c| c.frames).sum()
+    }
+
+    /// Every SSRC observed crossing this allocation, first-seen order, with
+    /// duplicates across channels removed.
+    ///
+    /// The answer to "what media dies when this allocation lapses", which is
+    /// the question the lapsed-allocation finding could not previously answer.
+    pub fn relayed_ssrcs(&self) -> Vec<u32> {
+        let mut out: Vec<u32> = Vec::new();
+        for channel in &self.channels {
+            for ssrc in &channel.ssrcs {
+                if !out.contains(ssrc) {
+                    out.push(*ssrc);
+                }
+            }
+        }
+        out
+    }
+
+    /// One line naming the media this allocation carried, or `None` when no
+    /// relayed frame was ever seen on it.
+    ///
+    /// `None` rather than "0 streams" on purpose: an allocation with no
+    /// relayed frames in the capture is the ordinary shape of a call that was
+    /// set up and not yet talking, and printing a zero beside it would read as
+    /// a second fault.
+    pub fn relayed_media_label(&self) -> Option<String> {
+        if self.channels.is_empty() {
+            return None;
+        }
+        let ssrcs = self.relayed_ssrcs();
+        let channels: Vec<String> = self
+            .channels
+            .iter()
+            .map(|c| format!("0x{:04x}", c.channel))
+            .collect();
+        let mut label = format!(
+            "{} frame(s) on channel {}",
+            self.relayed_frames(),
+            channels.join(", ")
+        );
+        if !ssrcs.is_empty() {
+            let named: Vec<String> = ssrcs.iter().map(|s| format!("0x{s:08x}")).collect();
+            label.push_str(&format!(
+                ", carrying {} stream(s) (SSRC {})",
+                named.len(),
+                named.join(", ")
+            ));
+        }
+        let shed_ssrcs: u32 = self.channels.iter().map(|c| c.ssrcs_dropped).sum();
+        if self.unattributed_frames > 0 || shed_ssrcs > 0 {
+            label.push_str(&format!(
+                " (a sample: {} frame(s) crossed channels beyond the retention cap, and {} \
+                 further SSRC(s) were not retained)",
+                self.unattributed_frames, shed_ssrcs
+            ));
+        }
+        Some(label)
+    }
+
+    /// The entry for `channel`, created if this allocation has room for it.
+    ///
+    /// `None` when [`MAX_CHANNELS_PER_ALLOCATION`] is already full and this
+    /// channel is new — the caller counts the frame against
+    /// [`Self::unattributed_frames`] rather than growing the table (D17).
+    fn channel_entry(
+        &mut self,
+        channel: u16,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) -> Option<&mut RelayChannel> {
+        // Two passes rather than one `if let ... else`: the borrow from the
+        // first would still be live across the push, which the borrow checker
+        // refuses even though the paths are disjoint.
+        if let Some(index) = self.channels.iter().position(|c| c.channel == channel) {
+            return self.channels.get_mut(index);
+        }
+        if self.channels.len() >= MAX_CHANNELS_PER_ALLOCATION {
+            return None;
+        }
+        self.channels.push(RelayChannel {
+            channel,
+            peer: None,
+            bound: false,
+            frames: 0,
+            bytes: 0,
+            first_seen: timestamp,
+            last_seen: timestamp,
+            ssrcs: Vec::new(),
+            ssrcs_dropped: 0,
+        });
+        self.channels.last_mut()
+    }
 }
 
 /// Transaction retention cap. STUN transactions are short-lived and small;
@@ -955,6 +1176,23 @@ pub const MAX_TRANSACTIONS: usize = 10_000;
 
 /// Allocation retention cap. One entry per client/server socket pair.
 pub const MAX_ALLOCATIONS: usize = 2_048;
+
+/// Channels retained per allocation (D17 — every store is bounded).
+///
+/// Sixteen: RFC 5766 gives a client 16,384 channel numbers, and a real
+/// endpoint binds one per media stream — two for an audio call with RTCP
+/// multiplexed off, a handful for video. A capture that needs more than
+/// sixteen on ONE allocation is a load generator, and the exact totals stay on
+/// [`RelayChannel::ssrcs_dropped`] and [`TurnAllocation::channels_dropped`]
+/// where the cap does bite.
+pub const MAX_CHANNELS_PER_ALLOCATION: usize = 16;
+
+/// SSRCs retained per channel (D17).
+///
+/// A channel carries one media stream in the ordinary case; eight leaves room
+/// for an endpoint that re-keys its SSRC mid-call without letting a
+/// misbehaving one grow the table without bound.
+pub const MAX_SSRCS_PER_CHANNEL: usize = 8;
 
 /// Requests seen, keyed by transaction ID, with their answers folded in.
 #[derive(Debug, Default)]
@@ -1060,6 +1298,7 @@ pub fn note_message(
                 software: msg.software.clone(),
                 ice_role: msg.ice_role,
                 use_candidate: msg.use_candidate,
+                priority: msg.priority,
                 fingerprint_valid: msg.fingerprint_valid,
             };
             tracker.transactions.insert(msg.transaction_id, tx);
@@ -1123,6 +1362,7 @@ pub fn note_message(
                     software: msg.software.clone(),
                     ice_role: msg.ice_role,
                     use_candidate: msg.use_candidate,
+                    priority: msg.priority,
                     fingerprint_valid: msg.fingerprint_valid,
                 };
                 tracker.transactions.insert(msg.transaction_id, tx);
@@ -1136,15 +1376,26 @@ pub fn note_message(
     }
 }
 
-/// Record one relayed TURN ChannelData frame.
+/// Record one relayed TURN ChannelData frame, given the WHOLE frame.
 ///
-/// `bytes` is the relayed application data only — the four-byte header is
-/// framing, not payload, and counting it would overstate the media.
+/// The whole frame rather than a length, because the header is where the
+/// attribution lives: the channel number is the first two bytes, and the RTP
+/// inside carries the SSRC that joins this frame to the stream the media path
+/// built out of it. A caller handing over a byte count could not supply
+/// either, and one handing over both separately could get them out of step.
+/// Only the relayed application data is counted as media — the four-byte
+/// header is framing, and counting it would overstate the media.
 ///
-/// The point of recording it is [`TurnAllocation::expired_before_last_activity`]:
-/// relayed media IS the traffic that kept flowing past the expiry, and an
-/// allocation whose activity clock only ever advanced on signaling could never
-/// show that.
+/// Two things are recorded, and they answer different questions:
+///
+/// * The allocation's activity clock, which is what
+///   [`TurnAllocation::expired_before_last_activity`] measures the expiry
+///   against — relayed media IS the traffic that kept flowing past it, and an
+///   allocation whose clock only ever advanced on signaling could never show
+///   a relay torn down under a live call.
+/// * The channel this frame crossed and the SSRC inside it, which is what
+///   lets a stream in the stream store be told which relay carried it. See
+///   [`RelayChannel`] and [`relay_path_for`].
 ///
 /// # Cost
 ///
@@ -1156,12 +1407,19 @@ pub fn note_message(
 pub fn note_channel_data(
     src: SocketAddr,
     dst: SocketAddr,
-    bytes: usize,
+    frame: &[u8],
     timestamp: chrono::DateTime<chrono::Utc>,
 ) {
     if !ALLOCATION_SEEN.load(std::sync::atomic::Ordering::Acquire) {
         return;
     }
+    let Some(payload) = channel_data_payload(frame) else {
+        return; // not a ChannelData frame: nothing to attribute
+    };
+    // Safe: `channel_data_payload` already required at least four bytes.
+    let channel = u16::from_be_bytes([frame[0], frame[1]]);
+    let ssrc = relayed_ssrc(payload);
+    let bytes = payload.len();
     let Ok(mut guard) = TRACKER.lock() else {
         return;
     };
@@ -1169,6 +1427,107 @@ pub fn note_channel_data(
     tracker.channel_data_frames += 1;
     tracker.channel_data_bytes += bytes as u64;
     tracker.touch_allocation(src, dst, timestamp);
+    tracker.record_relayed_frame(src, dst, channel, bytes as u64, ssrc, timestamp);
+}
+
+/// The SSRC of an RTP packet relayed inside a ChannelData frame, or `None`
+/// when the payload is not one.
+///
+/// Written here rather than borrowed from [`crate::rtp`] deliberately: this
+/// module must not start deciding what IS media. All it needs is the join key
+/// the stream store will end up filing this packet under, and it is better to
+/// return `None` on anything ambiguous than to record an SSRC read out of
+/// something that turns out not to be RTP at all.
+///
+/// RTCP is excluded on the same reasoning. It shares the version bits, its
+/// packet types land at `72..=79` once the marker bit is masked off, and its
+/// bytes 8..12 are not an SSRC in the sense the stream store means — folding
+/// them in would file a report block under a media stream that never existed.
+fn relayed_ssrc(payload: &[u8]) -> Option<u32> {
+    if payload.len() < 12 || payload[0] & 0xC0 != 0x80 {
+        return None;
+    }
+    if (72..=79).contains(&(payload[1] & 0x7F)) {
+        return None; // RTCP, not a media stream
+    }
+    Some(u32::from_be_bytes([
+        payload[8],
+        payload[9],
+        payload[10],
+        payload[11],
+    ]))
+}
+
+/// The relay a stream's packets crossed, or `None` when they crossed none.
+///
+/// # How a relayed stream reaches its allocation
+///
+/// The join is the socket pair plus the SSRC, and both halves are needed. A
+/// relayed stream's 5-tuple is CLIENT-to-RELAY — that is where the packets
+/// were actually seen — which is exactly the allocation's own key, so the pair
+/// finds the allocation in either direction. The SSRC then picks out which
+/// channel on it carried this particular stream, because one allocation
+/// routinely carries several.
+///
+/// A stream whose SSRC was never seen inside a ChannelData frame is NOT
+/// attributed to the allocation its addresses happen to match. Media sent
+/// directly to a relay's address without being channel-wrapped is a different
+/// thing from media the relay carried, and claiming the second would be the
+/// confident wrong answer this whole join exists to avoid.
+///
+/// Answered from a relaxed atomic, with no lock taken, on any run that never
+/// saw a TURN allocation granted — which is every capture without a relay.
+pub fn relay_path_for(a: SocketAddr, b: SocketAddr, ssrc: u32) -> Option<RelayPath> {
+    if !ALLOCATION_SEEN.load(std::sync::atomic::Ordering::Acquire) {
+        return None;
+    }
+    let guard = TRACKER.lock().ok()?;
+    let tracker = guard.as_ref()?;
+    let alloc = tracker
+        .allocations
+        .get(&(a, b))
+        .or_else(|| tracker.allocations.get(&(b, a)))?;
+    let channel = alloc.channels.iter().find(|c| c.ssrcs.contains(&ssrc))?;
+    Some(RelayPath {
+        client: alloc.client,
+        server: alloc.server,
+        relayed_address: alloc.relayed_address,
+        channel: channel.channel,
+        peer: channel.peer,
+        lapsed: alloc.expired_before_last_activity(),
+    })
+}
+
+/// The relay one media stream crossed: which allocation, which channel, and
+/// whether that allocation had already lapsed under it.
+///
+/// Context rather than a finding. It answers "where did this call's audio
+/// actually go", which for a relayed call had no answer at all — the stream
+/// list showed packets between the phone and a relay, and nothing anywhere
+/// said the relay was one, which address it was relaying to, or that the
+/// allocation carrying it was about to be torn down.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RelayPath {
+    /// The client socket that holds the allocation.
+    pub client: SocketAddr,
+    /// The TURN server socket that granted it.
+    pub server: SocketAddr,
+    /// The relayed transport address the server allocated — the address the
+    /// far end of the call actually sends to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relayed_address: Option<SocketAddr>,
+    /// The channel number that carried this stream.
+    pub channel: u16,
+    /// The peer the channel was bound to, when the bind was seen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer: Option<SocketAddr>,
+    /// Whether the allocation was still carrying traffic past the lifetime it
+    /// was last granted.
+    ///
+    /// Carried here, on the stream's own record, because that is where it is
+    /// actionable: the capture-level finding says an allocation lapsed, and
+    /// this says THIS call's audio was on it.
+    pub lapsed: bool,
 }
 
 impl Tracker {
@@ -1213,7 +1572,86 @@ impl Tracker {
                     alloc.released = true;
                 }
             }),
+            // ChannelBind is the one message that names both halves of a
+            // relayed media path — and it names them in the REQUEST, not in
+            // the response, which carries no attributes at all. So the
+            // binding is read back off the transaction this response just
+            // answered, and only once it HAS been answered: a ChannelBind
+            // that drew nothing bound no channel, and recording it would put
+            // a peer on a path the relay never agreed to carry.
+            //
+            // This is the one place besides Allocate that may CREATE an
+            // allocation, and it is entitled to: RFC 5766 §11 has a relay
+            // refuse a ChannelBind that names no allocation, so a successful
+            // one proves the allocation exists even on a capture that started
+            // after the Allocate. Nothing is invented by it — no relayed
+            // address and no lifetime, so `expired_before_last_activity` stays
+            // false and no lapse is claimed from a grant nobody observed.
+            METHOD_CHANNEL_BIND => {
+                let bound = self
+                    .transactions
+                    .get(&msg.transaction_id)
+                    .and_then(|tx| tx.channel_number.map(|c| (c, tx.peer_address)));
+                if let Some((channel, peer)) = bound {
+                    self.upsert_allocation(client, server, timestamp, |alloc| {
+                        let entry = alloc.channel_entry(channel, timestamp);
+                        if let Some(entry) = entry {
+                            entry.bound = true;
+                            if peer.is_some() {
+                                entry.peer = peer;
+                            }
+                        }
+                    });
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// Attribute one relayed frame to the channel, and the allocation, that
+    /// carried it.
+    ///
+    /// Never CREATES an allocation, for the same reason
+    /// [`Self::touch_allocation`] does not: an allocation exists because an
+    /// Allocate succeeded, and inventing one from a relayed frame would put a
+    /// lifetime on something no server ever granted. A capture that starts
+    /// after the Allocate therefore records the frames as counters and
+    /// attributes them to nothing, which is the honest reading of it.
+    fn record_relayed_frame(
+        &mut self,
+        a: SocketAddr,
+        b: SocketAddr,
+        channel: u16,
+        bytes: u64,
+        ssrc: Option<u32>,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) {
+        if self.allocations.is_empty() {
+            return;
+        }
+        let key = if self.allocations.contains_key(&(a, b)) {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        let Some(alloc) = self.allocations.get_mut(&key) else {
+            return;
+        };
+        let Some(entry) = alloc.channel_entry(channel, timestamp) else {
+            alloc.unattributed_frames += 1;
+            return;
+        };
+        entry.frames += 1;
+        entry.bytes += bytes;
+        entry.last_seen = entry.last_seen.max(timestamp);
+        if let Some(ssrc) = ssrc
+            && !entry.ssrcs.contains(&ssrc)
+        {
+            if entry.ssrcs.len() >= MAX_SSRCS_PER_CHANNEL {
+                entry.ssrcs_dropped += 1;
+            } else {
+                entry.ssrcs.push(ssrc);
+            }
         }
     }
 
@@ -1243,6 +1681,8 @@ impl Tracker {
                     refreshes: 0,
                     last_activity: timestamp,
                     released: false,
+                    channels: Vec::new(),
+                    unattributed_frames: 0,
                 },
             );
             // Release, paired with the Acquire in `note_channel_data`: the
@@ -1341,9 +1781,254 @@ impl StunReport {
             .filter(|a| a.expired_before_last_activity())
     }
 
+    /// How many media streams were observed crossing an allocation that had
+    /// already lapsed.
+    ///
+    /// The number the lapsed-allocation finding was missing: "one allocation
+    /// lapsed" says a relay was torn down, and this says how much audio was on
+    /// it when that happened. Zero is a real and different answer — the
+    /// allocation lapsed with no media on it, which nobody needs woken for.
+    pub fn lapsed_relayed_streams(&self) -> u64 {
+        self.lapsed_allocations()
+            .map(|a| a.relayed_ssrcs().len() as u64)
+            .sum()
+    }
+
     /// Whether the run saw no STUN and no TURN at all.
     pub fn is_empty(&self) -> bool {
         self.packets == 0 && self.channel_data_frames == 0
+    }
+
+    /// What ICE did in this capture: how many connectivity checks were sent,
+    /// how many were answered, which pairs were nominated, and whether the
+    /// two agents ever disagreed about who was in charge.
+    ///
+    /// Derived from the transaction table rather than stored beside it, the
+    /// same way [`Self::unanswered`] and [`Self::lapsed_allocations`] are: the
+    /// facts are already in the table, and a second copy of them could only
+    /// ever drift from it.
+    pub fn ice_summary(&self) -> IceSummary {
+        let mut summary = IceSummary::default();
+        // Roles each host claimed, per unordered host pair. Sets rather than a
+        // single value on purpose: RFC 8445 §7.3.1.1 has the losing agent
+        // SWITCH roles after a 487, so an agent that resolved a conflict
+        // claimed both over the capture's life. Intersecting the sets finds
+        // the conflict either way — before it was resolved and after — where
+        // comparing last-seen roles would silently miss the resolved case,
+        // which is the one most captures actually hold.
+        let mut claimed: indexmap::IndexMap<(SocketAddr, SocketAddr), [Vec<IceRole>; 2]> =
+            indexmap::IndexMap::new();
+        let mut conflict_responses: indexmap::IndexMap<(SocketAddr, SocketAddr), u32> =
+            indexmap::IndexMap::new();
+        // Every pair a nomination was seen on, not only the ones that fit in
+        // `nominated` — a conflict on the hundredth nominated pair is still a
+        // conflict ICE resolved, and reading `resolved` off the capped list
+        // would call it unresolved because the report ran out of rows.
+        // Bounded by the transaction table it is derived from.
+        let mut nominated_pairs: indexmap::IndexSet<(SocketAddr, SocketAddr)> =
+            indexmap::IndexSet::new();
+
+        for tx in &self.transactions {
+            if !tx.is_ice_check() {
+                continue;
+            }
+            summary.checks += 1;
+            if tx.responded_at.is_some() {
+                summary.checks_answered += 1;
+            }
+            if tx.nominated_pair() {
+                summary.nominated_total += 1;
+                nominated_pairs.insert(pair_key(tx.client, tx.server).0);
+                if summary.nominated.len() < MAX_ICE_ROWS {
+                    summary.nominated.push(NominatedPair {
+                        local: tx.client,
+                        remote: tx.server,
+                        role: tx.ice_role,
+                        priority: tx.priority,
+                        nominated_at: tx.responded_at.unwrap_or(tx.last_request),
+                        rtt_ms: tx.rtt_ms,
+                    });
+                }
+            }
+            let (key, side) = pair_key(tx.client, tx.server);
+            if let Some(role) = tx.ice_role {
+                let entry = claimed.entry(key).or_default();
+                if !entry[side].contains(&role) {
+                    entry[side].push(role);
+                }
+            }
+            // 487 Role Conflict, the answer an agent gives when the peer
+            // claimed the role it holds itself (RFC 8445 §7.3.1.1). Counted
+            // on the pair rather than raised on its own, because it and the
+            // duplicate-role claim are the same fault seen from the two ends.
+            if tx.error_code == Some(487) {
+                *conflict_responses.entry(key).or_default() += 1;
+            }
+        }
+
+        let mut pairs: Vec<(SocketAddr, SocketAddr)> = claimed.keys().copied().collect();
+        for key in conflict_responses.keys() {
+            if !pairs.contains(key) {
+                pairs.push(*key);
+            }
+        }
+        for key in pairs {
+            let roles = claimed.get(&key);
+            let both: Vec<IceRole> = roles
+                .map(|r| {
+                    r[0].iter()
+                        .filter(|role| r[1].contains(role))
+                        .copied()
+                        .collect()
+                })
+                .unwrap_or_default();
+            let responses = conflict_responses.get(&key).copied().unwrap_or(0);
+            if both.is_empty() && responses == 0 {
+                continue;
+            }
+            summary.role_conflicts_total += 1;
+            if summary.role_conflicts.len() < MAX_ICE_ROWS {
+                summary.role_conflicts.push(IceRoleConflict {
+                    a: key.0,
+                    b: key.1,
+                    role: both.first().copied(),
+                    role_conflict_responses: responses,
+                    // Whether ICE got past it. A conflict the agents resolved
+                    // cost a round trip and nothing else, and reporting it at
+                    // the same weight as one that never resolved would train
+                    // a reader to skip both.
+                    resolved: nominated_pairs.contains(&key),
+                });
+            }
+        }
+        summary
+    }
+}
+
+/// Rows retained for each ICE list (D17). Both lists are already bounded by
+/// the transaction table they are derived from; this bounds what a REPORT
+/// carries, so a capture full of ICE cannot turn one finding into ten thousand
+/// lines. The `_total` counters beside them stay exact.
+pub const MAX_ICE_ROWS: usize = 64;
+
+/// An unordered key for a host pair, plus which side of it `a` is.
+///
+/// Sorted so the same pair keys identically whichever direction the packet
+/// went, which is what lets a check and the peer's mirror image of it land in
+/// one entry instead of two — and two entries is exactly how one
+/// misconfiguration would be reported twice.
+fn pair_key(a: SocketAddr, b: SocketAddr) -> ((SocketAddr, SocketAddr), usize) {
+    if a <= b { ((a, b), 0) } else { ((b, a), 1) }
+}
+
+/// A candidate pair an ICE agent nominated, and the peer confirmed.
+///
+/// The ICE answer to the question `XOR-MAPPED-ADDRESS` answers for plain STUN:
+/// which path the media actually took. Without it a capture of an ICE exchange
+/// that converged and one that never did read the same — a pile of Binding
+/// Requests on a media port, with nothing saying which of them won.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct NominatedPair {
+    /// The socket the nominating check left from.
+    pub local: SocketAddr,
+    /// The socket it was sent to. Together with `local` this is the pair, and
+    /// it is the 5-tuple a follow-up capture filter has to match.
+    pub remote: SocketAddr,
+    /// The role the nominating agent claimed. Only a controlling agent may
+    /// nominate (RFC 8445 §8.1.1), so anything else here is worth seeing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<IceRole>,
+    /// The `PRIORITY` the check carried, reported and never recomputed —
+    /// sipnab is an observer, not an ICE agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<u32>,
+    /// When the peer confirmed it.
+    pub nominated_at: chrono::DateTime<chrono::Utc>,
+    /// Round-trip time of the nominating exchange, in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rtt_ms: Option<f64>,
+}
+
+/// Two ICE agents that disagreed about which of them was in charge.
+///
+/// A real misconfiguration, and one whose only other symptom is media that
+/// takes a long time to start or never starts at all: RFC 8445 §7.3.1.1 has
+/// the agent that detects it answer `487 Role Conflict`, and one side then
+/// switches role and repeats every check it had already sent.
+///
+/// Both shapes of evidence are folded into one record because they are the
+/// same fault seen from the two ends — the duplicate claim is what the
+/// requests show, and the `487` is what the answer to them shows. Two records
+/// would report one misconfiguration twice.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct IceRoleConflict {
+    /// One endpoint of the pair.
+    pub a: SocketAddr,
+    /// The other. Ordered so the same pair renders identically whichever
+    /// direction the first packet went.
+    pub b: SocketAddr,
+    /// The role both sides claimed, when the conflict was seen that way.
+    ///
+    /// `None` where the only evidence is a `487` — the request that provoked
+    /// it may not be in the capture, and naming a role nobody was observed to
+    /// claim would be an invention.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<IceRole>,
+    /// How many `487 Role Conflict` responses were seen on this pair.
+    pub role_conflict_responses: u32,
+    /// Whether a candidate pair between these two was nominated anyway.
+    ///
+    /// `true` means ICE resolved the conflict itself and the call went on —
+    /// it cost a round trip. `false` means nothing was ever nominated between
+    /// them, and the conflict is a candidate cause of media that never
+    /// started.
+    pub resolved: bool,
+}
+
+/// What ICE achieved in this capture.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct IceSummary {
+    /// Connectivity checks seen — Binding Requests carrying the ICE
+    /// attributes RFC 8445 §7.2.1 requires, which is what tells them from a
+    /// plain server-reflexive probe to a STUN server.
+    pub checks: u64,
+    /// How many of those drew an answer of either kind.
+    ///
+    /// Reported as a COUNT and deliberately not as a finding of its own. An
+    /// endpoint whose checks all went unanswered is a real and serious
+    /// condition — ICE never completed and the call has no media path — but
+    /// every one of those transactions is ALREADY reported, individually, by
+    /// [`StunReport::unanswered`] and by the `unanswered_stun_probe` finding.
+    /// A second finding over the same rows would report one silence twice and
+    /// make a capture look like it had two problems. `checks_answered == 0`
+    /// with `checks > 0` is the reading, and it is one subtraction away.
+    pub checks_answered: u64,
+    /// Nominated pairs, capped at [`MAX_ICE_ROWS`].
+    pub nominated: Vec<NominatedPair>,
+    /// Nominations seen, exact past the cap.
+    pub nominated_total: u64,
+    /// Role conflicts, capped at [`MAX_ICE_ROWS`].
+    pub role_conflicts: Vec<IceRoleConflict>,
+    /// Role conflicts seen, exact past the cap.
+    pub role_conflicts_total: u64,
+}
+
+impl IceSummary {
+    /// Whether this capture holds any ICE at all.
+    pub fn is_empty(&self) -> bool {
+        self.checks == 0 && self.nominated_total == 0 && self.role_conflicts_total == 0
+    }
+
+    /// Nominations the cap kept out of [`Self::nominated`].
+    pub fn nominated_dropped(&self) -> u64 {
+        self.nominated_total
+            .saturating_sub(self.nominated.len() as u64)
+    }
+
+    /// Role conflicts the cap kept out of [`Self::role_conflicts`].
+    pub fn role_conflicts_dropped(&self) -> u64 {
+        self.role_conflicts_total
+            .saturating_sub(self.role_conflicts.len() as u64)
     }
 }
 
@@ -2172,6 +2857,25 @@ mod allocation_tracking_tests {
     fn client() -> SocketAddr {
         "192.0.2.10:50000".parse().expect("valid addr")
     }
+
+    /// A ChannelData frame on `channel` wrapping a 172-byte RTP packet whose
+    /// SSRC is `ssrc`: the exact shape a relayed talk spurt has on the wire.
+    ///
+    /// Assembled from literal bytes rather than from anything in this module,
+    /// so a frame that this module would mis-frame cannot be built by the same
+    /// mistake that reads it.
+    pub(super) fn relayed_rtp(channel: u16, ssrc: u32) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(176);
+        frame.extend_from_slice(&channel.to_be_bytes());
+        frame.extend_from_slice(&172u16.to_be_bytes());
+        frame.push(0x80); // version 2, no padding, no extension, CSRC count 0
+        frame.push(0x00); // payload type 0 (PCMU), marker clear
+        frame.extend_from_slice(&1u16.to_be_bytes()); // sequence
+        frame.extend_from_slice(&160u32.to_be_bytes()); // RTP timestamp
+        frame.extend_from_slice(&ssrc.to_be_bytes());
+        frame.extend(std::iter::repeat_n(0xd5u8, 160));
+        frame
+    }
     fn server() -> SocketAddr {
         "198.51.100.20:3478".parse().expect("valid addr")
     }
@@ -2202,7 +2906,12 @@ mod allocation_tracking_tests {
         reset();
         allocate(60);
         // Relayed media a minute and a half in, long after the 60s grant.
-        note_channel_data(client(), server(), 172, ts(90_000));
+        note_channel_data(
+            client(),
+            server(),
+            &relayed_rtp(0x4001, 0x1122_3344),
+            ts(90_000),
+        );
 
         let report = report();
         assert_eq!(report.allocations.len(), 1);
@@ -2236,7 +2945,12 @@ mod allocation_tracking_tests {
         ))
         .expect("parses");
         note_message(&resp, server(), client(), ts(50_010));
-        note_channel_data(client(), server(), 172, ts(90_000));
+        note_channel_data(
+            client(),
+            server(),
+            &relayed_rtp(0x4001, 0x1122_3344),
+            ts(90_000),
+        );
 
         assert_eq!(report().lapsed_allocations().count(), 0);
         assert_eq!(report().allocations[0].refreshes, 1);
@@ -2260,7 +2974,12 @@ mod allocation_tracking_tests {
         ))
         .expect("parses");
         note_message(&resp, server(), client(), ts(20_010));
-        note_channel_data(client(), server(), 172, ts(90_000));
+        note_channel_data(
+            client(),
+            server(),
+            &relayed_rtp(0x4001, 0x1122_3344),
+            ts(90_000),
+        );
 
         assert!(report().allocations[0].released);
         assert_eq!(
@@ -2277,7 +2996,12 @@ mod allocation_tracking_tests {
     #[serial_test::serial(stun_store)]
     fn relayed_media_without_an_allocation_records_nothing() {
         reset();
-        note_channel_data(client(), server(), 172, ts(1_000));
+        note_channel_data(
+            client(),
+            server(),
+            &relayed_rtp(0x4001, 0x1122_3344),
+            ts(1_000),
+        );
         let report = report();
         assert!(report.allocations.is_empty());
         assert_eq!(
@@ -2341,6 +3065,556 @@ mod allocation_tracking_tests {
         let (unanswered, _) = unanswered_requests();
         assert_eq!(unanswered.len(), 1);
         assert_eq!(unanswered[0].method, "Binding");
+        reset();
+    }
+}
+
+#[cfg(test)]
+mod ice_state_tests {
+    use super::turn_tests::ts;
+    use super::*;
+
+    /// One agent, one peer, one check. Attributes are written out as literal
+    /// bytes rather than assembled by anything in this module, so a parser
+    /// that reads them wrongly cannot agree with a builder that writes them
+    /// the same wrong way.
+    fn check(
+        txn: u8,
+        priority: Option<u32>,
+        role: Option<IceRole>,
+        use_candidate: bool,
+    ) -> Vec<u8> {
+        let mut body: Vec<u8> = Vec::new();
+        if let Some(p) = priority {
+            body.extend_from_slice(&[0x00, 0x24, 0x00, 0x04]); // PRIORITY, 4 bytes
+            body.extend_from_slice(&p.to_be_bytes());
+        }
+        if let Some(role) = role {
+            body.extend_from_slice(match role {
+                IceRole::Controlling => &[0x80, 0x2a, 0x00, 0x08],
+                IceRole::Controlled => &[0x80, 0x29, 0x00, 0x08],
+            });
+            // The tie-breaker, which sipnab reads past and never interprets.
+            body.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+        }
+        if use_candidate {
+            body.extend_from_slice(&[0x00, 0x25, 0x00, 0x00]); // USE-CANDIDATE, empty
+        }
+        let mut m: Vec<u8> = vec![0x00, 0x01]; // Binding Request
+        m.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        m.extend_from_slice(&[0x21, 0x12, 0xa4, 0x42]); // magic cookie, literal
+        m.extend_from_slice(&[txn; 12]);
+        m.extend_from_slice(&body);
+        m
+    }
+
+    /// A Binding SUCCESS response carrying XOR-MAPPED-ADDRESS 192.0.2.10:50004,
+    /// written out as the bytes that appear on the wire.
+    fn success(txn: u8) -> Vec<u8> {
+        vec![
+            0x01, 0x01, 0x00, 0x0c, // Binding success, 12 bytes of attributes
+            0x21, 0x12, 0xa4, 0x42, // magic cookie
+            txn, txn, txn, txn, txn, txn, txn, txn, txn, txn, txn, txn, // txn id
+            0x00, 0x20, 0x00, 0x08, // XOR-MAPPED-ADDRESS, 8 bytes
+            0x00, 0x01, // reserved, family IPv4
+            // port 50004 ^ 0x2112 = 0xC354 ^ 0x2112; 50004 == 0xC354
+            0xe2, 0x46, // 0xC354 ^ 0x2112
+            // 192.0.2.10 ^ 21 12 a4 42
+            0xe1, 0x12, 0xa6, 0x48,
+        ]
+    }
+
+    /// A Binding ERROR response carrying `487 Role Conflict`.
+    fn role_conflict_error(txn: u8) -> Vec<u8> {
+        vec![
+            0x01, 0x11, 0x00, 0x08, // Binding error, 8 bytes of attributes
+            0x21, 0x12, 0xa4, 0x42, // magic cookie
+            txn, txn, txn, txn, txn, txn, txn, txn, txn, txn, txn, txn, // txn id
+            0x00, 0x09, 0x00, 0x04, // ERROR-CODE, 4 bytes
+            0x00, 0x00, 0x04, 0x57, // class 4, number 87 => 487
+        ]
+    }
+
+    fn agent_a() -> SocketAddr {
+        "192.0.2.10:50004".parse().expect("valid addr")
+    }
+    fn agent_b() -> SocketAddr {
+        "203.0.113.9:16000".parse().expect("valid addr")
+    }
+
+    /// The literal success bytes above must decode to the address they were
+    /// written for. Without this the two tests below could both be satisfied
+    /// by a decoder that produced nonsense consistently.
+    #[test]
+    fn the_literal_success_bytes_decode_to_the_address_they_encode() {
+        let msg = parse(&success(0x11)).expect("parses");
+        assert_eq!(
+            msg.mapped_address.map(|a| a.to_string()).as_deref(),
+            Some("192.0.2.10:50004")
+        );
+    }
+
+    /// A connectivity check is a Binding Request carrying the ICE attributes
+    /// RFC 8445 requires. A plain server-reflexive probe carries none of them
+    /// and must never be counted as one, or every NAT probe in the capture
+    /// would read as an ICE check that failed.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn a_server_reflexive_probe_is_not_counted_as_an_ice_check() {
+        reset();
+        let probe = parse(&check(0x01, None, None, false)).expect("parses");
+        note_message(
+            &probe,
+            agent_a(),
+            "198.51.100.20:3478".parse().expect("addr"),
+            ts(0),
+        );
+        let ice = report().ice_summary();
+        assert_eq!(ice.checks, 0, "a bare Binding Request is not an ICE check");
+        assert!(ice.is_empty());
+        reset();
+    }
+
+    /// The nomination, which is the ICE analogue of the mapped address: it
+    /// names the path the media actually took.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn a_nominated_pair_is_reported_once_the_peer_agrees() {
+        reset();
+        let nominating = parse(&check(
+            0x12,
+            Some(2_130_706_431),
+            Some(IceRole::Controlling),
+            true,
+        ))
+        .expect("parses");
+        note_message(&nominating, agent_a(), agent_b(), ts(100));
+        let reply = parse(&success(0x12)).expect("parses");
+        note_message(&reply, agent_b(), agent_a(), ts(118));
+
+        let ice = report().ice_summary();
+        assert_eq!(ice.checks, 1);
+        assert_eq!(ice.checks_answered, 1);
+        assert_eq!(ice.nominated_total, 1);
+        let pair = &ice.nominated[0];
+        assert_eq!(pair.local, agent_a());
+        assert_eq!(pair.remote, agent_b());
+        assert_eq!(pair.role, Some(IceRole::Controlling));
+        assert_eq!(pair.priority, Some(2_130_706_431));
+        assert_eq!(pair.rtt_ms, Some(18.0));
+        reset();
+    }
+
+    /// A nomination nobody answered nominated nothing: the pair was never
+    /// validated, so reporting it as the media path would name a path that
+    /// carried none.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn an_unanswered_nomination_nominates_nothing() {
+        reset();
+        let nominating =
+            parse(&check(0x13, Some(1), Some(IceRole::Controlling), true)).expect("parses");
+        note_message(&nominating, agent_a(), agent_b(), ts(0));
+
+        let ice = report().ice_summary();
+        assert_eq!(ice.checks, 1);
+        assert_eq!(ice.checks_answered, 0, "ICE never completed");
+        assert_eq!(ice.nominated_total, 0);
+        // And the transaction is ALSO in the unanswered list, which is where
+        // the silence is reported. The ICE summary counts it and deliberately
+        // does not raise a second finding over the same row.
+        assert_eq!(report().unanswered().count(), 1);
+        reset();
+    }
+
+    /// Two agents claiming the same role is the misconfiguration. Detected
+    /// from the requests alone, with no 487 anywhere.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn both_agents_claiming_one_role_is_a_conflict() {
+        reset();
+        let from_a = parse(&check(0x21, Some(9), Some(IceRole::Controlling), false)).expect("ok");
+        note_message(&from_a, agent_a(), agent_b(), ts(0));
+        let from_b = parse(&check(0x22, Some(8), Some(IceRole::Controlling), false)).expect("ok");
+        note_message(&from_b, agent_b(), agent_a(), ts(10));
+
+        let ice = report().ice_summary();
+        assert_eq!(ice.role_conflicts_total, 1, "one pair, not two rows");
+        let conflict = &ice.role_conflicts[0];
+        assert_eq!(conflict.role, Some(IceRole::Controlling));
+        assert_eq!(conflict.role_conflict_responses, 0, "no 487 was sent");
+        assert!(!conflict.resolved, "nothing was ever nominated");
+        reset();
+    }
+
+    /// A `487 Role Conflict` response is the same fault seen from the other
+    /// end, and must fold into ONE record rather than raising a second.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn a_487_and_a_duplicate_claim_are_one_conflict_not_two() {
+        reset();
+        let from_a = parse(&check(0x31, Some(9), Some(IceRole::Controlling), false)).expect("ok");
+        note_message(&from_a, agent_a(), agent_b(), ts(0));
+        let refusal = parse(&role_conflict_error(0x31)).expect("parses");
+        note_message(&refusal, agent_b(), agent_a(), ts(12));
+        let from_b = parse(&check(0x32, Some(8), Some(IceRole::Controlling), false)).expect("ok");
+        note_message(&from_b, agent_b(), agent_a(), ts(20));
+
+        let ice = report().ice_summary();
+        assert_eq!(ice.role_conflicts_total, 1);
+        assert_eq!(ice.role_conflicts[0].role_conflict_responses, 1);
+        reset();
+    }
+
+    /// RFC 8445 §7.3.1.1 has the losing agent SWITCH roles and repeat its
+    /// checks, so a resolved conflict leaves BOTH roles on record for one
+    /// agent. Comparing last-seen roles would miss it entirely; the sets must
+    /// still intersect, and the nomination that followed must mark it
+    /// resolved rather than let it read as a call that never got media.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn a_conflict_ice_resolved_is_reported_as_resolved() {
+        reset();
+        let both_controlling_a =
+            parse(&check(0x41, Some(9), Some(IceRole::Controlling), false)).expect("ok");
+        note_message(&both_controlling_a, agent_a(), agent_b(), ts(0));
+        let both_controlling_b =
+            parse(&check(0x42, Some(8), Some(IceRole::Controlling), false)).expect("ok");
+        note_message(&both_controlling_b, agent_b(), agent_a(), ts(10));
+        // A switches to controlled and re-checks, then nominates.
+        let switched = parse(&check(0x43, Some(9), Some(IceRole::Controlled), true)).expect("ok");
+        note_message(&switched, agent_a(), agent_b(), ts(30));
+        let reply = parse(&success(0x43)).expect("parses");
+        note_message(&reply, agent_b(), agent_a(), ts(40));
+
+        let ice = report().ice_summary();
+        assert_eq!(ice.role_conflicts_total, 1, "the conflict still happened");
+        assert_eq!(ice.role_conflicts[0].role, Some(IceRole::Controlling));
+        assert!(
+            ice.role_conflicts[0].resolved,
+            "a pair was nominated afterwards, so ICE fixed it itself"
+        );
+        assert_eq!(ice.nominated_total, 1);
+        reset();
+    }
+
+    /// The report's row cap must bite exactly, and the totals beside it must
+    /// stay exact past the point it does (D17).
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn nominations_past_the_row_cap_are_counted_rather_than_listed() {
+        reset();
+        let extra = 5u16;
+        for n in 0..(MAX_ICE_ROWS as u16 + extra) {
+            let remote: SocketAddr = format!("203.0.113.9:{}", 16000 + n)
+                .parse()
+                .expect("valid addr");
+            // A distinct transaction ID per check, or the tracker would fold
+            // them all into one retransmitted request.
+            let mut bytes = check(0x00, Some(1), Some(IceRole::Controlling), true);
+            bytes[8..20].copy_from_slice(&[
+                (n >> 8) as u8,
+                n as u8,
+                0x5a,
+                0x5a,
+                0x5a,
+                0x5a,
+                0x5a,
+                0x5a,
+                0x5a,
+                0x5a,
+                0x5a,
+                0x5a,
+            ]);
+            let request = parse(&bytes).expect("parses");
+            note_message(&request, agent_a(), remote, ts(i64::from(n)));
+            let mut reply = success(0x00);
+            reply[8..20].copy_from_slice(&bytes[8..20]);
+            let response = parse(&reply).expect("parses");
+            note_message(&response, remote, agent_a(), ts(i64::from(n) + 1));
+        }
+
+        let ice = report().ice_summary();
+        assert_eq!(ice.nominated.len(), MAX_ICE_ROWS, "the cap holds the list");
+        assert_eq!(
+            ice.nominated_total,
+            u64::from(MAX_ICE_ROWS as u16 + extra),
+            "and the total stays exact past it"
+        );
+        assert_eq!(ice.nominated_dropped(), u64::from(extra));
+        reset();
+    }
+
+    /// Two agents in the ordinary configuration are not a conflict. Without
+    /// this the finding would fire on every healthy ICE exchange there is.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn opposite_roles_are_not_a_conflict() {
+        reset();
+        let from_a = parse(&check(0x51, Some(9), Some(IceRole::Controlling), false)).expect("ok");
+        note_message(&from_a, agent_a(), agent_b(), ts(0));
+        let from_b = parse(&check(0x52, Some(8), Some(IceRole::Controlled), false)).expect("ok");
+        note_message(&from_b, agent_b(), agent_a(), ts(10));
+
+        let ice = report().ice_summary();
+        assert_eq!(ice.checks, 2);
+        assert_eq!(ice.role_conflicts_total, 0);
+        reset();
+    }
+}
+
+#[cfg(test)]
+mod relay_attribution_tests {
+    use super::allocation_tracking_tests::relayed_rtp;
+    use super::turn_tests::ts;
+    use super::*;
+
+    fn client() -> SocketAddr {
+        "192.0.2.10:50000".parse().expect("valid addr")
+    }
+    fn server() -> SocketAddr {
+        "198.51.100.20:3478".parse().expect("valid addr")
+    }
+    fn peer() -> SocketAddr {
+        "203.0.113.9:16000".parse().expect("valid addr")
+    }
+
+    /// An Allocate that succeeds with a 60-second lifetime, followed by a
+    /// ChannelBind for `channel` naming `peer()`.
+    fn allocate_and_bind(channel: u16) {
+        // Allocate Request / success with XOR-RELAYED-ADDRESS 198.51.100.77:49160
+        // and LIFETIME 60, written as the bytes that appear on the wire.
+        let req: Vec<u8> = vec![
+            0x00, 0x03, 0x00, 0x00, // Allocate Request, no attributes
+            0x21, 0x12, 0xa4, 0x42, // magic cookie
+            0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1,
+        ];
+        note_message(&parse(&req).expect("parses"), client(), server(), ts(0));
+        let resp: Vec<u8> = vec![
+            0x01, 0x03, 0x00, 0x14, // Allocate success, 20 bytes of attributes
+            0x21, 0x12, 0xa4, 0x42, // magic cookie
+            0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0x00, 0x16,
+            0x00, 0x08, // XOR-RELAYED-ADDRESS, 8 bytes
+            0x00, 0x01, // reserved, family IPv4
+            0xe1, 0x1a, // port 49160 (0xc008) ^ 0x2112
+            // 198.51.100.77 ^ 21 12 a4 42
+            0xe7, 0x21, 0xc0, 0x0f, //
+            0x00, 0x0d, 0x00, 0x04, // LIFETIME, 4 bytes
+            0x00, 0x00, 0x00, 0x3c, // 60 seconds
+        ];
+        note_message(&parse(&resp).expect("parses"), server(), client(), ts(10));
+
+        // ChannelBind Request naming CHANNEL-NUMBER and XOR-PEER-ADDRESS.
+        let mut bind: Vec<u8> = vec![
+            0x00, 0x09, 0x00, 0x14, // ChannelBind Request, 20 bytes of attributes
+            0x21, 0x12, 0xa4, 0x42, // magic cookie
+            0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0x00, 0x0c,
+            0x00, 0x02, // CHANNEL-NUMBER, 2 bytes
+        ];
+        bind.extend_from_slice(&channel.to_be_bytes());
+        bind.extend_from_slice(&[0x00, 0x00]); // padding to a 4-byte boundary
+        bind.extend_from_slice(&[
+            0x00, 0x12, 0x00, 0x08, // XOR-PEER-ADDRESS, 8 bytes
+            0x00, 0x01, // reserved, family IPv4
+            0x1f, 0x92, // port 16000 (0x3e80) ^ 0x2112
+            // 203.0.113.9 ^ 21 12 a4 42
+            0xea, 0x12, 0xd5, 0x4b,
+        ]);
+        note_message(&parse(&bind).expect("parses"), client(), server(), ts(20));
+        let bind_ok: Vec<u8> = vec![
+            0x01, 0x09, 0x00, 0x00, // ChannelBind success, no attributes
+            0x21, 0x12, 0xa4, 0x42, // magic cookie
+            0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2,
+        ];
+        note_message(
+            &parse(&bind_ok).expect("parses"),
+            server(),
+            client(),
+            ts(28),
+        );
+    }
+
+    /// The literal bytes above must decode to the addresses they claim, or
+    /// every assertion below could be met by a decoder producing nonsense.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn the_literal_turn_bytes_decode_to_the_addresses_they_encode() {
+        reset();
+        allocate_and_bind(0x4001);
+        let alloc = &report().allocations[0];
+        assert_eq!(
+            alloc.relayed_address.map(|a| a.to_string()).as_deref(),
+            Some("198.51.100.77:49160")
+        );
+        assert_eq!(alloc.channels[0].peer, Some(peer()));
+        reset();
+    }
+
+    /// The whole of gap 2: a relayed stream must be reachable from the
+    /// allocation that carried it, by the socket pair and SSRC the stream
+    /// store already has.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn a_relayed_stream_is_attributable_to_its_channel_and_allocation() {
+        reset();
+        allocate_and_bind(0x4001);
+        note_channel_data(
+            client(),
+            server(),
+            &relayed_rtp(0x4001, 0x1122_3344),
+            ts(30_000),
+        );
+        note_channel_data(
+            server(),
+            client(),
+            &relayed_rtp(0x4001, 0x5566_7788),
+            ts(30_020),
+        );
+
+        let path = relay_path_for(client(), server(), 0x1122_3344)
+            .expect("the relayed stream must find its allocation");
+        assert_eq!(path.client, client());
+        assert_eq!(path.server, server());
+        assert_eq!(
+            path.relayed_address.map(|a| a.to_string()).as_deref(),
+            Some("198.51.100.77:49160")
+        );
+        assert_eq!(path.channel, 0x4001);
+        assert_eq!(path.peer, Some(peer()));
+        assert!(!path.lapsed, "the grant had not run out yet");
+
+        // And in the reverse direction, because a relayed call has two streams
+        // and only one of them is addressed client-to-server.
+        let back = relay_path_for(server(), client(), 0x5566_7788).expect("the other direction");
+        assert_eq!(back.channel, 0x4001);
+
+        let alloc = &report().allocations[0];
+        assert_eq!(alloc.relayed_frames(), 2);
+        assert_eq!(alloc.relayed_ssrcs(), vec![0x1122_3344, 0x5566_7788]);
+        assert!(
+            alloc.channels[0].bound,
+            "the ChannelBind was seen to succeed"
+        );
+        reset();
+    }
+
+    /// The lapsed-allocation finding must be able to name the media that died
+    /// with the relay. Before this it could say an allocation lapsed and not
+    /// one packet that was on it.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn a_lapsed_allocation_names_the_media_that_died_with_it() {
+        reset();
+        allocate_and_bind(0x4001);
+        note_channel_data(
+            client(),
+            server(),
+            &relayed_rtp(0x4001, 0x1122_3344),
+            ts(90_000),
+        );
+
+        let report = report();
+        assert_eq!(report.lapsed_allocations().count(), 1);
+        assert_eq!(report.lapsed_relayed_streams(), 1);
+        let label = report.allocations[0]
+            .relayed_media_label()
+            .expect("the media must be nameable");
+        assert!(label.contains("0x11223344"), "{label}");
+        assert!(label.contains("0x4001"), "{label}");
+        // And the stream itself carries the verdict, so a per-call surface
+        // does not have to re-derive it from the capture-level finding.
+        let path = relay_path_for(client(), server(), 0x1122_3344).expect("attributed");
+        assert!(path.lapsed);
+        reset();
+    }
+
+    /// Media that merely shares an address with a relay is not media the
+    /// relay carried. Attributing it would be the confident wrong answer the
+    /// SSRC half of the join exists to prevent.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn an_ssrc_never_seen_in_a_channel_is_not_attributed() {
+        reset();
+        allocate_and_bind(0x4001);
+        note_channel_data(
+            client(),
+            server(),
+            &relayed_rtp(0x4001, 0x1122_3344),
+            ts(30_000),
+        );
+        assert!(
+            relay_path_for(client(), server(), 0xdead_beef).is_none(),
+            "an SSRC that never crossed the relay must not claim to have"
+        );
+        reset();
+    }
+
+    /// RTCP relayed on the same channel must not be filed as a media stream:
+    /// its bytes 8..12 are not an SSRC in the sense the stream store means.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn relayed_rtcp_contributes_no_stream() {
+        reset();
+        allocate_and_bind(0x4001);
+        // A ChannelData frame wrapping a minimal RTCP receiver report (PT 201).
+        let frame: Vec<u8> = vec![
+            0x40, 0x01, 0x00, 0x08, // channel 0x4001, 8 bytes of application data
+            0x80, 0xc9, 0x00, 0x01, // V=2, PT=201 (RR), length 1
+            0x11, 0x22, 0x33, 0x44, // sender SSRC
+        ];
+        note_channel_data(client(), server(), &frame, ts(30_000));
+
+        let alloc = &report().allocations[0];
+        assert_eq!(
+            alloc.relayed_frames(),
+            1,
+            "the frame still counts as relayed"
+        );
+        assert!(
+            alloc.relayed_ssrcs().is_empty(),
+            "but it is not a media stream"
+        );
+        reset();
+    }
+
+    /// The retention cap must bite exactly, and must stay countable past the
+    /// point it does (D17).
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn channels_past_the_cap_are_counted_rather_than_stored() {
+        reset();
+        allocate_and_bind(0x4001);
+        for n in 0..(MAX_CHANNELS_PER_ALLOCATION as u16 + 4) {
+            note_channel_data(
+                client(),
+                server(),
+                &relayed_rtp(0x4001 + n, 0x0100_0000 + u32::from(n)),
+                ts(1_000 + i64::from(n)),
+            );
+        }
+        let alloc = &report().allocations[0];
+        assert_eq!(alloc.channels.len(), MAX_CHANNELS_PER_ALLOCATION);
+        assert_eq!(
+            alloc.unattributed_frames, 4,
+            "the four frames past the cap must still be counted"
+        );
+        let label = alloc.relayed_media_label().expect("a label");
+        assert!(
+            label.contains("a sample"),
+            "the report must say the list is partial: {label}"
+        );
+        reset();
+    }
+
+    /// A relayed frame must never CREATE an allocation, and must never
+    /// attribute to one it did not cross.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn a_frame_with_no_allocation_attributes_to_nothing() {
+        reset();
+        note_channel_data(client(), server(), &relayed_rtp(0x4001, 1), ts(0));
+        assert!(report().allocations.is_empty());
+        assert!(relay_path_for(client(), server(), 1).is_none());
         reset();
     }
 }

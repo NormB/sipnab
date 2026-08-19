@@ -516,6 +516,48 @@ never that none was *sent* -- a capture that started late or lost a packet
 cannot tell those apart. And a Refresh carrying `LIFETIME` 0 is a deliberate
 release, which is never reported: the client asked for the teardown.
 
+**And it names the audio that died with the relay.** sipnab unwraps ChannelData
+and the RTP inside it reaches the stream list as ordinary media -- but carrying
+phone-to-relay addresses, so nothing in the stream list said the relay had
+carried it. Every surface now carries the join: the `--stun` allocations section says which
+channel carried which SSRC, the lapsed-allocation lines say `media on it:`, the
+`--analyze` finding counts `relayed_streams`, `--json-stun` puts a `channels`
+array on the allocation, and a relayed call's own diagnosis carries
+`media_relay` naming the relay its audio crossed. On a dashboard,
+`sipnab_nat_lapsed_turn_allocation_streams` is the scale beside the allocation
+count: a relay torn down with nothing on it cost nobody a call.
+
+### Both ICE agents think they are in charge
+
+ICE gives one agent the **controlling** role and the other **controlled**, and
+the controlling one picks the candidate pair. When both claim the same role, the
+agent that notices answers `487 Role Conflict`
+([RFC 8445 §7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1)),
+one side switches role and repeats every check it had already sent.
+
+Often ICE fixes this itself and the call costs a round trip. Where it does not,
+nothing is ever nominated and the call has no media path -- with signaling that
+looks perfectly healthy. The usual source is two endpoints configured with the
+same role, or a B2BUA relaying one side's role attribute straight to the other.
+
+sipnab reports it on stderr as `ICE: N candidate pair(s) show a role conflict`,
+as a `ROLE CONFLICT` line in the `--stun` ICE section, as an `ice_role_conflict`
+finding in `--analyze`, in the `ice` record of `--json-stun`, and as
+`sipnab_nat_ice_role_conflicts` for a dashboard, `/v1/stats` and the MCP
+`capture_status` tool. Each report says whether the conflict **resolved** --
+the agents nominated a pair between them anyway -- because warning at full weight
+about a conflict the agents fixed in one round trip is how a reader learns to
+skip the warning that matters.
+
+The same section answers the question ICE otherwise leaves unanswered: which
+candidate pair won. `nominated 192.0.2.10:50004 -> 203.0.113.9:16000` is the ICE
+analogue of the mapped address -- it names the path the media actually took, and
+without it a capture of an exchange that converged and one that never did read
+the same. Where **nothing** answered a single check, the ICE section says so
+outright: ICE never completed, so the call has no media path. Those individual
+transactions also appear in the unanswered list below it, which is where sipnab
+reports the silence itself -- one silence, stated once.
+
 ---
 
 ## SIP scanner detection

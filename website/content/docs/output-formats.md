@@ -306,6 +306,15 @@ persisted — usually true, and not the same claim. Past that window the hint
 appends a note saying so, and inside it says nothing, because a caveat printed
 every time is one nobody reads.
 
+`diagnosis.media_relay` is context rather than a finding, and is likewise
+**omitted** on any capture with no TURN relay in it. It answers "where did this
+call's audio actually go", which for a relayed call previously had no answer
+anywhere: `client`, `server`, `relayed_address` (the address the far end really
+sends to), `channel`, `peer`, and `lapsed`. `lapsed: true` is the capture-level
+`turn_allocation_lapsed` finding narrowed to **this** call's media, and is the
+only shape that also adds a hint — a relay doing its job needs no sentence in a
+list an operator reads for problems.
+
 A `relay_ignored` or `ignored` finding raises `private_media_address` on its own,
 with no observed stream needed: a public mapped or relayed address is proof the
 client's traffic reaches the internet. `unanswered` does so only when the server
@@ -371,7 +380,7 @@ would accuse a message nobody examined.
 
 A `turn_allocation` carries `client`, `server`, `relayed_address`,
 `lifetime_secs`, `allocated_at`, `refreshed_at`, `refreshes`, `last_activity`,
-`released`, and the derived `lapsed`:
+`released`, `channels`, `unattributed_frames`, and the derived `lapsed`:
 
 ```bash
 sipnab -N -I relay.pcap --json-stun --no-cli-print | jq 'select(.lapsed == true)'
@@ -384,6 +393,45 @@ it, mid-call, with **no SIP message anywhere to explain it** — the signaling
 shows a healthy call that went quiet. A deliberate release (a Refresh with
 `LIFETIME` 0) sets `released` and is never `lapsed`: the client asked for the
 teardown.
+
+`channels` is what ties the relay to the media. Each entry carries the
+`channel` number, the `peer` the ChannelBind named (absent when no bind appears
+in the capture — the frames still attribute, and the far side is simply not in
+this file), `bound`, `frames`, `bytes`, `first_seen` / `last_seen`, and the
+`ssrcs` observed inside the frames. Those SSRCs are the join to the stream
+list: sipnab unwraps ChannelData and the RTP inside reaches the stream store as
+an ordinary stream — but that stream carries **phone-to-relay** addresses, so
+without this nothing said the relay had carried it at all, and a lapsed
+allocation could say it lapsed while naming not one packet that died with it.
+
+```bash
+sipnab -N -I relay.pcap --json-stun --no-cli-print \
+  | jq -r 'select(.lapsed == true) | .channels[].ssrcs[]'
+```
+
+`ssrcs` counts media only: RTCP relayed on the same channel raises `frames` and
+`bytes` and contributes no SSRC, because its bytes 8..12 are not a stream in the
+sense the stream list means. `unattributed_frames` counts relayed frames whose
+channel fell outside the per-allocation cap. Non-zero means `channels` holds a
+sample of what crossed the allocation, and every text surface says so when it
+does. `ssrcs_dropped` is the same statement one level down.
+
+An `ice` record appears once, and only on a capture holding ICE connectivity
+checks — Binding Requests carrying the `PRIORITY` and role attributes
+[RFC 8445 §7.2.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.2.1) requires,
+which is what tells them from a plain server-reflexive probe to a STUN server:
+
+| Field | Meaning |
+|---|---|
+| `checks` / `checks_answered` | Connectivity checks seen, and how many drew an answer of either kind. `checks_answered: 0` with `checks` above zero means ICE never completed and the call has no media path — the individual transactions are already in the `transaction` records above, which is why this is a count and not a second finding. |
+| `nominated` | Candidate pairs a `USE-CANDIDATE` check nominated **and** the peer confirmed. Each carries `local`, `remote`, `role`, `priority`, `nominated_at` and `rtt_ms`. This is the ICE analogue of `mapped_address`: it names the path the media actually took. |
+| `role_conflicts` | Pairs where both agents claimed one role, or where one answered `487 Role Conflict`. Each carries `a`, `b`, the `role` both claimed, `role_conflict_responses`, and `resolved`. |
+| `nominated_total` / `role_conflicts_total` | Exact counts, which stay right past the retention cap that bounds the two lists above. |
+
+`resolved: true` means the agents nominated a pair between them anyway. ICE
+fixed the conflict itself, at the cost of one round trip of repeated checks.
+`resolved: false` means they never nominated anything between them, which makes
+the conflict a candidate cause of media that never started.
 
 ## Capture analysis (`--json-analyze`)
 

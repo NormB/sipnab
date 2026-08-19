@@ -303,14 +303,38 @@ pub struct CaptureQuality {
     /// NAT finding that reaches only the batch summary is a finding a
     /// dashboard and an agent cannot see (backlog NAT3).
     pub lapsed_turn_allocations: u64,
+    /// Media streams observed crossing an allocation that had already lapsed.
+    ///
+    /// The scale beside `lapsed_turn_allocations`, and the reason that
+    /// counter is worth paging on: an allocation that lapsed with nothing on
+    /// it cost nobody a call, and one carrying four streams cut off four
+    /// conversations mid-sentence. Until relayed media was attributable to
+    /// the allocation that carried it, the two rendered identically.
+    pub lapsed_turn_allocation_streams: u64,
+    /// Candidate pairs where both ICE agents claimed the same role, or where
+    /// one answered `487 Role Conflict`.
+    ///
+    /// The third series here about the NETWORK rather than the capture. RFC
+    /// 8445 §7.3.1.1 has ICE resolve this itself, so it is not always fatal —
+    /// which is exactly why it belongs on a dashboard rather than only in an
+    /// alert: a fleet where it happens constantly is misconfigured whether or
+    /// not any single call survived it.
+    pub ice_role_conflicts: u64,
 }
 
-/// How many TURN allocations lapsed while traffic was still using them.
+/// The three STUN-store readings the capture-quality block publishes.
 ///
-/// A free function rather than a method so both `current()` arms read it the
-/// same way, and so the STUN store is touched in exactly one place here.
-fn lapsed_turn_allocations() -> u64 {
-    crate::stun::report().lapsed_allocations().count() as u64
+/// One function rather than three, and one `report()` rather than three: each
+/// call clones the whole transaction and allocation table, and taking that
+/// snapshot once also means the three numbers describe the same instant
+/// instead of three consecutive ones.
+fn nat_quality() -> (u64, u64, u64) {
+    let report = crate::stun::report();
+    (
+        report.lapsed_allocations().count() as u64,
+        report.lapsed_relayed_streams(),
+        report.ice_summary().role_conflicts_total,
+    )
 }
 
 impl CaptureQuality {
@@ -322,6 +346,8 @@ impl CaptureQuality {
     /// between builds.
     #[must_use]
     pub fn current() -> Self {
+        let (lapsed_turn_allocations, lapsed_turn_allocation_streams, ice_role_conflicts) =
+            nat_quality();
         #[cfg(feature = "native")]
         {
             let (kernel_dropped_packets, interface_dropped_packets) =
@@ -334,7 +360,9 @@ impl CaptureQuality {
                 undecodable_frames: crate::capture::undecodable_frames(),
                 snapped_frames: crate::capture::snapped_frames(),
                 unanswered_nat_requests: crate::stun::unanswered_requests().0.len() as u64,
-                lapsed_turn_allocations: lapsed_turn_allocations(),
+                lapsed_turn_allocations,
+                lapsed_turn_allocation_streams,
+                ice_role_conflicts,
             }
         }
         #[cfg(not(feature = "native"))]
@@ -343,7 +371,9 @@ impl CaptureQuality {
                 undecodable_frames: crate::capture::undecodable_frames(),
                 snapped_frames: crate::capture::snapped_frames(),
                 unanswered_nat_requests: crate::stun::unanswered_requests().0.len() as u64,
-                lapsed_turn_allocations: lapsed_turn_allocations(),
+                lapsed_turn_allocations,
+                lapsed_turn_allocation_streams,
+                ice_role_conflicts,
                 ..Self::default()
             }
         }
@@ -517,6 +547,14 @@ impl PrometheusMetrics {
             payload_type_asymmetry: _,
             duration_asymmetry: _,
             late_media: _,
+            // Not a finding and deliberately not counted as one: a relayed
+            // call is doing exactly what it was configured to do, and a
+            // series that ticked on every one of them would say only how much
+            // of the fleet uses TURN. The condition that IS a fault — the
+            // allocation lapsing under the media — is already published as
+            // `sipnab_nat_lapsed_turn_allocations`, and counting it a second
+            // time here would double a single problem.
+            media_relay: _,
         } = diagnosis;
         for (raised, kind) in [
             (one_way_audio, "one_way_audio"),
@@ -777,6 +815,35 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
         out,
         "sipnab_nat_lapsed_turn_allocations {}",
         metrics.capture_quality.lapsed_turn_allocations
+    );
+    out.push('\n');
+    // The scale beside the series above, and the reason it is worth alerting
+    // on: an allocation that lapsed with nothing on it cost nobody a call.
+    write_help_type(
+        &mut out,
+        "sipnab_nat_lapsed_turn_allocation_streams",
+        "Media streams observed crossing a TURN allocation that had already lapsed",
+        "gauge",
+    );
+    let _ = writeln!(
+        out,
+        "sipnab_nat_lapsed_turn_allocation_streams {}",
+        metrics.capture_quality.lapsed_turn_allocation_streams
+    );
+    out.push('\n');
+    // A gauge for the third time: ICE resolves a role conflict by having one
+    // agent switch role, and a later nomination on the same pair unsays the
+    // severity of it — which a monotonic counter could never record.
+    write_help_type(
+        &mut out,
+        "sipnab_nat_ice_role_conflicts",
+        "Candidate pairs where both ICE agents claimed one role, or 487 Role Conflict was seen",
+        "gauge",
+    );
+    let _ = writeln!(
+        out,
+        "sipnab_nat_ice_role_conflicts {}",
+        metrics.capture_quality.ice_role_conflicts
     );
     out.push('\n');
     // Derivable from the three counters above, and published anyway: this is
@@ -1375,6 +1442,8 @@ mod tests {
                 snapped_frames: 44,
                 unanswered_nat_requests: 55,
                 lapsed_turn_allocations: 66,
+                lapsed_turn_allocation_streams: 77,
+                ice_role_conflicts: 88,
             },
             ..Default::default()
         };

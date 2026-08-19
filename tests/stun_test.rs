@@ -17,6 +17,11 @@
 //! advertises the LAN address it never learned to replace. Everything routable
 //! in it is RFC 5737; the LAN side is RFC 1918, which the finding requires by
 //! definition.
+//!
+//! A third, `ice_checks.pcap`, holds ICE connectivity checks rather than
+//! server probes: a pair that converged and nominated, and a pair where both
+//! agents claimed to be controlling. See [`ice_fixture`] for its contents. It
+//! is fabricated end to end and uses RFC 5737 addresses throughout.
 #![cfg(feature = "native")]
 
 use std::path::PathBuf;
@@ -356,4 +361,166 @@ fn a_capture_without_stun_gains_no_diagnosis_field() {
             "no STUN, no finding: {line}"
         );
     }
+}
+
+// ── ICE ──────────────────────────────────────────────────────────────
+
+/// `ice_checks.pcap`: a fabricated ICE connectivity-check exchange, RFC 5737
+/// addresses throughout.
+///
+/// ```text
+///   192.0.2.10:50004  <-> 203.0.113.9:16000    a healthy pair. Three checks,
+///                                              all answered, the second
+///                                              carrying USE-CANDIDATE.
+///   192.0.2.11:50006  <-> 203.0.113.11:16002   both agents claim
+///                                              ICE-CONTROLLING and each
+///                                              answers the other 487 Role
+///                                              Conflict. Nothing is ever
+///                                              nominated between them.
+/// ```
+fn ice_fixture() -> String {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("ice_checks.pcap")
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn ice_report() -> String {
+    let (stdout, stderr, code) = run(&["-N", "-I", &ice_fixture(), "--stun", "--no-cli-print"]);
+    assert_eq!(code, 0, "sipnab should exit cleanly; stderr:\n{stderr}");
+    stdout
+}
+
+/// The nomination is the ICE analogue of the mapped address: it names the path
+/// the media actually took. Without it, a capture of an exchange that
+/// converged and one that never did read identically.
+#[test]
+fn the_nominated_pair_is_named() {
+    let out = ice_report();
+    assert!(
+        out.contains("nominated 192.0.2.10:50004 -> 203.0.113.9:16000"),
+        "the winning pair must be named, got:\n{out}"
+    );
+    assert!(
+        out.contains("nominated by the controlling agent"),
+        "and which agent nominated it, got:\n{out}"
+    );
+}
+
+/// The checks are counted apart from the plain probes, and both halves of the
+/// ratio are shown — "5 checks, 5 answered" is what makes "0 answered" mean
+/// something when it happens.
+#[test]
+fn the_ice_section_counts_checks_and_answers() {
+    let out = ice_report();
+    assert!(
+        out.contains("ICE: 5 connectivity check(s), 5 answered."),
+        "got:\n{out}"
+    );
+}
+
+/// The role conflict, which is a real misconfiguration whose only other
+/// symptom is media that starts slowly or not at all.
+#[test]
+fn a_role_conflict_is_reported_with_its_verdict() {
+    let out = ice_report();
+    let line = out
+        .lines()
+        .find(|l| l.contains("ROLE CONFLICT"))
+        .unwrap_or_else(|| panic!("the conflict must be reported, got:\n{out}"));
+    assert!(line.contains("192.0.2.11:50006"), "{line}");
+    assert!(line.contains("203.0.113.11:16002"), "{line}");
+    assert!(line.contains("both claimed controlling"), "{line}");
+    assert!(line.contains("487 Role Conflict"), "{line}");
+    assert!(
+        line.contains("No pair between them was ever nominated"),
+        "an unresolved conflict must say so: {line}"
+    );
+}
+
+/// The run summary carries it too, so a capture read WITHOUT `--stun` still
+/// says the two agents disagreed.
+#[test]
+fn the_run_summary_names_the_role_conflict() {
+    let (_, stderr, code) = run(&["-N", "-I", &ice_fixture(), "--no-cli-print"]);
+    assert_eq!(code, 0);
+    assert!(
+        stderr.contains("ICE: 1 candidate pair(s) show a role conflict"),
+        "got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("192.0.2.11:50006 <-> 203.0.113.11:16002"),
+        "the summary must name which pair, got:\n{stderr}"
+    );
+}
+
+/// `--analyze` is where an operator looks for capture-level problems.
+#[test]
+fn analyze_ranks_the_role_conflict() {
+    let (stdout, stderr, code) = run(&[
+        "-N",
+        "-I",
+        &ice_fixture(),
+        "--json-analyze",
+        "--no-cli-print",
+    ]);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    let value: serde_json::Value = stdout
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .map(|l| serde_json::from_str(l).expect("valid JSON"))
+        .unwrap_or_else(|| panic!("--json-analyze must emit an object, got:\n{stdout}"));
+    let finding = value["findings"]
+        .as_array()
+        .expect("findings must be an array")
+        .iter()
+        .find(|f| f["kind"] == "ice_role_conflict")
+        .unwrap_or_else(|| panic!("the conflict must be a finding, got:\n{stdout}"));
+    assert_eq!(finding["severity"], "major");
+    assert_eq!(finding["occurrences"], 1);
+    assert_eq!(
+        finding["evidence"][0]["counts"]["role_conflict_responses"],
+        2
+    );
+}
+
+/// `--json-stun` carries one `ice` record: the counts and the lists are one
+/// answer to one question, and splitting them would make a consumer rebuild
+/// the denominator from whatever rows it happened to receive.
+#[test]
+fn json_stun_emits_one_tagged_ice_record() {
+    let (stdout, stderr, code) =
+        run(&["-N", "-I", &ice_fixture(), "--json-stun", "--no-cli-print"]);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    let records: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter(|l| l.starts_with('{'))
+        .map(|l| serde_json::from_str(l).expect("valid JSON"))
+        .filter(|r: &serde_json::Value| r["record"] == "ice")
+        .collect();
+    assert_eq!(records.len(), 1, "exactly one ice record, got:\n{stdout}");
+    let ice = &records[0];
+    assert_eq!(ice["checks"], 5);
+    assert_eq!(ice["checks_answered"], 5);
+    assert_eq!(ice["nominated_total"], 1);
+    assert_eq!(ice["nominated"][0]["local"], "192.0.2.10:50004");
+    assert_eq!(ice["nominated"][0]["remote"], "203.0.113.9:16000");
+    assert_eq!(ice["nominated"][0]["role"], "controlling");
+    assert_eq!(ice["role_conflicts_total"], 1);
+    assert_eq!(ice["role_conflicts"][0]["resolved"], false);
+}
+
+/// A capture holding STUN but no ICE must gain no ICE section. The quiet-run
+/// rule the rest of this report follows: an operator who reads a clean capture
+/// must see exactly what they saw before any of this existed.
+#[test]
+fn a_capture_without_ice_gains_no_ice_section() {
+    let out = stun_report();
+    assert!(
+        !out.contains("ICE:"),
+        "a plain NAT probe is not an ICE check, got:\n{out}"
+    );
+    assert!(!out.contains("ROLE CONFLICT"), "{out}");
 }

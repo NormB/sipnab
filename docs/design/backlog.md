@@ -503,7 +503,7 @@ Tiers:
   corrupt timestamp — with one `degraded` flag rolling them up for a dashboard.
   **Corrected 2026-08-06:** a fourth counter, `undecodable_frames`, has since
   joined the same `capture_quality` block and is deliberately outside
-  `degraded` ([`src/output/prometheus.rs:353`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L353) lists what the flag actually
+  `degraded` ([`src/output/prometheus.rs:403`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L403) lists what the flag actually
   covers). The prose above describes three because three is what this pass
   shipped; the block is no longer three wide, and `degraded` is no longer a
   rollup of all of it. See CT1.
@@ -1115,7 +1115,7 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:94`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L94)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:5274`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5274), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:5322`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5322), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
@@ -1616,7 +1616,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:6384`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6384), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:6411`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6411), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the

@@ -343,6 +343,38 @@
         "private_media_address": {
           "type": "boolean"
         },
+        "media_relay": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "client",
+            "server",
+            "channel",
+            "lapsed"
+          ],
+          "properties": {
+            "client": {
+              "type": "string"
+            },
+            "server": {
+              "type": "string"
+            },
+            "relayed_address": {
+              "type": "string"
+            },
+            "channel": {
+              "type": "integer",
+              "minimum": 16384,
+              "maximum": 32767
+            },
+            "peer": {
+              "type": "string"
+            },
+            "lapsed": {
+              "type": "boolean"
+            }
+          }
+        },
         "hints": {
           "type": "array",
           "items": {

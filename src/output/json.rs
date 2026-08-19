@@ -172,6 +172,11 @@ struct DiagnosisJson {
     /// so a consumer written before this existed sees no change.
     #[serde(skip_serializing_if = "Option::is_none")]
     stun_sdp_mismatch: Option<crate::rtp::diagnosis::StunSdpMismatch>,
+    /// The TURN relay this call's media crossed, when it crossed one. Absent
+    /// from the object entirely on a capture with no relay in it, so a
+    /// consumer written before this existed sees no change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    media_relay: Option<crate::stun::RelayPath>,
     /// Human-readable findings.
     hints: Vec<String>,
 }
@@ -674,6 +679,7 @@ pub fn dialog_to_json(
         no_media: diagnosis.no_media,
         private_media_address: diagnosis.private_media_address,
         stun_sdp_mismatch: diagnosis.stun_sdp_mismatch.clone(),
+        media_relay: diagnosis.media_relay.clone(),
         hints: diagnosis.hints.clone(),
     };
 

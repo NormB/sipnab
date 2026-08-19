@@ -261,6 +261,20 @@ pub struct MediaDiagnosis {
     /// finding.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stun_sdp_mismatch: Option<StunSdpMismatch>,
+    /// The TURN relay this dialog's media crossed, when it crossed one.
+    ///
+    /// Context, not a finding — nothing here is wrong. It answers "where did
+    /// this call's audio actually go", which for a relayed call previously had
+    /// no answer anywhere: the frames are unwrapped and the RTP inside them
+    /// reaches the stream store, but the stream that comes out is addressed
+    /// phone-to-relay, and nothing said the far socket was a relay, which
+    /// address it relayed to, or that its allocation was about to lapse.
+    ///
+    /// The last of those is why it earns a place beside the findings rather
+    /// than in a table somewhere: [`crate::stun::RelayPath::lapsed`] is the
+    /// capture-level lapsed-allocation finding, narrowed to THIS call's media.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_relay: Option<crate::stun::RelayPath>,
     /// Human-readable diagnostic hints.
     pub hints: Vec<String>,
 
@@ -913,6 +927,7 @@ pub fn diagnose_media(dialog_streams: &[&RtpStream], media: &MediaContext) -> Me
     }
 
     apply_private_media_address(&mut diag, dialog_streams, media);
+    apply_media_relay(&mut diag, dialog_streams);
 
     // Combine one-way + NAT hint
     if diag.one_way_audio && diag.nat_mismatch {
@@ -924,6 +939,60 @@ pub fn diagnose_media(dialog_streams: &[&RtpStream], media: &MediaContext) -> Me
     }
 
     diag
+}
+
+/// Attribute this dialog's media to the TURN relay that carried it, when one
+/// did.
+///
+/// # Why this is here rather than on the stream
+///
+/// The stream store already holds everything the join needs — an SSRC and the
+/// socket pair the packets were seen between — and it holds it for a relayed
+/// stream exactly as for a direct one, because the pipeline unwraps
+/// ChannelData before the stream is ever created. What it cannot hold is the
+/// fact that the far socket was a RELAY, which lives in the STUN store on the
+/// allocation. This is the one place both are in scope.
+///
+/// The first match wins and the rest are not searched: a dialog's streams
+/// cross one relay in every real deployment, and listing "the relay for stream
+/// 3" would invite a reader to look for a per-stream field that does not
+/// exist. When a dialog somehow spanned two, the allocation table under
+/// `--stun` holds both.
+///
+/// # Side effects
+///
+/// Reads the process-global STUN store ([`crate::stun::relay_path_for`]),
+/// which answers from a relaxed atomic with no lock on any capture that never
+/// saw a TURN allocation granted — that is, on every capture without a relay
+/// in it.
+fn apply_media_relay(diag: &mut MediaDiagnosis, dialog_streams: &[&RtpStream]) {
+    let Some(path) = dialog_streams
+        .iter()
+        .find_map(|s| crate::stun::relay_path_for(s.key.src, s.key.dst, s.key.ssrc))
+    else {
+        return;
+    };
+    // Stated only when it is ACTIONABLE. A relay that is doing its job needs
+    // no hint — the `media_relay` field says where the audio went, and a
+    // sentence repeating it on every healthy relayed call would be noise in
+    // the one list an operator reads for problems. A relay whose allocation
+    // lapsed under this call is the opposite: it is the reason the audio
+    // stopped, and nothing else in the dialog says so.
+    if path.lapsed {
+        let relay = path
+            .relayed_address
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| path.server.to_string());
+        diag.hints.push(format!(
+            "This call's media crossed TURN relay {relay} on channel 0x{:04x}, and that \
+             allocation was still carrying traffic after the lifetime the server last \
+             granted it had run out, with no Refresh seen. A relay tears an allocation \
+             down when its lifetime lapses and the audio stops with it, mid-call, with no \
+             SIP message to say why.",
+            path.channel
+        ));
+    }
+    diag.media_relay = Some(path);
 }
 
 /// Raise [`MediaDiagnosis::private_media_address`], with the STUN evidence for
@@ -2801,6 +2870,155 @@ mod stun_sdp_mismatch_tests {
             "{:?}",
             diag.hints
         );
+        crate::stun::reset();
+    }
+}
+
+/// The relay a dialog's media crossed, folded into the media diagnosis.
+///
+/// These write the PROCESS-GLOBAL STUN store, so each resets it first and they
+/// are serialized on the `stun_store` key — the same discipline the tracker's
+/// own tests keep.
+#[cfg(test)]
+mod media_relay_tests {
+    use super::*;
+    use crate::rtp::parser::RtpHeader;
+    use crate::rtp::stream::{RtpStream, StreamKey};
+    use chrono::DateTime;
+    use std::net::SocketAddr;
+
+    fn ts(ms: i64) -> DateTime<chrono::Utc> {
+        DateTime::from_timestamp_millis(1_700_000_000_000 + ms).expect("valid timestamp")
+    }
+
+    fn client() -> SocketAddr {
+        "192.0.2.10:50000".parse().expect("valid addr")
+    }
+    fn server() -> SocketAddr {
+        "198.51.100.20:3478".parse().expect("valid addr")
+    }
+
+    /// One relayed stream, addressed exactly as the pipeline files it: between
+    /// the phone and the RELAY, because that is where the packets were seen.
+    fn relayed_stream(ssrc: u32) -> RtpStream {
+        let key = StreamKey {
+            ssrc,
+            src: client(),
+            dst: server(),
+        };
+        let hdr = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 0,
+            ssrc,
+            payload_offset: 12,
+        };
+        RtpStream::new(key, &hdr, ts(30_000))
+    }
+
+    /// An Allocate that succeeded with a 60-second lifetime, then relayed
+    /// media on channel `0x4001` at `at_ms`.
+    fn relay_carrying(ssrc: u32, at_ms: i64) {
+        let alloc_req: Vec<u8> = vec![
+            0x00, 0x03, 0x00, 0x00, // Allocate Request
+            0x21, 0x12, 0xa4, 0x42, // magic cookie
+            0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1,
+        ];
+        crate::stun::note_message(
+            &crate::stun::parse(&alloc_req).expect("parses"),
+            client(),
+            server(),
+            ts(0),
+        );
+        let alloc_ok: Vec<u8> = vec![
+            0x01, 0x03, 0x00, 0x14, // Allocate success, 20 bytes of attributes
+            0x21, 0x12, 0xa4, 0x42, // magic cookie
+            0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0x00, 0x16,
+            0x00, 0x08, // XOR-RELAYED-ADDRESS
+            0x00, 0x01, // reserved, family IPv4
+            0xe1, 0x1a, // port 49160 (0xc008) ^ 0x2112
+            0xe7, 0x21, 0xc0, 0x0f, // 198.51.100.77 ^ 21 12 a4 42
+            0x00, 0x0d, 0x00, 0x04, // LIFETIME
+            0x00, 0x00, 0x00, 0x3c, // 60 seconds
+        ];
+        crate::stun::note_message(
+            &crate::stun::parse(&alloc_ok).expect("parses"),
+            server(),
+            client(),
+            ts(10),
+        );
+        // A ChannelData frame on 0x4001 wrapping a 12-byte RTP header.
+        let mut frame: Vec<u8> = vec![0x40, 0x01, 0x00, 0x0c, 0x80, 0x00, 0x00, 0x01];
+        frame.extend_from_slice(&160u32.to_be_bytes());
+        frame.extend_from_slice(&ssrc.to_be_bytes());
+        crate::stun::note_channel_data(client(), server(), &frame, ts(at_ms));
+    }
+
+    /// The attribution reaching the diagnosis: a relayed call must be able to
+    /// say which relay its audio crossed, which it previously could not.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn a_relayed_dialog_names_the_relay_its_media_crossed() {
+        crate::stun::reset();
+        relay_carrying(0x1122_3344, 30_000);
+        let stream = relayed_stream(0x1122_3344);
+        let streams = vec![&stream];
+        let diag = diagnose_media(&streams, &MediaContext::default());
+        let relay = diag.media_relay.expect("the relay must be named");
+        assert_eq!(
+            relay.relayed_address.map(|a| a.to_string()).as_deref(),
+            Some("198.51.100.77:49160")
+        );
+        assert_eq!(relay.channel, 0x4001);
+        assert!(!relay.lapsed);
+        // A healthy relay is not a problem, and must not produce a hint: a
+        // sentence on every relayed call is noise in the one list an operator
+        // reads for faults.
+        assert!(
+            !diag.hints.iter().any(|h| h.contains("TURN relay")),
+            "a working relay needs no hint: {:?}",
+            diag.hints
+        );
+        crate::stun::reset();
+    }
+
+    /// And when the allocation lapsed under the call, the dialog says so —
+    /// which is the capture-level finding narrowed to THIS call's audio.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn a_lapsed_relay_is_stated_on_the_call_it_cut_off() {
+        crate::stun::reset();
+        relay_carrying(0x1122_3344, 90_000);
+        let stream = relayed_stream(0x1122_3344);
+        let streams = vec![&stream];
+        let diag = diagnose_media(&streams, &MediaContext::default());
+        assert!(diag.media_relay.as_ref().is_some_and(|r| r.lapsed));
+        let hint = diag
+            .hints
+            .iter()
+            .find(|h| h.contains("TURN relay"))
+            .unwrap_or_else(|| panic!("the lapse must be stated: {:?}", diag.hints));
+        assert!(hint.contains("198.51.100.77:49160"), "{hint}");
+        assert!(hint.contains("0x4001"), "{hint}");
+        crate::stun::reset();
+    }
+
+    /// A capture with no relay in it must gain nothing at all. The quiet-run
+    /// guarantee: the field stays absent rather than becoming a null nobody
+    /// asked for.
+    #[test]
+    #[serial_test::serial(stun_store)]
+    fn a_dialog_with_no_relay_gains_no_relay_field() {
+        crate::stun::reset();
+        let stream = relayed_stream(0x1122_3344);
+        let streams = vec![&stream];
+        let diag = diagnose_media(&streams, &MediaContext::default());
+        assert!(diag.media_relay.is_none());
         crate::stun::reset();
     }
 }

@@ -1030,6 +1030,8 @@ async fn get_stats(
             "snapped_frames": quality.snapped_frames,
             "unanswered_nat_requests": quality.unanswered_nat_requests,
             "lapsed_turn_allocations": quality.lapsed_turn_allocations,
+            "lapsed_turn_allocation_streams": quality.lapsed_turn_allocation_streams,
+            "ice_role_conflicts": quality.ice_role_conflicts,
             "degraded": quality.degraded(),
         },
     })))
@@ -1467,6 +1469,14 @@ mod tests {
             // Also about the NETWORK: a relay torn down mid-call, which has no
             // other symptom anywhere — no SIP message says the media stopped.
             "lapsed_turn_allocations",
+            // How much audio was ON those relays when they were torn down. One
+            // lapsed allocation carrying nothing and one carrying four calls
+            // rendered identically until relayed media became attributable.
+            "lapsed_turn_allocation_streams",
+            // Two ICE agents that both claimed to be controlling. ICE can
+            // resolve it; a fleet where it happens constantly is misconfigured
+            // whether or not any single call survived it.
+            "ice_role_conflicts",
         ] {
             assert!(
                 q[field].is_u64(),

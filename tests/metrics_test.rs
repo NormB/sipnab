@@ -75,6 +75,13 @@ fn metrics_expose_expected_families_with_types() {
         // A relay torn down mid-call. A gauge for the same reason its
         // neighbour is: a late Refresh unsays it, which no counter could.
         ("sipnab_nat_lapsed_turn_allocations", "gauge"),
+        // How much audio was on those relays when they were torn down. One
+        // lapsed allocation carrying nothing and one carrying four calls read
+        // identically without it.
+        ("sipnab_nat_lapsed_turn_allocation_streams", "gauge"),
+        // Two ICE agents that both claimed to be controlling. A gauge because
+        // a later nomination on the same pair unsays the severity of it.
+        ("sipnab_nat_ice_role_conflicts", "gauge"),
         ("sipnab_capture_quality_degraded", "gauge"),
         ("sipnab_pdd_seconds", "histogram"),
         ("sipnab_mos", "histogram"),

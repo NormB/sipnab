@@ -1832,6 +1832,22 @@ pub struct CaptureQualityJson {
     /// mid-call, and no SIP message anywhere explains it. An agent asked why a
     /// call went quiet halfway through has nowhere else to look.
     pub lapsed_turn_allocations: u64,
+    /// Media streams observed crossing an allocation that had already lapsed.
+    ///
+    /// The scale beside `lapsed_turn_allocations`. An agent told "one
+    /// allocation lapsed" cannot tell a relay that was torn down with nothing
+    /// on it from one that cut off four conversations mid-sentence, and those
+    /// need very different answers.
+    pub lapsed_turn_allocation_streams: u64,
+    /// Candidate pairs where both ICE agents claimed the same role, or where
+    /// one answered `487 Role Conflict`.
+    ///
+    /// Also about the NETWORK. RFC 8445 §7.3.1.1 lets ICE resolve this
+    /// itself, so it is not always fatal — but it is a real
+    /// misconfiguration, and where it did NOT resolve it is a candidate cause
+    /// of media that never started, which an agent asked "why is there no
+    /// audio" has nowhere else to look for.
+    pub ice_role_conflicts: u64,
     /// `true` when any of the three LOSS counters above is non-zero.
     ///
     /// Named for the direction there is evidence for. `false` means nothing
@@ -1852,6 +1868,8 @@ impl From<crate::output::prometheus::CaptureQuality> for CaptureQualityJson {
             snapped_frames: q.snapped_frames,
             unanswered_nat_requests: q.unanswered_nat_requests,
             lapsed_turn_allocations: q.lapsed_turn_allocations,
+            lapsed_turn_allocation_streams: q.lapsed_turn_allocation_streams,
+            ice_role_conflicts: q.ice_role_conflicts,
             degraded: q.degraded(),
         }
     }
@@ -9137,6 +9155,10 @@ mod tests {
             // Also about the NETWORK: a relay torn down mid-call, which has no
             // other symptom anywhere — no SIP message says the media stopped.
             "lapsed_turn_allocations",
+            // How much audio was on those relays when they were torn down.
+            "lapsed_turn_allocation_streams",
+            // Two ICE agents that both claimed to be controlling.
+            "ice_role_conflicts",
         ] {
             assert!(
                 q[field].is_u64(),

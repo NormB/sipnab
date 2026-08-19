@@ -278,7 +278,7 @@ registry has grown since, and the count is pinned by
 `mcp_tool_table_lists_every_registered_tool` rather than by this sentence.
 The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
-([`server.rs:5499`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5499)) writes a pcap, `export_audio`
+([`server.rs:5547`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5547)) writes a pcap, `export_audio`
 ([`server.rs:5577`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5577)) writes a WAV, `list_captures`
 ([`server.rs:5477`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5477)) reads a directory, and
 `shutdown_server` ([`server.rs:6042`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6042)) ends the process.
@@ -361,7 +361,7 @@ and it is not incidental — it is the tool working:
 - `DialogSummary.from_user` / `to_user`
   ([`model.rs:53-57`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L53-L57)) are copied straight off the
   From/To URIs.
-- `get_message` ([`server.rs:3334`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3334)) returns the parsed
+- `get_message` ([`server.rs:3380`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3380)) returns the parsed
   message through `message_to_json_value`, headers and body included.
 - `search_messages` ([`server.rs:3654`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3654)) returns
   `snippet`, built as

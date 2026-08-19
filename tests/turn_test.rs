@@ -301,3 +301,124 @@ fn a_stun_only_capture_gains_no_turn_sections() {
     assert!(!stdout.contains("Relayed Address"), "{stdout}");
     assert!(!stdout.contains("TURN Allocations"), "{stdout}");
 }
+
+// ── Relay attribution ────────────────────────────────────────────────
+
+/// The relayed streams reach the stream store, and until now nothing recorded
+/// that they had crossed a relay at all. `--stun` must name the channel and
+/// the SSRCs on it, or there is no route from the allocation table to the
+/// stream list and back.
+#[test]
+fn the_stun_report_attributes_the_relayed_streams_to_their_channel() {
+    let out = turn_report();
+    assert!(
+        out.contains("152 frame(s) on channel 0x4001"),
+        "the frames must be attributed to the channel that carried them, got:\n{out}"
+    );
+    for ssrc in ["0x11223344", "0x55667788"] {
+        assert!(
+            out.contains(ssrc),
+            "{ssrc} crossed the relay and must be named beside it, got:\n{out}"
+        );
+    }
+    assert!(
+        out.contains("channel 0x4001 is bound to peer 203.0.113.9:16000"),
+        "the ChannelBind names the far side of the relay, got:\n{out}"
+    );
+}
+
+/// The lapsed-allocation prose must name the media that died with the relay.
+/// The finding could always say an allocation lapsed and could never say what
+/// was on it, which is the half an operator needs to reach the call.
+#[test]
+fn the_lapsed_allocation_names_the_media_that_died_with_it() {
+    let out = turn_report();
+    let line = out
+        .lines()
+        .find(|l| l.contains("media on it:"))
+        .unwrap_or_else(|| panic!("the lapsed allocation must name its media, got:\n{out}"));
+    assert!(line.contains("0x11223344"), "{line}");
+    assert!(line.contains("0x4001"), "{line}");
+}
+
+/// And the run summary says it too, so a capture read WITHOUT `--stun` still
+/// gets from "a relay was torn down" to the audio that was on it.
+#[test]
+fn the_run_summary_names_the_media_on_the_lapsed_allocation() {
+    let (_, stderr, code) = run(&["-N", "-I", &turn_fixture(), "--no-cli-print"]);
+    assert_eq!(code, 0);
+    assert!(
+        stderr.contains("TURN:     media on it:") && stderr.contains("0x11223344"),
+        "got:\n{stderr}"
+    );
+}
+
+/// `--json-stun` carries the attribution on the allocation record, so a
+/// consumer can join a relayed stream to its relay without reimplementing the
+/// ChannelData framing.
+#[test]
+fn json_stun_carries_the_channel_attribution() {
+    let (stdout, stderr, code) =
+        run(&["-N", "-I", &turn_fixture(), "--json-stun", "--no-cli-print"]);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    let alloc: serde_json::Value = stdout
+        .lines()
+        .filter(|l| l.starts_with('{'))
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("valid JSON"))
+        .find(|r| r["record"] == "turn_allocation")
+        .unwrap_or_else(|| panic!("the allocation must be present, got:\n{stdout}"));
+    let channels = alloc["channels"]
+        .as_array()
+        .unwrap_or_else(|| panic!("channels must be an array: {alloc}"));
+    assert_eq!(channels.len(), 1, "one channel carried everything: {alloc}");
+    assert_eq!(channels[0]["channel"], 0x4001);
+    assert_eq!(channels[0]["frames"], 152);
+    assert_eq!(channels[0]["bound"], true);
+    assert_eq!(channels[0]["peer"], "203.0.113.9:16000");
+    let ssrcs = channels[0]["ssrcs"]
+        .as_array()
+        .expect("ssrcs must be an array");
+    assert_eq!(ssrcs.len(), 2, "two relayed streams: {alloc}");
+    assert_eq!(
+        alloc["unattributed_frames"], 0,
+        "nothing was shed at the cap: {alloc}"
+    );
+}
+
+/// And `--analyze` counts the streams on the lapsed allocation, which is what
+/// separates a relay torn down with nothing on it from one that cut off a
+/// conversation.
+#[test]
+fn analyze_names_the_streams_on_the_lapsed_allocation() {
+    let (stdout, stderr, code) = run(&[
+        "-N",
+        "-I",
+        &turn_fixture(),
+        "--json-analyze",
+        "--no-cli-print",
+    ]);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    let value: serde_json::Value = stdout
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .map(|l| serde_json::from_str(l).expect("valid JSON"))
+        .unwrap_or_else(|| panic!("--json-analyze must emit an object, got:\n{stdout}"));
+    let lapsed = value["findings"]
+        .as_array()
+        .expect("findings must be an array")
+        .iter()
+        .find(|f| f["kind"] == "turn_allocation_lapsed")
+        .unwrap_or_else(|| panic!("the lapsed allocation must be a finding, got:\n{stdout}"));
+    assert_eq!(lapsed["evidence"][0]["counts"]["relayed_streams"], 2);
+    let endpoints = lapsed["evidence"][0]["endpoints"]
+        .as_array()
+        .expect("endpoints must be an array")
+        .iter()
+        .filter_map(|e| e.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        endpoints.contains("0x11223344"),
+        "the media must be named in the evidence, got: {endpoints}"
+    );
+}
