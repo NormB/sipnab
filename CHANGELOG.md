@@ -10,7 +10,7 @@ entry that carries them.
 
 ## [Unreleased]
 
-## [0.5.112] - 2026-08-18
+## [0.5.112] - 2026-08-19
 
 ### Changed
 
