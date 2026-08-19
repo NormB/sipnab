@@ -22,7 +22,19 @@ fixes where it goes.
 """
 import pathlib, re, subprocess, sys
 
-ROOT = pathlib.Path("/home/gator/Development/sipnab")
+# Derived from this file's location, like every sibling script
+# (`check-line-drift.py` and `rfc-links.py` both use the same `parents[1]`).
+# It was an absolute `/home/gator/Development/sipnab`, which exists on exactly
+# one machine. Measured 2026-08-19 on macOS/aarch64 at
+# /Users/gator/Development/sipnab: `git ls-files` ran with `cwd=` a path that
+# is not there and the script died with
+# `FileNotFoundError: ... PosixPath('/home/gator/Development/sipnab')`, before
+# reading a single doc. `tests/doc_link_hygiene_test.rs:321` fails with "Run
+# scripts/fix-line-anchors.py --apply", so the gate's only remedy was a script
+# that could not start anywhere but one checkout. Same defect, same fix, as
+# `rfc-links.py` -- which failed the QUIETER way: its glob matched nothing and
+# it reported success over zero files.
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 BASE = "https://github.com/NormB/sipnab"
 LINK = re.compile(r"\[`([^`]*?):(\d+(?:-\d+)?)`\]\(([^)]+)\)")
 
@@ -76,8 +88,9 @@ def convert(doc: pathlib.Path, text: str) -> tuple[str, int]:
 
 if __name__ == "__main__":
     apply = "--apply" in sys.argv
-    total = files = 0
+    total = files = scanned = 0
     for f in sorted((ROOT / "docs").rglob("*.md")):
+        scanned += 1
         orig = f.read_text()
         out, n = convert(f, orig)
         if n:
@@ -86,4 +99,9 @@ if __name__ == "__main__":
             print(f"  {f.relative_to(ROOT)}: {n}")
             if apply:
                 f.write_text(out)
-    print(f"{'FIXED' if apply else 'WOULD FIX'} {total} line citations across {files} files")
+    # `scanned` is reported because "0 across 0 files" cannot otherwise be told
+    # apart from "the glob matched nothing" -- and the second is exactly how the
+    # hardcoded ROOT hid in `rfc-links.py` for as long as it did. 85 files here
+    # on 2026-08-19; a zero is a broken ROOT, not a clean tree.
+    print(f"{'FIXED' if apply else 'WOULD FIX'} {total} line citations "
+          f"across {files} of {scanned} files scanned under {ROOT}/docs")

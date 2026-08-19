@@ -43,6 +43,64 @@ bad() {
 	printf 'FAIL: %s\n' "$1"
 }
 
+# A scenario this host cannot decide. Counted and printed, never folded into
+# PASS: the whole argument of this file is that a verdict nobody observed must
+# not read as a verdict, and that applies to the harness before it applies to
+# the hook.
+SKIP=0
+skip() {
+	SKIP=$((SKIP + 1))
+	printf 'SKIP: %s\n' "$1"
+}
+
+# Did the non-Linux cfg gate reach a VERDICT on the last `run_hook`?
+#
+# scripts/check-non-linux.sh exits 2 with "NOT CHECKED -- host is Darwin, not
+# Linux" off Linux, and the hook prints that line verbatim and carries on. The
+# three scenarios below then asserted the hook's EXIT CODE and got the answer
+# they wanted anyway -- from a different gate:
+#
+#   fixture 1 (ungated `#[cfg(test)]` reaching a Linux-only const) -- on macOS
+#     `super::FLAG` genuinely does not exist, so the CLIPPY gate 130 lines
+#     earlier fails with E0425 and the push is blocked. Correct outcome, wrong
+#     gate, and the scenario printed "non-Linux cfg gate blocks ...".
+#   fixture 2 (test module gated too) -- on macOS the module drops out and
+#     everything compiles, so the hook exits 0 and the scenario printed a pass
+#     for a gate that never ran.
+#   fixture 3 (parameter whose only reader is Linux-gated) -- on macOS the
+#     parameter is genuinely unused, so `-D warnings` blocks at CLIPPY.
+#
+# All three therefore reported PASS on macOS: measured 2026-08-19, the whole
+# file printed "31 passed, 0 failed" and "GREEN: all pre-push BDD scenarios
+# passed" while the gate those three name had contributed nothing. The
+# harness's own comment two dozen lines below already names this exact hazard
+# for the clippy gate -- "this scenario would report a pass it never earned" --
+# and then it happened, on the axis the file is named after.
+#
+# So: observe the gate's line in the hook's output and refuse to grade the
+# scenario unless the gate actually reached a verdict.
+#
+# THREE outcomes, not two, and the third is the one that made the first draft of
+# this helper wrong. The hook prints `  non-Linux cfg (...) ... ` before running
+# the check, so:
+#
+#   line absent           the hook exited at an EARLIER gate and never reached
+#                         this one. That is what fixtures 1 and 3 do on macOS:
+#                         clippy fails first, the hook exits, and out.log has no
+#                         non-Linux line at all. Grading on exit code here is
+#                         precisely the false pass being removed.
+#   line says NOT CHECKED reached, declined (wrong host, no cargo, no cfgs).
+#   anything else         reached and decided; grade it.
+nonlinux_gate_verdict() {
+	if ! grep -q 'non-Linux cfg' "$TMP/out.log" 2>/dev/null; then
+		printf 'not-reached'
+	elif grep -q 'non-Linux cfg.*NOT CHECKED' "$TMP/out.log" 2>/dev/null; then
+		printf 'not-checked'
+	else
+		printf 'decided'
+	fi
+}
+
 # Throwaway workspace; removed on any exit.
 TMP=$(mktemp -d 2>/dev/null || mktemp -d -t prepush)
 cleanup() {
@@ -337,18 +395,33 @@ EOF
 	( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
 }
 
+# The blocking scenarios assert the gate's OWN message, not merely a non-zero
+# exit: "the hook blocked" is true here for three different gates, and only one
+# of them is under test.
+NL_BLOCKED='Push blocked: the code does not build or document for a non-Linux target'
+
 write_platform_lib '#[cfg(test)]'
-if run_hook ""; then
+NL_RC=0
+run_hook "" || NL_RC=$?
+NL_V=$(nonlinux_gate_verdict)
+if [ "$NL_V" != decided ]; then
+	skip "non-Linux cfg gate blocks Linux-only tests for a cross-platform module -- gate $NL_V on $(uname -s); the block seen here came from the clippy gate instead"
+elif [ "$NL_RC" -ne 0 ] && grep -qF "$NL_BLOCKED" "$TMP/out.log"; then
+	ok "non-Linux cfg gate blocks Linux-only tests for a cross-platform module"
+else
 	bad "non-Linux cfg gate did NOT block Linux-only tests for a cross-platform module"
 	sed 's/^/    /' "$TMP/out.log"
-else
-	ok "non-Linux cfg gate blocks Linux-only tests for a cross-platform module"
 fi
 
 # ...and passes once the test module carries the platform decision too, which is
 # the fix 34defd5 actually shipped.
 write_platform_lib '#[cfg(all(test, target_os = "linux"))]'
-if run_hook ""; then
+NL_RC=0
+run_hook "" || NL_RC=$?
+NL_V=$(nonlinux_gate_verdict)
+if [ "$NL_V" != decided ]; then
+	skip "non-Linux cfg gate passes once the test module is gated as well -- gate $NL_V on $(uname -s), so a green hook proves nothing about it"
+elif [ "$NL_RC" -eq 0 ]; then
 	ok "non-Linux cfg gate passes once the test module is gated as well"
 else
 	bad "non-Linux cfg gate blocked a correctly gated test module"
@@ -373,11 +446,16 @@ fn main() {
 }
 EOF
 ( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
-if run_hook ""; then
+NL_RC=0
+run_hook "" || NL_RC=$?
+NL_V=$(nonlinux_gate_verdict)
+if [ "$NL_V" != decided ]; then
+	skip "non-Linux cfg gate blocks a parameter whose only use is Linux-gated -- gate $NL_V on $(uname -s); the block seen here came from the clippy gate instead"
+elif [ "$NL_RC" -ne 0 ] && grep -qF "$NL_BLOCKED" "$TMP/out.log"; then
+	ok "non-Linux cfg gate blocks a parameter whose only use is Linux-gated"
+else
 	bad "non-Linux cfg gate did NOT block a parameter whose only use is Linux-gated"
 	sed 's/^/    /' "$TMP/out.log"
-else
-	ok "non-Linux cfg gate blocks a parameter whose only use is Linux-gated"
 fi
 cat >"$CRATE/src/main.rs" <<'EOF'
 fn main() {}
@@ -705,9 +783,16 @@ HOOK_CORPUS_DIR=
 HOOK_CORPUS_SKIP=
 
 # -- Summary ------------------------------------------------------------------
-printf '\n--- test-pre-push summary: %d passed, %d failed ---\n' "$PASS" "$FAIL"
+printf '\n--- test-pre-push summary: %d passed, %d failed, %d skipped (host: %s) ---\n' \
+	"$PASS" "$FAIL" "$SKIP" "$(uname -s)"
 if [ "$FAIL" -ne 0 ]; then
 	exit 1
+fi
+if [ "$SKIP" -ne 0 ]; then
+	printf 'AMBER: %d scenario(s) could not be decided on this host. A SKIP is\n' "$SKIP"
+	printf 'coverage that did not happen, not coverage that passed -- run this on\n'
+	printf 'Linux for the full set. The rest passed.\n'
+	exit 0
 fi
 printf 'GREEN: all pre-push BDD scenarios passed.\n'
 exit 0

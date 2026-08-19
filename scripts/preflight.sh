@@ -140,10 +140,37 @@ fi
 step "vale (CI-pinned version)"
 VALE_OUT="/tmp/.sipnab-preflight-vale.$$"
 WANT_VALE=$(grep -oE "VALE_VERSION: '[0-9.]+'" .github/workflows/quality.yml 2>/dev/null | grep -oE "[0-9.]+" | head -1)
-if ! command -v vale >/dev/null 2>&1; then
+# VALE_BIN, exactly as .githooks/pre-push and CODESPELL_BIN below accept, and
+# for a reason this script's own strictness rules turn into a hard block.
+#
+# The version comparison two branches down is right and stays. What was missing
+# was any way to SATISFY it. `command -v vale` was the only lookup, so on a
+# machine whose package manager ships a version other than the pin there was no
+# second binary to reach for: `degraded` under PREFLIGHT_STRICT=1 (which is the
+# DEFAULT whenever stdout is not a tty -- a log file, a CI job, an agent) means
+# FAILED=1, and the run could not be made to pass by installing anything.
+#
+# Measured 2026-08-19 on macOS/aarch64: Homebrew ships vale 3.17.1, quality.yml
+# pins 3.16.0, and on identical committed bytes those two report 0 and 475
+# errors. Homebrew has no 3.16.0 formula, so "install the pinned version" was
+# advice with no macOS answer behind it -- a side-by-side pinned binary is the
+# answer, and now there is a variable that points at one.
+#
+# Deliberately checked BEFORE `command -v vale`: the point is to override a
+# PATH binary of the wrong version, so a PATH-first lookup would defeat it.
+# (CODESPELL_BIN below is PATH-first, which is a separate wart -- codespell has
+# no version pin, so any install is as good as another there.)
+VALE=""
+if [ -n "${VALE_BIN:-}" ] && [ -x "${VALE_BIN}" ]; then
+    VALE="$VALE_BIN"
+elif command -v vale >/dev/null 2>&1; then
+    VALE=vale
+fi
+if [ -z "$VALE" ]; then
     degraded
     note "vale is not installed. CI runs it and it BLOCKS."
     note "Install ${WANT_VALE:-the pinned version}: https://vale.sh"
+    note "or point VALE_BIN at a v${WANT_VALE:-pinned} binary, as the hook accepts."
 elif [ -z "$WANT_VALE" ]; then
     # An empty WANT_VALE used to skip the version comparison and run Vale
     # anyway, reporting OK from an unknown binary -- the same defect one level
@@ -152,15 +179,15 @@ elif [ -z "$WANT_VALE" ]; then
     note "no VALE_VERSION in .github/workflows/quality.yml, so the version"
     note "comparison had nothing to compare. Whatever this binary reports is"
     note "not evidence about CI. Restore the pin in the workflow."
-elif ! vale --version 2>/dev/null | grep -qF "$WANT_VALE"; then
+elif ! "$VALE" --version 2>/dev/null | grep -qF "$WANT_VALE"; then
     degraded
-    note "local $(vale --version 2>/dev/null | head -1) but CI pins $WANT_VALE."
+    note "local $("$VALE" --version 2>/dev/null | head -1) but CI pins $WANT_VALE."
     note "Different dictionaries: a green run here is NOT evidence about CI."
-    note "Fetch the pinned build for this arch and use that instead."
+    note "Fetch the pinned build for this arch and point VALE_BIN at it."
 else
     # CI's exact path list. Adding anything to it -- CHANGELOG.md especially --
     # invents errors CI will never report.
-    if vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md >"$VALE_OUT" 2>&1; then
+    if "$VALE" docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md >"$VALE_OUT" 2>&1; then
         ok
     else
         bad

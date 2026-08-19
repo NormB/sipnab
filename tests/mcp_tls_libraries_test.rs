@@ -123,7 +123,29 @@ fn the_unreachable_count_matches_the_entries_it_summarises() {
 /// would have an agent report a probe target that cannot resolve.
 #[test]
 fn every_entry_pairs_its_flavour_with_the_symbol_that_flavour_exports() {
-    for lib in tls_libraries_response().libraries {
+    let r = tls_libraries_response();
+    // A `for` over an empty vec asserts nothing and reports `ok`, and off Linux
+    // the vec is ALWAYS empty -- `tls_libraries_response()` scans `/proc/*/maps`
+    // and answers `supported: false` everywhere else. So on macOS this test, and
+    // `every_entry_carries_the_inode_that_identifies_it` below, were green
+    // having examined zero entries; they were not even reported as filtered,
+    // because nothing here is `#[cfg]`-gated. Say what was checked instead.
+    if !r.supported {
+        assert!(
+            r.libraries.is_empty(),
+            "an unsupported build must report no libraries rather than a list \
+             it could not have gathered: {:?}",
+            r.libraries
+        );
+        eprintln!(
+            "not checked here: /proc/*/maps is Linux-only, so this build \
+             reports supported=false and there is nothing to pair. Enforced \
+             on Linux."
+        );
+        return;
+    }
+    let mut checked = 0usize;
+    for lib in r.libraries {
         let expected = match lib.flavor.as_str() {
             "OpenSSL" => "SSL_write",
             "wolfSSL" => "wolfSSL_write",
@@ -135,7 +157,13 @@ fn every_entry_pairs_its_flavour_with_the_symbol_that_flavour_exports() {
             lib.process_count > 0,
             "a library is reported only because a process maps it"
         );
+        checked += 1;
     }
+    // Not an assertion: a Linux host with no process mapping a TLS library is a
+    // legitimate zero, and failing on it would make the gate depend on what
+    // else happens to be running. Printing it is the difference between "found
+    // none" and "looked at none".
+    eprintln!("checked {checked} mapped TLS librar(y/ies)");
 }
 
 /// Off Linux, or without `native`, the answer is "cannot", not "none found".
@@ -156,11 +184,24 @@ fn an_unsupported_build_says_so_rather_than_reporting_nothing() {
 /// carried inode 0 the agent would have no way to tell two libraries apart.
 #[test]
 fn every_entry_carries_the_inode_that_identifies_it() {
-    for lib in tls_libraries_response().libraries {
+    let r = tls_libraries_response();
+    // Same vacuity as the flavour/symbol pairing above: zero entries off Linux,
+    // so the loop asserted nothing and the test reported `ok`.
+    if !r.supported {
+        eprintln!(
+            "not checked here: /proc/*/maps is Linux-only, so there are no \
+             entries to carry an inode. Enforced on Linux."
+        );
+        return;
+    }
+    let mut checked = 0usize;
+    for lib in r.libraries {
         assert_ne!(
             lib.inode, 0,
             "inode 0 is an anonymous mapping and cannot name a file: {}",
             lib.path
         );
+        checked += 1;
     }
+    eprintln!("checked {checked} inode(s)");
 }

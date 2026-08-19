@@ -1,5 +1,6 @@
 #!/bin/sh
-# Compile the NON-LINUX arm of every `#[cfg(target_os = ...)]` split, on Linux.
+# Compile and DOCUMENT the NON-LINUX arm of every `#[cfg(target_os = ...)]`
+# split, on Linux.
 #
 # WHY THIS EXISTS
 #
@@ -96,8 +97,12 @@
 # how a stale artifact gets picked up later.
 #
 # EXIT CODES (the hook depends on these)
-#   0  checked, and the non-Linux arm builds clean
-#   1  checked, and it does NOT build -- the message names what broke
+#   0  checked, and the non-Linux arm builds AND documents clean
+#   1  checked, and it does NOT -- the message names what broke. Two phases can
+#      produce this: clippy (a name that does not resolve, a binding whose only
+#      reader is gated) and rustdoc (an intra-doc link to a Linux-only item).
+#      The rustdoc phase is worth calling out because CI cannot substitute for
+#      it: ci.yml's Docs step is `if: runner.os == 'Linux'`.
 #   2  NOT CHECKED, with the reason on stdout. Never silence: a gate that goes
 #      quiet when it cannot run is worse than no gate, because green then means
 #      nothing. Same rule the corpus and Vale gates follow.
@@ -240,6 +245,48 @@ fi
 cd "$TREE"
 CARGO_TARGET_DIR="$SHIM/target" \
 	cargo clippy --all-features --all-targets -- -D warnings -A unexpected_cfgs || exit 1
+
+# -- ...and rustdoc over the same inverted tree -------------------------------
+#
+# Clippy alone leaves a hole this gate was written to close, and the hole has
+# already cost a release cycle. Broken intra-doc links never fire under build
+# or clippy -- ci.yml says so at its Docs step -- so the ONLY thing that sees
+# them is `cargo doc`, and until this line existed nothing ran `cargo doc`
+# against a non-Linux cfg resolution ANYWHERE:
+#
+#   * ci.yml's Docs step is guarded `if: runner.os == 'Linux'` (ci.yml:183),
+#     so the macOS job never builds docs at all;
+#   * a Linux developer's pre-push rustdoc gate reads the un-inverted tree,
+#     where every Linux-only item exists;
+#   * a macOS developer's pre-push rustdoc gate DOES see it -- which is not a
+#     gate, it is a bug report delivered to whoever happened to be on a Mac.
+#
+# That is exactly how it went. `src/capture/native.rs` carried intra-doc links
+# to `capture::uprobe`, which is `#[cfg(target_os = "linux")]`
+# (src/capture/mod.rs:48). Green in CI forever; and since .githooks/pre-push
+# runs `RUSTDOCFLAGS="-D warnings" cargo doc` as a HARD gate, no push from a
+# Mac could succeed until the links were removed. One defect, invisible to
+# every machine that could have fixed it cheaply, blocking every machine that
+# could not.
+#
+# Same invocation as the pre-push gate and CI's Docs step, plus the two flags
+# the shim needs: `-A unexpected_cfgs` for the sentinel (see above), and
+# `--document-private-items` is deliberately NOT added, so this asks the same
+# question CI asks and not a stricter one.
+#
+# NOT VERIFIED ON LINUX, and the COST figures in the header do not include it.
+# Written and reviewed on macOS/aarch64, where this script exits 2 before
+# reaching any of this (the host check above), so the line below has never been
+# executed and nothing here has been timed. rustdoc reuses the CARGO_TARGET_DIR
+# the clippy phase just warmed, but doc artifacts are a different kind from
+# check artifacts, so expect both the 50 s first run and the 1.3 GB to grow.
+#
+# Run `sh scripts/check-non-linux.sh` standalone on a Linux host before
+# trusting a push through it: a pre-existing rustdoc warning in the inverted
+# tree would surface here as a new hard block, and the right response to that
+# is to fix the link, not to drop this phase.
+CARGO_TARGET_DIR="$SHIM/target" RUSTDOCFLAGS="-D warnings -A unexpected_cfgs" \
+	cargo doc --no-deps --all-features --workspace || exit 1
 
 # -- Phase 2: a genuinely different target ------------------------------------
 #

@@ -511,7 +511,19 @@ fn linked_code_targets_exist() {
     // `docs/internals/testing.md` +1, every other internals page unchanged.
     // Raised 343 -> 346 by the uprobe capture page: three links into
     // src/capture/uprobe/ and src/capture/resolve.rs.
-    const EXPECTED_CODE_LINKS: usize = 348;
+    // Raised 348 -> 349 by the rustdoc half of the non-Linux gate:
+    // `internals/build-ci-release.md` gained one link, to
+    // `src/capture/native.rs`, naming the file whose `capture::uprobe`
+    // intra-doc links were green in CI forever and blocked every push from a
+    // Mac. The paragraph explains why `scripts/check-non-linux.sh` now runs
+    // `cargo doc` over the inverted tree and CI cannot substitute for it
+    // (`ci.yml`'s Docs step is `if: runner.os == 'Linux'`), so the reader
+    // needs the file the defect lived in. Added by
+    // `scripts/link-repo-paths.py --apply`, which is what
+    // `repo_paths_in_docs_are_clickable` demands. Attributed per file:
+    // `docs/internals/build-ci-release.md` +1, every other internals page
+    // unchanged.
+    const EXPECTED_CODE_LINKS: usize = 349;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

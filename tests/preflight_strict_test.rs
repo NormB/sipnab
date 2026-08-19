@@ -236,7 +236,20 @@ impl<'a> Case<'a> {
             .current_dir(&self.cwd)
             .env_remove("CI")
             .env_remove("PREFLIGHT_STRICT")
-            .env_remove("CODESPELL_BIN");
+            .env_remove("CODESPELL_BIN")
+            // VALE_BIN joins the list the moment the vale gate learned to read
+            // it. `vale_gate_without_vale` hides `vale` from PATH to test the
+            // missing-tool arm, and a VALE_BIN inherited from the developer's
+            // shell would hand the gate a binary anyway -- turning "vale is not
+            // installed" into a real lint run and failing the assertion for a
+            // reason that has nothing to do with the code.
+            //
+            // Not hypothetical: on macOS the pinned 3.16.0 that the gate wants
+            // is not what Homebrew installs, so exporting VALE_BIN at a
+            // side-by-side binary is the documented way to run the hooks here.
+            // The one environment most likely to have it set is the one running
+            // these tests.
+            .env_remove("VALE_BIN");
         for (k, v) in &self.env {
             cmd.env(k, v);
         }

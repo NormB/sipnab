@@ -20,7 +20,16 @@ Two further artifacts come from the same scrape:
 """
 import pathlib, re, sys
 
-ROOT = pathlib.Path("/home/gator/Development/sipnab")
+# Derived from this file's location, like every sibling script
+# (`check-line-drift.py` and `rfc-links.py` both use the same `parents[1]`).
+# It was an absolute `/home/gator/Development/sipnab`, which exists on exactly
+# one machine. Measured 2026-08-19 on macOS/aarch64 at
+# /Users/gator/Development/sipnab: the first `read_text()` raised
+# `FileNotFoundError: '/home/gator/Development/sipnab/docs/sip-header-fields.md'`.
+# `tests/doc_link_hygiene_test.rs:380` fails with "Run scripts/fix-tables.py
+# --apply", so the gate's only remedy was a script that could not start
+# anywhere but one checkout.
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 # Verified 200; www.3gpp.org/DynaReport/24229.htm returns 403.
 TS_24229 = ("https://portal.3gpp.org/desktopmodules/Specifications/"
             "SpecificationDetails.aspx?specificationId=1055")

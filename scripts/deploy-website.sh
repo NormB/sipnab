@@ -61,7 +61,49 @@ if [ -z "${SKIP_BUILD:-}" ]; then
         echo "error: zola not found in PATH (set ZOLA_BIN=/path/to/zola)" >&2
         exit 1
     fi
-    echo "→ Building Zola site (zola $($ZOLA_BIN --version | awk '{print $2}'))..."
+    # ---- The version is part of the build, not a detail -------------------
+    #
+    # This printed whatever `zola --version` said and built with it, which is
+    # the same defect the Vale gate in .githooks/pre-push had: a pinned tool in
+    # CI and an unpinned one locally, reported confidently either way.
+    #
+    # .github/workflows/pages.yml and quality.yml both pin ZOLA_VERSION and
+    # verify a SHA256 before installing it, because zola's markdown renderer
+    # and heading slugger change between releases -- `slug_zola` in
+    # tests/link_integrity_test.rs and `zola_slug` in
+    # scripts/build-site-internals.py are hand-ports of that exact algorithm,
+    # and `generated_site_anchors_resolve_under_zola` is a gate on it. A deploy
+    # built by a different renderer can therefore publish anchors that no gate
+    # in this repository ever agreed to.
+    #
+    # Measured 2026-08-19 on macOS/aarch64: Homebrew ships zola 0.23.0; the
+    # workflows pin 0.19.2. Four minor versions apart, and nothing said so.
+    #
+    # It stays a WARNING rather than a hard stop: this is an operator's deploy
+    # script for their own infrastructure, not a merge gate, and refusing to
+    # publish over a version skew would be the wrong trade for someone pushing
+    # a hotfix. But it must not be silent, and it must name both numbers.
+    #
+    # `|| true` on both, and it is load-bearing under this script's
+    # `set -euo pipefail`: `VAR=$(cmd)` propagates cmd's status, and with
+    # pipefail a grep that matches nothing makes the whole pipeline non-zero.
+    # Without it a missing pin would kill the script one line before the branch
+    # written to report a missing pin. Verified 2026-08-19: the same assignment
+    # against a file with no match exits 1 and never reaches the next line.
+    ZOLA_HAVE=$("$ZOLA_BIN" --version 2>/dev/null | awk '{print $2}' || true)
+    ZOLA_PIN=$(grep -oE "ZOLA_VERSION: '[0-9.]+'" \
+        "$repo_root/.github/workflows/pages.yml" 2>/dev/null \
+        | grep -oE '[0-9.]+' | head -1 || true)
+    if [ -z "$ZOLA_PIN" ]; then
+        echo "warning: no ZOLA_VERSION pin found in .github/workflows/pages.yml," >&2
+        echo "         so this build cannot be compared against what CI publishes." >&2
+    elif [ "$ZOLA_HAVE" != "$ZOLA_PIN" ]; then
+        echo "warning: local zola ${ZOLA_HAVE:-unknown}, but CI publishes with ${ZOLA_PIN}." >&2
+        echo "         Renderer and heading-slug behaviour differ between releases, so" >&2
+        echo "         this deploy may not match what the Pages workflow would produce." >&2
+        echo "         Set ZOLA_BIN to a v${ZOLA_PIN} binary to publish the same bytes CI does." >&2
+    fi
+    echo "→ Building Zola site (zola ${ZOLA_HAVE:-unknown}, CI pins ${ZOLA_PIN:-unknown})..."
     if ! "$ZOLA_BIN" build; then
         echo "error: zola build failed" >&2
         exit 2

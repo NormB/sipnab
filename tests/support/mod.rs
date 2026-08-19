@@ -98,10 +98,46 @@ fn dur_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"\d+(?:\.\d+)?\s?(?:ns|µs|us|ms|s)\b").unwrap())
 }
 
-/// Temp-file paths under `/tmp/`.
+/// Temp-file paths, under `/tmp/` **and** under this platform's real temp
+/// directory.
+///
+/// The pattern was `/tmp/` alone, which is the Linux answer and only the Linux
+/// answer. `std::env::temp_dir()` reads `$TMPDIR` first, and on macOS launchd
+/// sets that to a per-user, per-boot directory: measured 2026-08-19 on
+/// macOS 26.5.2/aarch64 it is `/var/folders/4x/<hash>/T/`. Nothing a test wrote
+/// there matched `/tmp/`, so `normalize()` substituted nothing, and "the
+/// determinism contract every golden/snapshot test relies on" (see the module
+/// doc) quietly held for one platform.
+///
+/// It reads as a passing normalizer either way, which is why it survived: the
+/// self-test in `tests/support_selftest.rs` feeds it a literal
+/// `/tmp/abc123/out.pcap`, so it exercises the branch that works on both hosts
+/// and never the one that does not.
+///
+/// `/private/tmp` is here for the same reason and is macOS-specific too: `/tmp`
+/// there is a symlink into `/private`, so a path that has been through
+/// `canonicalize()` comes back with the longer prefix and no longer matches
+/// `/tmp/`.
+///
+/// Built once from `temp_dir()` at first use rather than hardcoded, because the
+/// `<hash>` differs per user and per boot. `regex::escape` is not optional: the
+/// path is interpolated into a pattern.
 fn tmp_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"/tmp/[^\s"']+"#).unwrap())
+    RE.get_or_init(|| {
+        let mut alts = vec![regex::escape("/tmp/"), regex::escape("/private/tmp/")];
+        let sys = std::env::temp_dir();
+        let sys = sys.to_string_lossy();
+        let sys = format!("{}/", sys.trim_end_matches('/'));
+        if !alts.iter().any(|a| a == &regex::escape(&sys)) {
+            alts.push(regex::escape(&sys));
+        }
+        // Longest-first: the alternation is ordered, and `/tmp/` would
+        // otherwise win against a temp dir that happens to start with it.
+        alts.sort_by_key(|a| std::cmp::Reverse(a.len()));
+        Regex::new(&format!(r#"(?:{})[^\s"']+"#, alts.join("|")))
+            .expect("temp-dir alternation is escaped, so it always compiles")
+    })
 }
 
 /// `pid=NNN` / `PID: NNN` in any case.

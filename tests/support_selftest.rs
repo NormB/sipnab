@@ -50,6 +50,38 @@ fn scrubs_temp_paths() {
     assert_eq!(normalize("wrote /tmp/abc123/out.pcap ok"), "wrote <TMP> ok");
 }
 
+/// ...and so is a path under the temp directory this platform ACTUALLY uses.
+///
+/// The case above is the only one that existed, and it is the one that works
+/// everywhere, so it could never fail: on Linux `temp_dir()` IS `/tmp`, and on
+/// macOS `$TMPDIR` is a per-user launchd directory under `/var/folders/` that
+/// the `/tmp/`-only pattern did not match at all. A test binary writing to
+/// `std::env::temp_dir()` -- which is what every helper in `support/mod.rs`
+/// does, `discard_coverage_profile` included -- therefore had its paths pass
+/// through `normalize()` untouched here while being scrubbed in CI.
+///
+/// Written against the platform's own answer rather than a literal so it
+/// asserts the property ("whatever this platform hands out is scrubbed")
+/// instead of re-stating one platform's answer, which is the defect it
+/// replaces.
+///
+/// The pid in the file name is what `tests/temp_path_isolation_test.rs`
+/// requires. Nothing here creates the file — it only formats the path into a
+/// string — but the gate cannot see that, and a fixed name would be wrong the
+/// moment someone added a write.
+#[test]
+fn scrubs_paths_under_the_platform_temp_directory() {
+    let f = std::env::temp_dir().join(format!("sipnab-selftest-{}.pcap", std::process::id()));
+    let line = format!("wrote {} ok", f.display());
+    assert_eq!(
+        normalize(&line),
+        "wrote <TMP> ok",
+        "normalize() left a real temp path in place; the determinism contract \
+         does not hold on this platform. The path was {}",
+        f.display()
+    );
+}
+
 /// `pid=N` and `PID: N` both normalize to `pid=<PID>`.
 #[test]
 fn scrubs_pids_any_case() {

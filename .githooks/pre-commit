@@ -149,22 +149,85 @@ while kill -0 "$TEST_PID" 2>/dev/null; do
 		# wedge by hand: per-thread `comm` names the test that is stuck, and
 		# `wchan` plus State distinguish "blocked in the kernel" from
 		# "spinning in userspace". Both sightings were State=S at ~0% CPU.
+		#
+		# ---- Two arms, because every probe above is Linux-only -------------
+		# Measured 2026-08-19 on macOS 26.5.2 / aarch64: `/proc` does not
+		# exist, so the status and per-thread loops read nothing; `ps --ppid`
+		# is a GNU long option and BSD ps answers `ps: illegal option -- -`;
+		# and gdb is not installed (on macOS it also needs codesigning, so
+		# installing it would not have helped). The whole collector therefore
+		# wrote a file containing pid headers, an empty thread section and a
+		# ps usage message -- which is precisely the "worse than no file
+		# because it looks like evidence" outcome the paragraph above rejects
+		# for the gdb-only version. It mattered here more than anywhere: the
+		# 1d17h sighting this watchdog exists for was on a Mac, so on the one
+		# host that has produced the defect, the evidence collector was inert.
+		#
+		# The Darwin arm collects the same three things by the native route:
+		#
+		#   /bin/ps -M          per-thread STAT/PRI/CPU -- the analogue of the
+		#                       /proc/<pid>/task walk, and the same S-at-0%
+		#                       signature is what both sightings showed.
+		#   pgrep -P + /bin/ps  children. `pgrep -P` is BSD as well as GNU
+		#                       (verified), so only the ps invocation differs.
+		#   sample              per-thread backtraces, and the one that makes
+		#                       this arm worth having: it is the piece gdb
+		#                       could never deliver on Linux. `sample` reads a
+		#                       live task without ptrace and without
+		#                       privileges for a process the same user owns,
+		#                       so unlike the gdb branch it is expected to
+		#                       SUCCEED, not to fail with a permissions
+		#                       message. Verified against a live victim: it
+		#                       reported the blocking kernel call
+		#                       (`__semwait_signal`) per thread, which is the
+		#                       `wchan` column by another name. Bounded to 2s
+		#                       (measured: 2s wall) so a wedged suite with
+		#                       many test binaries cannot turn the watchdog
+		#                       into its own hang.
+		#
+		# The dispatch is on `/proc` being real rather than on `uname`, so a
+		# host with neither falls to the final arm and SAYS it collected
+		# nothing instead of leaving an empty section to be misread.
 		for p in $(pgrep -P "$TEST_PID" 2>/dev/null); do
 			{
 				echo "===== pid $p ====="
-				sed -n 's/^\(Name\|State\|Threads\|PPid\):/\1:/p' "/proc/$p/status" 2>/dev/null
-				echo "--- threads: tid comm wchan ---"
-				for t in /proc/$p/task/*; do
-					printf '%s\t%s\t%s\n' "${t##*/}" \
-						"$(cat "$t/comm" 2>/dev/null)" \
-						"$(cat "$t/wchan" 2>/dev/null)"
-				done
-				echo "--- children (zombies are normal: event_exec reaps lazily) ---"
-				ps --ppid "$p" -o pid,stat,etime,comm 2>&1
-				if command -v gdb >/dev/null 2>&1; then
-					echo "--- gdb backtraces (needs ptrace_scope=0 or root; expected to fail otherwise) ---"
-					gdb -p "$p" -batch -ex 'set pagination off' \
-						-ex 'thread apply all bt' 2>&1
+				if [ -d "/proc/$p" ]; then
+					sed -n 's/^\(Name\|State\|Threads\|PPid\):/\1:/p' "/proc/$p/status" 2>/dev/null
+					echo "--- threads: tid comm wchan ---"
+					for t in /proc/$p/task/*; do
+						printf '%s\t%s\t%s\n' "${t##*/}" \
+							"$(cat "$t/comm" 2>/dev/null)" \
+							"$(cat "$t/wchan" 2>/dev/null)"
+					done
+					echo "--- children (zombies are normal: event_exec reaps lazily) ---"
+					ps --ppid "$p" -o pid,stat,etime,comm 2>&1
+					if command -v gdb >/dev/null 2>&1; then
+						echo "--- gdb backtraces (needs ptrace_scope=0 or root; expected to fail otherwise) ---"
+						gdb -p "$p" -batch -ex 'set pagination off' \
+							-ex 'thread apply all bt' 2>&1
+					fi
+				elif [ "$(uname -s)" = "Darwin" ]; then
+					echo "--- threads: ps -M (STAT S at ~0% CPU is the wedge signature) ---"
+					/bin/ps -M -p "$p" 2>&1
+					echo "--- children (zombies are normal: event_exec reaps lazily) ---"
+					KIDS=$(pgrep -P "$p" 2>/dev/null | tr '\n' ' ')
+					if [ -n "$KIDS" ]; then
+						# Word-splitting on $KIDS is intended: -p takes a list.
+						# shellcheck disable=SC2086
+						/bin/ps -o pid,stat,etime,comm -p $KIDS 2>&1
+					else
+						echo "(none)"
+					fi
+					if command -v sample >/dev/null 2>&1; then
+						echo "--- sample: per-thread backtraces (2s) ---"
+						sample "$p" 2 -f /dev/stdout 2>&1
+					else
+						echo "--- no /usr/bin/sample: no backtraces collected ---"
+					fi
+				else
+					echo "--- $(uname -s) has no /proc and no sample(1):"
+					echo "    NOTHING was collected for this pid. Do not read the"
+					echo "    absence of a stuck thread here as evidence of one."
 				fi
 			} >>"$STACKS"
 		done

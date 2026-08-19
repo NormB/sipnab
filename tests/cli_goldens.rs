@@ -31,6 +31,51 @@ mod support;
 /// pinning each command's stdout/stderr and exit code under the determinism env.
 #[test]
 fn cli_goldens() {
+    // ---- Config discovery is part of the determinism contract --------------
+    //
+    // `tests/cli/cmd/dump-config.trycmd` runs `sipnab --dump-config` with no
+    // `-f` and no `--no-config`, and its golden opens with
+    //
+    //     # No config file loaded (defaults only)
+    //
+    // That is not a property of the binary. It is a property of the MACHINE.
+    // `Config::load` searches `$SIPNAB_CONFIG`, then `$HOME/.config/sipnab/
+    // sipnab.toml`, then `$HOME/.sipnabrc` (src/config.rs:1664-1687), and the
+    // env pinned below covered time, color, terminal size and logging but not
+    // `$HOME` -- so the golden held only on a runner with a pristine home
+    // directory, which describes CI and describes no developer who has ever
+    // used the tool they are working on.
+    //
+    // Demonstrated 2026-08-19 on macOS/aarch64 against the built binary: with
+    // an empty `$HOME` the header reads `# No config file loaded (defaults
+    // only)`; drop a two-line `.sipnabrc` into that same `$HOME` and it reads
+    // `# Loaded from: <path>` with the file's values inlined below it. The
+    // golden then fails, and it fails looking like a `--dump-config` bug
+    // rather than an environment one. `touch ~/.sipnabrc` is the whole repro.
+    //
+    // So `$HOME` is pinned to a directory this test owns and keeps empty, and
+    // `$SIPNAB_CONFIG` is pointed inside it at a file that is never created --
+    // an exported `SIPNAB_CONFIG` outranks `$HOME` in the search, so pinning
+    // one without the other would leave the same hole one entry higher up.
+    // A miss there logs at `debug!`, which `SIPNAB_LOG=off` already silences.
+    //
+    // CARGO_TARGET_TMPDIR rather than the process-wide system temp directory:
+    // it is per-target, inside `target/`, and removed by `cargo clean` along
+    // with everything else this test builds.
+    //
+    // The pid suffix is what `tests/temp_path_isolation_test.rs` demands, and
+    // it is right to: two `cargo test` runs against the same target directory
+    // would otherwise share this HOME, and the second one's cleanup below
+    // would delete a config the first was about to read. Exactly the collision
+    // that file's header records against `sipnab_test_bpf_filter.txt`, where
+    // the symptom named `--bpf-file` rather than the harness.
+    let home = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("cli-goldens-home-{}", std::process::id()));
+    std::fs::create_dir_all(&home).expect("create the pinned HOME for CLI goldens");
+    for stray in [".sipnabrc", ".config/sipnab/sipnab.toml"] {
+        let _ = std::fs::remove_file(home.join(stray));
+    }
+
     // Register the built binary explicitly: with more than one `[[bin]]` in the
     // package, trycmd's auto-detection won't map the `sipnab` token, and the
     // cases would be silently *ignored* (a false green) rather than run.
@@ -47,6 +92,13 @@ fn cli_goldens() {
         // trycmd merges stderr; sipnab's tracing logs carry wall-clock
         // timestamps. Silence them so goldens pin only deterministic stdout.
         .env("SIPNAB_LOG", "off")
+        .env("HOME", home.to_string_lossy().into_owned())
+        .env(
+            "SIPNAB_CONFIG",
+            home.join("no-such-config.toml")
+                .to_string_lossy()
+                .into_owned(),
+        )
         .case("tests/cli/cmd/*.trycmd")
         .case("tests/cli/out/*.trycmd");
 }

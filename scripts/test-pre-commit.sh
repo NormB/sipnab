@@ -31,8 +31,48 @@ HOOK="$REPO_ROOT/.githooks/pre-commit"
 
 PASS=0
 FAIL=0
-ok()  { PASS=$((PASS + 1)); printf 'PASS: %s\n' "$1"; }
-bad() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; }
+# A scenario whose ASSERTION is only true on one platform. Counted separately
+# and printed in the summary, because the alternative -- quietly not running it
+# -- is the "green means nothing" shape this whole file exists to prevent. SKIP
+# is never a pass and never a failure; it is the harness saying which coverage
+# this host did not provide, so `0 skipped` on Linux is the real total.
+SKIP=0
+ok()   { PASS=$((PASS + 1)); printf 'PASS: %s\n' "$1"; }
+bad()  { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; }
+skip() { SKIP=$((SKIP + 1)); printf 'SKIP: %s\n' "$1"; }
+
+# ---- Scratch file for the Rust fixtures, and why they need one --------------
+#
+# Three scenarios below feed a multi-line Rust fixture to `scan_v`. They were
+# written as `BODY=$(cat <<-'RS' ... RS)`, and that construct is UNPARSEABLE by
+# bash 3.2 -- which is `/bin/sh` on macOS, and this file's shebang is
+# `#!/bin/sh`. bash 3.2 does not honour the heredoc's `'RS'` quoting while it is
+# inside a command substitution: it keeps scanning the body for shell quotes, so
+# the first apostrophe or backtick in the FIXTURE opens a quote that never
+# closes.
+#
+# All three fixtures trip it, because Rust is full of both:
+#
+#   `&'static str`  (lifetime tick)      `'{'` and `b'{'`  (char literals)
+#   `` `.unwrap()` `` (doc-comment backticks)
+#
+# Measured 2026-08-19 on macOS 26.5.2/aarch64 with the fixtures unchanged:
+# dash OK, bash 5 OK, zsh OK, /bin/sh (bash 3.2.57) FAILS. Apple has not shipped
+# a newer bash since 2007 (GPLv3), so this is not a machine that can be fixed by
+# updating something -- and Debian/Ubuntu `/bin/sh` is dash, which is why CI and
+# every Linux developer saw nothing.
+#
+# The failure is the worst available shape. It is a PARSE error, and bash reads
+# a script in chunks, so it does not fire where it is written: twenty scenarios
+# print PASS first and the script then dies at EOF with `unexpected EOF while
+# looking for matching`, before its own summary line and before `[ "$FAIL" -eq
+# 0 ]`. The harness that exists to prove the hook is honest was, on every Mac,
+# reporting a partial run as if it were a whole one.
+#
+# Hoisting the heredoc out of the substitution removes the construct bash 3.2
+# disagrees about, and the fixtures keep every character they are testing.
+HD=$(mktemp)
+trap 'rm -f "$HD"' EXIT INT TERM
 
 # ── The sandbox: run the REAL hook against a stubbed cargo ─────────────────
 # Everything below used to be grepped for out of the hook's source, which made
@@ -64,8 +104,60 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 	EOF
 	echo 'pub fn prod() -> u8 { 1 }' > "$_d/src/lib.rs"
 	echo 'pub fn audio() -> u8 { 1 }' > "$_d/crates/sipnab-audio/src/lib.rs"
+	# EVERY python gate the hook runs, and a source surface for each. The list
+	# was `check-unwrap.py` and `check-wasm-exports.py` only, and it went stale
+	# the moment gate 3b (privilege drop) landed: the hook ran
+	# `python3 scripts/check-privilege-drop.py`, python3 could not open a file
+	# that had never been copied, the hook exited 1 at step 3b -- and every
+	# scenario from 2 onward was then asserting against a hook that died before
+	# reaching the gate under test. Scenario 1 still passed (cargo runs at step
+	# 2, before the break), which is why the harness reported a partial green
+	# rather than an obvious red. Found 2026-08-19 on macOS/aarch64 by running
+	# it; it fails identically on Linux, so this half is not a platform defect,
+	# it is a stale list -- the same class the hook's own WASM-export comment
+	# already records.
 	cp "$REPO_ROOT/scripts/check-unwrap.py" "$REPO_ROOT/scripts/check-wasm-exports.py" \
-		"$_d/scripts/"
+		"$REPO_ROOT/scripts/check-privilege-drop.py" "$_d/scripts/"
+
+	# A privilege-drop surface, so gate 3b is reachable rather than exploding.
+	# check-privilege-drop.py wants all five controls, drop_supplementary_groups
+	# BEFORE set_gid, a main.rs that calls block_privilege_escalation(), and at
+	# least 500 bytes of production code (its own guard against a scan that read
+	# nothing). This is the minimum that satisfies all four.
+	cat > "$_d/src/privilege.rs" <<-'EOF'
+		//! Minimal stand-in for the real privilege-drop path.
+		pub fn block_privilege_escalation() -> Result<(), ()> {
+		    unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+		    set_no_new_privs()?;
+		    Ok(())
+		}
+		pub fn set_no_new_privs() -> Result<(), ()> {
+		    unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+		    Ok(())
+		}
+		pub fn drop_supplementary_groups() -> Result<(), ()> {
+		    Ok(())
+		}
+		pub fn set_gid(gid: u32) -> Result<(), ()> {
+		    let _ = gid;
+		    Ok(())
+		}
+		pub fn harden() -> Result<(), ()> {
+		    unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+		    unsafe { libc::chroot(c"/var/empty".as_ptr()) };
+		    unsafe { libc::chdir(c"/".as_ptr()) };
+		    drop_supplementary_groups()?;
+		    set_gid(65534)?;
+		    set_no_new_privs()?;
+		    Ok(())
+		}
+	EOF
+	cat > "$_d/src/main.rs" <<-'EOF'
+		mod privilege;
+		fn main() {
+		    let _ = privilege::block_privilege_escalation();
+		}
+	EOF
 
 	# A WASM surface, so gates 4 and 7 are reachable rather than skipped. Ten
 	# exports is the floor check-wasm-exports.py refuses to go below.
@@ -155,9 +247,40 @@ fi
 
 # And it must FAIL when the homepage disagrees — otherwise the above proves
 # only that the gate is quiet, not that it compares.
-sed -i 's/2838/9999/g' "$D/website/templates/index.html"
+#
+# Write-to-temp-and-move rather than `sed -i`. `sed -i EXPR FILE` is the GNU
+# spelling; BSD sed takes the backup SUFFIX as -i's argument, so on macOS it
+# read `s/2838/9999/g` as the suffix and the filename as the script, and
+# answered `sed: 1: "/var/folders/...": invalid command code f` (measured
+# 2026-08-19, macOS 26.5.2/aarch64). Under `set -eu` that aborted the whole
+# harness mid-run: scenarios 2b through 6 never executed and the script printed
+# no summary at all. The portable form has no `-i` to disagree about.
+sed 's/2838/9999/g' "$D/website/templates/index.html" >"$D/index.html.new"
+mv "$D/index.html.new" "$D/website/templates/index.html"
 run_hook "$D"
-if [ "$HOOK_RC" -ne 0 ]; then
+# ---- Why this scenario cannot assert a BLOCK off Linux ----------------------
+# The gate under test now warns instead of failing when `uname -s` is not
+# Linux, and that is deliberate: the published number must be the LINUX count
+# because ci.yml compares against it, and the ~114 `#[cfg(target_os = "linux")]`
+# uprobe/bpf tests cannot compile on a Mac, so a local run can never reach it.
+# See the comment at .githooks/pre-commit's step 5.
+#
+# That makes "the hook rejects a disagreeing count" true on Linux and false
+# here, by design. Asserting it anyway would turn a correct hook into a red
+# harness on every Mac; deleting the assertion would drop the only coverage of
+# the comparison. So each host asserts the branch it can actually reach --
+# BLOCK on Linux, WARN-and-name-both-numbers everywhere else -- and neither
+# host is allowed to pass by observing nothing.
+if [ "$(uname -s)" != "Linux" ]; then
+	# The warn arm must still have COMPARED: it prints both figures, and a
+	# gate that skipped the comparison outright would print neither.
+	if printf '%s' "$HOOK_OUT" | grep -q 'Homepage shows 9999.*counted 2838'; then
+		ok "hook warns (not blocks) on a disagreeing homepage count off Linux, naming 9999 vs 2838"
+	else
+		bad "off Linux the hook must WARN and name both numbers; output was: $HOOK_OUT"
+	fi
+	skip "hook rejects a disagreeing homepage count -- blocking is Linux-only by design (ci.yml owns the number)"
+elif [ "$HOOK_RC" -ne 0 ]; then
 	ok "hook rejects a homepage count that disagrees with the run"
 else
 	bad "hook accepted a homepage count of 9999 against a real 2838"
@@ -429,7 +552,10 @@ reports 10 "an unmatched { in a string does not extend a test exemption over the
 # The other direction, and the reason tests/mcp_untrusted_fencing_test.rs was
 # written to build its `"\n}"` needle out of a format! call: an unmatched `}`
 # used to collapse the depth and expose the rest of the test module.
-BODY=$(cat <<-'RS'
+# Heredoc written to $HD rather than into `$( )` -- see the HD comment at the
+# top. The `&'static` tick in this fixture is one of the three characters that
+# make bash 3.2 lose the thread.
+cat >"$HD" <<-'RS'
 	#[cfg(test)]
 	mod tests {
 	    fn end_of_struct() -> &'static str {
@@ -444,7 +570,7 @@ BODY=$(cat <<-'RS'
 
 	pub fn prod() -> u8 { "7".parse::<u8>().unwrap() }
 	RS
-)
+BODY=$(cat "$HD")
 scan_v "$BODY"
 reports 13 "an unmatched } in a string does not end a test exemption early (line 9 stays exempt, line 13 does not)"
 
@@ -471,7 +597,10 @@ reports 10 "braces inside a raw string do not move the brace depth"
 # too: reading `'a` as the start of a char literal would swallow whatever
 # follows, which the end-of-file balance check turns into a hard failure
 # rather than a wrong answer.
-BODY=$(cat <<-'RS'
+# Heredoc written to $HD rather than into `$( )` -- see the HD comment at the
+# top. The `'{'` and `b'{'` char literals here are the second of the three
+# characters that make bash 3.2 lose the thread.
+cat >"$HD" <<-'RS'
 	#[cfg(test)]
 	mod tests {
 	    #[test]
@@ -482,7 +611,7 @@ BODY=$(cat <<-'RS'
 
 	pub fn prod() -> u8 { "7".parse::<u8>().unwrap() }
 	RS
-)
+BODY=$(cat "$HD")
 scan_v "$BODY"
 reports 9 "braces inside char and byte-char literals do not move the brace depth"
 
@@ -516,13 +645,17 @@ quiet "a comment between #[cfg(test)] and its item does not break the exemption"
 
 # `.unwrap()` written inside a string or a doc comment is prose about the ban,
 # not a violation of it. The scanner reads the stripped code for this too.
-BODY=$(cat <<-'RS'
+#
+# Heredoc written to $HD rather than into `$( )` -- see the HD comment at the
+# top. This fixture carries all three of the characters bash 3.2 trips on: the
+# doc comment's backticks, the `&'static` tick, and a double quote.
+cat >"$HD" <<-'RS'
 	/// Never call `.unwrap()` on a request path.
 	pub fn explain() -> &'static str {
 	    "sipnab does not call .unwrap() while parsing a packet"
 	}
 	RS
-)
+BODY=$(cat "$HD")
 scan_v "$BODY"
 quiet "a mention of .unwrap() inside a string or doc comment is not a violation"
 
@@ -548,5 +681,10 @@ grep -q 'if ! UNWRAP_OUT=\$(python3 scripts/check-unwrap.py' "$HOOK" \
 	&& ok "hook reads the scanner's exit status" \
 	|| bad "hook must branch on the scanner's exit status, not parse its output"
 
-printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+printf '\n%d passed, %d failed, %d skipped (host: %s)\n' \
+	"$PASS" "$FAIL" "$SKIP" "$(uname -s)"
+if [ "$SKIP" -ne 0 ]; then
+	printf 'A SKIP is coverage this host could not provide, not coverage that\n'
+	printf 'passed. Run on Linux for the full set.\n'
+fi
 [ "$FAIL" -eq 0 ]

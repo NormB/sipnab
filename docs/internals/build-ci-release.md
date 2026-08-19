@@ -327,8 +327,20 @@ the tree to `target/nonlinux-shim/tree`, swaps the `target_os` values there so
 that `"linux"` names nothing and `"macos"` names the host, and runs CI's own
 macOS invocation over the result. The Linux arms drop out, the
 `not(target_os = "linux")` arms compile, and both breaks fail the gate by name
-and line. It costs 50 seconds the first time and 10 seconds after that, and it
-touches only the copy, so an interrupt leaves the working tree alone. Its
+and line.
+
+It runs **rustdoc** over that shim tree as well as clippy, and that half covers
+a gap neither CI nor a Linux developer can reach. Broken intra-doc links never
+fire under build or clippy, and the Docs step in `ci.yml` is guarded
+`if: runner.os == 'Linux'` — so a doc link into a `#[cfg(target_os = "linux")]`
+module was visible to exactly one kind of machine: a Mac, at push time, as a
+hard block on every push including the one that would have fixed it. Links to
+`capture::uprobe` in [`src/capture/native.rs`](../../src/capture/native.rs) did precisely that, and were green
+in CI the whole time.
+
+The clippy pass costs 50 seconds the first time and 10 seconds after that, and it
+touches only the copy, so an interrupt leaves the working tree alone. The rustdoc
+pass is newer than those figures and is not included in them. Its
 `target/nonlinux-shim` directory holds 1.3 GB after that first run and then
 grows with the number of **distinct source states** it has checked, because
 cargo keeps the artifacts of every version it has already built. This page

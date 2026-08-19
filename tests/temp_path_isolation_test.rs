@@ -88,7 +88,39 @@ fn every_temp_path_is_unique_per_process() {
         }
 
         for (idx, _) in text.match_indices("temp_dir()") {
-            sites += 1;
+            // A mention in a COMMENT is prose about the rule, not a use of it.
+            //
+            // The scan reads raw text, so `/// ... temp_dir() ...` counted as a
+            // site, and the statement window below then ran from inside the
+            // comment to the next `;` -- which is the first line of real code
+            // AFTER the comment. The offender line it printed was therefore a
+            // paragraph of documentation glued to an unrelated statement, and
+            // the only way to satisfy it was to stop writing the words down.
+            // Found 2026-08-19 by documenting `tmp_re()` in tests/support/mod.rs:
+            // one doc comment produced five offenders, none of which built a
+            // path at all.
+            //
+            // Line-level and deliberately so: a real site (`let p =
+            // temp_dir().join(...)`) does not start its line with `//`, and a
+            // trailing `// note` after real code leaves the line starting with
+            // the code. Block comments are not handled because this tree has no
+            // `/* */` mention of it; if one appears, the sites floor below drops
+            // and says so rather than this going quiet.
+            let line_start = text[..idx].rfind('\n').map(|n| n + 1).unwrap_or(0);
+            if text[line_start..idx].trim_start().starts_with("//") {
+                continue;
+            }
+
+            // A match that is the TAIL OF AN IDENTIFIER is not a call.
+            // `fn scrubs_paths_under_the_platform_temp_dir()` ends in the
+            // needle and was reported as a site; the real call is
+            // `std::env::temp_dir()`, whose preceding character is `:`. Anything
+            // preceded by a word character is part of a longer name.
+            let prev = text[..idx].chars().next_back();
+            if prev.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                continue;
+            }
+
             // Read to the end of the STATEMENT, not the end of the line. A
             // `format!` spanning several lines carries its `process::id()` on a
             // later line, and a line-only window reports it as an offender --
@@ -96,6 +128,28 @@ fn every_temp_path_is_unique_per_process() {
             // of this defect from 19 to "about 14 more".
             let tail = &text[idx..];
             let stmt = &tail[..tail.find(';').map(|e| e + 1).unwrap_or(tail.len())];
+
+            // A use that BINDS NOTHING and JOINS NOTHING names no path.
+            //
+            // The contract in this file's header is about joining a fixed name
+            // onto the shared directory. `assert!(.., temp_dir().display())`
+            // and `push(escape(&format!("{}/", temp_dir().to_string_lossy())))`
+            // do neither: they read the directory, produce a string, and create
+            // no file for anyone to collide over. Both were reported as
+            // offenders with a remedy -- "append std::process::id()" -- that
+            // would have been meaningless in each.
+            //
+            // `let` is the other half of the condition and it is what keeps
+            // this from being a hole: `let d = temp_dir();` followed by
+            // `d.join("fixed")` on a later line has no `.join(` in ITS
+            // statement either, and must stay an offender. So a binding is
+            // always a site; only a non-binding, non-joining expression is
+            // waved through.
+            if !stmt.contains(".join(") && !stmt.contains("let ") {
+                continue;
+            }
+
+            sites += 1;
 
             if stmt.contains("process::id()") {
                 per_process += 1;

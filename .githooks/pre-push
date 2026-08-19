@@ -226,6 +226,15 @@ fi
 # alternatives were tried and what killed each -- the FreeBSD cross-check dying
 # in libmimalloc-sys is the one already on the record, in 82eb8ff's own message.
 #
+# It runs rustdoc over that inverted tree as well as clippy, and that half is
+# NOT redundant with the rustdoc gate 100 lines above: that one reads the real
+# tree, where every Linux-only item exists. CI cannot cover it either, because
+# ci.yml's Docs step is `if: runner.os == 'Linux'`. So an intra-doc link into a
+# `#[cfg(target_os = "linux")]` module was, until that line was added, visible
+# to exactly one kind of machine -- a Mac, at push time, as a HARD block on
+# every push including the one that would have fixed it. `capture::uprobe`
+# links in src/capture/native.rs did precisely that.
+#
 # Resolved from the HOOK's location, not the working directory, so that
 # scripts/test-pre-push.sh -- which runs this hook from inside a throwaway
 # fixture crate -- exercises the real script instead of skipping a gate that
@@ -266,7 +275,7 @@ else
 			| head -20 | sed 's/^/    /'
 		printf '  Full output: %s\n' "$NONLINUX_LOG"
 		printf '\n'
-		printf '%bPush blocked: the code does not build for a non-Linux target.%b\n' "$RED" "$NC"
+		printf '%bPush blocked: the code does not build or document for a non-Linux target.%b\n' "$RED" "$NC"
 		printf 'Reproduce with:\n'
 		printf '    sh scripts/check-non-linux.sh\n'
 		printf 'Line numbers are the real ones -- the check compiles a copy of this\n'
@@ -274,7 +283,8 @@ else
 		printf 'swapped, so a fix belongs in the file the error names.\n'
 		printf '\n'
 		printf 'Usually one platform decision written twice: a cfg on a use but not\n'
-		printf 'on the binding, or Linux-only tests for a cross-platform module.\n'
+		printf 'on the binding, Linux-only tests for a cross-platform module, or an\n'
+		printf 'intra-doc link from always-compiled code to a Linux-only item.\n'
 		printf 'Prefer making the mistake unrepresentable -- one platform split, in\n'
 		printf 'one place -- over adding a second cfg to paper over the first.\n'
 		printf '\n'
@@ -321,6 +331,33 @@ for commit in $tag_commits; do
 	if ! command -v gh >/dev/null 2>&1; then
 		printf '%b  tag %s: gh not installed -- CI status NOT verified%b\n' \
 			"$YELLOW" "$short" "$NC"
+		continue
+	fi
+	# ...and jq, for exactly the same reason, which it did NOT get until now.
+	#
+	# The paragraph above argues at length that a missing optional tool must
+	# skip rather than block. Twelve lines further down the gate pipes gh's
+	# JSON through `jq`, unguarded, into `mine`. With jq absent that pipeline
+	# yields the empty string, and the very next branch reads an empty `mine`
+	# as "no CI runs found for this commit" and BLOCKS the push with a message
+	# stating a fact it never established -- "Push the commit and let CI run
+	# before tagging it", about a commit whose CI may be perfectly green.
+	#
+	# Worse than the case the gh guard prevents: gh missing produces a
+	# truthful "NOT verified", jq missing produced a confident wrong verdict,
+	# and the only way past it is SKIP_FMT_HOOK=1 -- which disables fmt,
+	# clippy, rustdoc, fuzz and the feature combinations as well.
+	#
+	# jq is preinstalled on GitHub's ubuntu-latest and macos-latest images and
+	# on this machine (/usr/bin/jq, 1.7.1-apple, macOS 26.5.2), which is why
+	# nothing has hit it. A minimal Debian container or a fresh Linux install
+	# has no jq at all, and the tag gate is the one gate whose false verdict
+	# costs a blocked release.
+	if ! command -v jq >/dev/null 2>&1; then
+		printf '%b  tag %s: jq not installed -- CI status NOT verified%b\n' \
+			"$YELLOW" "$short" "$NC"
+		printf '    gh returned the runs but nothing here can read them. Install jq\n'
+		printf '    to check tags locally; this is NOT a statement that CI is green.\n'
 		continue
 	fi
 	printf '  tag -> %s: checking CI ... ' "$short"
