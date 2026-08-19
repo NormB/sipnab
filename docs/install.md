@@ -41,7 +41,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.112 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.113 sh
 ```
 
 To install somewhere other than `/usr/local/bin` — a directory you already own,
@@ -140,7 +140,7 @@ canonical triples deliberately: they match `rustc -vV`, they are what
 script constructs them.
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
-Alpine included. Replace `<version>` with the latest, e.g. 0.5.112:
+Alpine included. Replace `<version>` with the latest, e.g. 0.5.113:
 
 ```bash
 # Run all of these, in order.
@@ -159,7 +159,7 @@ sudo install -m 755 sipnab-<version>-aarch64-unknown-linux-musl/sipnab /usr/loca
 ```
 
 Manual download with checksum verification (replace `<version>` with the
-latest, e.g. 0.5.112):
+latest, e.g. 0.5.113):
 
 ```bash
 # Run all of these, in order.
@@ -201,7 +201,7 @@ cargo install sipnab --features full
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.36, i.e. Debian 12+ / Ubuntu 23.04+ -- on older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package — replace `<version>` with the
-latest, e.g. 0.5.112:
+latest, e.g. 0.5.113:
 
 ```bash
 # Run all of these, in order.
@@ -260,26 +260,26 @@ dependency — for headless servers, mirroring the `.deb` variants).
 The standard package on an x86_64 host:
 
 ```bash
-sudo rpm -i sipnab-0.5.112-1.x86_64.rpm
+sudo rpm -i sipnab-0.5.113-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo rpm -i sipnab-0.5.112-1.x86_64-noaudio.rpm
+sudo rpm -i sipnab-0.5.113-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host — pick the variant matching
 `uname -m`:
 
 ```bash
-sudo rpm -i sipnab-0.5.112-1.aarch64.rpm
+sudo rpm -i sipnab-0.5.113-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo rpm -i sipnab-0.5.112-1.aarch64-noaudio.rpm
+sudo rpm -i sipnab-0.5.113-1.aarch64-noaudio.rpm
 ```
 
 ### Homebrew (macOS)
