@@ -264,7 +264,7 @@ pub const METHOD_REFRESH: u16 = 0x004;
 /// The one message that names both halves of a relayed media path, and it
 /// names them in the REQUEST — the success response carries neither. That is
 /// why the binding is folded in from the transaction rather than from the
-/// response ([`Tracker::apply_turn_response`]).
+/// response (`Tracker::apply_turn_response`, private — see its comment).
 pub const METHOD_CHANNEL_BIND: u16 = 0x009;
 
 /// The application data inside a TURN **ChannelData** wrapper, or `None` if
@@ -1183,7 +1183,7 @@ pub const MAX_ALLOCATIONS: usize = 2_048;
 /// endpoint binds one per media stream — two for an audio call with RTCP
 /// multiplexed off, a handful for video. A capture that needs more than
 /// sixteen on ONE allocation is a load generator, and the exact totals stay on
-/// [`RelayChannel::ssrcs_dropped`] and [`TurnAllocation::channels_dropped`]
+/// [`RelayChannel::ssrcs_dropped`] and [`TurnAllocation::unattributed_frames`]
 /// where the cap does bite.
 pub const MAX_CHANNELS_PER_ALLOCATION: usize = 16;
 
