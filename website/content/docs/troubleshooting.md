@@ -419,8 +419,8 @@ sipnab -N -I capture.pcap --nat-issues
 
 ### The SDP offered a private address
 
-`private_media_address == true` means the dialog advertised an RFC 1918,
-RFC 4193 or link-local address in its `c=` line to a peer that is not itself
+`private_media_address == true` means the dialog advertised an [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918),
+[RFC 4193](https://www.rfc-editor.org/rfc/rfc4193) or link-local address in its `c=` line to a peer that is not itself
 private. sipnab raises this as a **warning, not a fault**, because there are
 two situations and only one of them fails:
 
@@ -432,7 +432,7 @@ two situations and only one of them fails:
   is one-way.
 
 Without more to go on, sipnab cannot tell those apart from one capture, so it
-reports the evidence rather than a verdict. Carrier-grade NAT space (RFC 6598,
+reports the evidence rather than a verdict. Carrier-grade NAT space ([RFC 6598](https://www.rfc-editor.org/rfc/rfc6598),
 `100.64.0.0/10`) is deliberately NOT flagged: it is routable inside the carrier
 that assigned it, so flagging it would fire on a large share of working mobile
 calls.

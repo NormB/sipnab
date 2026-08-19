@@ -2528,14 +2528,14 @@ a web-filtering appliance silently discarding UDP. sipnab read one of them as
   back to advertising its PRIVATE address in SDP, and the far end then sends
   media somewhere unroutable while signaling looks perfect.
 
-  **Done 2026-08-17.** `crate::stun` parses RFC 5389 (header, cookie,
+  **Done 2026-08-17.** `crate::stun` parses [RFC 5389](https://www.rfc-editor.org/rfc/rfc5389) (header, cookie,
   transaction ID, `XOR-MAPPED-ADDRESS`, `ERROR-CODE`, `SOFTWARE`) and tracks
   transactions, so a request that never came back is reported with the number of
   attempts — a retransmission counted as one unanswered question, not several.
   An ERROR response counts as ANSWERED: the server was reachable and refused,
   which points somewhere else entirely.
 
-  TURN came mostly free, and the exceptions are the point: RFC 5766 reuses the
+  TURN came mostly free, and the exceptions are the point: [RFC 5766](https://www.rfc-editor.org/rfc/rfc5766) reuses the
   STUN header, so `Allocate` parses without the parser knowing TURN exists, but
   its attributes (`XOR-RELAYED-ADDRESS`, `XOR-PEER-ADDRESS`, `LIFETIME`) did
   not, an unanswered `Allocate` is a different fault from an unanswered
@@ -2566,7 +2566,7 @@ a web-filtering appliance silently discarding UDP. sipnab read one of them as
   reached, generalised.
 
 - [x] **NAT2 — a private media address offered to a public peer is not
-  flagged.** An SDP `c=` line carrying an RFC 1918 / RFC 4193 / link-local
+  flagged.** An SDP `c=` line carrying an [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) / [RFC 4193](https://www.rfc-editor.org/rfc/rfc4193) / link-local
   address is correct inside one LAN, and correct behind an SBC or ALG that
   rewrites it downstream. It is wrong when nothing rewrites it, and that failure
   is silent: the call answers `200` and carries audio one way.
@@ -2574,7 +2574,7 @@ a web-filtering appliance silently discarding UDP. sipnab read one of them as
   **Done 2026-08-17** as `MediaDiagnosis::private_media_address`, a WARNING
   rather than a fault, with a hint that says which of those two situations the
   reader should check for. Raised only when the peer is itself public, so a
-  LAN-only capture stays quiet. Carrier-grade NAT space (RFC 6598) is
+  LAN-only capture stays quiet. Carrier-grade NAT space ([RFC 6598](https://www.rfc-editor.org/rfc/rfc6598)) is
   deliberately excluded: it is routable within the carrier that assigned it, and
   flagging it would fire on a large share of working mobile calls.
 

@@ -233,7 +233,7 @@ The first command should print a diagnosis object like:
 **What to look for:**
 
 - `diagnosis.one_way_audio: true` confirms the engine saw RTP in only one direction for ≥6s after call establishment.
-- The ports in the hint are where the fix goes. Each side advertises a receive port in its SDP and, under symmetric RTP (RFC 4961), should send from that same port. A hint reading `advertised 16384 but sends from 41002` means the far end is replying to a port nothing is sending from, so no NAT pinhole was ever opened there — that is the firewall rule, port-forward or RTP port range to go and check. When the ports agree, the hint stays quiet about them.
+- The ports in the hint are where the fix goes. Each side advertises a receive port in its SDP and, under symmetric RTP ([RFC 4961](https://www.rfc-editor.org/rfc/rfc4961)), should send from that same port. A hint reading `advertised 16384 but sends from 41002` means the far end is replying to a port nothing is sending from, so no NAT pinhole was ever opened there — that is the firewall rule, port-forward or RTP port range to go and check. When the ports agree, the hint stays quiet about them.
 - `diagnosis.nat_mismatch: true` is the usual root cause — the Contact header / Via address differs from the SDP `c=` line. Common when the upstream SBC isn't rewriting Contact.
 - In the TUI's RTP stream view, look for one stream with packets and one with `0 packets received` — that's the silenced direction.
 

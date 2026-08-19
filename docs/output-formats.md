@@ -271,7 +271,7 @@ for most of them.
 ### STUN evidence inside the media diagnosis
 
 `diagnosis.private_media_address` is a warning: the SDP `c=` line names an
-RFC 1918 / RFC 4193 / link-local address, and the peer is not itself private, so
+[RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) / [RFC 4193](https://www.rfc-editor.org/rfc/rfc4193) / link-local address, and the peer is not itself private, so
 the far end cannot route back to it. It is correct inside one LAN, and correct
 behind an SBC, ALG or media proxy that rewrites the SDP downstream — which is
 why the hint asks the reader to check which of those they are in.
