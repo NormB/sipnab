@@ -671,11 +671,42 @@ esac
 # tool is absent is worse than no gate, because green then means nothing.
 prose_fail=0
 
+# The version is part of the check, not a detail. Vale.Spelling consults an
+# internal dictionary that changes between releases, and the Google package
+# resolves differently across binaries, so a run on the wrong version is not
+# evidence about CI in EITHER direction. Measured 2026-08-18 on identical
+# committed bytes: vale 3.16.0 (what CI pins) reported 0 errors, Homebrew's
+# 3.17.1 reported 475. That is not a stricter check finding more; it is a
+# different check answering a different question, and it made this gate
+# unpassable here while CI was green.
+#
+# `.vale.ini` says the same thing at its top. Take it literally: match the
+# version in quality.yml before believing a local run.
+#
+# VALE_BIN points at a pinned binary, exactly as CODESPELL_BIN does below.
+VALE_PIN='3.16.0'
+if [ -n "${VALE_BIN:-}" ] && [ -x "${VALE_BIN}" ]; then
+	VALE="$VALE_BIN"
+elif command -v vale >/dev/null 2>&1; then
+	VALE=vale
+else
+	VALE=''
+fi
+if [ -n "$VALE" ]; then
+	VALE_HAVE=$("$VALE" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+fi
+
 printf '  vale (prose style) ... '
-if ! command -v vale >/dev/null 2>&1; then
+if [ -z "$VALE" ]; then
 	printf '%bNOT CHECKED -- vale is not installed%b\n' "$YELLOW" "$NC"
-	printf '    CI runs it and it blocks. Install from https://vale.sh to check here.\n'
-elif vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md >/tmp/.sipnab-vale.$$ 2>&1; then
+	printf '    CI runs it and it blocks. Install v%s from https://vale.sh, or point\n' "$VALE_PIN"
+	printf '    VALE_BIN at one, to check here.\n'
+elif [ "$VALE_HAVE" != "$VALE_PIN" ]; then
+	printf '%bNOT CHECKED -- vale %s, CI pins %s%b\n' "$YELLOW" "${VALE_HAVE:-unknown}" "$VALE_PIN" "$NC"
+	printf '    A different binary reports a different count on the same bytes, so\n'
+	printf '    this run would be evidence about nothing. Point VALE_BIN at a\n'
+	printf '    v%s binary to check here; CI still enforces it.\n' "$VALE_PIN"
+elif "$VALE" docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md >/tmp/.sipnab-vale.$$ 2>&1; then
 	printf '%bOK%b\n' "$GREEN" "$NC"
 	rm -f /tmp/.sipnab-vale.$$
 else

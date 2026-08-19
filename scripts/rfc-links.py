@@ -73,7 +73,15 @@ def convert(text: str) -> tuple[str, int, int]:
 
 if __name__ == "__main__":
     apply = "--apply" in sys.argv
-    root = pathlib.Path("/home/gator/Development/sipnab")
+    # Derived from this file's location, like every sibling script
+    # (`check-line-drift.py` uses the same `parents[1]`). It was an absolute
+    # `/home/gator/Development/sipnab`, which exists on exactly one machine:
+    # everywhere else `root / "docs"` matched nothing, the glob yielded no
+    # files, and the script reported "0 section citations across 0 files" and
+    # exited 0. A no-op that reports success is worse than a crash, because the
+    # gate that points people here kept pointing them at a script that could
+    # not do anything.
+    root = pathlib.Path(__file__).resolve().parents[1]
     tot_s = tot_b = files = 0
     for f in sorted((root / "docs").rglob("*.md")):
         orig = f.read_text()
