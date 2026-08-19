@@ -1,3 +1,31 @@
+# Content Signals (contentsignals.org) — a stated preference, not an
+# enforcement. Nothing here blocks anything; a crawler that ignores it is not
+# stopped by this file.
+#
+#   search=yes    building a search index and returning links and short
+#                 excerpts. Wanted: this is how people find the tool.
+#   ai-input=yes  taking content live to answer a question — retrieval, RAG,
+#                 grounding. Wanted, and the one that matters most for a
+#                 diagnostic tool: it is what fires when someone's coding agent
+#                 reads these docs mid-session, or when an assistant is asked
+#                 what to use for SIP capture analysis.
+#   ai-train=no   training or fine-tuning models on the content. Declined.
+#
+# History worth keeping, because the previous arrangement was self-
+# contradictory. Cloudflare's managed robots.txt published
+# `ai-train=no, use=reference` while its AI-bot rules returned 403 to
+# `Claude-User`, `OAI-SearchBot` and `PerplexityBot` — precisely the
+# reference-time crawlers the signal permitted. Measured 2026-08-19: those
+# user agents got 403 on the same URL a browser got 200 on, from Cloudflare's
+# edge, never reaching origin. Disabling that bundle removed both the block
+# and the signals, so the signals are restated here, where they are visible in
+# the repository and cannot drift from what the site actually does.
+#
+# Keep the enforcement and this declaration in agreement. If AI-crawler rules
+# are re-enabled, allow the reference set named above, or change `ai-input`
+# here to match what is really being served.
 User-agent: *
+Content-Signal: search=yes, ai-input=yes, ai-train=no
 Allow: /
+
 Sitemap: https://sipnab.com/sitemap.xml
