@@ -1,0 +1,47 @@
+# sipnab
+
+> SIP and RTP capture, analysis and diagnosis. One static binary that reads live traffic, a pcap, or a HEP feed, and reports call flow, RTP quality, NAT and security findings.
+
+This file indexes the documentation as plain text. `llms-full.txt` beside it carries every page concatenated.
+
+## Docs
+
+- [Cookbook](https://sipnab.com/docs/cookbook/): Step-by-step recipes for every major sipnab feature: triage, filtering, HEP, TLS decryption, MCP, observability, security, audio export.
+- [Prometheus Metrics](https://sipnab.com/docs/metrics/): Every metric family sipnab emits, what each one means, which are counters and which are gauges, and the scrape config -- split out of the REST API page, which a scrape target's reader never needs.
+- [REST API](https://sipnab.com/docs/api/): sipnab's REST API: authentication, every endpoint with its response shape, status codes, curl recipes, and the security model. Metric names and their meaning are on the Prometheus metrics page.
+- [MCP Server](https://sipnab.com/docs/mcp/): Drive sipnab from an AI agent over the Model Context Protocol: what it is, a first working example, and where to go for deployment, the tool reference, and the protocol contract.
+- [Installation](https://sipnab.com/docs/install/): Install sipnab from pre-built binaries, cargo, or package managers.
+- [Troubleshooting](https://sipnab.com/docs/troubleshooting/): Real-world VoIP diagnostic workflows with exact commands.
+- [TUI Walkthrough](https://sipnab.com/docs/tui/): Your first analysis in the interactive TUI, step by step -- open a capture, read the ladder, measure a delay, and inspect RTP.
+- [Keybindings](https://sipnab.com/docs/keybindings/): Complete TUI keyboard shortcut reference for all views.
+- [Theme Guide](https://sipnab.com/docs/theme/): Customize sipnab's TUI colors with 11 semantic color slots and preset themes.
+- [CLI Reference](https://sipnab.com/docs/cli/): Complete flag reference for sipnab, organized by functional group.
+- [Filter DSL](https://sipnab.com/docs/filter-dsl/): Declarative filter language for matching SIP dialogs and RTP streams.
+- [Header Fields](https://sipnab.com/docs/sip-header-fields/): Every SIP header field in the IANA registry, its compact form, and the RFC that defines it.
+- [Request Methods](https://sipnab.com/docs/sip-methods/): Every SIP method in the IANA registry, the RFC section defining it, and which dialog state machine sipnab runs it through.
+- [Parameters](https://sipnab.com/docs/sip-parameters/): Every SIP URI parameter, header-field parameter and option tag in the IANA registry, with the RFC that defines it.
+- [MOS & Codecs](https://sipnab.com/docs/mos-and-codecs/): Where the quality score comes from, which codecs have a published impairment factor behind it, and which report a placeholder.
+- [Response Codes](https://sipnab.com/docs/sip-response-codes/): Every SIP response code in the IANA registry, the RFC section that defines it, and whether it means the call failed.
+- [Output Formats](https://sipnab.com/docs/output-formats/): Machine-readable output: NDJSON, summary reports, dialog/stream JSON, and pcap/pcapng.
+- [Config Reference](https://sipnab.com/docs/config/): TOML configuration file format and all configurable sections.
+- [TLS Without Keys](https://sipnab.com/docs/uprobe-walkthrough/): What uprobe and eBPF capture is and is NOT, its security implications, whether your kernel supports it at all, and how to run both backends step by step.
+- [MCP Deployment](https://sipnab.com/docs/mcp-deploy/): Step-by-step MCP deployment scenarios: same-box stdio, remote production servers over SSH or HTTP, HEP capture hosts, TLS endpoints, fleets, and headless automation.
+- [MCP Tools](https://sipnab.com/docs/mcp-tools/): Every MCP tool sipnab exposes, what question each answers, and the fields it returns.
+- [MCP Protocol](https://sipnab.com/docs/mcp-protocol/): The MCP wire contract: security model, what the write verbs may do, untrusted capture text, the stdio invariant, and error semantics.
+- [SIP Conformance Rules](https://sipnab.com/docs/sip-lint-rules/): Every rule the SIP conformance linter runs, the RFC section behind it, the severity and basis it reports under, and how to suppress it in CI.
+- [Tuning Capture](https://sipnab.com/docs/tuning-capture/): Size the kernel capture ring, read the kernel and interface drop counters, tell the two apart, and decide between the `any` device and a named interface.
+- [Encapsulations](https://sipnab.com/docs/encapsulations/): Which link types, EtherTypes and tunnels sipnab can read a SIP dialog out of, which it cannot, and what it reports when a frame does not decode.
+
+## Internals
+
+- [Domain Primer](https://sipnab.com/docs/internals/domain-primer/): The SIP and RTP model the code assumes you already have — written for the Rust engineer who is new to VoIP.
+- [Subsystem Guide](https://sipnab.com/docs/internals/subsystem-guide/): One packet's journey from the wire to the screen, traced function by function across all four packet paths.
+- [Invariants](https://sipnab.com/docs/internals/invariants/): The rules that must not break: what each one is, why it exists, what enforces it, and how it fails when broken.
+- [Test Architecture](https://sipnab.com/docs/internals/testing/): The test tiers, what each one asserts, how to regenerate its fixtures, and the self-enforcing gate tests.
+- [Contributor Walkthroughs](https://sipnab.com/docs/internals/walkthroughs/): Ordered checklists for the changes people actually make: a new TUI view, a new detector, a new CLI flag, a new MCP tool.
+- [Build, CI and Release](https://sipnab.com/docs/internals/build-ci-release/): What compiles, what gates a merge, what runs on a tag, and which of those you can safely ignore.
+- [Threading Model](https://sipnab.com/docs/internals/threading/): Thread topology, the channels between them, and the lock discipline that keeps the synchronous packet path synchronous.
+- [Zero-Copy Payloads](https://sipnab.com/docs/internals/zero-copy-payloads/): The bytes::Bytes spine from capture to output — including a performance claim the page itself refutes.
+- [TUI Testing](https://sipnab.com/docs/internals/tui-testing/): Snapshot, state and interaction testing for the terminal UI.
+- [Profiling](https://sipnab.com/docs/internals/profiling/): Where sipnab's time actually goes, and how to find out on this hardware without guessing.
+- [Uprobe TLS Capture](https://sipnab.com/docs/internals/uprobe-capture/): Reading SIP plaintext out of a process's TLS library with kernel uprobes, and why each step refuses rather than guesses.

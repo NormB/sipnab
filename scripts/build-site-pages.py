@@ -434,6 +434,89 @@ def render(src: str, text: str, want_h1: str, title: str, weight: int,
     return head + BANNER.format(src=src) + body
 
 
+def write_llms_txt(root: Path, static_dir: Path) -> None:
+    """Emit `llms.txt` (a routing index) and `llms-full.txt` (the whole text).
+
+    Both are built from `PAGES`, the same tuple list that drives the site, so
+    a page cannot appear on the website and be missing here: the description
+    beside each entry is the one the docs nav already shows, not a second copy
+    to keep in step.
+
+    # Why plain text at a fixed path
+
+    An agent asked about sipnab has to find the documentation before it can
+    read it, and rendered HTML is the worst form to hand it — nav chrome, the
+    mermaid bundle, and the reader's theme all arrive with the prose. The
+    source is markdown to begin with, so serving it back is free.
+
+    `llms.txt` is the routing file: one line per page, with the description, so
+    a fetch of ~50 lines decides which page answers the question.
+    `llms-full.txt` is every page concatenated, for the case where the whole
+    corpus is wanted in one request.
+
+    # What this does NOT do
+
+    It does not make the site reachable. sipnab.com is fronted by Cloudflare,
+    whose managed AI-crawler rules return 403 to `GPTBot`, `ClaudeBot`,
+    `CCBot`, `Bytespider`, `Amazonbot`, `Applebot-Extended`, `Google-Extended`
+    and `meta-externalagent` — measured 2026-08-19: those two get 403, an
+    ordinary browser UA gets 200 on the same URL. The same rule applies to
+    these files. Whether an agent may read them is a Cloudflare policy
+    decision and is not settled here; this only ensures that anything allowed
+    through finds the text rather than the chrome.
+
+    Note also that the managed `robots.txt` block publishes
+    `Content-Signal: ai-train=no, use=reference` while the 403 blocks
+    reference use too — the enforcement is stricter than the signal. That is
+    worth reconciling in the dashboard, not in this script.
+    """
+    lines = [
+        "# sipnab",
+        "",
+        "> SIP and RTP capture, analysis and diagnosis. One static binary that "
+        "reads live traffic, a pcap, or a HEP feed, and reports call flow, RTP "
+        "quality, NAT and security findings.",
+        "",
+        "This file indexes the documentation as plain text. `llms-full.txt` "
+        "beside it carries every page concatenated.",
+        "",
+        "## Docs",
+        "",
+    ]
+    # PAGES order is the docs-nav order, so the index reads the way the site
+    # reads rather than alphabetically.
+    for src, site_name, _want_h1, title, _weight, description in PAGES:
+        url = f"https://sipnab.com/docs/{Path(site_name).stem}/"
+        lines.append(f"- [{title}]({url}): {description}")
+
+    # The internals set comes from the OTHER generator. Indexing only PAGES
+    # would ship an index that silently omits 21 published pages -- the
+    # architecture, threading and domain-primer material an agent asked "why
+    # is it built this way" most needs. `_INT` is already imported above for
+    # DOCS_TO_SITE, so this costs nothing and cannot drift from what that
+    # generator publishes.
+    lines += ["", "## Internals", ""]
+    for src_name, site_name, _weight, title, description in _INT.PAGES:
+        url = f"https://sipnab.com/docs/internals/{Path(site_name).stem}/"
+        lines.append(f"- [{title}]({url}): {description}")
+    (static_dir / "llms.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    full = [
+        "# sipnab documentation",
+        "",
+        "Every published page, concatenated, in docs-nav order. Generated from "
+        "the same source the website is built from; see llms.txt for an index.",
+        "",
+    ]
+    sources = [src for src, *_ in PAGES]
+    sources += [f"docs/internals/{n}" for n, *_ in _INT.PAGES]
+    for src in sources:
+        body = (root / src).read_text(encoding="utf-8")
+        full += [f"<!-- source: {src} -->", "", body.rstrip(), "", "---", ""]
+    (static_dir / "llms-full.txt").write_text("\n".join(full) + "\n", encoding="utf-8")
+    print(f"  llms.txt / llms-full.txt <- {len(sources)} pages")
+
+
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
     out_dir = (
@@ -450,6 +533,9 @@ def main() -> int:
         )
         (out_dir / site_name).write_text(rendered, encoding="utf-8")
         print(f"  {src:22s} -> {site_name}")
+    # Written into static/ so Zola copies them to the site root verbatim,
+    # where the llms.txt convention expects them.
+    write_llms_txt(root, root / "website" / "static")
     return 0
 
 
