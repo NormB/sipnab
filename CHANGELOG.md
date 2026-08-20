@@ -52,6 +52,18 @@ entry that carries them.
   has failed; advancing between guesses would try one key over one span and the
   other key over the next, which proves nothing about either.
 
+  The same rule applies to the window and to the attempt counter that widens
+  it, and it took a third bug to see the shape: incrementing per direction gave
+  the two key guesses different spans, so a client record at 138 was covered
+  only by the wider search the SERVER key was doing. The correct key never got
+  the wide range, the record was missed, and the floor then ran far past the
+  answer — measured at 2,796,190 while the record sat at 137. Anything the
+  search depends on is now fixed for the whole record before the first guess:
+  floor, window, and attempt count. Found by a test that runs the operator's
+  actual flow — a key log read from disk, then a record from a connection whose
+  handshake predates the capture — which is the regression gate for the
+  originally reported failure and is what the unit tests could not see.
+
 ## [0.5.115] - 2026-08-20
 
 ### Fixed

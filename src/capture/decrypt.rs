@@ -1443,6 +1443,13 @@ fn try_decrypt_with_session(
         .find(|(pair, _)| *pair == (src_addr, dst_addr))
         .map_or(0, |(_, floor)| *floor);
     let mut searched: Option<u64> = None;
+    // Fixed for this record, like `pair_floor`. Computing it per direction
+    // lets the attempt counter advance between the two key guesses, so one key
+    // searches a narrower span than the other — and if the narrow one is the
+    // CORRECT key, the record is missed while the wrong key sweeps past it.
+    let record_window = SEQ_RESYNC_WINDOW
+        .saturating_mul(1u64 << session.lockon_attempts.min(24))
+        .min(lockon_window);
 
     for is_client_to_server in directions {
         let (write_key, write_iv, seq, locked) = if is_client_to_server {
@@ -1474,13 +1481,9 @@ fn try_decrypt_with_session(
         let window = if locked {
             SEQ_RESYNC_WINDOW
         } else {
-            // Widen with each failed attempt rather than spending the ceiling
-            // on the first record. `1 << attempts` reaches a million by the
-            // fourteenth record a direction fails to open, which a trunk
-            // carrying traffic passes in seconds, while a session whose keys
-            // are simply wrong stays cheap for far longer than it used to.
-            let widened = SEQ_RESYNC_WINDOW.saturating_mul(1u64 << session.lockon_attempts.min(24));
-            widened.min(lockon_window).min(*lockon_budget)
+            // Widen with each failed RECORD, not each direction: see
+            // `record_window`, which is fixed before the guesses begin.
+            record_window.min(*lockon_budget)
         };
 
         // Decrypt with the per-version AEAD framing. On success both paths
@@ -1517,7 +1520,6 @@ fn try_decrypt_with_session(
                 // the evidence that the next search should be wider, and it is
                 // the ONLY thing that widens it — without this the ceiling is
                 // never reached and a long-lived trunk stays unreadable.
-                session.lockon_attempts = session.lockon_attempts.saturating_add(1);
 
                 // Raise the floor past what was just ruled out. Searching
                 // `[seq, seq+window)` and failing proves this record's number
@@ -1561,6 +1563,9 @@ fn try_decrypt_with_session(
     // this direction's own number is past that span whichever role is right.
     // Advance once, here, rather than inside the loop.
     if let Some(width) = searched {
+        // Once per record, for the same reason the window is: advancing per
+        // direction gives the two key guesses different spans.
+        session.lockon_attempts = session.lockon_attempts.saturating_add(1);
         let floor = pair_floor.saturating_add(width);
         match session
             .lockon_floor
@@ -2573,6 +2578,153 @@ mod tests {
             narrow.try_decrypt(&far, client, server).is_none(),
             "a 4-wide ceiling must genuinely bound one record's search"
         );
+    }
+
+    /// Dan Jenkins's reported flow, end to end, as a regression gate.
+    ///
+    /// The unit tests above exercise the decrypt step with entries placed
+    /// directly on the decryptor. This pins the whole chain an operator
+    /// actually uses: an NSS key log written by an extractor is READ FROM
+    /// DISK, sessions are derived from it, and a record from a connection
+    /// whose handshake predates the capture is opened. Verified live against
+    /// OpenSIPS over TLS 1.3 on 2026-08-20, where 0.5.114 required restarting
+    /// the daemon and this does not.
+    ///
+    /// Uses ephemeral secrets generated here — a key log is never committed.
+    #[cfg(all(feature = "tls", feature = "native"))]
+    #[test]
+    fn a_keylog_on_disk_opens_a_connection_that_predates_the_capture() {
+        use crate::crypto::RingCryptoBackend;
+        use std::io::Write;
+
+        // Secrets an extractor would have logged for a live connection.
+        let client_secret = [0x11u8; 32];
+        let server_secret = [0x22u8; 32];
+        let client_random = [0xABu8; 32];
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sip.keylog");
+        {
+            let mut f = std::fs::File::create(&path).expect("create keylog");
+            // Order is deliberately server-first: an extractor emits these
+            // from a hash map, so a consumer must not depend on line order.
+            writeln!(
+                f,
+                "SERVER_TRAFFIC_SECRET_0 {} {}",
+                hex(&client_random),
+                hex(&server_secret)
+            )
+            .unwrap();
+            writeln!(
+                f,
+                "CLIENT_TRAFFIC_SECRET_0 {} {}",
+                hex(&client_random),
+                hex(&client_secret)
+            )
+            .unwrap();
+        }
+
+        let mut d = TlsDecryptor::new(Some(&path), Box::new(RingCryptoBackend))
+            .expect("decryptor from a keylog path");
+        // `new` loads what is already there, so a poll straight after reports
+        // no NEW lines. Assert on what was loaded, not on the delta.
+        d.poll_keylog_file().expect("keylog must be readable");
+        assert_eq!(
+            d.keylog_entries.len(),
+            2,
+            "both secrets must load from the file on disk"
+        );
+
+        // The connection was already running: this record is not record zero.
+        let (key, iv) =
+            derive_key_iv(&RingCryptoBackend, &client_secret, CipherSuite::Aes128Gcm).unwrap();
+        let sip = b"INVITE sip:carrier@example.net SIP/2.0\r\nCSeq: 1 INVITE\r\n\r\n";
+        let client: IpAddr = "10.0.0.1".parse().unwrap();
+        let server: IpAddr = "10.0.0.2".parse().unwrap();
+
+        // A trunk offers records continuously, and the search widens as they
+        // fail, so the stream is what reaches the counter — not one packet.
+        let mut opened = None;
+        for n in 0..24 {
+            let record = seal_tls13_record(&key, &iv, 137 + n, sip);
+            if let Some(out) = d.try_decrypt(&record, client, server) {
+                opened = Some(out);
+                break;
+            }
+        }
+        let out = opened.expect("a keylog read from disk must open a mid-stream connection");
+        assert_eq!(out, sip, "the SIP the record carried must come back whole");
+    }
+
+    /// DEFECT 2 regression: the search base must be identical for both key
+    /// guesses within one record.
+    ///
+    /// Direction is unknown until something decrypts, so each record is tried
+    /// under the client key and the server key. Advancing the floor between
+    /// those two tries means one key sweeps `[F, F+W)` and the other
+    /// `[F+W, F+2W)` — different keys over different spans, which proves
+    /// nothing about either and can step straight over the answer. Pinned as
+    /// arithmetic on the floor itself, because the symptom (a record that
+    /// silently never opens) is indistinguishable from ordinary failure.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn one_failed_record_advances_the_floor_once_not_once_per_key_guess() {
+        const W: u64 = 16; // the first window, before any widening
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        let client: IpAddr = "10.0.0.1".parse().unwrap();
+        let server: IpAddr = "10.0.0.2".parse().unwrap();
+
+        // One record, far out of reach, so both key guesses fail.
+        let far = seal_tls13_record(&key, &iv, 900_000, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n");
+        assert!(d.try_decrypt(&far, client, server).is_none());
+
+        let sess = d.sessions.values().next().expect("a session must exist");
+        let floor = sess
+            .lockon_floor
+            .iter()
+            .find(|(pair, _)| *pair == (client, server))
+            .map(|(_, f)| *f)
+            .expect("the failed record must have set a floor");
+        assert_eq!(
+            floor, W,
+            "one record must advance the floor by ONE window ({W}), not by one \
+             per key guess — {floor} means the guesses swept different spans"
+        );
+    }
+
+    /// DEFECT 3 regression: both key guesses within one record must get the
+    /// same search WIDTH.
+    ///
+    /// The window widens with the attempt counter. Incrementing that counter
+    /// between the two guesses gives the second a wider sweep than the first,
+    /// so if the CORRECT key is tried first it searches a narrower span than
+    /// the wrong one — and a record just beyond the narrow span is missed
+    /// while the wrong key sweeps past it. Measured live before the fix: a
+    /// record at 137 unreachable while the floor ran to 2,796,190.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn one_failed_record_widens_the_search_once_not_once_per_key_guess() {
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        let client: IpAddr = "10.0.0.1".parse().unwrap();
+        let server: IpAddr = "10.0.0.2".parse().unwrap();
+        let far = seal_tls13_record(&key, &iv, 900_000, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n");
+
+        for expected in 1..=3u32 {
+            assert!(d.try_decrypt(&far, client, server).is_none());
+            let attempts = d
+                .sessions
+                .values()
+                .next()
+                .expect("a session must exist")
+                .lockon_attempts;
+            assert_eq!(
+                attempts, expected,
+                "after {expected} failed record(s) the counter must be {expected}; \
+                 {attempts} means it advanced per key guess, so the two guesses \
+                 searched different widths"
+            );
+        }
     }
 
     /// The floor must never outrun the answer.
