@@ -10,6 +10,76 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.115] - 2026-08-20
+
+### Fixed
+
+- **A TLS 1.3 trunk held open for hours could not be decrypted without
+  restarting it.** The per-record nonce comes from a counter both endpoints
+  keep privately, and no TLS version puts it on the wire, so sipnab searches
+  forward for it. That search was bounded at 4096 records — which sounds
+  generous and is about seven minutes of a trunk ticking over at ten records a
+  second. Found in the field within hours of 0.5.114: on one host a
+  fresh-per-call carrier decrypted immediately while a carrier that holds its
+  TLS connection open stayed unreadable until OpenSIPS itself was restarted.
+  The difference was never the carrier; it was how far into the record stream
+  the capture began. Restarting a live carrier trunk is not a debugging step an
+  operator can take, which is what made this worth fixing rather than
+  documenting.
+
+  The ceiling is now 1,048,576 records — roughly a day at that rate — and the
+  search **widens as records fail to open** rather than spending the ceiling on
+  the first packet. That distinction matters both ways round: a wide search is
+  free when the answer is near, because it stops at the first candidate that
+  authenticates, so a connection captured from its handshake still costs one
+  trial; and it costs its full width only when there is no match at all, which
+  is a session whose keys belong to some other connection at least as often as
+  it is a trunk joined late. Escalating keeps the first case instant, reaches
+  the second within a handful of records a busy trunk passes in moments, and
+  never stalls a live capture on one packet. The run-wide trial budget moved
+  with it, to four full windows: at parity the first unopenable record spends
+  the entire allowance and a session that would have locked on gets nothing.
+
+- **`--tls-lockon-window` sets that ceiling**, in records, because the right
+  value is a property of the deployment rather than of sipnab — how far into an
+  established connection a capture may start and still be readable. Raise it
+  for a trunk held open for days; lower it where a key log carries secrets for
+  many unrelated connections and the search is wasted effort.
+
+### Changed
+
+- **The homepage advertised an eBPF capability no published binary carries.**
+  It said "The eBPF backend additionally reports the real peer addresses"
+  without saying that the backend needs the `bpf` feature, which is not in
+  `full` — and every release builds `full`. So a reader could install a release,
+  reach for the capability the front page promised, and find only the default
+  backend, which names the process rather than the peer because it sees no
+  socket. The page now says which backend a released binary has and what the
+  other one needs. Whether `bpf` should ship is a separate question, tracked as
+  UPR1: it builds for every target and is inert on macOS, but adds 576 KiB,
+  which the x86_64 musl artifact does not have under the published 12 MB
+  ceiling. `docs/internals/build-ci-release.md` said "`full` is everything
+  except `wasm`" and had been wrong since `bpf` was added; it now names both
+  exclusions and why a stock build refuses `--uprobe-backend bpf` rather than
+  downgrading to the backend that cannot report addresses.
+
+- **The "no key material" diagnostic names the TLS libraries this host maps
+  instead of explaining how to find them.** It told the operator to derive a
+  `--libssl` path from `/proc/<pid>/maps` themselves, while sipnab already
+  enumerates exactly that for `--uprobe-list`. It now lists every mapped
+  library — never picking one, since choosing for the operator is the guess the
+  message exists to remove — ends in a command that can be pasted, and points
+  at `--uprobe-tls`, which needs no external extractor at all. A host where
+  discovery finds nothing keeps the wording that promises no paths.
+
+- **A traffic secret logged twice with different values is now reported.** One
+  key log can carry two generations of the same `CLIENT_TRAFFIC_SECRET_0` when
+  it was reloaded across an extractor restart, and TLS 1.3 `KeyUpdate` rotates
+  that secret in place, so the later value cannot open records from before the
+  rotation. Which one is right is not decidable from the log, so sipnab says so
+  rather than choosing in silence — the remedy is a connection restarted while
+  capturing, which produces an unambiguous log.
+
 ## [0.5.114] - 2026-08-20
 
 ### Fixed

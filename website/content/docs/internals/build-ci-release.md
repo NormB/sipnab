@@ -15,7 +15,10 @@ can safely ignore.
 
 `Cargo.toml`'s `[features]` table has thirteen entries: the twelve named
 features below, plus `default` — which is `native, tui, audio, metrics`.
-`full` is everything except `wasm`.
+`full` is everything except `wasm` and `bpf`. `bpf` is out because it needs a
+nightly toolchain and `bpf-linker` to compile the kernel object, so a released
+binary carries the tracefs uprobe backend and not the eBPF one — which is why
+`--uprobe-backend bpf` refuses on a stock build rather than downgrading.
 
 | Feature | Implies | Gates |
 |---|---|---|

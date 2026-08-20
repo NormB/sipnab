@@ -291,6 +291,42 @@ Tiers:
 
 <!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
 
+- [ ] **UPR1 — every published binary ships the uprobe backend that cannot name
+  a peer.** `--uprobe-tls` already solves the problem operators hit with
+  eCapture: it probes *every* mapped TLS library rather than making someone
+  name one, and `--uprobe-list` answers "can sipnab read this daemon at all"
+  before a probe is installed. But it has two backends, and they are not
+  equivalent. `tracefs` (the default) "sees no socket, so its dialogs name a
+  process rather than a peer"; `bpf` pairs each write with its `tcp_sendmsg`
+  and recovers the real addresses. `bpf` is **not** in the `full` feature set
+  (`full = [native, tui, tls, hep, api, audio, mcp, mcp-http, metrics,
+  plugins]`), and [`.github/workflows/release.yml`](https://github.com/NormB/sipnab/blob/main/.github/workflows/release.yml) builds `features="full"`, so no
+  published binary can produce addressed output from a uprobe. That is the
+  whole reason a user reaches for eCapture instead: keys let sipnab decrypt the
+  real wire capture, so addresses, timing and RTP correlation survive, whereas
+  address-less plaintext has the same defect that made HEP-only unacceptable —
+  a media stream is created from real RTP packets or not at all. **Do:** decide
+  whether `bpf` can ship. It needs `aya`, a `bpf-linker` matched to the
+  installed LLVM, and a runtime kernel with `CONFIG_DEBUG_INFO_BTF`, across
+  every cross-compiled target, which is presumably why it was excluded. If it
+  cannot ship for all targets, ship it where it can and say so in `--help` and
+  on the install page, rather than leaving the capable path invisible to
+  everyone who installs a release.
+- [ ] **UPR2 — the "no key material" diagnostic explains how to find the right
+  library instead of naming it.** When a run holds TLS it cannot read and has
+  no key material, `tls_decrypt_guidance` in [`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs) tells the
+  operator that eCapture picks a library by looking at curl and that they
+  should "pass `--libssl` with the path from `/proc/<daemon-pid>/maps`". That is
+  a correct instruction and a worse one than sipnab can give, because sipnab
+  already enumerates exactly this: `--uprobe-list` reports which TLS libraries
+  processes on the host are mapping and exits without installing a probe.
+  Advice the tool could replace with an answer is a gap. **Do:** run that same
+  discovery when emitting this branch and name the paths found, so the message
+  ends in a command the operator can paste rather than a procedure they must
+  perform. Mention `--uprobe-tls` in the same breath, since it needs no
+  external extractor at all. Keep it cheap and non-fatal: discovery must never
+  turn a diagnostic into a failure, and a host where it finds nothing should
+  fall back to today's wording.
 - [ ] **PKG1 — `update-formula.sh` still meets real input for the first time on
   a release tag.** This is the shape that shipped 0.5.113's `.rpm` broken
   (#244): `build-rpm.sh` had no CI job at all and ran first on a tag, which is

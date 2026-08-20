@@ -389,7 +389,18 @@ pub struct UndecodableTally {
 ///
 /// Lives here, beside [`TlsDecryptReport`], because the decryptor that spends
 /// it and the message that quotes it to the operator must not drift apart.
-pub const TLS_SEQ_LOCKON_WINDOW: u64 = 4096;
+pub const TLS_SEQ_LOCKON_WINDOW: u64 = 1 << 20;
+
+// Sized from what it costs and what it buys, not from a round number that
+// looked safe. Each trial is one AEAD tag verification -- roughly a
+// microsecond -- and the search runs ONCE per direction per session, not per
+// record, so the whole window is a one-off of about a second. It was 4096,
+// which sounds generous and is about seven minutes of a trunk ticking over at
+// ten records a second. A carrier that holds its TLS connection open for hours
+// is far past that, and "restart the connection" is not a step an operator can
+// take on live traffic: a persistent trunk stayed unreadable until the daemon
+// was restarted, while a fresh-per-call carrier on the same host decrypted
+// immediately. A million records is roughly a day at that rate.
 
 /// What a run's TLS decryption actually achieved, as counts.
 ///

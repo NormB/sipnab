@@ -1413,6 +1413,30 @@ fn undecodable_summary(
     Some(msg)
 }
 
+/// TLS library paths mapped by processes on this host, for the diagnostic that
+/// would otherwise tell an operator how to look them up themselves.
+///
+/// Best-effort and never fatal: discovery walks `/proc`, and a host where it
+/// finds nothing (no permission, no such process, not Linux) simply gets the
+/// wording that does not name paths. Deliberately the ONLY place this platform
+/// split is written.
+fn mapped_tls_libraries() -> Vec<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut paths: Vec<String> = crate::capture::uprobe::discover::discover()
+            .into_iter()
+            .map(|lib| lib.path.display().to_string())
+            .collect();
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Vec::new()
+    }
+}
+
 /// What a run says about TLS application data it saw and could not read.
 ///
 /// Split out as a pure function for the same reason as [`no_sip_guidance`]:
@@ -1433,7 +1457,10 @@ fn undecodable_summary(
 /// The lines to print, in order; empty when there is nothing to report,
 /// which is every run that decrypted everything it saw and every run with no
 /// TLS in it at all.
-fn tls_decrypt_guidance(tls: &crate::capture::TlsDecryptReport) -> Vec<String> {
+fn tls_decrypt_guidance(
+    tls: &crate::capture::TlsDecryptReport,
+    mapped_libs: &[String],
+) -> Vec<String> {
     // Any successful decrypt at all proves the keys, the sequence numbers and
     // the session matching work, so the run has nothing to explain.
     if !tls.read_nothing() {
@@ -1468,7 +1495,7 @@ fn tls_decrypt_guidance(tls: &crate::capture::TlsDecryptReport) -> Vec<String> {
     // traffic. Restarting a connection would produce a fresh handshake that
     // is just as unreadable; the fix is upstream, at the key source.
     if tls.sessions_with_keys == 0 {
-        return vec![
+        let mut lines = vec![
             format!(
                 "sipnab could not decrypt {unread} TLS application-data record(s): it holds \
                  no key material for any session in this capture, so this run says nothing \
@@ -1477,11 +1504,31 @@ fn tls_decrypt_guidance(tls: &crate::capture::TlsDecryptReport) -> Vec<String> {
             "A keylog producer only records keys for what it attached to. Check both \
              halves of that: the TLS library — eCapture picks one by looking at curl, \
              which need not be the one the SIP daemon maps, so pass --libssl with the \
-             path from /proc/<daemon-pid>/maps — and the process, since --pid pins it to \
-             a single worker while a forking daemon spreads connections across all of \
-             them. Give sipnab --keylog-watch so keys minted after it starts are read too."
+             path the daemon shows in /proc/<daemon-pid>/maps — and the process, since \
+             --pid pins it to a single worker while a forking daemon spreads \
+             connections across all of them. Give sipnab --keylog-watch so keys minted \
+             after it starts are read too."
                 .to_string(),
         ];
+        // Naming what this host maps beats explaining how to look it up, and
+        // sipnab already enumerates exactly this for `--uprobe-list`. Every
+        // path is offered, never one chosen: picking for the operator is the
+        // guess this exists to remove.
+        if !mapped_libs.is_empty() {
+            lines.push(format!(
+                "This host maps {}. Pass the one the SIP daemon uses, e.g. \
+                 `ecapture tls -m keylog -k keys.log --libssl={}`.",
+                mapped_libs.join(", "),
+                mapped_libs[0],
+            ));
+            lines.push(
+                "Or skip the external extractor: `sudo sipnab --uprobe-list` reports \
+                 what each process maps, and `sudo sipnab -N --uprobe-tls` probes every \
+                 mapped TLS library itself, with no --libssl to choose and no keylog."
+                    .to_string(),
+            );
+        }
+        return lines;
     }
 
     // Keys matched sessions and the records still would not open. The record
@@ -2309,6 +2356,9 @@ impl BatchRunner {
             let crypto = crate::crypto::default_backend();
             match TlsDecryptor::new(keylog_path, crypto) {
                 Ok(mut d) => {
+                    if let Some(records) = cli.tls_args.tls_lockon_window {
+                        d.set_lockon_window(records);
+                    }
                     if let Some(source) = preopened {
                         d.set_keylog_source(source);
                         // Drain once, HERE, before a single packet is
@@ -3281,7 +3331,7 @@ impl BatchRunner {
                 .unwrap_or_default();
             #[cfg(not(feature = "tls"))]
             let tls_report = crate::capture::TlsDecryptReport::default();
-            for line in tls_decrypt_guidance(&tls_report) {
+            for line in tls_decrypt_guidance(&tls_report, &mapped_tls_libraries()) {
                 eprintln!("{line}");
             }
 
@@ -4666,12 +4716,15 @@ mod tests {
     /// described as key material that never arrived.
     #[test]
     fn keys_that_bound_to_no_handshake_name_the_missing_handshake() {
-        let lines = tls_decrypt_guidance(&crate::capture::TlsDecryptReport {
-            keylog_entries: 6,
-            sessions_with_keys: 0,
-            app_data_records: 4,
-            decrypted_records: 0,
-        });
+        let lines = tls_decrypt_guidance(
+            &crate::capture::TlsDecryptReport {
+                keylog_entries: 6,
+                sessions_with_keys: 0,
+                app_data_records: 4,
+                decrypted_records: 0,
+            },
+            &[],
+        );
         let joined = lines.join("\n");
         assert!(
             joined.contains("handshake"),
@@ -4696,7 +4749,7 @@ mod tests {
     /// statements that together assert the opposite of what happened.
     #[test]
     fn a_run_that_decrypted_no_tls_says_so_with_counts_and_a_remedy() {
-        let lines = tls_decrypt_guidance(&tls_report(2, 9, 0));
+        let lines = tls_decrypt_guidance(&tls_report(2, 9, 0), &[]);
         let joined = lines.join("\n");
         assert!(
             joined.contains('9') && joined.contains('2'),
@@ -4716,7 +4769,7 @@ mod tests {
     /// so it must not be described as a mid-stream capture.
     #[test]
     fn tls_records_with_no_matching_keys_get_their_own_remedy() {
-        let lines = tls_decrypt_guidance(&tls_report(0, 40, 0));
+        let lines = tls_decrypt_guidance(&tls_report(0, 40, 0), &[]);
         let joined = lines.join("\n");
         assert!(
             joined.contains("40"),
@@ -4729,6 +4782,50 @@ mod tests {
         assert!(
             !joined.to_lowercase().contains("restart"),
             "restarting a connection does not fix absent key material: {joined}"
+        );
+    }
+
+    /// Advice a tool can replace with an answer is a gap.
+    ///
+    /// The no-key-material branch told the operator to derive a `--libssl`
+    /// path from `/proc/<pid>/maps` themselves. sipnab already enumerates
+    /// exactly that for `--uprobe-list`, so when discovery found libraries it
+    /// must name them, and end in something pasteable rather than a procedure.
+    #[test]
+    fn no_key_material_names_the_libraries_this_host_maps() {
+        let libs = vec![
+            "/usr/lib/x86_64-linux-gnu/libssl.so.3".to_string(),
+            "/opt/openssl/lib/libssl.so.1.1".to_string(),
+        ];
+        let joined = tls_decrypt_guidance(&tls_report(0, 40, 0), &libs).join("\n");
+        assert!(
+            joined.contains("/usr/lib/x86_64-linux-gnu/libssl.so.3"),
+            "the library this host actually maps must be named: {joined}"
+        );
+        assert!(
+            joined.contains("/opt/openssl/lib/libssl.so.1.1"),
+            "a second mapped library must not be dropped -- picking one for the \
+             operator is the guess this exists to remove: {joined}"
+        );
+        assert!(
+            joined.contains("--uprobe-tls"),
+            "the path that needs no external extractor must be offered: {joined}"
+        );
+    }
+
+    /// A host where discovery finds nothing keeps the wording that does not
+    /// promise paths, rather than emitting an empty list as if it were an
+    /// answer.
+    #[test]
+    fn no_discovered_libraries_falls_back_to_the_generic_remedy() {
+        let joined = tls_decrypt_guidance(&tls_report(0, 40, 0), &[]).join("\n");
+        assert!(
+            joined.contains("--libssl"),
+            "the generic remedy must survive: {joined}"
+        );
+        assert!(
+            !joined.contains("sipnab found no"),
+            "an empty discovery must not be narrated as a finding: {joined}"
         );
     }
 
@@ -4745,7 +4842,7 @@ mod tests {
     #[test]
     fn a_partial_read_says_nothing_because_the_handshake_is_not_a_loss() {
         assert!(
-            tls_decrypt_guidance(&tls_report(1, 12, 7)).is_empty(),
+            tls_decrypt_guidance(&tls_report(1, 12, 7), &[]).is_empty(),
             "seven of twelve is a normal TLS 1.3 handshake, not five lost records"
         );
     }
@@ -4755,15 +4852,15 @@ mod tests {
     #[test]
     fn a_clean_or_absent_tls_run_reports_nothing() {
         assert!(
-            tls_decrypt_guidance(&tls_report(0, 0, 0)).is_empty(),
+            tls_decrypt_guidance(&tls_report(0, 0, 0), &[]).is_empty(),
             "no TLS in the capture"
         );
         assert!(
-            tls_decrypt_guidance(&tls_report(1, 12, 12)).is_empty(),
+            tls_decrypt_guidance(&tls_report(1, 12, 12), &[]).is_empty(),
             "everything decrypted"
         );
         assert!(
-            tls_decrypt_guidance(&tls_report(0, 0, 0)).is_empty(),
+            tls_decrypt_guidance(&tls_report(0, 0, 0), &[]).is_empty(),
             "a capture with no TLS in it at all"
         );
     }

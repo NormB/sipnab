@@ -2345,6 +2345,20 @@ pub struct TlsArgs {
     #[arg(help_heading = "TLS / Decryption", long)]
     pub keylog_watch: bool,
 
+    /// How far into an established TLS connection a capture may start and
+    /// still be readable, in records.
+    ///
+    /// No TLS version puts the record number on the wire, so a capture that
+    /// joined a connection already running must search for it; the AEAD tag
+    /// makes searching safe. The search widens only as records fail to open,
+    /// so raising this costs nothing on a connection captured from its
+    /// handshake — it is the ceiling that search may reach, not work it always
+    /// does. Raise it for a carrier trunk held open for days; lower it on a
+    /// host where key material for other connections is common and the search
+    /// is wasted effort.
+    #[arg(help_heading = "TLS / Decryption", long, value_name = "RECORDS")]
+    pub tls_lockon_window: Option<u64>,
+
     /// DTLS key log (NSS SSLKEYLOGFILE): extracts SRTP keys from DTLS-SRTP
     /// handshakes via the RFC 5764 exporter (AES-CM profiles).
     #[arg(help_heading = "TLS / Decryption", long, value_name = "FILE")]

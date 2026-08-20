@@ -911,6 +911,32 @@ fn default_keylog_watch_is_false() {
     );
 }
 
+/// `tls_lockon_window` defaults to `None`, meaning the built-in ceiling.
+///
+/// `None` rather than the number itself, so the default lives in one place —
+/// beside the search that spends it — instead of being restated here where it
+/// could drift from the value the decryptor actually uses.
+#[test]
+fn default_tls_lockon_window_is_none() {
+    let cli = defaults();
+    assert!(
+        cli.tls_args.tls_lockon_window.is_none(),
+        "tls_lockon_window should be None by default, deferring to the decryptor"
+    );
+}
+
+/// An explicit `--tls-lockon-window` is carried through as given.
+#[test]
+fn tls_lockon_window_is_parsed_from_the_flag() {
+    let cli = Cli::try_parse_from(["sipnab", "-N", "--tls-lockon-window", "8388608"])
+        .expect("an explicit lock-on window should parse");
+    assert_eq!(
+        cli.tls_args.tls_lockon_window,
+        Some(8_388_608),
+        "the record ceiling must reach the decryptor unmodified"
+    );
+}
+
 /// `dtls_keylog` defaults to `None`.
 #[test]
 fn default_dtls_keylog_is_none() {

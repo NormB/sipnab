@@ -144,9 +144,11 @@ single biggest trap on long-lived trunks, and it bites differently in each TLS
 version:
 
 - **TLS 1.3** numbers each record with a counter both endpoints keep privately.
-  Nothing on the wire carries it, so sipnab searches the beginning of a stream
-  for it — a few thousand records, which a trunk up for hours is far past. The
-  keys are right and the records still do not open.
+  Nothing on the wire carries it, so sipnab searches for it — about a million
+  records, roughly a day of a trunk ticking over at ten records a second. The
+  search costs one AEAD tag check per candidate and runs once per direction per
+  session, so it is a one-off of about a second, not a per-record cost. Past
+  that, the keys are right and the records still do not open.
 - **TLS 1.2** is worse: a `CLIENT_RANDOM` line gives the master secret, and the
   server random and cipher suite that expand it into record keys are in the
   ServerHello. Miss the handshake and there is no way to use the secret at all,

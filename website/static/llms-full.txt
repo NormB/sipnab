@@ -3253,7 +3253,7 @@ sipnab -D
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```text
-sipnab 0.5.114 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
+sipnab 0.5.115 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
 ```
 
 This is the fastest way to confirm a build carries the feature set
@@ -6129,6 +6129,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--keylog` | `<FILE>` | -- | TLS key log file (NSS `SSLKEYLOGFILE` format). Accepts a **FIFO** here and reads it as a live stream, so a producer can feed secrets in without writing them to disk. Feature: `tls` |
 | `--keylog-fd` | `<N>` | -- | Read NSS keylog lines from an already-open descriptor, for a privileged producer that hands secrets over a pipe rather than a file. **Implies `--keylog-watch`**, and conflicts with `--keylog` — pass one, never both. sipnab **cannot start that producer itself**: it sets `PR_SET_NO_NEW_PRIVS` at startup and every child inherits it, so a child can never acquire the `CAP_BPF` an eBPF extractor needs. Start it from a supervisor and pass the read end here. Feature: `tls` |
 | `--keylog-watch` | -- | off | Watch the key log for new entries (live decryption). Feature: `tls` |
+| `--tls-lockon-window` | `<RECORDS>` | 1048576 | How far into an established TLS connection a capture may start and still be readable. No TLS version puts the record number on the wire, so a capture that joined a running connection searches for it, widening only as records fail to open — raising this costs nothing on a connection captured from its handshake, because the search stops at the first candidate that authenticates. Raise it for a carrier trunk held open for days; lower it where key material for unrelated connections is common. Feature: `tls` |
 | `--dtls-keylog` | `<FILE>` | -- | DTLS key log (NSS `SSLKEYLOGFILE`); extracts SRTP keys from DTLS-SRTP handshakes ([RFC 5764](https://www.rfc-editor.org/rfc/rfc5764) exporter, AES-CM profiles). Feature: `tls` |
 | `--srtp-keys` | `<FILE>` | -- | SRTP master-keys file for media decryption (AES-CM, [RFC 3711](https://www.rfc-editor.org/rfc/rfc3711)); also honors SDES `a=crypto` keys from SDP. Feature: `tls` |
 | `--pcap-export-mode` | `<MODE>` | `decrypted` | Pcap export mode for encrypted traffic: `decrypted` (plaintext payloads, no DSB), `raw` (original encrypted bytes, no DSB), `encrypted+dsb` (original encrypted bytes + Decryption Secrets Block so Wireshark can decrypt) |
@@ -6167,6 +6168,8 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 - `sudo sh -c 'ecapture tls -m keylog --keylogfile=/dev/stdout | sipnab -N -d eth0 --keylog-fd 0'` — read SIP over TLS with **no certificate and no restart of the SIP daemon**: an eBPF extractor pulls session secrets out of the running daemon's OpenSSL and pipes them straight in, so nothing is ever written to disk. sipnab cannot launch the extractor itself, because every child inherits `PR_SET_NO_NEW_PRIVS` and so can never acquire `CAP_BPF`
 - `sudo sipnab -N -d eth0 --keylog-fd 3 --user sipnab 3< /run/sip.keys` — take the secrets on descriptor 3 opened by the shell, then drop to an unprivileged user for the capture itself; the pipe is already open, so nothing has to be reachable from `/run` afterwards
 - `sudo mkfifo -m 600 /run/sip.keys && sudo sipnab -N -d eth0 --keylog /run/sip.keys --keylog-watch` — the same idea through a named pipe rather than a descriptor, for a producer started separately by systemd; sipnab opens the FIFO while still privileged, before it drops to an unprivileged user and can no longer reach `/run`
+- `sudo sipnab -N -d eth0 --keylog /run/sip.keys --keylog-watch --tls-lockon-window 8388608` — read a carrier trunk that has been up for days without restarting it. The record counter is not on the wire, so a capture joining an established connection has to find it; the default reaches about a day of a trunk at ten records a second, and this raises the ceiling to roughly a week
+- `sipnab -N -I trunk.pcap --keylog keys.log --tls-lockon-window 4096` — narrow the search when reading a capture whose key log holds secrets for many unrelated connections, so a session that can never match gives up sooner instead of spending the run's trial budget
 - `sudo sipnab --uprobe-list` — **run this first.** Report which TLS libraries processes on this host are actually mapping, and exit without installing a single probe. Answers the only question that matters before starting: is the daemon you care about using a library sipnab can read?
 - `sudo sipnab --uprobe-list --uprobe-flavor wolfssl` — the same listing narrowed to one flavor, so the output says what *this* command would probe rather than what merely exists
 - `sudo sipnab -N --uprobe-tls` — read SIP over TLS with **no certificate, no key and no restart of the SIP daemon**. sipnab probes every mapped TLS library, so one command covers a host running OpenSSL for one daemon and wolfSSL for another
@@ -9295,7 +9298,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.114 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
+   # sipnab 0.5.115 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -10921,7 +10924,7 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
-  "version": "0.5.114",
+  "version": "0.5.115",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -13823,7 +13826,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.114",
+  "version": "0.5.115",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -17134,7 +17137,10 @@ can safely ignore.
 
 `Cargo.toml`'s `[features]` table has thirteen entries: the twelve named
 features below, plus `default` — which is `native, tui, audio, metrics`.
-`full` is everything except `wasm`.
+`full` is everything except `wasm` and `bpf`. `bpf` is out because it needs a
+nightly toolchain and `bpf-linker` to compile the kernel object, so a released
+binary carries the tracefs uprobe backend and not the eBPF one — which is why
+`--uprobe-backend bpf` refuses on a stock build rather than downgrading.
 
 | Feature | Implies | Gates |
 |---|---|---|

@@ -240,6 +240,16 @@ struct TlsSession {
     locked_server: bool,
     /// Client IP address (set from the first handshake we observe).
     client_addr: Option<IpAddr>,
+    /// Failed lock-on attempts on this session, which widen the next search.
+    ///
+    /// A wide window is free when the answer is near — the search stops at the
+    /// match — and costs its full width only when there is no match at all,
+    /// which is a session whose keys belong to some other connection just as
+    /// often as it is a trunk the capture joined late. Starting narrow and
+    /// widening keeps the first case cheap and still reaches the second within
+    /// a handful of records, instead of stalling a live capture for a second
+    /// on the very first packet it cannot open.
+    lockon_attempts: u32,
 }
 
 impl Drop for TlsSession {
@@ -575,6 +585,13 @@ pub struct TlsDecryptor {
     app_data_records: u64,
     /// Lock-on trials left for this run. See [`LOCKON_TRIAL_BUDGET`].
     lockon_budget: u64,
+    /// Widest sequence search any one record may drive, before the run budget.
+    ///
+    /// Configurable because the right answer is a property of the deployment,
+    /// not of sipnab: how far into an established connection a capture may
+    /// start and still be readable. Defaults to
+    /// [`crate::capture::TLS_SEQ_LOCKON_WINDOW`].
+    lockon_window: u64,
     /// Path to the keylog file (for --keylog-watch polling).
     keylog_path: Option<std::path::PathBuf>,
     /// Where `--keylog-watch` reads from.
@@ -645,6 +662,7 @@ impl TlsDecryptor {
             decrypted_count: 0,
             app_data_records: 0,
             lockon_budget: LOCKON_TRIAL_BUDGET,
+            lockon_window: SEQ_LOCKON_WINDOW,
             keylog_path: keylog_path.map(|p| p.to_path_buf()),
             keylog_source,
             observed_handshakes: Vec::new(),
@@ -1006,6 +1024,7 @@ impl TlsDecryptor {
                 sequence_server: 0,
                 locked_client: false,
                 locked_server: false,
+                lockon_attempts: 0,
                 client_addr: None,
             },
         ))
@@ -1046,14 +1065,22 @@ impl TlsDecryptor {
             crypto,
             decrypted_count,
             lockon_budget,
+            lockon_window,
             ..
         } = self;
+        let lockon_window = *lockon_window;
         let crypto = crypto.as_ref();
         for (key, session) in sessions.iter_mut() {
             let cipher = session.cipher_suite;
-            if let Some(plaintext) =
-                try_decrypt_with_session(session, crypto, record, src_addr, dst_addr, lockon_budget)
-            {
+            if let Some(plaintext) = try_decrypt_with_session(
+                session,
+                crypto,
+                record,
+                src_addr,
+                dst_addr,
+                lockon_budget,
+                lockon_window,
+            ) {
                 *decrypted_count += 1;
                 tracing::info!(
                     "TLS session decrypted [session={}, cipher={}]",
@@ -1065,6 +1092,19 @@ impl TlsDecryptor {
         }
 
         None
+    }
+
+    /// Set how wide the sequence search may become, in records.
+    ///
+    /// The ceiling, not work always done: the search stops at the first
+    /// candidate that authenticates, so a connection captured from its
+    /// handshake costs one trial whatever this is. Zero is rejected rather
+    /// than silently disabling lock-on — a capture that joined an established
+    /// connection would then never decrypt, with nothing saying why.
+    pub fn set_lockon_window(&mut self, records: u64) {
+        if records > 0 {
+            self.lockon_window = records;
+        }
     }
 
     /// Populate sessions from keylog entries.
@@ -1134,6 +1174,37 @@ impl TlsDecryptor {
                 .find(|e| e.label == "SERVER_TRAFFIC_SECRET_0")
                 .map(|e| &e.secret);
 
+            // Two entries under one label for one client_random that DISAGREE
+            // are the signature of a mid-life re-attach, and which one is right
+            // is not decidable here. eCapture dedups per (label, client_random)
+            // and truncates on start, so a single run yields one entry; more
+            // than one means the log was reloaded across an extractor restart.
+            // If a KeyUpdate happened in between, OpenSSL's tls13_update_key()
+            // overwrote the traffic secret in place and the later entry is a
+            // ratcheted secret still labelled _0, which cannot open records
+            // from before the ratchet. Say so rather than pick silently: the
+            // operator can restart the connection and get an unambiguous log.
+            for label in ["CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"] {
+                let mut seen: Option<&Vec<u8>> = None;
+                for e in entries.iter().filter(|e| e.label == label) {
+                    match seen {
+                        None => seen = Some(&e.secret),
+                        Some(first) if first != &e.secret => {
+                            tracing::warn!(
+                                "{label} for this session was logged more than once with \
+                                 different values; using the latest. A key log reloaded \
+                                 across an extractor restart can carry a secret rotated \
+                                 by a TLS 1.3 KeyUpdate, which cannot decrypt records \
+                                 from before the rotation. Restart the connection while \
+                                 capturing for an unambiguous log."
+                            );
+                            break;
+                        }
+                        Some(_) => {}
+                    }
+                }
+            }
+
             if let (Some(cs), Some(ss)) = (client_secret, server_secret) {
                 // Determine cipher suite from secret length:
                 // - 32 bytes (SHA-256 output) -> AES-128-GCM
@@ -1173,6 +1244,7 @@ impl TlsDecryptor {
                                 sequence_server: 0,
                                 locked_client: false,
                                 locked_server: false,
+                                lockon_attempts: 0,
                                 client_addr: None,
                             },
                         );
@@ -1243,6 +1315,7 @@ impl TlsDecryptor {
                                     sequence_server: 0,
                                     locked_client: false,
                                     locked_server: false,
+                                    lockon_attempts: 0,
                                     client_addr: None,
                                 },
                             );
@@ -1293,7 +1366,13 @@ const SEQ_LOCKON_WINDOW: u64 = crate::capture::TLS_SEQ_LOCKON_WINDOW;
 /// case a bounded one-off instead of a per-record cost across a large capture;
 /// once it is spent only [`SEQ_RESYNC_WINDOW`] is searched, which is what a
 /// run that has already locked on needs anyway.
-const LOCKON_TRIAL_BUDGET: u64 = 1 << 20;
+const LOCKON_TRIAL_BUDGET: u64 = 1 << 22;
+
+// Four full windows. It must exceed [`SEQ_LOCKON_WINDOW`] by a margin,
+// otherwise the first session offered a record it cannot open spends the
+// entire run's allowance and a later session that WOULD have locked on is left
+// with only [`SEQ_RESYNC_WINDOW`]. Keys belonging to some other connection are
+// the normal case on a busy host, not an exceptional one.
 
 /// Try to decrypt a record using a specific session's keys.
 ///
@@ -1311,6 +1390,7 @@ fn try_decrypt_with_session(
     src_addr: IpAddr,
     dst_addr: IpAddr,
     lockon_budget: &mut u64,
+    lockon_window: u64,
 ) -> Option<Vec<u8>> {
     // Determine direction: try both if we haven't established client_addr yet.
     //
@@ -1365,7 +1445,13 @@ fn try_decrypt_with_session(
         let window = if locked {
             SEQ_RESYNC_WINDOW
         } else {
-            SEQ_LOCKON_WINDOW.min(*lockon_budget)
+            // Widen with each failed attempt rather than spending the ceiling
+            // on the first record. `1 << attempts` reaches a million by the
+            // fourteenth record a direction fails to open, which a trunk
+            // carrying traffic passes in seconds, while a session whose keys
+            // are simply wrong stays cheap for far longer than it used to.
+            let widened = SEQ_RESYNC_WINDOW.saturating_mul(1u64 << session.lockon_attempts.min(24));
+            widened.min(lockon_window).min(*lockon_budget)
         };
 
         // Decrypt with the per-version AEAD framing. On success both paths
@@ -1397,6 +1483,15 @@ fn try_decrypt_with_session(
         };
         if !locked {
             *lockon_budget = lockon_budget.saturating_sub(trials);
+            if decrypted.is_none() {
+                // Only a direction still guessing escalates. A failure here is
+                // the evidence that the next search should be wider, and it is
+                // the ONLY thing that widens it — without this the ceiling is
+                // never reached and a long-lived trunk stays unreadable.
+                session.lockon_attempts = session.lockon_attempts.saturating_add(1);
+            } else {
+                session.lockon_attempts = 0;
+            }
         }
 
         if let Some((plaintext, used_seq)) = decrypted {
@@ -1762,6 +1857,7 @@ mod tests {
             decrypted_count: 0,
             app_data_records: 0,
             lockon_budget: LOCKON_TRIAL_BUDGET,
+            lockon_window: SEQ_LOCKON_WINDOW,
             keylog_path: None,
             keylog_source: None,
             observed_handshakes: Vec::new(),
@@ -1799,6 +1895,7 @@ mod tests {
         let mut d = TlsDecryptor {
             app_data_records: 0,
             lockon_budget: LOCKON_TRIAL_BUDGET,
+            lockon_window: SEQ_LOCKON_WINDOW,
             keylog_entries: vec![
                 KeyLogEntry {
                     label: "CLIENT_TRAFFIC_SECRET_0".to_string(),
@@ -1867,6 +1964,7 @@ mod tests {
             decrypted_count: 0,
             app_data_records: 0,
             lockon_budget: LOCKON_TRIAL_BUDGET,
+            lockon_window: SEQ_LOCKON_WINDOW,
             keylog_path: None,
             keylog_source: None,
             observed_handshakes: Vec::new(),
@@ -1907,6 +2005,7 @@ mod tests {
             decrypted_count: 0,
             app_data_records: 0,
             lockon_budget: LOCKON_TRIAL_BUDGET,
+            lockon_window: SEQ_LOCKON_WINDOW,
             keylog_path: None,
             keylog_source: None,
             observed_handshakes: Vec::new(),
@@ -1945,6 +2044,7 @@ mod tests {
             decrypted_count: 0,
             app_data_records: 0,
             lockon_budget: LOCKON_TRIAL_BUDGET,
+            lockon_window: SEQ_LOCKON_WINDOW,
             keylog_path: None,
             keylog_source: None,
             observed_handshakes: Vec::new(),
@@ -2212,6 +2312,47 @@ mod tests {
         assert_eq!(d.decrypted_count, 1);
     }
 
+    /// A carrier trunk held open for hours is far past a few thousand records,
+    /// and asking an operator to restart it is not a debugging step they can
+    /// take on live traffic. Verified in the field: a persistent trunk stayed
+    /// unreadable until the daemon was restarted, while a fresh-per-call
+    /// carrier on the same host decrypted immediately — the difference was
+    /// only how far into the record stream the capture began.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn tls13_locks_on_to_a_trunk_that_has_been_up_far_longer_than_a_few_thousand_records() {
+        // Well beyond the old 4096 ceiling, and not a round power of two.
+        const JOINED_AT: u64 = 100_003;
+        // A trunk carrying traffic offers records continuously; this is the
+        // budget in RECORDS, not seconds, and a busy trunk passes it in
+        // moments. The search widens only when a record fails to open, so a
+        // single record can never reach the ceiling by itself -- that is the
+        // point of escalating rather than spending it all on the first packet.
+        const PATIENCE: u64 = 24;
+
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        let sip = b"OPTIONS sip:t@example.com SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
+        let client: IpAddr = "10.0.0.1".parse().unwrap();
+        let server: IpAddr = "10.0.0.2".parse().unwrap();
+
+        let mut opened = None;
+        for n in 0..PATIENCE {
+            let record = seal_tls13_record(&key, &iv, JOINED_AT + n, sip);
+            if let Some(out) = d.try_decrypt(&record, client, server) {
+                opened = Some((n, out));
+                break;
+            }
+        }
+        let (after, out) = opened
+            .expect("a long-lived trunk must lock on from its own traffic, without restarting it");
+        assert_eq!(out, sip, "plaintext must be the SIP that was sealed");
+        assert!(
+            after > 0,
+            "escalation is what reaches this depth; locking on the first record \
+             would mean the ceiling is being spent up front again"
+        );
+    }
+
     /// Once a direction has locked on, a gap in the captured records — a
     /// kernel drop, a record sipnab could not parse — must not end decryption
     /// for the rest of the connection. Before the forward search existed the
@@ -2363,6 +2504,7 @@ mod tests {
             decrypted_count: 0,
             app_data_records: 0,
             lockon_budget: LOCKON_TRIAL_BUDGET,
+            lockon_window: SEQ_LOCKON_WINDOW,
             keylog_path: None,
             keylog_source: None,
             observed_handshakes: Vec::new(),
@@ -2412,6 +2554,7 @@ mod tests {
             decrypted_count: 0,
             app_data_records: 0,
             lockon_budget: LOCKON_TRIAL_BUDGET,
+            lockon_window: SEQ_LOCKON_WINDOW,
             keylog_path: None,
             keylog_source: None,
             observed_handshakes: Vec::new(),
@@ -2468,6 +2611,7 @@ mod tests {
             decrypted_count: 0,
             app_data_records: 0,
             lockon_budget: LOCKON_TRIAL_BUDGET,
+            lockon_window: SEQ_LOCKON_WINDOW,
             keylog_path: None,
             keylog_source: None,
             observed_handshakes: Vec::new(),
@@ -3199,6 +3343,7 @@ mod tests {
                 sequence_server: 0,
                 locked_client: false,
                 locked_server: false,
+                lockon_attempts: 0,
                 client_addr: None,
             },
         );
