@@ -560,6 +560,20 @@ fn report_unusable_entry(
 /// the same opener as the read path, so gzip members are handled identically
 /// and a mixed compressed/uncompressed set needs no special case here.
 fn first_packet_time(path: &Path) -> Result<Option<f64>> {
+    // A merged pcapng must be recognised BEFORE libpcap touches it. libpcap
+    // opens such a file happily and fails on the first packet that names a
+    // second interface, so there is no open-time error to catch -- and this
+    // gate has to agree with the read path, or an explicitly named merged
+    // capture is rejected here and never reaches the reader that can open it.
+    if super::merged::is_merged(path) {
+        let mut merged = super::merged::MergedPcapNg::open(path)?;
+        return Ok(merged.next_frame().map(|f| {
+            #[allow(clippy::cast_precision_loss)]
+            {
+                f.ts.timestamp() as f64 + f64::from(f.ts.timestamp_subsec_micros()) / 1e6
+            }
+        }));
+    }
     let (mut cap, _gz_guard) = super::file::open_offline(path)?;
     match cap.next_packet() {
         Ok(pkt) => {

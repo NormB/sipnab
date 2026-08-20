@@ -291,7 +291,44 @@ Tiers:
 
 <!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
 
-- [ ] **SEC1 — key material is never locked into RAM, so it can be paged to
+- [x] **RDR1 — sipnab cannot read a merged pcapng at all, and the corpus gate
+  does not notice.** libpcap refuses a pcapng whose interfaces disagree, and it
+  refuses on two independent grounds. Measured against
+  [The Ultimate PCAP](https://weberblog.net/the-ultimate-pcap/), now in the
+  corpus: first `an interface has a snapshot length 8192 different from the
+  snapshot length of the first interface` — the file declares six distinct
+  snaplens (2048, 8192, 15360, 65535, 262144, 524288) across 313 interface
+  description blocks. Normalising every IDB to one snaplen does not help; it
+  then refuses with `an interface has a type 274 different from the type of the
+  first interface`, because the file carries four encapsulations (Ethernet, Raw
+  IP, Linux cooked v1, and 802.3br mPackets = LINKTYPE 274) and libpcap wants
+  one. Per-packet encapsulation is the *point* of a merged capture, so there is
+  no normalisation that makes libpcap read this class of file. Anything
+  produced by `mergecap`, or captured across interfaces that differ, is
+  unreadable today — and the failure is a hard error at open, so the operator
+  at least sees it.
+
+  **The quieter half is the gate.** All 14 corpus binaries pass with this file
+  present: the walker takes every regular file under `SIPNAB_CORPUS`, and a
+  capture that cannot be opened contributes nothing and reports nothing. One of
+  63 captures was entirely unread while the suite said `ok`, which is the shape
+  [[feedback_empty_output_is_not_evidence]] warns about — a missing measurement
+  reading as a passing one.
+
+  **Do:** add a pure-Rust read path rather than a workaround.
+  `pcap_file::pcapng::PcapNgReader` is already a dependency and already used in
+  [`src/tui/save.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/save.rs), and it handles multiple IDBs with differing
+  snaplens and link types. The seam exists: only six sites take
+  `pcap::Capture<pcap::Offline>`, and [`src/parallel.rs`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs)'s `Frames` enum is
+  the precedent for an alternative reader arm. The real work is per-packet
+  encapsulation — the link type must come from the packet's own interface, not
+  from the file — so decoding has to take the linktype per frame instead of
+  once per capture. Build it against a multi-IDB fixture GENERATED IN THE TEST,
+  not against a corpus file: the corpus is never committed, so a test that
+  depends on one proves nothing in CI. **Separately, make the corpus gate count
+  what it could not open and fail on a regression**, so the next unreadable
+  class is not silent.
+- [x] **SEC1 — key material is never locked into RAM, so it can be paged to
   disk and outlive the process.** `disable_core_dumps()` treats a failed
   `prctl(PR_SET_DUMPABLE, 0)` as fatal, and the reasoning it gives is exactly
   right: "a later crash writes those keys to a file on disk that any local user
@@ -310,9 +347,17 @@ Tiers:
   route. Note the ceiling is small by default (often 64 KiB) and a refusal must
   not be silent. Consider whether `--keylog-fd` and the FIFO recipe should be
   the documented default rather than a file, since a key log on disk is a
-  larger exposure than sipnab's memory either way.
-- [ ] **TLS13KU — a TLS 1.3 KeyUpdate is neither recognised nor exploited, and
-  it is both a hazard and the best answer to a months-old trunk.** RFC 8446
+  larger exposure than sipnab's memory either way. **Done 0.5.117:**
+  `privilege::lock_key_memory` calls `mlockall(MCL_CURRENT | MCL_FUTURE)` on
+  the same trigger as the core-dump hardening — `MCL_FUTURE` because the
+  secrets are read from the key log after that point. Deliberately not fatal,
+  for the reason argued above, but the outcome is always reported, naming
+  `ulimit -l` and `LimitMEMLOCK=`. The test asserts the kernel's own `VmLck`
+  rather than the return value and is mutation-verified: a version reporting
+  success while pinning nothing fails it. `invariants.md` rule 5 was widened to
+  name swap, which it had never mentioned.
+- [x] **TLS13KU — a TLS 1.3 KeyUpdate is neither recognised nor exploited, and
+  it is both a hazard and the best answer to a months-old trunk.** [RFC 8446](https://www.rfc-editor.org/rfc/rfc8446)
   §5.3 resets the record sequence number to zero whenever the key changes, not
   only at the start of a connection, and OpenSSL rekeys on its own once a
   connection passes its AES-GCM record limit. So a trunk far beyond any
@@ -329,8 +374,17 @@ Tiers:
   right record — and every one of those failure modes is SILENT, producing a
   session that looks ready and decrypts nothing, which is the exact symptom
   this area keeps generating. Verify the reset against the current RFC text
-  rather than from memory before building anything.
-- [ ] **UPR1 — every published binary ships the uprobe backend that cannot name
+  rather than from memory before building anything. **Done 0.5.117:** both
+  claims verified against the RFC text first — §5.3 "The 64-bit sequence number
+  is reset to zero at each key change" and §4.6.3's
+  `HKDF-Expand-Label(secret, "traffic upd", "", Hash.length)`. sipnab now
+  recognises inner content type 22 carrying handshake type 24, derives the next
+  secret, and resets that direction's counter. The SENDER's direction only: a
+  peer obliged by `update_requested` sends its own, handled when it arrives.
+  Two mutation-verified tests, including a decoy control — application data
+  whose first byte is 0x18 must not ratchet — which had to be strengthened
+  after a weaker version passed while the type check was removed.
+- [x] **UPR1 — every published binary ships the uprobe backend that cannot name
   a peer.** `--uprobe-tls` already solves the problem operators hit with
   eCapture: it probes *every* mapped TLS library rather than making someone
   name one, and `--uprobe-list` answers "can sipnab read this daemon at all"
@@ -350,8 +404,15 @@ Tiers:
   every cross-compiled target, which is presumably why it was excluded. If it
   cannot ship for all targets, ship it where it can and say so in `--help` and
   on the install page, rather than leaving the capable path invisible to
-  everyone who installs a release.
-- [ ] **UPR2 — the "no key material" diagnostic explains how to find the right
+  everyone who installs a release. **Done 0.5.118:** shipped on the four
+  `*-linux-gnu` targets. musl is excluded on measurement, not judgement — the
+  published 0.5.117 musl binary leaves 330,488 bytes under the ceiling and the
+  backend costs 589,952 — and a gate runs the workflow's own feature step per
+  matrix entry to keep it that way. The costs came with it: one strictness rule
+  for [`build.rs`](https://github.com/NormB/sipnab/blob/main/build.rs) instead of two, `bpf`/`plugins` in `--version`, and the
+  notices/SBOM feature set named once so the drift gate cannot stay green over
+  an artefact carrying unlisted dependencies.
+- [x] **UPR2 — the "no key material" diagnostic explains how to find the right
   library instead of naming it.** When a run holds TLS it cannot read and has
   no key material, `tls_decrypt_guidance` in [`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs) tells the
   operator that eCapture picks a library by looking at curl and that they
@@ -365,8 +426,13 @@ Tiers:
   perform. Mention `--uprobe-tls` in the same breath, since it needs no
   external extractor at all. Keep it cheap and non-fatal: discovery must never
   turn a diagnostic into a failure, and a host where it finds nothing should
-  fall back to today's wording.
-- [ ] **PKG1 — `update-formula.sh` still meets real input for the first time on
+  fall back to today's wording. **Done 0.5.115:** `mapped_tls_libraries()`
+  runs the same discovery and the branch names every path found — never picking
+  one, since choosing for the operator is the guess it exists to remove — ends
+  in a pasteable command, and offers `--uprobe-tls`. A host where discovery
+  finds nothing keeps the wording that promises no paths, which has its own
+  test.
+- [x] **PKG1 — `update-formula.sh` still meets real input for the first time on
   a release tag.** This is the shape that shipped 0.5.113's `.rpm` broken
   (#244): `build-rpm.sh` had no CI job at all and ran first on a tag, which is
   the worst place to learn something is wrong, because the tag is cut and the
@@ -2620,7 +2686,7 @@ neither visible to `--features full`:**
    that has either.
 2. `TK6`'s `ebpf` feature sits **outside `full`**, and
    `no_test_hides_behind_a_feature_outside_full`
-   ([`tests/site_journey_test.rs:4816`](https://github.com/NormB/sipnab/blob/main/tests/site_journey_test.rs#L4816)) fails on any `#[test]` or
+   ([`tests/site_journey_test.rs:4832`](https://github.com/NormB/sipnab/blob/main/tests/site_journey_test.rs#L4832)) fails on any `#[test]` or
    `mod tests` gated on such a feature. So the offset table and version parsing
    are **ungated** pure logic and only the aya attachment is gated. This is
    architecture, not style.

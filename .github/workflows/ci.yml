@@ -297,11 +297,18 @@ jobs:
         run: bash packaging/rpm/test-build-rpm.sh
 
   # Homebrew formula generation. update-formula.sh runs on every release to
-  # produce sipnab.rb from SHA256SUMS.txt, and its 21-assertion test harness
-  # sat in the tree unrun — no workflow referenced it, so the only thing that
-  # had ever executed it was whoever wrote it. The deb builder next door has
-  # had a CI job all along; this is the same contract with nothing watching.
-  # Pure bash over a fixture sums file — no Rust toolchain needed.
+  # produce sipnab.rb from SHA256SUMS.txt, and its test harness sat in the tree
+  # unrun — no workflow referenced it, so the only thing that had ever executed
+  # it was whoever wrote it. The deb builder next door has had a CI job all
+  # along; this is the same contract with nothing watching.
+  #
+  # TWO checks, because "the harness passes" and "the generator works on real
+  # input" are different claims. The harness feeds a fixture; the second step
+  # fetches the real SHA256SUMS.txt from the latest published release and runs
+  # the real generator against it, so a failure that depends on real input — a
+  # new artifact name, a platform that did not build, a change in asset count
+  # or ordering — surfaces here instead of on a tag that is already publishing.
+  # That is the shape that shipped 0.5.113's .rpm broken.
   homebrew-formula:
     # Bounds how long this job can hold the main-branch concurrency
     # group, which never supersedes. Observed: 0.1 min.
@@ -320,6 +327,19 @@ jobs:
           persist-credentials: false
       - name: Test update-formula.sh
         run: bash packaging/homebrew/test-update-formula.sh
+
+      # Network-coupled on purpose, and it adds no failure surface this job did
+      # not already have: actions/checkout above already needs GitHub to be up,
+      # and `gh api` reads the same host. The alternative — a wider fixture —
+      # cannot see the one class that matters, which is what the LAST release
+      # actually published. The fixture stays too, and is wide enough to match
+      # a real manifest's shape, so a contributor with no network still runs
+      # every assertion offline.
+      - name: Test update-formula.sh against a real release SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash packaging/homebrew/test-real-sums.sh
 
   # The ThreadSanitizer verdict. sanitizers.yml is weekly, so a bug in how it
   # reads its own logs would sit undetected for a week at a time — and one did:
@@ -420,6 +440,16 @@ jobs:
           - "native,tui,tls,hep,api"
           # The documented headless server build (README "Headless capture host").
           - "native,hep,api,mcp,mcp-http"
+          # The eBPF uprobe backend, which every published *-linux-gnu binary
+          # now carries. Its USERSPACE half is what this leg compiles: the
+          # kernel half needs nightly and bpf-linker, which the release job
+          # installs and this one deliberately does not, so build.rs takes its
+          # degrading default here and emits the placeholder object. That is
+          # the split the two modes exist for -- this leg proves the
+          # `#[cfg(feature = "bpf")]` code and its tests still build, and
+          # `a_release_build_refuses_to_ship_without_the_kernel_programs`
+          # proves the release cannot ship the placeholder.
+          - bpf
           - wasm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

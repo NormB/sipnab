@@ -126,6 +126,30 @@ pub fn capture_file(
 ) -> Result<()> {
     // `_gz_guard` owns any decompressed temp file; it must outlive all reads
     // below, so keep it bound for the whole function.
+    // A pcapng whose interfaces disagree on snaplen or link type. libpcap
+    // accepts the file and then fails on the first packet naming a second
+    // interface, so this is decided up front rather than by catching an error
+    // that arrives mid-loop. Per-packet encapsulation is the point of a merged
+    // capture, so no rewrite makes libpcap read one.
+    if crate::capture::merged::is_merged(path) {
+        match crate::capture::merged::MergedPcapNg::open(path) {
+            Ok(merged) => {
+                if let Some(ready) = ready_tx {
+                    let _ = ready.send(Ok(()));
+                }
+                let mut count: u64 = 0;
+                read_merged(merged, path, config, &tx, &mut count)?;
+                return Ok(());
+            }
+            Err(e) => {
+                if let Some(ready) = ready_tx {
+                    let _ = ready.send(Err(format!("{e:#}")));
+                }
+                return Err(e);
+            }
+        }
+    }
+
     let (mut cap, _gz_guard) = match open_offline(path) {
         Ok(opened) => opened,
         Err(e) => {
@@ -162,6 +186,81 @@ pub fn capture_file(
         &mut count,
         &mut prev_ts,
     )
+}
+
+/// Read a merged pcapng, taking each frame's link type from its own interface.
+///
+/// Deliberately simpler than [`read_opened_inner`]: no send batching, no replay
+/// pacing, no multi-file ordinal continuity. Those exist for the hot path, and
+/// this is the path for a capture libpcap will not open at all — an assembled
+/// artifact, not a live ring buffer. Reaching for them here would duplicate two
+/// hundred lines of the loop that matters to serve the case that does not.
+fn read_merged(
+    mut merged: crate::capture::merged::MergedPcapNg,
+    path: &Path,
+    config: &CaptureConfig,
+    tx: &PacketTx,
+    count: &mut u64,
+) -> Result<u64> {
+    let source: std::sync::Arc<str> = std::sync::Arc::from(path.display().to_string());
+    let types: Vec<String> = merged.link_types().iter().map(i32::to_string).collect();
+    tracing::info!(
+        "Reading '{}' with the merged-pcapng decoder: libpcap refuses a file \
+         whose interfaces disagree. Link types present: {}",
+        path.display(),
+        types.join(", ")
+    );
+
+    let mut ordinal: u64 = 0;
+    // Run-global, like every other reader: `--count` spans a whole set, and a
+    // summary built from a per-file counter would disagree with the limit.
+    let started_at = *count;
+    while let Some(frame) = merged.next_frame() {
+        if signals::shutdown_requested() {
+            tracing::debug!("Shutdown requested, stopping merged reader");
+            break;
+        }
+        if let Some(max_count) = config.count
+            && *count >= max_count
+        {
+            tracing::debug!("Reached packet count limit ({max_count})");
+            break;
+        }
+
+        let mut packet = Packet::with_source(
+            frame.ts,
+            frame.data,
+            frame.caplen as usize,
+            frame.origlen as usize,
+            Some(std::sync::Arc::clone(&source)),
+            // The whole reason this path exists.
+            frame.link_type,
+        );
+        packet.origin = Some(crate::capture::packet::FrameOrigin {
+            ordinal,
+            digest: Some(crate::capture::packet::frame_digest(&packet.data)),
+        });
+        ordinal += 1;
+        *count += 1;
+        if tx.send(packet).is_err() {
+            tracing::debug!("Receiver dropped, stopping merged reader");
+            break;
+        }
+    }
+
+    // Said out loud, because a frame dropped in silence is indistinguishable
+    // from a capture that never held it.
+    let skipped = merged.skipped();
+    if skipped > 0 {
+        tracing::warn!(
+            "{skipped} block(s) in '{}' named an interface the file never \
+             described and were not read",
+            path.display()
+        );
+    }
+    let read = *count - started_at;
+    tracing::info!("Read {read} packets from '{}'", path.display());
+    Ok(read)
 }
 
 /// Read a set of capture files, in order, into one packet stream.
@@ -403,6 +502,23 @@ fn read_member(
     state: &mut SetState,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<bool> {
+    // A set may hold a merged pcapng; same up-front check as the single-file
+    // path, for the same reason. Skipping it would drop a whole member while
+    // the run reported success on the rest.
+    if crate::capture::merged::is_merged(path)
+        && let Ok(merged) = crate::capture::merged::MergedPcapNg::open(path)
+    {
+        if let Some(ready) = ready_tx {
+            let _ = ready.send(Ok(()));
+        }
+        // Counted into the set tally like any other member, or the closing
+        // summary reports "0 packets, 1 file not reached" for a file it just
+        // read in full -- a contradiction the operator has to resolve alone.
+        read_merged(merged, path, config, tx, state.count)?;
+        state.tally.complete += 1;
+        return Ok(true);
+    }
+
     // `_gz_guard` owns any decompressed temp file and must outlive the read.
     let (mut cap, _gz_guard) = match open_offline(path) {
         Ok(opened) => opened,

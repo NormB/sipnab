@@ -19,23 +19,61 @@ trap 'rm -rf "$tmp"' EXIT
 ok()   { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
 bad()  { printf '  FAIL %s\n' "$1"; fail=$((fail+1)); }
 
-# A valid SHA256SUMS.txt for v0.4.3 (includes musl + .deb noise lines that the
-# generator must ignore, and a stray wrong-version line it must NOT pick up).
+# A SHA256SUMS.txt for v0.4.3 with the SHAPE OF A REAL ONE.
+#
+# It used to be eight lines: four tap tarballs, two musl, a wrong-version line
+# and `abc  sipnab_0.4.3_amd64.deb`. That is not what a release publishes.
+# release.yml builds the file with
+#   sha256sum *.tar.gz *.deb *.rpm *.cdx.json > SHA256SUMS.txt
+# which on 0.5.117 produced sixteen entries: six tarballs (gnu, musl, darwin),
+# four .deb and four .rpm (each in plain and `-noaudio` flavours), and two
+# CycloneDX SBOMs — in glob order, which is NOT the order the generator reads
+# them in. A fixture narrower than that cannot exercise the classes that
+# actually break a release: a new artifact name, a platform that did not build,
+# a change in asset count or ordering.
+#
+# The shape is not asserted by eye. `test-real-sums.sh` carries the rules for
+# what a real manifest looks like and this fixture is run through them below,
+# so the two cannot drift — and that same checker meets the genuine article in
+# CI, against the latest published release.
+#
+# The 0.4.2 line is deliberate: a stray wrong-version entry the generator must
+# never pick up.
 good_sums() {
   cat <<'EOF'
 d1c0d9fcce3dcb79599e96efa317c7b2433128088bddeddb1065fead35bea7c0  sipnab-0.4.3-aarch64-apple-darwin.tar.gz
-17a1bda119ebf54ca5af286ae4c55becd0430648664afd2f5fede3eb439e6bbd  sipnab-0.4.3-x86_64-apple-darwin.tar.gz
 858136ae7e3faca63d9521156e2f0897e389efbf81efc8bdcafe4511f215a5bb  sipnab-0.4.3-aarch64-unknown-linux-gnu.tar.gz
-f94435e79a5aaae1cb24050cc9ac7f94041588c845b425f2ca73750a8b89e3c0  sipnab-0.4.3-x86_64-unknown-linux-gnu.tar.gz
 1111111111111111111111111111111111111111111111111111111111111111  sipnab-0.4.3-aarch64-unknown-linux-musl.tar.gz
+17a1bda119ebf54ca5af286ae4c55becd0430648664afd2f5fede3eb439e6bbd  sipnab-0.4.3-x86_64-apple-darwin.tar.gz
+f94435e79a5aaae1cb24050cc9ac7f94041588c845b425f2ca73750a8b89e3c0  sipnab-0.4.3-x86_64-unknown-linux-gnu.tar.gz
 2222222222222222222222222222222222222222222222222222222222222222  sipnab-0.4.3-x86_64-unknown-linux-musl.tar.gz
-deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef0  sipnab-0.4.2-x86_64-apple-darwin.tar.gz
-abc  sipnab_0.4.3_amd64.deb
+deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  sipnab-0.4.2-x86_64-apple-darwin.tar.gz
+3333333333333333333333333333333333333333333333333333333333333333  sipnab_0.4.3_amd64-noaudio.deb
+4444444444444444444444444444444444444444444444444444444444444444  sipnab_0.4.3_amd64.deb
+5555555555555555555555555555555555555555555555555555555555555555  sipnab_0.4.3_arm64-noaudio.deb
+6666666666666666666666666666666666666666666666666666666666666666  sipnab_0.4.3_arm64.deb
+7777777777777777777777777777777777777777777777777777777777777777  sipnab-0.4.3-1.aarch64-noaudio.rpm
+8888888888888888888888888888888888888888888888888888888888888888  sipnab-0.4.3-1.aarch64.rpm
+9999999999999999999999999999999999999999999999999999999999999999  sipnab-0.4.3-1.x86_64-noaudio.rpm
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab  sipnab-0.4.3-1.x86_64.rpm
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc  sipnab-0.4.3.cdx.json
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccd  sipnab-audio-0.4.3.cdx.json
 EOF
 }
 
 # --- success path -----------------------------------------------------------
 sums="$tmp/SHA256SUMS.txt"; good_sums > "$sums"
+
+# The fixture matches the shape of a real release manifest, checked by the same
+# script that meets the real one in CI rather than by a comment claiming it.
+# Without this the fixture can narrow back to four tarballs and every assertion
+# below stays green over a file no release ever produced.
+if bash "$HERE/test-real-sums.sh" "$sums" 0.4.3 >/dev/null 2>&1; then
+  ok "fixture has the shape of a real release manifest"
+else
+  bad "fixture has the shape of a real release manifest"
+  bash "$HERE/test-real-sums.sh" "$sums" 0.4.3 || true
+fi
 out="$("$GEN" 0.4.3 "$sums" 2>"$tmp/err")"; rc=$?
 [ $rc -eq 0 ] && ok "exits 0 on valid input" || { bad "exits 0 on valid input (rc=$rc)"; cat "$tmp/err"; }
 

@@ -598,11 +598,20 @@ sipnab -D
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```text
-sipnab 0.5.117 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
+sipnab 0.5.118 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf
 ```
 
 This is the fastest way to confirm a build carries the feature set
 you expected (e.g. that `mcp-http` is present on a server build).
+
+The list differs by artifact, and deliberately. The example above is a
+`*-linux-gnu` release binary: those carry `bpf`, the uprobe backend that can
+report the peer address a TLS session went out to. The static musl tarballs and
+the macOS builds do not — musl has no room under the published size ceiling and
+`aya` is Linux-only — so on those, `--uprobe-tls` falls back to the `tracefs`
+backend, whose dialogs name a process rather than a peer, and
+`--uprobe-backend bpf` refuses rather than pretending. The musl tarballs also
+omit `audio` (static musl has no `dlopen`).
 
 A first non-interactive run against a capture looks like this — timestamp,
 source, destination, method or status line, transport, one line per SIP

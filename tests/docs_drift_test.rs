@@ -2411,10 +2411,14 @@ fn no_documentation_table_repeats_a_row() {
     // docs/mcp-protocol.md. Two new operator pages, each mirrored, so four
     // files — and the page that was 3435 lines is now 112. Also from a
     // failing run.
+    // Raised 153 -> 154 by docs/design/simultaneous-capture-sources.md, the
+    // SRC1 design. One file, not two: a design doc has no website mirror. It
+    // counts from the moment it is TRACKED rather than written, which is why
+    // this fires at `git add` and not when the file appeared.
     assert_eq!(
         files.len(),
-        153,
-        "found {} tracked markdown files, expected 153. More is fine — bump \
+        154,
+        "found {} tracked markdown files, expected 154. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2710,8 +2714,13 @@ fn no_documentation_table_repeats_a_row() {
         // metrics table, and troubleshooting.md gained two prose sections with
         // no table in either, so all three held their counts.
         tables,
-        581,
-        "walked {tables} tables, expected 581. More is fine — bump this. FEWER \
+        // Raised 581 -> 583 by the two tables in
+        // docs/design/simultaneous-capture-sources.md, the SRC1 design: one
+        // mapping each capture source to what it can and cannot supply, and
+        // one for the staged plan. A design doc has no site mirror, so two
+        // tables and not four. Attributed against that file alone.
+        583,
+        "walked {tables} tables, expected 583. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

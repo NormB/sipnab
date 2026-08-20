@@ -11,8 +11,9 @@ prevent — it re-runs this script and fails if the committed file differs.
 Scope, stated plainly because it bounds what the file is evidence of:
 
   * Rust crates reached from `sipnab` through *normal* and *build* edges with
-    `--features full` (the released gnu build; the musl build is that set minus
-    `audio`, so this is a superset). Dev-dependencies are excluded — test
+    RELEASE_FEATURES below — the UNION of every feature set
+    `.github/workflows/release.yml` compiles, so this covers every published
+    binary rather than the largest one. Dev-dependencies are excluded — test
     harnesses are not linked into anything that ships.
   * Non-cargo libraries are listed by hand below, since they are resolved by the
     platform or by the cross image, not by cargo, and never appear in its
@@ -99,10 +100,11 @@ sipnab itself is dual-licensed **MIT OR Apache-2.0** (see `LICENSE-MIT` and
 
 This file is generated from the dependency graph, not maintained by hand, so it
 cannot drift from what actually ships. It lists the Rust crates reached from
-`sipnab` through normal and build edges with `--features full` — the released
-gnu build, of which the musl build is a subset — plus the non-cargo libraries
-the artifacts either link from the host or compile in. Dev-dependencies are
-excluded: test harnesses are not part of any distributed artifact.
+`sipnab` through normal and build edges with `--features full,bpf` — the union
+of every feature set the release workflow compiles, of which the musl and
+`noaudio` builds are subsets — plus the non-cargo libraries the artifacts
+either link from the host or compile in. Dev-dependencies are excluded: test
+harnesses are not part of any distributed artifact.
 
 Each entry gives the SPDX expression the crate declares in its own manifest.
 Full license texts are published at <https://spdx.org/licenses/> under those
@@ -110,7 +112,27 @@ identifiers.
 """
 
 
+# The feature set the RELEASE builds ship, named ONCE.
+#
+# This file travels inside every artifact and MIT/Apache-2.0 both require it to,
+# so it has to describe the binary beside it rather than a smaller build that
+# happens to be convenient. It said `full` while `.github/workflows/release.yml`
+# compiled the gnu targets with `full,bpf` — four crates (aya, aya-obj, object,
+# assert_matches) present in the shipped binary and absent from its own notices.
+# `third_party_notices_are_current` compares the committed file against THIS
+# generator, so both sides of that gate agreed while both were wrong.
+#
+# `the_notices_and_sbom_cover_every_released_feature_set` runs release.yml's own
+# feature-computing step for every matrix entry and fails if this string stops
+# covering the union. Change what the release compiles and that gate names this
+# line.
+RELEASE_FEATURES = "full,bpf"
+
+
 def cargo_metadata() -> dict:
+    # No --filter-platform: `aya` is a `cfg(target_os = "linux")` dependency and
+    # the notices must list it whoever runs the generator. Cargo's resolve graph
+    # is all-platforms by default, which is the wanted behaviour here.
     out = subprocess.run(
         [
             "cargo",
@@ -119,7 +141,7 @@ def cargo_metadata() -> dict:
             "1",
             "--no-default-features",
             "--features",
-            "full",
+            RELEASE_FEATURES,
         ],
         capture_output=True,
         check=True,

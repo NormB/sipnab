@@ -3766,9 +3766,19 @@ fn packaging_scripts_reference_existing_paths() {
     // for the other four, naming the builder it drives and the .deb harness it
     // mirrors. packaging/rpm/build-rpm.sh and .github/workflows/release.yml
     // both changed in the same commit and both still scan 3 and 12, unmoved.
+    // Raised 70 -> 72 by packaging/homebrew/test-real-sums.sh, which runs the
+    // real formula generator against the real SHA256SUMS.txt of the latest
+    // published release instead of a fixture. Attributed per file before
+    // moving: the new harness names exactly one repo path
+    // (packaging/homebrew/test-update-formula.sh, the fixture harness it
+    // complements) and .github/workflows/ci.yml names exactly one more (the
+    // new step's `run:` line). packaging/homebrew/test-update-formula.sh and
+    // .github/workflows/release.yml both changed in the same commit and both
+    // still scan the same count as before: the reference the fixture harness
+    // gained is `$HERE/test-real-sums.sh`, which the `$` filter above skips.
     assert_eq!(
-        checked, 70,
-        "packaging path scan saw {checked} references, expected 70. More is \
+        checked, 72,
+        "packaging path scan saw {checked} references, expected 72. More is \
          fine — bump this. FEWER means the candidate extractor stopped matching \
          and unverified paths pass unseen."
     );

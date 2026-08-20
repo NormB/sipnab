@@ -145,9 +145,16 @@ pub fn build_version() -> String {
 
 /// List of Cargo features compiled into this binary.
 ///
-/// Walked statically via `cfg!(feature = "...")`. Feature names match
-/// the `[features]` block in `Cargo.toml`. Returns an empty vector when
-/// no listed feature is enabled.
+/// Walked statically via `cfg!(feature = "...")`. Every feature declared in
+/// `Cargo.toml` other than the `default` and `full` aggregates appears here,
+/// which `compiled_features_names_every_feature_cargo_declares` enforces
+/// against the manifest. Returns an empty vector when no listed feature is
+/// enabled.
+///
+/// The list is not cosmetic. `--uprobe-backend bpf` refuses on a binary
+/// without the feature, saying the binary does not carry it; until `bpf` was
+/// reported here an operator had no way to find out which build they held
+/// short of rebuilding. `plugins` had the same hole.
 fn compiled_features() -> Vec<&'static str> {
     let mut out = Vec::new();
     if cfg!(feature = "native") {
@@ -179,6 +186,12 @@ fn compiled_features() -> Vec<&'static str> {
     }
     if cfg!(feature = "wasm") {
         out.push("wasm");
+    }
+    if cfg!(feature = "plugins") {
+        out.push("plugins");
+    }
+    if cfg!(feature = "bpf") {
+        out.push("bpf");
     }
     out
 }

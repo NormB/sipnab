@@ -122,11 +122,51 @@ fn build_bpf() {
     // excluded from this workspace, so cargo cannot resolve it by name from
     // here — `aya-build` builds that way and fails with a package-not-found
     // that says nothing about the cause.
-    // Can this machine build it at all? `--all-features` is the pre-push clippy
-    // gate, the rustdoc gate and every contributor's habit, and it sweeps up
-    // every feature including this one. Exploding here would mean a contributor
-    // without nightly cannot build sipnab -- the exact thing TK10 was told not
-    // to do -- so a missing toolchain degrades instead.
+    // ONE rule, TWO explicitly chosen modes.
+    //
+    // Default (`SIPNAB_BPF_REQUIRED` unset): a prerequisite this machine does
+    // not have degrades. `--all-features` is the pre-push clippy gate, the
+    // rustdoc gate and every contributor's habit, and it sweeps up every
+    // feature including this one; exploding here would mean a contributor
+    // without nightly or bpf-linker cannot build sipnab at all.
+    //
+    // `SIPNAB_BPF_REQUIRED=1`: the same prerequisites are hard errors. Set by
+    // `.github/workflows/release.yml` on the targets that ship `bpf`. The
+    // degrading path embeds an EMPTY placeholder object, so the binary
+    // advertises `bpf` in `--version` and refuses at runtime on every host it
+    // reaches -- the right trade for one contributor's laptop and exactly the
+    // wrong one for an artefact thousands of people install.
+    //
+    // This used to be one-sided: a missing bpf-linker warned, a missing nightly
+    // panicked. Which prerequisite is absent is not a property anyone chose,
+    // and it is the wrong thing for the strictness to depend on.
+    println!("cargo:rerun-if-env-changed=SIPNAB_BPF_REQUIRED");
+    let required = std::env::var("SIPNAB_BPF_REQUIRED").is_ok_and(|v| v == "1");
+
+    // Degrade, or refuse, depending on the mode. Never a silent no-op: the
+    // placeholder is empty and the loader checks for it and refuses by name.
+    let degrade_or_die = |reason: &str| {
+        assert!(
+            !required,
+            "SIPNAB_BPF_REQUIRED=1 and the eBPF kernel programs cannot be built: \
+             {reason}. A published binary must not advertise `bpf` in --version \
+             and then refuse at runtime. Install a nightly toolchain \
+             (`rustup toolchain install nightly`) and bpf-linker, matched to the \
+             LLVM installed on this host (0.9.13 pairs with LLVM 19; 0.11 wants \
+             LLVM 23.1)."
+        );
+        println!(
+            "cargo:warning={reason}, so the `bpf` feature is compiled WITHOUT its \
+             kernel programs. sipnab builds and every other backend works; \
+             --uprobe-backend bpf will refuse at runtime rather than capture \
+             nothing. Install a nightly toolchain and bpf-linker (0.9.13 pairs \
+             with LLVM 19; 0.11 wants LLVM 23.1), or set SIPNAB_BPF_REQUIRED=1 to \
+             turn this into a build failure."
+        );
+        std::fs::write(out_dir.join("sipnab-bpf"), b"")
+            .expect("could not write the placeholder BPF object");
+    };
+
     let have_linker = Command::new("bpf-linker")
         .arg("--version")
         .stdout(Stdio::null())
@@ -134,21 +174,11 @@ fn build_bpf() {
         .status()
         .is_ok_and(|s| s.success());
     if !have_linker {
-        println!(
-            "cargo:warning=bpf-linker not found, so the `bpf` feature is compiled \
-             WITHOUT its kernel programs. sipnab builds and every other backend \
-             works; --uprobe-backend bpf will refuse at runtime rather than \
-             capture nothing. Install it with `cargo install bpf-linker` (0.9.13 \
-             pairs with LLVM 19; 0.11 wants LLVM 23.1)."
-        );
-        // An empty object, so `include_bytes!` still resolves. The loader
-        // checks for it and refuses by name -- never a silent no-op capture.
-        std::fs::write(out_dir.join("sipnab-bpf"), b"")
-            .expect("could not write the placeholder BPF object");
+        degrade_or_die("bpf-linker not found");
         return;
     }
 
-    let status = Command::new("rustup")
+    let spawned = Command::new("rustup")
         .args([
             "run",
             "nightly",
@@ -177,15 +207,28 @@ fn build_bpf() {
         .env_remove("CARGO")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        .status()
-        .expect("could not run `rustup`, which the eBPF build needs to select nightly");
+        .status();
 
-    assert!(
-        status.success(),
-        "building the eBPF programs failed. This needs a nightly toolchain and \
-         bpf-linker, and bpf-linker must match the LLVM installed on this host \
-         (0.9.13 pairs with LLVM 19; 0.11 wants LLVM 23.1)"
-    );
+    // Two distinguishable outcomes, both routed through the SAME rule:
+    // `rustup` is absent (or nightly is not installed, which it reports as a
+    // non-zero exit), and the kernel crate failed to compile. Neither can
+    // produce an object, and a build that cannot produce one must not pretend
+    // it did.
+    match spawned {
+        Err(e) => {
+            degrade_or_die(&format!("could not run `rustup` to select nightly ({e})"));
+            return;
+        }
+        Ok(status) if !status.success() => {
+            degrade_or_die(
+                "the nightly build of the eBPF programs failed (missing nightly \
+                 toolchain, missing rust-src, or a bpf-linker that does not match \
+                 this host's LLVM)",
+            );
+            return;
+        }
+        Ok(_) => {}
+    }
 
     let built = target_dir
         .join(&bpf_target)

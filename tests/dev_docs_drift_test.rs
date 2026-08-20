@@ -523,7 +523,15 @@ fn linked_code_targets_exist() {
     // `repo_paths_in_docs_are_clickable` demands. Attributed per file:
     // `docs/internals/build-ci-release.md` +1, every other internals page
     // unchanged.
-    const EXPECTED_CODE_LINKS: usize = 349;
+    // Raised 349 -> 350 by the SBOM/notices paragraph in
+    // `internals/build-ci-release.md`, which gained one link, to
+    // `scripts/build-third-party-notices.py`. The paragraph now names the
+    // generator because the feature set the notices are built from lives there
+    // as `RELEASE_FEATURES`, and a reader asking why the SBOM says
+    // `--features full,bpf` needs the other half of that pair. Attributed per
+    // file: `docs/internals/build-ci-release.md` +1, every other internals page
+    // unchanged.
+    const EXPECTED_CODE_LINKS: usize = 350;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -1976,8 +1984,15 @@ fn line_citations_point_at_the_code_they_name() {
     // `CFG1` neighbor. No other file's count changed, and the checker resolves
     // the new citation cleanly — measured by running scripts/check-line-drift.py
     // with and without that edit stashed: 141 against 140.
+    // Raised 141 -> 190 by docs/design/simultaneous-capture-sources.md, the
+    // SRC1 design, which is the only file that grew. Attributed by counting:
+    // 190 - 49 = 141 exactly, and every one of the 49 is in that document.
+    // It cites the capture sources, the SDP correlation path and the transmit
+    // guard heavily on purpose — the design's central claim is that the
+    // correlation SRC1 calls the hard part is already implemented, and a claim
+    // like that is only checkable if it names the code making it true.
     assert_eq!(
-        checked, 141,
+        checked, 190,
         "the drift checker examined {checked} citations, not the 141 this tree \
          holds. FEWER means its resolution or symbol-extraction narrowed and the \
          gate is proving less than it claims — fix that rather than moving this \

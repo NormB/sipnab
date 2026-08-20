@@ -15,10 +15,25 @@ can safely ignore.
 
 `Cargo.toml`'s `[features]` table has thirteen entries: the twelve named
 features below, plus `default` — which is `native, tui, audio, metrics`.
-`full` is everything except `wasm` and `bpf`. `bpf` is out because it needs a
-nightly toolchain and `bpf-linker` to compile the kernel object, so a released
-binary carries the tracefs uprobe backend and not the eBPF one — which is why
-`--uprobe-backend bpf` refuses on a stock build rather than downgrading.
+`full` is everything except `wasm` and `bpf`, and that is still true — but it
+is no longer the whole story of what ships.
+
+`bpf` sits outside `full` because building it needs a nightly toolchain and
+`bpf-linker` for the kernel object, and this project cannot demand either of a
+contributor. The RELEASE has both: `release.yml` builds the four `*-linux-gnu` matrix
+entries with `--features full,bpf`, installs the two tools, and sets
+`SIPNAB_BPF_REQUIRED=1` so a runner missing either fails the build instead of
+publishing a binary that advertises the feature and refuses at runtime.
+
+The musl and macOS artifacts do NOT carry it, for two different reasons.
+`bpf` costs +589,952 bytes, and the published 0.5.117 x86_64 musl binary is
+12,252,424 bytes against the 12 MB ceiling `release.yml` enforces — 330,488
+bytes of headroom, so it does not fit. On macOS `Cargo.toml` declares `aya`
+under `[target.'cfg(target_os = "linux")'.dependencies]`, so the feature would
+compile to nothing while `--version` claimed it. On those binaries
+`--uprobe-backend bpf` still refuses, and `sipnab --version` is how you tell
+which build you hold: it lists every compiled feature, `bpf` and `plugins`
+included.
 
 | Feature | Implies | Gates |
 |---|---|---|
@@ -33,7 +48,8 @@ binary carries the tracefs uprobe backend and not the eBPF one — which is why
 | `mcp-http` | `mcp` + `api` | Streamable-HTTP MCP transport; depends on `api` so both share one axum stack rather than duplicating it. |
 | `plugins` | `native` | The `wasmi` WASM plugin host. **Non-default on purpose** — someone who does not want an interpreter inside their capture tool does not get one. See [`../design/wasm-plugin-api.md`](https://github.com/NormB/sipnab/blob/main/docs/design/wasm-plugin-api.md), which measures the cost at +1.56 MB and 15 crates. |
 | `wasm` | — | The browser analyzer bindings. Lib-only: its test and bin targets are meaningless on the host. |
-| `full` | everything but `wasm` | What the pre-commit hook and most local testing use. |
+| `bpf` | `native` | The eBPF uprobe backend — the only one that can report the peer address a TLS session went out to, because it pairs each write with its `tcp_sendmsg`. **Outside `full`**: the kernel half needs nightly and `bpf-linker`. Shipped on the four `*-linux-gnu` release artifacts, not on musl or macOS. |
+| `full` | everything but `wasm` and `bpf` | What the pre-commit hook and most local testing use. The released gnu binaries add `bpf` on top. |
 
 The implications that surprise people: **`tls` and `audio` do not pull in
 `native`**, and `mcp-http` pulls in *both* `mcp` and `api`. A green
@@ -172,11 +188,17 @@ before committing.
   `cargo fmt --check`, `cargo doc --no-deps --all-features --workspace`, plus
   the `--ignored` PTY TUI end-to-end tests.
 - **`features`** — `cargo check --no-default-features --features X --tests`
-  across eleven feature sets: each of `native`, `tls`, `api`, `mcp`, `hep`,
+  across twelve feature sets: each of `native`, `tls`, `api`, `mcp`, `hep`,
   `metrics`, then `tls,api`, `native,tui,audio`, `native,tui,tls,hep,api`,
-  `native,hep,api,mcp,mcp-http` and `wasm` (lib-only). The documented headless
-  server recipe (`native,hep,api,mcp,mcp-http`) gets a full `cargo test`, not
-  just a compile check.
+  `native,hep,api,mcp,mcp-http`, `bpf`, and `wasm` (lib-only). The documented
+  headless server recipe (`native,hep,api,mcp,mcp-http`) gets a full `cargo
+  test`, not just a compile check. `bpf` is here because every published
+  `*-linux-gnu` binary now carries it: this leg compiles its userspace half and
+  its test files, while `build.rs` takes its degrading default (no nightly, no
+  `bpf-linker` on this runner) — the release job is where the kernel half is
+  actually built, under `SIPNAB_BPF_REQUIRED=1`. `--tests` is what makes any of
+  these real: without it the check compiles no test file at all, and every leg
+  goes green over nothing.
 - **`audit`** — `cargo-audit` and `cargo-deny`.
 - **`fuzz-check`** — the `fuzz/` workspace compiles.
 
@@ -287,10 +309,10 @@ That means **every commit runs clippy and the whole test suite** and takes
 minutes. It is not optional theatre: the homepage-count gate alone means adding
 a test obliges you to update [`website/templates/index.html`](https://github.com/NormB/sipnab/blob/main/website/templates/index.html) in the same commit.
 
-Three checks stay out of the hook on purpose: the eleven-combination feature
+Three checks stay out of the hook on purpose: the twelve-combination feature
 matrix, Vale prose linting, and rustdoc. The hook already costs minutes and
 each of those adds more. [`pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) picks up
-rustdoc and three of the eleven combinations before anything leaves the
+rustdoc and three of the twelve combinations before anything leaves the
 machine, and CI runs the rest. Moving them into the pre-commit hook buys
 nothing — it is the same wait, on every commit instead of every push.
 
@@ -322,7 +344,7 @@ someone builds without that feature. It has bitten twice — the `features` job
 below records "at one point 7 of 8 reduced combos failed to build", and it
 happened again on the 0.5.61 release commit, where a test reflecting over `Cli`
 (behind `native`) took a whole test target out of every build without it. Three
-combinations, not eleven: `tls` and `api` are the ones that *exclude* `native`,
+combinations, not twelve: `tls` and `api` are the ones that *exclude* `native`,
 where the breakage lives, and `wasm` is the most distant target. The full matrix
 stays in CI. CI skips a combination the crate does not define, the way the
 fuzz gate skips a missing `fuzz/`.
@@ -608,11 +630,23 @@ pulls in seven dependencies the main crate's graph does not contain at all —
 `rodio`. A single main-crate SBOM would omit precisely the C-library-adjacent
 dependencies a vulnerability scan is looking for, while looking complete.
 
-The binary SBOM uses `--features full` on purpose. The `noaudio`
-artifacts resolve a strict subset of that graph — measured on 0.5.54 the two
-differ by exactly one component, `libloading` — so one full-feature document
-over-covers rather than under-covers every binary published, which is the safe
-direction. `cargo-cyclonedx` has no `--package` flag: one workspace-level
+The binary SBOM uses `--features full,bpf` on purpose: the union of every
+feature set the build matrix compiles. The `noaudio` and musl artifacts resolve
+a strict subset of that graph — measured on 0.5.54, `full` and `noaudio` differ
+by exactly one component, `libloading` — and the gnu artifacts add `bpf`, which
+brings in four crates `full` alone never reaches (`aya`, `aya-obj`, `object`,
+`assert_matches`). `THIRD-PARTY-NOTICES.md` comes from that same set, named
+once as `RELEASE_FEATURES` in
+[`scripts/build-third-party-notices.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-third-party-notices.py). That constant said `full`
+while the gnu binaries shipped `full,bpf`, and because
+`third_party_notices_are_current`
+compares the committed file against that same generator, both sides of the gate
+agreed while both were wrong.
+`the_notices_and_sbom_cover_every_released_feature_set` now runs the release
+workflow's own feature-computing step for every matrix entry and fails if
+either the SBOM flag or `RELEASE_FEATURES` stops covering the union, so one
+document over-covers rather than under-covers every binary published, which is
+the safe direction. `cargo-cyclonedx` has no `--package` flag: one workspace-level
 invocation emits a document per member into that member's own directory, and
 the release step renames them apart on the way into `artifacts/`.
 

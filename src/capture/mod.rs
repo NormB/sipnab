@@ -36,6 +36,8 @@ pub mod keylog_source;
 pub mod live;
 #[cfg(feature = "native")]
 pub mod mapped;
+/// Reading a pcapng whose interfaces disagree, which libpcap refuses.
+pub mod merged;
 #[cfg(feature = "native")]
 pub mod output_guard;
 pub mod packet;

@@ -78,7 +78,8 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `mcp-http` | MCP server over HTTP (Streamable-HTTP). Adds the `--mcp-transport http` option. | `mcp`, `api`, `rmcp/transport-streamable-http-server` |
 | `metrics` | Standalone Prometheus `/metrics` server: a raw TCP listener and plain threads, no axum/tokio, so scraping does not drag in the `api` feature or its async runtime. Included by default. | `native`, `base64` |
 | `plugins` | WASM plugin host (`--plugin`): sandboxed third-party dialog detections | `native`, `wasmi` |
-| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` | all |
+| `bpf` | eBPF uprobe backend for `--uprobe-tls`. The only backend that can report the **peer address** a TLS session went out to, because it pairs each write with its `tcp_sendmsg`; the default `tracefs` backend sees no socket and names a process instead. **Outside `full`**: the kernel half needs a nightly toolchain and `bpf-linker`. Linux only. | `native`, `aya` |
+| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins`. Not `wasm`, not `bpf`. | all |
 | `wasm` | WebAssembly target for in-browser pcap analysis | wasm-bindgen toolchain |
 
 Build with specific features. The TUI and TLS decryption only — no audio plugin,
@@ -95,11 +96,38 @@ and audio left out because a server has no use for either:
 cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http
 ```
 
-Everything — the feature set the official glibc and macOS releases ship:
+Everything — the feature set the official macOS releases ship:
 
 ```bash
 cargo build --release --features full
 ```
+
+The published `*-linux-gnu` binaries add one more. `bpf` is outside `full`
+because its kernel half needs a nightly toolchain and `bpf-linker`, and this
+project cannot demand either of a contributor — but the release runner installs
+both,
+so the Linux glibc tarballs, `.deb` and `.rpm` all ship it and
+`--uprobe-tls --uprobe-backend bpf` works on them out of the box:
+
+Building it needs two things a stock toolchain does not have: a nightly
+toolchain carrying the `rust-src` component, installed with `rustup`, and
+`bpf-linker` on `PATH` — either `cargo install bpf-linker` or the prebuilt
+static tarball the release workflow uses. Pick the `bpf-linker` release that
+matches your LLVM: 0.9.13 pairs with LLVM 19, 0.11 with LLVM 23.1. Without
+either, the build still succeeds and prints a warning, and the resulting binary
+refuses `--uprobe-backend bpf` at run time rather than capturing nothing. Set
+`SIPNAB_BPF_REQUIRED=1` to turn that warning into a build failure, which is
+what the release workflow does.
+
+```bash
+cargo build --release --features full,bpf
+```
+
+The musl tarballs and the macOS builds do **not** carry it: `bpf` costs about
+576 KiB, which the static musl binary has no room for under the published size
+ceiling, and `aya` is a Linux-only dependency that would compile to nothing on
+macOS. `sipnab --version` lists every compiled feature, so it is how you tell
+which build you are holding.
 
 ### What features do you need?
 
@@ -107,7 +135,8 @@ cargo build --release --features full
 - **CI/scripting only (no TUI):** `cargo build --release --no-default-features --features native` -- headless binary for automation pipelines.
 - **MCP / AI-agent server:** add `mcp` (stdio) or `mcp,mcp-http` (HTTP). See [MCP Server](@/docs/mcp.md) for the runtime configuration.
 - **Headless capture host with HEP + Prometheus + MCP:** `cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http` -- the typical "fleet capture server" feature set, leaves out the TUI and audio playback you don't need on a server.
-- **Full installation:** `cargo build --release --features full` -- everything.
+- **Full installation:** `cargo build --release --features full` -- everything except `wasm` and `bpf`.
+- **Peer addresses from a TLS uprobe:** add `bpf` (`cargo build --release --features full,bpf`) -- needs a nightly toolchain and `bpf-linker` at build time, and a kernel with `CONFIG_DEBUG_INFO_BTF` at run time. Already compiled into every published `*-linux-gnu` binary.
 - **WASM/browser analysis:** `cargo build --release --features wasm` -- WebAssembly target for in-browser pcap analysis (see Analyze page).
 
 ### Runtime dependencies
@@ -139,7 +168,7 @@ cargo build --release --no-default-features \
 This matters because it fails quietly. `cargo build --release --features full` on Alpine succeeds, and the binary then reports:
 
 ```text
-sipnab <version> features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics
+sipnab <version> features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins
 ```
 
 It advertises `audio` it cannot deliver. Nothing errors until you try to play a stream.

@@ -232,6 +232,42 @@ jobs:
               ;;
           esac
 
+          # The eBPF uprobe backend, on the gnu targets ONLY.
+          #
+          # `--uprobe-tls` has two backends and they are not equivalent. The
+          # default, `tracefs`, sees no socket, so its dialogs name a PROCESS
+          # rather than a peer; `bpf` pairs each write with its `tcp_sendmsg`
+          # and recovers the real addresses. Every published binary used to be
+          # built with `full`, which excludes `bpf`, so `--uprobe-backend bpf`
+          # refused on all of them and the capable path was invisible to
+          # everyone who installs a release.
+          #
+          # Both variants of both gnu targets, because `bpf` is orthogonal to
+          # `audio` and the `noaudio` .deb/.rpm are the headless-server
+          # packages most likely to be pointed at a TLS-terminating proxy.
+          #
+          # NOT musl, and the reason is measured rather than assumed: `bpf`
+          # costs +589,952 bytes, and the published 0.5.117 x86_64 musl binary
+          # is 12,252,424 bytes against the 12 MB ceiling the size gate below
+          # enforces — 330,488 bytes of headroom. It does not fit, and a static
+          # tarball that fails its own size gate is not a release.
+          #
+          # NOT macOS: `aya` is declared under
+          # `[target.'cfg(target_os = "linux")'.dependencies]`, so the feature
+          # would compile to nothing there while `--version` advertised it.
+          #
+          # bpf_required drives SIPNAB_BPF_REQUIRED on the build steps: with it
+          # set, a runner missing bpf-linker or nightly FAILS instead of
+          # embedding the empty placeholder object that makes a binary
+          # advertise `bpf` and refuse at runtime.
+          bpf_required="0"
+          case "${{ matrix.target }}" in
+            *-linux-gnu)
+              features="${features},bpf"
+              bpf_required="1"
+              ;;
+          esac
+
           # The audio plugin (libsipnab_audio cdylib) ships only on dynamic
           # builds that include audio: gnu + macOS with audio == "full".
           # musl (static, no-audio) and -noaudio builds skip the plugin.
@@ -244,14 +280,77 @@ jobs:
           echo "features=$features" >> "$GITHUB_OUTPUT"
           echo "suffix=$suffix" >> "$GITHUB_OUTPUT"
           echo "audio_plugin=$audio_plugin" >> "$GITHUB_OUTPUT"
-          echo "Target ${{ matrix.target }} -> features=$features suffix='$suffix' audio_plugin=$audio_plugin"
+          echo "bpf_required=$bpf_required" >> "$GITHUB_OUTPUT"
+          echo "Target ${{ matrix.target }} -> features=$features suffix='$suffix' audio_plugin=$audio_plugin bpf_required=$bpf_required"
+
+      # The eBPF kernel half needs a nightly toolchain (for `-Z build-std=core`)
+      # and bpf-linker. Installed only where `bpf` ships, so the musl and macOS
+      # legs pay nothing.
+      #
+      # The prebuilt tarball, NOT `cargo install bpf-linker`: the published
+      # binary is statically linked against its own LLVM, so it needs no
+      # llvm-dev in the container and takes seconds instead of a source build.
+      # Measured locally on the aarch64 equivalent: the kernel object builds in
+      # ~11 s once the linker is on PATH, and comes out at 126,248 bytes.
+      #
+      # x86_64 only, and that is not an assumption: BOTH gnu matrix entries run
+      # on ubuntu-latest, with the aarch64 binary cross-compiled inside
+      # rust:1-bookworm, so the host executing bpf-linker is x86_64 either way.
+      # The check below fails loudly if that ever stops being true rather than
+      # installing a binary for the wrong architecture.
+      - name: Install the eBPF build toolchain
+        if: steps.features.outputs.bpf_required == '1'
+        shell: bash
+        env:
+          BPF_LINKER_VERSION: '0.11.0'
+          # Recorded 2026-08-20 from
+          # aya-rs/bpf-linker v0.11.0, bpf-linker-x86_64-unknown-linux-musl.tar.zst
+          BPF_LINKER_SHA256: '10f62ba9ab7e544d538370552660efcb4f1a19153d5752bbf0f6b51f3bada450'
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          if [ "$arch" != "x86_64" ]; then
+            echo "::error::the eBPF toolchain install only carries an x86_64 bpf-linker, but this runner is $arch"
+            exit 1
+          fi
+
+          rustup toolchain install nightly --profile minimal --component rust-src
+          rustup component add rust-src --toolchain nightly
+
+          # zstd is how the upstream tarball is compressed; bookworm's tar needs
+          # the binary present for `--zstd`.
+          if ! command -v zstd >/dev/null 2>&1; then
+            if command -v apt-get >/dev/null 2>&1; then
+              (apt-get update && apt-get install -y zstd) \
+                || (sudo apt-get update && sudo apt-get install -y zstd)
+            fi
+          fi
+
+          tarball="bpf-linker-x86_64-unknown-linux-musl.tar.zst"
+          curl -fsSL -o "$tarball" \
+            "https://github.com/aya-rs/bpf-linker/releases/download/v${BPF_LINKER_VERSION}/${tarball}"
+          echo "${BPF_LINKER_SHA256}  ${tarball}" | sha256sum -c -
+          tar --zstd -xf "$tarball"
+          install -m 0755 bpf-linker /usr/local/bin/bpf-linker \
+            || sudo install -m 0755 bpf-linker /usr/local/bin/bpf-linker
+          rm -f "$tarball" bpf-linker
+          bpf-linker --version
 
       - name: Build (cross)
         if: matrix.cross
+        env:
+          SIPNAB_BPF_REQUIRED: ${{ steps.features.outputs.bpf_required }}
         run: cross build --release --target ${{ matrix.target }} --no-default-features --features ${{ steps.features.outputs.features }} --bin sipnab
 
+      # SIPNAB_BPF_REQUIRED=1 turns build.rs's degrading default into a hard
+      # error. Without it, a runner missing bpf-linker or nightly would embed an
+      # EMPTY placeholder object and publish a binary that advertises `bpf` in
+      # --version and refuses on every host that runs it. The degrade is right
+      # for a contributor and wrong for an artefact people install.
       - name: Build (native)
         if: '!matrix.cross'
+        env:
+          SIPNAB_BPF_REQUIRED: ${{ steps.features.outputs.bpf_required }}
         run: cargo build --release --target ${{ matrix.target }} --no-default-features --features ${{ steps.features.outputs.features }} --bin sipnab
 
       - name: Build audio plugin (cross)
@@ -614,12 +713,21 @@ jobs:
       # while looking complete. libsipnab_audio.so ships inside the full .deb,
       # the full .rpm, and every audio-enabled tarball, so it needs its own.
       #
-      # The main SBOM is generated with --features full deliberately. The
-      # noaudio artifacts build a strict SUBSET of that graph: measured on
-      # 0.5.54 the two differ by exactly one component (libloading, the dlopen
-      # wrapper), with nothing present in noaudio that full lacks. One
-      # full-feature SBOM therefore over-covers rather than under-covers every
-      # sipnab binary published here, which is the safe direction to err.
+      # The main SBOM is generated with --features full,bpf deliberately: the
+      # UNION of every feature set the build matrix compiles, so it over-covers
+      # rather than under-covers every sipnab binary published here. The musl
+      # and noaudio artifacts build a strict SUBSET of that graph (measured on
+      # 0.5.54, full and noaudio differ by exactly one component, libloading,
+      # the dlopen wrapper), and the gnu artifacts add `bpf`.
+      #
+      # `bpf` is not decoration here: it pulls in aya, aya-obj, object and
+      # assert_matches, none of which appear under `full`. A `--features full`
+      # SBOM would describe four fewer crates than the gnu binaries beside it
+      # actually contain, while claiming to over-cover them. The feature set is
+      # DERIVED rather than trusted by
+      # `the_notices_and_sbom_cover_every_released_feature_set`, which runs the
+      # feature-computing step above for every matrix entry and fails if this
+      # flag stops covering the union.
       # ---------------------------------------------------------------------
       - name: Install cargo-cyclonedx
         uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2
@@ -635,7 +743,7 @@ jobs:
           # the workspace and writes one SBOM per member into that member's
           # own directory, both under the --override-filename name. So the two
           # outputs collide by name and are separated on the way out.
-          cargo cyclonedx --format json --features full --override-filename sbom
+          cargo cyclonedx --format json --features full,bpf --override-filename sbom
 
           mv sbom.json "artifacts/sipnab-${version}.cdx.json"
           mv crates/sipnab-audio/sbom.json "artifacts/sipnab-audio-${version}.cdx.json"

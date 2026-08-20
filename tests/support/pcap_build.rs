@@ -717,3 +717,67 @@ fn checksum16(data: &[u8]) -> u16 {
     }
     !(sum as u16)
 }
+
+/// Write a pcapng whose interfaces DISAGREE — different link types and
+/// different snaplens — which is what a merged capture looks like.
+///
+/// `mergecap`, and any capture spanning interfaces that differ, produces this.
+/// libpcap refuses such a file outright, on two independent grounds: first the
+/// snaplen mismatch, and then (even after normalising those) the link-type
+/// mismatch. Per-packet encapsulation is the point of a merged capture, so
+/// there is no normalisation that makes libpcap read one.
+///
+/// `frames` is `(interface_index, bytes)`. Interface 0 is Ethernet at snaplen
+/// 65535; interface 1 is raw IP (DLT 12) at snaplen 2048.
+pub fn write_pcapng_multi_iface(path: &Path, frames: &[(u32, Vec<u8>)]) {
+    fn block(kind: u32, body: &[u8]) -> Vec<u8> {
+        let pad = (4 - body.len() % 4) % 4;
+        let total = 12 + body.len() + pad;
+        let mut b = Vec::with_capacity(total);
+        b.extend_from_slice(&kind.to_le_bytes());
+        b.extend_from_slice(&(total as u32).to_le_bytes());
+        b.extend_from_slice(body);
+        b.extend(std::iter::repeat_n(0u8, pad));
+        b.extend_from_slice(&(total as u32).to_le_bytes());
+        b
+    }
+    fn idb(linktype: u16, snaplen: u32) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&linktype.to_le_bytes());
+        v.extend_from_slice(&0u16.to_le_bytes());
+        v.extend_from_slice(&snaplen.to_le_bytes());
+        v
+    }
+
+    let mut out = Vec::new();
+    let mut shb = Vec::new();
+    shb.extend_from_slice(&0x1a2b_3c4du32.to_le_bytes());
+    shb.extend_from_slice(&1u16.to_le_bytes());
+    shb.extend_from_slice(&0u16.to_le_bytes());
+    shb.extend_from_slice(&(-1i64).to_le_bytes());
+    out.extend_from_slice(&block(0x0a0d_0d0a, &shb));
+
+    // The disagreement under test: different link type AND different snaplen.
+    out.extend_from_slice(&block(0x0000_0001, &idb(1, 65535)));
+    out.extend_from_slice(&block(0x0000_0001, &idb(12, 2048)));
+
+    for (iface, data) in frames {
+        let mut epb = Vec::new();
+        epb.extend_from_slice(&iface.to_le_bytes());
+        epb.extend_from_slice(&0u32.to_le_bytes()); // ts high
+        epb.extend_from_slice(&0u32.to_le_bytes()); // ts low
+        epb.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        epb.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        epb.extend_from_slice(data);
+        let pad = (4 - data.len() % 4) % 4;
+        epb.extend(std::iter::repeat_n(0u8, pad));
+        out.extend_from_slice(&block(0x0000_0006, &epb));
+    }
+    std::fs::write(path, out).expect("write merged pcapng");
+}
+
+/// The IP-and-up bytes of an Ethernet frame, for an interface whose link type
+/// is raw IP rather than Ethernet.
+pub fn strip_ethernet(frame: &[u8]) -> Vec<u8> {
+    frame[14..].to_vec()
+}

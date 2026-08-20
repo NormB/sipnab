@@ -9,10 +9,11 @@ sipnab itself is dual-licensed **MIT OR Apache-2.0** (see `LICENSE-MIT` and
 
 This file is generated from the dependency graph, not maintained by hand, so it
 cannot drift from what actually ships. It lists the Rust crates reached from
-`sipnab` through normal and build edges with `--features full` — the released
-gnu build, of which the musl build is a subset — plus the non-cargo libraries
-the artifacts either link from the host or compile in. Dev-dependencies are
-excluded: test harnesses are not part of any distributed artifact.
+`sipnab` through normal and build edges with `--features full,bpf` — the union
+of every feature set the release workflow compiles, of which the musl and
+`noaudio` builds are subsets — plus the non-cargo libraries the artifacts
+either link from the host or compile in. Dev-dependencies are excluded: test
+harnesses are not part of any distributed artifact.
 
 Each entry gives the SPDX expression the crate declares in its own manifest.
 Full license texts are published at <https://spdx.org/licenses/> under those
@@ -38,7 +39,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | r-efi | MIT OR Apache-2.0 OR LGPL-2.1-or-later | **Apache-2.0** |
 | termina | MIT OR MPL-2.0 | **MIT** |
 
-## Rust crates (394)
+## Rust crates (398)
 
 | Crate | Version | License |
 |---|---|---|
@@ -56,6 +57,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | anyhow | 1.0.104 | MIT OR Apache-2.0 |
 | approx | 0.5.1 | Apache-2.0 |
 | arrayvec | 0.7.6 | MIT OR Apache-2.0 |
+| assert_matches | 1.5.0 | MIT/Apache-2.0 |
 | async-trait | 0.1.89 | MIT OR Apache-2.0 |
 | atomic | 0.6.1 | Apache-2.0/MIT |
 | atomic-waker | 1.1.2 | Apache-2.0 OR MIT |
@@ -64,6 +66,8 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | aws-lc-sys | 0.41.0 | ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) |
 | axum | 0.8.9 | MIT |
 | axum-core | 0.5.6 | MIT |
+| aya | 0.14.0 | MIT OR Apache-2.0 |
+| aya-obj | 0.3.0 | MIT OR Apache-2.0 |
 | base64 | 0.22.1 | MIT OR Apache-2.0 |
 | base64 | 0.23.1 | MIT OR Apache-2.0 |
 | base64ct | 1.8.3 | Apache-2.0 OR MIT |
@@ -235,6 +239,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | num-iter | 0.1.45 | MIT OR Apache-2.0 |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 |
 | num_threads | 0.1.7 | MIT OR Apache-2.0 |
+| object | 0.39.1 | Apache-2.0 OR MIT |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 |
 | once_cell_polyfill | 1.70.2 | MIT OR Apache-2.0 |
 | opus-decoder | 0.1.1 | MIT OR Apache-2.0 |

@@ -10,6 +10,89 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.118] - 2026-08-20
+
+### Fixed
+
+- **No published binary carried the eBPF uprobe backend it advertised.**
+  `--uprobe-tls` has two backends and they are not equivalent: the default
+  `tracefs` one sees no socket, so its dialogs name a process rather than a
+  peer, while the `bpf` one pairs each write with its `tcp_sendmsg` and
+  recovers the real addresses. `bpf` was not in the `full` feature set and
+  every release built `full`, so the capable backend existed and shipped to
+  nobody. It now ships on the four `*-linux-gnu` targets — the headless
+  servers the `.deb` and `.rpm` serve, which is where a uprobe is reached for.
+
+  Not on musl, and that is measured rather than assumed. The published 0.5.117
+  musl binary is 12,252,424 bytes against the 12 MB ceiling the release
+  enforces, leaving 330,488 bytes; the backend adds 589,952, which would land
+  it 259,464 over. A gate now runs the workflow's own feature step for every
+  matrix entry and fails if musl or macOS is ever given it.
+
+- **The build script's strictness depended on which prerequisite was missing.**
+  A missing `bpf-linker` warned and embedded an empty kernel object; a missing
+  nightly toolchain panicked. Nobody chose that split, and the lenient half is
+  the dangerous one for a release: it produces a binary that advertises `bpf`
+  and refuses at runtime. There is now one rule with two modes — every
+  prerequisite degrades by default, for contributors, and
+  `SIPNAB_BPF_REQUIRED=1`, which the release sets, makes every one of them a
+  hard error.
+
+- **`sipnab --version` omitted `bpf` and `plugins`.** An operator told at
+  runtime that "this binary does not carry it" had no way to check which build
+  they held. Both are now reported.
+
+- **The third-party notices and the SBOM described a different binary from the
+  one shipped.** Both are generated with `--features full` while the release
+  now builds `full,bpf`, so they would have omitted `aya`, `aya-obj`, `object`
+  and `assert_matches` — and the drift gate compares against the same
+  generator, so it would have stayed GREEN while the artefact carried four
+  unlisted dependencies. The feature set is named once and both read it, and
+  the gate derives the union from the workflow rather than trusting three
+  copies to agree.
+
+- **The Homebrew formula generator met real input for the first time on a
+  release tag.** Its 21 assertions ran against a fixture; the real
+  `SHA256SUMS.txt` was only ever seen at publish time, so a failure that
+  depends on what the last release actually published — a new artifact name, a
+  platform that did not build, a change in asset count — surfaced with the tag
+  already cut. CI now fetches the previous release's real sums file and runs
+  the real generator on it, and never skips: a failed or unshaped download is a
+  failure, not a pass. The fixture was widened to the real 17-line shape and is
+  itself proved against that check, so the two cannot drift apart.
+
+- **A merged pcapng could not be read at all.** libpcap refuses a file whose
+  interfaces disagree, and it refuses on two independent grounds. Measured
+  against a real one carrying 313 interface description blocks: first the
+  snapshot lengths — the file declares six distinct ones — and then, once every
+  one of those is rewritten to a single value, the link types, because it
+  carries four encapsulations at once. Per-packet encapsulation is the *point*
+  of a merged capture, so no rewrite makes libpcap read one. Anything produced
+  by `mergecap`, or captured across interfaces that differ, was unreadable.
+
+  sipnab now decodes such a file itself, taking each frame's link type from the
+  interface that recorded it. That turned out to cost very little, because the
+  parser never had the restriction: `Packet::from_bytes` has always taken
+  `link_type` per packet, and only the readers collapsed it to one value for a
+  whole file by asking libpcap once at open. On the capture above the run goes
+  from refusing outright to reading 51,328 packets, finding 21 SIP messages and
+  101 RTP streams — and reporting the 33.7% of frames it could not decode,
+  broken down by link type and EtherType, rather than implying it read
+  everything.
+
+  Chosen up front rather than by catching libpcap's complaint, because libpcap
+  does not complain at open: it accepts the file, reads the first interface's
+  description, and fails on the first PACKET naming a different one. An
+  open-time fallback never fires. Matching the text of the read error would be
+  worse — it is libpcap's wording, it differs between the snaplen and link-type
+  cases, and it differs between versions. A single-interface file, which is
+  almost every file, costs one short read of the interface blocks and takes the
+  ordinary streaming path untouched.
+
+  Blocks naming an interface the file never described are counted and reported,
+  not dropped in silence: a frame discarded without a word is indistinguishable
+  from a capture that never held it.
+
 ## [0.5.117] - 2026-08-20
 
 ### Security
