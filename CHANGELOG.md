@@ -10,6 +10,115 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.114] - 2026-08-20
+
+### Fixed
+
+- **A live SIP-over-TLS 1.3 trunk decrypted almost nothing, for five separate
+  reasons.** Found against real carrier traffic, each verified independently —
+  bugs four and five with a reference AES-GCM decrypt in Python against the real
+  captured key material, to rule out a red herring. Diagnosed and patched by
+  Dan Jenkins ([@danjenkins](https://github.com/danjenkins)), who supplied all
+  five fixes with regression tests (#245).
+
+  - **`--keylog-watch` read new keys only once every five seconds.**
+    `poll_keylog_file()` ran inside the reassembly sweep, so a call that
+    completed faster than the sweep — an INVITE and its ACK — was over before
+    the key that would have decrypted it was read. The poll now runs on its own
+    ~100ms wall clock, independent of packet timestamps, which do not advance on
+    a quiet link: the packet that matters is an INVITE after silence, and the key
+    has to be loaded before it arrives.
+
+  - **A TLS record split across TCP segments was dropped silently.** Records run
+    to ~18KB and routinely span segments — most visibly a large INVITE whose SDP
+    body lands separately from its headers. `parse_tls_records` stops at a
+    truncated record by design, but `try_tls_decrypt` fed it one segment at a
+    time and never reassembled, so the record, and the SIP message inside it,
+    vanished. A `TlsRecordReassembler` now holds the undecoded tail per stream
+    direction, mirroring the `tcp_sip_leftover` pattern already used for SIP
+    framing.
+
+  - **The reassembler was then unreachable.** Every chunk was gated on
+    `tls::is_tls()` before reaching it, and the tail half of a split record is
+    bare ciphertext with no record header, so it fails that heuristic nearly
+    always. `is_tls` now decides only whether to *start* tracking a stream;
+    `has_held()` admits a continuation regardless of how it looks alone.
+
+  - **Any second TLS handshake wiped every session already derived.** Both the
+    ServerHello handler and the keylog poll called `sessions.clear()`
+    unconditionally. That is right for TLS 1.2, whose CLIENT_RANDOM/ServerHello
+    pairing stays ambiguous until a ServerHello resolves it, and never right for
+    TLS 1.3, which derives from `CLIENT_TRAFFIC_SECRET_0` keyed on
+    `client_random` alone. On a trunk carrying a keepalive or a second
+    concurrent call, a ready session was destroyed before its own traffic
+    arrived. Both sites now retain everything that is not TLS 1.2. The failure
+    looked exactly like a missing key: no error anywhere, `try_decrypt` simply
+    stopped finding a session it had already keyed.
+
+  - **The wrong secret was chosen when a `client_random` had more than one.**
+    eCapture's hooks fire on every `SSL_write`, not once per handshake, so the
+    same `client_random` can be logged a dozen times and an early firing can
+    record a premature secret under the same label. Session derivation took the
+    first match; it now takes the latest.
+
+- **TLS 1.3 decryption never recovered from a missed record.** The per-record
+  nonce comes from a counter each endpoint keeps privately (RFC 8446 §5.3), and
+  nothing on the wire carries it. TLS 1.2 already searched a small window for
+  it; TLS 1.3 tried one value and gave up, so a single dropped or unreassembled
+  record froze the counter and killed decryption for the rest of the connection
+  — and a capture attached to a connection already running never decrypted at
+  all. Measured on a real session whose records opened at client sequence 8 and
+  server sequence 10 while sipnab tried only zero. Both directions now search
+  forward, wide enough to lock on to a stream joined part-way through and narrow
+  once decrypting. The AEAD tag makes the search safe: a wrong sequence number
+  cannot forge a passing tag.
+
+- **A capture full of unreadable TLS reported the same thing as a capture with
+  no SIP in it.** Supplying `--keylog` and getting `No SIP traffic found` was
+  consistent with an empty capture and with a capture full of SIP sipnab could
+  not open, and the run rendered both identically. It now reports how many
+  application-data records it saw against how many it opened, and says which of
+  three situations it is in — no key material, keys but no matching session, or
+  sessions that decrypt nothing — naming the remedy for each.
+
+- **The `.rpm` refused to install on any Fedora or RHEL host.** `dnf` rejected
+  it with `nothing provides libpcap.so.0.8()(64bit)`, on machines that already
+  had libpcap. Debian patched libpcap's SONAME to `libpcap.so.0.8` in the 0.x
+  days and never bumped it; upstream, and so every RPM distribution, ships
+  `libpcap.so.1`. The release workflow builds the gnu binaries and packages the
+  `.rpm` inside a Debian container, so the packaged ELF recorded Debian's name
+  and rpmbuild's automatic generator copied it into the metadata.
+  `build-rpm.sh` now rewrites the staged binary's `DT_NEEDED` to
+  `libpcap.so.1` before rpmbuild reads it, so the generator names the library
+  the binary genuinely loads. Filtering the generated `Requires` instead would
+  have been worse than the bug: the loader reads the same `DT_NEEDED`, so the
+  package would install and then fail to start. The builder now also checks the
+  finished artifact and deletes it rather than emit one `dnf` cannot install.
+  Reported by Ihor Olkhovskyi
+  ([@igorolhovskiy](https://github.com/igorolhovskiy)), who hit it installing
+  on Fedora 44 (#244).
+
+- **The audio plugin turned ALSA into a hard dependency of the full `.rpm`.**
+  The spec declares `Recommends: alsa-lib` on purpose, because the plugin is
+  `dlopen`ed lazily and a headless server should not drag in the ALSA stack for
+  a feature it never uses. The automatic generator read `libasound.so.2` out of
+  the plugin's `DT_NEEDED` anyway and wrote a hard `Requires`, which blocks the
+  install outright on any host whose repositories carry no alsa-lib. Only the
+  plugin directory is now excluded from dependency generation; the binary's own
+  dependencies still come from its ELF, which is what makes the libpcap
+  `Requires` above correct.
+
+### Added
+
+- **`packaging/rpm/test-build-rpm.sh`, and a CI job that runs it.** The `.deb`
+  builder and the Homebrew formula have each had a test on every push for a
+  while. `build-rpm.sh` had none, and ran for the first time on a release tag —
+  which is how four `.rpm`s naming a SONAME no RPM distribution provides
+  reached users, and why a user reported it rather than CI. The harness links
+  real stub ELFs with `-Wl,-soname,libpcap.so.0.8`, because a shell-script
+  stand-in carries no `DT_NEEDED` and so cannot express this bug at all, and
+  asserts both the generated metadata and the packaged ELF.
+
 ## [0.5.113] - 2026-08-19
 
 ### Fixed
