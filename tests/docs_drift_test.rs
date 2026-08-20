@@ -70,6 +70,20 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "undefined-only",
         &["docs/tls-capture.md", "website/content/docs/tls-capture.md"],
     ),
+    // `--libssl` and `--pid` are eCapture's. The TLS chooser names both because
+    // getting them wrong is the commonest way a keylog comes back empty:
+    // eCapture picks the TLS library to instrument by looking at curl, which
+    // need not be the one the SIP daemon maps, and `--pid` pins it to a single
+    // process while a forking daemon spreads connections across all its
+    // workers. Scoped to the two TLS pages, as the others here are.
+    (
+        "libssl",
+        &["docs/tls-capture.md", "website/content/docs/tls-capture.md"],
+    ),
+    (
+        "pid",
+        &["docs/tls-capture.md", "website/content/docs/tls-capture.md"],
+    ),
     (
         "keylogfile",
         &["docs/tls-capture.md", "website/content/docs/tls-capture.md"],

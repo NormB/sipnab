@@ -105,8 +105,20 @@ impl TlsVersion {
 /// short for a record header or the declared length exceeds available data.
 ///
 /// This parser is lenient: it stops on malformed data rather than returning
-/// errors, because partial TLS data is common in packet captures.
+/// errors, because partial TLS data is common in packet captures. Discards
+/// any trailing incomplete record — callers that need to hold those bytes
+/// for a later call (e.g. across TCP segments) should use
+/// [`parse_tls_records_with_consumed`] instead.
 pub fn parse_tls_records(data: &[u8]) -> Vec<TlsRecord> {
+    parse_tls_records_with_consumed(data).0
+}
+
+/// Same as [`parse_tls_records`], but also returns how many leading bytes of
+/// `data` were consumed by the complete records returned. `data[consumed..]`
+/// is either empty or the start of a record that hasn't fully arrived yet
+/// (or unparseable garbage) and should be held and prepended to the next
+/// call on the same stream — see [`TlsRecordReassembler`].
+pub fn parse_tls_records_with_consumed(data: &[u8]) -> (Vec<TlsRecord>, usize) {
     let mut records = Vec::new();
     let mut offset = 0;
 
@@ -144,7 +156,90 @@ pub fn parse_tls_records(data: &[u8]) -> Vec<TlsRecord> {
         offset = payload_end;
     }
 
-    records
+    (records, offset)
+}
+
+/// Reassembles TLS records that arrive split across TCP segments before
+/// [`parse_tls_records`] sees them.
+///
+/// Upstream of this (`PacketProcessor::process_tcp`'s "pass through whole"
+/// branch for non-SIP TCP payloads), a TLS stream is TCP-reassembled but NOT
+/// TLS-record-framed: each captured packet's share of the byte stream is
+/// handed onward as its own chunk. A TLS record (up to ~18KB) routinely
+/// spans more than one such chunk — most visibly, a SIP INVITE's SDP body
+/// landing in a separate record/chunk from the headers. Fed one chunk at a
+/// time, `parse_tls_records` stops cleanly at the truncated record and
+/// returns nothing usable for either chunk on its own, so the message was
+/// silently dropped rather than partially decoded. This holds the undecoded
+/// tail per stream direction and prepends it to the next chunk, mirroring
+/// `tcp_sip_leftover`'s SIP-level framing in `capture::mod`.
+pub struct TlsRecordReassembler {
+    /// The undecoded tail of the last chunk, per `(src, dst)` direction.
+    ///
+    /// Insertion-ordered so eviction can drop the least-recently-updated
+    /// direction rather than an arbitrary one.
+    leftover: indexmap::IndexMap<
+        (std::net::SocketAddr, std::net::SocketAddr),
+        Vec<u8>,
+        ahash::RandomState,
+    >,
+    /// How many directions may hold a partial record at once, beyond which
+    /// the least-recently-updated is evicted to bound memory.
+    max_sessions: usize,
+}
+
+impl TlsRecordReassembler {
+    /// `max_sessions` bounds how many distinct (src, dst) directions can
+    /// have a held partial at once; beyond that, the least-recently-updated
+    /// one is evicted to keep memory bounded on a host with many streams.
+    pub fn new(max_sessions: usize) -> Self {
+        Self {
+            leftover: indexmap::IndexMap::default(),
+            max_sessions,
+        }
+    }
+
+    /// Feed one more chunk of ciphertext for the `(src, dst)` direction,
+    /// returning every complete TLS record now assembled (zero or more).
+    /// Any trailing incomplete bytes are held for the next call on the same
+    /// stream rather than discarded.
+    pub fn insert(
+        &mut self,
+        src: std::net::SocketAddr,
+        dst: std::net::SocketAddr,
+        chunk: &[u8],
+    ) -> Vec<TlsRecord> {
+        let key = (src, dst);
+        let mut buf = self.leftover.shift_remove(&key).unwrap_or_default();
+        buf.extend_from_slice(chunk);
+
+        let (records, consumed) = parse_tls_records_with_consumed(&buf);
+
+        if consumed < buf.len() {
+            buf.drain(..consumed);
+            if !self.leftover.contains_key(&key) && self.leftover.len() >= self.max_sessions {
+                // Index 0 is the least-recently-updated held partial (map
+                // order is update recency), same eviction rule as
+                // `tcp_sip_leftover`.
+                self.leftover.shift_remove_index(0);
+            }
+            self.leftover.insert(key, buf);
+        }
+
+        records
+    }
+
+    /// Whether `(src, dst)` currently has an incomplete tail held from a
+    /// previous call.
+    ///
+    /// The caller uses this to admit a chunk into [`Self::insert`] even when
+    /// the chunk alone doesn't look like the start of a TLS record — the
+    /// tail half of a record split across a TCP segment boundary is exactly
+    /// that: ciphertext bytes with no record header of its own, which is why
+    /// it needed reassembling in the first place.
+    pub fn has_held(&self, src: std::net::SocketAddr, dst: std::net::SocketAddr) -> bool {
+        self.leftover.contains_key(&(src, dst))
+    }
 }
 
 /// Check if data looks like a TLS record.
@@ -400,6 +495,117 @@ mod tests {
 
         let records = parse_tls_records(&data);
         assert!(records.is_empty(), "Truncated record should not be emitted");
+    }
+
+    // -----------------------------------------------------------------------
+    // TLS record reassembly across TCP segments
+    // -----------------------------------------------------------------------
+
+    fn addrs() -> (std::net::SocketAddr, std::net::SocketAddr) {
+        (
+            "10.0.0.1:5061".parse().unwrap(),
+            "10.0.0.2:54321".parse().unwrap(),
+        )
+    }
+
+    /// A record split across two chunks (e.g. a large INVITE's SDP body
+    /// landing in a separate TCP segment from its headers) is held, then
+    /// completed and returned whole once the rest arrives — the bug this
+    /// reassembler exists to fix.
+    #[test]
+    fn reassembler_completes_a_record_split_across_two_chunks() {
+        let payload = vec![0xAB; 300];
+        let record = make_tls_record(23, 0x0303, &payload);
+        let (src, dst) = addrs();
+        let mut r = TlsRecordReassembler::new(10);
+
+        let (head, tail) = record.split_at(record.len() - 50);
+
+        let first = r.insert(src, dst, head);
+        assert!(
+            first.is_empty(),
+            "an incomplete record must not be returned yet"
+        );
+
+        let second = r.insert(src, dst, tail);
+        assert_eq!(second.len(), 1, "the completed record must be returned");
+        assert_eq!(second[0].payload, payload);
+    }
+
+    /// `has_held` reports a held partial while one is outstanding, and
+    /// clears once the record it belongs to completes.
+    ///
+    /// This is the exact signal `try_tls_decrypt` (app/batch.rs) needs to
+    /// admit a continuation chunk that fails `is_tls` on its own — the tail
+    /// half of a split record is bare ciphertext with no record header, so
+    /// it fails that heuristic every time. Before that caller consulted
+    /// `has_held`, it gated every chunk on `is_tls` unconditionally and
+    /// dropped exactly this case, silently, one layer below the bug this
+    /// reassembler was built to fix.
+    #[test]
+    fn has_held_tracks_an_incomplete_records_lifetime() {
+        let payload = vec![0xAB; 300];
+        let record = make_tls_record(23, 0x0303, &payload);
+        let (src, dst) = addrs();
+        let mut r = TlsRecordReassembler::new(10);
+
+        assert!(
+            !r.has_held(src, dst),
+            "nothing held before any bytes arrive"
+        );
+
+        let (head, tail) = record.split_at(record.len() - 50);
+        r.insert(src, dst, head);
+        assert!(
+            r.has_held(src, dst),
+            "an incomplete record must be held after the first chunk"
+        );
+
+        r.insert(src, dst, tail);
+        assert!(
+            !r.has_held(src, dst),
+            "nothing should be held once the record completes"
+        );
+    }
+
+    /// A held partial for one stream direction is independent of another —
+    /// interleaved traffic on two directions doesn't corrupt either.
+    #[test]
+    fn reassembler_keeps_directions_independent() {
+        let payload_a = vec![0x11; 200];
+        let payload_b = vec![0x22; 40];
+        let record_a = make_tls_record(23, 0x0303, &payload_a);
+        let record_b = make_tls_record(23, 0x0303, &payload_b);
+        let (a_src, a_dst) = addrs();
+        let (b_src, b_dst) = ("10.0.0.3:5061".parse().unwrap(), a_dst);
+        let mut r = TlsRecordReassembler::new(10);
+
+        let (a_head, a_tail) = record_a.split_at(record_a.len() - 30);
+        assert!(r.insert(a_src, a_dst, a_head).is_empty());
+
+        // Stream B completes in one shot while A is still held incomplete.
+        let b_done = r.insert(b_src, b_dst, &record_b);
+        assert_eq!(b_done.len(), 1);
+        assert_eq!(b_done[0].payload, payload_b);
+
+        let a_done = r.insert(a_src, a_dst, a_tail);
+        assert_eq!(a_done.len(), 1);
+        assert_eq!(a_done[0].payload, payload_a);
+    }
+
+    /// A chunk containing several complete records at once (record-layer
+    /// pipelining) returns all of them, not just the first.
+    #[test]
+    fn reassembler_returns_multiple_complete_records_in_one_chunk() {
+        let mut data = make_tls_record(22, 0x0303, &[0x01, 0x00]);
+        data.extend_from_slice(&make_tls_record(23, 0x0303, &[0xCA, 0xFE]));
+        let (src, dst) = addrs();
+        let mut r = TlsRecordReassembler::new(10);
+
+        let records = r.insert(src, dst, &data);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].content_type, TlsContentType::Handshake);
+        assert_eq!(records[1].content_type, TlsContentType::ApplicationData);
     }
 
     // -----------------------------------------------------------------------

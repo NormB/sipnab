@@ -130,9 +130,35 @@ them out of a running process and sipnab consumes them unchanged:
 
 ```sh
 # Run all of these, in order.
-sudo ecapture tls -m keylog --keylogfile=/tmp/keys.log &
+# eCapture picks the TLS library to instrument by looking at curl. Your SIP
+# daemon may well map a different one, so name the daemon's explicitly — this
+# is the single most common reason a keylog stays empty.
+LIBSSL=$(sudo awk '/libssl/ {print $6; exit}' /proc/"$(pgrep -o opensips)"/maps)
+sudo ecapture tls -m keylog --libssl="$LIBSSL" --keylogfile=/tmp/keys.log &
 sudo sipnab -d eth0 --keylog /tmp/keys.log --keylog-watch
 ```
+
+The uprobe attaches to the library, not to one process, so a forking daemon
+needs no `--pid` — it covers every worker that maps that path, and `--pid`
+would restrict you to one of them. Check the path it chose in eCapture's own
+startup line (`openssl_path=`) before trusting the run.
+
+**Start the capture before the connections you want to read.** This is the
+single biggest trap on long-lived trunks, and it bites differently in each TLS
+version:
+
+- **TLS 1.3** numbers each record with a counter both endpoints keep privately.
+  Nothing on the wire carries it, so sipnab searches the beginning of a stream
+  for it — a few thousand records, which a trunk up for hours is far past. The
+  keys are right and the records still do not open.
+- **TLS 1.2** is worse: a `CLIENT_RANDOM` line gives the master secret, and the
+  server random and cipher suite that expand it into record keys are in the
+  ServerHello. Miss the handshake and there is no way to use the secret at all,
+  now or later.
+
+sipnab says which of these happened, with counts. The fix is at capture time
+either way: bounce the connection, or the far end, while capturing, so the
+capture catches the stream from its handshake and its first record.
 
 Cookbook [§7e](@/docs/cookbook.md#7-decrypt-sip-tls-via-sslkeylogfile) has the full
 sequence, and [§7f](@/docs/cookbook.md#7-decrypt-sip-tls-via-sslkeylogfile) shows
@@ -171,6 +197,10 @@ Stated plainly, because time spent here is time people lose:
   local capture. You still need keys or plaintext from an endpoint.
 - **Any of methods 3–5 against a machine you do not control.** They read
   process memory on the host they run on. That is the whole boundary.
+- **Attaching to a long-lived connection and expecting the back catalogue.**
+  Keys extracted from a running process decrypt records captured from that
+  point on, provided the capture catches the stream early enough. They never
+  recover traffic that went past before you started.
 
 ## Still stuck?
 
@@ -181,6 +211,10 @@ Stated plainly, because time spent here is time people lose:
 | `needs this kernel's BTF` | No `CONFIG_DEBUG_INFO_BTF`; use `--uprobe-backend tracefs` |
 | `no kernel programs` | Binary lacks the `bpf` feature; use `tracefs`, or rebuild |
 | Keylog present, still encrypted | Keys minted after start — add `--keylog-watch` |
+| Keylog stays empty | eCapture attached to a TLS library the daemon never calls — pass `--libssl` with the path from `/proc/<daemon-pid>/maps` |
+| Keys load, sessions listed, nothing decrypts | The capture joined TLS 1.3 connections already running, past the record numbers sipnab searches. Restart the connection while capturing |
+| Keys load, no sessions listed | TLS 1.2 without the handshake — the ServerHello never got captured, and the master secret alone cannot make record keys. Restart the connection while capturing |
+| TLS 1.2, right keys, still nothing | A CBC suite. sipnab refuses to emit record plaintext it cannot MAC-verify, so a forged capture cannot inject "decrypted" SIP. Configure an AES-GCM suite |
 | Addresses show `0.0.0.0:0` | Expected on the tracefs backend; use method 4 for peers |
 
 More in [Troubleshooting](@/docs/troubleshooting.md) and the

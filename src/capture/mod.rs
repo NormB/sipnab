@@ -378,6 +378,76 @@ pub struct UndecodableTally {
     pub frames: u64,
 }
 
+/// How far forward sipnab searches for the TLS record sequence number of a
+/// stream it has not yet decrypted.
+///
+/// A capture started against a connection that was already running joins the
+/// record stream part-way through, and no TLS version puts the record number
+/// on the wire. The AEAD tag makes searching for it safe, and this bounds the
+/// search — so it is also the answer to "how far into an established
+/// connection may a capture start and still be readable".
+///
+/// Lives here, beside [`TlsDecryptReport`], because the decryptor that spends
+/// it and the message that quotes it to the operator must not drift apart.
+pub const TLS_SEQ_LOCKON_WINDOW: u64 = 4096;
+
+/// What a run's TLS decryption actually achieved, as counts.
+///
+/// The sibling of [`UndecodableReport`], for the layer above the link: an
+/// operator who supplies `--keylog` is told the keys loaded and then, if
+/// nothing decrypts, told only that no SIP was found. Those two statements
+/// are consistent with a capture that holds nothing and with a capture full
+/// of SIP sipnab could not read, and the run renders them identically. These
+/// counts are what let it tell the two apart.
+///
+/// Defined here rather than beside the decryptor so the reporting path
+/// compiles in feature combinations built without `tls`, where every count is
+/// simply zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TlsDecryptReport {
+    /// Keylog entries loaded, whatever became of them.
+    ///
+    /// Separate from `sessions_with_keys` because the gap between the two is a
+    /// failure of its own: a TLS 1.2 `CLIENT_RANDOM` line carries the master
+    /// secret, and the server random and cipher suite that turn it into record
+    /// keys are in the ServerHello. Keys can therefore arrive in full and still
+    /// build no session, which has nothing to do with where they came from.
+    pub keylog_entries: usize,
+    /// Sessions built from the supplied key material, i.e. secrets sipnab
+    /// holds and could derive record keys from.
+    pub sessions_with_keys: usize,
+    /// ApplicationData records offered to the decryptor.
+    pub app_data_records: u64,
+    /// ApplicationData records that were opened.
+    pub decrypted_records: u64,
+}
+
+impl TlsDecryptReport {
+    /// ApplicationData records seen and not opened.
+    ///
+    /// Not a loss figure. A healthy TLS 1.3 capture always leaves several of
+    /// these behind: EncryptedExtensions, Certificate, CertificateVerify and
+    /// both Finished messages travel in ApplicationData framing but are sealed
+    /// under the HANDSHAKE traffic secrets, which sipnab does not load because
+    /// they carry no application data. Treating the difference as dropped SIP
+    /// would report five phantom losses on every capture that includes a
+    /// handshake. Use [`Self::read_nothing`] to judge a run.
+    #[must_use]
+    pub fn undecrypted_records(&self) -> u64 {
+        self.app_data_records.saturating_sub(self.decrypted_records)
+    }
+
+    /// Whether this run saw TLS application data and opened none of it.
+    ///
+    /// The one unambiguous failure: any successful decrypt proves the keys,
+    /// the sequence numbers and the session matching all work, whereas none at
+    /// all means the run is holding ciphertext it can say nothing about.
+    #[must_use]
+    pub fn read_nothing(&self) -> bool {
+        self.app_data_records > 0 && self.decrypted_records == 0
+    }
+}
+
 /// What this run could not decode at all.
 ///
 /// The counts sipnab prints describe what it understood. This describes what

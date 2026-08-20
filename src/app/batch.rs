@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
+use smallvec::{SmallVec, smallvec};
 
 use crate::capture::{self, CaptureConfig, ParsedPacket, PcapExportMode, PcapWriter};
 use crate::cli::Cli;
@@ -1412,6 +1413,102 @@ fn undecodable_summary(
     Some(msg)
 }
 
+/// What a run says about TLS application data it saw and could not read.
+///
+/// Split out as a pure function for the same reason as [`no_sip_guidance`]:
+/// the whole value is in WHICH sentence it chooses, and the three cases have
+/// three different remedies. Getting that wrong sends an operator to restart
+/// production trunks when the real problem is that no key material ever
+/// reached sipnab.
+///
+/// Before this existed the failure was silent. `--keylog` reports the keys it
+/// loaded, the decryptor reports each session it derived, and a record that
+/// opens under none of them is dropped without a word — so a capture full of
+/// SIP that sipnab held as ciphertext and a capture with no SIP in it printed
+/// character for character the same thing. A no-op that reports success is
+/// worse than a crash.
+///
+/// # Returns
+///
+/// The lines to print, in order; empty when there is nothing to report,
+/// which is every run that decrypted everything it saw and every run with no
+/// TLS in it at all.
+fn tls_decrypt_guidance(tls: &crate::capture::TlsDecryptReport) -> Vec<String> {
+    // Any successful decrypt at all proves the keys, the sequence numbers and
+    // the session matching work, so the run has nothing to explain.
+    if !tls.read_nothing() {
+        return Vec::new();
+    }
+    let unread = tls.app_data_records;
+
+    // Keys arrived and none of them became a session. For TLS 1.2 that is the
+    // ServerHello: `CLIENT_RANDOM` gives the master secret, and the server
+    // random and cipher suite needed to expand it into record keys are in the
+    // handshake. A capture that joined mid-stream holds the secret and no way
+    // to use it — and no later packet will supply what is missing.
+    if tls.sessions_with_keys == 0 && tls.keylog_entries > 0 {
+        return vec![
+            format!(
+                "sipnab loaded {} keylog line(s) and built no session from any of them, \
+                 so the {} TLS application-data record(s) in this capture went unread.",
+                tls.keylog_entries, tls.app_data_records,
+            ),
+            "The handshake is missing. A TLS 1.2 key log gives the master secret; the server \
+             random and cipher suite that expand it into record keys are in the ServerHello, \
+             and a capture that started after the connection did never saw one. Nothing later \
+             in the capture can supply them."
+                .to_string(),
+            "Capture the handshake: restart the connection while the capture is running, or \
+             capture continuously from before the connections you want to read."
+                .to_string(),
+        ];
+    }
+
+    // No session and no keys either, so no secret sipnab holds belongs to this
+    // traffic. Restarting a connection would produce a fresh handshake that
+    // is just as unreadable; the fix is upstream, at the key source.
+    if tls.sessions_with_keys == 0 {
+        return vec![
+            format!(
+                "sipnab could not decrypt {unread} TLS application-data record(s): it holds \
+                 no key material for any session in this capture, so this run says nothing \
+                 about what that traffic contained."
+            ),
+            "A keylog producer only records keys for what it attached to. Check both \
+             halves of that: the TLS library — eCapture picks one by looking at curl, \
+             which need not be the one the SIP daemon maps, so pass --libssl with the \
+             path from /proc/<daemon-pid>/maps — and the process, since --pid pins it to \
+             a single worker while a forking daemon spreads connections across all of \
+             them. Give sipnab --keylog-watch so keys minted after it starts are read too."
+                .to_string(),
+        ];
+    }
+
+    // Keys matched sessions and the records still would not open. The record
+    // sequence number is the difference, and it is not on the wire.
+    // Sessions were built and not one record opened under them. The record
+    // sequence number is what is left, and it is not on the wire.
+    vec![
+        format!(
+            "sipnab holds keys for {} TLS session(s) and could not decrypt any of the \
+                 {} application-data record(s) it saw.",
+            tls.sessions_with_keys, tls.app_data_records,
+        ),
+        format!(
+            "The usual cause is a capture that began against connections which were \
+                 already running. A TLS record is numbered by a counter both endpoints keep \
+                 privately, nothing on the wire carries it, and sipnab searches only the \
+                 first {} records of a stream for it — a trunk that has been up for hours \
+                 is far past that. Capturing the handshake does not help; the counter \
+                 depends on how many records have gone by since.",
+            crate::capture::TLS_SEQ_LOCKON_WINDOW,
+        ),
+        "Restart the connection while the capture is running — bounce the far end, or \
+             the daemon — so the stream is captured from its first record."
+            .to_string(),
+    ]
+}
+
 /// The guidance a run prints when it found no SIP at all.
 ///
 /// Split out as a pure function because the whole value is in WHICH sentence
@@ -1426,6 +1523,9 @@ fn undecodable_summary(
 ///   the capture was readable, so the media-only message stands unchanged.
 /// * `undecodable` — the run's undecodable tally.
 /// * `frames_read` — frames handed to the parser.
+/// * `tls` — what TLS decryption achieved. Ciphertext this run could not read
+///   is the same disclaimer one layer up: SIP may well have been present and
+///   simply unreadable, so the plain sentence has no basis.
 ///
 /// # Returns
 ///
@@ -1435,6 +1535,7 @@ fn no_sip_guidance(
     streams: usize,
     undecodable: &crate::capture::UndecodableReport,
     frames_read: u64,
+    tls: &crate::capture::TlsDecryptReport,
 ) -> Vec<String> {
     // RTP was parsed, so the capture demonstrably decoded: media-only, not
     // unreadable. Undecodable background here changes nothing.
@@ -1464,6 +1565,18 @@ fn no_sip_guidance(
             ),
             "Fix the decode before reading anything into the zero above: convert the \
              capture (editcap -T ether) or open an issue naming the number(s) reported."
+                .to_string(),
+        ];
+    }
+
+    // TLS application data went unread, so SIP may well have been present and
+    // simply unreadable. `tls_decrypt_guidance` has already printed the counts
+    // and the remedy; this only refuses to contradict them.
+    if tls.read_nothing() {
+        return vec![
+            "No SIP traffic was decoded, but TLS application data in this capture could \
+             not be decrypted (see above), so this is not a finding that the capture \
+             contains no SIP."
                 .to_string(),
         ];
     }
@@ -1842,6 +1955,10 @@ pub struct BatchRunner {
     /// SIP-over-TLS decryptor (`--keylog` / `--tls-key`), when configured.
     #[cfg(feature = "tls")]
     tls_decryptor: Option<TlsDecryptor>,
+    /// Holds a TLS record split across TCP segments until it completes —
+    /// see [`crate::capture::tls::TlsRecordReassembler`].
+    #[cfg(feature = "tls")]
+    tls_reassembler: crate::capture::tls::TlsRecordReassembler,
     /// SRTP media decryption context (`--srtp-keys` + learned SDES keys).
     #[cfg(feature = "tls")]
     srtp_context: Option<crate::rtp::srtp::SrtpContext>,
@@ -2247,6 +2364,13 @@ impl BatchRunner {
             None
         };
 
+        // Same bound as the packet-level TCP/SIP reassembler
+        // (`PacketProcessor::with_max_sessions`) — one held-partial entry
+        // per concurrent TLS stream direction, same eviction policy.
+        #[cfg(feature = "tls")]
+        let tls_reassembler =
+            crate::capture::tls::TlsRecordReassembler::new(cli.max_reassembly_limit(config));
+
         // 17d. Feed TLS secrets embedded in a pcapng (Decryption Secrets Block) into
         // the decryptor, so a self-contained capture decrypts without an external
         // --keylog. Creates a decryptor on demand when the file carries secrets.
@@ -2403,6 +2527,8 @@ impl BatchRunner {
             #[cfg(feature = "tls")]
             tls_decryptor,
             #[cfg(feature = "tls")]
+            tls_reassembler,
+            #[cfg(feature = "tls")]
             srtp_context,
             #[cfg(feature = "tls")]
             dtls_extractor,
@@ -2465,6 +2591,8 @@ impl BatchRunner {
             #[cfg(feature = "tls")]
             mut tls_decryptor,
             #[cfg(feature = "tls")]
+            mut tls_reassembler,
+            #[cfg(feature = "tls")]
             mut srtp_context,
             #[cfg(feature = "tls")]
             mut dtls_extractor,
@@ -2517,6 +2645,19 @@ impl BatchRunner {
         // See `SweepClock` for why the two cannot share one rule.
         let mut sweep_clock = SweepClock::new(cli.has_input());
         let sweep_interval = std::time::Duration::from_secs(5);
+        // --keylog-watch's own cadence — real wall time via Instant, not
+        // sweep_clock. sweep_clock advances from packet timestamps, so on a
+        // quiet link it never advances at all; the packet that matters is an
+        // INVITE arriving after silence, and it needs the key already loaded
+        // before it arrives, not in response to it. 100ms bounds the miss
+        // window to a tenth of the old 5s sweep tie-in while keeping keylog
+        // reads off the per-packet hot path (unbounded there, this is one
+        // syscall per ~100ms wall time regardless of packet rate, not one
+        // per packet against a stated >=100K pps target).
+        #[cfg(feature = "tls")]
+        let mut keylog_poll_clock = std::time::Instant::now();
+        #[cfg(feature = "tls")]
+        let keylog_poll_interval = std::time::Duration::from_millis(100);
         // How much detector state each sweep keeps. Derived from the widest
         // window this run's detectors were given rather than fixed, because
         // the sweep is what ages that state out: a constant here caps every
@@ -2605,19 +2746,28 @@ impl BatchRunner {
                 if let Some(det) = engines.reg_flood.as_mut() {
                     det.sweep(security_max_age);
                 }
+            }
 
-                // --keylog-watch: poll for new keys in the keylog source.
-                //
-                // `--keylog-fd` implies the watch. A descriptor handed over by a
-                // live producer has nothing to read at startup and everything
-                // to read later, so requiring a second flag to look at it would
-                // make the obvious invocation load no keys at all and say
-                // nothing — the failure this area has already been bitten by.
-                #[cfg(feature = "tls")]
-                if (cli.tls_args.keylog_watch || cli.tls_args.keylog_fd.is_some())
-                    && let Some(ref mut decryptor) = tls_decryptor
-                    && let Err(e) = decryptor.poll_keylog_file()
-                {
+            // --keylog-watch: poll for new keys in the keylog source, on its
+            // own ~100ms wall-clock cadence (keylog_poll_clock above) rather
+            // than tied to the 5-second reassembly/dialog sweep. A fast SIP
+            // call (INVITE..ACK in well under 5s) can complete before that
+            // sweep ever runs again, so a key that arrived mid-call was not
+            // read until the call was already over — sipnab would log the
+            // session as "ready" and never decrypt a single message from it.
+            //
+            // `--keylog-fd` implies the watch. A descriptor handed over by a
+            // live producer has nothing to read at startup and everything
+            // to read later, so requiring a second flag to look at it would
+            // make the obvious invocation load no keys at all and say
+            // nothing — the failure this area has already been bitten by.
+            #[cfg(feature = "tls")]
+            if keylog_poll_clock.elapsed() >= keylog_poll_interval
+                && (cli.tls_args.keylog_watch || cli.tls_args.keylog_fd.is_some())
+                && let Some(ref mut decryptor) = tls_decryptor
+            {
+                keylog_poll_clock = std::time::Instant::now();
+                if let Err(e) = decryptor.poll_keylog_file() {
                     tracing::debug!("Keylog poll error: {e}");
                 }
             }
@@ -2732,101 +2882,118 @@ impl BatchRunner {
                 // dynamic ports negotiated via SDP and must not be filtered here.
                 // The filter is applied inside process_parsed_packet for SIP only.
 
-                // Attempt TLS decryption for TCP payloads when --keylog is active
+                // Attempt TLS decryption for TCP payloads when --keylog is active.
+                // Zero, one, or more synthetic packets: a TLS record spans more
+                // than one captured packet often enough (large INVITE bodies
+                // among them — see `TlsRecordReassembler`) that this can yield
+                // more than one decrypted SIP message from a single incoming
+                // packet, and can just as easily yield none yet while a record
+                // is still incomplete.
                 #[cfg(feature = "tls")]
-                let tls_decrypted = try_tls_decrypt(pp, &mut tls_decryptor);
+                let tls_decrypted = try_tls_decrypt(pp, &mut tls_decryptor, &mut tls_reassembler);
 
                 #[cfg(not(feature = "tls"))]
-                let tls_decrypted: Option<ParsedPacket> = None;
+                let tls_decrypted: capture::ParsedPackets = capture::ParsedPackets::new();
 
-                // If TLS decryption yielded a SIP message, process the decrypted
-                // packet (its transport is already stamped Tls).
-                let effective_pp = tls_decrypted.as_ref().unwrap_or(pp);
+                // If TLS decryption yielded one or more SIP messages, process
+                // those (each already stamped Tls); otherwise fall back to the
+                // original packet, exactly as the pre-reassembly `unwrap_or`
+                // did for the single-message case.
+                let effective_pps: SmallVec<[&ParsedPacket; 1]> = if tls_decrypted.is_empty() {
+                    smallvec![pp]
+                } else {
+                    tls_decrypted.iter().collect()
+                };
 
-                // Acquire write locks once per packet. The locks are uncontested
-                // in the no-API case; with --api, the API thread briefly waits
-                // for in-flight per-packet processing to finish.
-                //
-                // Nothing that can block belongs in this scope. Everything that
-                // used to — both `sh -c` spawn sites, the alert engine's own
-                // lock, and the stdout writes — is queued into `effects` (and
-                // into the event-exec engine's pending queue) and replayed
-                // immediately below, with the guards gone.
-                {
-                    let mut ds_guard = dialog_store.write();
-                    let mut ss_guard = stream_store.write();
-                    let mut proc_state = ProcessingState {
-                        dialog_store: &mut ds_guard,
-                        stream_store: &mut ss_guard,
-                        rtp_heuristic: &mut rtp_heuristic,
-                        event_exec: &mut event_exec,
-                        #[cfg(feature = "tls")]
-                        srtp: srtp_context.as_mut(),
-                        #[cfg(feature = "tls")]
-                        dtls: dtls_extractor.as_mut(),
-                        group: group_buf.as_mut(),
-                    };
-                    process_parsed_packet(
-                        effective_pp,
-                        &batch_ctx,
-                        &mut proc_state,
-                        &mut engines,
-                        &mut counters,
-                        &mut effects,
-                    );
-                }
+                for effective_pp in effective_pps.iter().copied() {
+                    // Acquire write locks once per packet. The locks are uncontested
+                    // in the no-API case; with --api, the API thread briefly waits
+                    // for in-flight per-packet processing to finish.
+                    //
+                    // Nothing that can block belongs in this scope. Everything that
+                    // used to — both `sh -c` spawn sites, the alert engine's own
+                    // lock, and the stdout writes — is queued into `effects` (and
+                    // into the event-exec engine's pending queue) and replayed
+                    // immediately below, with the guards gone.
+                    {
+                        let mut ds_guard = dialog_store.write();
+                        let mut ss_guard = stream_store.write();
+                        let mut proc_state = ProcessingState {
+                            dialog_store: &mut ds_guard,
+                            stream_store: &mut ss_guard,
+                            rtp_heuristic: &mut rtp_heuristic,
+                            event_exec: &mut event_exec,
+                            #[cfg(feature = "tls")]
+                            srtp: srtp_context.as_mut(),
+                            #[cfg(feature = "tls")]
+                            dtls: dtls_extractor.as_mut(),
+                            group: group_buf.as_mut(),
+                        };
+                        process_parsed_packet(
+                            effective_pp,
+                            &batch_ctx,
+                            &mut proc_state,
+                            &mut engines,
+                            &mut counters,
+                            &mut effects,
+                        );
+                    }
 
-                // Both store guards have dropped. Replay what the packet
-                // queued, in the order it was raised: output, then alert
-                // findings, then the hook commands. Draining per packet —
-                // rather than per batch, or at end of capture — is what keeps
-                // ordering identical to emitting inline.
-                effects.drain(&mut sink, &engines.alerts, &mut event_exec);
+                    // Both store guards have dropped. Replay what the packet
+                    // queued, in the order it was raised: output, then alert
+                    // findings, then the hook commands. Draining per packet —
+                    // rather than per batch, or at end of capture — is what keeps
+                    // ordering identical to emitting inline.
+                    effects.drain(&mut sink, &engines.alerts, &mut event_exec);
 
-                // --hep-send: forward matched SIP messages via HEP
-                #[cfg(feature = "hep")]
-                if let Some(ref sender) = hep_sender
-                    && sip::is_sip_message(&effective_pp.payload)
-                    && let Ok(sip_msg) = sip::parse_sip(
-                        &effective_pp.payload,
-                        effective_pp.timestamp,
-                        effective_pp.src_addr,
-                        effective_pp.dst_addr,
-                        effective_pp.src_port,
-                        effective_pp.dst_port,
-                        crate::capture::parse::TransportProto::Udp,
-                    )
-                    && let Err(e) = sender.send(&sip_msg)
-                {
-                    tracing::debug!("HEP send failed: {e}");
-                }
+                    // --hep-send: forward matched SIP messages via HEP
+                    #[cfg(feature = "hep")]
+                    if let Some(ref sender) = hep_sender
+                        && sip::is_sip_message(&effective_pp.payload)
+                        && let Ok(sip_msg) = sip::parse_sip(
+                            &effective_pp.payload,
+                            effective_pp.timestamp,
+                            effective_pp.src_addr,
+                            effective_pp.dst_addr,
+                            effective_pp.src_port,
+                            effective_pp.dst_port,
+                            crate::capture::parse::TransportProto::Udp,
+                        )
+                        && let Err(e) = sender.send(&sip_msg)
+                    {
+                        tracing::debug!("HEP send failed: {e}");
+                    }
 
-                // --hep-send: and the RTCP alongside it, as protocol type 5.
-                //
-                // Separate `if` rather than an `else` on the one above: the SIP
-                // arm can fall through for reasons that are not "this was not
-                // SIP" (a parse failure), and an `else` would then hand a
-                // malformed SIP datagram to the RTCP detector. These are two
-                // independent questions about the same bytes.
-                //
-                // RTP is not forwarded — see `HepSender::send_rtcp`.
-                #[cfg(feature = "hep")]
-                if let Some(ref sender) = hep_sender
-                    && !sip::is_sip_message(&effective_pp.payload)
-                    && crate::pipeline::is_rtcp_packet(&effective_pp.payload, effective_pp.dst_port)
-                    && let Err(e) = sender.send_rtcp(
-                        &crate::capture::hep::HepEndpoint {
-                            src_addr: effective_pp.src_addr,
-                            dst_addr: effective_pp.dst_addr,
-                            src_port: effective_pp.src_port,
-                            dst_port: effective_pp.dst_port,
-                            transport: effective_pp.transport,
-                        },
-                        effective_pp.timestamp,
-                        &effective_pp.payload,
-                    )
-                {
-                    tracing::debug!("HEP RTCP send failed: {e}");
+                    // --hep-send: and the RTCP alongside it, as protocol type 5.
+                    //
+                    // Separate `if` rather than an `else` on the one above: the SIP
+                    // arm can fall through for reasons that are not "this was not
+                    // SIP" (a parse failure), and an `else` would then hand a
+                    // malformed SIP datagram to the RTCP detector. These are two
+                    // independent questions about the same bytes.
+                    //
+                    // RTP is not forwarded — see `HepSender::send_rtcp`.
+                    #[cfg(feature = "hep")]
+                    if let Some(ref sender) = hep_sender
+                        && !sip::is_sip_message(&effective_pp.payload)
+                        && crate::pipeline::is_rtcp_packet(
+                            &effective_pp.payload,
+                            effective_pp.dst_port,
+                        )
+                        && let Err(e) = sender.send_rtcp(
+                            &crate::capture::hep::HepEndpoint {
+                                src_addr: effective_pp.src_addr,
+                                dst_addr: effective_pp.dst_addr,
+                                src_port: effective_pp.src_port,
+                                dst_port: effective_pp.dst_port,
+                                transport: effective_pp.transport,
+                            },
+                            effective_pp.timestamp,
+                            &effective_pp.payload,
+                        )
+                    {
+                        tracing::debug!("HEP RTCP send failed: {e}");
+                    }
                 }
             }
 
@@ -3104,14 +3271,32 @@ impl BatchRunner {
             report_capture_quality();
             report_llmnr_summary();
 
+            // What TLS decryption achieved. Reported whether or not any SIP
+            // was found, because a run that read nine records of ten and
+            // printed the nine has said nothing about the tenth.
+            #[cfg(feature = "tls")]
+            let tls_report = tls_decryptor
+                .as_ref()
+                .map(crate::capture::decrypt::TlsDecryptor::report)
+                .unwrap_or_default();
+            #[cfg(not(feature = "tls"))]
+            let tls_report = crate::capture::TlsDecryptReport::default();
+            for line in tls_decrypt_guidance(&tls_report) {
+                eprintln!("{line}");
+            }
+
             // Guidance when no SIP signaling was found — and, when the
             // capture did not decode, a refusal to state that absence as a
             // finding. See `no_sip_guidance` for why the choice of sentence
             // is the whole point.
             if counters.sip_count == 0 {
-                for line in
-                    no_sip_guidance(counters.rtp_count, stream_count, &undecodable, total_count)
-                {
+                for line in no_sip_guidance(
+                    counters.rtp_count,
+                    stream_count,
+                    &undecodable,
+                    total_count,
+                    &tls_report,
+                ) {
                     eprintln!("{line}");
                 }
             }
@@ -3733,39 +3918,58 @@ fn process_parsed_packet(
 
 /// Attempt TLS decryption on a TCP payload.
 ///
-/// If the payload looks like TLS, parses the records and tries to decrypt
-/// ApplicationData records. If decryption yields SIP content, returns a
-/// synthetic `ParsedPacket` with the decrypted payload and transport set
-/// to reflect the TLS origin; returns `None` for non-TCP/non-TLS payloads,
-/// when no decryptor is configured, or when nothing decrypts to SIP. As a
-/// side effect, Handshake records are fed into the decryptor to capture
-/// key material.
+/// If the payload looks like TLS, reassembles it against any tail held from
+/// a previous call on the same stream direction (a TLS record routinely
+/// spans more than one TCP segment / captured packet — see
+/// [`tls::TlsRecordReassembler`]), then tries to decrypt each complete
+/// ApplicationData record now available. Returns one synthetic
+/// `ParsedPacket` (decrypted payload, transport stamped to reflect the TLS
+/// origin) per record whose plaintext is a SIP message — zero, one, or more.
+/// Returns empty for non-TCP/non-TLS payloads, when no decryptor is
+/// configured, when the reassembled bytes hold no complete record yet, or
+/// when nothing decrypts to SIP. As a side effect, Handshake records are fed
+/// into the decryptor to capture key material.
 #[cfg(feature = "tls")]
 fn try_tls_decrypt(
     pp: &ParsedPacket,
     tls_decryptor: &mut Option<TlsDecryptor>,
-) -> Option<ParsedPacket> {
-    let decryptor = tls_decryptor.as_mut()?;
+    tls_reassembler: &mut tls::TlsRecordReassembler,
+) -> capture::ParsedPackets {
+    let Some(decryptor) = tls_decryptor.as_mut() else {
+        return capture::ParsedPackets::new();
+    };
 
     if pp.transport != TransportProto::Tcp {
-        return None;
+        return capture::ParsedPackets::new();
     }
 
-    if !tls::is_tls(&pp.payload) {
-        return None;
+    let src = std::net::SocketAddr::new(pp.src_addr, pp.src_port);
+    let dst = std::net::SocketAddr::new(pp.dst_addr, pp.dst_port);
+
+    // `is_tls` gates admission for a chunk that would START tracking this
+    // stream, but must not gate one that CONTINUES an already-held partial:
+    // the tail half of a TLS record split across a TCP segment boundary is
+    // ciphertext with no record header of its own, and routinely fails this
+    // same heuristic — which is exactly the case `TlsRecordReassembler`
+    // exists to handle. Gating on it unconditionally here (as the
+    // pre-reassembly version of this function did, before there was
+    // anything to hold across calls) silently re-dropped every split
+    // record's tail chunk before it ever reached `insert`, defeating the
+    // reassembly this same patch added: the SIP message inside kept getting
+    // lost the same way, just one layer further down.
+    if !tls_reassembler.has_held(src, dst) && !tls::is_tls(&pp.payload) {
+        return capture::ParsedPackets::new();
     }
 
-    let records = tls::parse_tls_records(&pp.payload);
+    let records = tls_reassembler.insert(src, dst, &pp.payload);
+
+    let mut out = capture::ParsedPackets::new();
     for record in &records {
         // Feed Handshake records (ClientHello/ServerHello/ClientKeyExchange) so
         // the decryptor can capture randoms + the RSA-encrypted pre-master for
         // the --tls-key path and the TLS 1.2 CLIENT_RANDOM keylog path.
         if record.content_type == tls::TlsContentType::Handshake {
-            decryptor.process_record(
-                record,
-                std::net::SocketAddr::new(pp.src_addr, pp.src_port),
-                std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
-            );
+            decryptor.process_record(record, src, dst);
             continue;
         }
         if let Some(plaintext) = decryptor.try_decrypt(record, pp.src_addr, pp.dst_addr)
@@ -3777,11 +3981,11 @@ fn try_tls_decrypt(
             let mut decrypted_pp = pp.clone();
             decrypted_pp.payload = plaintext.into();
             decrypted_pp.transport = TransportProto::Tls;
-            return Some(decrypted_pp);
+            out.push(decrypted_pp);
         }
     }
 
-    None
+    out
 }
 
 // ── SIP output dispatch ──────────────────────────────────────────────
@@ -4441,11 +4645,151 @@ mod tests {
         crate::capture::reset_undecodable_frames();
     }
 
+    /// A TLS report with `sessions` keyed sessions, `seen` ApplicationData
+    /// records offered and `decrypted` of them opened.
+    fn tls_report(sessions: usize, seen: u64, decrypted: u64) -> crate::capture::TlsDecryptReport {
+        crate::capture::TlsDecryptReport {
+            // Sessions only exist because entries were loaded; a run with no
+            // sessions in these fixtures is a run with no key material.
+            keylog_entries: sessions * 2,
+            sessions_with_keys: sessions,
+            app_data_records: seen,
+            decrypted_records: decrypted,
+        }
+    }
+
+    /// A TLS 1.2 keylog line binds to a session only through the handshake:
+    /// `CLIENT_RANDOM` carries the master secret, and the server random and
+    /// cipher suite that turn it into record keys are in the ServerHello. A
+    /// capture that joined mid-stream has the secret and no way to use it —
+    /// which is a third failure, with a third remedy, and must not be
+    /// described as key material that never arrived.
+    #[test]
+    fn keys_that_bound_to_no_handshake_name_the_missing_handshake() {
+        let lines = tls_decrypt_guidance(&crate::capture::TlsDecryptReport {
+            keylog_entries: 6,
+            sessions_with_keys: 0,
+            app_data_records: 4,
+            decrypted_records: 0,
+        });
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("handshake"),
+            "the missing handshake must be named: {joined}"
+        );
+        assert!(
+            joined.contains('6') && joined.contains('4'),
+            "keys loaded and records seen must both be named: {joined}"
+        );
+        assert!(
+            !joined.contains("--libssl"),
+            "keys DID arrive, so the key-source remedy is the wrong one: {joined}"
+        );
+    }
+
+    /// A run that decrypted nothing says so, with the counts that distinguish
+    /// "no keys matched" from "keys matched and the records still would not
+    /// open", and names the remedy.
+    ///
+    /// This is the reported defect: the operator supplies a keylog, is told
+    /// the keys loaded, and is then told no SIP was found — three true
+    /// statements that together assert the opposite of what happened.
+    #[test]
+    fn a_run_that_decrypted_no_tls_says_so_with_counts_and_a_remedy() {
+        let lines = tls_decrypt_guidance(&tls_report(2, 9, 0));
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains('9') && joined.contains('2'),
+            "records seen and sessions keyed must both be named: {joined}"
+        );
+        assert!(
+            joined.contains("already running") || joined.contains("mid-stream"),
+            "the cause must be named: {joined}"
+        );
+        assert!(
+            joined.to_lowercase().contains("restart"),
+            "the remedy must be actionable: {joined}"
+        );
+    }
+
+    /// Keys that matched nothing is a different failure with a different fix,
+    /// so it must not be described as a mid-stream capture.
+    #[test]
+    fn tls_records_with_no_matching_keys_get_their_own_remedy() {
+        let lines = tls_decrypt_guidance(&tls_report(0, 40, 0));
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("40"),
+            "the record count must be named: {joined}"
+        );
+        assert!(
+            joined.contains("--libssl") || joined.contains("keylog"),
+            "the remedy must point at where keys come from: {joined}"
+        );
+        assert!(
+            !joined.to_lowercase().contains("restart"),
+            "restarting a connection does not fix absent key material: {joined}"
+        );
+    }
+
+    /// A run that decrypted anything must stay quiet about the rest.
+    ///
+    /// Written the other way round first — "a partial read must not be
+    /// silent" — until a real capture disproved it. Of twelve
+    /// ApplicationData records in a healthy TLS 1.3 session, five were
+    /// EncryptedExtensions, Certificate, CertificateVerify and the two
+    /// Finished messages: application-data FRAMING, sealed under the
+    /// handshake traffic secrets, carrying no application data and opened by
+    /// no key sipnab loads. Reporting the difference as loss would have cried
+    /// wolf on every capture that includes a handshake.
+    #[test]
+    fn a_partial_read_says_nothing_because_the_handshake_is_not_a_loss() {
+        assert!(
+            tls_decrypt_guidance(&tls_report(1, 12, 7)).is_empty(),
+            "seven of twelve is a normal TLS 1.3 handshake, not five lost records"
+        );
+    }
+
+    /// A run with no TLS at all, or one that decrypted everything it saw, has
+    /// nothing to report — the notice must not fire on healthy runs.
+    #[test]
+    fn a_clean_or_absent_tls_run_reports_nothing() {
+        assert!(
+            tls_decrypt_guidance(&tls_report(0, 0, 0)).is_empty(),
+            "no TLS in the capture"
+        );
+        assert!(
+            tls_decrypt_guidance(&tls_report(1, 12, 12)).is_empty(),
+            "everything decrypted"
+        );
+        assert!(
+            tls_decrypt_guidance(&tls_report(0, 0, 0)).is_empty(),
+            "a capture with no TLS in it at all"
+        );
+    }
+
+    /// With ciphertext it could not read, the run must not state the absence
+    /// of SIP as a finding — the same rule the undecodable-frame branch
+    /// enforces one layer down.
+    #[test]
+    fn no_sip_over_undecrypted_tls_is_never_stated_as_a_finding() {
+        let lines = no_sip_guidance(0, 0, &undecodable_of(0, &[]), 42, &tls_report(1, 9, 0));
+        let joined = lines.join("\n");
+        assert!(
+            !joined.contains("No SIP traffic found."),
+            "the unqualified finding must not appear: {joined}"
+        );
+        assert!(
+            joined.contains("could not decrypt") || joined.contains("not a finding"),
+            "the run must disclaim the zero: {joined}"
+        );
+    }
+
     /// With no SIP, no RTP and a clean decode, the unqualified "No SIP traffic
     /// found." stands — that IS the finding.
     #[test]
     fn a_clean_read_with_no_sip_states_it_plainly() {
-        let lines = no_sip_guidance(0, 0, &undecodable_of(0, &[]), 4_212);
+        let lines = no_sip_guidance(0, 0, &undecodable_of(0, &[]), 4_212, &tls_report(0, 0, 0));
         assert!(
             lines.iter().any(|l| l == "No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061)."),
             "a clean read must say so plainly: {lines:?}"
@@ -4468,6 +4812,7 @@ mod tests {
                 )],
             ),
             49,
+            &tls_report(0, 0, 0),
         );
         let joined = lines.join("\n");
         assert!(
@@ -4493,6 +4838,7 @@ mod tests {
             2,
             &undecodable_of(3, &[(crate::capture::UndecodableReason::NotIp(None), 3)]),
             500,
+            &tls_report(0, 0, 0),
         );
         let joined = lines.join("\n");
         assert!(
