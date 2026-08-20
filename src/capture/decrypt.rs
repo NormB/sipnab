@@ -240,6 +240,17 @@ struct TlsSession {
     locked_server: bool,
     /// Client IP address (set from the first handshake we observe).
     client_addr: Option<IpAddr>,
+    /// Lowest sequence still possible for a wire direction, keyed by
+    /// `(src, dst)` rather than by client/server role.
+    ///
+    /// Role is unknown until something decrypts, so a record is tried under
+    /// BOTH keys, and a role-keyed floor would let a failure in one role
+    /// advance the other's counter — blinding a direction that never saw the
+    /// record. Keyed by address pair the inference is sound: both key guesses
+    /// failing for A->B proves A->B's own number is past the window, whichever
+    /// role turns out to be right. Two entries in practice, so a Vec beats a
+    /// map.
+    lockon_floor: Vec<((IpAddr, IpAddr), u64)>,
     /// Failed lock-on attempts on this session, which widen the next search.
     ///
     /// A wide window is free when the answer is near — the search stops at the
@@ -1025,6 +1036,7 @@ impl TlsDecryptor {
                 locked_client: false,
                 locked_server: false,
                 lockon_attempts: 0,
+                lockon_floor: Vec::new(),
                 client_addr: None,
             },
         ))
@@ -1245,6 +1257,7 @@ impl TlsDecryptor {
                                 locked_client: false,
                                 locked_server: false,
                                 lockon_attempts: 0,
+                                lockon_floor: Vec::new(),
                                 client_addr: None,
                             },
                         );
@@ -1316,6 +1329,7 @@ impl TlsDecryptor {
                                     locked_client: false,
                                     locked_server: false,
                                     lockon_attempts: 0,
+                                    lockon_floor: Vec::new(),
                                     client_addr: None,
                                 },
                             );
@@ -1420,6 +1434,16 @@ fn try_decrypt_with_session(
 
     let version = session.version;
 
+    // Read ONCE per record. Both key guesses must be tried over the SAME
+    // range: advancing between them would try the client key over one span and
+    // the server key over the next, which proves nothing about either.
+    let pair_floor = session
+        .lockon_floor
+        .iter()
+        .find(|(pair, _)| *pair == (src_addr, dst_addr))
+        .map_or(0, |(_, floor)| *floor);
+    let mut searched: Option<u64> = None;
+
     for is_client_to_server in directions {
         let (write_key, write_iv, seq, locked) = if is_client_to_server {
             (
@@ -1436,6 +1460,11 @@ fn try_decrypt_with_session(
                 session.locked_server,
             )
         };
+
+        // Not locked on means the counter is a guess, so the base is the
+        // floor earlier failures established for THIS wire direction, not the
+        // role's counter — see `lockon_floor`.
+        let seq = if locked { seq } else { pair_floor };
 
         // How far forward to search for the sequence number that opens this
         // record. A direction that has decrypted before is counting, and needs
@@ -1489,6 +1518,18 @@ fn try_decrypt_with_session(
                 // the ONLY thing that widens it — without this the ceiling is
                 // never reached and a long-lived trunk stays unreadable.
                 session.lockon_attempts = session.lockon_attempts.saturating_add(1);
+
+                // Raise the floor past what was just ruled out. Searching
+                // `[seq, seq+window)` and failing proves this record's number
+                // is at least `seq+window`, and a direction's records only
+                // count upward, so the next one may start there rather than
+                // back at zero. Without this the ceiling bounds not just what
+                // one record costs but what the connection can EVER reach, and
+                // a trunk older than the ceiling stays unreadable however much
+                // traffic arrives. Records the capture missed only make this
+                // bound more conservative — the true number is higher still —
+                // so the floor can lag the truth but never pass it.
+                searched = Some(searched.unwrap_or(0).max(window));
             } else {
                 session.lockon_attempts = 0;
             }
@@ -1513,6 +1554,21 @@ fn try_decrypt_with_session(
             }
 
             return Some(plaintext);
+        }
+    }
+
+    // Every key guess failed over `[pair_floor, pair_floor + searched)`, so
+    // this direction's own number is past that span whichever role is right.
+    // Advance once, here, rather than inside the loop.
+    if let Some(width) = searched {
+        let floor = pair_floor.saturating_add(width);
+        match session
+            .lockon_floor
+            .iter_mut()
+            .find(|(pair, _)| *pair == (src_addr, dst_addr))
+        {
+            Some((_, existing)) => *existing = (*existing).max(floor),
+            None => session.lockon_floor.push(((src_addr, dst_addr), floor)),
         }
     }
 
@@ -2193,7 +2249,7 @@ mod tests {
         };
 
         // Build the decryptor with the RSA private key and feed the handshake.
-        let mut d = TlsDecryptor::new(None, Box::new(RingCryptoBackend)).unwrap();
+        let mut d = TlsDecryptor::new(None, crate::crypto::default_backend()).unwrap();
         d.set_rsa_key(RsaKey::from_pem(RSA_KEY_PEM).unwrap());
         assert!(d.has_rsa_key());
 
@@ -2350,6 +2406,234 @@ mod tests {
             after > 0,
             "escalation is what reaches this depth; locking on the first record \
              would mean the ceiling is being spent up front again"
+        );
+    }
+
+    /// A trunk up for months is past any single search, however wide.
+    ///
+    /// The ceiling bounds what one record may cost; it must not bound what the
+    /// connection can ever reach. A failed search over `[floor, floor+window)`
+    /// proves the record's sequence is at least `floor+window`, and records
+    /// within a direction only count upward — so the next record may start
+    /// there instead of at zero. Missed records make that bound more
+    /// conservative, never wrong, so the floor can advance but never overshoot.
+    /// Without this the ceiling is a reachability limit and a trunk older than
+    /// it stays unreadable no matter how much traffic arrives.
+    ///
+    /// Uses a deliberately small ceiling so the accumulation is what is under
+    /// test, not the constant: 5000 is unreachable in any one search of 1000.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn tls13_reaches_a_sequence_no_single_search_could_cover() {
+        const JOINED_AT: u64 = 5_000;
+        const CEILING: u64 = 1_000;
+        const PATIENCE: u64 = 30;
+
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        d.set_lockon_window(CEILING);
+        let sip = b"OPTIONS sip:t@example.com SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
+        let client: IpAddr = "10.0.0.1".parse().unwrap();
+        let server: IpAddr = "10.0.0.2".parse().unwrap();
+
+        let mut opened = None;
+        for n in 0..PATIENCE {
+            let record = seal_tls13_record(&key, &iv, JOINED_AT + n, sip);
+            if let Some(out) = d.try_decrypt(&record, client, server) {
+                opened = Some((n, out));
+                break;
+            }
+        }
+        let (after, out) = opened.expect(
+            "the search must accumulate across records, or a ceiling is a reachability limit",
+        );
+        assert_eq!(out, sip, "plaintext must be the SIP that was sealed");
+        // No single search can span this: every window is capped at CEILING,
+        // and the first starts at zero. Opening a record at JOINED_AT at all
+        // is therefore only possible if earlier failures raised the floor.
+        const { assert!(CEILING < JOINED_AT) };
+        assert!(
+            after > 0,
+            "locking on the first record would mean the ceiling was never the \
+             limit, so this fixture would prove nothing"
+        );
+    }
+
+    /// A warning is behaviour with a contract, so it gets a test.
+    ///
+    /// Two entries under one label for one client_random that DISAGREE are the
+    /// signature of a key log reloaded across an extractor restart, and a TLS
+    /// 1.3 KeyUpdate rotates the traffic secret in place — so the later value
+    /// cannot open records from before the rotation. Which is right is not
+    /// decidable here, and silently choosing is the failure this exists to
+    /// prevent. Added after shipping the warning untested in 0.5.115.
+    ///
+    /// Gated on `native` as well as `tls`: capturing the log needs
+    /// `tracing-subscriber`, which only `native` pulls in, and the gate builds
+    /// a `tls`-only leg with `--tests`.
+    #[cfg(all(feature = "tls", feature = "native"))]
+    #[test]
+    fn disagreeing_traffic_secrets_are_reported_not_silently_chosen() {
+        #[derive(Clone, Default)]
+        struct CaptureBuf(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
+        impl std::io::Write for CaptureBuf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureBuf {
+            type Writer = CaptureBuf;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+        fn capture(f: impl FnOnce()) -> String {
+            let buf = CaptureBuf::default();
+            let sub = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::DEBUG)
+                .with_ansi(false)
+                .with_writer(buf.clone())
+                .finish();
+            tracing::subscriber::with_default(sub, f);
+            String::from_utf8_lossy(&buf.0.lock().clone()).into_owned()
+        }
+
+        let entry = |label: &str, cr: &[u8], secret: u8| KeyLogEntry {
+            label: label.to_string(),
+            client_random: cr.to_vec(),
+            secret: vec![secret; 48],
+        };
+        let cr = [0xC1u8; 32];
+
+        // Two generations of the same label for one client_random.
+        let logged = capture(|| {
+            let mut d = TlsDecryptor::new(None, crate::crypto::default_backend()).unwrap();
+            d.keylog_entries = vec![
+                entry("CLIENT_TRAFFIC_SECRET_0", &cr, 0x11),
+                entry("SERVER_TRAFFIC_SECRET_0", &cr, 0x22),
+                entry("CLIENT_TRAFFIC_SECRET_0", &cr, 0x33),
+            ];
+            d.ensure_sessions_populated();
+        });
+        assert!(
+            logged.contains("more than once with different values"),
+            "a disagreement must be reported, not resolved in silence:\n{logged}"
+        );
+
+        // NEGATIVE CONTROL: one generation must stay quiet, or the warning
+        // fires on every ordinary capture and stops meaning anything.
+        let quiet = capture(|| {
+            let mut d = TlsDecryptor::new(None, crate::crypto::default_backend()).unwrap();
+            d.keylog_entries = vec![
+                entry("CLIENT_TRAFFIC_SECRET_0", &cr, 0x11),
+                entry("SERVER_TRAFFIC_SECRET_0", &cr, 0x22),
+            ];
+            d.ensure_sessions_populated();
+        });
+        assert!(
+            !quiet.contains("more than once with different values"),
+            "an ordinary key log must not warn:\n{quiet}"
+        );
+    }
+
+    /// A zero ceiling must be refused, not obeyed.
+    ///
+    /// `--tls-lockon-window 0` reads like "do not search", and obeying it would
+    /// mean a capture that joined an established connection never decrypts —
+    /// silently, since a record that opens under no key looks exactly like a
+    /// record that is not SIP. The documented behaviour is that zero is
+    /// ignored; this pins it, with the non-zero case as the control proving
+    /// the setter is not simply inert.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn a_zero_lockon_window_is_refused_while_a_real_one_is_honoured() {
+        let client: IpAddr = "10.0.0.1".parse().unwrap();
+        let server: IpAddr = "10.0.0.2".parse().unwrap();
+        let sip = b"OPTIONS sip:t@example.com SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
+
+        // Zero is ignored, so a mid-stream record is still reachable.
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        d.set_lockon_window(0);
+        let record = seal_tls13_record(&key, &iv, 12, sip);
+        assert_eq!(
+            d.try_decrypt(&record, client, server).as_deref(),
+            Some(&sip[..]),
+            "a zero window must not disable lock-on and blind the run"
+        );
+
+        // CONTROL: a real ceiling does take effect, so the setter is not inert.
+        // One record at 5000 cannot be reached through a 4-wide search.
+        let (mut narrow, key2, iv2) = tls13_decryptor_and_client_keys();
+        narrow.set_lockon_window(4);
+        let far = seal_tls13_record(&key2, &iv2, 5_000, sip);
+        assert!(
+            narrow.try_decrypt(&far, client, server).is_none(),
+            "a 4-wide ceiling must genuinely bound one record's search"
+        );
+    }
+
+    /// The floor must never outrun the answer.
+    ///
+    /// It rises only on a FAILED search, so a connection captured from its
+    /// handshake must still open its very first record at sequence zero. This
+    /// is the case that would break if the floor were ever advanced
+    /// optimistically — and it is the overwhelmingly common one, so breaking
+    /// it would be worse than never reaching a long-lived trunk at all.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn a_connection_captured_from_its_handshake_still_opens_its_first_record() {
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        let sip = b"INVITE sip:t@example.com SIP/2.0\r\nCSeq: 1 INVITE\r\n\r\n";
+        let record = seal_tls13_record(&key, &iv, 0, sip);
+        let out = d
+            .try_decrypt(
+                &record,
+                "10.0.0.1".parse().unwrap(),
+                "10.0.0.2".parse().unwrap(),
+            )
+            .expect("sequence zero must open on the first record, with no search at all");
+        assert_eq!(out, sip);
+    }
+
+    /// A floor raised by one direction must not blind the other.
+    ///
+    /// The two directions count independently, so ruling out numbers for
+    /// client-to-server says nothing about server-to-client. Sharing one floor
+    /// would make a chatty direction advance past a quiet one's true sequence,
+    /// and the quiet direction would then never decrypt — silently, because a
+    /// record that opens under no key is indistinguishable from one that is
+    /// not SIP.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn a_floor_raised_by_one_direction_does_not_blind_the_other() {
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        d.set_lockon_window(64);
+        let client: IpAddr = "10.0.0.1".parse().unwrap();
+        let server: IpAddr = "10.0.0.2".parse().unwrap();
+        let sip = b"OPTIONS sip:t@example.com SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
+
+        // Drive the client direction's floor up with real records whose
+        // sequence is beyond what the narrow window can reach yet. Real key,
+        // real framing — the only reason they do not open is distance, which
+        // is exactly the condition that raises a floor.
+        for n in 0..8 {
+            let far = seal_tls13_record(&key, &iv, 900 + n, sip);
+            assert!(
+                d.try_decrypt(&far, client, server).is_none(),
+                "record {n} at 900+ must be out of reach of a 64-wide search from 0"
+            );
+        }
+
+        // The server direction has failed nothing, so its own low sequence
+        // must still be reachable.
+        let reply = seal_tls13_record(&key, &iv, 0, sip);
+        assert_eq!(
+            d.try_decrypt(&reply, server, client).as_deref(),
+            Some(&sip[..]),
+            "the untouched direction must still open at its own sequence"
         );
     }
 
@@ -3344,6 +3628,7 @@ mod tests {
                 locked_client: false,
                 locked_server: false,
                 lockon_attempts: 0,
+                lockon_floor: Vec::new(),
                 client_addr: None,
             },
         );

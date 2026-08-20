@@ -10,6 +10,48 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.116] - 2026-08-20
+
+### Fixed
+
+- **Two behaviours shipped in 0.5.115 without tests now have them, both
+  sides.** The warning that reports a traffic secret logged twice with
+  different values had none at all, and `--tls-lockon-window 0` was documented
+  as refused — because obeying it would blind every mid-stream capture, and
+  silently, since a record that opens under no key looks exactly like a record
+  that is not SIP — but nothing proved the guard existed. Each is pinned with a
+  negative control (an ordinary key log must stay quiet; a real ceiling must
+  genuinely bound a search) and each was mutation-tested: disabling the branch
+  it guards turns it red.
+
+- **A trunk older than the lock-on ceiling could never be read, however much
+  traffic arrived.** 0.5.115 raised the ceiling to a million records and made
+  the search widen as records fail, which reaches a trunk up for about a day.
+  It did not help one up for months: the search restarted from zero on every
+  record, so the ceiling bounded not just what a single record could cost but
+  what the connection could ever reach. At ten records a second a trunk is past
+  a million within a day and past a hundred million within a year.
+
+  The search now carries a floor. Failing over `[floor, floor + window)` proves
+  the record's number is at least `floor + window`, and a direction's records
+  only count upward, so the next record starts there rather than at zero.
+  Coverage accumulates across records while the cost of any single record stays
+  capped, which makes the ceiling a cost limit rather than a reachability
+  limit — a hundred records reach a hundred windows. Records the capture missed
+  only make the bound more conservative, never wrong, so the floor can lag the
+  true number but cannot pass it.
+
+  The floor is keyed by wire direction, `(src, dst)`, and not by client/server
+  role. Role is unknown until something decrypts — which is exactly the case
+  this serves — so every record is tried under both keys, and a role-keyed
+  floor let a failure in one role advance the other's counter, blinding a
+  direction that never saw the record. Keyed by address pair the inference
+  holds: both guesses failing for one direction proves that direction's own
+  number is past the span, whichever role turns out to be right. For the same
+  reason the floor is read once per record and advanced once after every guess
+  has failed; advancing between guesses would try one key over one span and the
+  other key over the next, which proves nothing about either.
+
 ## [0.5.115] - 2026-08-20
 
 ### Fixed

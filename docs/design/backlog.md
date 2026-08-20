@@ -291,6 +291,45 @@ Tiers:
 
 <!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
 
+- [ ] **SEC1 — key material is never locked into RAM, so it can be paged to
+  disk and outlive the process.** `disable_core_dumps()` treats a failed
+  `prctl(PR_SET_DUMPABLE, 0)` as fatal, and the reasoning it gives is exactly
+  right: "a later crash writes those keys to a file on disk that any local user
+  with read access can recover". Swap writes them to disk with no crash
+  required. Nothing in `src/` calls `mlock`, `mlockall` or `MCL_FUTURE`, so TLS
+  master secrets, derived record keys and SRTP keys are ordinary pageable
+  memory. `zeroize` on drop cannot help: it clears the RAM copy, not a page
+  already written to swap, which persists after the process exits and is
+  readable by anyone who can read the swap device or a later forensic image —
+  a strictly weaker attacker than the one `PR_SET_DUMPABLE` defends against
+  (who needs root, since a non-dumpable process is also non-ptraceable by a
+  non-root user). **Do:** lock the pages holding key material, or `mlockall`
+  early and account for `RLIMIT_MEMLOCK`. Decide the failure policy
+  deliberately and by the same rule as core dumps: if a failed `prctl` is fatal
+  because keys are resident, a failed lock is the same condition by a different
+  route. Note the ceiling is small by default (often 64 KiB) and a refusal must
+  not be silent. Consider whether `--keylog-fd` and the FIFO recipe should be
+  the documented default rather than a file, since a key log on disk is a
+  larger exposure than sipnab's memory either way.
+- [ ] **TLS13KU — a TLS 1.3 KeyUpdate is neither recognised nor exploited, and
+  it is both a hazard and the best answer to a months-old trunk.** RFC 8446
+  §5.3 resets the record sequence number to zero whenever the key changes, not
+  only at the start of a connection, and OpenSSL rekeys on its own once a
+  connection passes its AES-GCM record limit. So a trunk far beyond any
+  practical search window becomes trivially readable at its next rekey — the
+  counter returns to zero — provided sipnab holds the post-rekey secret, which
+  is exactly what a mid-life extractor attach supplies. sipnab currently treats
+  KeyUpdate as neither: `grep` finds it only in the warning added in 0.5.115.
+  The same event is also the hazard behind that warning, because
+  `tls13_update_key()` overwrites the traffic secret in place, so a secret
+  captured after a rekey cannot open records from before it. **Do:** write a
+  design first rather than patching this in. It needs post-handshake message
+  recognition, re-derivation via `HKDF-Expand-Label(secret, "traffic upd", "",
+  Hash.length)`, and the sequence reset applied to the right direction at the
+  right record — and every one of those failure modes is SILENT, producing a
+  session that looks ready and decrypts nothing, which is the exact symptom
+  this area keeps generating. Verify the reset against the current RFC text
+  rather than from memory before building anything.
 - [ ] **UPR1 — every published binary ships the uprobe backend that cannot name
   a peer.** `--uprobe-tls` already solves the problem operators hit with
   eCapture: it probes *every* mapped TLS library rather than making someone
