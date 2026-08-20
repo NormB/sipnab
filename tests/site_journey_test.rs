@@ -3760,9 +3760,15 @@ fn packaging_scripts_reference_existing_paths() {
     // home of the invariant their shared test count depends on. Attributed per
     // file before moving: HEAD has 0 in each, the working tree has 1 in each,
     // and the path they name exists — which is exactly what this gate checks.
+    // Raised 65 -> 70 by packaging/rpm/test-build-rpm.sh, the .rpm builder's
+    // first test harness. Attributed per file: .github/workflows/ci.yml gains
+    // exactly one (the new job's `run:` line), and the harness itself accounts
+    // for the other four, naming the builder it drives and the .deb harness it
+    // mirrors. packaging/rpm/build-rpm.sh and .github/workflows/release.yml
+    // both changed in the same commit and both still scan 3 and 12, unmoved.
     assert_eq!(
-        checked, 65,
-        "packaging path scan saw {checked} references, expected 65. More is \
+        checked, 70,
+        "packaging path scan saw {checked} references, expected 70. More is \
          fine — bump this. FEWER means the candidate extractor stopped matching \
          and unverified paths pass unseen."
     );

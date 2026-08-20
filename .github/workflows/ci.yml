@@ -263,6 +263,39 @@ jobs:
       - name: Test build-deb.sh (full + noaudio variants)
         run: bash packaging/deb/test-build-deb.sh
 
+  # Rpm packaging: the .deb and the Homebrew formula have each had a CI job for
+  # a while; build-rpm.sh had nothing, and ran for the first time on a release
+  # tag. That is how sipnab shipped four .rpms requiring Debian's
+  # libpcap.so.0.8, which no Fedora or RHEL host provides, and learned about it
+  # from a user (issue #244). Same shape as the deb job: rpmbuild over stub
+  # ELFs, no Rust toolchain, no root.
+  rpm-packaging:
+    # Bounds how long this job can hold the main-branch concurrency
+    # group, which never supersedes.
+    timeout-minutes: 15
+    name: RPM packaging (build-rpm.sh)
+    runs-on: ubuntu-latest
+    # GitHub-hosted on purpose: packaging script, arch-independent.
+    # thor-02 is ONE runner and runs one job at a time, so every job
+    # pinned there that does not need it delays every job that does.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
+      - name: Install rpmbuild and patchelf
+        # rpm and patchelf are what the release workflow installs before
+        # calling the builder; ubuntu-latest ships neither. gcc builds the
+        # harness's ELF fixtures — the runner has it, but naming it keeps the
+        # job from depending on an image detail nothing here controls.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm patchelf gcc
+      - name: Test build-rpm.sh (full + noaudio variants)
+        run: bash packaging/rpm/test-build-rpm.sh
+
   # Homebrew formula generation. update-formula.sh runs on every release to
   # produce sipnab.rb from SHA256SUMS.txt, and its 21-assertion test harness
   # sat in the tree unrun — no workflow referenced it, so the only thing that
@@ -594,8 +627,8 @@ jobs:
     # fuzz-check] while the comment above claimed "every other job" —
     # so install-sh and deb-package could both fail with the one required
     # check on main still green.
-    needs: [check, install-sh, deb-package, homebrew-formula, tsan-verdict,
-            bench-scripts, features, audit, fuzz-check]
+    needs: [check, install-sh, deb-package, rpm-packaging, homebrew-formula,
+            tsan-verdict, bench-scripts, features, audit, fuzz-check]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded

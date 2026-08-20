@@ -533,9 +533,15 @@ jobs:
         run: |
           # rpmbuild is preinstalled nowhere: the gnu jobs run as root in a
           # rust:1-bookworm container (no sudo binary), host runners need sudo.
+          #
+          # patchelf is what lets build-rpm.sh rewrite the packaged binary's
+          # DT_NEEDED from Debian's libpcap.so.0.8 to the libpcap.so.1 every
+          # RPM distribution ships. Without it the builder refuses to produce a
+          # package at all, rather than publishing one dnf cannot install
+          # (issue #244), so it belongs on the same line as rpm.
           SUDO=""; command -v sudo >/dev/null && SUDO=sudo
           $SUDO apt-get update || true
-          $SUDO apt-get install -y rpm
+          $SUDO apt-get install -y rpm patchelf
           version="${GITHUB_REF_NAME#v}"
           [ "$version" = "${GITHUB_REF_NAME}" ] && version="dev"
           # RPM versions must start with a digit too; mirror the .deb scheme
