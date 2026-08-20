@@ -291,6 +291,44 @@ Tiers:
 
 <!-- Added 2026-08-03. Analysis: docs/design/process-isolation-and-hot-path-cost.md -->
 
+- [ ] **PKG1 — `update-formula.sh` still meets real input for the first time on
+  a release tag.** This is the shape that shipped 0.5.113's `.rpm` broken
+  (#244): `build-rpm.sh` had no CI job at all and ran first on a tag, which is
+  the worst place to learn something is wrong, because the tag is cut and the
+  workflow is already publishing. The Homebrew generator is better protected —
+  [`packaging/homebrew/test-update-formula.sh`](https://github.com/NormB/sipnab/blob/main/packaging/homebrew/test-update-formula.sh) has 21 assertions and CI runs it
+  on every push — but the harness feeds it a **fixture** `SHA256SUMS.txt`. The
+  generator itself only ever runs against the **real** sums file on a tag, so
+  any failure that depends on real input (a new artifact name, a platform that
+  did not build, a change in asset ordering or count) is still discovered at
+  publish time, with the tag already pushed. "The harness passes" and "the
+  generator works on real input" are different claims, and only the first is
+  currently tested. **Do:** run the real generator in CI against the previous
+  release's `SHA256SUMS.txt`, fetched from the GitHub API, and assert the
+  formula it produces is well-formed — or, if that is judged too coupled to the
+  network, widen the fixture until it provably matches the shape of a real sums
+  file and say so where the fixture is defined. Either closes the gap; leaving
+  it means the next packaging regression is found the same way #244 was, by a
+  user.
+- [ ] **SRC1 — `-d <iface>` and `-L <hep-listen>` can never both be active, so
+  an operator must choose between reliable signaling and any media at all.**
+  `plan()` in [`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs) resolves the capture source as a single
+  if/else chain — File > Live > Uprobe > Hep > None — so one process gets
+  exactly one source. Raised by Dan Jenkins ([@danjenkins](https://github.com/danjenkins)) alongside #245,
+  from real deployment experience: when eCapture keylog extraction proves
+  fragile against a given daemon, OpenSIPS's own HEP mirror is a far more
+  robust way to obtain decrypted SIP, because it is already plaintext at the
+  source and involves no key extraction at all. But taking HEP costs RTP and
+  media-stream tracking **entirely** — a stream is only ever created from real
+  RTP packets, and RTCP arriving over HEP has nothing to attach to without
+  them. So the choice is signaling that always works with no media, or media
+  with signaling that depends on key extraction holding up. **Do:** allow a
+  live interface and a HEP listener in one process, so HEP supplies signaling
+  while the NIC supplies RTP for the same calls. The hard part is not the
+  plumbing but correlation — deciding when a HEP-delivered dialog and a
+  locally-captured stream belong to the same call — which overlaps the
+  provenance work in the leg-correlation thread. Worth designing rather than
+  bolting on.
 - [x] **G6 — `--cores N` is silently ignored on live capture.** `RunMode` is
   chosen by `cli.cores > 1 && cli.has_input() && !cli.multi_device`
   ([`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs)), so `--cores 8 -d eth0` falls through to
