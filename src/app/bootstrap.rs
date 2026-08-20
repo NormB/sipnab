@@ -1206,6 +1206,23 @@ pub fn launch(
         std::process::exit(1);
     }
 
+    // Same trigger as core dumps: key material is resident in this process.
+    // Reported either way, because a low RLIMIT_MEMLOCK is common and an
+    // operator who is told nothing cannot tell a locked run from an unlocked
+    // one. Not fatal -- see `privilege::lock_key_memory`.
+    if has_decrypt_keys {
+        match privilege::lock_key_memory() {
+            privilege::MemoryLock::Locked => {
+                tracing::info!(
+                    "Key material locked into RAM (decryption active); it cannot reach swap"
+                );
+            }
+            privilege::MemoryLock::Unlocked(reason) => {
+                tracing::warn!("Key material is NOT locked into RAM: {reason}");
+            }
+        }
+    }
+
     Launched {
         handle,
         rx,

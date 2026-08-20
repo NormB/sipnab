@@ -221,6 +221,60 @@ pub fn is_root() -> bool {
 ///
 /// The `prctl` (Linux) or `setrlimit` (macOS) failing, or being built for a
 /// platform with neither.
+/// Whether key material is resident in unswappable memory, and why not.
+///
+/// Reported rather than assumed: the limit that governs this (`RLIMIT_MEMLOCK`)
+/// is commonly 64 KiB on stock systems, so "we tried" and "it worked" are
+/// genuinely different outcomes and the operator has to be able to tell them
+/// apart. Claiming hardening that did not happen is the failure mode
+/// [`disable_core_dumps`] was rewritten to remove.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MemoryLock {
+    /// Pages are locked; key material cannot be written to swap.
+    Locked,
+    /// Pages are NOT locked, for this reason.
+    Unlocked(String),
+}
+
+/// Lock this process's pages into RAM so key material cannot reach swap.
+///
+/// `zeroize` clears a secret from memory when it is dropped. It cannot clear a
+/// copy the kernel already wrote to the swap device, which persists after the
+/// process exits and is readable by anyone who can read that device or a later
+/// forensic image — a weaker attacker than the one `PR_SET_DUMPABLE` defends
+/// against, who needs root and live ptrace. `disable_core_dumps` exists because
+/// "a crash writes those keys to a file on disk"; swap writes them to disk with
+/// no crash required, which is the same exposure by a quieter route.
+///
+/// `MCL_FUTURE` as well as `MCL_CURRENT`, because the secrets that matter are
+/// read from the key log AFTER this runs.
+///
+/// Not fatal on failure, unlike core dumps. `RLIMIT_MEMLOCK` is an environment
+/// property an operator often cannot change, and refusing to capture at all
+/// would trade a confidentiality control the deployment may not need for the
+/// availability it definitely does. The outcome is returned so the caller can
+/// say plainly which of the two happened.
+pub fn lock_key_memory() -> MemoryLock {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: mlockall takes a flags word and touches no memory we own.
+        let rc = unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
+        if rc == 0 {
+            return MemoryLock::Locked;
+        }
+        let err = std::io::Error::last_os_error();
+        MemoryLock::Unlocked(format!(
+            "mlockall failed: {err}. Key material can be written to swap, where \
+             it outlives this process and zeroize cannot reach it. Raise \
+             RLIMIT_MEMLOCK (ulimit -l, or LimitMEMLOCK= in the systemd unit)."
+        ))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        MemoryLock::Unlocked("locking pages is implemented on Linux only".to_string())
+    }
+}
+
 pub fn disable_core_dumps() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -757,6 +811,51 @@ mod tests {
             msg.contains("--user"),
             "Error should suggest --user flag, got: {msg}"
         );
+    }
+
+    /// Locking must actually lock, not merely return success.
+    ///
+    /// Asserts the EFFECT the kernel reports — `VmLck` in `/proc/self/status`
+    /// counts kilobytes this process has pinned — rather than the return value,
+    /// because a function that returns `Locked` while pinning nothing is
+    /// exactly the "claims hardening it did not do" failure this is meant to
+    /// close. Skips rather than fails where `RLIMIT_MEMLOCK` forbids it, since
+    /// that is an environment limit and not a defect: the point is that a
+    /// SUCCESSFUL return implies pinned pages.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn locking_key_memory_pins_pages_the_kernel_reports() {
+        fn vmlck_kb() -> u64 {
+            std::fs::read_to_string("/proc/self/status")
+                .ok()
+                .and_then(|s| {
+                    s.lines()
+                        .find(|l| l.starts_with("VmLck:"))
+                        .and_then(|l| l.split_whitespace().nth(1)?.parse().ok())
+                })
+                .unwrap_or(0)
+        }
+
+        let before = vmlck_kb();
+        match lock_key_memory() {
+            MemoryLock::Locked => {
+                let after = vmlck_kb();
+                assert!(
+                    after > before,
+                    "lock_key_memory reported Locked but the kernel pinned nothing \
+                     (VmLck {before} kB -> {after} kB); key material could still \
+                     reach swap"
+                );
+                // SAFETY: releasing what this test pinned; no memory is freed.
+                unsafe { libc::munlockall() };
+            }
+            MemoryLock::Unlocked(reason) => {
+                assert!(
+                    reason.contains("RLIMIT_MEMLOCK") || reason.contains("mlockall"),
+                    "a refusal must name what to change, not just fail: {reason}"
+                );
+            }
+        }
     }
 
     /// `disable_core_dumps` never panics regardless of permission outcome.

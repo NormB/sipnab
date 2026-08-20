@@ -10,6 +10,73 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.117] - 2026-08-20
+
+### Security
+
+### Fixed
+
+- **A TLS 1.3 KeyUpdate ended decryption for the rest of the connection.**
+  RFC 8446 §5.3 is explicit: "The 64-bit sequence number is reset to zero at
+  each key change". A rekey therefore changes two things at once — the peer
+  seals under a new application traffic secret, and its record counter restarts
+  — and sipnab followed neither. Every later record from that direction was
+  sealed under a secret it did not hold at a number it was not expecting, which
+  looks exactly like a session whose keys were simply wrong: no error, nothing
+  decrypts, and the operator is told the keys loaded fine. On a long-lived
+  carrier trunk a rekey is not an edge case; OpenSSL performs one on its own
+  once a connection passes its AES-GCM record limit.
+
+  sipnab now recognises the post-handshake message — inner content type 22
+  carrying handshake type 24, inside an ordinary application_data record — and
+  derives the next secret the way the RFC specifies,
+  `HKDF-Expand-Label(secret, "traffic upd", "", Hash.length)` (§4.6.3), rather
+  than needing it extracted again. The record counter for that direction
+  returns to zero with it.
+
+  Only the SENDER's direction rotates. A KeyUpdate carrying `update_requested`
+  obliges the peer to send its own, which arrives as its own record and is
+  followed when it does; inferring the peer's rotation from this message would
+  rotate a direction that has not actually changed.
+
+  This is also the answer to a trunk older than any practical search window:
+  the counter returns to zero at the rekey, so a connection that has been up
+  for months becomes readable at its next key change without restarting it.
+
+  The negative control matters as much as the fix. Rotating on anything but a
+  real KeyUpdate discards a working secret mid-connection and causes the very
+  failure this prevents, so a decoy is tested: application data whose first
+  byte is 0x18 must decrypt as data and must not ratchet. That control was
+  written weaker first — with ordinary SIP text, which never starts with 0x18 —
+  and passed while the type check was removed. Both cases are now
+  mutation-verified.
+
+- **Key material could be written to swap, where it outlives the process.**
+  `disable_core_dumps` is fatal on failure, and its reasoning is exact: "a
+  later crash writes those keys to a file on disk that any local user with read
+  access can recover". Swap writes them to disk with no crash required. Nothing
+  locked those pages, so TLS master secrets, derived record keys and SRTP keys
+  were ordinary pageable memory — and `zeroize` on drop cannot help, because it
+  clears the RAM copy, not a page the kernel already wrote to the swap device.
+  That copy survives the process and is readable by anyone who can read the
+  device or a later forensic image: a weaker attacker than the one
+  `PR_SET_DUMPABLE` defends against, who needs root and live ptrace.
+
+  sipnab now calls `mlockall(MCL_CURRENT | MCL_FUTURE)` when key material is
+  loaded, on the same trigger as the core-dump hardening. `MCL_FUTURE` matters
+  as much as `MCL_CURRENT`, because the secrets are read from the key log after
+  that point.
+
+  Unlike core dumps this is **not** fatal on failure. `RLIMIT_MEMLOCK` is
+  commonly 64 KiB on stock systems and an operator often cannot change it;
+  refusing to capture would trade a control the deployment may not need for the
+  availability it certainly does. The outcome is reported either way — locked,
+  or not locked and why, naming `ulimit -l` and `LimitMEMLOCK=` — because
+  claiming hardening that did not happen is the failure the core-dump path was
+  rewritten to remove. The test asserts the kernel's own `VmLck` rather than
+  the return value, and is mutation-verified: a version that reports success
+  while pinning nothing fails it.
+
 ## [0.5.116] - 2026-08-20
 
 ### Fixed

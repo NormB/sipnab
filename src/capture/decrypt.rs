@@ -251,6 +251,15 @@ struct TlsSession {
     /// role turns out to be right. Two entries in practice, so a Vec beats a
     /// map.
     lockon_floor: Vec<((IpAddr, IpAddr), u64)>,
+    /// Current TLS 1.3 traffic secrets, kept so a KeyUpdate can ratchet them.
+    ///
+    /// `HKDF-Expand-Label(secret, "traffic upd", "", Hash.length)` needs the
+    /// secret itself, not the key and IV derived from it, so a session that
+    /// keeps only the derived material cannot follow a rekey. Empty for TLS
+    /// 1.2, which has no KeyUpdate.
+    client_secret: Vec<u8>,
+    /// See [`TlsSession::client_secret`].
+    server_secret: Vec<u8>,
     /// Failed lock-on attempts on this session, which widen the next search.
     ///
     /// A wide window is free when the answer is near — the search stops at the
@@ -1025,6 +1034,8 @@ impl TlsDecryptor {
         Some((
             TlsSessionKey { client_random: cr },
             TlsSession {
+                client_secret: Vec::new(),
+                server_secret: Vec::new(),
                 version: SessionVersion::Tls12,
                 client_write_key: ck,
                 server_write_key: sk,
@@ -1247,6 +1258,8 @@ impl TlsDecryptor {
                             session_key.clone(),
                             TlsSession {
                                 version: SessionVersion::Tls13,
+                                client_secret: cs.clone(),
+                                server_secret: ss.clone(),
                                 client_write_key: ck,
                                 server_write_key: sk,
                                 client_write_iv: civ,
@@ -1318,6 +1331,8 @@ impl TlsDecryptor {
                             sessions.insert(
                                 session_key.clone(),
                                 TlsSession {
+                                    client_secret: Vec::new(),
+                                    server_secret: Vec::new(),
                                     version: SessionVersion::Tls12,
                                     client_write_key: ck,
                                     server_write_key: sk,
@@ -1493,7 +1508,7 @@ fn try_decrypt_with_session(
         // and for TLS 1.3, where the server's NewSessionTickets ride inside
         // ApplicationData records and offset it the same way.
         let mut trials = 0u64;
-        let decrypted: Option<(Vec<u8>, u64)> = match version {
+        let decrypted: Option<(Vec<u8>, u64, Option<u8>)> = match version {
             SessionVersion::Tls13 => decrypt_tls13_record(
                 crypto,
                 write_key,
@@ -1511,7 +1526,8 @@ fn try_decrypt_with_session(
                 window,
                 record,
                 &mut trials,
-            ),
+            )
+            .map(|(pt, seq)| (pt, seq, None)),
         };
         if !locked {
             *lockon_budget = lockon_budget.saturating_sub(trials);
@@ -1537,7 +1553,7 @@ fn try_decrypt_with_session(
             }
         }
 
-        if let Some((plaintext, used_seq)) = decrypted {
+        if let Some((plaintext, used_seq, inner_type)) = decrypted {
             // Update direction tracking and sequence number
             if session.client_addr.is_none() {
                 session.client_addr = Some(if is_client_to_server {
@@ -1553,6 +1569,61 @@ fn try_decrypt_with_session(
             } else {
                 session.sequence_server = used_seq + 1;
                 session.locked_server = true;
+            }
+
+            // A post-handshake KeyUpdate (inner type 22 = handshake, handshake
+            // type 24) means this sender has rotated its application traffic
+            // secret and, per RFC 8446 5.3, restarted its record counter at
+            // zero. Follow it, or every later record from this direction is
+            // sealed under a secret sipnab does not hold at a number it is not
+            // expecting — indistinguishable from keys that were simply wrong.
+            //
+            // Only the SENDER's direction rotates here. A KeyUpdate carrying
+            // update_requested obliges the peer to send its own, which arrives
+            // as its own record and is handled when it does; inferring the
+            // peer's rotation from this message would rotate a direction that
+            // has not actually changed.
+            if version == SessionVersion::Tls13
+                && inner_type == Some(22)
+                && plaintext.first() == Some(&24)
+            {
+                let current = if is_client_to_server {
+                    &session.client_secret
+                } else {
+                    &session.server_secret
+                };
+                if !current.is_empty() {
+                    let info = hkdf_expand_label_info(b"traffic upd", &[], current.len() as u16);
+                    let hash = if current.len() == 48 {
+                        HashAlg::Sha384
+                    } else {
+                        HashAlg::Sha256
+                    };
+                    if let Ok(next) = crypto.hkdf_expand(current, &info, current.len(), hash)
+                        && let Ok((k, iv)) = derive_key_iv(crypto, &next, session.cipher_suite)
+                    {
+                        tracing::info!(
+                            "TLS 1.3 KeyUpdate followed; {} traffic secret rotated and its \
+                             record counter reset to zero",
+                            if is_client_to_server {
+                                "client"
+                            } else {
+                                "server"
+                            }
+                        );
+                        if is_client_to_server {
+                            session.client_secret = next;
+                            session.client_write_key = k;
+                            session.client_write_iv = iv;
+                            session.sequence_client = 0;
+                        } else {
+                            session.server_secret = next;
+                            session.server_write_key = k;
+                            session.server_write_iv = iv;
+                            session.sequence_server = 0;
+                        }
+                    }
+                }
             }
 
             return Some(plaintext);
@@ -1599,7 +1670,7 @@ fn decrypt_tls13_record(
     window: u64,
     record: &TlsRecord,
     trials: &mut u64,
-) -> Option<(Vec<u8>, u64)> {
+) -> Option<(Vec<u8>, u64, Option<u8>)> {
     let aad = build_record_aad(record);
     for seq in seq_start..=seq_start.saturating_add(window) {
         let mut nonce = write_iv.to_vec();
@@ -1612,9 +1683,11 @@ fn decrypt_tls13_record(
         }
         *trials += 1;
         if let Ok(mut pt) = crypto.aes_gcm_decrypt(write_key, &nonce, &aad, &record.payload) {
-            // TLS 1.3: strip inner content type and zero padding.
-            strip_tls13_padding(&mut pt);
-            return Some((pt, seq));
+            // TLS 1.3: strip inner content type and zero padding. The type is
+            // carried out, not dropped: a post-handshake KeyUpdate arrives as
+            // inner type 22 inside an application_data record.
+            let inner = strip_tls13_padding(&mut pt);
+            return Some((pt, seq, inner));
         }
     }
     None
@@ -1713,7 +1786,7 @@ fn build_record_aad(record: &TlsRecord) -> [u8; 5] {
 ///
 /// We strip the trailing content type byte and any zero padding. The
 /// content type byte is always the last non-zero byte.
-fn strip_tls13_padding(plaintext: &mut Vec<u8>) {
+fn strip_tls13_padding(plaintext: &mut Vec<u8>) -> Option<u8> {
     // TLS 1.3 decrypted record structure:
     //   [actual_content] [zero_padding (0+)] [content_type_byte]
     //
@@ -1723,16 +1796,23 @@ fn strip_tls13_padding(plaintext: &mut Vec<u8>) {
     // 2. Remove any trailing zero-padding bytes.
 
     if plaintext.is_empty() {
-        return;
+        return None;
     }
 
     // Step 1: Pop the content type byte (last byte in the record).
-    plaintext.pop();
+    //
+    // Returned rather than dropped: a TLS 1.3 record's REAL type lives here,
+    // and a post-handshake KeyUpdate arrives as inner type 22 inside an
+    // ordinary application_data record. Discarding this byte made that
+    // message invisible, and with it the fact that the peer had rotated its
+    // traffic secret and reset its sequence number to zero (RFC 8446 5.3).
+    let inner = plaintext.pop();
 
     // Step 2: Strip any trailing zero-padding bytes.
     while plaintext.last() == Some(&0) {
         plaintext.pop();
     }
+    inner
 }
 
 /// Format first 4 bytes of a client random as a short session ID for logs.
@@ -2290,11 +2370,24 @@ mod tests {
     /// key AND the right sequence number — which is the property under test.
     #[cfg(feature = "tls")]
     fn seal_tls13_record(key: &[u8], iv: &[u8], seq: u64, plaintext: &[u8]) -> TlsRecord {
+        seal_tls13_inner(key, iv, seq, plaintext, 23)
+    }
+
+    /// Seal with an explicit INNER content type. A post-handshake KeyUpdate is
+    /// inner type 22 inside an ordinary application_data record, so a test for
+    /// it cannot use the application-data sealer.
+    fn seal_tls13_inner(
+        key: &[u8],
+        iv: &[u8],
+        seq: u64,
+        plaintext: &[u8],
+        inner_type: u8,
+    ) -> TlsRecord {
         use ring::aead;
 
         // TLS 1.3 inner plaintext: content ‖ real content type.
         let mut inner = plaintext.to_vec();
-        inner.push(23);
+        inner.push(inner_type);
 
         // Per-record nonce (RFC 8446 §5.3): write_iv XOR the 64-bit sequence
         // number, right-aligned in the 12-byte IV.
@@ -2725,6 +2818,105 @@ mod tests {
                  searched different widths"
             );
         }
+    }
+
+    /// A TLS 1.3 KeyUpdate rotates the traffic secret and resets the record
+    /// counter to zero — RFC 8446 §5.3, "The 64-bit sequence number is reset
+    /// to zero at each key change".
+    ///
+    /// Until this was handled, a rekey ended decryption for the rest of the
+    /// connection: every later record was sealed under a secret sipnab did not
+    /// have, at a counter it was not expecting, and the failure looked exactly
+    /// like a session whose keys were simply wrong. It is also the one thing
+    /// that makes a trunk older than any search window readable again, since
+    /// the counter returns to zero at the rekey.
+    ///
+    /// The peer's new secret is derived, not extracted:
+    /// `HKDF-Expand-Label(secret, "traffic upd", "", Hash.length)` (§4.6.3).
+    #[cfg(feature = "tls")]
+    #[test]
+    fn a_key_update_ratchets_the_secret_and_resets_the_counter() {
+        use crate::crypto::RingCryptoBackend;
+
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        let client: IpAddr = "10.0.0.1".parse().unwrap();
+        let server: IpAddr = "10.0.0.2".parse().unwrap();
+        let sip = b"OPTIONS sip:t@example.com SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
+
+        // Ordinary traffic first, so the direction is locked on and counting.
+        let first = seal_tls13_record(&key, &iv, 0, sip);
+        assert!(
+            d.try_decrypt(&first, client, server).is_some(),
+            "the pre-rekey record must decrypt"
+        );
+
+        // KeyUpdate: handshake type 24, length 1, update_not_requested(0),
+        // carried as inner type 22 inside an application_data record.
+        let ku = seal_tls13_inner(&key, &iv, 1, &[24, 0, 0, 1, 0], 22);
+        d.try_decrypt(&ku, client, server);
+
+        // The peer now seals under the ratcheted secret, from sequence zero.
+        let next_secret = {
+            let info = hkdf_expand_label_info(b"traffic upd", &[], 32);
+            RingCryptoBackend
+                .hkdf_expand(&[0x11u8; 32], &info, 32, HashAlg::Sha256)
+                .expect("ratchet must derive")
+        };
+        let (nk, niv) =
+            derive_key_iv(&RingCryptoBackend, &next_secret, CipherSuite::Aes128Gcm).unwrap();
+        let after = seal_tls13_inner(&nk, &niv, 0, sip, 23);
+
+        assert_eq!(
+            d.try_decrypt(&after, client, server).as_deref(),
+            Some(&sip[..]),
+            "after a KeyUpdate the ratcheted secret at sequence zero must open"
+        );
+    }
+
+    /// NEGATIVE CONTROL: ordinary application data must NOT ratchet.
+    ///
+    /// Rotating on anything but a real KeyUpdate would throw away the working
+    /// secret mid-connection and end decryption — the exact failure this
+    /// feature exists to prevent, caused by the feature itself.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn ordinary_application_data_does_not_ratchet_the_secret() {
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        let client: IpAddr = "10.0.0.1".parse().unwrap();
+        let server: IpAddr = "10.0.0.2".parse().unwrap();
+        let sip = b"OPTIONS sip:t@example.com SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
+
+        for seq in 0..3u64 {
+            let r = seal_tls13_record(&key, &iv, seq, sip);
+            assert_eq!(
+                d.try_decrypt(&r, client, server).as_deref(),
+                Some(&sip[..]),
+                "record {seq} must decrypt under the ORIGINAL secret; a spurious \
+                 ratchet would have discarded it"
+            );
+        }
+
+        // The guard is the INNER TYPE, not the first byte. Application data
+        // whose first byte happens to be 24 must not be mistaken for a
+        // KeyUpdate — without this the control passes while the type check is
+        // removed, because ordinary SIP never starts with 0x18 by accident.
+        let looks_like_ku: Vec<u8> = [24u8, 0, 0, 1, 0]
+            .into_iter()
+            .chain(*b" not a keyupdate")
+            .collect();
+        let decoy = seal_tls13_record(&key, &iv, 3, &looks_like_ku);
+        assert_eq!(
+            d.try_decrypt(&decoy, client, server).as_deref(),
+            Some(&looks_like_ku[..]),
+            "a decoy payload must decrypt as data"
+        );
+        let after = seal_tls13_record(&key, &iv, 4, sip);
+        assert_eq!(
+            d.try_decrypt(&after, client, server).as_deref(),
+            Some(&sip[..]),
+            "the decoy must NOT have ratcheted the secret: inner type 23 is data, \
+             whatever its first byte looks like"
+        );
     }
 
     /// The floor must never outrun the answer.
@@ -3769,6 +3961,8 @@ mod tests {
         d.sessions.insert(
             key.clone(),
             TlsSession {
+                client_secret: Vec::new(),
+                server_secret: Vec::new(),
                 version: SessionVersion::Tls12,
                 client_write_key: vec![0u8; 16],
                 server_write_key: vec![0u8; 16],

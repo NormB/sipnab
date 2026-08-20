@@ -234,16 +234,24 @@ derived SRTP session keys — is zeroized on drop and never printed, logged, or
 serialized to any output surface.
 
 **Why.** D11. A capture tool holding decryption material is a high-value target
-on disk and in a core dump.
+on disk, in a core dump, and in swap. Zeroizing on drop addresses none of the
+last one on its own: it clears the RAM copy, not a page the kernel already
+wrote to the swap device, which outlives the process.
 
 **Enforced by.** `zeroize` on the keylog material in
 [`capture/tls.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/tls.rs) (the `tls` feature pulls the crate
 in), a hand-rolled `Drop` zeroization in
 [`rtp/srtp.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/srtp.rs) so non-`tls` builds do not leak session
-keys to freed heap, and redaction on the output paths.
+keys to freed heap, redaction on the output paths, and
+`privilege::lock_key_memory` (`mlockall(MCL_CURRENT | MCL_FUTURE)`, called on
+the same trigger as the core-dump hardening) so the kernel cannot page them
+out in the first place. That last one is best-effort and says so: a low
+`RLIMIT_MEMLOCK` is common and not always the operator's to change, so it
+reports whether it succeeded rather than claiming hardening it did not do.
 
-**Fails as.** Keys recoverable from a crash report or a core file — an
-exposure with no error message attached to it.
+**Fails as.** Keys recoverable from a crash report, a core file, or a swap
+device read long after the process exited — an exposure with no error message
+attached to it.
 
 ## 6. A bearer token is valid on exactly one surface, and only as far as its scope
 
