@@ -3087,7 +3087,7 @@ a web-filtering appliance silently discarding UDP. sipnab read one of them as
   **Corrected 2026-08-06:** this used to end *"multi-packet fragment reassembly
   (B/E spanning) is a documented follow-up"*, and that follow-up shipped —
   `SctpReassembler` ([`src/capture/parse.rs:1782`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1782)), constructed on every
-  `PacketProcessor` ([`src/capture/mod.rs:723`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs#L723), `:651`, `:686`). The P2 entry
+  `PacketProcessor` ([`src/capture/mod.rs:760`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs#L760), `:651`, `:686`). The P2 entry
   above records it as done. Two entries in one file disagreeing about the same
   feature is the cheapest kind of wrong to produce and the most expensive to
   notice, because each one reads as authoritative on its own.

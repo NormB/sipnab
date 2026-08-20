@@ -37,6 +37,12 @@ pub mod live;
 #[cfg(feature = "native")]
 pub mod mapped;
 /// Reading a pcapng whose interfaces disagree, which libpcap refuses.
+///
+/// Gated on `native` like its siblings: the decoder is `pcap-file`, which only
+/// `native` pulls in. Declaring it unconditionally broke every feature
+/// combination built without `native` — caught by the gate's `tls`-only and
+/// `wasm` legs, not by `--all-features`, which can never see a missing feature.
+#[cfg(feature = "native")]
 pub mod merged;
 #[cfg(feature = "native")]
 pub mod output_guard;
