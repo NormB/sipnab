@@ -20,23 +20,23 @@ re-run every table below. 0.5.47 dates the recipe, not this run.
 > the probe that decides whether a capture is a merged pcapng. It read the
 > ENTIRE file into memory and then rejected it on the first four bytes, so
 > every offline run over an ordinary pcap loaded the whole capture, threw it
-> away, and only then started work. Three call sites run it before a single
-> packet is read. On this 128 MB corpus that cost 0.06 s of a 0.16 s run —
+> away, and only then started work. Three call sites run it before the reader
+> touches a packet. On this 128 MB corpus that cost 0.06 s of a 0.16 s run —
 > four-core reconstruction fell from 3.29M packets per second to 2.40M, and
 > resident memory rose from 96 MiB to 143 MiB.
 >
 > The figures this page carried for 0.5.108 were never wrong: the released
 > 0.5.108 artifact re-measures at 3.30M on the same host today. What was wrong
 > was that the page kept asserting them while the shipped tool no longer met
-> them. Every release from 0.5.108 to 0.5.117 measures ~3.26M; 0.5.118 is the
-> first that does not.
+> them. Every release from 0.5.108 to 0.5.117 measures ~3.26M, and 0.5.118 is
+> the first that does not.
 >
 > [`bench/regression-gate.sh`](../bench/regression-gate.sh) exists to catch
 > exactly this and did not, because its baseline still recorded 0.5.104's
 > 2.28M. A drop to 2.40M is 105% of that, so the gate passed while the tool
 > lost a quarter of its throughput — the failure its own baseline file warns
-> about in writing, that a stale baseline "does not merely under-report; it
-> silently widens the band it advertises". The baseline now records this
+> about in writing: a stale baseline "silently widens the band it
+> advertises". The baseline now records this
 > measurement, so the same regression trips it.
 
 The generator reproduces the documented corpus composition exactly:
@@ -46,8 +46,8 @@ The generator reproduces the documented corpus composition exactly:
 **Measured on the released 0.5.121 artifact, checksum-verified, 2026-08-21, on
 an idle host**, against the released 0.5.108 and 0.5.117 artifacts as controls
 and a local release build of the fix. Every artifact figure below is a
-published binary whose checksum verifies; the 0.5.122 column is a local release
-build, marked as one, because at the time of measuring the fix had not shipped.
+published binary whose checksum verifies. The 0.5.122 column is a local
+release build, marked as one, because at the time of measuring the fix had not shipped.
 The regression, its boundary and its repair therefore come from one afternoon
 and one corpus rather than from a remembered number. Nothing here is comparable to the
 pre-0.5.47 figures, which came from an unpublished corpus nobody can rebuild.
@@ -99,8 +99,8 @@ discover:
 `--cores N` shards by host-pair across worker threads. On the 535k-packet
 fixed-state corpus (100 Call-IDs, 200 streams):
 
-The middle column is what shipped for ten releases; the right is the same
-corpus once `is_merged` stopped reading it. Each is median-of-5 after a
+The middle column is what shipped for ten releases. The right-hand column is
+the same corpus once `is_merged` stopped reading it. Each is median-of-5 after a
 discarded warmup, on the same idle host:
 
 | cores | 0.5.117 | 0.5.121 | 0.5.122 |      |
