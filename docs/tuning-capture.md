@@ -47,8 +47,9 @@ interface drops and wastes memory while the real problem goes unaddressed.
 
 ### Where the two numbers appear
 
-Both counters are reported on four surfaces, kept apart on every one of them,
-so whichever you are looking at can answer "which kind of drop is this?"
+sipnab reports both counters on four surfaces and keeps them apart on every
+one of them, so whichever you are looking at can answer "which kind of drop is
+this?"
 
 | Surface | How they appear |
 |---|---|

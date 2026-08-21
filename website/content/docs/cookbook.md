@@ -1229,7 +1229,7 @@ The analyze page supports `.pcap`, `.pcapng`, `.cap` (pcap format), and their gz
 sipnab -N -I capture.pcap --lint
 ```
 
-Each finding names what was seen and what the RFC requires:
+Each finding names what sipnab saw and what the RFC requires:
 
 ```text
 error: SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX [call-id@host] §12.1.1 makes the
@@ -1297,7 +1297,8 @@ sipnab -N -I capture.pcap --json-stun
 
 You get one record per STUN/TURN transaction and per TURN allocation, each
 carrying a `record` field naming which it is. That is what tells you whether
-the endpoint ever learned its public address, whether the relay was allocated,
+the endpoint ever learned its public address, whether the relay allocation
+succeeded,
 and whether the candidate it then advertised in SDP matches either.
 
 **Pitfalls:**
@@ -1319,7 +1320,7 @@ sipnab -N -I capture.pcap --group-by call-id
 sipnab -N -I capture.pcap --group-by src --json
 ```
 
-Messages sharing the field are emitted together. They are **reordered, not
+sipnab emits messages sharing the field together, **reordered but not
 reformatted**, so `--json` output stays one valid object per line and anything
 downstream keeps working.
 
@@ -1374,11 +1375,11 @@ VERIFIED  capture.pcap#3@86eadc8a324bb487
 00000030  30 20 34 30 33 20 46 6f  72 62 69 64 64 65 6e 0d  |0 403 Forbidden.|
 ```
 
-**`VERIFIED` is the word that matters.** With the digest, the frame's bytes are
-checked against it, so a capture that was rotated, truncated or recompressed
-since the pointer was made is **refused** rather than answered with whatever now
-sits at that position. Without a digest — the form a human types — the frame is
-printed and marked `UNVERIFIED`, because there is nothing to check it against.
+**`VERIFIED` is the word that matters.** With the digest, sipnab checks the
+frame's bytes against it and **refuses** a capture that has since rotated,
+truncated or recompressed, rather than answering with whatever now sits at that
+position. Without a digest — the form a human types — sipnab prints the frame
+and marks it `UNVERIFIED`, because it has nothing to check against.
 
 **Pitfalls:**
 
@@ -1402,9 +1403,9 @@ Before loading one someone sent you, know what you are trusting:
 
 **A plugin has no imports at all.** Not a restricted set — none. No WASI, no
 filesystem, no network, no clock, not even logging. A module that imports
-anything fails to instantiate. CPU is bounded by fuel metering, memory by a
-16 MiB ceiling, replies by 4 MiB, and a trap or exhausted budget fails *that
-dialog's* plugin findings and nothing else.
+anything fails to instantiate. Fuel metering bounds CPU, a 16 MiB ceiling
+bounds memory, 4 MiB bounds each reply, and a trap or exhausted budget fails
+*that dialog's* plugin findings and nothing else.
 
 What is **not** bounded is what it reads: a plugin sees every dialog sipnab
 reconstructs, including `Authorization` headers and `MESSAGE` bodies. It cannot
@@ -1422,8 +1423,8 @@ run a script — from someone you trust, or after reading it.
 
 **Problem:** RTP loss figures look terrible. Before you escalate to the carrier, you need to know the capture itself was not the thing dropping packets.
 
-A lossy capture does not produce a smaller answer; it produces a **wrong** one.
-A dropped RTP packet is counted as network loss that never happened, so MOS
+A lossy capture does not produce a smaller answer. It produces a **wrong** one.
+sipnab counts a dropped RTP packet as network loss that never happened, so MOS
 reads worse than the call actually was.
 
 sipnab polls libpcap's kernel counters once a second and reports two numbers
@@ -1459,7 +1460,7 @@ Live capture on 'eth0' finished: 4821003 packets, no drops
 **Pitfalls:**
 
 - Operators routinely respond to *any* drop by raising `-B`. That does nothing at all for interface drops and wastes memory while the real problem goes unaddressed.
-- Both counters zero does not mean the capture is complete: a frame can arrive intact and still be unreadable, or be cut short by `--snaplen`. `--report` counts those separately. See [tuning](@/docs/tuning-capture.md).
+- Both counters zero does not mean the capture is complete: a frame can arrive intact and still be unreadable, or `--snaplen` can cut it short. `--report` counts those separately. See [tuning](@/docs/tuning-capture.md).
 
 ---
 
@@ -1477,14 +1478,14 @@ sipnab -N -I capture.pcap --group-by src --filter "method == 'REGISTER'"
 
 The pattern to look for is a `401`/`403` answered by an immediate retry with the
 same credentials. That is a client that treats an auth challenge as a transient
-error, and it will not stop on its own:
+error, and it does not stop on its own:
 
 ```text
 {"status_code":403,"reason":"Forbidden","cseq":{"number":2,"method":"REGISTER"},
  "ua":"SynthSwitch/1.0","from":"Alice <sip:alice@example.com>"}
 ```
 
-`ua` and `from` are what you take to the desk that owns the endpoint; the
+`ua` and `from` are what you take to the desk that owns the endpoint. The
 `frame` field in the same object is what proves it (recipe 20).
 
 **Pitfalls:**
@@ -1534,12 +1535,12 @@ sipnab -N -I capture.pcap --report                                  # RFC 2833 /
 ```
 
 In the SDP, look for `a=rtpmap:101 telephone-event/8000` on **both** sides. If
-one side offers it and the other does not, that side will send in-band audio
-tones instead — which survive G.711 and are destroyed by G.729.
+one side offers it and the other does not, that side sends in-band audio tones
+instead — which survive G.711 and which G.729 destroys.
 
 **Pitfalls:**
 
-- In-band DTMF through a low-bitrate codec is not a bug you can fix in signaling; the tones are gone before they reach the IVR.
+- In-band DTMF through a low-bitrate codec is not a bug you can fix in signaling. The codec destroys the tones before they reach the IVR.
 - A `telephone-event` payload type that differs between offer and answer (101 vs 96) is legal and still works. A mismatch in whether it exists at all is not.
 
 ---
@@ -1568,7 +1569,7 @@ Homer authoritative.
 **Pitfalls:**
 
 - sipnab **refuses** a non-loopback `--hep-listen` unless you pass `--hep-allow` or `--hep-auth`. That is deliberate: an open HEP port accepts forged call records from anyone who can reach it.
-- `--hep-auth` travels in cleartext inside the datagram. It defeats blind spoofing; it does not survive an on-path sniffer. Tunnel HEP over WireGuard or IPsec on an untrusted path.
+- `--hep-auth` travels in cleartext inside the datagram. It defeats blind spoofing, but it does not survive an on-path sniffer. Tunnel HEP over WireGuard or IPsec on an untrusted path.
 - Give each agent its own `--hep-id`, or the collector cannot tell your nodes apart.
 
 ---
@@ -1594,7 +1595,7 @@ What the difference tells you:
 
 **Pitfalls:**
 
-- Clocks. Two captures from two machines are only comparable if their clocks are, and a few hundred milliseconds of skew will make a normal exchange look like a retransmission. Check NTP before reading timing differences as evidence.
+- Clocks. Two captures from two machines are only comparable if their clocks are, and a few hundred milliseconds of skew makes a normal exchange look like a retransmission. Check NTP before reading timing differences as evidence.
 - A B2BUA **changes the `Call-ID`** between its legs by design, so this recipe compares a proxy's two sides, not a B2BUA's. Correlate those by `From`/`To` and time instead.
 
 ---
@@ -1637,7 +1638,7 @@ journalctl -u sipnab -f
 
 **Pitfalls:**
 
-- `--syslog` is what makes `journalctl` useful; without it the interesting output goes to stdout and is merged without structure.
+- `--syslog` is what makes `journalctl` useful. Without it the interesting output goes to stdout, where journald merges it without structure.
 - Granting `CAP_NET_RAW` via `AmbientCapabilities` is what lets the unit run without being root at all. Do not add `User=root` back "to be safe" — that undoes it.
 - A live run with no `-O` writes no capture file. If you want the packets kept, say where.
 

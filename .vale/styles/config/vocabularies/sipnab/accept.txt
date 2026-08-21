@@ -732,3 +732,5 @@ zeroized
 zeroizes
 zeroizing
 zsh
+IPsec
+WireGuard
