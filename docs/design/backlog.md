@@ -328,6 +328,25 @@ Tiers:
   depends on one proves nothing in CI. **Separately, make the corpus gate count
   what it could not open and fail on a regression**, so the next unreadable
   class is not silent.
+
+  **Shipped in 0.5.118: the reader only.** [`src/capture/merged.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/merged.rs) decodes a
+  merged pcapng per-interface and the read paths check for one up front. The
+  gate half — the last sentence above — was NOT built, and is tracked as RDR2
+  rather than left inside a ticked box. Half a fix under an `[x]` is the same
+  missing measurement this entry was written about.
+- [ ] **RDR2 — the corpus gate still cannot tell "read it, found nothing" from
+  "never opened it".** The walker takes every regular file under
+  `SIPNAB_CORPUS`, and a capture it cannot open contributes nothing and reports
+  nothing, so the suite says `ok`. That is how one of 63 captures went entirely
+  unread while every one of the 14 corpus binaries passed — the condition RDR1
+  found, which the RDR1 reader fixes for exactly one class of unreadable file
+  and leaves in place for every future class.
+
+  **Do:** count captures that fail to open, report the count, and fail the gate
+  when it rises. The count is the point: a per-file skip that only warns
+  reproduces the defect at a lower volume, because a warning in a passing run
+  is not read. See [[feedback_empty_output_is_not_evidence]] — a missing tool
+  and an unopenable capture both read as a passing measurement.
 - [x] **SEC1 — key material is never locked into RAM, so it can be paged to
   disk and outlive the process.** `disable_core_dumps()` treats a failed
   `prctl(PR_SET_DUMPABLE, 0)` as fatal, and the reasoning it gives is exactly

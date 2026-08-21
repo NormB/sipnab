@@ -381,7 +381,7 @@ Three concrete follow-ons:
   ranges. (RFC 7315's own example uses `192.0.6.8`, which is **not** a
   documentation address — do not copy it.)
 - **[`backlog.md`](backlog.md) PA5's redaction inventory
-  ([`:1163`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md#L1163)) does not list `P-Charging-Vector`.** It lists
+  ([`:1182`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md#L1182)) does not list `P-Charging-Vector`.** It lists
   `Call-ID` and SDP `o=` as *"internal hostnames and IPs"*, which is the same
   category. Adding this strategy without adding the header to that inventory
   would leave a redaction mode that redacts the two lesser sources of the same
