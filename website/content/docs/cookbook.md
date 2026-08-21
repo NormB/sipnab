@@ -33,6 +33,20 @@ are new, recipe 1 is the broadest starting point.
 | Hand someone a written summary of a call | [12. Generate a call report (text / Markdown / JSON)](#12-generate-a-call-report-text-markdown-json) |
 | Listen to the audio | [13. Export RTP audio as WAV](#13-export-rtp-audio-as-wav) |
 | Look at a pcap with nothing installed | [14. Analyze a pcap without installing anything](#14-analyze-a-pcap-without-installing-anything) |
+| Check signaling against the RFCs | [15. Check a capture against the RFCs](#15-check-a-capture-against-the-rfcs) |
+| Get one machine-readable verdict per capture | [16. Analyze a capture into one machine-readable verdict](#16-analyze-a-capture-into-one-machine-readable-verdict) |
+| See what NAT/STUN/TURN did | [17. Inspect what NAT did to a call](#17-inspect-what-nat-did-to-a-call) |
+| Read a busy capture call by call | [18. Collect messages by call, host or method](#18-collect-messages-by-call-host-or-method) |
+| Read a very large capture faster | [19. Read a very large capture faster](#19-read-a-very-large-capture-faster) |
+| Prove a finding with the exact bytes | [20. Verify the exact bytes behind a finding](#20-verify-the-exact-bytes-behind-a-finding) |
+| Add my own detection | [21. Detect your own fault patterns with a plugin](#21-detect-your-own-fault-patterns-with-a-plugin) |
+| Know whether the loss is mine or the network's | [22. Measure whether the loss is yours or the network's](#22-measure-whether-the-loss-is-yours-or-the-network-s) |
+| Chase a device flooding REGISTER | [23. Find the device flooding REGISTER](#23-find-the-device-flooding-register) |
+| Diagnose a codec mismatch to a vendor | [24. Diagnose a codec mismatch](#24-diagnose-a-codec-mismatch) |
+| Work out why DTMF never lands | [25. Find out why DTMF does not reach the IVR](#25-find-out-why-dtmf-does-not-reach-the-ivr) |
+| Collect HEP *and* forward it upstream | [26. Run sipnab as a HEP relay](#26-run-sipnab-as-a-hep-relay) |
+| Settle "we sent it" / "we never got it" | [27. Compare the same call at two nodes](#27-compare-the-same-call-at-two-nodes) |
+| Keep a capture running across reboots | [28. Run sipnab as a service](#28-run-sipnab-as-a-service) |
 | Just find a command to copy | [Look up a one-liner by task](#look-up-a-one-liner-by-task) |
 
 ### Where a recipe fits
@@ -754,6 +768,7 @@ rejects one that does not, answering HTTP 422 `Unexpected message, expect
 initialize request`:
 
 ```bash
+# Run all of these, in order.
 SID=$(curl -sS -D - -o /dev/null http://capture.example.com:8731/mcp \
      -H "Content-Type: application/json" \
      -H "Accept: application/json, text/event-stream" \
@@ -791,6 +806,7 @@ curl -sS http://capture.example.com:8731/mcp \
 Call `find_problems` and get JSON of the problematic dialogs:
 
 ```bash
+# Run all of these, in order.
 curl -sS http://capture.example.com:8731/mcp \
      -H "Content-Type: application/json" \
      -H "Accept: application/json, text/event-stream" \
@@ -1203,6 +1219,430 @@ The analyze page supports `.pcap`, `.pcapng`, `.cap` (pcap format), and their gz
 
 ---
 
+## 15. Check a capture against the RFCs
+
+**Problem:** A call works "most of the time". Nothing in the ladder looks wrong, and both vendors say their side is fine.
+
+`--lint` reads the signaling against RFC 3261 and reports what violates it, citing the section:
+
+```bash
+sipnab -N -I capture.pcap --lint
+```
+
+Each finding names what was seen and what the RFC requires:
+
+```text
+error: SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX [call-id@host] §12.1.1 makes the
+UAS add a Contact to the response. It is the remote target for the dialog the
+2xx creates, so without it the caller has nowhere to send the ACK and nowhere
+to send the BYE. The call answers and then cannot be hung up cleanly.
+(RFC 3261 §12.1.1) observed=2xx to INVITE with no Contact header field
+expected=Contact: <sip:user@host>
+Lint: 4 finding(s) across 3 dialog(s)
+```
+
+That is the whole value: `observed=` and `expected=` are what you paste into a
+vendor ticket, and the `§` reference is what ends the argument.
+
+Use it as a gate in CI, where a violation should fail the build:
+
+```bash
+sipnab -N -I regression.pcap --lint --lint-fail-on error
+```
+
+**Pitfalls:**
+
+- `--lint-fail-on error` **exits non-zero when it finds something** — that is the point, but it means a shell with `set -e` stops there. Exit 3 is "lint findings at or above the threshold", not a crash.
+- `--lint-fail-on warning` is stricter than most real traffic survives. Start at `error`.
+- Findings are per dialog. A capture with one broken proxy repeats the same rule many times; `--lint-max-per-rule` caps the noise.
+
+---
+
+## 16. Analyze a capture into one machine-readable verdict
+
+**Problem:** You have a pipeline, not a person. It needs one answer per capture, not a stream of messages.
+
+```bash
+sipnab -N -I capture.pcap --analyze
+```
+
+```bash
+sipnab -N -I capture.pcap --json-analyze
+```
+
+`--json-analyze` emits **one object**, not one line per finding — deliberately.
+The frames read and the dialogs examined are properties of the run, not of any
+finding, so a clean capture still serializes to something that states them. A
+per-finding stream would make "no findings" and "never ran" identical, which is
+the distinction a pipeline most needs.
+
+**Pitfalls:**
+
+- This is a summary, not a substitute for `--report`: it tells you the capture's verdict, not each stream's jitter.
+- A capture whose SIP sits outside `--portrange` analyzes cleanly because it saw no SIP. Check the packet counts in the same object before trusting a green result.
+
+---
+
+## 17. Inspect what NAT did to a call
+
+**Problem:** One-way audio, and the SDP addresses look like private space. You suspect NAT traversal failed but cannot prove where.
+
+```bash
+sipnab -N -I capture.pcap --stun
+```
+
+```bash
+sipnab -N -I capture.pcap --json-stun
+```
+
+You get one record per STUN/TURN transaction and per TURN allocation, each
+carrying a `record` field naming which it is. That is what tells you whether
+the endpoint ever learned its public address, whether the relay was allocated,
+and whether the candidate it then advertised in SDP matches either.
+
+**Pitfalls:**
+
+- STUN rides on the media ports, so a capture filtered to port 5060 contains none of it. Capture the media range too, or use `--portrange`.
+- A missing STUN transaction is not proof of a broken client: an endpoint with a public address does not need one.
+
+---
+
+## 18. Collect messages by call, host or method
+
+**Problem:** A busy capture interleaves twenty calls. Reading it message by message means reconstructing each call in your head.
+
+```bash
+sipnab -N -I capture.pcap --group-by call-id
+```
+
+```bash
+sipnab -N -I capture.pcap --group-by src --json
+```
+
+Messages sharing the field are emitted together. They are **reordered, not
+reformatted**, so `--json` output stays one valid object per line and anything
+downstream keeps working.
+
+Accepts `call-id`, `from`, `to`, `method`, `src`, `dst`.
+
+**Pitfalls:**
+
+- Requires `-N`/`--no-tui`.
+- It buffers until the capture ends, so it is an offline tool. On a live device you get nothing until you stop it.
+- `--max-groups` (default 100000) bounds that buffer. A capture with more distinct keys drops the excess rather than growing without limit.
+
+---
+
+## 19. Read a very large capture faster
+
+**Problem:** A multi-gigabyte capture takes long enough that you stop using the tool.
+
+```bash
+sipnab -N -I huge.pcap --cores 8 --report
+```
+
+Offline, `--cores N` runs N reconstruction workers, sharding packets by host
+pair, each with private dialog and RTP-stream stores.
+
+**Pitfalls:**
+
+- It covers reconstruction and `--report`/`--json`. Per-message output ordering, the security detectors and SRTP decryption stay on the single-threaded path regardless — so a run that needs those gains nothing.
+- On a **live** device `--cores` means something different: N capture sockets, which widens capture, not analysis. Processing stays on one thread either way. See [tuning](@/docs/tuning-capture.md).
+- `--cores` and `--metrics` do not combine usefully offline; the run exits before a scrape lands, and sipnab says so.
+
+---
+
+## 20. Verify the exact bytes behind a finding
+
+**Problem:** You are disputing a finding with a vendor. Paraphrasing the packet is not evidence.
+
+Every `--json`, `--report`, REST and MCP result carries a `frame` pointer:
+
+```text
+"frame": "capture.pcap#3@86eadc8a324bb487"
+```
+
+Hand it straight back to sipnab:
+
+```bash
+sipnab --show-frame 'capture.pcap#3@86eadc8a324bb487'
+```
+
+```text
+VERIFIED  capture.pcap#3@86eadc8a324bb487
+348 bytes, frame 3 of capture.pcap
+00000030  30 20 34 30 33 20 46 6f  72 62 69 64 64 65 6e 0d  |0 403 Forbidden.|
+```
+
+**`VERIFIED` is the word that matters.** With the digest, the frame's bytes are
+checked against it, so a capture that was rotated, truncated or recompressed
+since the pointer was made is **refused** rather than answered with whatever now
+sits at that position. Without a digest — the form a human types — the frame is
+printed and marked `UNVERIFIED`, because there is nothing to check it against.
+
+**Pitfalls:**
+
+- Quote the pointer. `#` starts a comment in most shells and everything after it disappears.
+- `UNVERIFIED` is not a warning about that packet; it means you did not give sipnab a way to prove it is the same file.
+
+---
+
+## 21. Detect your own fault patterns with a plugin
+
+**Problem:** You have a site-specific fault pattern. A filter can select the calls, but you want sipnab to *diagnose* it — as a finding, with evidence, everywhere findings appear.
+
+```bash
+sipnab -N -I capture.pcap --plugin ./my-detector.wasm --report
+```
+
+Findings appear beside the built-in ones, in the same shape, so `--call-report`,
+the TUI and the JSON all render yours with no extra work.
+
+Before loading one someone sent you, know what you are trusting:
+
+**A plugin has no imports at all.** Not a restricted set — none. No WASI, no
+filesystem, no network, no clock, not even logging. A module that imports
+anything fails to instantiate. CPU is bounded by fuel metering, memory by a
+16 MiB ceiling, replies by 4 MiB, and a trap or exhausted budget fails *that
+dialog's* plugin findings and nothing else.
+
+What is **not** bounded is what it reads: a plugin sees every dialog sipnab
+reconstructs, including `Authorization` headers and `MESSAGE` bodies. It cannot
+send them anywhere, but it chooses what to report. Load one the way you would
+run a script — from someone you trust, or after reading it.
+
+**Pitfalls:**
+
+- Needs a build with `--features plugins`, which is **not** in the default feature set. `sipnab --version` tells you whether the binary in front of you can load one.
+- If a filter or a `jq` pipeline already answers your question, use those — no build step, no trust decision. See [plugins](@/docs/plugins.md).
+
+---
+
+## 22. Measure whether the loss is yours or the network's
+
+**Problem:** RTP loss figures look terrible. Before you escalate to the carrier, you need to know the capture itself was not the thing dropping packets.
+
+A lossy capture does not produce a smaller answer; it produces a **wrong** one.
+A dropped RTP packet is counted as network loss that never happened, so MOS
+reads worse than the call actually was.
+
+sipnab polls libpcap's kernel counters once a second and reports two numbers
+that mean different things:
+
+```text
+PACKETS ARE BEING DROPPED on 'eth0' (kernel buffer: 18432, interface/driver: 0).
+```
+
+| Counter | libpcap field | What it means | What fixes it |
+|---|---|---|---|
+| kernel buffer | `ps_drop` | The ring was full when the packet arrived. sipnab was not draining fast enough. | a bigger `-B`, a narrower BPF filter, a lower `--snaplen` |
+| interface/driver | `ps_ifdrop` | The NIC or its driver discarded it before libpcap ever saw it. | **a bigger buffer cannot fix this** — it is the NIC |
+
+The same two numbers appear in four places, so whichever surface you are on can
+answer the question:
+
+```bash
+sipnab -N -I capture.pcap --report          # named separately, each with its own fix
+```
+
+```bash
+sipnab -N -d eth0 --metrics 127.0.0.1:9100  # sipnab_capture_kernel_dropped_packets_total
+                                            # sipnab_capture_interface_dropped_packets_total
+```
+
+A clean run says so explicitly, so silence is never ambiguous:
+
+```text
+Live capture on 'eth0' finished: 4821003 packets, no drops
+```
+
+**Pitfalls:**
+
+- Operators routinely respond to *any* drop by raising `-B`. That does nothing at all for interface drops and wastes memory while the real problem goes unaddressed.
+- Both counters zero does not mean the capture is complete: a frame can arrive intact and still be unreadable, or be cut short by `--snaplen`. `--report` counts those separately. See [tuning](@/docs/tuning-capture.md).
+
+---
+
+## 23. Find the device flooding REGISTER
+
+**Problem:** A device is hammering `REGISTER` and the proxy's CPU shows it. You need to name the device and the reason.
+
+```bash
+sipnab -N -I capture.pcap --filter "method == 'REGISTER' AND state == 'Failed'" --json
+```
+
+```bash
+sipnab -N -I capture.pcap --group-by src --filter "method == 'REGISTER'"
+```
+
+The pattern to look for is a `401`/`403` answered by an immediate retry with the
+same credentials. That is a client that treats an auth challenge as a transient
+error, and it will not stop on its own:
+
+```text
+{"status_code":403,"reason":"Forbidden","cseq":{"number":2,"method":"REGISTER"},
+ "ua":"SynthSwitch/1.0","from":"Alice <sip:alice@example.com>"}
+```
+
+`ua` and `from` are what you take to the desk that owns the endpoint; the
+`frame` field in the same object is what proves it (recipe 20).
+
+**Pitfalls:**
+
+- A storm from many sources with one `From` is credential reuse, not one broken phone. Group by `src` before concluding.
+- Registration traffic is often on a different port from calls. If the counts look impossibly low, widen `--portrange`.
+
+---
+
+## 24. Diagnose a codec mismatch
+
+**Problem:** Calls to one destination fail immediately. The far end says "your equipment is wrong".
+
+```bash
+sipnab -N -I capture.pcap --filter "state == 'Failed'" --json
+```
+
+```bash
+sipnab -N -I capture.pcap --call-report '<call-id>' --markdown
+```
+
+A `488 Not Acceptable Here` after an INVITE is the signature. The call report
+puts the offered and answered codec lists next to each other, which is the part
+that settles it: if the offer contains only `PCMU` and the far end supports only
+`G729`, no configuration on your side of the trunk was ever going to work.
+
+**Pitfalls:**
+
+- `488` is not always codec: it also covers unsupported transport or an unacceptable `ptime`. Read the SDP, not just the status code.
+- A re-INVITE can renegotiate mid-call, so a call that answered can still fail this way later. Filter on the dialog, not the first transaction.
+
+---
+
+## 25. Find out why DTMF does not reach the IVR
+
+**Problem:** Callers press keys and the IVR does not respond. Everyone blames the IVR.
+
+DTMF travels three different ways, and the failure is nearly always that the
+two ends chose differently:
+
+```bash
+sipnab -N -I capture.pcap --json | jq 'select(.method == "INFO")'   # SIP INFO
+```
+
+```bash
+sipnab -N -I capture.pcap --report                                  # RFC 2833 / telephone-event
+```
+
+In the SDP, look for `a=rtpmap:101 telephone-event/8000` on **both** sides. If
+one side offers it and the other does not, that side will send in-band audio
+tones instead — which survive G.711 and are destroyed by G.729.
+
+**Pitfalls:**
+
+- In-band DTMF through a low-bitrate codec is not a bug you can fix in signaling; the tones are gone before they reach the IVR.
+- A `telephone-event` payload type that differs between offer and answer (101 vs 96) is legal and still works. A mismatch in whether it exists at all is not.
+
+---
+
+## 26. Run sipnab as a HEP relay
+
+**Problem:** Several edge nodes send HEP. You want them analyzed locally *and* forwarded to a central Homer, without installing an agent twice.
+
+sipnab both receives and sends HEP, and the two are not the same job:
+
+```bash
+sipnab -N \
+  --hep-listen 0.0.0.0:9060 --hep-allow 192.0.2.0/24 \
+  --hep-send homer.example.com:9060 --hep-id 42
+```
+
+Receiving makes sipnab a **collector**: your SBC or proxy already speaks HEP, so
+nothing touches the capture path — no port mirror, no root. Sending makes it a
+**capture agent**: SIP goes as HEP protocol type 1 and RTCP as type 5, so the
+collector can report media quality and not only call setup. RTP is never
+forwarded.
+
+Doing both makes it a tap in the middle: analyze at the edge, keep the central
+Homer authoritative.
+
+**Pitfalls:**
+
+- sipnab **refuses** a non-loopback `--hep-listen` unless you pass `--hep-allow` or `--hep-auth`. That is deliberate: an open HEP port accepts forged call records from anyone who can reach it.
+- `--hep-auth` travels in cleartext inside the datagram. It defeats blind spoofing; it does not survive an on-path sniffer. Tunnel HEP over WireGuard or IPsec on an untrusted path.
+- Give each agent its own `--hep-id`, or the collector cannot tell your nodes apart.
+
+---
+
+## 27. Compare the same call at two nodes
+
+**Problem:** The SBC says it sent the call. The PBX says it never arrived. Both are looking at their own logs.
+
+Capture at both ends and read the same `Call-ID` from each:
+
+```bash
+# Run all of these, in order.
+sipnab -N -I sbc.pcap --call-report '<call-id>' --markdown > sbc.md
+sipnab -N -I pbx.pcap --call-report '<call-id>' --markdown > pbx.md
+diff sbc.md pbx.md
+```
+
+What the difference tells you:
+
+- **Present at the SBC, absent at the PBX** — it never crossed. Look at routing, firewall, or the network in between.
+- **Present at both, different bodies** — something rewrote it. An SBC that changes SDP addresses is doing its job; one that drops a header is not.
+- **Present at both, different timing** — the message crossed but late. Compare against the retransmission timers in each report.
+
+**Pitfalls:**
+
+- Clocks. Two captures from two machines are only comparable if their clocks are, and a few hundred milliseconds of skew will make a normal exchange look like a retransmission. Check NTP before reading timing differences as evidence.
+- A B2BUA **changes the `Call-ID`** between its legs by design, so this recipe compares a proxy's two sides, not a B2BUA's. Correlate those by `From`/`To` and time instead.
+
+---
+
+## 28. Run sipnab as a service
+
+**Problem:** The capture should survive a reboot and an SSH disconnect, and write somewhere you can find it.
+
+```ini
+# /etc/systemd/system/sipnab.service
+[Unit]
+Description=sipnab SIP capture
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/sipnab -N -d eth0 --syslog \
+  --metrics 127.0.0.1:9100 \
+  --alert-json
+Restart=on-failure
+RestartSec=5
+# sipnab drops privileges itself after opening the capture socket.
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+# Run all of these, in order.
+sudo systemctl daemon-reload
+sudo systemctl enable --now sipnab
+journalctl -u sipnab -f
+```
+
+**Pitfalls:**
+
+- `--syslog` is what makes `journalctl` useful; without it the interesting output goes to stdout and is merged without structure.
+- Granting `CAP_NET_RAW` via `AmbientCapabilities` is what lets the unit run without being root at all. Do not add `User=root` back "to be safe" — that undoes it.
+- A live run with no `-O` writes no capture file. If you want the packets kept, say where.
+
+---
+
 ## Look up a one-liner by task
 
 The recipes above walk through a problem end to end. This section is the
@@ -1232,6 +1672,9 @@ NDJSON to jq, counting failures by status code:
 ```bash
 sipnab -N -I capture.pcap --json \
   | jq -s 'map(select(.status_code >= 400)) | group_by(.status_code)
+```
+
+```bash
            | map({code: .[0].status_code, n: length})'
 ```
 

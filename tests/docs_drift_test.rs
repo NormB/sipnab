@@ -62,6 +62,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/tls-capture.md",
         ],
     ),
+    // `--now` is systemd's, on `systemctl enable --now`. The cookbook's
+    // "Run sipnab as a service" recipe gives a unit file and then the two
+    // commands that install it, and `enable` without `--now` leaves the
+    // service configured but not started -- which is precisely the outcome a
+    // reader following a "run it as a service" recipe would report as broken.
+    // Scoped to the cookbook and its generated mirror: written anywhere else
+    // it would read as a sipnab flag and must still fail this guard.
+    (
+        "now",
+        &["docs/examples.md", "website/content/docs/cookbook.md"],
+    ),
     // `--undefined-only` is binutils `nm`, and `--keylogfile` is eCapture's.
     // The TLS chooser names both because the commands it gives have to be
     // runnable as written: one finds which symbol a daemon actually calls,
@@ -2719,8 +2730,16 @@ fn no_documentation_table_repeats_a_row() {
         // mapping each capture source to what it can and cannot supply, and
         // one for the staged plan. A design doc has no site mirror, so two
         // tables and not four. Attributed against that file alone.
-        583,
-        "walked {tables} tables, expected 583. More is fine — bump this. FEWER \
+        //
+        // Raised 583 -> 587 by two tables that DO have mirrors, so four:
+        // docs/examples.md gained the kernel-buffer vs interface/driver
+        // comparison in "Measure whether the loss is yours or the network's",
+        // and docs/tuning-capture.md gained "Where the two numbers appear",
+        // listing the four surfaces that report the same pair. The cookbook's
+        // navigation table gained fourteen ROWS for the new recipes and is
+        // still one table, so it does not move this count.
+        587,
+        "walked {tables} tables, expected 587. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

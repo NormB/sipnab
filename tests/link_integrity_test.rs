@@ -593,7 +593,22 @@ fn wiki_intra_docs_links_resolve() {
     // Raised 433 -> 441 by the MCP split: mcp.md shed its tool reference and
     // protocol contract into two new pages, and the four-page set cross-links
     // where one page used to link internally.
-    const EXPECTED_WIKI_LINKS: usize = 441;
+    const EXPECTED_WIKI_LINKS: usize = 459;
+    // Raised 441 -> 459 by doubling the cookbook from fourteen recipes to
+    // twenty-eight. Attributed per file, measured rather than assumed:
+    // docs/examples.md +17 and docs/tuning-capture.md +1. The site mirrors
+    // gained the same links again (+17 and +1) and are deliberately NOT in
+    // this figure -- the extractor walks docs/ only, which is why the delta is
+    // 18 and not 36.
+    //
+    // Of the 17: fourteen are rows in the page's own "What do you want to do?"
+    // table, one per new recipe, which is what makes a recipe reachable rather
+    // than merely present. The other three are cross-references the new
+    // recipes make instead of restating -- two to the capture-tuning page (the
+    // drop-counter recipe, and `--cores` meaning something different on a live
+    // device) and one to the plugins page. tuning-capture.md's single link
+    // points at output-formats.md, where the same counters appear again on the
+    // API's capture-quality object.
     // 385: `docs/mos-and-codecs.md` +1. The new "Declaring an impairment factor
     // sipnab does not have" section points at "AMR-WB — published, and
     // mode-dependent" further down the same page rather than restating why a

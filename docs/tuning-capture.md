@@ -45,6 +45,28 @@ That distinction is the single most useful thing on this page. Operators
 routinely respond to *any* drop by raising `-B`, which does nothing at all for
 interface drops and wastes memory while the real problem goes unaddressed.
 
+### Where the two numbers appear
+
+Both counters are reported on four surfaces, kept apart on every one of them,
+so whichever you are looking at can answer "which kind of drop is this?"
+
+| Surface | How they appear |
+|---|---|
+| Live warning | `PACKETS ARE BEING DROPPED on 'eth0' (kernel buffer: N, interface/driver: M)`, the moment the first drop happens |
+| End-of-run summary | `... N dropped by the kernel buffer and M by the interface`, or `no drops` |
+| `--report` | one sentence each, and each names only the fixes that apply to it |
+| `--metrics` (Prometheus) | `sipnab_capture_kernel_dropped_packets_total` and `sipnab_capture_interface_dropped_packets_total`, as separate counters |
+
+Two separate Prometheus counters rather than one `sipnab_capture_dropped_total`
+with a label is deliberate: a dashboard that sums them produces a number whose
+remedy is ambiguous, and an alert on that sum pages someone to raise a buffer
+that cannot help. Alert on them separately, or the alert cannot say what to do.
+
+The REST API and MCP report the same pair as `kernel_dropped_packets` and
+`interface_dropped_packets` on the capture-quality object, beside the
+`invalid_timestamps`, `undecodable_frames` and snapped-frame counts that make
+up the rest of a capture's quality — see [output formats](output-formats.md).
+
 > **Why a drop is not just "missing packets".** A dropped SIP message means a
 > dialog reconstructs wrong — a missing `BYE` leaves a call that never ends, a
 > missing `200 OK` leaves one that never answered. A dropped RTP packet is
