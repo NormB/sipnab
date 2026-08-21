@@ -287,13 +287,29 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     ),
     // bench/carrier.py and bench/scaling.sh flags, in the reproduce recipes.
     // These belong to the benchmark harness, not to sipnab's CLI.
+    //
+    // `--calls` and `--out` reach `internals/profiling.md` as well, which
+    // gained the recipe for cutting one generated corpus into the rotated
+    // members a MULTI-FILE `-I` needs — a different reader path from a single
+    // file, and one no other page tells you how to measure. The page already
+    // excuses `--runs` from the same harness.
     (
         "calls",
-        &["docs/benchmarks.md", "website/content/docs/benchmarks.md"],
+        &[
+            "docs/benchmarks.md",
+            "website/content/docs/benchmarks.md",
+            "docs/internals/profiling.md",
+            "website/content/docs/internals/profiling.md",
+        ],
     ),
     (
         "out",
-        &["docs/benchmarks.md", "website/content/docs/benchmarks.md"],
+        &[
+            "docs/benchmarks.md",
+            "website/content/docs/benchmarks.md",
+            "docs/internals/profiling.md",
+            "website/content/docs/internals/profiling.md",
+        ],
     ),
     (
         "call-ids",

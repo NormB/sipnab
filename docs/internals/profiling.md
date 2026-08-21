@@ -162,6 +162,24 @@ bench/regression-gate.sh target/release/sipnab      # against bench/baseline.jso
 bench/scaling.sh "$BIN" corpus.pcap 535000 --cores 1,2,4,8 --runs 5
 ```
 
+[`bench/scaling.sh`](../../bench/scaling.sh) takes a directory as well as a file, and a **multi-file**
+`-I` set is a different measurement, not a longer one: the calling thread reads
+a lone file itself, while a set gets one reader thread per file and a
+dispatcher that hands the workers each file in turn. Cut one corpus into
+rotated members rather than generating several, so the members share one
+timeline the way a real rotation does:
+
+```sh
+# Run all of these, in order.
+python3 bench/carrier.py --calls 40000 --out big.pcap   # 4,280,000 packets
+editcap -F pcap -c 535000 big.pcap rot/rot.pcap         # 8 members of 535k
+bench/scaling.sh "$BIN" rot 4280000 --cores 1,2,4,8,12 --runs 9
+```
+
+`-F pcap` is not optional. `editcap` writes pcapng by default, and the mapped
+reader declines pcapng, so the whole set would fall back to libpcap and measure
+a different reader.
+
 Two rules learned the hard way, both recorded in
 [`build-ci-release.md`](build-ci-release.md) and [`bench/baseline.json`](../../bench/baseline.json):
 

@@ -531,7 +531,18 @@ fn linked_code_targets_exist() {
     // `--features full,bpf` needs the other half of that pair. Attributed per
     // file: `docs/internals/build-ci-release.md` +1, every other internals page
     // unchanged.
-    const EXPECTED_CODE_LINKS: usize = 350;
+    // Raised 350 -> 352 by the per-file reader threads in
+    // `internals/threading.md`: the new thread-table row links `parallel.rs`,
+    // and the new channel row links `shard_set_parallel()` in the same file.
+    // Attributed per file: `docs/internals/threading.md` +2, every other
+    // internals page unchanged.
+    // Raised 352 -> 353 by the multi-file benchmark recipe in
+    // `internals/profiling.md`, whose one link `scripts/link-repo-paths.py`
+    // added to `bench/scaling.sh` — the recipe names the harness, and
+    // `repo_paths_in_docs_are_clickable` demands a tracked path be a link
+    // rather than something a reader retypes. Attributed per file:
+    // `docs/internals/profiling.md` +1.
+    const EXPECTED_CODE_LINKS: usize = 353;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -633,9 +644,13 @@ fn linked_symbols_resolve_to_a_definition() {
     // its auxiliary threads (`start_servers`, `build_resolver`,
     // `spawn_scanner_kill_worker`), so the page states who starts each thread
     // instead of implying the TUI event loop starts all of them.
+    // Raised 65 -> 66 by the same page naming `shard_set_parallel()` as the
+    // owner of the per-file reader queues, so the channel row says which
+    // function bounds them. Attributed per file: `internals/threading.md` +1,
+    // every other developer page unchanged.
     assert_eq!(
-        seen, 65,
-        "symbol extraction found {seen} claims, expected 65. Bump when the \
+        seen, 66,
+        "symbol extraction found {seen} claims, expected 66. Bump when the \
          developer docs cite more symbols; a drop means the `()`-suffix pattern \
          stopped matching and unresolvable symbols pass unseen."
     );

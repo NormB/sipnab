@@ -18530,6 +18530,7 @@ well as in the TUI. `TUI` and `batch` mean it does not.
 | `capture-multi` | both | [`capture/native.rs`](../../src/capture/native.rs) | Supervisor for a multi-device capture set. |
 | `tui-processor` | TUI | [`app/tui_mode.rs`](../../src/app/tui_mode.rs) | The single store writer in TUI mode: drains the channel and runs the pipeline. |
 | (unnamed workers) | batch | [`parallel.rs`](../../src/parallel.rs) | `--cores N` reconstruction workers, spawned with bare `thread::spawn` — they own thread-local stores, so they show as unnamed in a backtrace. |
+| (unnamed per-file readers) | batch | [`parallel.rs`](../../src/parallel.rs) | `--cores N` over a **multi-file** `-I` set: one scoped thread per reader, each reading whole files and handing per-shard batches to the dispatcher, which releases them to the workers in file order. A single-file `-I` has one file and therefore one reader, so it gets none of these — the calling thread reads it, exactly as before. |
 | `servers` | both | [`app/servers.rs`](../../src/app/servers.rs) | One current-thread tokio runtime hosting api, mcp and mcp-http as `JoinSet` tasks. |
 | `metrics-server` | both | [`output/prometheus_server.rs`](../../src/output/prometheus_server.rs) | Raw TCP accept loop for Prometheus scrapes. |
 | `metrics-conn` | both | [`output/prometheus_server.rs`](../../src/output/prometheus_server.rs) | One short-lived thread per accepted scrape, capped at 16 concurrent. |
@@ -18650,6 +18651,7 @@ flow's packets share a host pair and therefore a worker.
 | batch main loop | the same [`capture::channel`](../../src/capture/channel.rs) wrapper, not a bare bounded channel: [`batch.rs`](../../src/app/batch.rs) receives on a `capture::channel::PacketRx` exactly as the TUI processor does |
 | `--cores` dispatcher → workers, channel-fed | crossbeam `bounded::<Packet>(8192)` ([`run_offline_parallel()`](../../src/parallel.rs)) |
 | `--cores` reader → workers, file input | crossbeam `bounded::<Vec<Packet>>(64)` carrying batches of 128 ([`run_offline_parallel_file()`](../../src/parallel.rs)) — same ~8192 in-flight packet cap, one channel hop per 128 packets instead of per packet |
+| `--cores` per-file reader → dispatcher, multi-file input | crossbeam `bounded` carrying one batch per item ([`shard_set_parallel()`](../../src/parallel.rs)). The queue depth is not the bound that matters: `READ_AHEAD_BYTES` caps in **bytes** how far a LATER file's reader may run ahead of the file the dispatcher holds, because a batch is 128 packets of any size and the default snaplen is 65535 |
 | scanner-kill request / response | crossbeam `bounded(256)` in each direction ([`process_isolation.rs`](../../src/process_isolation.rs)) |
 | DNS resolve queue | `std::sync::mpsc` ([`names.rs`](../../src/names.rs)) |
 | inside api/mcp servers | tokio (axum/rmcp internals) |
@@ -18994,6 +18996,24 @@ nightly:
 bench/regression-gate.sh target/release/sipnab      # against bench/baseline.json
 bench/scaling.sh "$BIN" corpus.pcap 535000 --cores 1,2,4,8 --runs 5
 ```
+
+[`bench/scaling.sh`](../../bench/scaling.sh) takes a directory as well as a file, and a **multi-file**
+`-I` set is a different measurement, not a longer one: the calling thread reads
+a lone file itself, while a set gets one reader thread per file and a
+dispatcher that hands the workers each file in turn. Cut one corpus into
+rotated members rather than generating several, so the members share one
+timeline the way a real rotation does:
+
+```sh
+# Run all of these, in order.
+python3 bench/carrier.py --calls 40000 --out big.pcap   # 4,280,000 packets
+editcap -F pcap -c 535000 big.pcap rot/rot.pcap         # 8 members of 535k
+bench/scaling.sh "$BIN" rot 4280000 --cores 1,2,4,8,12 --runs 9
+```
+
+`-F pcap` is not optional. `editcap` writes pcapng by default, and the mapped
+reader declines pcapng, so the whole set would fall back to libpcap and measure
+a different reader.
 
 Two rules learned the hard way, both recorded in
 [`build-ci-release.md`](build-ci-release.md) and [`bench/baseline.json`](../../bench/baseline.json):

@@ -581,47 +581,84 @@ struct ReadProgress {
     clock: SweepClock,
 }
 
-/// Read every packet of an already-opened capture into the per-worker batches,
-/// flushing a batch to its worker whenever it fills.
+impl ReadProgress {
+    /// Fold one file's read into the run's totals, returning the error that
+    /// stopped that file short of its end, if one did.
+    ///
+    /// The ONE place a [`FileRead`] becomes part of the run, so the serial
+    /// reader and the parallel one cannot count differently. It is called in
+    /// FILE ORDER by both — the parallel dispatcher folds a file's read only
+    /// when it reaches that file — which is what keeps `--count` arithmetic,
+    /// the capture clock and the fallback share independent of how many
+    /// threads happened to do the reading.
+    ///
+    /// The error is returned rather than logged here because only the caller
+    /// knows the sentence: "stopped reading X early" is about a file, and this
+    /// type is about a run.
+    fn absorb(&mut self, read: FileRead) -> Option<anyhow::Error> {
+        self.count += read.count;
+        self.unshardable += read.unshardable;
+        if let Some(latest) = read.latest {
+            self.clock.observe(latest);
+        }
+        read.stopped
+    }
+}
+
+/// Read every packet of an already-opened capture, batching by shard and
+/// handing each finished batch to `sink`.
 ///
-/// Split out of [`run_offline_parallel_file`] so a multi-file set shares ONE set
-/// of partial batches, one packet budget and one loss counter across its
-/// members — the direct analogue of `read_opened_inner` in
-/// [`crate::capture::file`] on the single-threaded path. Partial batches
-/// deliberately survive the file boundary: flushing them per file would be pure
-/// channel overhead, and the workers' stores live for the whole run either way.
+/// Written ONCE for both readers. A single-file `-I` is read in the calling
+/// thread and hands its batches straight to the workers; a member of a
+/// multi-file set is read in its own thread and hands them to the dispatcher
+/// that releases them in file order ([`shard_set_parallel`]). Where the batch
+/// goes is the whole of the difference, and it is the whole of [`ShardSink`]:
+/// the ordinal, the source, the capture clock and the host-pair peek are
+/// stamped here for both, so the two cannot drift in what a packet carries.
 ///
-/// Returns `Ok(false)` when the whole SET should stop (the `--count` budget is
-/// spent) rather than merely this file ending.
-fn shard_opened(
+/// The per-shard partial batches are this FILE's, not the set's. They used to
+/// survive the file boundary, on the argument that flushing them per file was
+/// pure channel overhead; a file read in its own thread has no way to share
+/// them with another file's reader, and the price is one partial batch per
+/// shard per file — 64 extra sends on the 8-file, 8-shard set that already
+/// costs 33k of them.
+///
+/// Everything read is reported in the returned [`FileRead`], including on the
+/// path where the read stopped mid-file: `FileRead::stopped` carries the error
+/// instead of the function returning it, because a truncated file is the
+/// NORMAL state of a ring buffer's newest member and the packets before the
+/// break are real ones that a caller must still count.
+fn shard_opened<S: ShardSink>(
     cap: &mut pcap::Capture<pcap::Offline>,
     path: &std::path::Path,
     capture_config: &crate::capture::CaptureConfig,
-    txs: &[crossbeam_channel::Sender<Vec<crate::capture::packet::Packet>>],
-    batches: &mut [Vec<crate::capture::packet::Packet>],
-    progress: &mut ReadProgress,
-) -> anyhow::Result<bool> {
+    n: usize,
+    budget: Option<u64>,
+    sink: &mut S,
+) -> FileRead {
     use crate::capture::packet::Packet;
-
-    let n = txs.len();
     // Map the file when it can be mapped, and read it through libpcap when it
     // cannot. A BPF filter is libpcap's to apply, so a filtered read never
     // maps: bypassing the filter would silently widen the capture, which is a
     // wrong answer rather than a slow one.
     let mut frames = Frames::open(cap, path, capture_config.bpf_filter.is_none());
     let link_type = frames.link_type();
-    tracing::info!("Reading from '{}'", path.display());
     // Stamp provenance exactly as the single-threaded reader does (see
     // `crate::capture::file`): the file is the source, the ordinal is this
     // frame's 0-based position IN this file, and the digest is over the bytes
-    // as read. This function is the one stage that sees every packet of every
-    // file in order, so the ordinal it assigns is the same one a resolver
-    // counts to — a pointer from a `--cores` run resolves identically to one
-    // from a single-threaded run. Without this, every fact a parallel run
-    // produced carried no `frame_ref` at all, so `--cores` silently dropped
-    // packet provenance from every surface.
+    // as read. The ordinal counts within THIS file and nothing else, which is
+    // what lets a file be read in its own thread without changing a single
+    // pointer: a resolver counts frames from the start of the file it is given,
+    // so a pointer from a `--cores` run resolves identically to one from a
+    // single-threaded run however many threads did the reading. Without the
+    // stamp, every fact a parallel run produced carried no `frame_ref` at all,
+    // so `--cores` silently dropped packet provenance from every surface.
     let source: std::sync::Arc<str> = std::sync::Arc::from(path.display().to_string());
     let mut ordinal: u64 = 0;
+
+    // One partial batch per shard, this FILE's own; see the doc comment.
+    let mut batches: Vec<Vec<Packet>> = (0..n).map(|_| Vec::with_capacity(BATCH)).collect();
+    let mut read = FileRead::default();
 
     // Frames are cut from a shared block rather than allocated one at a time.
     //
@@ -638,11 +675,12 @@ fn shard_opened(
     // memory resident because one packet in it is still being processed.
     // Bigger blocks buy fewer allocations and cost bounded-ness.
     loop {
-        if let Some(max) = capture_config.count
-            && progress.count >= max
+        if let Some(max) = budget
+            && read.count >= max
         {
             tracing::debug!("Reached packet count limit ({max})");
-            return Ok(false);
+            read.budget_spent = true;
+            break;
         }
         match frames.next() {
             Ok(Some(frame)) => {
@@ -677,36 +715,126 @@ fn shard_opened(
                     digest: None,
                 });
                 ordinal += 1;
-                // Observed here rather than in the workers: this is the only
-                // stage that sees every packet of every file, and the sweep's
-                // "now" has to be the SET's last timestamp.
-                progress.clock.observe(packet.timestamp);
+                // The newest timestamp of THIS file, folded into the run's
+                // one capture clock by whoever collects the read
+                // ([`ReadProgress::absorb`]). `SweepClock` keeps only the
+                // maximum, so one value per file is the same clock as one per
+                // packet — and it is the only form a reader thread can report,
+                // because the clock belongs to the run and the sweep's "now"
+                // has to be the SET's last timestamp, not this file's.
+                if read.latest.is_none_or(|latest| packet.timestamp > latest) {
+                    read.latest = Some(packet.timestamp);
+                }
                 let s = match crate::capture::parse::peek_host_pair(&packet) {
                     Some((a, b)) => shard_for(a, b, n),
                     // Counted, not merely tolerated — see the same branch in
                     // `run_offline_parallel`. One `u64` increment on the
                     // reader's serial path: no atomic, no lock, no allocation.
                     None => {
-                        progress.unshardable += 1;
+                        read.unshardable += 1;
                         0
                     }
                 };
                 batches[s].push(packet);
+                read.count += 1;
                 if batches[s].len() >= BATCH {
                     let full = std::mem::replace(&mut batches[s], Vec::with_capacity(BATCH));
-                    let weight = full.len() as u64;
-                    progress.dropped += shard_send(&txs[s], full, weight);
+                    // A refused batch ends the read and is not recorded.
+                    // The only sink that refuses is the queue one, and it
+                    // refuses only once the run has already been refused —
+                    // this file's verdict is on its way to a dispatcher that
+                    // has stopped reading verdicts.
+                    if !sink.emit(s, full) {
+                        break;
+                    }
                 }
-                progress.count += 1;
             }
-            Ok(None) => return Ok(true),
+            Ok(None) => break,
             Err(e) => {
-                return Err(anyhow::anyhow!(
+                read.stopped = Some(anyhow::anyhow!(
                     "Error reading pcap '{}': {e}",
                     path.display()
                 ));
+                break;
             }
         }
+    }
+    // Flushed on EVERY path out, including the error one. The partial batches
+    // used to belong to the set and were flushed once at the end of the run;
+    // now that they belong to the file, the file has to flush them — and a
+    // read that stopped on a truncated record has already read real packets
+    // that must still reach a worker.
+    for (s, b) in batches.into_iter().enumerate() {
+        if b.is_empty() {
+            continue;
+        }
+        if !sink.emit(s, b) {
+            break;
+        }
+    }
+    read
+}
+
+/// What one file's read produced, reported as ONE value rather than written
+/// into the run's totals as it goes.
+///
+/// The run's counters cannot be incremented in place any more: a file read in
+/// its own thread has no exclusive access to them, and one that did would make
+/// the totals depend on which reader got there first. Every field here is
+/// folded into [`ReadProgress`] by the thread that owns it, in file order, by
+/// [`ReadProgress::absorb`] — so the serial reader and the parallel one build
+/// the same totals from the same arithmetic.
+#[derive(Debug, Default)]
+struct FileRead {
+    /// Packets read from this file.
+    count: u64,
+    /// Packets of this file whose host pair the cheap peek could not read,
+    /// which therefore fell back to worker 0.
+    unshardable: u64,
+    /// Newest capture timestamp in this file, or `None` for an empty one.
+    latest: Option<chrono::DateTime<chrono::Utc>>,
+    /// Whether the read stopped because the `--count` budget ran out inside
+    /// this file rather than at its end.
+    budget_spent: bool,
+    /// The error that stopped this file short of its end, if one did.
+    stopped: Option<anyhow::Error>,
+}
+
+/// Where a finished batch goes once the reader has filled it.
+///
+/// The two answers are "straight to the worker that owns the shard" (a
+/// single-file set, read in the calling thread) and "into this reader's queue,
+/// for the dispatcher to release in file order" (one file of many, read in its
+/// own thread). [`shard_opened`] is written against this so there is one copy
+/// of the read loop rather than one per reader.
+///
+/// `emit` returns `false` when the run is over and the reader must stop —
+/// the set has already been refused, and the queue it is filling will never be
+/// drained again. A reader that ignored it would block forever on a bounded
+/// channel and hang the process instead of letting the error be reported.
+trait ShardSink {
+    /// Hand `batch` to the worker that owns `shard`. `false` means stop
+    /// reading.
+    fn emit(&mut self, shard: usize, batch: Vec<crate::capture::packet::Packet>) -> bool;
+}
+
+/// The single-file sink: one hop, straight to the worker.
+struct DirectSink<'a> {
+    /// One sender per worker, indexed by shard.
+    txs: &'a [crossbeam_channel::Sender<Vec<crate::capture::packet::Packet>>],
+    /// Raw packets lost because a worker's shard channel had closed.
+    dropped: u64,
+}
+
+impl ShardSink for DirectSink<'_> {
+    fn emit(&mut self, shard: usize, batch: Vec<crate::capture::packet::Packet>) -> bool {
+        let weight = batch.len() as u64;
+        self.dropped += shard_send(&self.txs[shard], batch, weight);
+        // A dead worker does NOT stop the read: the loss is counted and
+        // reported once at the end, exactly as it was before this sink
+        // existed. Stopping here would turn one dead shard into a truncated
+        // analysis of every other one.
+        true
     }
 }
 
@@ -862,8 +990,14 @@ impl<'a> Frames<'a> {
     }
 }
 
-/// Read every file of the set into the worker batches, tallying what became of
-/// each one.
+/// Read every file of the set in THIS thread, tallying what became of each
+/// one.
+///
+/// The serial reader, and now one of two: [`shard_set_parallel`] reads a
+/// multi-file set with one thread per file. This one is what a single-file
+/// `-I` uses — there is one file, so there is one reader, and a thread to hand
+/// it to would be pure overhead — and what a `--count` run uses, because a
+/// budget shared across a set only means anything read in order.
 ///
 /// Split out of [`run_offline_parallel_file`] for the reason
 /// `read_set` is split out of [`crate::capture::file::capture_files`] on the
@@ -892,13 +1026,12 @@ impl<'a> Frames<'a> {
 /// # Side effects
 ///
 /// Opens and reads each file (writing a decompressed temp copy for gzip input),
-/// pushes packets into `batches` and flushes full ones to `txs`, advances
-/// `progress` and `tally`, and logs per-file progress and per-file failures.
+/// pushes batches to `txs`, advances `progress` and `tally`, and logs per-file
+/// progress and per-file failures.
 fn shard_set(
     paths: &[std::path::PathBuf],
     capture_config: &crate::capture::CaptureConfig,
     txs: &[crossbeam_channel::Sender<Vec<crate::capture::packet::Packet>>],
-    batches: &mut [Vec<crate::capture::packet::Packet>],
     progress: &mut ReadProgress,
     tally: &mut crate::capture::file::ReadTally,
 ) -> anyhow::Result<()> {
@@ -944,21 +1077,31 @@ fn shard_set(
             // set is which of the forty.
             return Err(crate::capture::file::filter_failure(bpf, path, e));
         }
+        tracing::info!("Reading from '{}'", path.display());
         // A read error stops THIS file, not the set. Truncation is the normal
         // state of a ring buffer — the newest member is still being written when
         // the capture stops, and libpcap reports `truncated dump file` on the
         // trailing partial record. Whatever was read before the break is already
         // in the workers' stores and stays there.
-        match shard_opened(&mut cap, path, capture_config, txs, batches, progress) {
-            Ok(true) => tally.complete += 1,
-            // The `--count` budget ran out inside this file. Requested, so not
-            // a loss — but the file was still not read to its end, and the
-            // files behind it are "not reached" rather than absent.
-            Ok(false) => {
+        let mut sink = DirectSink { txs, dropped: 0 };
+        // The budget is what is LEFT of `--count` across the set, so a hundred
+        // packets over four files is still a hundred packets.
+        let budget = capture_config
+            .count
+            .map(|max| max.saturating_sub(progress.count));
+        let read = shard_opened(&mut cap, path, capture_config, txs.len(), budget, &mut sink);
+        progress.dropped += sink.dropped;
+        let budget_spent = read.budget_spent;
+        match progress.absorb(read) {
+            None if budget_spent => {
+                // The `--count` budget ran out inside this file. Requested, so
+                // not a loss — but the file was still not read to its end, and
+                // the files behind it are "not reached" rather than absent.
                 tally.stopped_early += 1;
                 return Ok(());
             }
-            Err(e) => {
+            None => tally.complete += 1,
+            Some(e) => {
                 tally.stopped_early += 1;
                 tally.lost = true;
                 tracing::error!(
@@ -971,13 +1114,685 @@ fn shard_set(
     Ok(())
 }
 
-/// Like `run_offline_parallel`, but reads the capture FILES directly in this
-/// thread instead of consuming a `PacketRx` fed by a separate capture reader
-/// thread. This fuses pcap-read + host-pair peek + shard into a SINGLE serial
-/// stage — eliminating the dispatcher thread and the semaphore-capped capture
-/// channel that capped `--cores` scaling at ~2 workers (the read→dispatcher
-/// hand-off was two serial stages). Sharding/reassembly/merge are identical to
+/// How far the readers of LATER files may run ahead of the file the dispatcher
+/// is releasing, in bytes, across the whole set.
+///
+/// This number is the entire speed/memory trade of the parallel read, because
+/// a later file's reader cannot deliver a single packet until the earlier
+/// file's reader has delivered its last one — the workers must see a shard's
+/// packets in capture order — so everything it reads early it has to hold.
+/// Speedup is therefore bounded by `1 + runway / file size` and capped at the
+/// reader count: a runway of one whole file lets the next file be dispatched
+/// the instant its predecessor ends, which halves the read stage; a runway of
+/// a tenth of a file buys a tenth.
+///
+/// Measured on the 8-file rotated set below at `--cores 8`, sweeping this
+/// value with everything else fixed — read stage, then peak RSS:
+///
+/// ```text
+///   runway     read     RSS        runway     read     RSS
+///   0        0.875s   212 MiB      1024     0.579s   299 MiB
+///   256      0.814s   222 MiB      2048     0.583s   383 MiB
+///   512      0.733s   250 MiB      4096     0.580s   412 MiB
+/// ```
+///
+/// (in batches, as the sweep was run; the budget is in bytes for the reason
+/// below.) The curve has a knee and then a cliff into pure cost: past ~1024
+/// batches the read stage does not move again, because 0.58s is where the
+/// EIGHT WORKERS become the bottleneck instead — a bigger runway then buys
+/// nothing and still holds the memory. A runway of zero is the control, and it
+/// is worth its own line: the reader threads and the dispatcher, with no
+/// read-ahead at all, are 3-4% SLOWER than reading the set in one thread.
+/// Every gain here is bought with this budget, and none of it comes free from
+/// the threading.
+///
+/// Bytes rather than batches because a batch is 128 packets of ANY size, and
+/// sipnab's default snaplen is 65535: on a jumbo capture a 1024-batch runway
+/// is 8 GiB. The charge is the frame plus the `Packet` that carries it, which
+/// is what the batch actually costs; 48 MiB of that is ~131k packets of the
+/// ~240-byte frames in the set below, the knee above. Real resident cost runs
+/// well above the charge, because the allocator's 64 KiB blocks stay alive
+/// until the last frame cut from them drops: the shipped value measures 293
+/// MiB peak RSS at `--cores 8` against 205 MiB for the serial reader over the
+/// same set.
+///
+/// (The sweep above predates [`DISPATCH_RESERVE_BYTES`], so its RSS column
+/// carries a second, unbounded buffer that no longer exists. The read-stage
+/// column is unaffected — at eight cores the dispatcher barely blocks, so that
+/// buffer stayed near empty — and the 1024-batch row's 299 MiB is within
+/// measurement of the 293 MiB the shipped build now takes.)
+const READ_AHEAD_BYTES: usize = 48 * 1024 * 1024;
+
+/// How far the reader of the file being dispatched may run ahead, in bytes.
+///
+/// A separate, much smaller pool because it answers a different question. The
+/// runway above buys parallelism; this only smooths the moment the dispatcher
+/// spends blocked on a full worker channel, and 8 MiB is ~21k packets of the
+/// set below — more than enough that the reader is never idle waiting for it.
+///
+/// It exists because that reader is exempt from the runway, and "exempt" was
+/// briefly "unbounded": its queue was capped in BATCHES, so when the workers
+/// were the bottleneck it filled the queue instead of waiting. Measured at
+/// `--cores 2` on the 8-file set, peak RSS went 168 MiB -> 366 MiB, where the
+/// runway alone accounts for ~82 MiB of that; the rest was one reader running
+/// hundreds of MiB ahead of a dispatcher blocked on the workers. With a
+/// 65535-byte snaplen the same queue is tens of gigabytes. With this pool the
+/// same run peaks at 286 MiB and loses no throughput for it.
+const DISPATCH_RESERVE_BYTES: usize = 8 * 1024 * 1024;
+
+/// What one buffered packet is charged against [`READ_AHEAD_BYTES`]: its
+/// frame, plus the `Packet` that carries the frame. The second half is what
+/// gives the charge a floor — a capture of 64-byte frames would otherwise buy
+/// a runway of millions of packets for nothing.
+fn read_ahead_charge(batch: &[crate::capture::packet::Packet]) -> usize {
+    let frames: usize = batch.iter().map(|p| p.data.len()).sum();
+    frames + std::mem::size_of_val(batch)
+}
+
+/// A batch on its way from one file's reader to the dispatcher.
+enum ReaderMsg {
+    /// One shard's worth of packets, in capture order.
+    Batch {
+        /// Which worker owns them.
+        shard: usize,
+        /// What this batch was charged against the run-ahead ledger, carried
+        /// so the dispatcher can give it back without re-walking 128 packets
+        /// it otherwise never touches.
+        charge: usize,
+        /// The packets, already stamped with source and ordinal.
+        packets: Vec<crate::capture::packet::Packet>,
+    },
+    /// This file is finished — read, refused, or never opened. Always the LAST
+    /// message a file sends, which is how the dispatcher knows it may move on
+    /// to the next one.
+    Done(FileOutcome),
+}
+
+/// What became of one file, reported to the dispatcher by its reader.
+///
+/// The three arms are the three verdicts [`shard_set`] reaches inline, kept
+/// apart here because a reader thread cannot reach them: only the dispatcher
+/// knows whether this is the FIRST file (whose open failing proves the set
+/// unusable) and only it may write the tally.
+enum FileOutcome {
+    /// The file could not be opened.
+    OpenFailed(anyhow::Error),
+    /// The BPF filter would not compile against this file's link type.
+    FilterFailed(anyhow::Error),
+    /// The file was opened and read; [`FileRead::stopped`] says whether the
+    /// read reached the end.
+    Read(FileRead),
+}
+
+/// How far each file's reader may run ahead of the dispatcher, and the state
+/// that keeps that bounded.
+///
+/// The ledger is in BYTES: a reader charges what a batch costs before handing
+/// it over. There are two pools, because the readers ahead and the reader
+/// being dispatched are bounded for different reasons.
+///
+/// [`READ_AHEAD_BYTES`] is the runway proper — what a LATER file's reader may
+/// hold, and the whole speed/memory trade. A file's charge comes back in one
+/// move rather than batch by batch: when the dispatcher reaches file `f`,
+/// everything reader `f` was holding is released at once.
+///
+/// [`DISPATCH_RESERVE_BYTES`] is what the reader of the CURRENT file may hold,
+/// and it is released batch by batch as the dispatcher forwards them. That
+/// reader must never wait on the RUNWAY — without that exemption the whole set
+/// deadlocks the moment the readers ahead hold the entire budget, because the
+/// dispatcher would be waiting on a reader that is waiting on the dispatcher —
+/// but "exempt from the runway" is not "unbounded", which is what it was until
+/// this pool existed.
+///
+/// Neither pool can deadlock on a batch bigger than itself: a caller holding
+/// nothing is admitted whatever it asks for, and takes only what was there.
+///
+/// # One claimant at a time
+///
+/// The whole runway goes to the file the dispatcher will reach NEXT, and no
+/// other, until that file is either fully read or out of permits. Sharing it
+/// out is the obvious policy and it is the wrong one, because what the runway
+/// buys is the head start ONE file has when its turn comes. Measured on the
+/// 8-file rotated set at `--cores 8` with the same 2048-batch budget: shared
+/// out between the seven waiting readers the read stage was 0.677s, spent on
+/// the next file in line it is 0.583s. Each file gets the same head start in
+/// turn, and a runway larger than a file passes straight on to the file after
+/// it — so a set of many small files still reads every one of them at once.
+struct Runway {
+    /// Guards the whole ledger. Taken once per BATCH — 128 packets — so its
+    /// cost is 1/128th of a lock per packet.
+    state: std::sync::Mutex<RunwayState>,
+    /// Signalled when permits are freed or the run is cancelled.
+    ready: std::sync::Condvar,
+}
+
+/// The permit ledger. See [`Runway`].
+struct RunwayState {
+    /// Bytes of the runway nobody holds.
+    free: usize,
+    /// Bytes of the dispatch reserve nobody holds.
+    reserve: usize,
+    /// The file the dispatcher is releasing. Its reader is charged nothing.
+    current: usize,
+    /// Bytes held per file index.
+    held: Vec<usize>,
+    /// Which files have been read to their end, so the claim can pass on. A
+    /// file that could not be opened counts as finished: it will never ask for
+    /// a permit, and a claim it holds is one no other file can use.
+    finished: Vec<bool>,
+    /// Set when the run is over and every waiting reader must give up.
+    cancelled: bool,
+}
+
+impl RunwayState {
+    /// The one file entitled to spend the runway: the nearest one after the
+    /// dispatch point that has not finished reading.
+    fn claimant(&self) -> usize {
+        let mut file = self.current + 1;
+        while file < self.finished.len() && self.finished[file] {
+            file += 1;
+        }
+        file
+    }
+}
+
+impl Runway {
+    /// A ledger for `files` files, `budget` bytes of read-ahead and
+    /// [`DISPATCH_RESERVE_BYTES`] for the file being dispatched.
+    fn new(files: usize, budget: usize) -> Self {
+        Self {
+            state: std::sync::Mutex::new(RunwayState {
+                free: budget,
+                reserve: DISPATCH_RESERVE_BYTES,
+                current: 0,
+                held: vec![0; files],
+                finished: vec![false; files],
+                cancelled: false,
+            }),
+            ready: std::sync::Condvar::new(),
+        }
+    }
+
+    /// Claim the right to hand one more batch, costing `charge` bytes, to the
+    /// dispatcher — blocking until the run-ahead allows it. `false` means the
+    /// run was cancelled and the reader must stop.
+    ///
+    /// A batch larger than the pool it draws on is still admitted, once that
+    /// pool is otherwise untouched. Refusing it would be a deadlock, not a
+    /// saving: the packets are already read and no smaller batch is coming.
+    /// What it takes is what was THERE, not what it asked for — a pool that
+    /// gave back more than it lent would grow by the overdraft every time an
+    /// oversized batch went through, and a bound that rises each time it is
+    /// exceeded is not a bound.
+    ///
+    /// # Side effects
+    ///
+    /// Charges one of the two pools; blocks the calling thread until there is
+    /// room in it.
+    fn acquire(&self, file: usize, charge: usize) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if state.cancelled {
+                return false;
+            }
+            if file <= state.current {
+                // The file being dispatched draws on the reserve, which comes
+                // back batch by batch as the dispatcher forwards them. It is
+                // full whenever the dispatcher has caught up, so a reader the
+                // dispatcher is keeping up with never waits here at all.
+                if state.reserve >= charge || state.reserve == DISPATCH_RESERVE_BYTES {
+                    state.reserve -= charge.min(state.reserve);
+                    return true;
+                }
+            } else if state.claimant() == file && (state.free >= charge || state.held[file] == 0) {
+                let taken = charge.min(state.free);
+                state.free -= taken;
+                state.held[file] += taken;
+                return true;
+            }
+            state = self.ready.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// Give back what a forwarded batch was holding.
+    ///
+    /// Always to the RESERVE, whichever pool the batch was charged to. A batch
+    /// charged to the runway had that charge returned wholesale when the
+    /// dispatcher reached its file, so returning it again would double-count —
+    /// which the ceiling at [`DISPATCH_RESERVE_BYTES`] absorbs, and is why the
+    /// dispatcher does not have to remember which pool paid.
+    ///
+    /// # Side effects
+    ///
+    /// Wakes the reader of the file being dispatched, if it is waiting.
+    fn release(&self, charge: usize) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.reserve = state
+            .reserve
+            .saturating_add(charge)
+            .min(DISPATCH_RESERVE_BYTES);
+        drop(state);
+        self.ready.notify_all();
+    }
+
+    /// Bytes of the dispatch reserve nobody holds.
+    ///
+    /// Only an assertion reads this, and that is the point: at the end of a
+    /// clean run it must be the whole reserve again, because every batch the
+    /// reserve lent for has been forwarded. A dispatcher that forwarded a
+    /// batch without giving its bytes back would leave this short, and would
+    /// eventually stall a reader against a reserve that only ever shrinks.
+    fn reserve_free(&self) -> usize {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).reserve
+    }
+
+    /// Whether the run is over. Read by a reader between files, so a set whose
+    /// third member was refused does not go on to open the other
+    /// twenty-four.
+    fn cancelled(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .cancelled
+    }
+
+    /// Move the dispatch point to `file`, releasing everything that file's
+    /// reader was holding.
+    ///
+    /// # Side effects
+    ///
+    /// Wakes every reader waiting for a permit.
+    fn advance(&self, file: usize) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.current = file;
+        state.free += std::mem::take(&mut state.held[file]);
+        drop(state);
+        self.ready.notify_all();
+    }
+
+    /// Record that a file has been read to its end, passing the claim on the
+    /// runway to the next unfinished file.
+    ///
+    /// # Side effects
+    ///
+    /// Wakes every reader waiting for a permit.
+    fn retire(&self, file: usize) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.finished[file] = true;
+        drop(state);
+        self.ready.notify_all();
+    }
+
+    /// End the run: every reader waiting for a permit gives up.
+    ///
+    /// # Side effects
+    ///
+    /// Wakes every reader waiting for a permit.
+    fn cancel(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.cancelled = true;
+        drop(state);
+        self.ready.notify_all();
+    }
+}
+
+/// The multi-file sink: into this reader's own queue, for the dispatcher to
+/// release when it reaches this file.
+struct QueueSink<'a> {
+    /// This file's index in the set, which is what the run-ahead is measured
+    /// against.
+    file: usize,
+    /// This reader THREAD's queue. A thread reads files `first`, `first+R`,
+    /// `first+2R`… in order and the dispatcher reaches them in that order too,
+    /// so one queue per thread already delivers every message in the order its
+    /// consumer wants it.
+    tx: &'a crossbeam_channel::Sender<ReaderMsg>,
+    /// The shared read-ahead ledger.
+    runway: &'a Runway,
+}
+
+impl ShardSink for QueueSink<'_> {
+    fn emit(&mut self, shard: usize, batch: Vec<crate::capture::packet::Packet>) -> bool {
+        // Walked once, here, on the thread that just built the batch and has
+        // every `Packet` in its cache — not on the dispatcher, which otherwise
+        // touches nothing but the pointer.
+        let charge = read_ahead_charge(&batch);
+        if !self.runway.acquire(self.file, charge) {
+            return false;
+        }
+        self.tx
+            .send(ReaderMsg::Batch {
+                shard,
+                charge,
+                packets: batch,
+            })
+            .is_ok()
+    }
+}
+
+/// Read one file, all the way, in a reader thread.
+///
+/// The open and the filter check are the same two steps [`shard_set`] takes
+/// inline; what differs is that a thread cannot decide what they MEAN — the
+/// first file's open failing is a verdict on the whole set, and only the
+/// dispatcher knows which file is first.
+///
+/// # Side effects
+///
+/// Sends this file's batches into `sink`'s queue, blocking on the run-ahead.
+fn read_one_file(
+    file: usize,
+    path: &std::path::Path,
+    capture_config: &crate::capture::CaptureConfig,
+    shards: usize,
+    tx: &crossbeam_channel::Sender<ReaderMsg>,
+    runway: &Runway,
+) -> FileOutcome {
+    let (mut cap, _gz_guard) = match crate::capture::file::open_offline(path) {
+        Ok(opened) => opened,
+        Err(e) => return FileOutcome::OpenFailed(e),
+    };
+    if let Some(ref bpf) = capture_config.bpf_filter
+        && let Err(e) = cap.filter(bpf, true)
+    {
+        return FileOutcome::FilterFailed(crate::capture::file::filter_failure(bpf, path, e));
+    }
+    let mut sink = QueueSink { file, tx, runway };
+    // No `--count` budget: a set read in parallel never has one. See
+    // `shard_set_parallel` for why.
+    FileOutcome::Read(shard_opened(
+        &mut cap,
+        path,
+        capture_config,
+        shards,
+        None,
+        &mut sink,
+    ))
+}
+
+/// Read every file of a multi-file set, one reader thread per file, and
+/// release what they read into the worker pool IN FILE ORDER.
+///
+/// # Why this exists
+///
+/// One thread used to read the whole `-I` set: open a file, read + copy +
+/// host-pair-peek every packet of it, then the next file, while N workers
+/// waited. That single stage is what `--cores` plateaus on — measured on an
+/// 8×535k-packet rotated set (`bench/carrier.py --calls 40000`, cut into eight
+/// members with `editcap -F pcap -c 535000`), the read stage takes 0.85s at
+/// `--cores 4` and 0.83s at `--cores 8`, so past four cores the extra workers
+/// buy nothing at all. Since `-I` routinely names a directory or glob of
+/// rotated captures, there are N files to read and no reason one thread should
+/// read them all.
+///
+/// Interleaved against the serial reader on that set, median of nine on an
+/// idle host, whole-process wall clock:
+///
+/// ```text
+///   cores   serial    per-file   change
+///   1       2.815s     2.822s     -0.3%   (control: neither uses this)
+///   2       1.794s     1.821s     -1.5%
+///   4       1.168s     1.215s     -4.0%
+///   8       1.146s     0.909s    +20.7%
+///   12      1.228s     0.957s    +22.1%
+/// ```
+///
+/// The peak moves with it: 3.66M pkts/s at four cores becomes 4.71M at eight.
+/// The two- and four-core rows are a real regression and are the trade, not an
+/// oversight — there the WORKERS are the bottleneck, so the read-ahead buys
+/// nothing and still costs a second reader competing for memory bandwidth, a
+/// channel hop, and 48 MiB moving through the caches the workers are using.
+///
+/// A SINGLE-file `-I` has one file and therefore one reader: this function is
+/// not used for it at all ([`run_offline_parallel_file`] calls [`shard_set`]
+/// instead), and nothing here makes a one-file run faster. That is not a
+/// limitation to work around later — a pcap record's length is only known from
+/// the record before it, so a file cannot be cut into pieces without first
+/// walking it.
+///
+/// # Why the dispatcher exists
+///
+/// The readers do not send to the workers. They cannot: a worker must see its
+/// shard's packets in capture order, and the workers are stateful in ways that
+/// order decides — the RTP sequence tracking that derives loss and jitter, the
+/// SIP dialog state machine, and TCP reassembly all read the packets one after
+/// another. A reader for file 4 that sent a BYE before file 3's reader sent
+/// the INVITE would not merely reorder the output, it would produce different
+/// numbers. So each reader fills its own queue and this thread releases them
+/// file by file, which reproduces the serial reader's per-worker sequence
+/// EXACTLY: for every shard, file 0's packets in order, then file 1's, and so
+/// on. Nothing downstream can tell the two readers apart.
+///
+/// The cost of that guarantee is memory, and [`READ_AHEAD_BYTES`] is where it
+/// is paid and bounded.
+///
+/// # `--count`
+///
+/// Never used with one: a budget shared across a set means "the first N
+/// packets in read order", and a reader that does not know how many packets
+/// the files before it held cannot honour it. [`run_offline_parallel_file`]
+/// sends a `--count` run down the serial reader instead, where the semantics
+/// are exact. A `--count` run is a peek at a capture, not a throughput
+/// problem.
+///
+/// # Errors
+///
+/// The two the serial reader raises, from the same files, in the same order:
+/// the FIRST file failing to open, or the BPF filter refusing to compile
+/// against any member. The verdicts are reached in file
+/// order because the dispatcher folds each file's outcome only when it reaches
+/// that file — a reader that finished file 7 early cannot make file 7's
+/// failure the one that is reported when file 3 also failed.
+///
+/// # Side effects
+///
+/// Spawns one thread per reader, reads and maps files, pushes batches into
+/// `txs`, advances `progress` and `tally`, and logs per-file progress and
+/// per-file failures.
+fn shard_set_parallel(
+    paths: &[std::path::PathBuf],
+    capture_config: &crate::capture::CaptureConfig,
+    txs: &[crossbeam_channel::Sender<Vec<crate::capture::packet::Packet>>],
+    progress: &mut ReadProgress,
+    tally: &mut crate::capture::file::ReadTally,
+    readers: usize,
+) -> anyhow::Result<()> {
+    debug_assert!(paths.len() > 1 && readers > 1 && capture_config.count.is_none());
+    let shards = txs.len();
+    let runway = Runway::new(paths.len(), READ_AHEAD_BYTES);
+    // Deep enough that the BYTE ledger is what stops a reader, never the
+    // queue: the smallest a batch can be charged is 128 `Packet`s, so that
+    // divides the two pools into the most batches they can ever cover.
+    let depth = (READ_AHEAD_BYTES + DISPATCH_RESERVE_BYTES)
+        / (BATCH * std::mem::size_of::<crate::capture::packet::Packet>())
+        + 8;
+
+    std::thread::scope(|scope| {
+        // One queue per reader THREAD, sized past both byte pools so that the
+        // ledger is what blocks a reader and the queue never is.
+        let mut queues = Vec::with_capacity(readers);
+        for first in 0..readers {
+            let (tx, rx) = crossbeam_channel::bounded::<ReaderMsg>(depth);
+            queues.push(rx);
+            let runway = &runway;
+            scope.spawn(move || {
+                for file in (first..paths.len()).step_by(readers) {
+                    if runway.cancelled() {
+                        return;
+                    }
+                    let outcome =
+                        read_one_file(file, &paths[file], capture_config, shards, &tx, runway);
+                    // Retired BEFORE the verdict is queued: the `Done` message
+                    // sits behind every batch this file produced and the
+                    // dispatcher will not see it for a while, but the runway
+                    // this file is no longer using has to pass to the next one
+                    // immediately or it goes unspent.
+                    runway.retire(file);
+                    if tx.send(ReaderMsg::Done(outcome)).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+
+        let outcome = dispatch_in_file_order(paths, txs, &queues, &runway, progress, tally);
+
+        // No reader may be left blocked, on ANY path out. This scope joins
+        // every thread before it returns, so a reader still waiting for a
+        // permit or for room in a queue nobody drains would hang the process
+        // instead of letting the error above be reported. Cancelling releases
+        // the waiters; draining releases the senders.
+        runway.cancel();
+        for rx in &queues {
+            while rx.recv().is_ok() {}
+        }
+        // Every batch the dispatcher forwarded gave its bytes back, so a run
+        // that read the whole set ends with the reserve whole. Checked rather
+        // than assumed because the symptom of the alternative is a hang on a
+        // big capture and nothing at all on a small one — the reserve is
+        // 8 MiB, so a fixture never reaches it and only a real run does.
+        // Skipped on the error paths, where readers were cancelled holding
+        // bytes for batches nobody will forward.
+        debug_assert!(
+            outcome.is_err() || runway.reserve_free() == DISPATCH_RESERVE_BYTES,
+            "the dispatch reserve leaked: {} of {DISPATCH_RESERVE_BYTES} bytes \
+             came back",
+            runway.reserve_free()
+        );
+        outcome
+    })
+}
+
+/// Release what the readers produced into the worker pool, file by file.
+///
+/// See [`shard_set_parallel`] for why this stage exists at all. It does one
+/// thing per batch — hand it to the worker that owns the shard — and nothing
+/// per packet, which is the whole point: the per-packet work is in the reader
+/// threads.
+///
+/// # Errors
+///
+/// A file's reader vanishing without reporting (it panicked), the FIRST file
+/// failing to open, or the BPF filter refusing a file.
+///
+/// # Side effects
+///
+/// Sends batches to the workers, advances `progress` and `tally`, moves the
+/// run-ahead's dispatch point, and logs one line per file read and one per
+/// file lost.
+fn dispatch_in_file_order(
+    paths: &[std::path::PathBuf],
+    txs: &[crossbeam_channel::Sender<Vec<crate::capture::packet::Packet>>],
+    queues: &[crossbeam_channel::Receiver<ReaderMsg>],
+    runway: &Runway,
+    progress: &mut ReadProgress,
+    tally: &mut crate::capture::file::ReadTally,
+) -> anyhow::Result<()> {
+    for (file, path) in paths.iter().enumerate() {
+        runway.advance(file);
+        let rx = &queues[file % queues.len()];
+        // Said at the moment the file's traffic starts reaching the workers,
+        // not at the moment its reader opened it, so the narration stays in
+        // file order however the reads interleaved. An operator watching a
+        // 27-file run reads this line as "the run is on file 12 now", and
+        // eight readers announcing themselves at once would destroy that.
+        let mut announced = false;
+        let announce = |announced: &mut bool| {
+            if !*announced {
+                tracing::info!("Reading from '{}'", path.display());
+                *announced = true;
+            }
+        };
+        loop {
+            match rx.recv() {
+                Ok(ReaderMsg::Batch {
+                    shard,
+                    charge,
+                    packets,
+                }) => {
+                    announce(&mut announced);
+                    let weight = packets.len() as u64;
+                    progress.dropped += shard_send(&txs[shard], packets, weight);
+                    // After the send, not before: the reserve exists to bound
+                    // what is IN FLIGHT, and this batch is only out of flight
+                    // once a worker owns it.
+                    runway.release(charge);
+                }
+                Ok(ReaderMsg::Done(FileOutcome::Read(read))) => {
+                    // Announced even for an empty file: it WAS read, and the
+                    // serial reader says so too.
+                    announce(&mut announced);
+                    match progress.absorb(read) {
+                        None => tally.complete += 1,
+                        // A read error stops THIS file, not the set.
+                        // Truncation is the normal state of a ring buffer —
+                        // the newest member is still being written when the
+                        // capture stops. Whatever was read before the break
+                        // has already been released above.
+                        Some(e) => {
+                            tally.stopped_early += 1;
+                            tally.lost = true;
+                            tracing::error!(
+                                "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
+                                path.display()
+                            );
+                        }
+                    }
+                    break;
+                }
+                Ok(ReaderMsg::Done(FileOutcome::OpenFailed(e))) => {
+                    // The first file owns the "is this set usable at all"
+                    // verdict. A later one that vanished mid-run — a rotating
+                    // capture directory being cleaned up while it is analyzed
+                    // — is logged and skipped: losing one file of a set is
+                    // bad, losing the other nine is worse.
+                    if file == 0 {
+                        return Err(e);
+                    }
+                    tally.skipped += 1;
+                    tally.lost = true;
+                    tracing::error!("Skipping '{}': {e:#}", path.display());
+                    break;
+                }
+                Ok(ReaderMsg::Done(FileOutcome::FilterFailed(e))) => {
+                    // Counted as a skip BEFORE the refusal is propagated: a
+                    // file whose traffic never reached the workers is data
+                    // missing from the analysis, and the caller reports the
+                    // tally on every path out.
+                    tally.skipped += 1;
+                    tally.lost = true;
+                    return Err(e);
+                }
+                Err(_) => {
+                    // The reader dropped its queue without a verdict, which
+                    // only happens if it panicked. Said out loud rather than
+                    // treated as end-of-file: a silently short set is the
+                    // failure this whole module's tally exists to prevent.
+                    return Err(anyhow::anyhow!(
+                        "the reader thread for '{}' stopped without reporting",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Like `run_offline_parallel`, but reads the capture FILES itself instead of
+/// consuming a `PacketRx` fed by a separate capture reader thread. That
+/// eliminated the semaphore-capped capture channel which capped `--cores`
+/// scaling at ~2 workers, by fusing pcap-read + host-pair peek + shard into
+/// one stage instead of two. Sharding/reassembly/merge are identical to
 /// `run_offline_parallel`, so `--cores N` parity with `--cores 1` is preserved.
+///
+/// That fused stage is SERIAL for one file and is what `--cores` then
+/// plateaued on. A set of several files no longer runs it in one thread: see
+/// [`shard_set_parallel`], which reads the files concurrently and releases
+/// what they read in file order, so the workers see exactly the sequence the
+/// serial reader gave them. One file still means one reader — a pcap record's
+/// length is only known from the record before it, so a single file cannot be
+/// cut into pieces without first walking it.
 ///
 /// # Cross-file dialog stitching
 ///
@@ -1067,30 +1882,39 @@ pub fn run_offline_parallel_file(
         })
         .collect();
 
-    // Single reader+sharder: open each pcap in turn (gzip-transparent), apply any
-    // BPF, and for each packet do the cheap host-pair peek + append to that
-    // worker's batch. A batch is flushed (one channel hop for ~BATCH packets)
-    // when it fills, and any partial batches are flushed once the whole SET is
-    // read. One thread, one copy, one hop per batch.
+    // Read the set: open each pcap (gzip-transparent), apply any BPF, and for
+    // each packet do the cheap host-pair peek + append to that worker's batch,
+    // flushed to the worker when it fills — one channel hop per ~BATCH
+    // packets.
     let mut progress = ReadProgress {
         count: 0,
         dropped: 0,
         unshardable: 0,
         clock: SweepClock::new(true),
     };
-    let mut batches: Vec<Vec<Packet>> = (0..n).map(|_| Vec::with_capacity(BATCH)).collect();
     let mut tally = crate::capture::file::ReadTally {
         given: paths.len(),
         ..crate::capture::file::ReadTally::default()
     };
-    let read = shard_set(
-        paths,
-        capture_config,
-        &txs,
-        &mut batches,
-        &mut progress,
-        &mut tally,
-    );
+    // One reader thread per file, capped at the worker count — but only where
+    // that means anything. A single-file `-I` has ONE file and therefore one
+    // reader whatever this says, so it stays in this thread rather than paying
+    // for a queue and a dispatcher it cannot use; and a `--count` run keeps
+    // the serial reader because "the first N packets of the set" is defined in
+    // read order (see [`shard_set_parallel`]).
+    let readers = paths.len().min(n);
+    let read = if readers > 1 && capture_config.count.is_none() {
+        shard_set_parallel(
+            paths,
+            capture_config,
+            &txs,
+            &mut progress,
+            &mut tally,
+            readers,
+        )
+    } else {
+        shard_set(paths, capture_config, &txs, &mut progress, &mut tally)
+    };
     // Reported before the error is propagated, and on every path out, exactly
     // as `capture_files` does it: a filter that fails against file twelve still
     // read eleven, and what reached the workers is what the operator has to be
@@ -1100,13 +1924,6 @@ pub fn run_offline_parallel_file(
     // had actually read.
     tally.report(progress.count);
     read?;
-    // Flush every partial batch so no tail packets are lost.
-    for (s, b) in batches.into_iter().enumerate() {
-        if !b.is_empty() {
-            let weight = b.len() as u64;
-            progress.dropped += shard_send(&txs[s], b, weight);
-        }
-    }
     drop(txs);
     let dropped = progress.dropped;
     if dropped > 0 {
@@ -1416,6 +2233,22 @@ mod tests {
     /// known mix of readable and unreadable frames.
     #[cfg(feature = "native")]
     fn write_eth_pcap(dir: &std::path::Path, name: &str, frames: &[Vec<u8>]) -> std::path::PathBuf {
+        write_eth_pcap_at(dir, name, frames, 1_700_000_000)
+    }
+
+    /// The same, with the first record's timestamp chosen by the caller.
+    ///
+    /// A rotated capture set is ONE timeline cut into pieces, so a fixture that
+    /// restarts the clock in every file is not one: the members would overlap
+    /// in time, and a test about reading them in order would be asserting
+    /// against an input no capture rotation produces.
+    #[cfg(feature = "native")]
+    fn write_eth_pcap_at(
+        dir: &std::path::Path,
+        name: &str,
+        frames: &[Vec<u8>],
+        first_ts: u32,
+    ) -> std::path::PathBuf {
         use std::io::Write;
         let path = dir.join(name);
         let mut f = std::fs::File::create(&path).expect("create the temp pcap");
@@ -1431,7 +2264,7 @@ mod tests {
         for (i, frame) in frames.iter().enumerate() {
             let len = u32::try_from(frame.len()).expect("test frame fits a u32");
             let mut rec = Vec::new();
-            rec.extend_from_slice(&(1_700_000_000u32 + i as u32).to_le_bytes()); // ts_sec
+            rec.extend_from_slice(&(first_ts + i as u32).to_le_bytes()); // ts_sec
             rec.extend_from_slice(&0u32.to_le_bytes()); // ts_usec
             rec.extend_from_slice(&len.to_le_bytes()); // incl_len
             rec.extend_from_slice(&len.to_le_bytes()); // orig_len
@@ -1939,6 +2772,394 @@ mod tests {
             parallel.contains("loopback-dlt-loop.pcap"),
             "the refusal must name the file it refused on, or a forty-file set \
              leaves the operator nothing to act on: {parallel}"
+        );
+    }
+
+    // ── One reader thread per file ─────────────────────────────────
+
+    /// One RTP frame: 12-byte header, `ssrc`, `seq`, and a fixed payload.
+    #[cfg(feature = "native")]
+    fn rtp_frame(ssrc: u32, seq: u16) -> Vec<u8> {
+        let mut payload = vec![0x80, 0x00];
+        payload.extend_from_slice(&seq.to_be_bytes());
+        payload.extend_from_slice(&(160u32 * u32::from(seq)).to_be_bytes());
+        payload.extend_from_slice(&ssrc.to_be_bytes());
+        payload.extend_from_slice(&[0xaa; 160]);
+        eth_ipv4_udp(40000, 40002, &payload)
+    }
+
+    /// EVERY file of a multi-file `-I` set is read, and every file's packets
+    /// are counted against the run.
+    ///
+    /// Five files of five different lengths, each carrying its own SSRC, so
+    /// the assertions name what came from where: a reader that dropped a file,
+    /// read one twice, or read only the first would move the total AND lose a
+    /// stream, and the per-stream provenance says which file went missing
+    /// rather than only that the arithmetic no longer adds up.
+    ///
+    /// This is the test the parallel reader had to pass before it was worth
+    /// measuring: `-I` routinely names a directory of rotated captures, and a
+    /// reader that quietly reads some of them is a wrong answer that looks
+    /// like a fast one.
+    #[cfg(feature = "native")]
+    #[test]
+    fn every_file_of_a_multi_file_set_is_read_and_counted() {
+        use crate::capture::CaptureConfig;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let lengths = [7usize, 11, 13, 17, 19];
+        let mut paths = Vec::new();
+        for (i, len) in lengths.iter().enumerate() {
+            let ssrc = 0x1000_0000 + i as u32;
+            let frames: Vec<Vec<u8>> = (0..*len).map(|s| rtp_frame(ssrc, s as u16 + 1)).collect();
+            paths.push(write_eth_pcap_at(
+                dir.path(),
+                &format!("rot.pcap{i}"),
+                &frames,
+                1_700_000_000 + (i as u32 * 1000),
+            ));
+        }
+
+        let r = run_offline_parallel_file(&paths, &CaptureConfig::default(), pcfg(4))
+            .expect("a set of five readable files must read");
+
+        let total: usize = lengths.iter().sum();
+        assert_eq!(
+            r.packets_read, total as u64,
+            "every file's packets must reach the run: {} of {total} read",
+            r.packets_read
+        );
+        assert_eq!(
+            r.stream_store.len(),
+            lengths.len(),
+            "one stream per file; a missing stream is a file that was never read"
+        );
+        let mut seen: Vec<(String, u64)> = r
+            .stream_store
+            .iter()
+            .map(|s| {
+                let source = s
+                    .first_frame
+                    .as_ref()
+                    .expect("every stream must carry the file it was read from")
+                    .source
+                    .to_string();
+                (source, s.packet_count)
+            })
+            .collect();
+        seen.sort();
+        let mut want: Vec<(String, u64)> = paths
+            .iter()
+            .zip(lengths.iter())
+            .map(|(p, len)| (p.display().to_string(), *len as u64))
+            .collect();
+        want.sort();
+        assert_eq!(
+            seen, want,
+            "each file must contribute exactly its own packets, attributed to \
+             itself"
+        );
+    }
+
+    /// A stream split across the files of a rotated set is delivered to its
+    /// worker in CAPTURE order, so the order-derived metrics are the ones the
+    /// serial reader produces.
+    ///
+    /// This is the guarantee the dispatcher exists for. Four files carry one
+    /// stream's sequence numbers 1..200 in order; a reader that let file 3
+    /// reach the worker before file 1 would not merely reorder the output, it
+    /// would report loss that is not there — `RtpStream::update` counts a
+    /// forward sequence gap as loss, so the jump from 50 to 101 is 50 packets
+    /// "lost" and the backwards step afterwards is written off as reordering.
+    ///
+    /// Asserted twice over: against the serial reader's own answer for the
+    /// same bytes, which is the property that matters, and against the
+    /// absolute values, so the test still bites if the two paths ever stop
+    /// being selected the way this test selects them.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_stream_split_across_files_is_delivered_in_capture_order() {
+        use crate::capture::CaptureConfig;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let per_file = 50u16;
+        let files = 4u16;
+        let mut paths = Vec::new();
+        for f in 0..files {
+            let frames: Vec<Vec<u8>> = (0..per_file)
+                .map(|i| rtp_frame(0x2233_4455, f * per_file + i + 1))
+                .collect();
+            paths.push(write_eth_pcap_at(
+                dir.path(),
+                &format!("rot.pcap{f}"),
+                &frames,
+                1_700_000_000 + u32::from(f) * u32::from(per_file),
+            ));
+        }
+        let total = u64::from(per_file) * u64::from(files);
+
+        let parallel = run_offline_parallel_file(&paths, &CaptureConfig::default(), pcfg(4))
+            .expect("the set must read");
+        // `--count` keeps the serial reader, because a budget shared across a
+        // set only means anything read in order. A budget nothing can spend
+        // therefore reads the same bytes the same way, one file after another,
+        // which is exactly the reference this needs.
+        let serial_cc = CaptureConfig {
+            count: Some(u64::MAX),
+            ..CaptureConfig::default()
+        };
+        let serial =
+            run_offline_parallel_file(&paths, &serial_cc, pcfg(4)).expect("the set must read");
+
+        for (label, r) in [("parallel", &parallel), ("serial", &serial)] {
+            let s = r
+                .stream_store
+                .iter()
+                .next()
+                .unwrap_or_else(|| panic!("{label}: the fixture holds one RTP stream"));
+            assert_eq!(
+                s.packet_count, total,
+                "{label}: every packet of the split stream must arrive"
+            );
+            assert_eq!(
+                s.lost_packets, 0,
+                "{label}: the sequence runs 1..{total} unbroken, so any loss \
+                 reported is a file that reached the worker out of turn"
+            );
+            assert_eq!(
+                s.last_seq,
+                per_file * files,
+                "{label}: the last packet the worker saw must be the last one \
+                 in the capture"
+            );
+        }
+        let (p, s) = (
+            parallel.stream_store.iter().next().expect("one stream"),
+            serial.stream_store.iter().next().expect("one stream"),
+        );
+        assert_eq!(
+            (
+                p.packet_count,
+                p.lost_packets,
+                p.last_seq,
+                p.jitter.to_bits()
+            ),
+            (
+                s.packet_count,
+                s.lost_packets,
+                s.last_seq,
+                s.jitter.to_bits()
+            ),
+            "reading the set in parallel must produce the serial reader's \
+             answer, bit for bit, for every metric the packet ORDER decides"
+        );
+    }
+
+    /// A member of the set that cannot be opened is skipped and the rest of
+    /// the set is still read — the parallel reader's copy of the rule the
+    /// serial one has always had.
+    ///
+    /// Losing one file of a rotating capture directory being cleaned up
+    /// underneath the run is bad; losing the other two because of it is worse.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_missing_file_mid_set_does_not_take_the_rest_of_the_set_with_it() {
+        use crate::capture::CaptureConfig;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let first: Vec<Vec<u8>> = (0..9).map(|s| rtp_frame(0x3000_0001, s + 1)).collect();
+        let last: Vec<Vec<u8>> = (0..5).map(|s| rtp_frame(0x3000_0002, s + 1)).collect();
+        let paths = vec![
+            write_eth_pcap_at(dir.path(), "rot.pcap0", &first, 1_700_000_000),
+            dir.path().join("rot.pcap1-vanished"),
+            write_eth_pcap_at(dir.path(), "rot.pcap2", &last, 1_700_001_000),
+        ];
+
+        let r = run_offline_parallel_file(&paths, &CaptureConfig::default(), pcfg(4))
+            .expect("one unreadable member must not fail the whole set");
+        assert_eq!(
+            r.packets_read, 14,
+            "the two readable files must be read in full"
+        );
+        assert_eq!(
+            r.stream_store.len(),
+            2,
+            "both readable files' traffic must reach the workers"
+        );
+    }
+
+    // ── The read-ahead ledger ──────────────────────────────────────
+
+    /// Run `f` on a thread and report whether it finished promptly, so a test
+    /// about blocking does not hang the suite when the answer is wrong.
+    #[cfg(feature = "native")]
+    fn finishes_promptly(f: impl FnOnce() + Send + 'static) -> bool {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            f();
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok()
+    }
+
+    /// The reader of the file being dispatched never waits on the RUNWAY, even
+    /// with the runway entirely spent.
+    ///
+    /// Not an optimisation: it is what makes the whole arrangement live. The
+    /// dispatcher waits on the current file's reader, so a current reader that
+    /// waited for a budget only the dispatcher can release would deadlock the
+    /// run.
+    #[cfg(feature = "native")]
+    #[test]
+    fn the_dispatched_files_reader_is_never_charged_the_runway() {
+        let runway = std::sync::Arc::new(Runway::new(3, 0));
+        let r = std::sync::Arc::clone(&runway);
+        assert!(
+            finishes_promptly(move || assert!(r.acquire(0, 1 << 20))),
+            "the file being dispatched must be admitted with an empty runway, \
+             or the run deadlocks the moment the readers ahead spend it"
+        );
+    }
+
+    /// It is bounded all the same: it draws on the dispatch reserve, and waits
+    /// when that is spent until the dispatcher forwards something.
+    ///
+    /// "Exempt from the runway" was briefly "unbounded", and the queue depth
+    /// was the only thing holding it — a cap counted in BATCHES of any size.
+    /// At `--cores 2`, where the workers rather than the reader are the
+    /// bottleneck, that reader ran far enough ahead of a blocked dispatcher to
+    /// take peak RSS from 170 MiB to 366 MiB on the 8-file set; with a
+    /// 65535-byte snaplen the same queue is tens of gigabytes.
+    #[cfg(feature = "native")]
+    #[test]
+    fn the_dispatched_files_reader_waits_when_its_reserve_is_spent() {
+        let runway = std::sync::Arc::new(Runway::new(2, 0));
+        assert!(
+            runway.acquire(0, DISPATCH_RESERVE_BYTES),
+            "an untouched reserve admits a batch the size of the whole reserve"
+        );
+
+        let waiting = std::sync::Arc::clone(&runway);
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let admitted = waiting.acquire(0, 4096);
+            let _ = tx.send(admitted);
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "with the reserve spent, even the file being dispatched must wait: \
+             the alternative is a reader that keeps reading into a queue \
+             nobody is draining"
+        );
+
+        runway.release(4096);
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(2)),
+            Ok(true),
+            "forwarding a batch must hand its bytes back and wake the reader"
+        );
+    }
+
+    /// The whole runway goes to the file the dispatcher will reach NEXT, and
+    /// passes on only when that file is finished.
+    ///
+    /// Sharing it out is the policy this replaced: it left every file with a
+    /// seventh of a head start instead of one file with all of it, and the
+    /// read stage 0.677s instead of 0.583s.
+    #[cfg(feature = "native")]
+    #[test]
+    fn only_the_next_file_in_line_may_spend_the_runway() {
+        let runway = std::sync::Arc::new(Runway::new(4, 1000));
+        assert!(runway.acquire(1, 400), "file 1 is next in line");
+
+        let waiting = std::sync::Arc::clone(&runway);
+        assert!(
+            !finishes_promptly(move || {
+                waiting.acquire(2, 100);
+            }),
+            "file 2 must not spend a budget file 1 has not finished with, \
+             however much of it is free"
+        );
+
+        runway.retire(1);
+        let claiming = std::sync::Arc::clone(&runway);
+        assert!(
+            finishes_promptly(move || assert!(claiming.acquire(2, 100))),
+            "the claim must pass on the moment file 1 is finished"
+        );
+    }
+
+    /// A batch bigger than the whole budget is admitted rather than refused
+    /// forever.
+    ///
+    /// The packets are already read and no smaller batch is coming, so
+    /// refusing is a deadlock, not a saving. A jumbo capture with a 64 KiB
+    /// snaplen is the ordinary way to reach this.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_batch_larger_than_the_whole_runway_is_still_admitted() {
+        let runway = std::sync::Arc::new(Runway::new(2, 100));
+        let r = std::sync::Arc::clone(&runway);
+        assert!(
+            finishes_promptly(move || assert!(r.acquire(1, 5_000_000))),
+            "one oversized batch must go through, or a jumbo capture stops \
+             dead"
+        );
+    }
+
+    /// Every byte the reserve lends comes back when the batch is forwarded.
+    ///
+    /// The arithmetic half of the assertion at the end of
+    /// [`shard_set_parallel`]. A reserve that gave back less than it lent
+    /// shrinks by that much per batch and eventually stalls the reader of
+    /// every file; one that gave back more would stop being a bound.
+    #[cfg(feature = "native")]
+    #[test]
+    fn every_byte_the_dispatch_reserve_lends_comes_back() {
+        let runway = Runway::new(2, 0);
+        assert!(runway.acquire(0, 4096));
+        assert!(runway.acquire(0, 8192));
+        assert_eq!(
+            runway.reserve_free(),
+            DISPATCH_RESERVE_BYTES - 12288,
+            "both batches must be charged while they are in flight"
+        );
+        runway.release(4096);
+        runway.release(8192);
+        assert_eq!(
+            runway.reserve_free(),
+            DISPATCH_RESERVE_BYTES,
+            "forwarding both must restore the reserve exactly — no more, no less"
+        );
+    }
+
+    /// Cancelling releases a reader that is waiting for the runway.
+    ///
+    /// The run ends on the error paths too — a refused BPF filter, a reader
+    /// that will never be reached — and every one of them joins the reader
+    /// threads. A waiter nobody wakes turns a reported error into a hang.
+    #[cfg(feature = "native")]
+    #[test]
+    fn cancelling_the_runway_releases_a_waiting_reader() {
+        let runway = std::sync::Arc::new(Runway::new(4, 0));
+        let waiting = std::sync::Arc::clone(&runway);
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let admitted = waiting.acquire(2, 10);
+            let _ = tx.send(admitted);
+        });
+        // The waiter must be parked before the cancel, or the test proves
+        // nothing about waking one.
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "file 2 must be waiting: the budget is empty and it is not next in \
+             line"
+        );
+        runway.cancel();
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(2)),
+            Ok(false),
+            "a cancelled runway must release its waiters, and tell them the \
+             run is over rather than admitting them"
         );
     }
 }

@@ -14,16 +14,38 @@
 //! digest off that reader; the reader is still the ceiling, so the argument
 //! below is unchanged — only the core count where it starts to bite moved.
 //!
-//! It also removes something the current design gives for free. Today a worker
-//! sees one file at a time, in file order, so messages arrive in timestamp
-//! order. With N readers a worker's inbox is interleaved across files and
-//! packets arrive **out of timestamp order**.
+//! It also appears to remove something the current design gives for free.
+//! Today a worker sees one file at a time, in file order, so messages arrive
+//! in timestamp order. With N readers sending straight to the workers, a
+//! worker's inbox would be interleaved across files and packets would arrive
+//! **out of timestamp order**.
 //!
 //! `DialogStore::merge` is order-tolerant on purpose — `absorb_messages` sorts
 //! by timestamp and replays. But merge is the *offline* path. The live path is
 //! `process_message`, fed in arrival order, and the backlog entry states that
 //! out-of-order arrival being harmless there is **not established**. PR1 is
 //! explicitly blocked on establishing it. This file is that work.
+//!
+//! # PR1 landed, and it does not reorder anything
+//!
+//! Worth recording here rather than only where the reader lives, because this
+//! file is the reason someone would believe reordering was safe. The dialog
+//! store tolerates it — that is what the rest of this file measures — but the
+//! RTP path does not and cannot. `RtpStream::update` derives loss and jitter
+//! from the sequence numbers and arrival gaps of one packet after another, so
+//! a stream split across two files of a rotated set reports loss that is not
+//! in the capture the moment the second file overtakes the first; and
+//! `StreamStore::merge` is a union that assumes no two workers ever saw one
+//! stream.
+//!
+//! So `parallel::shard_set_parallel` reads the files concurrently and a
+//! dispatcher releases what they read in FILE ORDER. Every worker's inbox is
+//! the sequence the serial reader gave it, packet for packet.
+//!
+//! That leaves this file doing exactly what its name says rather than what its
+//! premise said. It is not evidence for a reordering reader that was never
+//! built; it is a standing constraint on the INVITE-family guards below, and
+//! the measurement any future design that *does* want to reorder starts from.
 //!
 //! # What was established, and by what mechanism
 //!
