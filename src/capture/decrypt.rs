@@ -1034,6 +1034,38 @@ impl TlsDecryptor {
                             self.pending_client_randoms.shift_remove(&conn);
                         }
                     }
+                    // Tell the session, if it already exists, that we watched
+                    // its handshake.
+                    //
+                    // Order is why this is here and not only where sessions are
+                    // built. With a complete keylog on disk, every session is
+                    // derived at STARTUP -- before a single packet is read --
+                    // so a flag computed at construction is computed against an
+                    // empty observed-handshake list and is false forever.
+                    // Measured on Dan Jenkins's reproduction capture: two
+                    // sessions ready before packet one, `observed=0`, and the
+                    // handshake-seen path never engaged. The information
+                    // arrives later than the session does, so it has to be
+                    // delivered when it arrives.
+                    if let Some(cr) = info.client_random {
+                        let key = TlsSessionKey { client_random: cr };
+                        if let Some(session) = self.sessions.get_mut(&key) {
+                            session.handshake_seen = true;
+                            // Learning that we watched the handshake INVALIDATES
+                            // every floor already drawn for this session, because
+                            // each one was inferred while sipnab still believed
+                            // it might have joined mid-stream. Measured on Dan
+                            // Jenkins's capture: by the time the ServerHello was
+                            // paired the floor stood at 16, so the INVITE at
+                            // sequence 0 was tried at 16 and failed -- the flag
+                            // was set, the guard held, and the record was still
+                            // buried by a conclusion drawn before the guard
+                            // existed. Stopping further advance is not enough;
+                            // the earlier advances have to go too.
+                            session.lockon_floor.clear();
+                            session.lockon_attempts = 0;
+                        }
+                    }
                     self.observed_handshakes.push(info);
                     // Drop only TLS 1.2 sessions, not TLS 1.3 ones.
                     //
