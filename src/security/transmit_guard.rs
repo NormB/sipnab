@@ -85,9 +85,24 @@ impl TransmitPermit {
     /// requires `--hep-allow-kill` because HEP inner addresses are
     /// sender-asserted) stays the control that applies there. `File` is the
     /// case with no defense: historical addresses, uninvolved third parties.
+    ///
+    /// `Composite` is CONJUNCTIVE: every member must qualify, and an empty
+    /// member list qualifies nothing. Written this way rather than as "any
+    /// member is live" deliberately — the disjunctive form would let a future
+    /// member widen the permit by joining a composite that already contains a
+    /// `Live` one, which is exactly how a `File` member would come to license
+    /// transmitting at historical third-party addresses. Conjunctive, this
+    /// permit is STRONGER than the single-source one: it forces every member
+    /// added later to justify itself on its own.
     pub fn for_source(source: &CaptureSource) -> Option<Self> {
         match source {
             CaptureSource::Live { .. } | CaptureSource::Hep { .. } => Some(Self(())),
+            // `all` over an empty slice is vacuously true, which would grant a
+            // permit to a composite with no members at all. The emptiness
+            // check is the whole reason this is not one expression.
+            CaptureSource::Composite(members) => (!members.is_empty()
+                && members.iter().all(|m| Self::for_source(m).is_some()))
+            .then_some(Self(())),
             // A file has historical addresses and uninvolved third parties.
             // A uprobe read has NO addresses: sipnab took the bytes where an
             // application handed them to its TLS library and never saw a
@@ -159,6 +174,86 @@ mod tests {
             TransmitPermit::for_source(&hep).is_some(),
             "HEP is a real-time source; the narrower --hep-allow-kill gate \
              governs it, not this one"
+        );
+    }
+
+    /// A live source built for composite-membership tests.
+    fn live(device: &str) -> CaptureSource {
+        CaptureSource::Live {
+            device: device.to_string(),
+        }
+    }
+
+    /// A HEP source built for composite-membership tests.
+    fn hep() -> CaptureSource {
+        CaptureSource::Hep {
+            bind_addr: "127.0.0.1:9060".to_string(),
+            #[cfg(feature = "hep")]
+            allowlist: Vec::new(),
+            rate_limit: 0,
+            per_peer_rate_limit: 0,
+            max_tracked_peers: crate::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
+            auth_key: None,
+            #[cfg(feature = "hep")]
+            auth_mode: crate::cli::HepAuthMode::default(),
+            #[cfg(feature = "hep")]
+            hmac_window_secs: crate::capture::hep::DEFAULT_HMAC_WINDOW_SECS,
+        }
+    }
+
+    /// The permit a composite grants is the AND of its members, never the OR.
+    ///
+    /// This is the one place the composite source could weaken a security
+    /// property, and it does so only if the rule is written as "any member is
+    /// live". Written conjunctively it is stronger than the single-source rule,
+    /// because it forces every future member to justify itself.
+    #[test]
+    fn a_composite_transmits_only_when_every_member_may() {
+        assert!(
+            TransmitPermit::for_source(&CaptureSource::Composite(vec![live("eth0"), hep()]))
+                .is_some(),
+            "the shipped pair -- a NIC for media, a HEP mirror for signaling -- \
+             is two real-time sources and transmits exactly as either alone does"
+        );
+
+        let with_file = CaptureSource::Composite(vec![
+            live("eth0"),
+            CaptureSource::File {
+                paths: vec![std::path::PathBuf::from("/tmp/evidence.pcap")],
+            },
+        ]);
+        assert!(
+            TransmitPermit::for_source(&with_file).is_none(),
+            "a File member must sink the whole permit. Written as \"any member \
+             is live\" this passes, and sipnab answers a scanner recorded in \
+             someone else's capture at addresses that are historical, \
+             reassigned and not on this network"
+        );
+
+        let with_uprobe = CaptureSource::Composite(vec![
+            live("eth0"),
+            CaptureSource::Uprobe {
+                targets: Vec::new(),
+                backend: crate::capture::UprobeBackend::Tracefs,
+            },
+        ]);
+        assert!(
+            TransmitPermit::for_source(&with_uprobe).is_none(),
+            "a uprobe member observed no socket, so there is nowhere a response \
+             could honestly go"
+        );
+    }
+
+    /// An empty composite grants nothing.
+    ///
+    /// `all()` over an empty slice is vacuously TRUE, so the natural one-line
+    /// spelling of the conjunctive rule hands a permit to a source with no
+    /// members — a run that transmits on the authority of nothing at all.
+    #[test]
+    fn an_empty_composite_grants_no_permit() {
+        assert!(
+            TransmitPermit::for_source(&CaptureSource::Composite(Vec::new())).is_none(),
+            "vacuous truth is not permission"
         );
     }
 

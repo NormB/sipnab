@@ -593,7 +593,14 @@ fn wiki_intra_docs_links_resolve() {
     // Raised 433 -> 441 by the MCP split: mcp.md shed its tool reference and
     // protocol contract into two new pages, and the four-page set cross-links
     // where one page used to link internally.
-    const EXPECTED_WIKI_LINKS: usize = 459;
+    const EXPECTED_WIKI_LINKS: usize = 460;
+    // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
+    // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
+    // rather than restating how to pair `-L` with `-d`. Attributed per file
+    // against HEAD before the number moved — docs/examples.md gained recipe 6d
+    // itself, whose links are all external (GitHub handles and a repo path),
+    // so it held its count, and the site mirrors are not walked by this
+    // extractor at all.
     // Raised 441 -> 459 by doubling the cookbook from fourteen recipes to
     // twenty-eight. Attributed per file, measured rather than assumed:
     // docs/examples.md +17 and docs/tuning-capture.md +1. The site mirrors

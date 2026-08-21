@@ -1991,8 +1991,15 @@ fn line_citations_point_at_the_code_they_name() {
     // guard heavily on purpose — the design's central claim is that the
     // correlation SRC1 calls the hard part is already implemented, and a claim
     // like that is only checkable if it names the code making it true.
+    // 190 -> 191 when SRC1 stage 1 shipped. Attributed: the whole increase is
+    // ONE citation, `resolve_from_sdp` in §8.1 of that same design page, added
+    // because the measurement produced a caveat about matching BOTH ends of a
+    // stream's socket pair and the claim "sipnab already does this" is only
+    // checkable if it names the function that does. Measured by running
+    // scripts/check-line-drift.py before and after: 190 against 191, and no
+    // other file's count moved.
     assert_eq!(
-        checked, 190,
+        checked, 191,
         "the drift checker examined {checked} citations, not the 141 this tree \
          holds. FEWER means its resolution or symbol-extraction narrowed and the \
          gate is proving less than it claims — fix that rather than moving this \

@@ -63,13 +63,13 @@ wrong at once, and one of them is a test that pins the *complement*:
   pcap reconstruction (`-I`) … Advanced features (live capture, per-message
   output ordering, security detectors, SRTP decrypt) use the single-threaded
   path regardless."*
-- `cores_ignored_warning` ([`bootstrap.rs:2322`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2322)),
+- `cores_ignored_warning` ([`bootstrap.rs:2580`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2580)),
   whose live-capture branch says *"this run captures live rather than reading a
   saved file … parallel reconstruction is offline-only — it shards a capture
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it`
-  ([`bootstrap.rs:3043`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3043)), which asserts the warning
+  ([`bootstrap.rs:3301`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3301)), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N
@@ -127,7 +127,7 @@ capture is not getting.
 
 **`buffer_mb` is per handle.** `capture_live_group` applies
 `config.buffer_mb` to each socket it opens, and the default is 64 MiB since CT2
-(`DEFAULT_BUFFER_MB`, [`native.rs:261`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L261)). So
+(`DEFAULT_BUFFER_MB`, [`native.rs:333`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L333)). So
 `--cores 8` on a live interface asks the kernel for **512 MiB of ring**, from a
 flag that yesterday allocated nothing.
 
@@ -144,7 +144,7 @@ is what actually helps a burst. Not decidable from the code — it needs §5.
 
 ### 2.2 `--multi-device` composes badly and should stay refused
 
-`start_multi_capture` ([`native.rs:499`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L499)) already
+`start_multi_capture` ([`native.rs:639`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L639)) already
 spawns one capture thread per interface into one shared channel, with a
 coordinator thread and an aggregated readiness signal. That is the same topology
 `capture_live_fanout` builds — which is a good sign for the design and a problem
@@ -403,6 +403,6 @@ not mistake them for settled.
   catch it and fall back — the open question is whether the most common
   invocation silently gets no benefit.
 - **Is `immediate_mode` right for N sockets?** `immediate_mode_for`
-  ([`bootstrap.rs:1984`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1984)) returns true only for the
+  ([`bootstrap.rs:2167`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2167)) returns true only for the
   TUI. Whether the batched setting interacts with rollover or with N drainers is
   unexamined.

@@ -413,3 +413,181 @@ fn hep_send_forwards_captured_sip_as_hep3() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+// ── -d and -L in one process (SRC1) ────────────────────────────────────
+
+/// Whether this process can open a live capture device.
+///
+/// Read from `/proc/self/status` so the assertion below is specific to the
+/// environment rather than accepting either outcome. `None` when it cannot be
+/// determined (non-Linux / no `/proc`).
+fn can_live_capture() -> Option<bool> {
+    // CAP_NET_RAW is capability bit 13 in the Linux capability bitmask.
+    const CAP_NET_RAW: u64 = 1 << 13;
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let euid: u32 = status
+        .lines()
+        .find_map(|l| l.strip_prefix("Uid:"))
+        .and_then(|rest| rest.split_whitespace().nth(1))
+        .and_then(|s| s.parse().ok())?;
+    if euid == 0 {
+        return Some(true);
+    }
+    let cap_eff: u64 = status
+        .lines()
+        .find_map(|l| l.strip_prefix("CapEff:"))
+        .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())?;
+    Some(cap_eff & CAP_NET_RAW != 0)
+}
+
+/// **`-d` with `-L` runs both, and the process says so.**
+///
+/// This is SRC1 end to end at the process level: the two flags used to parse
+/// happily together and `-d` simply won, so `sipnab -d lo -L 127.0.0.1:9060`
+/// bound no HEP socket and printed nothing about it — an operator's belief that
+/// a listener was up went uncontradicted for the life of the run. Raised by Dan
+/// Jenkins ([@danjenkins](https://github.com/danjenkins)) from OpenSIPS
+/// deployment experience.
+///
+/// The startup line is asserted unconditionally because it is emitted by
+/// `plan()`, before any device is opened, so it holds with or without capture
+/// privileges. What follows the line is split on the probed capability rather
+/// than accepting either outcome: with privileges both members open and the
+/// mirrored INVITE surfaces on stdout; without them the interface member fails
+/// and takes the whole session down, which is the one-fails-all rule a
+/// composite inherits from `--multi-device`.
+#[test]
+fn a_live_device_and_a_hep_listener_run_in_one_process() {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
+    support::discard_coverage_profile(&mut cmd);
+    cmd.args([
+        "-N",
+        "-d",
+        "lo",
+        "--hep-listen",
+        "127.0.0.1:0",
+        "--json",
+        "--quiet",
+        "--duration",
+        "3s",
+        // Media ports only: the mirror already carries the signaling, and
+        // without this the interface member would capture the same messages a
+        // second time (see the composite filter warning).
+        "udp portrange 10000-20000",
+    ]);
+    cmd.env("SIPNAB_LOG", "info");
+    cmd.env("NO_COLOR", "1");
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().expect("spawn sipnab -d lo -L");
+    let stdout_rx = line_reader(child.stdout.take().expect("stdout"));
+    let stderr_rx = line_reader(child.stderr.take().expect("stderr"));
+
+    // Collect stderr until the process ends or the deadline passes, scraping
+    // the composite announcement and the bound HEP port out of it.
+    let deadline = Instant::now() + test_timeout(20);
+    let mut stderr_lines: Vec<String> = Vec::new();
+    let mut hep_port: Option<u16> = None;
+    let mut announced = false;
+    while Instant::now() < deadline {
+        match stderr_rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(line) => {
+                if line.contains("Capturing from two sources in one process") {
+                    announced = true;
+                }
+                if let Some(rest) = line.split("HEP listener started on ").nth(1)
+                    && let Some(p) = rest.trim().rsplit(':').next()
+                    && let Ok(p) = p.parse::<u16>()
+                {
+                    hep_port = Some(p);
+                }
+                stderr_lines.push(line);
+            }
+            Err(_) => {
+                if announced && (hep_port.is_some() || child.try_wait().ok().flatten().is_some()) {
+                    break;
+                }
+            }
+        }
+    }
+    let log = stderr_lines.join("\n");
+
+    assert!(
+        announced,
+        "a two-source run must announce itself: an operator reading a log has \
+         no other way to tell which run they are looking at.\n{log}"
+    );
+    assert!(
+        log.contains("device 'lo'") && log.contains("HEP listener 127.0.0.1:"),
+        "the announcement must name BOTH members:\n{log}"
+    );
+
+    match can_live_capture() {
+        // Privileged: both members opened, and the HEP member accepts.
+        Some(true) => {
+            let port = hep_port.unwrap_or_else(|| {
+                let _ = child.kill();
+                panic!("the HEP member must bind and report its port:\n{log}");
+            });
+            let sock = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
+            sock.send_to(&hep3_sip(&invite_bytes()), ("127.0.0.1", port))
+                .expect("send HEP");
+
+            let found = {
+                let deadline = Instant::now() + test_timeout(10);
+                let mut hit = false;
+                while Instant::now() < deadline {
+                    if let Ok(line) = stdout_rx.recv_timeout(Duration::from_millis(100))
+                        && line.contains(CALL_ID)
+                    {
+                        hit = true;
+                        break;
+                    }
+                }
+                hit
+            };
+            assert!(
+                found,
+                "the HEP member must deliver signaling while the interface \
+                 member holds the capture open — that pair is the whole \
+                 feature:\n{log}"
+            );
+        }
+        // Unprivileged: the interface member cannot open, and one member
+        // failing dooms the session rather than leaving a half-capture that
+        // silently covers only the HEP side.
+        Some(false) => {
+            let status = {
+                let deadline = Instant::now() + test_timeout(20);
+                let mut seen = None;
+                while Instant::now() < deadline {
+                    if let Ok(Some(s)) = child.try_wait() {
+                        seen = Some(s);
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                seen
+            };
+            let status = status.unwrap_or_else(|| {
+                let _ = child.kill();
+                panic!("without capture rights the run must end, not hang:\n{log}");
+            });
+            assert_eq!(
+                status.code(),
+                Some(1),
+                "a member that cannot open is an environment failure (exit 1), \
+                 and it must take the whole composite down:\n{log}"
+            );
+        }
+        None => eprintln!(
+            "skipping the privileged half: cannot determine capture capability \
+             (no /proc/self/status)"
+        ),
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+}

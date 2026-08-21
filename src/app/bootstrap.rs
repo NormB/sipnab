@@ -238,6 +238,63 @@ fn plan_uprobe_targets(_cli: &Cli) -> Result<Vec<capture::UprobeTarget>, String>
     )
 }
 
+/// Build the `-L/--hep-listen` source from the CLI and config.
+///
+/// A function rather than an inline arm because it is now built from TWO
+/// places: the `else if` chain, where `-L` is the only source, and the
+/// composite, where it joins a live interface. Written once so a listener in a
+/// composite cannot end up with a different allowlist, rate limit or auth mode
+/// than the same flags produce on their own — a divergence that would be
+/// invisible until an authenticated sender was silently dropped.
+///
+/// # Errors
+///
+/// A malformed `--hep-allow` CIDR or an unresolvable `--hep-auth` secret,
+/// both exit code 2.
+fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanError> {
+    let hep_addr = match cli.hep_args.hep_listen.as_ref() {
+        Some(a) => a,
+        // Every caller checks `hep_listen.is_some()` first; reaching here means
+        // a caller stopped doing that, which must not resolve to a default
+        // bind address nobody asked for.
+        None => {
+            return Err(PlanError::arg(
+                "no --hep-listen address to plan from".to_string(),
+            ));
+        }
+    };
+    #[cfg(feature = "hep")]
+    let allowlist =
+        {
+            let mut v: Vec<crate::capture::hep::CidrRange> = Vec::new();
+            for cidr in &cli.hep_args.hep_allow {
+                v.push(crate::capture::hep::CidrRange::parse(cidr).map_err(|e| {
+                    PlanError::arg(format!("Invalid --hep-allow CIDR '{cidr}': {e}"))
+                })?);
+            }
+            v
+        };
+    let hep_auth = cli
+        .resolve_hep_auth()
+        .map_err(|e| PlanError::arg(format!("HEP auth: {e}")))?;
+    Ok(CaptureSource::Hep {
+        bind_addr: hep_addr.clone(),
+        #[cfg(feature = "hep")]
+        allowlist,
+        rate_limit: cli.hep_rate_limit_resolved(config),
+        per_peer_rate_limit: cli.hep_args.hep_rate_limit_per_peer.resolve(
+            cli.hep_rate_limit_resolved(config),
+            cli.hep_args.hep_allow.len(),
+        ),
+        max_tracked_peers: cli.tracked_peer_capacity(config),
+        auth_key: hep_auth,
+        #[cfg(feature = "hep")]
+        auth_mode: cli.hep_args.hep_auth_mode,
+        #[cfg(feature = "hep")]
+        hmac_window_secs: cli.hep_hmac_window_secs(config),
+    })
+}
+
 /// # Arguments
 ///
 /// * `cli` — parsed command-line flags.
@@ -319,6 +376,57 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         );
     }
 
+    // `-I` with `-L` is REFUSED where `-I` with `-d` is merely warned, and the
+    // difference is a security property rather than a preference.
+    //
+    // Composing them is what an operator who typed both would expect, and it
+    // is the one composition sipnab must not build. File packets parse as
+    // `InputOrigin::Wire` and `security::scanner_kill::kill_response_eligible`
+    // admits `Wire` unconditionally; that conflation is safe today ONLY because
+    // `security::transmit_guard::TransmitPermit::for_source` refuses a `File`
+    // run outright, so no file-origin packet ever reaches the kill path. Pair
+    // `File` with `Hep` and the source-level refusal disappears while the
+    // per-packet gate waves file-origin packets through — sipnab transmitting
+    // at addresses out of somebody else's capture. Admitting a File member
+    // needs a fourth `InputOrigin` first.
+    //
+    // Refused rather than left to silently prefer the file, because the silent
+    // preference is what SRC1 is about: the operator believes a listener is up
+    // and it is not.
+    if cli.has_input() && cli.hep_args.hep_listen.is_some() {
+        return Err(PlanError::arg(
+            "--input/-I and --hep-listen/-L cannot run together. This is a \
+             security refusal, not a scheduling one: packets read from a file \
+             carry historical addresses belonging to third parties who are not \
+             part of this analysis, and sipnab keeps them off the active \
+             response path by refusing to transmit for a FILE run at all. A \
+             composite source would remove that refusal while the per-packet \
+             gate still admitted them. Read the capture in its own run, and \
+             point -L at a separate sipnab."
+                .to_string(),
+        ));
+    }
+
+    // `--multi-device` reinterprets the `-d` string as a comma-separated list,
+    // and composing a device LIST with a HEP member is a reasonable thing to
+    // want. It is refused here because it is unsafe before the endpoint index
+    // carries a node dimension: `sdp_endpoints` is keyed on `(IpAddr, u16)`
+    // with no node, so two mirrors advertising the same RFC 1918 socket
+    // overwrite each other and a stream binds to whichever offer arrived last.
+    // See `docs/design/simultaneous-capture-sources.md` §3.3 F2.
+    if cli.capture_args.multi_device && cli.hep_args.hep_listen.is_some() {
+        return Err(PlanError::arg(
+            "--multi-device and --hep-listen/-L cannot run together yet. One \
+             interface plus one HEP listener is supported; a device LIST plus a \
+             listener is not, because sipnab correlates a HEP-delivered dialog \
+             to a locally captured stream by SDP media endpoint alone and that \
+             index carries no node dimension — two sources advertising the same \
+             address and port would overwrite each other. Drop --multi-device, \
+             or drop -L."
+                .to_string(),
+        ));
+    }
+
     #[allow(clippy::manual_map)]
     let source = if cli.has_input() {
         // Expand directories, globs and repeated -I into the exact files to
@@ -384,39 +492,85 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
                 _ => capture::UprobeBackend::Tracefs,
             },
         })
-    } else if let Some(hep_addr) = cli.hep_args.hep_listen.as_ref() {
-        #[cfg(feature = "hep")]
-        let allowlist = {
-            let mut v: Vec<crate::capture::hep::CidrRange> = Vec::new();
-            for cidr in &cli.hep_args.hep_allow {
-                v.push(crate::capture::hep::CidrRange::parse(cidr).map_err(|e| {
-                    PlanError::arg(format!("Invalid --hep-allow CIDR '{cidr}': {e}"))
-                })?);
-            }
-            v
-        };
-        let hep_auth = cli
-            .resolve_hep_auth()
-            .map_err(|e| PlanError::arg(format!("HEP auth: {e}")))?;
-        Some(CaptureSource::Hep {
-            bind_addr: hep_addr.clone(),
-            #[cfg(feature = "hep")]
-            allowlist,
-            rate_limit: cli.hep_rate_limit_resolved(config),
-            per_peer_rate_limit: cli.hep_args.hep_rate_limit_per_peer.resolve(
-                cli.hep_rate_limit_resolved(config),
-                cli.hep_args.hep_allow.len(),
-            ),
-            max_tracked_peers: cli.tracked_peer_capacity(config),
-            auth_key: hep_auth,
-            #[cfg(feature = "hep")]
-            auth_mode: cli.hep_args.hep_auth_mode,
-            #[cfg(feature = "hep")]
-            hmac_window_secs: cli.hep_hmac_window_secs(config),
-        })
+    } else if cli.hep_args.hep_listen.is_some() {
+        Some(plan_hep_source(cli, config)?)
     } else {
         None
     };
+
+    // ── The composite: HEP for signaling, the NIC for media ─────────────
+    //
+    // `-d` and `-L` used to parse happily together and `-d` simply won, so the
+    // listener evaporated with no diagnostic — the same defect class the
+    // `-I`/`-d` warning above names, one arm down and with no warning at all.
+    // An operator running OpenSIPS has two ways to see decrypted SIP: eCapture
+    // plus `--keylog`, which depends on symbol discovery and a keylog channel
+    // staying healthy, and OpenSIPS's own HEP mirror, which is already
+    // plaintext at the source and has nothing to be fragile about. Choosing HEP
+    // cost every RTP stream, because a stream is only ever created from real
+    // RTP packets. Raised by Dan Jenkins (@danjenkins); designed in
+    // `docs/design/simultaneous-capture-sources.md`.
+    //
+    // Only the Live arm composes. `-I` is refused above (a security refusal,
+    // not a scheduling one) and a uprobe read carries no addressing to place
+    // against the other member's traffic, so it warns instead. Composing the
+    // CONFIG-file device as well as `-d`: both arms build the identical
+    // `CaptureSource::Live` and nothing downstream can see which produced it,
+    // so refusing one would make the same run behave differently depending on
+    // where the device name was written.
+    let source = match source {
+        Some(live @ CaptureSource::Live { .. }) if cli.hep_args.hep_listen.is_some() => {
+            let hep = plan_hep_source(cli, config)?;
+            // The NIC first: it is the member that needs the BPF filter, the
+            // one whose drops are counted, and the one an operator reading the
+            // startup line is most likely to have mistyped.
+            let composite = CaptureSource::Composite(vec![live, hep]);
+            // Say the composite exists. A `-d eth0 -L :9060` run used to say
+            // nothing about HEP at all, so the operator's belief that a
+            // listener was up went uncontradicted.
+            tracing::info!(
+                "Capturing from two sources in one process: {}. HEP supplies \
+                 signaling, the interface supplies media; they are correlated \
+                 by SDP media endpoint, so a stream binds to a HEP-delivered \
+                 dialog only when the mirrored SDP names the socket this host \
+                 actually sees the RTP on.",
+                composite.label()
+            );
+            Some(composite)
+        }
+        other => other,
+    };
+
+    // The last silent `-L` precedence left in the chain, said out loud.
+    if let Some(msg) = hep_listen_ignored_warning(cli, source.as_ref()) {
+        tracing::warn!("{msg}");
+    }
+
+    // `-O` cannot write a composite, and the failure it would produce is
+    // non-deterministic rather than merely wrong. The writer initialises on the
+    // FIRST packet's link type, and the members disagree: live capture yields
+    // `DLT_EN10MB`, while a HEP packet carries `link_type = 0` and a `data`
+    // buffer holding the bare transport payload — no Ethernet, no IP, no UDP.
+    // That absence is deliberate (`capture::hep`: fabricating a `DLT_RAW`
+    // header made `etherparse` read `INVITE`'s leading 0x49 as an IPv4 header
+    // with IHL 9 and drop every HEP message silently). Classic pcap then
+    // refuses whichever member arrived second, so which half of the run
+    // survives depends on packet timing; pcapng is worse, appending a second
+    // interface and writing bare SIP text as if it were a frame of the declared
+    // link type, producing an export that decodes into something nobody sent.
+    if let Some(ref out) = cli.capture_args.output
+        && matches!(source, Some(CaptureSource::Composite(_)))
+    {
+        return Err(PlanError::arg(format!(
+            "-O/--output cannot write a run that captures from two sources. \
+             '{out}' would be initialised from whichever member's first packet \
+             arrived first, and the two disagree about the link layer: the \
+             interface yields Ethernet frames, while HEP delivers a bare SIP \
+             payload with no link, IP or transport header to write. Capture the \
+             interface alone to write a pcap, or use --hep-send <ADDR> to \
+             forward the signaling to a collector instead of writing it."
+        )));
+    }
 
     // An operator who asked for a transmitting feature and is reading a file
     // gets told once, here, before any mode branches. The refusal itself is
@@ -485,10 +639,24 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // no explicit filter was set. Critical for performance: without a BPF
     // filter, capturing on 'any' processes ALL traffic. `None` source means
     // auto-detect — which always yields a live device.
+    // A composite counts as live: the BPF filter is a LIVE-MEMBER concern (the
+    // HEP reader never reads `CaptureConfig::bpf_filter`), so answering `false`
+    // here would open the NIC with no filter and hand every frame on the link
+    // to the parser.
     let is_live = match source {
-        Some(CaptureSource::Live { .. }) | None => true,
-        Some(_) => false,
+        Some(ref s) => s.has_live_member(),
+        None => true,
     };
+
+    // Two sources with a signaling-only filter is a run that measures no media
+    // and doubles every dialog. Emitted before the filter is built so the
+    // operator reads it beside the "Auto-generated BPF filter:" line it
+    // explains.
+    if let Some(msg) =
+        composite_filter_warning(source.as_ref(), capture_config.bpf_filter.is_some())
+    {
+        tracing::warn!("{msg}");
+    }
     //
     // The filter is encapsulation-aware because the previous one was not, and
     // that is the worst shape a capture bug can take: `portrange 5060-5061`
@@ -968,9 +1136,27 @@ pub fn launch(
         Ok(Err(e)) => {
             let is_permission = crate::capture::live::is_permission_error(&e);
             if is_permission {
+                // A composite names its INTERFACE members only. This message
+                // tells the operator which device to grant capture rights on,
+                // and a HEP listener needs none — naming it here would send
+                // them to run `setcap` for a UDP socket that opened fine.
                 let dev_name = match &handle.source {
-                    CaptureSource::Live { device } => device.as_str(),
-                    _ => "capture source",
+                    CaptureSource::Live { device } => device.clone(),
+                    CaptureSource::Composite(members) => {
+                        let devices: Vec<&str> = members
+                            .iter()
+                            .filter_map(|m| match m {
+                                CaptureSource::Live { device } => Some(device.as_str()),
+                                _ => None,
+                            })
+                            .collect();
+                        if devices.is_empty() {
+                            handle.source.label()
+                        } else {
+                            devices.join(", ")
+                        }
+                    }
+                    _ => "capture source".to_string(),
                 };
                 tracing::error!(
                     "Permission denied on '{}'. Grant capture capabilities once \
@@ -2294,6 +2480,81 @@ fn explicit_filter_encap_notice(filter: &str) -> Option<String> {
          are dropped in the kernel where no sipnab counter can report them. \
          Drop the filter to get sipnab's encapsulation-aware one, or add \
          --capture-tunnels for UDP-tunneled signaling."
+            .to_string(),
+    )
+}
+
+/// The message to log when `-L/--hep-listen` was given on a run that will not
+/// open a listener, or `None` when the listener is honored.
+///
+/// The chain resolves ONE source by type and `-L` sits near the bottom of it,
+/// so a higher arm silently wins. `-d` no longer does — it composes — and `-I`
+/// is refused outright, which leaves the uprobe arm as the last place a
+/// listener can evaporate. That silence is the SRC1 defect in miniature: the
+/// operator typed a bind address, sipnab bound nothing, and said nothing about
+/// it, so the belief that a mirror is being received goes uncontradicted for
+/// the life of the run.
+///
+/// Warned rather than refused, on the same reasoning as
+/// [`cores_ignored_warning`]: the capture that DOES happen is correct and
+/// complete, and refusing would break an invocation that works today.
+///
+/// Returns the message rather than logging it, so it can be asserted on.
+fn hep_listen_ignored_warning(cli: &Cli, source: Option<&CaptureSource>) -> Option<String> {
+    let addr = cli.hep_args.hep_listen.as_deref()?;
+    // Anything that actually carries the listener: `-L` alone, or the
+    // composite it joins. Matched on the RESOLVED source rather than on the
+    // flags that produced it, so a new arm added to the chain above cannot
+    // reintroduce a silent drop without failing this.
+    let honored = match source {
+        Some(CaptureSource::Hep { .. }) => true,
+        Some(CaptureSource::Composite(members)) => members
+            .iter()
+            .any(|m| matches!(m, CaptureSource::Hep { .. })),
+        _ => false,
+    };
+    if honored {
+        return None;
+    }
+    Some(format!(
+        "--hep-listen/-L {addr} is ignored on this run: --uprobe-tls / \
+         --uprobe-library take precedence, so no HEP socket is bound and no \
+         mirrored signaling will arrive. A uprobe read carries no addressing at \
+         all, so it cannot be composed with a HEP listener the way a live \
+         interface can. Drop the uprobe flags to receive the mirror, or run the \
+         listener as its own sipnab."
+    ))
+}
+
+/// The message to log when a composite source will capture no media, or `None`
+/// when the interface member has a filter that can see some.
+///
+/// A live capture with no explicit BPF expression gets the auto-generated
+/// signaling filter — `portrange 5060-5061` plus its encapsulated arms — and
+/// nothing else reaches userspace. On a single-source run that is the right
+/// default. On a composite it is self-defeating twice over: the whole point of
+/// the interface member is the RTP that a HEP mirror cannot carry, and the
+/// filter admits exactly the traffic the mirror already delivers, so every
+/// signaling message arrives TWICE, from two sources, with two timestamps, and
+/// dialog reconstruction folds them into one dialog with a doubled message
+/// ladder.
+///
+/// Warned rather than refused: sipnab does not know the operator's media port
+/// range, and a run that captures signaling twice is still a correct capture of
+/// what it saw.
+///
+/// Returns the message rather than logging it, so it can be asserted on.
+fn composite_filter_warning(source: Option<&CaptureSource>, has_filter: bool) -> Option<String> {
+    if has_filter || !matches!(source, Some(CaptureSource::Composite(_))) {
+        return None;
+    }
+    Some(
+        "this run captures from an interface AND a HEP listener, but no BPF \
+         filter was given, so the interface gets the auto-generated SIGNALING \
+         filter and will see no media at all — while every message the mirror \
+         sends also arrives off the wire, doubling each dialog's message \
+         ladder. Name your media ports instead, e.g. \
+         `sipnab -N -d eth0 -L 127.0.0.1:9060 \"udp portrange 10000-20000\"`."
             .to_string(),
     )
 }
@@ -4623,6 +4884,153 @@ mod tests {
 
     /// A real capture, for the `-I` paths that resolve their input.
     const FIXTURE_FILE: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
+
+    // ── The composite source: -d with -L ───────────────────────────────
+
+    /// A HEP source shaped as `plan_hep_source` builds one.
+    fn hep_src(bind: &str) -> CaptureSource {
+        CaptureSource::Hep {
+            bind_addr: bind.to_string(),
+            #[cfg(feature = "hep")]
+            allowlist: Vec::new(),
+            rate_limit: 0,
+            per_peer_rate_limit: 0,
+            max_tracked_peers: crate::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
+            auth_key: None,
+            #[cfg(feature = "hep")]
+            auth_mode: crate::cli::HepAuthMode::default(),
+            #[cfg(feature = "hep")]
+            hmac_window_secs: crate::capture::hep::DEFAULT_HMAC_WINDOW_SECS,
+        }
+    }
+
+    /// The last arm that can still swallow `-L` says so.
+    ///
+    /// `--uprobe-tls` outranks `--hep-listen` in the chain and cannot compose
+    /// with it (a uprobe read carries no addressing), so the listener is
+    /// genuinely dropped. Dropping it in SILENCE is the SRC1 defect, and this
+    /// is the one place it can still happen.
+    #[test]
+    fn hep_listen_warning_fires_where_a_uprobe_run_swallows_the_listener() {
+        let mut cli = base_cli();
+        cli.hep_args.hep_listen = Some("127.0.0.1:19060".into());
+        let uprobe = CaptureSource::Uprobe {
+            targets: Vec::new(),
+            backend: capture::UprobeBackend::Tracefs,
+        };
+        let msg = hep_listen_ignored_warning(&cli, Some(&uprobe))
+            .expect("a dropped listener must never be silent");
+        assert!(msg.contains("--hep-listen/-L"), "name the flag: {msg}");
+        assert!(msg.contains("127.0.0.1:19060"), "name the address: {msg}");
+        assert!(
+            msg.contains("--uprobe-tls"),
+            "name what took precedence, so the operator knows what to drop: {msg}"
+        );
+    }
+
+    /// Silent wherever the listener is actually bound — alone, or as a
+    /// composite member. Keyed on the RESOLVED source, so a new arm in the
+    /// chain cannot reintroduce a silent drop without tripping the test above.
+    #[test]
+    fn hep_listen_warning_is_silent_wherever_the_listener_is_bound() {
+        let mut cli = base_cli();
+        cli.hep_args.hep_listen = Some("127.0.0.1:19060".into());
+
+        assert_eq!(
+            hep_listen_ignored_warning(&cli, Some(&hep_src("127.0.0.1:19060"))),
+            None,
+            "-L alone binds the listener"
+        );
+
+        let composite = CaptureSource::Composite(vec![
+            CaptureSource::Live {
+                device: "eth0".into(),
+            },
+            hep_src("127.0.0.1:19060"),
+        ]);
+        assert_eq!(
+            hep_listen_ignored_warning(&cli, Some(&composite)),
+            None,
+            "a composite binds it too"
+        );
+
+        // And no `-L` at all is nothing to say.
+        let bare = base_cli();
+        assert_eq!(
+            hep_listen_ignored_warning(&bare, Some(&hep_src("127.0.0.1:19060"))),
+            None
+        );
+    }
+
+    /// A composite with no BPF filter measures no media and doubles every
+    /// dialog, and the auto-generated filter is what makes that happen — so
+    /// the warning has to arrive with it, not instead of it.
+    #[test]
+    fn composite_filter_warning_fires_when_nothing_names_the_media_ports() {
+        let composite = CaptureSource::Composite(vec![
+            CaptureSource::Live {
+                device: "eth0".into(),
+            },
+            hep_src("127.0.0.1:19060"),
+        ]);
+        let msg = composite_filter_warning(Some(&composite), false)
+            .expect("a composite with no filter captures no media");
+        assert!(
+            msg.contains("no media"),
+            "say what will be missing, not merely that a filter is absent: {msg}"
+        );
+        assert!(
+            msg.contains("portrange"),
+            "and give a filter they can paste: {msg}"
+        );
+
+        assert_eq!(
+            composite_filter_warning(Some(&composite), true),
+            None,
+            "an operator who named their ports needs no advice"
+        );
+    }
+
+    /// Never fires on a single source. A `-d`-only run with the signaling
+    /// filter is the long-standing, correct default and must stay quiet.
+    #[test]
+    fn composite_filter_warning_is_silent_on_a_single_source() {
+        let live = CaptureSource::Live {
+            device: "eth0".into(),
+        };
+        assert_eq!(composite_filter_warning(Some(&live), false), None);
+        assert_eq!(
+            composite_filter_warning(Some(&hep_src("127.0.0.1:19060")), false),
+            None
+        );
+        assert_eq!(composite_filter_warning(None, false), None);
+    }
+
+    /// The composite's NIC member must still get the auto-generated filter.
+    ///
+    /// `is_live` used to be `matches!(source, Live | None)`, and a composite is
+    /// neither — so a composite would have opened its interface with NO filter
+    /// and handed every frame on the link to the parser. The warning above
+    /// tells the operator the filter is signaling-only; this pins that a filter
+    /// is generated at all.
+    #[test]
+    fn a_composite_still_gets_the_generated_bpf_filter_for_its_interface() {
+        let mut cli = base_cli();
+        cli.capture_args.device = Some("eth0".into());
+        cli.hep_args.hep_listen = Some("127.0.0.1:19060".into());
+        let plan = plan(&cli, &Config::default()).expect("plan");
+        assert!(
+            matches!(plan.source, Some(CaptureSource::Composite(_))),
+            "the pair must compose: {:?}",
+            plan.source
+        );
+        assert_eq!(
+            plan.capture_config.bpf_filter.as_deref(),
+            Some(auto_bpf_filter(5060, 5061, &[]).as_str()),
+            "the interface member needs a filter; without one the composite \
+             opens the link wide"
+        );
+    }
 }
 
 #[cfg(test)]

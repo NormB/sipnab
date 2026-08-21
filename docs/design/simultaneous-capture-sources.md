@@ -1,21 +1,29 @@
 # Running a live interface and a HEP listener in one process
 
-**Status:** DESIGN. Nothing here is implemented.
-**Verified against:** `94fad2de` (0.5.117), working tree.
+**Status:** STAGES 0 AND 1 SHIPPED. `-d <iface>` with `-L <addr>` runs both in one
+process. Stages 2 (provenance, TTL, cross-source flag) and 3 (multi-node) remain
+open — see §7.
+**Verified against:** `94fad2de` (0.5.117) when written; stage 1 landed on
+`8c03a453` (0.5.118).
 **Backlog:** [`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) **SRC1** (`:447`).
 **Raised by:** Dan Jenkins ([@danjenkins](https://github.com/danjenkins)) alongside
 [#245](https://github.com/NormB/sipnab/issues/245), from OpenSIPS deployment
 experience.
-**Check:** `grep -n 'pub source: Option<CaptureSource>' src/app/bootstrap.rs`
-exits 0 today. The plan carries at most ONE source, by type, and `launch` takes
-the same singular `Option`. That grep stops matching the day a composite source
-lands, which is the narrowest fact that distinguishes "designed" from "built".
+**Check:** `grep -n 'Composite(Vec<CaptureSource>)' src/capture/native.rs` exits 0.
 
-A weaker check — grepping for the `else if` chain — would keep passing after a
-composite landed, because the chain stays for the single-source cases. A check
-that survives the change it is meant to detect is not a check.
+That grep is the narrowest fact separating "designed" from "built": the plan used
+to carry at most ONE source, by type, and this variant is what lets it carry two.
+The original check pointed at `pub source: Option<CaptureSource>` in
+[`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs) on the expectation that a composite would change that
+signature. It did not — the composite went INSIDE `CaptureSource`, so the plan
+still holds one `Option` and that grep still matches. A check whose subject
+survives the change it was meant to detect is not a check, which is exactly what
+the original paragraph warned about and then walked into.
 
 ## 1. The problem in one paragraph
+
+Written before the fix; kept in the present tense because it describes the
+behaviour up to 0.5.118, which is what the rest of the page reasons against.
 
 An operator running OpenSIPS has two ways to see decrypted SIP. eCapture plus
 `--keylog` lifts TLS session keys out of the daemon, which works but depends on
@@ -31,6 +39,11 @@ HEP for signaling, the local NIC for media, one process — is refused by one
 `else if` chain.
 
 ## 2. How one source becomes the only source
+
+Also as of 0.5.117. The chain below still resolves the single-source cases; what
+changed is that a resolved `Live` and a `-L` address now compose instead of the
+first one winning, and `-I` with `-L` is refused rather than silently preferring
+the file.
 
 ### 2.1 The chain in `plan`
 
@@ -58,7 +71,7 @@ together and one of them evaporates.
 
 ### 2.2 What `launch` does with the answer
 
-`launch` ([`src/app/bootstrap.rs:859`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L859)) takes the same singular `Option`. Four
+`launch` ([`src/app/bootstrap.rs:1024`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1024)) takes the same singular `Option`. Four
 decisions downstream read the source as a scalar:
 
 - **Auto-detection.** [`src/app/bootstrap.rs:880`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L880) substitutes a default interface
@@ -71,7 +84,7 @@ decisions downstream read the source as a scalar:
   from the source *variant*: `Live` and `Hep` yes, `File` and `Uprobe` no.
 - **Thread spawn.** [`src/app/bootstrap.rs:936`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L936) branches to
   `start_multi_capture` for `--multi-device`, otherwise `start_capture`
-  ([`src/capture/native.rs:383`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L383)), which matches the variant and spawns one named
+  ([`src/capture/native.rs:455`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L455)), which matches the variant and spawns one named
   thread per arm.
 
 ### 2.3 How a packet reaches the pipeline
@@ -102,13 +115,13 @@ parser already tells the two kinds of packet apart:
 ### 2.4 The fan-in that already exists
 
 `--multi-device` is the precedent, and it is close to the shape this feature
-needs. `start_multi_capture` ([`src/capture/native.rs:505`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L505)) validates the device
-list, then `run_multi_capture` ([`src/capture/native.rs:585`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L585)) spawns one thread
+needs. `start_multi_capture` ([`src/capture/native.rs:639`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L639)) validates the device
+list, then `run_multi_capture` ([`src/capture/native.rs:735`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L735)) spawns one thread
 per device, hands each a `tx.clone()`, drops its own clone so the channel closes
 when the last reader exits, aggregates a per-device readiness signal, tears every
 sibling down when any one fails to open, and joins them all from a coordinator
 thread whose `JoinHandle` becomes the single `CaptureHandle`
-([`src/capture/native.rs:314`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L314)).
+([`src/capture/native.rs:386`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L386)).
 
 Every structural question a composite source raises — readiness aggregation,
 one-fails-all teardown, a single join handle, channel close on last producer —
@@ -186,16 +199,29 @@ A stream attributed to the wrong dialog is worse than an unattributed one,
 because the wrong attribution arrives looking like a measurement. These are the
 ways this design produces one.
 
-**F1 — The proxy sees a different SDP than the wire does.** This is the big one,
-and it is structural rather than incidental. When OpenSIPS engages rtpengine or
-any media relay, the SDP that OpenSIPS mirrors over HEP describes the endpoints
-*as that hop sees them*, and the media on the NIC flows to the relay's rewritten
-address. The map entry and the observed socket never meet, and every stream comes
-out orphaned (`RtpStream::orphaned`, [`src/rtp/stream.rs:442`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L442)). That is a silent
-degradation to today's behaviour, not a wrong answer — acceptable, but it means
-the feature delivers nothing in a relayed topology, and the documentation has to
-say which topology it helps. Where OpenSIPS proxies signaling and lets media flow
-end-to-end past the same box, the addresses agree and the feature works.
+**F1 — The proxy sees a different SDP than the wire does. MEASURED, and it does
+not bite — but only at one tracer scope.** The worry was structural: when
+OpenSIPS engages rtpengine or any media relay, the SDP that OpenSIPS *received*
+describes the endpoints as the far side offered them, while media on the NIC
+flows to the relay's rewritten address. If HEP carried only the received message,
+the map entry and the observed socket would never meet and every stream would
+come out orphaned (`RtpStream::orphaned`, [`src/rtp/stream.rs:442`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L442)).
+
+§8 said to answer that before writing code. It was answered — see
+[§8.1](#81-the-measurement-f1) for the run — and the answer is that OpenSIPS's
+`tracer` module mirrors **both** the received and the sent copy of every message
+it traces, so the rtpengine-rewritten SDP is in the HEP stream too. Measured
+against OpenSIPS 3.6.7 with rtpengine 12.5.1 anchoring the media, the set of
+media endpoints advertised across the mirrored messages was **exactly** the set
+of sockets RTP was observed on: four of four, nothing advertised that was not
+seen, nothing seen that was not advertised.
+
+The condition attached to that is the part an operator has to get right, and it
+is a *configuration* property rather than a property of HEP. `trace()` at
+transaction scope (`"t"`) mirrors both directions. At message scope (`"m"`) it
+mirrors only what OpenSIPS received, and F1 reproduces exactly: in the same
+relayed call, one advertised endpoint against four observed sockets. So the
+feature's documentation has to name the scope, not merely the topology.
 
 **F2 — Endpoint collision across nodes.** `sdp_endpoints` is keyed on
 `(IpAddr, u16)` with no node dimension. A single sipnab receiving HEP from
@@ -320,7 +346,7 @@ while watching its own NIC is that wedge in its smallest form.
 ### 5.1 Shape
 
 One coordinator thread, one reader thread per member, one `tx.clone()` each —
-`run_multi_capture` ([`src/capture/native.rs:585`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L585)) generalised from a device list
+`run_multi_capture` ([`src/capture/native.rs:735`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L735)) generalised from a device list
 to a source list. No new concurrency primitive, no new channel, no ordering
 guarantee that does not already hold.
 
@@ -386,7 +412,7 @@ means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
 ([`src/app/bootstrap.rs:687`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L687)), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:2322`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2322)) already names both reasons a
+`cores_ignored_warning` ([`src/app/bootstrap.rs:2580`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2580)) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
@@ -450,7 +476,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
 message ([`src/app/bootstrap.rs:629-655`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L629-L655)), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:2322`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2322)), `-I` beating `-d` warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:2580`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2580)), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:315`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L315)). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a
@@ -467,7 +493,7 @@ it should land whether or not the rest is ever built.
 
 ## 7. Staged plan
 
-### Stage 0 — Warn that `-L` is being ignored
+### Stage 0 — Warn that `-L` is being ignored — **SHIPPED**
 
 **Value alone:** yes, and immediately. An operator who typed both flags today
 believes they have a HEP listener and does not. This is the `-I`/`-d` warning at
@@ -479,7 +505,16 @@ believes they have a HEP listener and does not. This is the `-I`/`-d` warning at
 flag pair; a test that each flag alone stays silent. Mutation check — delete the
 warning and the first test must fail.
 
-### Stage 1 — `CaptureSource::Composite` for `Live` + `Hep`
+**What shipped, and how it differs.** Stage 1 landed with it, so `-d` + `-L` no
+longer needs a warning — it composes. The silent precedence that remains is
+`--uprobe-tls` beating `-L`, and that is what `hep_listen_ignored_warning`
+([`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs)) warns about. It is keyed on the RESOLVED source rather
+than on the flags, so a new arm added to the chain cannot reintroduce a silent
+drop without failing
+`hep_listen_warning_fires_where_a_uprobe_run_swallows_the_listener`. `-I` with
+`-L` is refused outright instead of warned, for the security reason in §6.2.
+
+### Stage 1 — `CaptureSource::Composite` for `Live` + `Hep` — **SHIPPED**
 
 **Value alone:** the whole feature for the single-node deployment. HEP supplies
 signaling, the NIC supplies RTP, and §3.1 means dialog-to-stream binding works
@@ -531,7 +566,46 @@ disjunctive and cannot be widened by adding a member.
   error naming the failed member — the behaviour `run_multi_capture` already has
   for devices, asserted for a mixed list.
 
-### Stage 2 — Provenance and honest limits
+**What shipped, and where each test lives.** [`tests/composite_source_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/composite_source_test.rs)
+carries the plan-level and correlation tests; [`src/capture/native.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs) carries the
+coordinator tests (they drive the private spawner, exactly as the `--multi-device`
+teardown tests do); [`src/security/transmit_guard.rs`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs) carries the permit tests;
+[`tests/hep_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/hep_test.rs) carries one end-to-end process run.
+
+| Design test | Name |
+| --- | --- |
+| Happy path | `hep_signaling_binds_the_stream_the_nic_captured` |
+| Reverse order | `rtp_arriving_before_the_hep_invite_still_binds` |
+| No false binding | `a_hep_dialog_does_not_claim_a_stream_on_a_different_socket` |
+| Wrong-node collision | `two_hep_nodes_advertising_one_socket_collide_and_the_last_offer_wins` |
+| Refusals | `an_input_file_with_a_hep_listener_is_refused_with_the_security_reason`, `writing_a_capture_file_from_a_composite_is_refused`, `multi_device_with_a_hep_listener_is_refused` |
+| Transmit permit | `a_composite_transmits_only_when_every_member_may`, `an_empty_composite_grants_no_permit` |
+| Readiness | `a_hep_bind_failure_tears_the_interface_member_down` |
+| Composition | `an_interface_and_a_hep_listener_feed_one_channel`, `a_live_device_and_a_hep_listener_run_in_one_process` |
+
+Four departures from the plan above, each for a reason:
+
+1. **The jitter half of the reverse-order test was not asserted.** The design
+   asks it to check that the estimate is withheld against the placeholder clock.
+   That machinery (`jitter_restart_at`, `measured_jitter_ms`) is real and
+   already tested where it lives; the composite adds no new path through it, and
+   asserting it here would have duplicated an existing gate rather than pinning
+   anything the composite changed.
+2. **`source_exhausted` is not asserted directly.** The composition test asserts
+   the mechanism underneath it — the channel closes once the last producer exits
+   — because `source_exhausted` reads that closure and nothing else. What is not
+   covered is a member *ending while the other continues* under a real batch
+   loop; the coordinator-level test covers the teardown direction only.
+3. **The empty-composite permit test is additional.** `all()` over an empty slice
+   is vacuously true, so the natural one-line spelling of the conjunctive rule
+   hands a permit to a source with no members at all.
+4. **A `composite_filter_warning` and its two tests are additional.** They are
+   not in the plan because the plan did not notice that the auto-generated BPF
+   filter is signaling-only: a composite with no explicit filter would capture no
+   media at all — the exact thing the feature exists to capture — while doubling
+   every dialog's message ladder (F6).
+
+### Stage 2 — Provenance and honest limits — **OPEN**
 
 **Value alone:** yes, independent of stage one. Ordinals on live and HEP packets
 make `first_frame` resolvable for every source, which the provenance design
@@ -548,7 +622,7 @@ the cross-source flag appears on a stream bound across sources and not on one
 bound within a source; a resolvable `first_frame` on a live-captured stream,
 which no test can assert today.
 
-### Stage 3 — Multi-node
+### Stage 3 — Multi-node — **OPEN**
 
 **Value alone:** yes, and it is the positioning payoff — but only after stage two,
 because it is unsafe without the node dimension F2 describes.
@@ -566,20 +640,66 @@ be determined stays orphaned rather than guessing.
 
 Four things, ranked by how likely each is to be true.
 
-**1. Relayed media makes it inert (F1) — the real risk.** If most OpenSIPS
-deployments that would reach for this run rtpengine, the SDP that OpenSIPS
-mirrors describes endpoints that the local NIC never sees, every stream comes out
-orphaned, and the feature ships as a no-op with a good story. **This is the
-question to answer before writing code, and it is answerable cheaply:** run
-`sipnab -L` against a representative deployment's HEP mirror, extract the
-advertised media endpoints, and check them against `tcpdump` on the media
-interface. If the addresses do not agree, stop. That measurement costs an hour
-and gates several days.
+**1. Relayed media makes it inert (F1) — the real risk. ANSWERED: no.** The
+worry was that most OpenSIPS deployments reaching for this run rtpengine, so the
+mirrored SDP would describe endpoints the local NIC never sees and the feature
+would ship as a no-op with a good story. The measurement below refutes it at
+transaction tracer scope and confirms it at message scope, which turns the risk
+from "does this work at all" into "say which `trace()` scope it needs".
 
-Note the measurement does not have to come back "always" or "never". If it holds
-for direct-media deployments and fails for relayed ones, the feature is still
-worth building — with documentation that names the topology, which is more than
-today's silent `-d` precedence offers.
+### 8.1 The measurement (F1)
+
+Taken 2026-08-20 on an isolated harness built from the repo's own images —
+OpenSIPS **3.6.7** (`eaee48e28`), rtpengine **12.5.1**, SIPp UAC/UAS, one call
+carrying twelve seconds of real G.711A. Signaling was mirrored with `proto_hep`
++ `tracer` to a HEP collector; the media path was recorded with `tcpdump`; the
+advertised set was every `c=`/`m=` endpoint in every mirrored message, and the
+observed set was every socket RTP actually flowed on.
+
+| Run | Tracer scope | Media | Advertised | Observed | Intersection |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `"t"` (transaction) | rtpengine-anchored | 4 | 4 | **4 of 4** |
+| 2 | `"t"` (transaction) | direct, no relay | 2 | 2 | **2 of 2** |
+| 3 | `"m"` (message) | rtpengine-anchored | 1 | 4 | 1 of 4 |
+
+**How the both-directions finding was established, rather than assumed.** Run 1
+put 11 HEP records on the wire for 13 SIP packets: each traced message appears
+twice, distinguishable by the HEP source-address chunk, and the two copies
+*differ* — the sent copy of the INVITE carries the added `Record-Route`, the
+second `Via`, and the rtpengine-rewritten `c=`/`m=`. That is the outgoing buffer,
+not the received one. `tracer.c` arms both `TMCB_MSG_MATCHED_IN` and
+`TMCB_MSG_SENT_OUT`, which is the mechanism behind the count.
+
+**What each run means.** Run 1 is the case the design feared and it works
+exactly: `172.31.0.10:30030` and `172.31.0.10:30036` were advertised in the
+*sent* copies and are precisely the relay-side sockets the capture saw. Run 2
+matches too, but is moot at the proxy: with direct media no RTP crosses the
+OpenSIPS host at all, so a `-d` capture *there* sees nothing to correlate — the
+match existed only because the measurement captured on the shared segment. That
+is the topology sentence this feature owes an operator, and it is the opposite of
+the one the design expected to have to write. Run 3 is F1 reproduced on demand.
+
+**Four caveats the measurement produced, none of which changes the design:**
+
+1. `proto_hep` refuses to initialise without a HEP *listener* even when the
+   config only sends — `No HEP listener defined!`, exit 255. A
+   `socket=hep_udp:<ip>:<port>` line is mandatory alongside `hep_id`. Purely an
+   OpenSIPS-side documentation point.
+2. Match on **both** endpoints of a stream's socket pair, not just the
+   capture-local one. Under scope `"t"` either rule works; under `"m"` the single
+   advertised endpoint is the stream's *remote* peer, so a local-only rule binds
+   zero streams where a both-ends rule binds one. sipnab already does the right
+   thing — `resolve_from_sdp` ([`src/rtp/stream_store.rs:1034`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1034)) tries `key.src`
+   and `key.dst` — so this is a property to keep rather than one to add.
+3. The ACK is never mirrored: it is end-to-end and outside the INVITE server
+   transaction. No SDP rode on it here, but a delayed-offer call puts the ANSWER
+   in the ACK, and that answer would be absent from the HEP feed. Not measured.
+4. rtpengine advertises the RTCP port only via `a=rtcp:` (30031, 30037), never in
+   `m=`/`c=`. `extract_sdp_links` reads `m=`/`c=`, so those sockets are unknown to
+   it. No RTCP flowed in these runs, so whether that produces real orphans is
+   unconfirmed.
+
+Dialog scope (`"d"`) was not measured.
 
 **2. Mis-attribution outweighs the gain.** F2 and F3 are real, and a stream
 attributed to the wrong dialog is worse than an orphan because it arrives looking
@@ -621,8 +741,16 @@ better than today because today the limitation is *silent*:
 
 Things this design could not settle from the code alone.
 
-- **Does the mirrored SDP match the wire in a real OpenSIPS deployment?** §8,
-  question 1. Nothing in the repo answers it; a measurement does.
+- ~~**Does the mirrored SDP match the wire in a real OpenSIPS deployment?**~~
+  **Answered** — §8.1. Yes at tracer scope `"t"`, exactly and in both the relayed
+  and direct topologies; no at scope `"m"`, where F1 reproduces.
+- **Does a delayed-offer call's SDP answer survive the mirror?** New, from §8.1
+  caveat 3: the ACK is end-to-end and outside the INVITE server transaction, so
+  the tracer never sees it. A call whose answer rides on the ACK would advertise
+  only the offer, and half the media would be unattributable. Unmeasured.
+- **Do `a=rtcp:` ports need reading?** New, from §8.1 caveat 4: rtpengine
+  advertises the RTCP socket only there, and `extract_sdp_links` reads `m=`/`c=`.
+  Whether that produces real orphans is unconfirmed — no RTCP flowed in the runs.
 - **Does OpenSIPS mirror RTCP over HEP in practice?** `HepProtocol`
   ([`src/capture/hep.rs:575`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L575)) parses protocol type 5 as RTCP, and SRC1 says such a
   report has nothing to attach to. Whether it becomes attachable once the NIC

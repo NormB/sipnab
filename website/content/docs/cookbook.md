@@ -401,11 +401,65 @@ Watch dialogs accumulate live:
 watch -n 1 'curl -s http://localhost:9100/v1/dialogs?limit=5 | jq ".dialogs[] | {call_id, state}"'
 ```
 
+### 6d. Take signaling from HEP and media off the wire, in one process
+
+**Problem:** the HEP mirror is the robust way to get decrypted SIP — it is
+already plaintext at the source, so there is no TLS key extraction to go wrong —
+but a HEP feed carries no RTP, so a `--hep-listen` run measures no media at all.
+Capturing the interface instead gets you media and puts you back on key
+extraction for the signaling.
+
+Run both in one sipnab. HEP supplies the signaling, the NIC supplies the RTP for
+the same calls, and streams bind to dialogs by SDP media endpoint:
+
+```bash
+sipnab -N -d eth0 --hep-listen 127.0.0.1:9060 "udp portrange 10000-20000"
+```
+
+Raised by Dan Jenkins ([@danjenkins](https://github.com/danjenkins)) from
+OpenSIPS deployment experience.
+
+The BPF expression is not optional decoration. Without one, the interface gets
+sipnab's auto-generated *signaling* filter and captures no media whatsoever —
+while every message the mirror already sent also arrives off the wire, doubling
+each dialog's message ladder. Name your media ports and nothing else; sipnab
+warns if you forget.
+
+**Trace both directions, or this measures nothing.** In OpenSIPS, use
+transaction scope so the tracer mirrors the message it *sent* as well as the one
+it received:
+
+```cfg
+route {
+    $var(tid) = "hep_central";
+    trace($var(tid), "t", "sip");   # "t", not "m"
+}
+```
+
+At `"m"` (message) scope only the received copy is mirrored. That matters the
+moment rtpengine or any other relay rewrites the SDP: the address OpenSIPS
+received is not the address the media flows to, so every stream comes out
+orphaned. Measured on OpenSIPS 3.6.7 with rtpengine 12.5.1 anchoring: at `"t"`
+every advertised media endpoint was a socket the capture actually saw RTP on
+(4 of 4); at `"m"`, 1 of 4.
+
+Note also that `proto_hep` refuses to start without a HEP *listener* socket even
+when the config only sends — add `socket=hep_udp:127.0.0.1:9061` alongside your
+`hep_id` or OpenSIPS exits with `No HEP listener defined!`.
+
+**Where this helps, and where it cannot.** It helps where media transits the
+machine running the mirror — a proxy anchoring media through rtpengine on the
+same box is the case it was built for. Where media flows end-to-end and never
+crosses that machine, no capture there can see it, and no amount of correlation
+changes that: put sipnab's `-d` where the media actually is.
+
 **Pitfalls:**
 
 - HEP is UDP — silently drops if the listener can't keep up. The `--hep-rate-limit 50000` default lets you tune.
 - A routable HEP listener needs a guard: sipnab refuses a non-loopback `--hep-listen` bind unless you pass `--hep-allow 192.0.2.0/24` (repeatable) or `--hep-auth`/`--hep-auth-file`. A loopback bind needs neither.
 - If your central host is reachable by hostname only, set `--mcp-allowed-host` for the MCP transport too (see Recipe 8).
+- `-d` with `--hep-listen` takes exactly one interface and one listener. `-I` with `--hep-listen` is refused (a file's addresses are historical and belong to third parties, and sipnab keeps them off its active-response path by refusing to transmit for a file run at all); so are `--multi-device` with `--hep-listen`, and `-O` with the pair — the two sources disagree about the link layer, so there is no honest pcap to write. Use `--hep-send` to forward the signaling instead.
+- One sipnab, one mirroring node. The SDP endpoint index is keyed on address and port with no node dimension, so two nodes advertising the same RFC 1918 socket would overwrite each other and a stream would bind to whichever offer arrived last.
 
 ---
 
