@@ -2040,6 +2040,19 @@ fn try_decrypt_with_session(
                 }
             }
 
+            // Only real application data reaches the caller. In TLS 1.3 the
+            // OUTER content type of every protected record is 23, so a
+            // NewSessionTicket or a KeyUpdate is indistinguishable from a SIP
+            // message until it is opened -- the INNER type is the only thing
+            // that separates them (RFC 8446 5.2). Handing handshake plaintext
+            // on looks harmless because it does not parse as SIP, and is not:
+            // the caller reassembles a BYTE STREAM, so ticket bytes prepend
+            // themselves to the next real message and frame it as garbage.
+            // Measured on a loopback TLS call: two NewSessionTickets ahead of
+            // the responses cost the `100 Trying` outright.
+            if inner_type.is_some_and(|t| t != 23) {
+                return None;
+            }
             return Some(plaintext);
         }
     }

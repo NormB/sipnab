@@ -4049,16 +4049,26 @@ fn try_tls_decrypt(
             decryptor.process_record(record, src, dst);
             continue;
         }
-        if let Some(plaintext) = decryptor.try_decrypt_at(record, src, dst, pp.timestamp)
-            && sip::is_sip_message(&plaintext)
-        {
-            // Build a synthetic ParsedPacket with the decrypted SIP payload,
-            // stamped Tls so the pipeline parses (and reports) the true
-            // transport origin.
-            let mut decrypted_pp = pp.clone();
-            decrypted_pp.payload = plaintext.into();
-            decrypted_pp.transport = TransportProto::Tls;
-            out.push(decrypted_pp);
+        if let Some(plaintext) = decryptor.try_decrypt_at(record, src, dst, pp.timestamp) {
+            // Frame the decrypted BYTES into SIP messages rather than testing
+            // this record for "does it look like SIP". A sender may write one
+            // message as several records -- a real trunk sends the INVITE
+            // headers in one and the SDP body in the next -- and the per-record
+            // test keeps the headers while discarding the body, leaving an
+            // INVITE with no offer. sipnab then stores whatever SDP the next
+            // hop rewrote and reports a media mismatch that is not in the
+            // capture.
+            for msg in tls_reassembler.frame_plaintext(src, dst, &plaintext) {
+                if !sip::is_sip_message(&msg) {
+                    continue;
+                }
+                // A synthetic ParsedPacket carrying the decrypted SIP, stamped
+                // Tls so the pipeline reports the true transport origin.
+                let mut decrypted_pp = pp.clone();
+                decrypted_pp.payload = msg.into();
+                decrypted_pp.transport = TransportProto::Tls;
+                out.push(decrypted_pp);
+            }
         }
     }
 

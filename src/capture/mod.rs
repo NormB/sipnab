@@ -1172,7 +1172,7 @@ impl Default for PacketProcessor {
 /// Returns the byte ranges of the complete messages plus `consumed` — the index
 /// where the first incomplete (held-back) message begins. `data[consumed..]`
 /// should be retained and prepended to the next flush of the same stream.
-fn frame_tcp_sip(data: &[u8]) -> (Vec<std::ops::Range<usize>>, usize) {
+pub(crate) fn frame_tcp_sip(data: &[u8]) -> (Vec<std::ops::Range<usize>>, usize) {
     let mut ranges = Vec::new();
     let mut pos = 0;
     while pos < data.len() {

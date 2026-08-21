@@ -178,6 +178,22 @@ pub struct TlsRecordReassembler {
     ///
     /// Insertion-ordered so eviction can drop the least-recently-updated
     /// direction rather than an arbitrary one.
+    /// Decrypted bytes not yet forming a whole SIP message, per direction.
+    ///
+    /// TLS delivers a BYTE STREAM, not messages. A sender is free to write one
+    /// SIP message as several records, and a real trunk does: the INVITE
+    /// headers in one record and the SDP body in the next. Testing each
+    /// decrypted record for "does this look like SIP" therefore keeps the
+    /// headers and DISCARDS the body -- the INVITE survives with no offer at
+    /// all, so the first SDP stored is whatever the next hop rewrote, and the
+    /// run reports a media/NAT mismatch that is not in the capture. Framing
+    /// has to happen after decryption, on the stream, exactly as it already
+    /// does for cleartext SIP over TCP.
+    plaintext: indexmap::IndexMap<
+        (std::net::SocketAddr, std::net::SocketAddr),
+        Vec<u8>,
+        ahash::RandomState,
+    >,
     leftover: indexmap::IndexMap<
         (std::net::SocketAddr, std::net::SocketAddr),
         Vec<u8>,
@@ -194,6 +210,7 @@ impl TlsRecordReassembler {
     /// one is evicted to keep memory bounded on a host with many streams.
     pub fn new(max_sessions: usize) -> Self {
         Self {
+            plaintext: indexmap::IndexMap::default(),
             leftover: indexmap::IndexMap::default(),
             max_sessions,
         }
@@ -203,6 +220,51 @@ impl TlsRecordReassembler {
     /// returning every complete TLS record now assembled (zero or more).
     /// Any trailing incomplete bytes are held for the next call on the same
     /// stream rather than discarded.
+    /// Feed decrypted bytes for one direction and return the COMPLETE SIP
+    /// messages they now form.
+    ///
+    /// The counterpart of [`Self::insert`], one layer up: `insert` turns TCP
+    /// segments into TLS records, this turns the decrypted records back into
+    /// SIP messages. Both are needed because neither boundary is the other --
+    /// a record is not a message, and testing each record for "is this SIP"
+    /// keeps an INVITE's headers and throws its SDP body away.
+    ///
+    /// Bounded by the same session cap and byte ceiling as `insert`: a peer
+    /// that sends an unterminated message must not pin memory.
+    pub fn frame_plaintext(
+        &mut self,
+        src: std::net::SocketAddr,
+        dst: std::net::SocketAddr,
+        plaintext: &[u8],
+    ) -> Vec<Vec<u8>> {
+        let key = (src, dst);
+        if !self.plaintext.contains_key(&key) && self.plaintext.len() >= self.max_sessions {
+            self.plaintext.shift_remove_index(0);
+        }
+        let buf = self.plaintext.entry(key).or_default();
+        buf.extend_from_slice(plaintext);
+
+        let (ranges, consumed) = crate::capture::frame_tcp_sip(buf);
+        let mut out: Vec<Vec<u8>> = ranges.iter().map(|r| buf[r.clone()].to_vec()).collect();
+        buf.drain(..consumed);
+
+        // A held remainder that can never complete is dropped rather than
+        // grown: without this a single unterminated message pins a buffer per
+        // direction for the life of the run.
+        if buf.len() > usize::from(MAX_TLS_RECORD_LENGTH) * 4 {
+            buf.clear();
+        }
+        if buf.is_empty() {
+            self.plaintext.shift_remove(&key);
+        }
+        // Nothing framed and nothing held means the bytes were not SIP at all;
+        // hand them back so a caller that knows better can still look.
+        if out.is_empty() && consumed == 0 && self.plaintext.get(&key).is_none() {
+            out.push(plaintext.to_vec());
+        }
+        out
+    }
+
     pub fn insert(
         &mut self,
         src: std::net::SocketAddr,
@@ -406,6 +468,98 @@ fn decode_hex(hex: &str) -> Result<Vec<u8>> {
 /// zeroization on drop.
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// A SIP message split across two TLS records must arrive whole.
+    ///
+    /// TLS delivers a byte stream, and a real trunk writes an INVITE as two
+    /// records: the headers, then the SDP body. Judging each decrypted record
+    /// on "does this look like SIP" keeps the headers and throws the body
+    /// away, so the INVITE survives with NO offer -- and the first SDP the
+    /// run then stores is whatever the next hop rewrote, which is reported as
+    /// a media/NAT mismatch that is not in the capture. Reproduced on a real
+    /// loopback TLS 1.3 call before this framing existed.
+    #[test]
+    fn an_invite_split_across_two_records_is_reassembled_with_its_body() {
+        let mut r = TlsRecordReassembler::new(64);
+        let a: std::net::SocketAddr = "10.0.0.1:5061".parse().unwrap();
+        let b: std::net::SocketAddr = "10.0.0.2:5061".parse().unwrap();
+
+        let sdp = "v=0\r\no=x 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\n\
+                   t=0 0\r\nm=audio 40000 RTP/AVP 8\r\n";
+        let head = format!(
+            "INVITE sip:x@example.net SIP/2.0\r\nCSeq: 1 INVITE\r\n\
+             Content-Type: application/sdp\r\nContent-Length: {}\r\n\r\n",
+            sdp.len()
+        );
+
+        // Record one: headers only. Nothing is complete yet.
+        assert!(
+            r.frame_plaintext(a, b, head.as_bytes()).is_empty(),
+            "headers alone are not a whole message and must be HELD, not emitted \
+             (emitting here is what drops the body)"
+        );
+
+        // Record two: the body completes it.
+        let out = r.frame_plaintext(a, b, sdp.as_bytes());
+        assert_eq!(
+            out.len(),
+            1,
+            "the two records must form exactly one message"
+        );
+        let msg = String::from_utf8(out[0].clone()).expect("utf8");
+        assert!(msg.starts_with("INVITE "), "the message must be the INVITE");
+        assert!(
+            msg.contains("m=audio 40000"),
+            "and it must carry the SDP OFFER -- losing this is what makes sipnab \
+             report a NAT mismatch that is not in the capture: {msg}"
+        );
+    }
+
+    /// Two whole messages in one record both come out.
+    ///
+    /// The other half of stream framing: a sender may coalesce. Emitting only
+    /// the first would lose the second as surely as splitting loses a body.
+    #[test]
+    fn two_messages_in_one_record_are_both_emitted() {
+        let mut r = TlsRecordReassembler::new(64);
+        let a: std::net::SocketAddr = "10.0.0.1:5061".parse().unwrap();
+        let b: std::net::SocketAddr = "10.0.0.2:5061".parse().unwrap();
+
+        let both = "SIP/2.0 100 Trying\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n\
+                    SIP/2.0 180 Ringing\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n";
+        let out = r.frame_plaintext(a, b, both.as_bytes());
+        assert_eq!(
+            out.len(),
+            2,
+            "both messages must be emitted, not just the first"
+        );
+        assert!(String::from_utf8_lossy(&out[0]).contains("100 Trying"));
+        assert!(String::from_utf8_lossy(&out[1]).contains("180 Ringing"));
+    }
+
+    /// A held remainder that can never complete is dropped, not grown.
+    ///
+    /// Without this a peer that opens a message and never finishes it pins a
+    /// buffer per direction for the life of the run.
+    #[test]
+    fn an_unterminated_message_does_not_pin_memory_forever() {
+        let mut r = TlsRecordReassembler::new(64);
+        let a: std::net::SocketAddr = "10.0.0.1:5061".parse().unwrap();
+        let b: std::net::SocketAddr = "10.0.0.2:5061".parse().unwrap();
+
+        let head = "INVITE sip:x SIP/2.0\r\nContent-Length: 999999\r\n\r\n";
+        r.frame_plaintext(a, b, head.as_bytes());
+        for _ in 0..8 {
+            r.frame_plaintext(a, b, &vec![b'A'; usize::from(MAX_TLS_RECORD_LENGTH)]);
+        }
+        let held = r.plaintext.get(&(a, b)).map_or(0, Vec::len);
+        assert!(
+            held <= usize::from(MAX_TLS_RECORD_LENGTH) * 4,
+            "an unterminated message must not grow without bound: held {held} bytes"
+        );
+    }
+
     use super::*;
     use std::io::Write;
 
