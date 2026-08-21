@@ -146,6 +146,51 @@ fault-injection scenarios (broken SDP, bogus codec, malformed message) are
 Add or remove scenarios in `sipp/run-uac-loop.sh` and drop the XML (plus any
 media pcap) into `sipp/scenarios/`.
 
+## Encrypted calls (TLS)
+
+The default `opensips-1` image cannot make one. The upstream `make all`
+excludes `tls_mgm`, so the stock harness has no `proto_tls` and no TLS
+listener. That left only one way to chase a TLS defect: a capture taken from a
+production trunk belonging to somebody outside the project, rather than a call
+reproduced here.
+
+`harness/opensips-tls/` builds OpenSIPS **4.0.1** with `tls_mgm`, `proto_tls`
+and `tls_openssl`, and adds a `tls:5061` socket beside the existing UDP one:
+
+```sh
+harness/opensips-tls/make-certs.sh
+```
+
+```sh
+docker build -t sipnab-harness/opensips-tls:local harness/opensips-tls
+```
+
+The script generates the certificates and the repository never stores them: a
+scanner cannot tell a throwaway harness key from a real one, and neither can
+the next reader.
+
+### A TLS call you can decrypt
+
+`harness/tls/make-tls-call.py` places a complete TLS 1.3 call on loopback and
+writes its own keylog, so the keys are correct by construction and the run does
+not also test a key-extraction tool:
+
+```sh
+sudo python3 harness/tls/make-tls-call.py /tmp/tlsout
+```
+
+```sh
+sipnab -N -I /tmp/tlsout/tlscall.pcap --keylog /tmp/tlsout/tlscall.keylog --portrange 1-65535
+```
+
+Two properties are deliberate, and both were defects before they were
+fixtures. The suite is `TLS_AES_256_GCM_SHA384`, matching the trunk in the
+field report rather than the AES-128 the unit tests use. And the script splits the INVITE across **two** `send()` calls, so it lands in
+two TLS records — headers, then the SDP body. A capture tool that judges each record on "does this look
+like SIP" keeps the headers and drops the offer, and then reports a media
+mismatch that is not in the capture. Recovering that whole INVITE is what the
+script exists to prove.
+
 ## Persisting a pcap (second capture method)
 
 `sipnab` live-captures and serves MCP. To *also* write a pcap fixture, set
