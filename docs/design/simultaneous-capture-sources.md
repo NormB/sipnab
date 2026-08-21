@@ -1,8 +1,10 @@
 # Running a live interface and a HEP listener in one process
 
-**Status:** STAGES 0, 1 AND 2 SHIPPED. `-d <iface>` with `-L <addr>` runs both in
-one process, every source numbers its own frames, and a stream says whether its
-dialog crossed sources. Stage 3 (multi-node) remains open — see §7.
+**Status:** STAGES 0, 1 AND 2 SHIPPED, and SRC2 on top of them. `-d <iface>` with
+`-L <addr>` runs both in one process, every source numbers its own frames, a
+stream says whether its dialog crossed sources, and a call whose two witnesses
+told different stories says so — see §10. Stage 3 (multi-node) remains open —
+see §7.
 **Verified against:** `94fad2de` (0.5.117) when written; stage 1 landed on
 `8c03a453` (0.5.118); stage 2 landed on top of 0.5.120.
 **Backlog:** [`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) **SRC1** (`:447`).
@@ -10,8 +12,9 @@ dialog crossed sources. Stage 3 (multi-node) remains open — see §7.
 [#245](https://github.com/NormB/sipnab/issues/245), from OpenSIPS deployment
 experience.
 **Check:** `grep -n 'Composite(Vec<CaptureSource>)' src/capture/native.rs` exits 0
-(stage 1), and `grep -n 'fn next_origin' src/capture/packet.rs` exits 0
-(stage 2).
+(stage 1), `grep -n 'fn next_origin' src/capture/packet.rs` exits 0
+(stage 2), and `grep -n 'fn detect_source_disagreement' src/sip/diagnosis.rs`
+exits 0 (SRC2).
 
 That grep is the narrowest fact separating "designed" from "built": the plan used
 to carry at most ONE source, by type, and this variant is what lets it carry two.
@@ -844,3 +847,144 @@ Things this design could not settle from the code alone.
   ([`src/tui/mod.rs:157`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L157)) is one string rendered by
   [`src/tui/render/status.rs:117`](https://github.com/NormB/sipnab/blob/main/src/tui/render/status.rs#L117), which branches on an `Online`/`Offline` prefix.
   Deferred to stage three rather than guessed at here.
+
+## 10. SRC2 — comparing the two witnesses
+
+**Status: SHIPPED.** Backlog **SRC2**, built on stage 2's provenance.
+
+Stage 2 tagged every fact with the source that produced it and stopped there.
+Nothing compared the two accounts, so sipnab merged both into one store and said
+nothing when they differed. Dan Jenkins reframed why that matters, after using
+the composite stage one shipped:
+
+> "i really didn't want to trust HEP from opensips... the whole point is being
+> able to see when opensips is doing something wrong, or ive told it to do the
+> wrong thing or whatever. so being able to trace TLS purely from what hit the
+> box is fantastic"
+
+HEP reports what the proxy BELIEVES it did. The wire reports what actually left
+the box. When the question under investigation is "is OpenSIPS misbehaving, or
+did I configure it to", a mirror produced by the suspect cannot answer it — it
+is the same witness twice. That makes the two sources complementary rather than
+redundant, and it makes their DISAGREEMENT the finding rather than an
+inconvenience to reconcile.
+
+### 10.1 The trap: the mirror arrives first
+
+The HEP mirror is usually FIRST. The proxy mirrors as it processes, while the
+copy on the wire takes a network hop and a kernel queue to reach the same
+process — the same inversion §3.3 F5 describes for media. So any rule shaped
+"first one wins" silently makes the proxy's account authoritative, and checking
+that account is the entire reason the wire capture exists.
+
+Three properties of `detect_source_disagreement`
+([`src/sip/diagnosis.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/diagnosis.rs)) keep that from happening, and none of them is a
+convention a later edit can quietly drop:
+
+1. **The pairing key is content, never position.** Two copies pair on
+   `(request?, status, method, CSeq, top-`Via` branch)` — [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) §17.1.3 and
+   §17.2.3 transaction identity. Which copy the pipeline saw first cannot change
+   which copies pair, or whether they pair at all.
+2. **Both accounts are reported by name.** `SdpDivergence` carries `mirror` AND
+   `wire`. There is no `expected` field for a surface to render as the truth and
+   no `actual` field to render as the deviation.
+3. **The two gap lists come from ONE expression applied twice with the arguments
+   swapped.** A rule favouring either witness would have to be written into that
+   single closure, where it is visible, rather than emerging from two
+   similar-looking blocks that drifted apart.
+
+`the_mirror_arriving_first_does_not_make_it_the_reference` runs the same ladder
+in both arrival orders and demands the same per-source answer from each.
+
+### 10.2 What is reported, per call
+
+Four states, and each reads differently:
+
+- **Agreed** — `agreed`, the count of messages both witnesses carried. The
+  denominator: "2 of 14" is diagnostic and "2" is not.
+- **Mirror-only** — the proxy believes it sent something this capture never saw
+  leave the box.
+- **Wire-only** — the box did something its own trace does not admit to.
+- **Differing** — both carried the message and each advertised different media
+  endpoints. A rewrite: sometimes the SBC doing its job, sometimes the bug, and
+  nothing at this layer can tell those apart, which is why both addresses travel.
+
+It is detection 9 on `SignalingDiagnosis`, so it reaches every surface the eight
+before it reach — `--call-report` in all three formats, `--json-dialogs`, the
+REST dialog routes and MCP's `diagnose_call` — through the machinery those
+already share, and it is omitted rather than nulled for the reason
+`icmp_unreachable` is: a `null` would claim a comparison that never ran.
+
+### 10.3 The gate, and what it costs a single-source run
+
+The comparison runs only when BOTH witnesses carried at least one message of
+THIS call.
+
+Gating on the RUN instead — "the process was started with `-d` and `-L`" — was
+rejected, and the reason is the filter this feature's own warning pushes an
+operator towards. `composite_filter_warning` exists because the auto-generated
+BPF filter is signaling-only and a composite run wants media, so the operator
+writes a media-only filter and the wire then carries no signaling at all. Under
+a run-level gate every call in that deployment comes out mirror-only, and a
+finding on every call is a finding on none.
+
+On a single-source run the gate is one pass of `Copy`-byte comparisons that
+stops as soon as both witnesses are known to have spoken, allocating nothing.
+The index, the pairing and every `String` are past the early return.
+
+### 10.4 What this deliberately cannot say
+
+**A call ONE witness never saw at all.** From inside such a call there is no way
+to tell a proxy that mirrored a phantom from a witness that was not watching
+that call's signaling — TLS it cannot decrypt, a BPF filter excluding the port,
+a mirror not configured for that traffic. Separating those needs capture-wide
+evidence this detection is not given.
+`a_whole_call_only_the_mirror_saw_is_not_reported_as_a_disagreement` pins the
+limit so a later change to it is visible as a change.
+
+**A dropped packet against a message a source never carried.** They look
+identical here. That is the nature of the comparison and the reason this is a
+finding to investigate rather than a verdict; the hint says so in the words a
+reader sees.
+
+**A uprobe source paired with anything.** `-d` beats `--uprobe-tls` and
+`--uprobe-tls` beats `-L`, both with a warning, so uprobe never composes and a
+third pairing would be untested code answering a question no run can ask. When
+one becomes possible, `detect_source_disagreement`'s gate is where it goes.
+
+**A rank in `--analyze`.** Detection 8 has a `FindingKind`
+([`src/analysis.rs`](https://github.com/NormB/sipnab/blob/main/src/analysis.rs)) and this one deliberately does not. All four
+severities describe what happened to the CALL, or to sipnab's own reading of
+the input: `Blind` means sipnab did not read part of the capture, `Critical`
+that nobody could hear, `Major` that the call failed, `Minor` that something
+degraded. A disagreement between two witnesses is a statement about the
+EVIDENCE, and every one of those tiers would mis-say it — `Blind` most of all,
+because it would assert that sipnab missed the message when the whole point is
+that the proxy may have reported one it never sent. It belongs in a tier
+`--analyze` does not have, and adding one is a larger change than this item.
+
+### 10.5 Tests
+
+Unit tests live beside the detection in [`src/sip/diagnosis.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/diagnosis.rs); the
+end-to-end ones drive the real pipeline from
+[`tests/composite_source_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/composite_source_test.rs).
+
+- Mirror-only — `a_message_only_the_mirror_reported_is_named_as_mirror_only`,
+  and `a_message_only_the_mirror_reported_reaches_the_report_and_the_json` for
+  the surfaces.
+- Wire-only — `a_message_only_the_wire_carried_is_named_as_wire_only`.
+- Differing in SDP — `matched_messages_whose_sdp_differs_report_both_addresses`,
+  `an_sdp_rewritten_between_the_two_witnesses_reaches_the_dialog_json`.
+- The trap — `the_mirror_arriving_first_does_not_make_it_the_reference`.
+- Agreement is not a finding —
+  `two_witnesses_that_agree_on_every_message_report_nothing`.
+- Single source is silent — `a_single_source_run_reports_no_source_disagreement`,
+  `a_single_source_run_carries_no_source_disagreement`,
+  `messages_with_no_recorded_origin_report_nothing`,
+  `a_uprobe_source_is_not_compared_against_the_wire`.
+- The documented limit — `a_whole_call_only_the_mirror_saw_is_not_reported_as_a_disagreement`.
+- Retransmissions pair by count — `a_retransmission_the_wire_missed_is_one_gap_not_three`.
+- The finding is not silently clean — `a_source_disagreement_alone_makes_the_diagnosis_non_empty`.
+- The hint — `the_disagreement_hint_names_both_witnesses`.
+- The wire shape matches its schema —
+  `the_disagreement_json_validates_against_the_call_report_schema`.

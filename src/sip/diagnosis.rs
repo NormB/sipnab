@@ -357,6 +357,102 @@ pub struct IcmpUnreachable {
     pub evidence: Vec<usize>,
 }
 
+/// One message that only one of the two witnesses carried.
+///
+/// Which witness is said by the field this sits in —
+/// [`SourceDisagreement::mirror_only`] or [`SourceDisagreement::wire_only`] —
+/// never by a flag inside the entry, so a surface cannot render a gap without
+/// naming the source that has it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnwitnessedMessage {
+    /// What the message is — `INVITE`, `200 OK`. A report pasted into a ticket
+    /// has no message list to join `index` against, which is the same reason
+    /// `evidence_label` exists on the report surfaces.
+    pub summary: String,
+    /// Index into the dialog's own message list, the coordinate every other
+    /// detection's `evidence` uses.
+    pub index: usize,
+}
+
+/// One message BOTH witnesses carried, whose SDP named different media
+/// endpoints on each.
+///
+/// Both accounts travel, neither is the reference, and there is deliberately
+/// no `expected`/`actual` pair here: an SDP rewritten between the proxy's own
+/// account and the wire is sometimes the SBC doing its job and sometimes the
+/// bug, and nothing at this layer can tell those apart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SdpDivergence {
+    /// What the message is, as [`UnwitnessedMessage::summary`].
+    pub summary: String,
+    /// Media endpoints the MIRROR's copy advertised, `<media> <addr>:<port>`
+    /// in `m=` order. Empty when that copy carried no SDP at all, which is
+    /// itself a disagreement worth seeing.
+    pub mirror: Vec<String>,
+    /// Media endpoints the copy captured on the WIRE advertised.
+    pub wire: Vec<String>,
+    /// Index of the mirrored copy in the dialog's message list.
+    pub mirror_index: usize,
+    /// Index of the copy captured on the wire.
+    pub wire_index: usize,
+}
+
+/// Detection 9 — the run's two witnesses do not tell the same story about
+/// this call.
+///
+/// # Why two witnesses are not one witness twice
+///
+/// A HEP mirror is produced by the proxy under investigation: it reports what
+/// that proxy BELIEVES it did. A local capture reports what actually left the
+/// box. When the question is "is OpenSIPS misbehaving, or did I configure it
+/// to", a mirror produced by the suspect cannot answer it. That makes the two
+/// sources complementary rather than redundant, and it makes their
+/// DISAGREEMENT the finding rather than an inconvenience to reconcile. Raised
+/// by Dan Jenkins ([@danjenkins](https://github.com/danjenkins)) after using
+/// the composite source SRC1 shipped.
+///
+/// Each state the entry names has a different reading:
+///
+/// * **Mirror-only** — the proxy believes it sent something this capture never
+///   saw leave the box.
+/// * **Wire-only** — the box did something its own trace does not admit to.
+/// * **Differing** — an SDP rewrite between the two accounts.
+/// * **Agreed** — [`agreed`](Self::agreed), the denominator. Two witnesses
+///   that match are the healthy case, so a call with no gap and no divergence
+///   produces no finding at all rather than a clean object on every call.
+///
+/// # What this cannot say
+///
+/// A call ONE witness never saw at all produces nothing here, deliberately.
+/// From inside such a call there is no way to tell a proxy that mirrored a
+/// phantom from a witness that was not watching that call's signaling — TLS it
+/// cannot decrypt, a BPF filter that excludes the port, a mirror not
+/// configured for that traffic. Separating those needs capture-wide evidence
+/// this detection is not given, and guessing would put a finding on every call
+/// of a run whose wire filter is media-only, which is the filter a composite
+/// run wants.
+///
+/// A message either capture dropped also looks exactly like one a source never
+/// carried. That is the nature of the comparison and the reason this is a
+/// finding to investigate rather than a verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceDisagreement {
+    /// How many messages both witnesses carried — the denominator that makes
+    /// the gap counts mean something. "2 of 14 messages" is diagnostic; "2
+    /// messages" is not.
+    pub agreed: usize,
+    /// Messages the HEP mirror reported that the wire never carried.
+    pub mirror_only: Vec<UnwitnessedMessage>,
+    /// Messages the wire carried that the mirror never reported.
+    pub wire_only: Vec<UnwitnessedMessage>,
+    /// Messages both witnesses carried whose SDP named different endpoints.
+    pub sdp_differs: Vec<SdpDivergence>,
+    /// Every message index this finding drew on, sorted and deduplicated —
+    /// the same `evidence` shape the other eight detections carry, so the
+    /// report surfaces render it with the machinery they already have.
+    pub evidence: Vec<usize>,
+}
+
 /// One dialog's signaling diagnosis.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SignalingDiagnosis {
@@ -383,6 +479,14 @@ pub struct SignalingDiagnosis {
     /// was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icmp_unreachable: Option<IcmpUnreachable>,
+    /// Detection 9 — the run's two capture sources disagree about this call.
+    ///
+    /// Omitted from serialized output when absent, for the reason
+    /// [`Self::icmp_unreachable`] is: it can only be checked when TWO
+    /// witnesses carried this call, and a `null` on a single-source capture
+    /// would read as "checked, they agreed" when nothing was compared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_disagreement: Option<SourceDisagreement>,
     /// Plain-language lines, one per detection, so that surfaces rendering one
     /// line per problem do not each re-invent the phrasing.
     pub hints: Vec<String>,
@@ -406,6 +510,7 @@ impl SignalingDiagnosis {
             post_dial_delay,
             registration_failure,
             icmp_unreachable,
+            source_disagreement,
             hints: _,
         } = self;
         final_failure.is_none()
@@ -416,6 +521,7 @@ impl SignalingDiagnosis {
             && post_dial_delay.is_none()
             && registration_failure.is_none()
             && icmp_unreachable.is_none()
+            && source_disagreement.is_none()
     }
 }
 
@@ -511,6 +617,7 @@ pub fn diagnose_signaling_with_evidence(
     detect_post_dial_delay(messages, &mut diag, thresholds);
     detect_registration_failure(messages, &mut diag);
     detect_icmp_unreachable(messages, &mut diag, icmp);
+    detect_source_disagreement(messages, &mut diag);
 
     diag
 }
@@ -665,6 +772,305 @@ fn detect_icmp_unreachable(
         truncated,
         evidence,
     });
+}
+
+/// What makes two captured copies the same message.
+///
+/// `(request?, status, request method, CSeq, top-`Via` branch)` — RFC 3261
+/// §17.1.3 and §17.2.3 match a response to a transaction on the branch and the
+/// CSeq method, and this adds only what tells one message of a transaction from
+/// another. Borrowed from the messages, so building the whole index allocates
+/// nothing but the map.
+type MessageIdentity<'a> = (
+    bool,
+    Option<u16>,
+    Option<&'a str>,
+    Option<(u32, &'a str)>,
+    Option<&'a str>,
+);
+
+/// The identity above, read off one message.
+fn message_identity(m: &SipMessage) -> MessageIdentity<'_> {
+    (
+        m.is_request,
+        m.status_code,
+        m.method.as_ref().map(SipMethod::as_str),
+        m.cseq(),
+        m.top_via_branch(),
+    )
+}
+
+/// What a message is, in the words the report surfaces already use.
+fn message_summary(m: &SipMessage) -> String {
+    if m.is_request {
+        match &m.method {
+            Some(method) => method.to_string(),
+            None => "request".to_string(),
+        }
+    } else {
+        match (m.status_code, &m.reason) {
+            (Some(code), Some(reason)) => format!("{code} {reason}"),
+            (Some(code), None) => code.to_string(),
+            _ => "response".to_string(),
+        }
+    }
+}
+
+/// The media endpoints one copy of a message advertises, in `m=` order.
+///
+/// Resolved through [`crate::sip::sdp::effective_address`] — media-level `c=`
+/// when present, session-level otherwise — because that is the address the
+/// rest of sipnab binds RTP on, and comparing the raw lines instead would
+/// report a session-level `c=` moved to media level as a rewrite when the
+/// resulting socket is identical.
+fn sdp_media_endpoints(m: &SipMessage) -> Vec<String> {
+    let Some(sdp) = m.sdp() else {
+        return Vec::new();
+    };
+    sdp.media
+        .iter()
+        .map(
+            |media| match crate::sip::sdp::effective_address(media, &sdp) {
+                Some(addr) => format!("{} {addr}:{}", media.media_type, media.port),
+                // No `c=` at either level. Said, rather than dropped: a media
+                // section with no address is not the same as no media section.
+                None => format!("{} (no address):{}", media.media_type, media.port),
+            },
+        )
+        .collect()
+}
+
+/// Render a per-source endpoint list for a human line.
+fn endpoints_or_none(endpoints: &[String]) -> String {
+    if endpoints.is_empty() {
+        "no SDP".to_string()
+    } else {
+        endpoints.join(", ")
+    }
+}
+
+/// How many entries of a gap list a hint names before it stops.
+///
+/// A hint is one line in a ticket, a TUI row and an MCP payload. A call whose
+/// mirror is fifty messages ahead of its wire would otherwise render fifty
+/// summaries into all three. The full list is in the structured finding, which
+/// is where a reader who wants every one goes.
+const HINT_ITEM_CAP: usize = 3;
+
+/// Name the first few messages of a gap list, with a count of what was cut.
+fn name_a_few(items: &[UnwitnessedMessage]) -> String {
+    let mut named: Vec<String> = items
+        .iter()
+        .take(HINT_ITEM_CAP)
+        .map(|item| format!("{} #{}", item.summary, item.index))
+        .collect();
+    if items.len() > HINT_ITEM_CAP {
+        named.push(format!("and {} more", items.len() - HINT_ITEM_CAP));
+    }
+    named.join(", ")
+}
+
+/// Detection 9 — compare what the HEP mirror reported against what the wire
+/// carried, for one call.
+///
+/// # Why the mirror cannot become the reference by arriving first
+///
+/// This is the trap the feature exists inside. The HEP mirror is usually
+/// FIRST: the proxy mirrors as it processes, while the copy on the wire takes
+/// a network hop and a kernel queue on the way to the same process. Any rule
+/// shaped "first one wins" therefore makes the proxy's account authoritative —
+/// and checking that account is the entire reason the wire capture is there.
+/// Three properties keep that from happening, and none of them is a convention
+/// a later edit can quietly drop:
+///
+/// 1. **The pairing key is content, never position.** Two copies pair on
+///    [`message_identity`], which reads the start line, the `CSeq` and the top
+///    `Via` branch. Which copy the pipeline saw first cannot change which
+///    copies pair, or whether they pair at all.
+/// 2. **Both accounts are reported by name.** [`SdpDivergence`] carries
+///    `mirror` AND `wire`; there is no `expected` field for a surface to render
+///    as the truth and no `actual` field to render as the deviation.
+/// 3. **The two gap lists are produced by ONE expression applied twice with
+///    the arguments swapped**, below. A rule that favoured either witness would
+///    have to be written into that single closure, where it would be visible,
+///    rather than emerging from two similar-looking blocks that drifted.
+///
+/// `the_mirror_arriving_first_does_not_make_it_the_reference` pins all three
+/// by running the same ladder in both arrival orders and demanding the same
+/// per-source answer.
+///
+/// # Cost on a single-source run
+///
+/// The gate below is one pass of `Copy`-byte comparisons that stops as soon as
+/// both witnesses are known to have spoken, and it allocates nothing. A run
+/// with one source walks the ladder once and returns; the index, the pairing
+/// and every `String` here are past that return.
+fn detect_source_disagreement(messages: &[SipMessage], diag: &mut SignalingDiagnosis) {
+    use crate::capture::parse::InputOrigin;
+
+    // Both witnesses must have carried at least one message of THIS call.
+    //
+    // Gating on the run instead ("the process was started with -d and -L")
+    // was rejected: the BPF filter a composite run wants is media-only —
+    // `composite_filter_warning` pushes the operator there — so the wire
+    // carries no signaling at all and EVERY call would come out mirror-only.
+    // A finding on every call is a finding on none. The cost of the weaker
+    // gate is stated on `SourceDisagreement`: a call one witness never saw at
+    // all says nothing here.
+    let mut saw_mirror = false;
+    let mut saw_wire = false;
+    for m in messages {
+        match m.input_origin {
+            Some(InputOrigin::Hep) => saw_mirror = true,
+            Some(InputOrigin::Wire) => saw_wire = true,
+            // Uprobe has no counterpart to be compared against — `-d` beats
+            // `--uprobe-tls` and `--uprobe-tls` beats `-L`, so it never
+            // composes with another source — and an absent origin is "nobody
+            // said" rather than "the same source as the last one".
+            _ => {}
+        }
+        if saw_mirror && saw_wire {
+            break;
+        }
+    }
+    if !(saw_mirror && saw_wire) {
+        return;
+    }
+
+    // Both witnesses' copies under one content-derived key. The two vectors
+    // hold message indices in capture order within each source, which is the
+    // only thing arrival order decides here: WHICH of N identical
+    // retransmissions is called the counterpart of which. It cannot make
+    // either source authoritative.
+    let mut paired: std::collections::HashMap<MessageIdentity<'_>, (Vec<usize>, Vec<usize>)> =
+        std::collections::HashMap::new();
+    for (i, m) in messages.iter().enumerate() {
+        let entry = match m.input_origin {
+            Some(InputOrigin::Hep) => &mut paired.entry(message_identity(m)).or_default().0,
+            Some(InputOrigin::Wire) => &mut paired.entry(message_identity(m)).or_default().1,
+            _ => continue,
+        };
+        entry.push(i);
+    }
+
+    let mut agreed = 0usize;
+    let mut mirror_only: Vec<UnwitnessedMessage> = Vec::new();
+    let mut wire_only: Vec<UnwitnessedMessage> = Vec::new();
+    let mut sdp_differs: Vec<SdpDivergence> = Vec::new();
+
+    for (mirror_copies, wire_copies) in paired.into_values() {
+        // Pair by count. Three mirrored transmissions against two on the wire
+        // is ONE message the wire never carried, not three — reporting the two
+        // that did arrive as gaps would turn every retransmitting call into a
+        // disagreement.
+        let matched = mirror_copies.len().min(wire_copies.len());
+        agreed += matched;
+
+        // Property 3 from the doc above: one expression, both witnesses.
+        let surplus = |copies: &[usize]| -> Vec<UnwitnessedMessage> {
+            copies[matched..]
+                .iter()
+                .map(|&i| UnwitnessedMessage {
+                    summary: message_summary(&messages[i]),
+                    index: i,
+                })
+                .collect()
+        };
+        mirror_only.extend(surplus(&mirror_copies));
+        wire_only.extend(surplus(&wire_copies));
+
+        for k in 0..matched {
+            let (mirror_index, wire_index) = (mirror_copies[k], wire_copies[k]);
+            let mirror = sdp_media_endpoints(&messages[mirror_index]);
+            let wire = sdp_media_endpoints(&messages[wire_index]);
+            if mirror != wire {
+                sdp_differs.push(SdpDivergence {
+                    summary: message_summary(&messages[mirror_index]),
+                    mirror,
+                    wire,
+                    mirror_index,
+                    wire_index,
+                });
+            }
+        }
+    }
+
+    // Agreement is not a finding. Emitting an object for every matching call
+    // would put a `signaling_diagnosis` on every clean dialog of a composite
+    // run, which is the shape the module's own omission rule exists to avoid.
+    if mirror_only.is_empty() && wire_only.is_empty() && sdp_differs.is_empty() {
+        return;
+    }
+
+    // A `HashMap` iterates in an order the allocator picks, so without this
+    // two runs over the same capture would render the same finding in
+    // different orders and a golden test would flap.
+    mirror_only.sort_unstable_by_key(|item| item.index);
+    wire_only.sort_unstable_by_key(|item| item.index);
+    sdp_differs.sort_unstable_by_key(|d| d.mirror_index.min(d.wire_index));
+
+    let mut evidence: Vec<usize> = mirror_only
+        .iter()
+        .chain(wire_only.iter())
+        .map(|item| item.index)
+        .chain(
+            sdp_differs
+                .iter()
+                .flat_map(|d| [d.mirror_index, d.wire_index]),
+        )
+        .collect();
+    evidence.sort_unstable();
+    evidence.dedup();
+
+    let mut said: Vec<String> = Vec::new();
+    if !mirror_only.is_empty() {
+        said.push(format!(
+            "the HEP mirror reported {} the wire never carried ({})",
+            plural_messages(mirror_only.len()),
+            name_a_few(&mirror_only)
+        ));
+    }
+    if !wire_only.is_empty() {
+        said.push(format!(
+            "the wire carried {} the mirror never reported ({})",
+            plural_messages(wire_only.len()),
+            name_a_few(&wire_only)
+        ));
+    }
+    for d in sdp_differs.iter().take(HINT_ITEM_CAP) {
+        said.push(format!(
+            "{} #{} advertises {} on the mirror and {} on the wire",
+            d.summary,
+            d.mirror_index,
+            endpoints_or_none(&d.mirror),
+            endpoints_or_none(&d.wire)
+        ));
+    }
+    diag.hints.push(format!(
+        "Capture sources disagree about this call: {}. {} matched on both. HEP is \
+         the proxy's account of what it did and the wire is what left the box, so \
+         neither is the reference — read them against each other. A message either \
+         capture dropped looks the same as one a source never carried.",
+        said.join("; "),
+        plural_messages(agreed)
+    ));
+
+    diag.source_disagreement = Some(SourceDisagreement {
+        agreed,
+        mirror_only,
+        wire_only,
+        sdp_differs,
+        evidence,
+    });
+}
+
+/// `1 message` / `4 messages`, so a hint never reads "1 messages".
+fn plural_messages(n: usize) -> String {
+    if n == 1 {
+        "1 message".to_string()
+    } else {
+        format!("{n} messages")
+    }
 }
 
 /// Elapsed seconds between two messages, by index.
@@ -2505,6 +2911,461 @@ mod tests {
         assert!(
             hint.contains("route") && hint.contains("powered off"),
             "the fix is routing, addressing or the host itself: {hint}"
+        );
+    }
+
+    // -- detection 9: the two witnesses disagree --------------------------
+    //
+    // SRC2. HEP reports what the proxy BELIEVES it did; the wire reports what
+    // actually left the box. SRC1 put both sources in one process and stage 2
+    // tagged every fact with the source that produced it — and then nothing
+    // compared them, so the disagreement that makes two witnesses worth
+    // having was the one thing sipnab could not say.
+
+    /// A message stamped with the capture source that delivered it, which is
+    /// the only input detection 9 has that the other eight do not.
+    fn from_source(raw: &str, origin: crate::capture::parse::InputOrigin) -> SipMessage {
+        let mut m = msg(raw);
+        m.input_origin = Some(origin);
+        m
+    }
+
+    /// Parse CRLF-exact fixture text and stamp its source.
+    ///
+    /// [`msg`] rewrites every `\n` to `\r\n`, which is what makes the
+    /// header-only fixtures readable — but an SDP body has to be written with
+    /// real line endings for `Content-Length` to be the length the parser
+    /// measures, and rewriting those would double every CR.
+    fn msg_crlf(raw: &str, origin: crate::capture::parse::InputOrigin) -> SipMessage {
+        let ts =
+            chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid fixture timestamp");
+        let mut m = parse_sip(
+            raw.as_bytes(),
+            ts,
+            SRC,
+            DST,
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("fixture parses");
+        m.input_origin = Some(origin);
+        m
+    }
+
+    /// An INVITE whose SDP advertises `ip:port` — the fact the two witnesses
+    /// are made to disagree about, because a rewritten media address is the
+    /// disagreement an operator can act on.
+    fn invite_offering(branch: &str, cseq: u32, ip: &str, port: u16) -> String {
+        let sdp = format!(
+            "v=0\r\n\
+             o=- 1 1 IN IP4 {ip}\r\n\
+             s=-\r\n\
+             c=IN IP4 {ip}\r\n\
+             t=0 0\r\n\
+             m=audio {port} RTP/AVP 0\r\n\
+             a=rtpmap:0 PCMU/8000\r\n"
+        );
+        format!(
+            "INVITE sip:b@example.com SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch={branch}\r\n\
+             From: <sip:a@example.com>;tag=1\r\n\
+             To: <sip:b@example.com>\r\n\
+             Call-ID: c1@example.com\r\n\
+             CSeq: {cseq} INVITE\r\n\
+             Content-Type: application/sdp\r\n\
+             Content-Length: {len}\r\n\
+             \r\n\
+             {sdp}",
+            len = sdp.len()
+        )
+    }
+
+    /// **Mirror-only.** A message the proxy mirrored and the wire never
+    /// carried is a proxy that believes it sent something it did not.
+    #[test]
+    fn a_message_only_the_mirror_reported_is_named_as_mirror_only() {
+        use crate::capture::parse::InputOrigin;
+        let d = diagnose_signaling(&[
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire),
+            // The proxy says it answered. Nothing left the box.
+            from_source(&response(200, "OK", ""), InputOrigin::Hep),
+        ]);
+        let s = d
+            .source_disagreement
+            .expect("a mirrored 200 the wire never carried is the finding");
+        assert_eq!(
+            s.agreed, 1,
+            "the INVITE arrived on both witnesses and must pair"
+        );
+        assert_eq!(s.mirror_only.len(), 1, "one message, not the whole call");
+        assert_eq!(s.mirror_only[0].index, 2, "the mirrored 200 OK");
+        assert!(
+            s.mirror_only[0].summary.contains("200"),
+            "a report pasted into a ticket has no message list to join against: {:?}",
+            s.mirror_only[0].summary
+        );
+        assert!(
+            s.wire_only.is_empty(),
+            "the wire carried nothing the mirror missed"
+        );
+        assert_eq!(
+            s.evidence,
+            vec![2],
+            "the report surfaces render evidence with the machinery the other \
+             eight detections use; an empty one renders nothing"
+        );
+    }
+
+    /// **Wire-only.** A message on the wire the mirror never reported is
+    /// tracing that is lying to its operator: the box did something its own
+    /// trace does not admit to.
+    #[test]
+    fn a_message_only_the_wire_carried_is_named_as_wire_only() {
+        use crate::capture::parse::InputOrigin;
+        let d = diagnose_signaling(&[
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire),
+            from_source(&response(486, "Busy Here", ""), InputOrigin::Wire),
+        ]);
+        let s = d
+            .source_disagreement
+            .expect("a 486 on the wire the mirror never reported is the finding");
+        assert_eq!(s.wire_only.len(), 1);
+        assert_eq!(s.wire_only[0].index, 2);
+        assert!(
+            s.wire_only[0].summary.contains("486"),
+            "got {:?}",
+            s.wire_only[0].summary
+        );
+        assert!(s.mirror_only.is_empty());
+    }
+
+    /// **Differing in SDP.** The same message on both witnesses advertising
+    /// different media endpoints is a rewrite — sometimes the SBC doing its
+    /// job, sometimes the bug. Both addresses are reported, because which of
+    /// those it is cannot be decided here.
+    #[test]
+    fn matched_messages_whose_sdp_differs_report_both_addresses() {
+        use crate::capture::parse::InputOrigin;
+        let d = diagnose_signaling(&[
+            msg_crlf(
+                &invite_offering("z9hG4bK1", 1, "198.51.100.7", 20000),
+                InputOrigin::Hep,
+            ),
+            msg_crlf(
+                &invite_offering("z9hG4bK1", 1, "203.0.113.9", 30000),
+                InputOrigin::Wire,
+            ),
+        ]);
+        let s = d
+            .source_disagreement
+            .expect("two accounts of one message naming two media sockets");
+        assert_eq!(
+            s.agreed, 1,
+            "they are the same message and must pair — a rewrite is not a gap"
+        );
+        assert_eq!(s.sdp_differs.len(), 1);
+        assert_eq!(s.sdp_differs[0].mirror, vec!["audio 198.51.100.7:20000"]);
+        assert_eq!(s.sdp_differs[0].wire, vec!["audio 203.0.113.9:30000"]);
+        assert!(
+            s.mirror_only.is_empty() && s.wire_only.is_empty(),
+            "neither copy is missing; they disagree about content"
+        );
+    }
+
+    /// **Agreement is not a finding.** Two witnesses that say the same thing
+    /// are the healthy case, and a diagnosis object on every clean call in a
+    /// composite run is how a finding becomes noise.
+    #[test]
+    fn two_witnesses_that_agree_on_every_message_report_nothing() {
+        use crate::capture::parse::InputOrigin;
+        let d = diagnose_signaling(&[
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire),
+            from_source(&response(200, "OK", ""), InputOrigin::Hep),
+            from_source(&response(200, "OK", ""), InputOrigin::Wire),
+        ]);
+        assert!(
+            d.source_disagreement.is_none(),
+            "the two accounts match; there is nothing to report"
+        );
+        assert!(d.is_empty(), "and the whole diagnosis stays clean");
+    }
+
+    /// **A single-source run reports nothing new.** One witness has no second
+    /// account to be checked against, so every message would be "only this
+    /// source" — the whole call, reported as a finding, for every call.
+    #[test]
+    fn a_single_source_run_reports_no_source_disagreement() {
+        use crate::capture::parse::InputOrigin;
+        for origin in [InputOrigin::Wire, InputOrigin::Hep, InputOrigin::Uprobe] {
+            let d = diagnose_signaling(&[
+                from_source(&invite("z9hG4bK1", 1), origin),
+                from_source(&response(486, "Busy Here", ""), origin),
+            ]);
+            assert!(
+                d.source_disagreement.is_none(),
+                "{origin}: one witness cannot disagree with itself"
+            );
+        }
+    }
+
+    /// **An absent origin is "nobody said", never "the same source".**
+    ///
+    /// The half that can rot is the mixed one. A dialog with no origins at all
+    /// stays silent under any defaulting rule, because every message would
+    /// default to the SAME witness; it is a message with no origin standing
+    /// beside one that has that catches `unwrap_or_default()`, which would
+    /// read a hand-built message as something seen on a wire.
+    #[test]
+    fn messages_with_no_recorded_origin_report_nothing() {
+        let d = diagnose_signaling(&[msg(&invite("z9hG4bK1", 1)), msg(&response(200, "OK", ""))]);
+        assert!(
+            d.source_disagreement.is_none(),
+            "no origins, nothing to compare"
+        );
+        assert!(d.is_empty());
+
+        let mixed = diagnose_signaling(&[
+            from_source(
+                &invite("z9hG4bK1", 1),
+                crate::capture::parse::InputOrigin::Hep,
+            ),
+            msg(&response(486, "Busy Here", "")),
+        ]);
+        assert!(
+            mixed.source_disagreement.is_none(),
+            "a message no source claimed is not evidence that the OTHER source \
+             carried it"
+        );
+    }
+
+    /// **The trap SRC2 names.** The HEP mirror is usually FIRST — the proxy
+    /// mirrors as it processes, while the wire copy takes a network hop — so
+    /// any rule shaped "first one wins" would quietly make the proxy's account
+    /// the truth that the wire capture exists to check.
+    ///
+    /// Both halves asserted, because a comparison can go wrong in two
+    /// directions: the paired copies must report the same per-source values
+    /// whichever arrived first, and a gap must stay on the side it belongs to.
+    #[test]
+    fn the_mirror_arriving_first_does_not_make_it_the_reference() {
+        use crate::capture::parse::InputOrigin;
+        let mirror = msg_crlf(
+            &invite_offering("z9hG4bK1", 1, "198.51.100.7", 20000),
+            InputOrigin::Hep,
+        );
+        let wire = msg_crlf(
+            &invite_offering("z9hG4bK1", 1, "203.0.113.9", 30000),
+            InputOrigin::Wire,
+        );
+
+        let first = diagnose_signaling(&[mirror.clone(), wire.clone()])
+            .source_disagreement
+            .expect("mirror first");
+        let second = diagnose_signaling(&[wire, mirror])
+            .source_disagreement
+            .expect("wire first");
+
+        assert_eq!(
+            first.sdp_differs[0].mirror, second.sdp_differs[0].mirror,
+            "the mirror's endpoints are the mirror's whichever copy arrived first"
+        );
+        assert_eq!(
+            first.sdp_differs[0].wire, second.sdp_differs[0].wire,
+            "and the wire's are the wire's"
+        );
+        assert_eq!(
+            first.sdp_differs[0].mirror,
+            vec!["audio 198.51.100.7:20000"]
+        );
+        assert_eq!(first.sdp_differs[0].wire, vec!["audio 203.0.113.9:30000"]);
+
+        // The second direction: a message only the wire carried, with the
+        // mirror's copies placed before it and after it. An early mirror must
+        // not absorb it into a match, and a late mirror must not turn it into
+        // a mirror-only gap.
+        let inv_h = from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep);
+        let inv_w = from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire);
+        let busy_w = from_source(&response(486, "Busy Here", ""), InputOrigin::Wire);
+        for (label, ladder) in [
+            (
+                "mirror first",
+                vec![inv_h.clone(), inv_w.clone(), busy_w.clone()],
+            ),
+            ("mirror last", vec![busy_w, inv_w, inv_h]),
+        ] {
+            let s = diagnose_signaling(&ladder)
+                .source_disagreement
+                .unwrap_or_else(|| panic!("{label}: the 486 is on one witness only"));
+            assert_eq!(s.wire_only.len(), 1, "{label}: the wire carried it");
+            assert!(
+                s.mirror_only.is_empty(),
+                "{label}: the mirror is silent, not surplus"
+            );
+        }
+    }
+
+    /// **Only the pair sipnab can actually produce is compared.** A uprobe
+    /// source never composes with another today — `-d` beats `--uprobe-tls`
+    /// and `--uprobe-tls` beats `-L`, both with a warning — so pairing it
+    /// against the wire would be untested code answering a question no run
+    /// can ask.
+    #[test]
+    fn a_uprobe_source_is_not_compared_against_the_wire() {
+        use crate::capture::parse::InputOrigin;
+        let d = diagnose_signaling(&[
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Uprobe),
+            from_source(&response(486, "Busy Here", ""), InputOrigin::Wire),
+        ]);
+        assert!(d.source_disagreement.is_none());
+    }
+
+    /// **Copies pair by count.** Three mirrored transmissions against two on
+    /// the wire is ONE message the wire never carried, not three: the two that
+    /// did arrive are matches, and reporting them as gaps would inflate every
+    /// retransmitting call into a disagreement.
+    #[test]
+    fn a_retransmission_the_wire_missed_is_one_gap_not_three() {
+        use crate::capture::parse::InputOrigin;
+        let d = diagnose_signaling(&[
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire),
+        ]);
+        let s = d
+            .source_disagreement
+            .expect("three mirrored copies against two on the wire");
+        assert_eq!(s.agreed, 2, "two transmissions reached both witnesses");
+        assert_eq!(s.mirror_only.len(), 1, "one surplus copy, not three");
+    }
+
+    /// **A body one witness dropped is a disagreement, not a blank.** The two
+    /// copies are the same message, so they pair; one carried SDP and the
+    /// other did not, which is exactly the case a comparison written as "diff
+    /// the endpoints when both have them" would render as agreement.
+    #[test]
+    fn an_sdp_only_one_witness_carried_is_reported_as_a_difference() {
+        use crate::capture::parse::InputOrigin;
+        let d = diagnose_signaling(&[
+            msg_crlf(
+                &invite_offering("z9hG4bK1", 1, "198.51.100.7", 20000),
+                InputOrigin::Hep,
+            ),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire),
+        ]);
+        let s = d
+            .source_disagreement
+            .expect("one copy offered media and the other offered none");
+        assert_eq!(s.agreed, 1, "same message, so it pairs");
+        assert_eq!(s.sdp_differs[0].mirror, vec!["audio 198.51.100.7:20000"]);
+        assert!(
+            s.sdp_differs[0].wire.is_empty(),
+            "the wire's copy carried no SDP at all: {:?}",
+            s.sdp_differs[0].wire
+        );
+        let hint = d
+            .hints
+            .iter()
+            .find(|h| h.starts_with("Capture sources disagree"))
+            .expect("rendered");
+        assert!(
+            hint.contains("no SDP on the wire"),
+            "an empty list must render as a statement, not as a blank: {hint}"
+        );
+    }
+
+    /// **The hint stops naming messages; the finding does not.** A hint is one
+    /// line in a TUI row, a ticket and an MCP payload. A call whose mirror ran
+    /// fifty messages ahead of its wire would otherwise render fifty summaries
+    /// into all three, and the reader who wants every one has the structured
+    /// finding.
+    #[test]
+    fn the_hint_caps_the_messages_it_names_and_says_how_many_it_cut() {
+        use crate::capture::parse::InputOrigin;
+        let mut ladder = vec![
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire),
+        ];
+        for code in [180u16, 181, 182, 183, 199] {
+            ladder.push(from_source(
+                &response(code, "Ringing", ""),
+                InputOrigin::Hep,
+            ));
+        }
+        let d = diagnose_signaling(&ladder);
+        let s = d.source_disagreement.expect("five mirrored-only responses");
+        assert_eq!(s.mirror_only.len(), 5, "the finding carries all of them");
+        let hint = d
+            .hints
+            .iter()
+            .find(|h| h.starts_with("Capture sources disagree"))
+            .expect("rendered");
+        assert!(
+            hint.contains("and 2 more"),
+            "the hint names three and counts the rest: {hint}"
+        );
+        assert!(
+            !hint.contains("199"),
+            "the fifth is past the cap and must not be named: {hint}"
+        );
+    }
+
+    /// **`is_empty` counts it.** A dialog whose only finding is that its two
+    /// witnesses disagree must not render as clean — every surface omits the
+    /// whole object on `is_empty`, so forgetting this one line would make the
+    /// finding invisible on every door at once.
+    #[test]
+    fn a_source_disagreement_alone_makes_the_diagnosis_non_empty() {
+        use crate::capture::parse::InputOrigin;
+        let d = diagnose_signaling(&[
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep),
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire),
+            from_source(&response(200, "OK", ""), InputOrigin::Hep),
+        ]);
+        assert!(
+            d.final_failure.is_none()
+                && d.abandoned.is_none()
+                && d.retransmissions.is_none()
+                && d.ack_missing.is_none(),
+            "nothing else fired, so is_empty can only be reading detection 9"
+        );
+        assert!(!d.is_empty(), "the disagreement is a finding");
+    }
+
+    /// **The hint names both witnesses and neither as the truth.** The plain
+    /// line is what MCP's `diagnose_call` and the TUI render, and a sentence
+    /// shaped "the wire is missing X" would hand the proxy's account the
+    /// authority this whole detection exists to withhold.
+    #[test]
+    fn the_disagreement_hint_names_both_witnesses() {
+        use crate::capture::parse::InputOrigin;
+        let d = diagnose_signaling(&[
+            msg_crlf(
+                &invite_offering("z9hG4bK1", 1, "198.51.100.7", 20000),
+                InputOrigin::Hep,
+            ),
+            msg_crlf(
+                &invite_offering("z9hG4bK1", 1, "203.0.113.9", 30000),
+                InputOrigin::Wire,
+            ),
+        ]);
+        let hint = d
+            .hints
+            .iter()
+            .find(|h| h.starts_with("Capture sources disagree"))
+            .expect("one plain-language line per detection");
+        assert!(
+            hint.contains("198.51.100.7:20000") && hint.contains("203.0.113.9:30000"),
+            "both accounts, side by side: {hint}"
+        );
+        assert!(
+            hint.contains("mirror") && hint.contains("wire"),
+            "each address attributed to the witness that gave it: {hint}"
         );
     }
 }

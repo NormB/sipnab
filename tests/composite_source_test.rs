@@ -47,6 +47,9 @@ use sipnab::sip::dialog_store::DialogStore;
 
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
+
+#[path = "support/schema.rs"]
+mod schema;
 use pcap_build::udp_frame;
 
 /// UDP, as both the HEP-mirrored signaling and the media are.
@@ -854,4 +857,261 @@ fn a_live_captured_stream_has_a_resolvable_first_frame() {
         round_trip, minted,
         "the text form and the in-memory form must be the same pointer"
     );
+}
+
+// ── SRC2: the two witnesses, compared ───────────────────────────────────
+//
+// Stage 2 tagged every fact with the source that produced it and stopped
+// there. HEP reports what the proxy BELIEVES it did; the wire reports what
+// actually left the box. Dan Jenkins put the reason plainly: "the whole point
+// is being able to see when opensips is doing something wrong, or ive told it
+// to do the wrong thing". A mirror produced by the suspect cannot answer that
+// question, which is what makes the two sources complementary rather than
+// redundant — and makes their DISAGREEMENT the finding.
+//
+// These tests drive the real pipeline, so they pin that the finding reaches
+// the surfaces an operator actually reads, not just the function that
+// computes it.
+
+/// The media socket the WIRE's copy advertises when the two accounts are made
+/// to disagree — a relay address the proxy's own copy never mentions.
+const RELAY_IP: [u8; 4] = [203, 0, 113, 77];
+const RELAY_PORT: u16 = 40000;
+
+/// A `200 OK` answering [`invite_with_sdp`], carrying no SDP of its own.
+fn ok_for(call_id: &str) -> Vec<u8> {
+    format!(
+        "SIP/2.0 200 OK\r\n\
+         Via: SIP/2.0/UDP 203.0.113.1:5060;branch=z9hG4bK-{call_id}\r\n\
+         From: <sip:alice@example.net>;tag=a1\r\n\
+         To: <sip:bob@example.net>;tag=b2\r\n\
+         Call-ID: {call_id}\r\n\
+         CSeq: 1 INVITE\r\n\
+         Content-Length: 0\r\n\
+         \r\n"
+    )
+    .into_bytes()
+}
+
+impl Mixed {
+    /// The text call report for the one dialog in the store — the surface an
+    /// operator pastes into a ticket.
+    fn call_report(&self) -> String {
+        let ds = self.dialogs.read();
+        let dialog = ds.iter().next().expect("one dialog was fed");
+        sipnab::output::generate_call_report(
+            dialog,
+            &[],
+            &sipnab::rtp::diagnosis::MediaDiagnosis::default(),
+            sipnab::output::ReportFormat::Text,
+        )
+    }
+
+    /// The dialog JSON `--json-dialogs`, `--call-report --json`, the REST
+    /// `/v1/dialogs/:call_id` route and MCP all render through.
+    fn dialog_json(&self) -> serde_json::Value {
+        let ds = self.dialogs.read();
+        let dialog = ds.iter().next().expect("one dialog was fed");
+        let raw = sipnab::output::dialog_to_json(
+            dialog,
+            &[],
+            &sipnab::rtp::diagnosis::MediaDiagnosis::default(),
+        );
+        serde_json::from_str(&raw).expect("dialog JSON parses")
+    }
+}
+
+/// **Mirror-only, end to end.** Both witnesses carry the INVITE — which is
+/// what licenses the comparison — and then the proxy mirrors an answer that
+/// never left the box.
+#[test]
+fn a_message_only_the_mirror_reported_reaches_the_report_and_the_json() {
+    let mut m = Mixed::new();
+    m.feed(&hep_packet_at(
+        invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT),
+        2001,
+        t0(),
+    ));
+    m.feed(&wire_sip(
+        &invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT),
+        t0() + chrono::Duration::milliseconds(4),
+    ));
+    m.feed(&hep_packet_at(
+        ok_for(CALL_ID),
+        2001,
+        t0() + chrono::Duration::milliseconds(9),
+    ));
+
+    let report = m.call_report();
+    assert!(
+        report.contains("Capture sources disagree"),
+        "the finding must reach the report an operator pastes into a ticket:\n{report}"
+    );
+    assert!(
+        report.contains("only the HEP mirror reported"),
+        "and must name WHICH witness reported it alone:\n{report}"
+    );
+
+    let json = m.dialog_json();
+    let sd = &json["signaling_diagnosis"]["source_disagreement"];
+    assert_eq!(sd["agreed"], 1, "the INVITE reached both witnesses: {sd}");
+    assert_eq!(
+        sd["mirror_only"][0]["index"], 2,
+        "the mirrored 200 OK, by index into the dialog's own ladder: {sd}"
+    );
+    assert!(
+        sd["wire_only"]
+            .as_array()
+            .expect("wire_only is an array")
+            .is_empty(),
+        "the wire carried nothing the mirror missed: {sd}"
+    );
+}
+
+/// **Differing in SDP, end to end.** The proxy's account names one media
+/// socket and the wire another. Both travel; neither is rendered as the
+/// truth, because a rewrite here is sometimes the SBC doing its job and
+/// sometimes the bug.
+#[test]
+fn an_sdp_rewritten_between_the_two_witnesses_reaches_the_dialog_json() {
+    let mut m = Mixed::new();
+    m.feed(&hep_packet_at(
+        invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT),
+        2001,
+        t0(),
+    ));
+    m.feed(&wire_sip(
+        &invite_with_sdp(CALL_ID, RELAY_IP, RELAY_PORT),
+        t0() + chrono::Duration::milliseconds(4),
+    ));
+
+    let json = m.dialog_json();
+    let d = &json["signaling_diagnosis"]["source_disagreement"]["sdp_differs"][0];
+    assert_eq!(
+        d["mirror"][0], "audio 198.51.100.7:20000",
+        "the proxy's account: {d}"
+    );
+    assert_eq!(
+        d["wire"][0], "audio 203.0.113.77:40000",
+        "what left the box: {d}"
+    );
+
+    let report = m.call_report();
+    assert!(
+        report.contains("advertises audio 198.51.100.7:20000 on the mirror")
+            && report.contains("audio 203.0.113.77:40000 on the wire"),
+        "both accounts side by side, each attributed:\n{report}"
+    );
+}
+
+/// **A single-source run reports nothing new.** The whole detection exists for
+/// a composite run; one witness cannot disagree with itself, and a run with
+/// one source must serialize exactly as it did before SRC2.
+#[test]
+fn a_single_source_run_carries_no_source_disagreement() {
+    for label in ["wire only", "mirror only"] {
+        let mut m = Mixed::new();
+        let invite = invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT);
+        let ok = ok_for(CALL_ID);
+        if label == "wire only" {
+            m.feed(&wire_sip(&invite, t0()));
+            m.feed(&wire_sip(&ok, t0() + chrono::Duration::milliseconds(9)));
+        } else {
+            m.feed(&hep_packet_at(invite, 2001, t0()));
+            m.feed(&hep_packet_at(
+                ok,
+                2001,
+                t0() + chrono::Duration::milliseconds(9),
+            ));
+        }
+
+        assert!(
+            !m.call_report().contains("Capture sources disagree"),
+            "{label}: nothing to compare against"
+        );
+        let json = m.dialog_json();
+        assert!(
+            json["signaling_diagnosis"]["source_disagreement"].is_null(),
+            "{label}: absent, never null-and-checked: {}",
+            json["signaling_diagnosis"]
+        );
+    }
+}
+
+/// **A call one witness never saw at all says nothing, deliberately.**
+///
+/// This pins a documented limit rather than a wish. From inside such a call
+/// there is no way to tell a proxy that mirrored a phantom from a witness that
+/// was not watching that call's signaling — TLS it cannot decrypt, a BPF
+/// filter that excludes the port, a mirror not configured for that traffic.
+/// Guessing would put a finding on every call of a run whose wire filter is
+/// media-only, which is the filter `composite_filter_warning` pushes a
+/// composite run towards.
+#[test]
+fn a_whole_call_only_the_mirror_saw_is_not_reported_as_a_disagreement() {
+    let mut m = Mixed::new();
+    m.feed(&hep_packet_at(
+        invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT),
+        2001,
+        t0(),
+    ));
+    m.feed(&hep_packet_at(
+        ok_for(CALL_ID),
+        2001,
+        t0() + chrono::Duration::milliseconds(9),
+    ));
+    // The wire is busy with media for the same call, which is the composite
+    // deployment: it is watching, and it has no opinion about the signaling.
+    for seq in 0..5u16 {
+        m.feed(&wire_rtp_at(
+            PEER_IP,
+            PEER_PORT,
+            MEDIA_IP,
+            MEDIA_PORT,
+            seq,
+            t0() + chrono::Duration::seconds(1),
+        ));
+    }
+
+    assert_eq!(m.stream_count(), 1, "the media bound as it always did");
+    assert!(
+        m.dialog_json()["signaling_diagnosis"]["source_disagreement"].is_null(),
+        "a witness that carried no signaling for this call is silent, not a \
+         witness that contradicts the mirror"
+    );
+}
+
+/// **The schema and the emitted shape agree.** `--call-report --json`, the
+/// REST dialog routes and MCP all answer to
+/// `tests/schemas/call_report.schema.json`, which declares
+/// `additionalProperties: false` at every level. A field added to the finding
+/// and not to the schema therefore makes every composite run's JSON invalid,
+/// and a schema written for a shape the code never emits is a gate that can
+/// never fail — so this validates an instance that actually carries the
+/// finding, not a clean one.
+#[test]
+fn the_disagreement_json_validates_against_the_call_report_schema() {
+    let mut m = Mixed::new();
+    m.feed(&hep_packet_at(
+        invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT),
+        2001,
+        t0(),
+    ));
+    m.feed(&wire_sip(
+        &invite_with_sdp(CALL_ID, RELAY_IP, RELAY_PORT),
+        t0() + chrono::Duration::milliseconds(4),
+    ));
+    m.feed(&hep_packet_at(
+        ok_for(CALL_ID),
+        2001,
+        t0() + chrono::Duration::milliseconds(9),
+    ));
+
+    let json = m.dialog_json();
+    assert!(
+        !json["signaling_diagnosis"]["source_disagreement"].is_null(),
+        "the instance under validation must carry the finding: {json}"
+    );
+    let validator = schema::load_validator("call_report.schema.json");
+    schema::assert_valid(&validator, &json, "composite dialog JSON");
 }
