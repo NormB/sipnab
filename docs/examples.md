@@ -421,7 +421,7 @@ warns if you forget.
 
 **What you get that a single source cannot give you.** The two accounts are
 complementary rather than redundant, and their DISAGREEMENT is the finding.
-HEP reports what the proxy *believes* it did; the wire reports what actually
+HEP reports what the proxy *believes* it did. The wire reports what actually
 left the box. When the question is "is the proxy misbehaving, or did I
 configure it to", a mirror produced by the suspect cannot answer it — it is the
 same witness twice.
@@ -433,9 +433,9 @@ A composite run therefore reports, per call:
 | Seen by both | The proxy did what it says it did |
 | Mirror-only | The proxy believes it sent something the wire never carried |
 | Wire-only | Traffic left the box that the tracing never reported |
-| Differing SDP | Both saw the message and disagree about the media endpoint — both accounts are printed side by side |
+| Differing SDP | Both saw the message and disagree about the media endpoint, so the report carries both accounts side by side |
 
-Neither account is labelled expected or actual. Copies are paired by
+Neither account carries the label expected or actual. sipnab pairs copies by
 transaction identity ([RFC 3261 §17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3) and §17.2.3), never by arrival order,
 because the mirror usually arrives FIRST — the proxy mirrors as it processes
 while the wire copy takes a network hop, so any "first one wins" rule would

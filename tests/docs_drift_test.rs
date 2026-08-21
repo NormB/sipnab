@@ -2514,10 +2514,14 @@ fn no_documentation_table_repeats_a_row() {
     // SRC1 design. One file, not two: a design doc has no website mirror. It
     // counts from the moment it is TRACKED rather than written, which is why
     // this fires at `git add` and not when the file appeared.
+    // Raised 154 -> 157 by the engineering-notes section: website/content/
+    // notes/_index.md and two posts. Three files and not six -- notes are
+    // written for the website directly and have no docs/ source, which is the
+    // mirror relationship inverted from every entry above.
     assert_eq!(
         files.len(),
-        154,
-        "found {} tracked markdown files, expected 154. More is fine — bump \
+        157,
+        "found {} tracked markdown files, expected 157. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -2857,8 +2861,12 @@ fn no_documentation_table_repeats_a_row() {
         // mirror, the mirror-vs-wire finding table in docs/examples.md and the
         // cookbook generated from it, and the answer-surface table in
         // docs/architecture.md, which has no site mirror.
-        596,
-        "walked {tables} tables, expected 596. More is fine — bump this. FEWER \
+        //
+        // Raised 596 -> 597 by the release-comparison table in the engineering
+        // note on the 0.5.118 regression. One and not two: a note is written
+        // for the website directly and has no docs/ source to mirror.
+        597,
+        "walked {tables} tables, expected 597. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

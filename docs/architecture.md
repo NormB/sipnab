@@ -26,8 +26,8 @@ stores, none of them a second copy of the state.
 MCP is not a wrapper bolted over the CLI. It is a first-class reader
 ([`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs)) that takes the same read locks
 the TUI takes, which is why an agent can query a live capture while it is
-still running. No tool mutates the analysis; the write-back question and the
-reasons it stays closed are argued in
+still running. No tool mutates the analysis. For the write-back question and
+why it stays closed, see
 [`design/mcp-write-back.md`](design/mcp-write-back.md).
 
 The core is synchronous. Async (tokio) exists only at the edges, on one shared

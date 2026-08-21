@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}{{ section.title }} -- {{ config.title }}{% endblock title %}
+{% block description %}{{ section.description | default(value=config.description) }}{% endblock description %}
+{% block og_title %}{{ section.title }} -- {{ config.title }}{% endblock og_title %}
+{% block og_description %}{{ section.description | default(value=config.description) }}{% endblock og_description %}
+
+{% block content %}
+<div class="doc-layout">
+  <aside class="doc-sidebar" aria-label="Notes navigation">
+    <nav class="doc-nav" aria-label="All notes">
+      <div class="doc-nav-group">
+        <p class="doc-nav-group-title">Notes</p>
+        <ul class="doc-nav-list">
+          {% for p in section.pages %}
+          <li><a class="doc-nav-link" href="{{ p.permalink }}">{{ p.title }}</a></li>
+          {% endfor %}
+        </ul>
+      </div>
+    </nav>
+  </aside>
+
+  <article class="doc-content">
+    <header class="doc-header">
+      <p class="doc-kicker">Engineering notes</p>
+      <h1>{{ section.title }}</h1>
+      {% if section.description %}
+      <p class="doc-lead">{{ section.description }}</p>
+      {% endif %}
+    </header>
+
+    {{ section.content | safe }}
+
+    <ul class="note-list">
+      {% for p in section.pages %}
+      <li class="note-list-item">
+        <h2><a href="{{ p.permalink }}">{{ p.title }}</a></h2>
+        {% if p.date %}<p class="note-date"><time datetime="{{ p.date }}">{{ p.date | date(format="%e %B %Y") }}</time></p>{% endif %}
+        {% if p.description %}<p>{{ p.description }}</p>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </article>
+</div>
+{% endblock content %}

@@ -10,6 +10,52 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Offline reconstruction was 27% slower than this project measured, for ten
+  releases.** `is_merged` — the probe that decides whether a capture is a
+  merged pcapng — read the ENTIRE file into memory with `std::fs::read` and
+  then rejected it on the first four bytes. Three call sites run it before a
+  single packet is read, so every offline run over an ordinary pcap loaded the
+  whole capture, threw it away, and only then started work. The doc comment
+  directly above it promised the opposite: "Cheap: reads interface description
+  blocks only ... costs one short read."
+
+  Measured on the 128 MB fixed-state corpus at four cores: 3.29M packets per
+  second on 0.5.117, 2.40M from 0.5.118 onward, 3.26M with this fix. Resident
+  memory 97 -> 143 -> 97 MiB. Every release from 0.5.108 to 0.5.117 measures
+  ~3.26M; 0.5.118 is the first that does not.
+
+  The magic is now checked against four bytes before anything else is read. A
+  pcapng still reads in full, because interface blocks may sit anywhere in the
+  section and a bounded guess that fell short would mis-detect one.
+
+- **The benchmark gate could not see it.** `bench/regression-gate.sh` exists to
+  catch exactly this and passed on every release from 0.5.118 to 0.5.121,
+  because `bench/baseline.json` still recorded 0.5.104's 2.28M. 0.5.108 lifted
+  the real figure to 3.30M by mapping the capture file; `docs/benchmarks.md`
+  was updated that day and the baseline was not. A drop to 2.40M is 105% of a
+  four-release-old baseline, so a 20% gate had silently become a 31% one — the
+  failure that file's own comment warns about in writing. The baseline is now
+  3.25M, the lowest of three replicates, giving a 2.60M floor that the
+  regression trips.
+
+### Added
+
+- **The write-verb table in `docs/mcp-protocol.md` was missing its two
+  highest-privilege entries.** The security section said "All 32 ...
+  Twenty-seven are `readOnlyHint: true` ... These five are not" while the
+  server registered 35 tools with 7 write verbs, and the table omitted
+  `start_tls_capture` and `stop_tls_capture` — the two that attach uprobes to a
+  process that is not sipnab. An auditor reading it got a list of write verbs
+  without the two carrying the largest blast radius. A gate now derives the
+  totals and the table's membership from `src/mcp/server.rs`.
+
+- Documentation for the late-keylog recovery that shipped in 0.5.120 and was
+  never written down, including the bounds on what it holds (4 MiB, 16 records
+  per direction, 5 s), and for 0.5.121's mirror-vs-wire disagreement report,
+  which existed only in a design note.
+
 ## [0.5.121] - 2026-08-21
 
 ### Added

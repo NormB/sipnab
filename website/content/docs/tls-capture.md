@@ -204,8 +204,8 @@ and `--keylog-watch` already do. A run that recovered records says so:
 TLS late decrypt: recovered 3 record(s) that arrived before their keys
 ```
 
-The hold is bounded, because a peer whose keys never arrive would otherwise
-grow it without limit:
+The hold has limits, because a peer whose keys never arrive would otherwise
+grow it without end:
 
 | Bound | Value |
 |---|---|

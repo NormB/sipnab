@@ -4461,6 +4461,18 @@ fn every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist() {
             "{{ section.content | safe }}",
             "HTML Zola rendered from a committed _index.md, as page.html",
         ),
+        (
+            "notes.html",
+            "{{ section.content | safe }}",
+            "HTML Zola rendered from the committed notes/_index.md, as \
+             section.html. Notes carry no user-submitted content: every one is \
+             a file in this repository",
+        ),
+        (
+            "note.html",
+            "{{ page.content | safe }}",
+            "HTML Zola rendered from a committed note .md, as page.html",
+        ),
     ];
 
     // `| safe`, `|safe`, and Tera's block form. Not a search for the word
