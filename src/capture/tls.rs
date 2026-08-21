@@ -194,6 +194,10 @@ pub struct TlsRecordReassembler {
         Vec<u8>,
         ahash::RandomState,
     >,
+    /// The undecoded tail of the last chunk, per `(src, dst)` direction.
+    ///
+    /// Insertion-ordered so eviction can drop the least-recently-updated
+    /// direction rather than an arbitrary one.
     leftover: indexmap::IndexMap<
         (std::net::SocketAddr, std::net::SocketAddr),
         Vec<u8>,
@@ -265,6 +269,10 @@ impl TlsRecordReassembler {
         out
     }
 
+    /// Feed one more chunk of ciphertext for the `(src, dst)` direction,
+    /// returning every complete TLS record now assembled (zero or more).
+    /// Any trailing incomplete bytes are held for the next call on the same
+    /// stream rather than discarded.
     pub fn insert(
         &mut self,
         src: std::net::SocketAddr,

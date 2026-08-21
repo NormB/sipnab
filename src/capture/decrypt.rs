@@ -598,6 +598,21 @@ const MAX_PENDING_PER_CONN: usize = 32;
 /// decrypts or the budget evicts it.
 const REWIND_BUDGET_BYTES: usize = 4 * 1024 * 1024;
 
+/// How far behind the newest packet a held record may be before it is retired.
+///
+/// The race this hold exists for is tens of milliseconds -- measured at 56 ms
+/// on a live trunk. Five seconds is two orders of magnitude of slack and still
+/// bounds the pathological case: without it, ciphertext that will never open
+/// (a handshake flight, an unrelated HTTPS flow, a cipher sipnab refuses) is
+/// re-swept against every session on every key load, forever, on the single
+/// consumer thread.
+const REWIND_MAX_AGE_SECS: i64 = 5;
+
+/// Trial decryptions one sweep may attempt before stopping and resuming at the
+/// next key load. A full hold is 4096 directions x 16 records against every
+/// session; unbounded, one keylog line could stall the packet loop.
+const REWIND_TRIALS_PER_SWEEP: usize = 2048;
+
 /// One ApplicationData record that no session could open yet, kept so it can
 /// be tried again after keys load.
 ///
@@ -715,6 +730,23 @@ pub struct TlsDecryptor {
     /// Generation the last replay ran at, so a caller can ask "anything new?"
     /// without tracking it itself.
     last_rewind_generation: u64,
+    /// Newest capture timestamp seen, for ageing the hold.
+    ///
+    /// Capture time, not wall clock: reading a file recorded last week would
+    /// otherwise retire every held record instantly.
+    newest_seen: Option<chrono::DateTime<chrono::Utc>>,
+    /// Whether more keys can still arrive after a record is seen.
+    ///
+    /// False for the ordinary `-I capture.pcap --keylog keys.log` run: the file
+    /// is read once at startup and nothing will ever add to it, so a record
+    /// that cannot be opened now can never be opened later and holding it is
+    /// pure cost -- a record clone each, up to the whole budget, for a replay
+    /// that by construction can never recover anything. Only a watched keylog,
+    /// an inherited descriptor, or DSB blocks embedded in the capture can
+    /// change the key set mid-run. The decryptor cannot tell these apart from
+    /// the inside (a static file also has a `keylog_source`), so the caller
+    /// that chose the source says so.
+    keys_may_still_arrive: bool,
     /// Records dropped because the budget was full.
     rewind_evicted: u64,
     /// Records a rewind recovered. Both counters are reported: a rewind that
@@ -774,6 +806,8 @@ impl TlsDecryptor {
             rewind_bytes: 0,
             keylog_generation: 0,
             last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
@@ -791,6 +825,9 @@ impl TlsDecryptor {
             sessions_with_keys: self.sessions.len(),
             app_data_records: self.app_data_records,
             decrypted_records: self.decrypted_count,
+            late_recovered: self.rewind_recovered,
+            late_evicted: self.rewind_evicted,
+            late_still_held: self.rewind_pending.values().map(|q| q.len() as u64).sum(),
         }
     }
 
@@ -1307,6 +1344,15 @@ impl TlsDecryptor {
         dst: SocketAddr,
         timestamp: chrono::DateTime<chrono::Utc>,
     ) {
+        // The capture clock advances whether or not anything is held, so a
+        // run that stops holding still ages what it already has.
+        if self.newest_seen.is_none_or(|n| timestamp > n) {
+            self.newest_seen = Some(timestamp);
+        }
+        // Nothing to wait for, so nothing to hold. See `keys_may_still_arrive`.
+        if !self.keys_may_still_arrive {
+            return;
+        }
         let cost = record.payload.len();
         // A single record larger than the whole budget is not held: evicting
         // everything to make room for one that may never open trades a
@@ -1389,12 +1435,30 @@ impl TlsDecryptor {
         > = IndexMap::new();
         let mut held_bytes = 0usize;
 
+        let cutoff = self
+            .newest_seen
+            .map(|n| n - chrono::Duration::seconds(REWIND_MAX_AGE_SECS));
+        let mut trials = 0usize;
+
         let drained: Vec<(
             (SocketAddr, SocketAddr),
             std::collections::VecDeque<PendingRecord>,
         )> = self.rewind_pending.drain(..).collect();
         for (dir, queue) in drained {
             for item in queue {
+                // Too old to still be waiting on a key: retire it rather
+                // than re-sweep it on every key load for the rest of the run.
+                if cutoff.is_some_and(|c| item.timestamp < c) {
+                    self.rewind_evicted += 1;
+                    continue;
+                }
+                // Trial budget spent: keep the rest untried and pick them up
+                // at the next key load rather than stalling the packet loop.
+                if trials >= REWIND_TRIALS_PER_SWEEP {
+                    held_bytes += item.record.payload.len();
+                    still.entry(dir).or_default().push_back(item);
+                    continue;
+                }
                 let Self {
                     sessions,
                     crypto,
@@ -1407,6 +1471,15 @@ impl TlsDecryptor {
                 let crypto = crypto.as_ref();
                 let mut opened = None;
                 for session in sessions.values_mut() {
+                    // A session pinned to a different connection cannot open
+                    // this record; skipping saves two AEAD opens per session.
+                    if session
+                        .client_addr
+                        .is_some_and(|a| a != item.src.ip() && a != item.dst.ip())
+                    {
+                        continue;
+                    }
+                    trials += 1;
                     if let Some(plaintext) = try_decrypt_with_session(
                         session,
                         crypto,
@@ -1473,6 +1546,16 @@ impl TlsDecryptor {
         }
         self.last_rewind_generation = self.keylog_generation;
         self.rewind()
+    }
+
+    /// Declare that more key material can still arrive during this run.
+    ///
+    /// Set for `--keylog-watch`, `--keylog-fd`, and captures carrying DSB
+    /// blocks. Without it the late-decrypt hold is disabled, because a record
+    /// that cannot open against a key set that will never change cannot open
+    /// later either.
+    pub fn set_keys_may_still_arrive(&mut self, yes: bool) {
+        self.keys_may_still_arrive = yes;
     }
 
     /// Generation of the loaded keylog; bumped whenever entries load.
@@ -2459,6 +2542,8 @@ mod tests {
             rewind_bytes: 0,
             keylog_generation: 0,
             last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
@@ -2528,6 +2613,8 @@ mod tests {
             rewind_bytes: 0,
             keylog_generation: 0,
             last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
@@ -2578,6 +2665,8 @@ mod tests {
             rewind_bytes: 0,
             keylog_generation: 0,
             last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
@@ -2625,6 +2714,8 @@ mod tests {
             rewind_bytes: 0,
             keylog_generation: 0,
             last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
@@ -2670,6 +2761,8 @@ mod tests {
             rewind_bytes: 0,
             keylog_generation: 0,
             last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
@@ -2912,6 +3005,10 @@ mod tests {
         let (key, iv) =
             derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm).unwrap();
         let mut d = decryptor_with(Box::new(RingCryptoBackend));
+        // These tests describe a WATCHED keylog: keys arrive after the
+        // record does. Without saying so the hold is disabled, exactly as
+        // it is for a plain `--keylog` file that can never grow.
+        d.set_keys_may_still_arrive(true);
         d.keylog_entries = make_keylog_entries();
         (d, key, iv)
     }
@@ -3551,6 +3648,10 @@ mod tests {
         let (key, iv) =
             derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm).unwrap();
         let mut d = decryptor_with(Box::new(RingCryptoBackend));
+        // These tests describe a WATCHED keylog: keys arrive after the
+        // record does. Without saying so the hold is disabled, exactly as
+        // it is for a plain `--keylog` file that can never grow.
+        d.set_keys_may_still_arrive(true);
 
         let invite = b"INVITE sip:iq@example.net SIP/2.0\r\nCSeq: 1 INVITE\r\n\r\n";
         let record = seal_tls13_record(&key, &iv, 0, invite);
@@ -3593,6 +3694,10 @@ mod tests {
         let (key, iv) =
             derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm).unwrap();
         let mut d = decryptor_with(Box::new(RingCryptoBackend));
+        // These tests describe a WATCHED keylog: keys arrive after the
+        // record does. Without saying so the hold is disabled, exactly as
+        // it is for a plain `--keylog` file that can never grow.
+        d.set_keys_may_still_arrive(true);
         let client: IpAddr = "10.0.0.1".parse().unwrap();
         let server: IpAddr = "10.0.0.2".parse().unwrap();
 
@@ -3648,6 +3753,10 @@ mod tests {
         let (key, iv) =
             derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm).unwrap();
         let mut d = decryptor_with(Box::new(RingCryptoBackend));
+        // These tests describe a WATCHED keylog: keys arrive after the
+        // record does. Without saying so the hold is disabled, exactly as
+        // it is for a plain `--keylog` file that can never grow.
+        d.set_keys_may_still_arrive(true);
         let client: IpAddr = "10.0.0.1".parse().unwrap();
         let server: IpAddr = "10.0.0.2".parse().unwrap();
 
@@ -3757,6 +3866,10 @@ mod tests {
         use crate::crypto::RingCryptoBackend;
 
         let mut d = decryptor_with(Box::new(RingCryptoBackend));
+        // These tests describe a WATCHED keylog: keys arrive after the
+        // record does. Without saying so the hold is disabled, exactly as
+        // it is for a plain `--keylog` file that can never grow.
+        d.set_keys_may_still_arrive(true);
         let client: IpAddr = "10.0.0.1".parse().unwrap();
         let server: IpAddr = "10.0.0.2".parse().unwrap();
 
@@ -3889,6 +4002,8 @@ mod tests {
             rewind_bytes: 0,
             keylog_generation: 0,
             last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
@@ -3945,6 +4060,8 @@ mod tests {
             rewind_bytes: 0,
             keylog_generation: 0,
             last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
@@ -4008,6 +4125,8 @@ mod tests {
             rewind_bytes: 0,
             keylog_generation: 0,
             last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,

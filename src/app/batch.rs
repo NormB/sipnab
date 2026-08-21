@@ -2359,6 +2359,13 @@ impl BatchRunner {
                     if let Some(records) = cli.tls_args.tls_lockon_window {
                         d.set_lockon_window(records);
                     }
+                    // Only a source that can GROW mid-run makes the
+                    // late-decrypt hold worth paying for: a plain `--keylog`
+                    // file is read once and a record that fails against it now
+                    // fails against it forever.
+                    d.set_keys_may_still_arrive(
+                        cli.tls_args.keylog_watch || cli.tls_args.keylog_fd.is_some(),
+                    );
                     if let Some(source) = preopened {
                         d.set_keylog_source(source);
                         // Drain once, HERE, before a single packet is
@@ -3324,6 +3331,27 @@ impl BatchRunner {
             // What TLS decryption achieved. Reported whether or not any SIP
             // was found, because a run that read nine records of ten and
             // printed the nine has said nothing about the tenth.
+            // One last replay before the counters are read. A capture that
+            // ends moments after its keys arrive -- a test call, a Ctrl-C --
+            // would otherwise discard the held INVITE with nothing said: the
+            // only other trigger is the next TLS packet, and there is not
+            // going to be one. The recovered messages are too late to enter
+            // the pipeline here, but they are NOT too late to be counted, and
+            // a run that silently dropped what it was holding is exactly the
+            // missing measurement this feature exists to remove.
+            #[cfg(feature = "tls")]
+            if let Some(ref mut d) = tls_decryptor {
+                let late = d.rewind();
+                if !late.is_empty() {
+                    tracing::warn!(
+                        "TLS late decrypt: {} record(s) opened only after the capture ended \
+                         -- their keys arrived too late to place the messages in this run. \
+                         Re-read the saved capture with the same keylog to see them.",
+                        late.len()
+                    );
+                }
+            }
+
             #[cfg(feature = "tls")]
             let tls_report = tls_decryptor
                 .as_ref()
@@ -3989,30 +4017,6 @@ fn try_tls_decrypt(
         return capture::ParsedPackets::new();
     };
 
-    if pp.transport != TransportProto::Tcp {
-        return capture::ParsedPackets::new();
-    }
-
-    let src = std::net::SocketAddr::new(pp.src_addr, pp.src_port);
-    let dst = std::net::SocketAddr::new(pp.dst_addr, pp.dst_port);
-
-    // `is_tls` gates admission for a chunk that would START tracking this
-    // stream, but must not gate one that CONTINUES an already-held partial:
-    // the tail half of a TLS record split across a TCP segment boundary is
-    // ciphertext with no record header of its own, and routinely fails this
-    // same heuristic — which is exactly the case `TlsRecordReassembler`
-    // exists to handle. Gating on it unconditionally here (as the
-    // pre-reassembly version of this function did, before there was
-    // anything to hold across calls) silently re-dropped every split
-    // record's tail chunk before it ever reached `insert`, defeating the
-    // reassembly this same patch added: the SIP message inside kept getting
-    // lost the same way, just one layer further down.
-    if !tls_reassembler.has_held(src, dst) && !tls::is_tls(&pp.payload) {
-        return capture::ParsedPackets::new();
-    }
-
-    let records = tls_reassembler.insert(src, dst, &pp.payload);
-
     let mut out = capture::ParsedPackets::new();
 
     // Records held from before their keys existed come FIRST, because they
@@ -4053,6 +4057,35 @@ fn try_tls_decrypt(
             out.push(late);
         }
     }
+
+    // Non-TCP packets carry no TLS, but reaching this line still served a
+    // purpose: the recovery above runs on ANY packet. Gating it behind the
+    // TLS checks below meant a session whose keys arrived last could wait for
+    // the next TLS-looking packet on that same connection -- which on a quiet
+    // trunk may never come, and at end of capture never does.
+    if pp.transport != TransportProto::Tcp {
+        return out;
+    }
+
+    let src = std::net::SocketAddr::new(pp.src_addr, pp.src_port);
+    let dst = std::net::SocketAddr::new(pp.dst_addr, pp.dst_port);
+
+    // `is_tls` gates admission for a chunk that would START tracking this
+    // stream, but must not gate one that CONTINUES an already-held partial:
+    // the tail half of a TLS record split across a TCP segment boundary is
+    // ciphertext with no record header of its own, and routinely fails this
+    // same heuristic — which is exactly the case `TlsRecordReassembler`
+    // exists to handle. Gating on it unconditionally here (as the
+    // pre-reassembly version of this function did, before there was
+    // anything to hold across calls) silently re-dropped every split
+    // record's tail chunk before it ever reached `insert`, defeating the
+    // reassembly this same patch added: the SIP message inside kept getting
+    // lost the same way, just one layer further down.
+    if !tls_reassembler.has_held(src, dst) && !tls::is_tls(&pp.payload) {
+        return out;
+    }
+
+    let records = tls_reassembler.insert(src, dst, &pp.payload);
 
     for record in &records {
         // Feed Handshake records (ClientHello/ServerHello/ClientKeyExchange) so
@@ -4755,6 +4788,9 @@ mod tests {
             sessions_with_keys: sessions,
             app_data_records: seen,
             decrypted_records: decrypted,
+            late_recovered: 0,
+            late_evicted: 0,
+            late_still_held: 0,
         }
     }
 
@@ -4772,6 +4808,9 @@ mod tests {
                 sessions_with_keys: 0,
                 app_data_records: 4,
                 decrypted_records: 0,
+                late_recovered: 0,
+                late_evicted: 0,
+                late_still_held: 0,
             },
             &[],
         );
