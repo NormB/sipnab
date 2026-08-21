@@ -33,21 +33,35 @@ runs:
     - name: Decide what is missing
       id: probe
       shell: bash
+      # `${{ }}` is substituted as TEXT before bash sees the script, so a value
+      # containing `;` or `$(...)` would become code rather than data. Every
+      # use goes through the environment instead, where bash treats it as a
+      # value and nothing else. Nothing untrusted reaches this input today --
+      # the only callers are workflow files in this repository -- but the
+      # difference between "not reachable" and "not possible" is the whole
+      # point, and a composite action is reusable by definition.
+      env:
+        PACKAGES: ${{ inputs.packages }}
       run: |
         need=""
-        for p in ${{ inputs.packages }}; do
+        # Unquoted on purpose: the input is a space-separated LIST and word
+        # splitting is what turns it into one. It is a shell variable now, so
+        # splitting is all it can do.
+        for p in $PACKAGES; do
           dpkg -s "$p" >/dev/null 2>&1 || need="$need $p"
         done
-        need="$(echo $need | xargs || true)"
+        need="$(echo "$need" | xargs || true)"
         echo "need=$need" >> "$GITHUB_OUTPUT"
         if [ -z "$need" ]; then
-          echo "already installed: ${{ inputs.packages }}"
+          echo "already installed: $PACKAGES"
         else
           echo "missing:$need"
         fi
         # A stable key for this exact package set, so two jobs asking for
-        # different sets cannot share (and clobber) one cache entry.
-        echo "slug=$(echo '${{ inputs.packages }}' | tr ' ' '-' | tr -cd 'a-zA-Z0-9.-')" \
+        # different sets cannot share (and clobber) one cache entry. The
+        # character filter also means the key cannot carry anything but
+        # [A-Za-z0-9.-], whatever the input was.
+        echo "slug=$(printf '%s' "$PACKAGES" | tr ' ' '-' | tr -cd 'a-zA-Z0-9.-')" \
           >> "$GITHUB_OUTPUT"
 
     - name: Restore the .deb cache
@@ -63,6 +77,9 @@ runs:
     - name: Install
       if: steps.probe.outputs.need != ''
       shell: bash
+      # NEED derives from `packages`, so it carries the same caveat.
+      env:
+        NEED: ${{ steps.probe.outputs.need }}
       run: |
         set -euo pipefail
         cache="$HOME/.cache/sipnab-apt"
@@ -82,7 +99,8 @@ runs:
           timeout 180 sudo apt-get update || true
           # --download-only fetches the full dependency closure, which is what
           # makes the later `dpkg -i` of the whole directory resolvable.
-          timeout 420 sudo apt-get install --download-only -y ${{ steps.probe.outputs.need }}
+          # shellcheck disable=SC2086 -- a package LIST, split on purpose.
+          timeout 420 sudo apt-get install --download-only -y $NEED
           sudo cp /var/cache/apt/archives/*.deb "$cache"/
           sudo chown -R "$(id -u):$(id -g)" "$cache"
           sudo dpkg -i "$cache"/*.deb
@@ -95,10 +113,12 @@ runs:
     - name: Verify
       if: steps.probe.outputs.need != ''
       shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
       run: |
         set -euo pipefail
         missing=""
-        for p in ${{ inputs.packages }}; do
+        for p in $PACKAGES; do
           dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"
         done
         if [ -n "$missing" ]; then
@@ -106,4 +126,4 @@ runs:
           echo "The cache may hold a .deb set from a different runner image."
           exit 1
         fi
-        echo "verified: ${{ inputs.packages }}"
+        echo "verified: $PACKAGES"

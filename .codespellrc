@@ -45,7 +45,12 @@ skip = */target/*,*/.git/*,*.lock,website/public/*,*/website/public/*,*/js/*,*.m
 #                a Source column narrow enough to render "Sourc" cannot hold an
 #                IPv4 address and must be dropped instead (#151). "Correcting"
 #                it to "Source" would invert what the test checks.
-ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor,Sourc
+#   didnt        inside a verbatim quotation from Dan Jenkins in
+#                docs/design/backlog.md (SRC2). Same reason as `requestor`
+#                above: the value of a quotation is that it reports what was
+#                actually said. Tidying someone's informal chat message into
+#                prose they did not write makes the quote evidence of nothing.
+ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor,Sourc,didnt
 #
 # Deliberately NOT ignored: "cappable", which codespell wanted to make "capable".
 # It appeared in "both are small, and both are cappable", where the meaning is

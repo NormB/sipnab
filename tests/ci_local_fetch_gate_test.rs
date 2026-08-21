@@ -111,6 +111,77 @@ fn no_hosted_workflow_installs_system_packages_from_the_archives() {
     );
 }
 
+/// No local action interpolates an expression into a shell script body.
+///
+/// `${{ ... }}` is substituted as TEXT before bash ever sees the script, so a
+/// value containing `;` or `$(...)` becomes CODE rather than data. Passing it
+/// through `env:` instead makes bash treat it as a value and nothing else.
+///
+/// Flagged on `.github/actions/system-deps/action.yml` by an external scanner
+/// after it shipped, and the scanner was right even though nothing untrusted
+/// can reach that input today -- the only callers are workflow files in this
+/// repository. A composite action is reusable by definition, so "not currently
+/// reachable" is a property of today's callers, not of the action. This gate
+/// holds the pattern rather than the reachability argument, because the
+/// reachability argument is the part that changes without anyone noticing.
+#[test]
+fn no_local_action_interpolates_an_expression_into_a_shell_script() {
+    let dir = repo().join(".github/actions");
+    if !dir.exists() {
+        return;
+    }
+    let mut offenders = Vec::new();
+    let mut scanned = 0usize;
+
+    for entry in std::fs::read_dir(&dir).expect("read .github/actions") {
+        let action = entry.expect("dir entry").path().join("action.yml");
+        if !action.exists() {
+            continue;
+        }
+        scanned += 1;
+        let name = action
+            .strip_prefix(repo())
+            .unwrap_or(&action)
+            .display()
+            .to_string();
+        let text = std::fs::read_to_string(&action).expect("read action");
+
+        // Walk the file tracking whether we are inside a `run: |` block. Only
+        // those bodies execute; `env:`, `key:` and `if:` are evaluated by the
+        // runner, where an expression is the intended mechanism.
+        let mut in_run = false;
+        let mut run_indent = 0usize;
+        for (i, line) in text.lines().enumerate() {
+            let indent = line.len() - line.trim_start().len();
+            if in_run && !line.trim().is_empty() && indent <= run_indent {
+                in_run = false;
+            }
+            if line.trim_start().starts_with("run: |") {
+                in_run = true;
+                run_indent = indent;
+                continue;
+            }
+            if in_run && line.contains("${{") {
+                offenders.push(format!("{name}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        scanned > 0,
+        "no action.yml files were scanned; this gate is checking nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "these lines interpolate a workflow expression directly into a shell \
+         script, where the value becomes code rather than data. Pass it through \
+         the step's `env:` block and reference it as a shell variable:\n  \
+         env:\n    PACKAGES: ${{{{ inputs.packages }}}}\n  run: |\n    \
+         for p in $PACKAGES; do ...\n\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// The shared action must install from the cache without touching the network.
 ///
 /// The negative control for the rule above. An action that merely wraps the
