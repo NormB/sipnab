@@ -496,7 +496,7 @@ Tiers:
   ([@danjenkins](https://github.com/danjenkins)) reframed it after using it,
   and his framing is sharper than the entry it came from:
 
-  > "i really didnt want to trust HEP from opensips... the whole point is
+  > "i really didn't want to trust HEP from opensips... the whole point is
   > being able to see when opensips is doing something wrong, or ive told it
   > to do the wrong thing or whatever. so being able to trace TLS purely from
   > what hit the box is fantastic"
