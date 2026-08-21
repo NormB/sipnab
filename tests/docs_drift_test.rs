@@ -2850,8 +2850,15 @@ fn no_documentation_table_repeats_a_row() {
         // docs/design/live-fanout.md gained a §2.3 of PROSE and every other
         // changed page only moved line anchors inside existing tables, so all
         // of those held their counts.
-        591,
-        "walked {tables} tables, expected 591. More is fine — bump this. FEWER \
+        //
+        // Raised 591 -> 596 by the documentation sweep that followed the
+        // 0.5.118 throughput regression. Five tables, attributed per file:
+        // the late-keylog hold bounds in docs/tls-capture.md and its site
+        // mirror, the mirror-vs-wire finding table in docs/examples.md and the
+        // cookbook generated from it, and the answer-surface table in
+        // docs/architecture.md, which has no site mirror.
+        596,
+        "walked {tables} tables, expected 596. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
@@ -3369,6 +3376,80 @@ fn the_benchmarks_page_names_one_measured_release_throughout() {
              A blanket version bump most likely dragged `**Version:** sipnab X` \
              along with the `--version` examples. This line records what the \
              tables were measured against, which a later release does not change."
+        );
+    }
+}
+
+/// The MCP tool count in prose must match what the server registers.
+///
+/// `homepage_mcp_tool_tile_matches_the_server` in `site_journey_test` already
+/// derives this count and holds the homepage tile to it. It stops at the
+/// homepage, and the README and the design notes drifted behind it unnoticed:
+/// both said 31 while the server registered 35, so the most-read file in the
+/// repository undercounted the surface by four tools. Deriving the number in
+/// one gate and hand-writing it in three files is the whole defect -- every
+/// place that states it is checked here against the registrations themselves.
+#[test]
+fn prose_mcp_tool_counts_match_the_server() {
+    let server = include_str!("../src/mcp/server.rs");
+    let registered = regex::Regex::new(r#"(?m)^\s+name = "[a-z_]+","#)
+        .unwrap()
+        .find_iter(server)
+        .count();
+    assert!(
+        registered >= 20,
+        "only {registered} MCP tool registrations found — the pattern stopped \
+         matching, so this gate is comparing prose against nothing"
+    );
+
+    let stale =
+        regex::Regex::new(r"(\d+) (?:Model Context Protocol tools|MCP tools|tools \()").unwrap();
+    for (path, text) in [
+        ("README.md", include_str!("../README.md")),
+        (
+            "docs/design/mcp-write-back.md",
+            include_str!("../docs/design/mcp-write-back.md"),
+        ),
+        ("docs/README.md", include_str!("../docs/README.md")),
+    ] {
+        for cap in stale.captures_iter(text) {
+            let claimed: usize = cap[1].parse().unwrap();
+            assert_eq!(
+                claimed, registered,
+                "{path} says {claimed} MCP tools; src/mcp/server.rs registers \
+                 {registered}. Update the prose in the same commit as the tool."
+            );
+        }
+    }
+
+    // The security section states the split in WORDS, which the digit scan
+    // above cannot see. It drifted to "All 32 ... Twenty-seven ... These five"
+    // while the server registered 35 with 7 write verbs -- so an auditor
+    // reading the write-verb table got a list that omitted `start_tls_capture`
+    // and `stop_tls_capture`, the two that attach uprobes to another process.
+    // A stale count in a security section is not a typo, so it is gated.
+    let protocol = include_str!("../docs/mcp-protocol.md");
+    let writers = regex::Regex::new(r"read_only_hint = false")
+        .unwrap()
+        .find_iter(include_str!("../src/mcp/server.rs"))
+        .count();
+    assert!(
+        protocol.contains(&format!("All {registered} carry MCP annotations")),
+        "docs/mcp-protocol.md does not say all {registered} tools carry annotations"
+    );
+    assert!(
+        protocol.contains(&format!(
+            "of the {registered} tools are `readOnlyHint: true`"
+        )),
+        "docs/mcp-protocol.md's write-verb section names a tool total other than \
+         {registered}"
+    );
+    for tool in ["start_tls_capture", "stop_tls_capture"] {
+        assert!(
+            protocol.contains(&format!("| `{tool}` |")),
+            "docs/mcp-protocol.md's write-verb table omits `{tool}`, which is \
+             `readOnlyHint: false`. {writers} tools are write verbs and the \
+             table must list every one of them."
         );
     }
 }

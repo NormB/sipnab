@@ -669,6 +669,30 @@ Tiers:
 
 ## P2 — robustness, observability & efficiency
 
+- [ ] **TLSHOLD — two of the three late-decrypt counters never reach the
+  operator, so an eviction and a key that never came look identical.** The
+  late-keylog hold added in 0.5.120 keeps three tallies:
+  [`late_recovered`, `late_evicted`, `late_still_held`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs).
+  Only the first is ever printed, as `TLS late decrypt: recovered N record(s)
+  that arrived before their keys`. The other two are computed, carried through
+  the report struct, and dropped on the floor — `TlsDecryptReport` derives no
+  `Serialize`, and `tls_decrypt_guidance` returns early on any run that
+  decrypted anything, which is exactly the run where an eviction is
+  interesting.
+
+  The field comment claimed they were "reported beside `late_recovered` on
+  purpose" for the reason that matters: without the eviction count, "we never
+  had the keys" and "we had them and had already discarded the ciphertext" are
+  the same silence, and only one of those is fixed by starting the key source
+  earlier. That claim was false and the comment now says so.
+
+  **Do:** print the two counters when either is non-zero, on runs that
+  decrypted as well as runs that did not, and name the bound that was hit
+  (4 MiB total, 16 records per direction, 5 s) so the operator knows which
+  knob the eviction argues for. Documented behaviour is in
+  [`docs/tls-capture.md`](https://github.com/NormB/sipnab/blob/main/docs/tls-capture.md);
+  keep the two in step.
+
 - [ ] **REL1 — the release build fetches from four external hosts and a
   failure at any of them costs a re-run of the whole tag.** Measured over one
   session on 2026-08-21, four separate builds failed on a fetch and none on
@@ -2903,6 +2927,113 @@ a web-filtering appliance silently discarding UDP. sipnab read one of them as
   bare-RTP control rather than checking the bytes came back out — an unwrap
   helper can be correct while the pipeline still drops what it returns — and is
   mutation-checked by disabling the unwrap, which fails it.
+
+## MCPX — gaps found by surveying the VoIP MCP field (added 2026-08-21)
+
+Surveyed against Callcenter.js, the Zapier VoIP.ms and VoIPstudio connectors,
+[Plivo's MCP plugin](https://github.com/plivo/mcp), a community VoIPbin server,
+[VoipNow Calls MCP](https://github.com/4psa/mcp-voipnow) and — the only true
+analysis peer found — [VoIPmonitor MCP](https://github.com/emaktel/mcp-voipmonitor).
+
+Two framing facts, because they decide what belongs here. First, no Homer,
+HEPIC, sngrep or captagent MCP server exists; sipnab's 35 tools are the deepest
+SIP-analysis MCP surface found, and the nearest analysis peer exposes four.
+Second, almost everything the commercial servers do is CALL CONTROL —
+originate, bridge, hold, transfer, send SMS, provision accounts. sipnab
+declines all of it, and [`docs/mcp-protocol.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-protocol.md) already carries the rule that
+settles it: **no tool sends SIP**. Originating needs registrar credentials to a
+live PBX and would turn a read-only analyser into a UAC with a blast radius
+reachable from attacker-controlled capture text. The items below are only the
+ones that fit an analysis tool.
+
+- [ ] **MCPX1 — the final response code is not queryable, so every failure
+  looks the same.** The filter DSL has 30 fields and `state` collapses 403,
+  404, 408, 486, 503 and 603 into `Failed`. `triage_call` returns
+  `final_status_code` for ONE call and `explain_response_code` explains one
+  integer, but no listing tool carries it, so it cannot be filtered, sorted or
+  counted. Every competitor CDR read has this: VoipNow's `cdr-list` takes
+  `disposition`, VoIPmonitor's `search_calls` filters on failed SIP responses.
+  On a trunk incident the first question is "which release cause dominates in
+  the last ten minutes, and does it cluster by carrier IP" — today the agent
+  must page every dialog and parse messages itself.
+
+  **Do:** `response_code` as a first-class DSL numeric field and on
+  `DialogSummary`, so `response_code == 503 and dst.ip =~ '^198\.51\.'` works.
+
+- [ ] **MCPX2 — no server-side aggregation, so the agent counts, and counting
+  is what it gets wrong.** The only aggregate on the surface is
+  `total_matched`. A response-code histogram, top destinations by failure rate,
+  MOS percentiles or ASR by trunk all require N guessed queries or paging every
+  row. [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) already documents this exact failure — "an agent
+  asked 'how many calls failed?' counts the rows it holds and answers with that
+  number". The page object fixed one count; every other count is still done in
+  the model's head.
+
+  **Do:** one `aggregate_dialogs { group_by, filter?, top_n? }` computed inside
+  the store lock, returning bounded buckets plus `other_count`. **Cap it at one
+  `group_by` dimension and refuse time-bucketing** — positioning §4 is the
+  constraint, and without a cap this becomes a query engine and then a
+  dashboard, which is the thing sipnab exists not to be.
+
+- [ ] **MCPX3 — there is no way to look in a second capture without destroying
+  the first.** `list_captures` returns `{filename, bytes}` and nothing else.
+  The only way inside another file is `open_capture`, which is documented
+  "**Destructive.** Replaces every dialog and stream" and mints a new
+  `capture_identity` that voids every held cursor. So "which of these 40
+  rotated files holds Call-ID X" cannot be asked at all. Positioning §3 already
+  authorises the fix and §5 ranks it third.
+
+  **Do:** `first_packet`/`last_packet`/`dialog_count` on `list_captures` from a
+  cheap header read, plus a read-only `find_in_captures { filter, limit }` that
+  names matching files without swapping the active store. No database.
+
+- [ ] **MCPX4 — exports are unreachable from the deployment shape that needs
+  them most.** `export_capture` and `export_audio` return a server-local
+  absolute path. Over stdio that is fine. Over the HTTP transport that
+  [`docs/mcp-deploy.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md) documents for remote/service use, the client has no
+  filesystem and there is no download endpoint, so the tool succeeds and the
+  agent still cannot get the bytes. The whole point of `export_capture` is
+  preserving signaling before stopping a live capture and handing it to a
+  carrier. VoIPmonitor's `get_pcap_info` returns a download link for exactly
+  this reason.
+
+  **Do:** return an MCP resource URI over the same authenticated channel, which
+  keeps the `--mcp-file-root` sandbox and adds no unauthenticated HTTP.
+  Needs MCPX6.
+
+- [ ] **MCPX5 — MCP is behind `--report` and the REST API on two answers.**
+  (a) `get_dialog_report` and `render_ladder` are per-Call-ID, so the
+  whole-capture `--report` view has no MCP path. (b) `capture_status` gives
+  `orphaned_stream_count` as a NUMBER, `rtp_stats` carries `orphaned` per row
+  but takes no `orphaned` filter, and [`docs/filter-dsl.md`](https://github.com/NormB/sipnab/blob/main/docs/filter-dsl.md) redirects the
+  question to `--report` or `/v1/streams?orphaned=true`. So an agent is told
+  three orphaned streams exist and cannot list them. Orphaned media is the
+  signature of an RTP proxy or NAT fault and one of the few findings sngrep
+  cannot produce.
+
+  **Do:** an `orphaned` filter on `rtp_stats` and a `get_capture_report
+  { format }`. The test is surface parity: nothing reachable from `--report` or
+  `/v1/*` should be unreachable over MCP.
+
+- [ ] **MCPX6 — `tools/list` is 35 schemas deep and the server enables nothing
+  else.** `ServerCapabilities::builder().enable_tools()` is the whole
+  declaration: no resources, no prompts. Three things here are more naturally
+  RESOURCES than tools — the files under `--mcp-file-root`, the
+  `capture_identity`/`server_capabilities` pair, and export artifacts.
+  Resources are read-only by protocol construction, so they strengthen the
+  argument in [`docs/mcp-protocol.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-protocol.md) rather than dilute it: a host can grant
+  resource reads without granting tool calls. None of the six surveyed servers
+  exposes resources either, so this is a differentiator rather than catch-up.
+
+- [ ] **MCPX7 — rows are bounded with unusual rigour; columns are not bounded
+  at all.** `--mcp-max-rows`, `limit` and cursors bound how MANY dialogs come
+  back. Nothing bounds how WIDE each one is, so an agent wanting `call_id` and
+  `state` for 500 dialogs still pays for `timing`, `frame`, `updated_at` and
+  two fenced display names per row. VoipNow's `cdr-list` takes a `fields`
+  projection; layered under sipnab's better cursor model it is the cheapest
+  context win on the surface, and it adds no data and no risk.
+
+  **Do:** `fields: string[]` on the four page-returning dialog tools.
 
 ## P5 — features & long-term / exploratory
 

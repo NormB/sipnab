@@ -53,8 +53,8 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 32 carry MCP annotations, so a host
-  can decide what to call without asking. Twenty-seven are `readOnlyHint: true`.
+- **Every tool declares what it does.** All 35 carry MCP annotations, so a host
+  can decide what to call without asking. Twenty-eight are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the five that are
   not. Every tool sets `openWorldHint` to `false`, because sipnab answers from
   the loaded capture and contacts no external service.
@@ -108,7 +108,7 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
 
 ## What the write verbs do
 
-Twenty-seven of the 32 tools are `readOnlyHint: true`. These five are not, and
+Twenty-eight of the 35 tools are `readOnlyHint: true`. These seven are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 
@@ -119,6 +119,8 @@ confirmation:
 | `open_capture` | **true** | true | Replaces the loaded capture, so every later answer describes something else. Gated on `--mcp-allow-open-capture`. |
 | `save_findings` | false | **false** | Appends one agent annotation. Additive, but each call records another, so repeating it is not free. |
 | `shutdown_server` | **true** | true | Ends the run. Gated on `--mcp-allow-shutdown`. |
+| `start_tls_capture` | false | **false** | Attaches uprobes to a TLS library in a running process, so it changes the state of a program that is not sipnab. Needs `CAP_BPF`/root, and each call attaches again. |
+| `stop_tls_capture` | false | true | Detaches them. |
 
 Every tool sets `openWorldHint` to `false`, explicitly rather than by
 omission. sipnab answers from the capture it has loaded and contacts no external

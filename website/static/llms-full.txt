@@ -424,6 +424,31 @@ each dialog's message ladder. Name your media ports and nothing else, because
 sipnab
 warns if you forget.
 
+
+**What you get that a single source cannot give you.** The two accounts are
+complementary rather than redundant, and their DISAGREEMENT is the finding.
+HEP reports what the proxy *believes* it did; the wire reports what actually
+left the box. When the question is "is the proxy misbehaving, or did I
+configure it to", a mirror produced by the suspect cannot answer it — it is the
+same witness twice.
+
+A composite run therefore reports, per call:
+
+| Finding | What it means |
+|---|---|
+| Seen by both | The proxy did what it says it did |
+| Mirror-only | The proxy believes it sent something the wire never carried |
+| Wire-only | Traffic left the box that the tracing never reported |
+| Differing SDP | Both saw the message and disagree about the media endpoint — both accounts are printed side by side |
+
+Neither account is labelled expected or actual. Copies are paired by
+transaction identity ([RFC 3261 §17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3) and §17.2.3), never by arrival order,
+because the mirror usually arrives FIRST — the proxy mirrors as it processes
+while the wire copy takes a network hop, so any "first one wins" rule would
+quietly make the suspect authoritative.
+
+A single-source run reports none of this and allocates nothing for it.
+
 **Trace both directions, or this measures nothing.** In OpenSIPS, use
 transaction scope so the tracer mirrors the message it *sent* as well as the one
 it received:
@@ -460,7 +485,7 @@ changes that: put sipnab's `-d` where the media actually is.
 - A routable HEP listener needs a guard: sipnab refuses a non-loopback `--hep-listen` bind unless you pass `--hep-allow 192.0.2.0/24` (repeatable) or `--hep-auth`/`--hep-auth-file`. A loopback bind needs neither.
 - If your central host is reachable by hostname only, set `--mcp-allowed-host` for the MCP transport too (see Recipe 8).
 - `-d` with `--hep-listen` takes exactly one interface and one listener. sipnab refuses `-I` with `--hep-listen` (a file's addresses are historical and belong to third parties, and sipnab keeps them off its active-response path by refusing to transmit for a file run at all); so are `--multi-device` with `--hep-listen`, and `-O` with the pair — the two sources disagree about the link layer, so there is no honest pcap to write. Use `--hep-send` to forward the signaling instead.
-- One sipnab, one mirroring node. The SDP endpoint index keys on address and port with no node dimension, so two nodes advertising the same RFC 1918 socket would overwrite each other and a stream would bind to whichever offer arrived last.
+- One sipnab, one mirroring node. The SDP endpoint index keys on address and port with no node dimension, so two nodes advertising the same [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) socket would overwrite each other and a stream would bind to whichever offer arrived last.
 
 ---
 
@@ -14791,8 +14816,8 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 32 carry MCP annotations, so a host
-  can decide what to call without asking. Twenty-seven are `readOnlyHint: true`.
+- **Every tool declares what it does.** All 35 carry MCP annotations, so a host
+  can decide what to call without asking. Twenty-eight are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the five that are
   not. Every tool sets `openWorldHint` to `false`, because sipnab answers from
   the loaded capture and contacts no external service.
@@ -14846,7 +14871,7 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
 
 ## What the write verbs do
 
-Twenty-seven of the 32 tools are `readOnlyHint: true`. These five are not, and
+Twenty-eight of the 35 tools are `readOnlyHint: true`. These seven are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 
@@ -14857,6 +14882,8 @@ confirmation:
 | `open_capture` | **true** | true | Replaces the loaded capture, so every later answer describes something else. Gated on `--mcp-allow-open-capture`. |
 | `save_findings` | false | **false** | Appends one agent annotation. Additive, but each call records another, so repeating it is not free. |
 | `shutdown_server` | **true** | true | Ends the run. Gated on `--mcp-allow-shutdown`. |
+| `start_tls_capture` | false | **false** | Attaches uprobes to a TLS library in a running process, so it changes the state of a program that is not sipnab. Needs `CAP_BPF`/root, and each call attaches again. |
+| `stop_tls_capture` | false | true | Detaches them. |
 
 Every tool sets `openWorldHint` to `false`, explicitly rather than by
 omission. sipnab answers from the capture it has loaded and contacts no external

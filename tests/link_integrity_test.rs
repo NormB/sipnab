@@ -593,7 +593,7 @@ fn wiki_intra_docs_links_resolve() {
     // Raised 433 -> 441 by the MCP split: mcp.md shed its tool reference and
     // protocol contract into two new pages, and the four-page set cross-links
     // where one page used to link internally.
-    const EXPECTED_WIKI_LINKS: usize = 460;
+    const EXPECTED_WIKI_LINKS: usize = 464;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -622,6 +622,13 @@ fn wiki_intra_docs_links_resolve() {
     // wideband `Ie` cannot go in `[media.codec_ie]`. Attributed per file against
     // HEAD before this number moved: it is the only counted link any staged .md
     // gained, and every other page held its count exactly.
+    // 460 -> 464: the documentation sweep after the 0.5.118 throughput
+    // regression, attributed per file against HEAD. docs/README.md +3 -- MCP
+    // had no entry in the How-to list at all, so the new one links the guide,
+    // the deployment tutorial and the tool reference rather than restating
+    // any of them. docs/architecture.md +1, pointing at design/mcp-write-back
+    // .md from the sentence that says no MCP tool mutates the analysis, so the
+    // reason lives in one place. Every other changed page held its count.
 
     assert_eq!(
         seen, EXPECTED_WIKI_LINKS,
