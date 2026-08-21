@@ -443,9 +443,13 @@ pub struct TlsDecryptReport {
     /// they arrived, then opened once one did.
     pub late_recovered: u64,
     /// Records dropped from the hold before a key ever arrived, because the
-    /// byte budget filled. Reported beside `late_recovered` on purpose --
-    /// without it "we never had the keys" and "we had them and had already
-    /// discarded the ciphertext" are the same silence.
+    /// byte budget filled. Kept beside `late_recovered` because without it
+    /// "we never had the keys" and "we had them and had already discarded the
+    /// ciphertext" are the same silence.
+    ///
+    /// NOT yet surfaced to the operator: only `late_recovered` reaches the log,
+    /// so today that silence is exactly what a run with evictions produces.
+    /// Tracked as TLSHOLD in docs/design/backlog.md.
     pub late_evicted: u64,
     /// Records still held at the end of the run, i.e. keys that never came.
     pub late_still_held: u64,

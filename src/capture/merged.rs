@@ -69,11 +69,42 @@ pub struct MergedFrame {
 /// one short read and takes the ordinary path untouched.
 #[must_use]
 pub fn is_merged(path: &Path) -> bool {
-    let Ok(bytes) = std::fs::read(path) else {
+    let Ok(mut file) = std::fs::File::open(path) else {
         return false;
     };
+    is_merged_in(&mut file)
+}
+
+/// The scan itself, over anything readable, so a test can count what it
+/// consumed.
+///
+/// Whether this reads four bytes or the whole capture is the difference
+/// between the comment above being true and being a wish, and it is not a
+/// detail: all three callers run it before a single packet is read, so a
+/// classic pcap that loads itself into memory here pays that on every offline
+/// run.
+fn is_merged_in<R: std::io::Read + std::io::Seek>(r: &mut R) -> bool {
     // Section Header Block magic, little-endian; anything else is not pcapng.
-    if bytes.len() < 12 || bytes[0..4] != 0x0a0d_0d0au32.to_le_bytes() {
+    // Checked FIRST, against four bytes, because the answer for a classic pcap
+    // is already decided here and loading the capture to learn it is the whole
+    // defect.
+    let mut magic = [0u8; 4];
+    if r.read_exact(&mut magic).is_err() {
+        return false;
+    }
+    if magic != 0x0a0d_0d0au32.to_le_bytes() {
+        return false;
+    }
+    // It IS a pcapng, so the interface blocks have to be walked. They may sit
+    // anywhere in the section, so the rest is read rather than bounded by a
+    // guess -- a pcapng is the uncommon case on this path, and a guess that
+    // fell short would silently mis-detect one. `magic` is put back first so
+    // every offset below still counts from the start of the file.
+    let mut bytes = magic.to_vec();
+    if r.read_to_end(&mut bytes).is_err() {
+        return false;
+    }
+    if bytes.len() < 12 {
         return false;
     }
     let mut off = 0usize;
@@ -235,6 +266,95 @@ fn epoch_to_utc(d: std::time::Duration) -> DateTime<Utc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A reader that counts what it hands out, so "did not read the capture"
+    /// is asserted as an effect rather than read off the source.
+    struct Counting<'a> {
+        inner: std::io::Cursor<&'a [u8]>,
+        read: usize,
+    }
+
+    impl std::io::Read for Counting<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = std::io::Read::read(&mut self.inner, buf)?;
+            self.read += n;
+            Ok(n)
+        }
+    }
+
+    impl std::io::Seek for Counting<'_> {
+        fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            std::io::Seek::seek(&mut self.inner, pos)
+        }
+    }
+
+    /// The predicate that gates this whole module, asserted in the direction
+    /// that matters. Nothing covered it before: every test here drove
+    /// `MergedPcapNg` directly, so a `is_merged` that always answered "no"
+    /// would have passed the suite while quietly routing every merged capture
+    /// back to the libpcap reader that cannot read one.
+    #[test]
+    fn a_merged_pcapng_is_detected_and_an_ordinary_one_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let merged = dir.path().join("merged.pcapng");
+        merged_fixture(&merged);
+        assert!(
+            is_merged(&merged),
+            "interfaces disagreeing on link type and snaplen is the definition"
+        );
+
+        // Same builder, one interface: a perfectly ordinary pcapng, which
+        // libpcap reads fine and which must NOT be diverted.
+        let plain = dir.path().join("plain.pcapng");
+        let mut f = 0x0a0d_0d0au32.to_le_bytes().to_vec();
+        f.extend_from_slice(&28u32.to_le_bytes());
+        f.extend_from_slice(&0x1a2b_3c4du32.to_le_bytes());
+        f.extend_from_slice(&1u16.to_le_bytes());
+        f.extend_from_slice(&0u16.to_le_bytes());
+        f.extend_from_slice(&(-1i64).to_le_bytes());
+        f.extend_from_slice(&28u32.to_le_bytes());
+        // One Interface Description Block: Ethernet, snaplen 65535.
+        f.extend_from_slice(&1u32.to_le_bytes());
+        f.extend_from_slice(&20u32.to_le_bytes());
+        f.extend_from_slice(&1u16.to_le_bytes());
+        f.extend_from_slice(&0u16.to_le_bytes());
+        f.extend_from_slice(&65535u32.to_le_bytes());
+        f.extend_from_slice(&20u32.to_le_bytes());
+        std::fs::write(&plain, &f).unwrap();
+        assert!(
+            !is_merged(&plain),
+            "a single-interface pcapng is not merged and must take the ordinary path"
+        );
+    }
+
+    /// The regression this exists to prevent shipped in 0.5.118 and survived
+    /// to 0.5.121: `is_merged` read the ENTIRE capture into memory and then
+    /// rejected it on the first four bytes. Offline reconstruction of a 128 MB
+    /// classic pcap fell from 3.29M to 2.39M packets per second because of it.
+    #[test]
+    fn a_classic_pcap_is_rejected_without_reading_the_capture() {
+        // A classic pcap magic, then a megabyte of whatever. The whole point
+        // is the "whatever": nothing here should ever be touched.
+        let mut file = 0xa1b2_c3d4u32.to_le_bytes().to_vec();
+        file.extend(std::iter::repeat_n(0x5au8, 1 << 20));
+
+        let mut r = Counting {
+            inner: std::io::Cursor::new(&file[..]),
+            read: 0,
+        };
+        assert!(
+            !is_merged_in(&mut r),
+            "a classic pcap is not a merged pcapng"
+        );
+        assert!(
+            r.read <= 16,
+            "is_merged read {} bytes of a {}-byte capture it rejects on the \
+             first four; every offline run pays this before reading a packet",
+            r.read,
+            file.len()
+        );
+    }
 
     /// Build a pcapng whose two interfaces disagree on BOTH link type and
     /// snaplen, then read it back.

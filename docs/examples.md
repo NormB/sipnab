@@ -418,6 +418,31 @@ each dialog's message ladder. Name your media ports and nothing else, because
 sipnab
 warns if you forget.
 
+
+**What you get that a single source cannot give you.** The two accounts are
+complementary rather than redundant, and their DISAGREEMENT is the finding.
+HEP reports what the proxy *believes* it did. The wire reports what actually
+left the box. When the question is "is the proxy misbehaving, or did I
+configure it to", a mirror produced by the suspect cannot answer it — it is the
+same witness twice.
+
+A composite run therefore reports, per call:
+
+| Finding | What it means |
+|---|---|
+| Seen by both | The proxy did what it says it did |
+| Mirror-only | The proxy believes it sent something the wire never carried |
+| Wire-only | Traffic left the box that the tracing never reported |
+| Differing SDP | Both saw the message and disagree about the media endpoint, so the report carries both accounts side by side |
+
+Neither account carries the label expected or actual. sipnab pairs copies by
+transaction identity ([RFC 3261 §17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3) and §17.2.3), never by arrival order,
+because the mirror usually arrives FIRST — the proxy mirrors as it processes
+while the wire copy takes a network hop, so any "first one wins" rule would
+quietly make the suspect authoritative.
+
+A single-source run reports none of this and allocates nothing for it.
+
 **Trace both directions, or this measures nothing.** In OpenSIPS, use
 transaction scope so the tracer mirrors the message it *sent* as well as the one
 it received:
@@ -454,7 +479,7 @@ changes that: put sipnab's `-d` where the media actually is.
 - A routable HEP listener needs a guard: sipnab refuses a non-loopback `--hep-listen` bind unless you pass `--hep-allow 192.0.2.0/24` (repeatable) or `--hep-auth`/`--hep-auth-file`. A loopback bind needs neither.
 - If your central host is reachable by hostname only, set `--mcp-allowed-host` for the MCP transport too (see Recipe 8).
 - `-d` with `--hep-listen` takes exactly one interface and one listener. sipnab refuses `-I` with `--hep-listen` (a file's addresses are historical and belong to third parties, and sipnab keeps them off its active-response path by refusing to transmit for a file run at all); so are `--multi-device` with `--hep-listen`, and `-O` with the pair — the two sources disagree about the link layer, so there is no honest pcap to write. Use `--hep-send` to forward the signaling instead.
-- One sipnab, one mirroring node. The SDP endpoint index keys on address and port with no node dimension, so two nodes advertising the same RFC 1918 socket would overwrite each other and a stream would bind to whichever offer arrived last.
+- One sipnab, one mirroring node. The SDP endpoint index keys on address and port with no node dimension, so two nodes advertising the same [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) socket would overwrite each other and a stream would bind to whichever offer arrived last.
 
 ---
 

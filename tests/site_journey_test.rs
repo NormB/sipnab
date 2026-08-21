@@ -1439,6 +1439,20 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
     // Re-measured on the released 0.5.104 artifact, 2026-08-17: 2.31M at four
     // cores (replicates 2.31/2.31/2.26M), updated together with the page —
     // again in one commit, again because this gate forces it.
+    // Re-measured 2026-08-21: 3.26M at four cores (replicates 3.25/3.29/3.29M),
+    // on a local release build of the fix for a regression that shipped in
+    // 0.5.118 and survived to 0.5.121. `is_merged` read the ENTIRE capture into
+    // memory and then rejected it on the first four bytes, costing 0.06 s of a
+    // 0.16 s run: four cores fell 3.29 -> 2.40M. The tile is back where 0.5.117
+    // was, not somewhere new. The TILE stays at 0.5.121's 2.40M until the fix
+    // ships: the released binary is what a visitor downloads, and quoting a
+    // number no published artifact produces is the failure this gate exists to
+    // prevent. It moves to 3.26M with the release that carries the fix.
+    // Note what let the regression ship for ten releases -- the
+    // benchmark gate's baseline still recorded 0.5.104's 2.28M, so 2.40M read
+    // as 105% of baseline and passed. THIS gate is the other half: it forces
+    // the tile and the page to move together, but neither is measured in CI,
+    // so bench/baseline.json is what has to catch the number changing.
     // The second tile used to read "12.2x sngrep". It was dropped on
     // 2026-08-10: it argued sipnab's headline claim as a RATIO AGAINST A
     // COMPETITOR, which both advertised that competitor on the most-visited
@@ -1453,7 +1467,7 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
     // One tile now, where there were two. Written as a binding rather than a
     // one-element loop because clippy::single_element_loop rejects the latter;
     // if a second throughput tile ever returns, restore the loop.
-    let (count, suffix) = ("3.25", "M pkts/s");
+    let (count, suffix) = ("2.40", "M pkts/s");
     let tile = format!(r#"data-count="{count}" data-suffix="{suffix}""#);
     assert!(
         idx.contains(&tile),
@@ -4446,6 +4460,18 @@ fn every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist() {
             "section.html",
             "{{ section.content | safe }}",
             "HTML Zola rendered from a committed _index.md, as page.html",
+        ),
+        (
+            "notes.html",
+            "{{ section.content | safe }}",
+            "HTML Zola rendered from the committed notes/_index.md, as \
+             section.html. Notes carry no user-submitted content: every one is \
+             a file in this repository",
+        ),
+        (
+            "note.html",
+            "{{ page.content | safe }}",
+            "HTML Zola rendered from a committed note .md, as page.html",
         ),
     ];
 

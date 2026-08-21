@@ -7,13 +7,24 @@ description = "Reproducible throughput and memory benchmarks, and what the headr
 How fast sipnab is, measured honestly — and what that speed is for. The number
 is not a race against the local capture tools. It is the headroom that decides
 how much of an estate one binary can take at once, and therefore whether you
-stand up a collector tier at all. **Every table on this page comes from one run
-on 0.5.108, on 2026-08-17.**
+stand up a collector tier at all. **Every table on this page comes from one
+session on 2026-08-21.**
 
-Taken on the released 0.5.108 artifact, checksum-verified, 2026-08-17, on an
-idle host, with the released 0.5.107 measured in the same session, in two
-interleaved rounds, as the control for the multi-core change 0.5.108
-carries.
+Taken on the released 0.5.121 artifact, checksum-verified, 2026-08-21, on an
+idle host, against the released 0.5.108 and 0.5.117 artifacts as controls and a
+local release build of the fix. Every artifact figure below is a published
+binary whose checksum verifies. The 0.5.122 column is a local release build,
+marked as one, because at the time of measuring the fix had not shipped.
+
+**0.5.118 through 0.5.121 ran 27% slower than this page said, and 0.5.122 fixes
+it.** The cause was `is_merged`, the probe deciding whether a capture is a
+merged pcapng: it read the ENTIRE file into memory and then rejected it on the
+first four bytes, so every offline run over an ordinary pcap loaded the whole
+capture, threw it away, and only then started work. Three call sites run it
+before the reader touches a packet. On this 128 MB corpus that cost 0.06 s of a
+0.16 s run. The 0.5.108 figures this page carried were never wrong — that
+artifact still measures 3.30M today — but the page kept asserting them while
+the shipped tool no longer met them.
 
 Every number is reproducible. The corpus generator and the timing harness ship
 in [`bench/`](https://github.com/NormB/sipnab/tree/main/bench), so you can
@@ -34,7 +45,7 @@ exists to skip.
 
 Put the figures next to the load. A proxy running 100 calls per second at
 roughly ten SIP messages per call emits about 1,000 signaling packets per
-second. The tables below measure 1.29M packets per second on one core and 3.25M
+second. The tables below measure 1.14M packets per second on one core and 3.26M
 on four, on a corpus that is 93.5% RTP — media a signaling-only HEP feed never
 carries at all. Three orders of magnitude separate that proxy from a single
 core's budget.
@@ -58,22 +69,29 @@ discover:
   G.711 PCMU at 20 ms, 93.5% RTP by packet count.
 - **Method:** offline pcap reconstruction (`-I file`), median-of-5 after one
   discarded warmup. `pkts/s = packets ÷ wall-clock seconds`, startup included.
-- **Version:** sipnab 0.5.108 (release artifact). **Date:** 2026-08-17.
+- **Version:** sipnab 0.5.121 (release artifact), with the released 0.5.108
+  and 0.5.117 artifacts as controls and a local release build of the fix.
+  **Date:** 2026-08-21.
 
 ## Multi-core offline reconstruction
 
 [`--cores N`](@/docs/cli.md#resource-limits) shards by host-pair across worker
 threads. On the 535k-packet fixed-state corpus (100 Call-IDs, 200 streams):
 
-Both columns come from release artifacts, checksum-verified, over two
-interleaved rounds on the same idle host (median-of-5 per round):
+The middle column is what shipped for ten releases. The right-hand column is
+the same corpus once `is_merged` stopped reading it. Each is median-of-5 after a
+discarded warmup, on the same idle host:
 
-| cores | 0.5.107 | 0.5.108 |      |
-|------:|--------:|--------:|-----:|
-| 1 | 1.29M | 1.29M | — |
-| 2 | 2.18M | 2.19M | — |
-| 4 | 2.34M | **3.25M** | **+39%** |
-| 8 | 2.17M | **3.30M** | **+53%** |
+| cores | 0.5.117 | 0.5.121 | 0.5.122 |      |
+|------:|--------:|--------:|--------:|-----:|
+| 1 | 1.15M | 1.02M | 1.14M | — |
+| 2 | 2.19M | 1.78M | 2.16M | — |
+| 4 | 3.29M | 2.40M | **3.26M** | **+36%** |
+| 8 | 3.31M | 2.46M | **3.37M** | **+37%** |
+
+The percentage is the repair, not a gain: 0.5.122 returns to where 0.5.117 was.
+Resident memory returns with it, 143 MiB back to 97 MiB at four cores, because
+the capture is no longer loaded twice — once to reject it, once to read it.
 
 **0.5.108 raised the multi-core ceiling by removing a read, and the sizing
 advice this page gave for four releases is now wrong.** The `--cores` path is

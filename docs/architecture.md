@@ -5,14 +5,34 @@ decisions that explain the shape of the code. For the historical roadmap and
 the full design-decision catalog (D1–D21), see `design/implementation-plan-v6.md`.
 This file tracks the code as it exists.
 
-## One binary, two modes
+## One binary, two run modes, four answer surfaces
 
 `sipnab` is a single binary (plus the `sipnab-audio` dlopen'd plugin crate).
 It runs either as a **TUI** (interactive, ratatui) or in **batch/CLI mode**
 (parse → print/JSON/report → exit). Both modes share one library
 ([`src/lib.rs`](https://github.com/NormB/sipnab/blob/main/src/lib.rs)). The binary ([`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs)) wires CLI flags to library calls.
-The core is synchronous, and async (tokio) exists only at the edges, for the
-optional API/MCP servers.
+
+The run mode decides who drives. It does not decide who can ask: the same
+analysis is readable over four surfaces, all of them readers of the same two
+stores, none of them a second copy of the state.
+
+| Surface | Flag | Who asks |
+|---|---|---|
+| Terminal | default | A person at a TUI, or a script reading text/JSON/NDJSON |
+| REST API | `--api` | Another program, over HTTP |
+| MCP | `--mcp`, plus `--mcp-transport http` to serve it over HTTP | An AI agent, calling Model Context Protocol tools |
+| Prometheus | `--metrics` | A scraper |
+
+MCP is not a wrapper bolted over the CLI. It is a first-class reader
+([`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs)) that takes the same read locks
+the TUI takes, which is why an agent can query a live capture while it is
+still running. No tool mutates the analysis. For the write-back question and
+why it stays closed, see
+[`design/mcp-write-back.md`](design/mcp-write-back.md).
+
+The core is synchronous. Async (tokio) exists only at the edges, on one shared
+runtime ([`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs)), for the optional API and
+MCP servers.
 
 ## Data flow
 

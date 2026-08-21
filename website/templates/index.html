@@ -287,7 +287,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
           <tr><td><a href="{{ get_url(path='@/docs/metrics.md') }}">Prometheus metrics</a></td><td>Counters and gauges about sipnab itself: what it captured, what it lost, what it could not read.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. 32 tools cover dialogs, RTP, diagnostics, and security findings. 27 are read-only; the five that write — file export, capture swap, findings, shutdown — each stay off until you enable them server-side.</td></tr>
           <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Memory-safe by construction. 5467 automated tests. Under 12 MB static binary.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Memory-safe by construction. 5470 automated tests. Under 12 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -369,11 +369,11 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
          local tool. "Headroom", not a fan-in ceiling: the tables measure
          offline pcap reconstruction, and the benchmarks page says so. #}
       <a class="arch-item fade-in-up" href="{{ get_url(path='@/docs/benchmarks.md') }}">
-        <span class="arch-stat" data-count="3.25" data-suffix="M pkts/s">3.25M pkts/s</span>
-        <span class="arch-label">Headroom to take a whole estate's HEP feed on one box, with no collector tier &mdash; offline reconstruction, four cores (measured v0.5.108)</span>
+        <span class="arch-stat" data-count="2.40" data-suffix="M pkts/s">2.40M pkts/s</span>
+        <span class="arch-label">Headroom to take a whole estate's HEP feed on one box, with no collector tier &mdash; offline reconstruction, four cores (measured v0.5.121)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
-        <span class="arch-stat" data-count="5467" data-suffix="">5467</span>
+        <span class="arch-stat" data-count="5470" data-suffix="">5470</span>
         <span class="arch-label">Automated tests</span>
       </a>
     </div>

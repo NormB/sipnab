@@ -28,8 +28,10 @@ nothing and they tell you what you should see at each step.
    `sudo sipnab -d eth0`. Both open the TUI; the walkthrough takes you through
    your first analysis step by step.
 3. **[Drive sipnab from an AI agent](mcp-deploy.md)** — deployment
-- [Reading SIP over TLS without keys](uprobe-walkthrough.md) — what uprobe and eBPF capture is and is **not**, its security implications, whether your kernel supports it at all, and both backends step by step.
    scenarios in order, from same-box stdio to a remote production server.
+4. **[Reading SIP over TLS without keys](uprobe-walkthrough.md)** — what uprobe
+   and eBPF capture is and is **not**, its security implications, whether your
+   kernel supports it at all, and both backends step by step.
 
 ## How-to guides
 
@@ -38,7 +40,14 @@ you want.
 
 - **[Cookbook](examples.md)** — recipes for triage, filtering, HEP, TLS
   decryption, MCP, observability, scanner blocking, and audio export, plus a
-  quick-reference of one-liners.
+  quick-reference of one-liners. Includes cross-checking a HEP mirror against
+  the wire, where the DISAGREEMENT between the two is the finding.
+- **[Drive sipnab from an AI agent](mcp.md)** — expose the analysis as 35
+  Model Context Protocol tools over stdio or HTTP, so an agent queries a
+  capture directly instead of shelling out and parsing text. What the tools
+  return, what stays off unless you enable it, and why none of them write
+  back. Deployment is a [tutorial of its own](mcp-deploy.md); the
+  [tool reference](mcp-tools.md) is the complete list.
 - **[Troubleshooting](troubleshooting.md)** — symptom → command. Failed calls,
   one-way audio, high loss, NAT issues: what to run and what to look for.
 - **[Tuning capture](tuning-capture.md)** — are you dropping packets, and what

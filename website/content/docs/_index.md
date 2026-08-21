@@ -49,6 +49,14 @@ fragmentation and TCP stream reassembly. All 19 RFC 3261 and IANA compact
 header forms all resolve, so a message using `f:`/`t:`/`i:` is not a blind
 spot.
 
+**Cross-check the proxy against the wire.** One run can take a HEP mirror and
+a live interface at once and report where the two disagree: messages the proxy
+believes it sent that never reached the wire, traffic on the wire the tracing
+never reported, and messages both saw carrying different SDP. A mirror answers
+"what does the proxy think it did". The interface answers "what actually left
+the box". Asking the suspect twice cannot tell you the proxy is misconfigured —
+see the [Cookbook](/docs/cookbook/).
+
 **Correlate calls.** sipnab follows dialogs across their lifetime and links them to
 their media through SDP, then rendered as a call list, a ladder-style call
 flow, and per-message detail.

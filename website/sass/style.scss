@@ -1225,6 +1225,37 @@ input:focus-visible,
 
   .doc-header h1 { margin: 0; }
 
+  // -- Engineering notes --
+  //
+  // The notes section reuses .doc-layout/.doc-content wholesale, so it needs
+  // only the listing and the dateline. Kept here rather than in a file of its
+  // own because it is three rules that inherit everything else.
+  .note-date {
+    margin: 0.35rem 0 0;
+    font-size: 0.9rem;
+    color: $text-dim;
+  }
+
+  .note-list {
+    list-style: none;
+    margin: 2rem 0 0;
+    padding: 0;
+  }
+
+  .note-list-item {
+    padding: 1.25rem 0;
+    border-top: 1px solid $border;
+
+    h2 {
+      margin: 0;
+      font-size: 1.25rem;
+      a { text-decoration: none; }
+    }
+
+    p { margin: 0.5rem 0 0; color: $text-dim; max-width: 64ch; }
+    .note-date { margin: 0.2rem 0 0; }
+  }
+
   // -- Body measure --
   //
   // 70ch is a reading measure: ~70 characters is the line length prose is

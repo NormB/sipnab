@@ -187,6 +187,37 @@ SRTP keys arrive two ways, and sipnab reads both:
 - **DTLS-SRTP** — a DTLS handshake carries the keys, so supply the keylog
   the same way, cookbook [§7d](@/docs/cookbook.md#7-decrypt-sip-tls-via-sslkeylogfile).
 
+## When the keys arrive after the call starts
+
+Methods 3, 4 and 5 share one race. You attach the key source to a daemon that
+is already running, a call arrives, and the first records reach sipnab before
+the first key does. On a SIP session the first record is the INVITE, so the
+symptom is not "a few records are unreadable" — it is a call with no offer in
+it, which sipnab then reports as a media mismatch or a NAT problem, because
+from the dialog's point of view that is exactly what it looks like.
+
+sipnab holds application data it cannot open yet and retries it as soon as a
+key for that session turns up. No flag switches this on: it is what `--keylog`
+and `--keylog-watch` already do. A run that recovered records says so:
+
+```text
+TLS late decrypt: recovered 3 record(s) that arrived before their keys
+```
+
+The hold has limits, because a peer whose keys never arrive would otherwise
+grow it without end:
+
+| Bound | Value |
+|---|---|
+| Total held, across every session | 4 MiB |
+| Records per direction | 16 |
+| Directions | 4096 |
+| Age | 5 seconds |
+
+Those bounds are the reason to start the key source **before** the capture
+wherever you can. Recovery closes a gap measured in packets, not one measured
+in minutes.
+
 ## What does not work, and why
 
 Stated plainly, because time spent here is time people lose:
@@ -201,8 +232,11 @@ Stated plainly, because time spent here is time people lose:
   process memory on the host they run on. That is the whole boundary.
 - **Attaching to a long-lived connection and expecting the back catalogue.**
   Keys extracted from a running process decrypt records captured from that
-  point on, provided the capture catches the stream early enough. They never
-  recover traffic that went past before you started.
+  point on, provided the capture catches the stream early enough. sipnab does
+  recover records that reached it in the moments before the key did, described
+  above, but that closes a gap of packets rather than one of history: traffic
+  that went past before the capture started is not in the capture, and nothing
+  recovers it.
 
 ## Still stuck?
 
@@ -213,6 +247,7 @@ Stated plainly, because time spent here is time people lose:
 | `needs this kernel's BTF` | No `CONFIG_DEBUG_INFO_BTF`; use `--uprobe-backend tracefs` |
 | `no kernel programs` | Binary lacks the `bpf` feature; use `tracefs`, or rebuild |
 | Keylog present, still encrypted | Keys minted after start — add `--keylog-watch` |
+| Call decodes, but its INVITE is missing and sipnab reports a media or NAT problem | The keys arrived after the INVITE did. sipnab retries records held from before the key, within the bounds above; start the key source before the capture |
 | Keylog stays empty | eCapture attached to a TLS library the daemon never calls — pass `--libssl` with the path from `/proc/<daemon-pid>/maps` |
 | Keys load, sessions listed, nothing decrypts | The capture joined TLS 1.3 connections already running, past the record numbers sipnab searches. Restart the connection while capturing |
 | Keys load, no sessions listed | TLS 1.2 without the handshake — the ServerHello never got captured, and the master secret alone cannot make record keys. Restart the connection while capturing |

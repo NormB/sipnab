@@ -134,6 +134,7 @@
       <div class="nav-links" id="nav-links">
         <a href="{{ get_url(path='@/download.md') }}" {% if current_path is defined and current_path == "/download/" %}class="active"{% endif %}>Download</a>
         <a href="{{ get_url(path='@/analyze/_index.md') }}" {% if current_path is defined and current_path is starting_with("/analyze") %}class="active"{% endif %}>Analyze</a>
+        <a href="{{ get_url(path='@/notes/_index.md') }}" {% if current_path is defined and current_path is starting_with("/notes") %}class="active"{% endif %}>Notes</a>
         <div class="nav-drop" id="nav-drop">
           <button class="nav-drop-btn{% if current_path is defined and current_path is starting_with("/docs") %} active{% endif %}" id="nav-drop-btn" aria-haspopup="true" aria-expanded="false">Docs <span class="nav-caret" aria-hidden="true">&#9662;</span></button>
           <div class="nav-drop-menu" role="menu">
@@ -228,6 +229,7 @@
           <a href="{{ get_url(path='@/download.md') }}">Download</a>
           <a href="{{ get_url(path='@/docs/_index.md') }}">Docs</a>
           <a href="{{ get_url(path='@/analyze/_index.md') }}">Analyze</a>
+          <a href="{{ get_url(path='@/notes/_index.md') }}">Notes</a>
           <a href="{{ config.extra.github_url }}/blob/main/CHANGELOG.md">Changelog</a>
         </nav>
         <div class="footer-meta">
