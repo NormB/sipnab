@@ -489,6 +489,38 @@ Tiers:
   locally-captured stream belong to the same call — which overlaps the
   provenance work in the leg-correlation thread. Worth designing rather than
   bolting on.
+- [ ] **SRC2 — the two witnesses are not compared, so the disagreement that
+  makes them worth having is never surfaced.** SRC1 shipped composition:
+  `-d` and `-L` now run in one process. It was sold as redundancy — HEP as the
+  robust path when eCapture keylog extraction proves fragile. Dan Jenkins
+  ([@danjenkins](https://github.com/danjenkins)) reframed it after using it,
+  and his framing is sharper than the entry it came from:
+
+  > "i really didnt want to trust HEP from opensips... the whole point is
+  > being able to see when opensips is doing something wrong, or ive told it
+  > to do the wrong thing or whatever. so being able to trace TLS purely from
+  > what hit the box is fantastic"
+
+  HEP reports what the proxy BELIEVES it did. The wire reports what actually
+  left the box. When the question under investigation is "is OpenSIPS
+  misbehaving, or did I configure it to", a mirror produced by the suspect
+  cannot answer it — it is the same witness twice. That makes the two sources
+  complementary rather than redundant, and it makes their DISAGREEMENT the
+  finding, not an inconvenience to reconcile.
+
+  Today sipnab merges both into one store and says nothing when they differ.
+  A message the mirror reports and the wire never carried is a proxy that
+  believes it sent something it did not. A message on the wire that the mirror
+  never reported is tracing that is lying to its operator. An SDP whose
+  addresses differ between the two is a rewrite — sometimes the SBC doing its
+  job, sometimes the bug. All three are currently invisible.
+
+  **Do:** tag each dialog and message with the source that produced it
+  (`input_origin`, already open as SRC1 stage 2), then report per call: seen
+  on both, mirror-only, wire-only, and differing-in-SDP. Ordering matters more
+  here than elsewhere — the mirror is usually first, so a naive "first SDP
+  wins" would let the proxy's account define the truth the wire is supposed to
+  check. Depends on SRC1 stage 2 for the provenance it needs.
 - [x] **G6 — `--cores N` is silently ignored on live capture.** `RunMode` is
   chosen by `cli.cores > 1 && cli.has_input() && !cli.multi_device`
   ([`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs)), so `--cores 8 -d eth0` falls through to
@@ -627,6 +659,38 @@ Tiers:
 - [x] src/capture/hep.rs:1566 — [missed-edge-case] `HepSender::new` binds `0.0.0.0:0` (IPv4-only); IPv6 dest fails — bind family should follow destination. **Done:** the destination is resolved first and the bind follows its family (`[::]:0` for IPv6, `0.0.0.0:0` for IPv4).
 
 ## P2 — robustness, observability & efficiency
+
+- [ ] **REL1 — the release build fetches from four external hosts and a
+  failure at any of them costs a re-run of the whole tag.** Measured over one
+  session on 2026-08-21, four separate builds failed on a fetch and none on
+  the code: `apt-get install libpcap-dev` hung fifteen minutes against the
+  Ubuntu archives and was cancelled, taking the aggregate CI gate with it;
+  Trivy's ~60 MB vulnerability DB stalled coming from `mirror.gcr.io` and
+  failed the Docker job after the image had already built and passed smoke;
+  and the 0.5.120 release build failed outright on the netmap headers pulled
+  from `raw.githubusercontent.com`, which sit behind an explicit `|| exit 1`
+  in the musl cross image. That last one published NOTHING: `Create Release`
+  and the Homebrew bump were skipped, so a tag existed with no artefacts
+  behind it until the job was re-run by hand.
+
+  CI was made local-first in 0.5.118 — a shared composite action installs
+  `.deb` files from `actions/cache` with `dpkg`, which reaches no network, and
+  Trivy's DB is cached per day with a fallback to yesterday's. `release.yml`
+  was DELIBERATELY excluded from that work and the exclusion is documented in
+  [`tests/ci_local_fetch_gate_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/ci_local_fetch_gate_test.rs): its builds run inside pinned containers
+  as root where the package set is multiarch and `actions/cache` has no
+  meaning. That reasoning still holds; what it did not account for is that a
+  release fetch failing is strictly worse than a CI fetch failing, because a
+  tag is already public by the time it happens.
+
+  **Do:** the inputs are all FIXED and VERSIONED — the netmap headers are
+  pinned to a commit, libpcap to a release tarball — so they are exactly the
+  kind of thing that should be vendored, mirrored into the repo's own
+  registry, or fetched with a retry and a checksum rather than a bare `wget`
+  under `|| exit 1`. Whatever is chosen, a failed fetch must not be
+  indistinguishable from a failed BUILD in the log: the 0.5.120 failure quoted
+  the `apt-get` line at the head of a long `&&` chain while apt had in fact
+  succeeded, so the message named the wrong command.
 
 - [x] **DH1 — The TUI is the one diagnosis surface that hints never reach.**
   Media hints are produced once, in [`src/rtp/diagnosis.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/diagnosis.rs), and consumed by four
