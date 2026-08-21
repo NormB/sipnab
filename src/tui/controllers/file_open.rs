@@ -459,8 +459,15 @@ fn run_pcap_load(
                 sip_count += 1;
                 if !sdp_links.is_empty() {
                     let mut ss = stream_store.write();
+                    // As on the batch and `--cores` routers: opening a file in
+                    // the TUI must reach the same endpoint provenance a batch
+                    // run over the same file reaches.
+                    let provenance = crate::rtp::stream_store::SdpProvenance::observed(
+                        parsed.input_origin,
+                        parsed.timestamp,
+                    );
                     for (ip, port, call_id, media) in &sdp_links {
-                        ss.link_to_dialog_with_sdp(*ip, *port, call_id, media);
+                        ss.link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
                     }
                 }
             }

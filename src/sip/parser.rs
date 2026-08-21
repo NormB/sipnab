@@ -315,6 +315,11 @@ pub fn parse_sip_bytes(
         // an IP header. The capture pipeline stamps both where it holds the
         // `ParsedPacket` and the message together.
         dscp: None,
+        // And the third of the same kind: which capture source delivered these
+        // bytes is a property of the packet, and the parser is handed no
+        // packet. Left absent rather than defaulted to `Wire`, because "seen
+        // on a wire" is a claim a parser has no grounds to make.
+        input_origin: None,
         raw: data.clone(),
         is_request: first.is_request,
         method: first.method,

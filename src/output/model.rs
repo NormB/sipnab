@@ -75,6 +75,16 @@ pub struct DialogSummary {
     /// would read as a real pointer to frame 0.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frame: Option<String>,
+    /// Which capture source delivered the message that OPENED this dialog —
+    /// `wire`, `hep` or `uprobe`.
+    ///
+    /// First, never latest, matching [`Self::frame`]: one process can capture
+    /// from an interface and a HEP mirror at once, and with no BPF filter
+    /// excluding the mirrored signaling ports the same message arrives from
+    /// both, so a field reassigned per message would report whichever spoke
+    /// last. Omitted, never null, when the opening message carried no origin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_origin: Option<String>,
 }
 
 impl From<&SipDialog> for DialogSummary {
@@ -114,6 +124,9 @@ impl From<&SipDialog> for DialogSummary {
             // `d.messages.first()`, which compaction can replace with a
             // later message.
             frame: d.first_frame.as_ref().map(ToString::to_string),
+            // From the same message `frame` came from, so the two cannot name
+            // different packets.
+            input_origin: d.input_origin.map(|o| o.as_str().to_string()),
         }
     }
 }
@@ -187,6 +200,32 @@ pub struct StreamSummary {
     /// path segment.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub round_trip_source: Option<String>,
+    /// Which capture source this stream's MEDIA arrived over — `wire`, `hep`
+    /// or `uprobe`.
+    ///
+    /// Absent, never null, when the stream came from no captured packet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_origin: Option<String>,
+    /// Which source delivered the SDP that named this stream's dialog,
+    /// present **only when it differs** from [`Self::input_origin`].
+    ///
+    /// Its presence is the honest limit on this stream's attribution. sipnab
+    /// binds a dialog to a stream by SDP media endpoint, which never consults
+    /// the capture source — that is what lets one process take signaling from
+    /// a HEP mirror and media off the NIC at all, and it is also what lets the
+    /// two halves come from places that disagree: the SDP says what the proxy
+    /// believes it did, the media says what left the box. A reader deciding
+    /// whether to act on an attribution needs to know which of those they
+    /// have.
+    ///
+    /// One predicate decides this on every surface
+    /// ([`RtpStream::dialog_bound_across_sources`](crate::rtp::stream::RtpStream::dialog_bound_across_sources)),
+    /// the same way `dscp_last` is gated, so a cross-source binding cannot
+    /// appear on one door and be silent on another. Absent means either a
+    /// same-source binding or one whose sources nobody recorded — never "they
+    /// agree", which is a claim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dialog_origin: Option<String>,
 }
 
 impl StreamSummary {
@@ -259,6 +298,13 @@ impl StreamSummary {
             // knows.
             round_trip_ms: None,
             round_trip_source: None,
+            input_origin: s.input_origin.map(|o| o.as_str().to_string()),
+            // Emitted only when the binding crossed sources, decided by the
+            // one predicate that decides it everywhere.
+            dialog_origin: s
+                .dialog_bound_across_sources()
+                .then(|| s.dialog_origin.map(|o| o.as_str().to_string()))
+                .flatten(),
         }
     }
 }

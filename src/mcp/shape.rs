@@ -167,7 +167,12 @@ pub const DIALOG_FENCED_FIELDS: &[&str] = &["from_user", "to_user"];
 /// `call_id` and `frame` are the handles an agent passes to `get_dialog`,
 /// `get_message` and `--show-frame`; fencing either breaks the next call.
 /// `state` and `method` look like wire data and are not: both are rendered from
-/// sipnab's own enums, so a sender cannot choose their text.
+/// sipnab's own enums, so a sender cannot choose their text. `input_origin` is
+/// the same case and is worth naming separately, because it is the field that
+/// says a fact came over HEP — where an unauthenticated sender asserts the
+/// addressing. What that sender CANNOT choose is this string: it is one of
+/// three variants of `InputOrigin`, decided by which reader built the packet,
+/// so the answer is sipnab's rather than theirs.
 pub const DIALOG_VERBATIM_FIELDS: &[&str] = &[
     "call_id",
     "state",
@@ -178,6 +183,7 @@ pub const DIALOG_VERBATIM_FIELDS: &[&str] = &[
     "updated_at",
     "timing",
     "frame",
+    "input_origin",
 ];
 
 /// Project a dialog into the summary the MCP surface returns, with its

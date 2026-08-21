@@ -44,7 +44,7 @@ narrower and more interesting:
 | Platform split | [`fanout.rs:109`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L109) | non-Linux returns `ErrorKind::Unsupported`; the call site is unconditional so it cannot go unused (`82eb8ff`) |
 | Plan / group id | [`live.rs:194`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L194), [`:209`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L209) | pure, tested without a device |
 | Kernel probe | [`live.rs:293`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L293) | throwaway handle, so refusal is discovered once |
-| N-socket driver | `capture_live_fanout`, [`live.rs:224`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L224) | complete, joins all threads, first error wins |
+| N-socket driver | `capture_live_fanout`, [`live.rs:253`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L253) | complete, joins all threads, first error wins |
 | **A caller** | [`bootstrap.rs:1958`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1958), [`native.rs:397`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L397) | **CT4 shipped it**: `--cores N` becomes `fanout_sockets`, and the `Live` arm calls `capture_live_fanout` |
 
 That last row is the one thing this section got to change. When the page was
@@ -73,13 +73,13 @@ wrong at once, and one of them is a test that pins the *complement*:
   pcap reconstruction (`-I`) … Advanced features (live capture, per-message
   output ordering, security detectors, SRTP decrypt) use the single-threaded
   path regardless."*
-- `cores_ignored_warning` ([`bootstrap.rs:2580`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2580)),
+- `cores_ignored_warning` ([`bootstrap.rs:2659`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2659)),
   whose live-capture branch says *"this run captures live rather than reading a
   saved file … parallel reconstruction is offline-only — it shards a capture
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it`
-  ([`bootstrap.rs:3301`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3301)), which asserts the warning
+  ([`bootstrap.rs:3380`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3380)), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N
@@ -100,7 +100,7 @@ does nothing on this path — the rarest and cheapest kind of flag change.
 
 **The module already assumes it.** `capture_live_fanout`'s own fallback warning
 is written in terms of `--cores`
-([`live.rs:236`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L236)): *"`--cores {sockets}` does not
+([`live.rs:253`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L253)): *"`--cores {sockets}` does not
 widen a live capture here."* Shipping a second flag would make that message
 wrong on the day it first becomes reachable.
 
@@ -160,7 +160,7 @@ coordinator thread and an aggregated readiness signal. That is the same topology
 `capture_live_fanout` builds — which is a good sign for the design and a problem
 for the combination: `--cores 4 -d eth0,eth1 --multi-device` would be eight
 capture threads and eight rings, and `fanout_group_id`
-([`live.rs:209`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L209)) derives **one group id per
+([`live.rs:238`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L238)) derives **one group id per
 process**, not per device.
 
 **Unverified:** whether the kernel permits sockets bound to two different
@@ -170,10 +170,32 @@ running kernel — the same standard `fanout_applies_to_an_open_pcap_handle`
 ([`fanout.rs:198`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L198)) already set for the single-device
 claim — `--cores` with `--multi-device` must keep its existing refusal.
 
+### 2.3 A grouped socket cannot number its own frames
+
+Added when SRC1 stage 2 gave the live reader an ordinal
+([`docs/design/simultaneous-capture-sources.md`](https://github.com/NormB/sipnab/blob/main/docs/design/simultaneous-capture-sources.md)). A frame pointer is
+`<source>#<ordinal>`, and the source a live socket stamps is the DEVICE NAME —
+one string for however many sockets the group opened. `capture_live_group` runs
+once per socket, so a counter per socket would mint `eth0#0` from every one of
+them: several different frames sharing a name, and following such a pointer
+returns bytes that are not the ones described. Nothing downstream can tell that
+apart from a correct pointer, which makes it worse than no pointer at all.
+
+So a grouped socket stamps no ordinal and `frame_counter_for`
+([`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs)) is where that is decided, keyed on
+the group rather than on the socket index. A `--cores N` live run therefore has
+the provenance every live run had before stage two: absent, which is a MISSING
+answer rather than a wrong one.
+
+The alternative is one counter shared across the group's sockets — an atomic per
+packet on the path this feature exists to relieve. It is not obviously too
+expensive and it has not been measured, so it stays unbuilt rather than
+speculated about.
+
 ## 3. What widening CAPTURE buys, exactly
 
 `capture_live_fanout` gives every socket the same `tx`
-([`live.rs:224`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L224)), and there is one receiver: the
+([`live.rs:253`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L253)), and there is one receiver: the
 `rx.recv_timeout` at [`batch.rs:2121`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2121). So the shape is
 N producers, one consumer, one pair of stores, one sweep.
 
@@ -236,7 +258,7 @@ Three things happen at that EOF, and none of them has a live equivalent:
    fragments in capture-timestamp order and re-runs the state machine. Live,
    there is no moment at which a dialog is finished arriving.
 2. **`StreamStore::reassociate_all` links streams to dialogs globally**
-   ([`stream_store.rs:1326`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1326)), because SDP and RTP
+   ([`stream_store.rs:1537`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1537)), because SDP and RTP
    routinely land on different workers when the carrier advertises a separate
    media IP.
 3. **`final_sweep` runs exactly ONCE, after the merge, at the capture's final
@@ -276,7 +298,7 @@ to answer is what replaces `final_sweep`'s single well-defined moment.
 ### Instruments
 
 `KERNEL_DROPPED` / `IFACE_DROPPED`
-([`live.rs:761`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L761)) are the loss counters;
+([`live.rs:811`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L811)) are the loss counters;
 `sipnab_capture_queue_depth_packets` and
 `sipnab_capture_backpressure_blocks_total` are the regime discriminator (§3).
 Both are read from the same process under test, which is why the controls below

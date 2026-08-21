@@ -321,6 +321,29 @@ pub struct RtpStream {
     ///
     /// [`SipDialog::first_frame`]: crate::sip::dialog::SipDialog::first_frame
     pub first_frame: Option<crate::capture::packet::FrameRef>,
+    /// Which capture source this stream's MEDIA arrived over.
+    ///
+    /// Stamped from the packet that created the stream, in the same branch and
+    /// for the same reason as [`first_frame`](Self::first_frame): that branch
+    /// runs only for a key the store has not seen, so it is by construction
+    /// the stream's first packet.
+    ///
+    /// `None` for a stream built by hand. Absent means unknown, and a stream
+    /// that does not know where its media came from must not be compared
+    /// against a dialog that does — see
+    /// [`dialog_bound_across_sources`](Self::dialog_bound_across_sources).
+    pub input_origin: Option<crate::capture::parse::InputOrigin>,
+    /// Which capture source delivered the SDP that named this stream's dialog.
+    ///
+    /// Written at the moment [`associated_dialog`](Self::associated_dialog) is
+    /// filled, from the message that advertised the media endpoint, so the two
+    /// always describe the same binding.
+    ///
+    /// `None` when the binding came from a path that carries no provenance —
+    /// `StreamStore::link_to_dialog`, which takes a bare `Call-ID` and no
+    /// message — or when the stream is still orphaned. Absent is not "same
+    /// source": it is "nobody said", and it must not be read as agreement.
+    pub dialog_origin: Option<crate::capture::parse::InputOrigin>,
     /// Timestamp of the first packet seen for this stream.
     pub first_seen: DateTime<Utc>,
     /// Timestamp of the most recent packet.
@@ -440,6 +463,37 @@ impl RtpStream {
     #[must_use]
     pub fn orphaned(&self) -> bool {
         self.associated_dialog.is_none()
+    }
+
+    /// Did this stream's dialog reach sipnab over a DIFFERENT capture source
+    /// than its media?
+    ///
+    /// A cross-source binding is a weaker tie than a same-source one. sipnab
+    /// correlates a dialog to a stream by SDP media endpoint — a bare
+    /// `(IpAddr, u16)` that never consults the capture source — which is what
+    /// makes a composite run work at all, and also what makes it possible for
+    /// the two halves to come from places that disagree: HEP carries what the
+    /// proxy believes it did, the wire carries what actually left the box. The
+    /// output must say which of those it has, rather than presenting both as
+    /// "associated", so an operator can discount a suspicious attribution
+    /// instead of trusting it.
+    ///
+    /// Requires BOTH sides to be known. An absent origin is "nobody said", not
+    /// "the same source", and reporting a difference from an unknown would
+    /// manufacture exactly the confidence this exists to withhold — so this is
+    /// `false` for a stream built by hand and for one bound through a path
+    /// that carries no provenance.
+    ///
+    /// A method rather than a stored flag, for the same reason
+    /// [`orphaned`](Self::orphaned) is one: a future path that fills
+    /// [`dialog_origin`](Self::dialog_origin) cannot forget to maintain a
+    /// second field beside it.
+    #[must_use]
+    pub fn dialog_bound_across_sources(&self) -> bool {
+        match (self.input_origin, self.dialog_origin) {
+            (Some(media), Some(signaling)) => media != signaling,
+            _ => false,
+        }
     }
 
     /// Is this stream marked for the queue voice is supposed to be in?
@@ -638,6 +692,14 @@ impl RtpStream {
             // `ParsedPacket` — stamps it immediately after, next to the other
             // corrections that must land before the first packet is folded in.
             first_frame: None,
+            // Same reason again: an RTP header does not know which capture
+            // source carried it. `process_rtp` stamps this beside
+            // `first_frame`, from the same packet.
+            input_origin: None,
+            // Nothing is bound yet: `associated_dialog` starts `None` and this
+            // is written only where that is filled, so the two can never
+            // describe different bindings.
+            dialog_origin: None,
             first_seen: timestamp,
             last_seen: timestamp,
             packet_count: 1,

@@ -1926,6 +1926,13 @@ pub fn classify_packet(
                 // sees a packet, and every consumer downstream sees only the
                 // message. A `Copy` byte, so this costs nothing.
                 sip_msg.dscp = pp.dscp;
+                // Which source delivered it, across the same boundary and for
+                // the same reason. In a mixed run this is the only thing that
+                // makes a HEP-reported fact distinguishable from a
+                // wire-observed one, and their DISAGREEMENT is the finding the
+                // next item compares for (SRC1 stage 2). Per message, never
+                // per run: a composite run has no run-level answer.
+                sip_msg.input_origin = Some(pp.input_origin);
                 let mut sdp_links = Vec::new();
                 if !opts.no_dialog
                     && let Some(sdp) = sip_msg.sdp()
@@ -2164,8 +2171,17 @@ pub fn process_packet(
             // Link SDP media endpoints to RTP streams (separate lock).
             if !sdp_links.is_empty() {
                 let mut ss = stream_store.write();
+                // The endpoint remembers WHICH source advertised it and WHEN,
+                // because both decide what a stream created later may claim
+                // from it: a binding across sources is a weaker tie and must
+                // say so, and an offer stale enough to belong to a previous
+                // call on the same socket must claim nothing (F3).
+                let provenance = crate::rtp::stream_store::SdpProvenance::observed(
+                    pp.input_origin,
+                    pp.timestamp,
+                );
                 for (ip, port, call_id, media) in &sdp_links {
-                    ss.link_to_dialog_with_sdp(*ip, *port, call_id, media);
+                    ss.link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
                 }
             }
         }

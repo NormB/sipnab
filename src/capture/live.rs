@@ -201,6 +201,35 @@ pub(crate) fn plan_fanout(sockets: usize) -> FanoutPlan {
     }
 }
 
+/// The frame counter this socket may keep, or `None` when it must not number
+/// its frames at all.
+///
+/// A frame pointer is `<source>#<ordinal>`, and the source here is the DEVICE
+/// NAME — one string for however many sockets `PACKET_FANOUT` opened on it.
+/// Under a group, `capture_live_group` runs once per socket, so a counter per
+/// socket would mint `eth0#0` from every one of them: several different frames
+/// with one name. Following such a pointer returns bytes that are not the ones
+/// described, which is worse than following nothing, and no `is_some()` check
+/// downstream can tell the two apart.
+///
+/// So a grouped socket stamps nothing and `Packet::frame_ref` keeps returning
+/// `None` for it — the behaviour every live capture had before stage two, which
+/// is a MISSING answer rather than a wrong one. The alternative, one shared
+/// atomic across the group's sockets, buys provenance for the one live mode
+/// that exists to shed load, at a per-packet atomic on the contended path; it
+/// has not been measured, and this repo does not upgrade a reasoned claim to a
+/// measured one.
+///
+/// Pure so the decision is testable without a capture device, exactly as
+/// [`plan_fanout`] is.
+pub(crate) fn frame_counter_for(
+    fanout_group: Option<u16>,
+) -> Option<crate::capture::packet::FrameCounter> {
+    fanout_group
+        .is_none()
+        .then(crate::capture::packet::FrameCounter::new)
+}
+
 /// Group id for this process.
 ///
 /// Derived from the pid so two sipnab instances capturing the same interface do
@@ -533,6 +562,16 @@ fn capture_live_group(
     let interface_name = Some(device.to_string());
     let start = std::time::Instant::now();
     let mut count: u64 = 0;
+    // This device's frame numbering, kept separately from `count` because the
+    // two answer different questions: `count` is what `--count` and the summary
+    // line bound, whereas the ordinal is half of a provenance pointer and
+    // belongs to THIS source. Under `--multi-device` and under a `-d` + `-L`
+    // composite several readers push into one channel, so one counter per
+    // reader is what keeps each source's positions its own -- see
+    // `FrameCounter`. `None` under `PACKET_FANOUT`, where several sockets share
+    // this device name and no per-socket counter could number them without
+    // collisions -- see `frame_counter_for`.
+    let mut frames = frame_counter_for(fanout_group);
 
     // Kernel/interface drop accounting. libpcap's counters are cumulative per
     // handle, so the loop keeps the previous reading and folds the delta into
@@ -601,7 +640,7 @@ fn capture_live_group(
         match cap.next_packet() {
             Ok(pkt) => {
                 let ts = pcap_ts_to_chrono(pkt.header.ts);
-                let packet = Packet::new(
+                let mut packet = Packet::new(
                     ts,
                     pkt.data.to_vec(),
                     pkt.header.caplen as usize,
@@ -609,6 +648,15 @@ fn capture_live_group(
                     interface_name.clone(),
                     link_type,
                 );
+                // Stamped beside the source name, because those two together
+                // are what make the frame nameable, and BEFORE the send: once
+                // the packet is on the channel this thread cannot amend it,
+                // and a consumer inferring position from arrival order would
+                // be wrong the moment the other member of a composite
+                // interleaves its own packets.
+                packet.origin = frames
+                    .as_mut()
+                    .map(crate::capture::packet::FrameCounter::next_origin);
 
                 if tx.send(packet).is_err() {
                     tracing::debug!("Receiver dropped, stopping live capture");
@@ -937,6 +985,35 @@ mod fanout_plan_tests {
             id,
             std::process::id() as u16,
             "must be derived from the pid so instances do not collide"
+        );
+    }
+
+    /// A lone socket numbers its frames; a socket in a fanout group does not.
+    ///
+    /// `capture_live_group` runs once per socket and every one of them stamps
+    /// the same DEVICE NAME, so a counter per socket in a group would mint
+    /// `eth0#0` from each of them — several different frames sharing one name.
+    /// Following such a pointer returns bytes that are not the ones described,
+    /// which is worse than following nothing and which nothing downstream can
+    /// tell apart from a correct pointer. Withholding the ordinal restores the
+    /// pre-stage-two behaviour for that mode, which is a MISSING answer.
+    ///
+    /// Both directions, because a rule that always refuses would silently undo
+    /// the whole of this stage for ordinary single-socket capture.
+    #[test]
+    fn only_an_ungrouped_socket_numbers_its_own_frames() {
+        let mut solo = frame_counter_for(None).expect("a lone socket owns its device's numbering");
+        assert_eq!(solo.next_origin().ordinal, 0);
+        assert_eq!(
+            solo.next_origin().ordinal,
+            1,
+            "and it advances, or every stream would cite frame 0"
+        );
+
+        assert!(
+            frame_counter_for(Some(0xA1B2)).is_none(),
+            "a socket sharing a device name with its siblings must stamp \
+             nothing rather than mint a second frame 0 for that device"
         );
     }
 }

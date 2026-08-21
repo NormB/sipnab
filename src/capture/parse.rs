@@ -97,6 +97,28 @@ pub enum InputOrigin {
     Uprobe,
 }
 
+impl InputOrigin {
+    /// The name this origin is written under on every output surface.
+    ///
+    /// One spelling in one place. Two surfaces naming the same origin
+    /// differently would leave an operator comparing a JSON report against a
+    /// log line unable to tell whether they are looking at the same source.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Wire => "wire",
+            Self::Hep => "hep",
+            Self::Uprobe => "uprobe",
+        }
+    }
+}
+
+impl std::fmt::Display for InputOrigin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// upper-layer parsing.
 #[derive(Debug, Clone)]
 pub struct ParsedPacket {

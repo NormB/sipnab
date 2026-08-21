@@ -55,6 +55,10 @@ fn unmeasured() -> serde_json::Value {
         frame: None,
         round_trip_ms: None,
         round_trip_source: None,
+        // This suite is about the round-trip keys; a hand-built summary saw no
+        // capture source, and `None` is the honest answer rather than `wire`.
+        input_origin: None,
+        dialog_origin: None,
     };
     serde_json::to_value(s).expect("serialize")
 }
@@ -107,6 +111,10 @@ fn a_measured_round_trip_carries_its_provenance() {
         frame: None,
         round_trip_ms: None,
         round_trip_source: None,
+        // This suite is about the round-trip keys; a hand-built summary saw no
+        // capture source, and `None` is the honest answer rather than `wire`.
+        input_origin: None,
+        dialog_origin: None,
     };
 
     let xr = serde_json::to_value(
@@ -150,6 +158,8 @@ fn a_measured_zero_is_reported_rather_than_hidden() {
         frame: None,
         round_trip_ms: None,
         round_trip_source: None,
+        input_origin: None,
+        dialog_origin: None,
     }
     .with_round_trip(Some((0.0, RttSource::XrVoipMetrics)));
 

@@ -2770,8 +2770,16 @@ fn no_documentation_table_repeats_a_row() {
         // site mirror. It is a table rather than prose because the two- and
         // four-core rows are a REGRESSION, and a reader owed that number is
         // owed it beside the rows it is being traded against.
-        590,
-        "walked {tables} tables, expected 590. More is fine — bump this. FEWER \
+        //
+        // Raised 590 -> 591 by SRC1 stage 2: the design-test-to-name table in
+        // the stage-2 section of docs/design/simultaneous-capture-sources.md,
+        // matching the one stage 1 already carries. One and not two — a design
+        // doc has no site mirror. Attributed per file against HEAD:
+        // docs/design/live-fanout.md gained a §2.3 of PROSE and every other
+        // changed page only moved line anchors inside existing tables, so all
+        // of those held their counts.
+        591,
+        "walked {tables} tables, expected 591. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

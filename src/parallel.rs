@@ -362,8 +362,15 @@ fn reconstruct(
                 // The store takes the message by move — cloning a SipMessage
                 // deep-copies every header String.
                 ds.process_message(msg);
+                // Same provenance the single-threaded router records, so a
+                // `--cores` run and a `--cores 1` run reach the same answer
+                // about which source advertised an endpoint and when.
+                let provenance = crate::rtp::stream_store::SdpProvenance::observed(
+                    pp.input_origin,
+                    pp.timestamp,
+                );
                 for (ip, port, call_id, media) in &sdp_links {
-                    ss.link_to_dialog_with_sdp(*ip, *port, call_id, media);
+                    ss.link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
                 }
             }
         }

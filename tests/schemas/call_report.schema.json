@@ -89,6 +89,15 @@
       "type": "string",
       "description": "Pointer to the frame this dialog opened in, as `<source>#<ordinal>@<digest>`. Follow it with `sipnab --show-frame`, which checks the digest and refuses when the capture changed since the pointer was made. Optional, and absent rather than null when the dialog has no frame (live capture): absent means unknown, and a value that is present is always a real pointer.",
       "pattern": "^.+#[0-9]+(@[0-9a-f]{16})?$"
+    },
+    "input_origin": {
+      "type": "string",
+      "enum": [
+        "wire",
+        "hep",
+        "uprobe"
+      ],
+      "description": "Which capture source delivered the message that OPENED this dialog. First, never latest: one process can capture from an interface and a HEP mirror at once, and with no BPF filter excluding the mirrored signaling ports the same message arrives from both, so a field reassigned per message would report whichever spoke last. Absent rather than null when the opening message came from no captured packet."
     }
   },
   "$defs": {
@@ -471,6 +480,24 @@
           "minimum": 0,
           "maximum": 63,
           "description": "DSCP of this stream's most recent packet, present ONLY when it differs from `dscp` — the stream was re-marked in flight."
+        },
+        "input_origin": {
+          "type": "string",
+          "enum": [
+            "wire",
+            "hep",
+            "uprobe"
+          ],
+          "description": "Which capture source this stream's MEDIA arrived over. Absent rather than null when the stream came from no captured packet."
+        },
+        "dialog_origin": {
+          "type": "string",
+          "enum": [
+            "wire",
+            "hep",
+            "uprobe"
+          ],
+          "description": "Which source delivered the SDP that named this stream's dialog, present ONLY when it differs from `input_origin` — the binding crossed capture sources. A cross-source tie is weaker than a same-source one: the SDP says what the proxy believes it did and the media says what the NIC saw, and the two can disagree. Absent means either a same-source binding or one whose sources nobody recorded, never 'they agree'."
         }
       }
     },

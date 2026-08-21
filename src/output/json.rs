@@ -244,6 +244,26 @@ struct StreamJson {
     /// Omitted, never null, when no IP header was observed (a HEP-fed stream).
     #[serde(skip_serializing_if = "Option::is_none")]
     dscp: Option<u8>,
+    /// Which capture source this stream's MEDIA arrived over — `wire`, `hep`
+    /// or `uprobe`.
+    ///
+    /// Omitted when the stream came from no captured packet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_origin: Option<&'static str>,
+    /// Which source delivered the SDP that named this stream's dialog, emitted
+    /// **only when it differs** from `input_origin`.
+    ///
+    /// The same rule as `dscp_last`, and one predicate decides it everywhere
+    /// (`RtpStream::dialog_bound_across_sources`), so a reader cannot meet a
+    /// cross-source binding on one surface and a silent one on another.
+    ///
+    /// Its presence is the honest limit this stream's attribution carries: the
+    /// SDP came from what the proxy said it did and the media from what the
+    /// NIC saw, and the two can disagree. Absent means either a same-source
+    /// binding or one whose sources nobody recorded — never "they agree",
+    /// which is a claim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dialog_origin: Option<&'static str>,
     /// DSCP of this stream's MOST RECENT packet, when it differs from
     /// [`dscp`](Self::dscp).
     ///
@@ -459,6 +479,17 @@ struct DialogJson {
     /// Omitted, never null, when the dialog has no frame.
     #[serde(skip_serializing_if = "Option::is_none")]
     frame: Option<String>,
+    /// Which capture source delivered the message that OPENED this dialog —
+    /// `wire`, `hep` or `uprobe`.
+    ///
+    /// First, never latest, matching `frame` above: in a composite run with no
+    /// BPF filter excluding the mirrored signaling ports, the same message
+    /// arrives from both sources, and a field reassigned per message would
+    /// report whichever spoke last.
+    ///
+    /// Omitted, never null, when the opening message carried no origin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_origin: Option<&'static str>,
     /// Associated RTP streams.
     streams: Vec<StreamJson>,
 }
@@ -723,6 +754,9 @@ pub fn dialog_to_json(
         // The dialog's own record of where it opened, not `messages.first()`,
         // which compaction can replace with a later message.
         frame: dialog.first_frame.as_ref().map(ToString::to_string),
+        // From the same message `frame` came from, so the two cannot name
+        // different packets.
+        input_origin: dialog.input_origin.map(|o| o.as_str()),
         streams: stream_jsons,
     };
 
@@ -859,6 +893,13 @@ fn build_stream_json(stream: &RtpStream) -> StreamJson {
         // cannot meet a `dscp_last` that agrees with `dscp` on one surface and
         // not on another.
         dscp_last: stream.dscp_remarked().then_some(stream.dscp_last).flatten(),
+        input_origin: stream.input_origin.map(|o| o.as_str()),
+        // Emitted only when the binding crossed sources, decided by the one
+        // predicate that decides it everywhere.
+        dialog_origin: stream
+            .dialog_bound_across_sources()
+            .then(|| stream.dialog_origin.map(|o| o.as_str()))
+            .flatten(),
     }
 }
 
