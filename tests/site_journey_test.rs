@@ -3776,9 +3776,17 @@ fn packaging_scripts_reference_existing_paths() {
     // .github/workflows/release.yml both changed in the same commit and both
     // still scan the same count as before: the reference the fixture harness
     // gained is `$HERE/test-real-sums.sh`, which the `$` filter above skips.
+    // Raised 72 -> 73 by the REL1 comment in .github/workflows/release.yml
+    // explaining why that workflow cannot use `.github/actions/system-deps`.
+    // Attributed by measurement, not by inspection: rewording that one line to
+    // say "the shared composite action" instead of naming the path brought the
+    // scan back to exactly 72, so the delta is that single new reference and
+    // nothing else stopped being checked. The path is spelled out rather than
+    // described precisely because this gate then verifies it still exists —
+    // a note pointing at a directory that has moved is worse than no note.
     assert_eq!(
-        checked, 72,
-        "packaging path scan saw {checked} references, expected 72. More is \
+        checked, 73,
+        "packaging path scan saw {checked} references, expected 73. More is \
          fine — bump this. FEWER means the candidate extractor stopped matching \
          and unverified paths pass unseen."
     );

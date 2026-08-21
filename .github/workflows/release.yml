@@ -143,17 +143,52 @@ jobs:
         if: matrix.cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
+      # ci.yml gets these from .deb files in actions/cache and reaches no
+      # network at all (.github/actions/system-deps). This job cannot: it runs
+      # as root inside a pinned bookworm container where the package set is
+      # multiarch and actions/cache has no meaning. That exclusion still holds.
+      #
+      # What it did not account for is that a fetch failing HERE is strictly
+      # worse than a fetch failing in CI, because the tag is already public.
+      # `Create Release` and the Homebrew bump are `needs: build`, so one
+      # unresponsive archive publishes a tag with no artefacts behind it —
+      # measured on 0.5.120. Bounding and retrying are available even where
+      # caching is not, so the fetch stays and is made to fail fast and to
+      # NAME ITSELF: an unbounded apt-get that hung for fifteen minutes is
+      # what cancelled the 0.5.118 CI run, and the log said nothing useful.
       - name: Install build deps (bookworm container)
         if: matrix.container
         shell: bash
+        # TARGET through env rather than interpolated into the script body:
+        # `${{ }}` is substituted as TEXT before bash sees it, so a value
+        # carrying `;` or `$(...)` would be code. A matrix literal cannot, but
+        # the habit is what keeps the next step safe.
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
-          apt-get update
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+          set -euo pipefail
+          apt_bounded() { # apt_bounded <seconds> <apt args...>
+            local secs="$1"; shift
+            local what="$1"
+            # apt neither retries nor gives up on its own. Acquire::Retries
+            # covers a dropped connection; the Timeouts cover a stalled read;
+            # `timeout` covers the case neither does, a host that keeps the
+            # socket alive and sends nothing.
+            if ! timeout "$secs" apt-get \
+                 -o Acquire::Retries=5 \
+                 -o Acquire::http::Timeout=30 \
+                 -o Acquire::https::Timeout=30 "$@"; then
+              echo "::error::FETCH failure, not a build failure: apt-get $what did not complete within ${secs}s against the Debian archives. No sipnab source was compiled and nothing in this repository is broken — re-run the job."
+              exit 1
+            fi
+          }
+          apt_bounded 300 update
+          if [ "$TARGET" = "aarch64-unknown-linux-gnu" ]; then
             dpkg --add-architecture arm64
-            apt-get update
-            apt-get install -y gcc-aarch64-linux-gnu libpcap-dev:arm64 libasound2-dev:arm64
+            apt_bounded 300 update
+            apt_bounded 600 install -y gcc-aarch64-linux-gnu libpcap-dev:arm64 libasound2-dev:arm64
           else
-            apt-get install -y libpcap-dev libasound2-dev
+            apt_bounded 600 install -y libpcap-dev libasound2-dev
           fi
 
       - name: Configure aarch64 multiarch cross-compile
@@ -321,15 +356,23 @@ jobs:
           # the binary present for `--zstd`.
           if ! command -v zstd >/dev/null 2>&1; then
             if command -v apt-get >/dev/null 2>&1; then
-              (apt-get update && apt-get install -y zstd) \
-                || (sudo apt-get update && sudo apt-get install -y zstd)
+              (timeout 300 apt-get -o Acquire::Retries=5 update && timeout 300 apt-get -o Acquire::Retries=5 install -y zstd) \
+                || (sudo timeout 300 apt-get -o Acquire::Retries=5 update && sudo timeout 300 apt-get -o Acquire::Retries=5 install -y zstd)
             fi
           fi
 
+          # The sha256 check below was already here and stays: it is what turns
+          # a substituted or truncated tarball into "this download is wrong"
+          # rather than a linker that misbehaves later. What it lacked was a
+          # retry — one dropped connection to github.com failed a job that
+          # produces every gnu artifact and both packages — and a bound, so a
+          # stalled transfer costs 5 minutes instead of the job's 45.
           tarball="bpf-linker-x86_64-unknown-linux-musl.tar.zst"
-          curl -fsSL -o "$tarball" \
-            "https://github.com/aya-rs/bpf-linker/releases/download/v${BPF_LINKER_VERSION}/${tarball}"
-          echo "${BPF_LINKER_SHA256}  ${tarball}" | sha256sum -c -
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o "$tarball" \
+            "https://github.com/aya-rs/bpf-linker/releases/download/v${BPF_LINKER_VERSION}/${tarball}" \
+            || { echo "::error::FETCH failure, not a build failure: curl could not download $tarball from github.com after 5 attempts. No sipnab source was compiled — re-run the job."; exit 1; }
+          echo "${BPF_LINKER_SHA256}  ${tarball}" | sha256sum -c - \
+            || { echo "::error::FETCH corrupt, not a build failure: $tarball does not match BPF_LINKER_SHA256. Do NOT re-run — github.com served bytes other than the pinned ones."; exit 1; }
           tar --zstd -xf "$tarball"
           install -m 0755 bpf-linker /usr/local/bin/bpf-linker \
             || sudo install -m 0755 bpf-linker /usr/local/bin/bpf-linker
@@ -427,7 +470,11 @@ jobs:
                 # that tick as proof it had run.
                 SUDO=""
                 [ "$(id -u)" != "0" ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
-                $SUDO apt-get update -qq && $SUDO apt-get install -y -qq qemu-user-static \
+                # Bounded: this branch already degrades to SKIP:no-qemu on
+                # failure, so an unbounded apt would not fail the job — it
+                # would sit there until timeout-minutes killed a release build
+                # that was one step from passing.
+                $SUDO timeout 300 apt-get -o Acquire::Retries=5 update -qq && $SUDO timeout 300 apt-get -o Acquire::Retries=5 install -y -qq qemu-user-static \
                   && run="qemu-aarch64-static" || run="SKIP:no-qemu"
               else
                 run="SKIP:no-qemu"
@@ -639,8 +686,12 @@ jobs:
           # package at all, rather than publishing one dnf cannot install
           # (issue #244), so it belongs on the same line as rpm.
           SUDO=""; command -v sudo >/dev/null && SUDO=sudo
-          $SUDO apt-get update || true
-          $SUDO apt-get install -y rpm patchelf
+          # `|| true` on update only: a flaky third-party repo must not fail
+          # the job when rpm and patchelf are in the main archives. The install
+          # itself is load-bearing and says so when it fails.
+          $SUDO timeout 300 apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update || true
+          $SUDO timeout 600 apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y rpm patchelf \
+            || { echo "::error::FETCH failure, not a build failure: apt-get install rpm patchelf did not complete within 600s. The binary is already built and gated; only the .rpm packaging step needs these. Re-run the job."; exit 1; }
           version="${GITHUB_REF_NAME#v}"
           [ "$version" = "${GITHUB_REF_NAME}" ] && version="dev"
           # RPM versions must start with a digit too; mirror the .deb scheme

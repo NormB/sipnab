@@ -26,10 +26,22 @@
 //! populate a cold cache, and even then under a bounded timeout so a stall
 //! costs minutes rather than a cancelled run.
 //!
-//! `release.yml` is deliberately NOT in scope here and is not an oversight.
-//! Its builds run inside pinned `bookworm` and `cross` containers as root,
-//! where the package set is multiarch and `actions/cache` has no meaning; that
-//! conversion is tracked separately rather than rushed alongside this one.
+//! `release.yml` was deliberately NOT in scope when this file was written, and
+//! that was not an oversight: its builds run inside pinned `bookworm` and
+//! `cross` containers as root, where the package set is multiarch and
+//! `actions/cache` has no meaning. **That half is still true and there is
+//! still no `system-deps` in `release.yml`.**
+//!
+//! What the exclusion did not account for is that a RELEASE fetch failing is
+//! strictly worse than a CI fetch failing, because a tag is already public by
+//! the time it happens. Measured on 2026-08-21: the 0.5.120 release build died
+//! on the netmap headers behind a bare `wget ... || exit 1` in the musl cross
+//! image, `Create Release` and the Homebrew bump are `needs: build`, and so a
+//! v0.5.120 tag existed with NOTHING behind it until the job was re-run by
+//! hand. So the release path is now in scope for the properties that do not
+//! need a cache — bound it, retry it, checksum it, and make the log name the
+//! command that actually failed — under "The release path" at the bottom of
+//! this file. Caching is what stayed out; ignoring the release path did not.
 
 use std::path::Path;
 
@@ -277,4 +289,371 @@ fn converted_workflows_reference_the_shared_action() {
              carry"
         );
     }
+}
+
+// ── The release path ────────────────────────────────────────────────────────
+//
+// Measured over one session on 2026-08-21, four builds failed on a fetch and
+// none on the code. The one that mattered was the 0.5.120 RELEASE build: it
+// died on the netmap headers pulled from `raw.githubusercontent.com` inside
+// the musl cross image, so `Create Release` and the Homebrew bump -- both
+// `needs: build` -- were skipped and the v0.5.120 tag existed, public, with no
+// artefacts behind it until the job was re-run by hand.
+//
+// That is the asymmetry the gates below encode. A CI fetch failing costs a
+// re-run; a RELEASE fetch failing costs a published tag that promises files
+// nobody can download. The inputs are all fixed and versioned -- a commit, a
+// release tarball -- so there is no reason for either to be fetched without a
+// bound, a retry, and a checksum.
+
+/// The cross-compilation images the musl release artifacts are built in.
+///
+/// Derived from the directory rather than listed, for the same reason
+/// `hosted_workflows_installing_packages` is: a third musl target gets these
+/// gates the day its Dockerfile lands, not the day someone remembers it.
+fn cross_dockerfiles() -> Vec<String> {
+    let dir = repo().join("docker/cross");
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("read docker/cross") {
+        let path = entry.expect("dir entry").path();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("file name")
+            .to_string();
+        if name.starts_with("Dockerfile") {
+            out.push(format!("docker/cross/{name}"));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Join a Dockerfile's `\` continuations into one string per instruction.
+///
+/// Reading the file line by line is not how DOCKER reads it, and the
+/// difference is the whole of the 0.5.120 defect: fetching and building were
+/// ONE instruction, so the failure message quoted the entire `&&` chain and
+/// led with `apt-get install` -- a command that had succeeded. Comment lines
+/// are dropped mid-continuation, which is also what the Docker parser does.
+fn dockerfile_instructions(text: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut start = 0usize;
+    for (i, raw) in text.lines().enumerate() {
+        let line = raw.trim_end();
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        if cur.is_empty() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            start = i + 1;
+        }
+        let continued = line.ends_with('\\');
+        cur.push_str(line.trim_end_matches('\\'));
+        cur.push(' ');
+        if !continued {
+            out.push((start, cur.trim().to_string()));
+            cur.clear();
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push((start, cur.trim().to_string()));
+    }
+    out
+}
+
+/// Is this line a `::error::` annotation rather than a command?
+///
+/// The whole point of these changes is that a failed fetch NAMES the command
+/// that failed, so the messages say `apt-get` and `curl` on purpose. Without
+/// this, the gates below would flag their own remedy: an error line reading
+/// "curl could not download ..." is prose about curl, not an invocation of it.
+fn is_annotation(line: &str) -> bool {
+    line.contains("::error::") || line.contains("::warning::")
+}
+
+/// Every URL the cross images download is verified against a pinned checksum.
+///
+/// Not defensive padding: these inputs cannot vary. The netmap headers are
+/// pinned to a commit and libpcap to a release tarball, so each host has
+/// exactly one correct answer and until 0.5.120 nothing checked which one it
+/// gave. A substituted or truncated header would have surfaced as a compiler
+/// error deep inside libpcap rather than as "the download is wrong", which is
+/// the confusing-build-error case a checksum turns into a clear one.
+///
+/// The count of checksums is compared against the count of URLs in the same
+/// instruction, so adding a fourth download without a pin fails here rather
+/// than appearing to inherit the previous one.
+#[test]
+fn every_download_in_the_cross_images_is_pinned_by_a_checksum() {
+    let files = cross_dockerfiles();
+    assert!(
+        !files.is_empty(),
+        "no cross Dockerfiles were scanned; this gate is checking nothing"
+    );
+    let mut offenders = Vec::new();
+    let mut pinned = 0usize;
+
+    for f in &files {
+        let text = read(f);
+        assert!(
+            text.contains("sha256sum -c"),
+            "{f} downloads pinned inputs but never verifies one; a checksum \
+             that is recorded and not checked is a comment"
+        );
+        for (line, instr) in dockerfile_instructions(&text) {
+            let urls = instr.matches("https://").count() + instr.matches("http://").count();
+            if urls == 0 {
+                continue;
+            }
+            let sums = instr.matches("_SHA256}").count();
+            if !instr.contains("fetch-pinned") || sums != urls {
+                offenders.push(format!(
+                    "{f}:{line}: {urls} download(s) but {sums} checksum(s)\n    {instr}"
+                ));
+            }
+            pinned += sums;
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "these downloads in the release cross images are not pinned by a \
+         checksum. Fetch them through the image's `fetch-pinned` helper, \
+         passing the sha256 as its third argument:\n  fetch-pinned \"<url>\" \
+         \"<dest>\" \"${{THING_SHA256}}\"\n\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        pinned >= 4,
+        "expected at least the three netmap headers and the libpcap tarball \
+         to be checksummed, found {pinned}; if a download was deleted rather \
+         than pinned, the image builds against something else"
+    );
+}
+
+/// A stalled mirror costs minutes, not the job's whole 45.
+///
+/// The negative control for the checksum gate: a helper that verifies bytes it
+/// waited forever for is no better than the bare `wget` it replaced. The
+/// 0.5.118 CI failure was a fifteen-minute hang, not an error, and the fix
+/// that worked there was a `timeout` -- the same shape `system-deps` uses on
+/// its cold path.
+///
+/// Every assertion here is made against the INVOCATION line, never the file.
+/// The first draft asserted `text.contains("--tries=")` over the whole file,
+/// and mutation-testing caught it: deleting `--tries=5` from the wget call
+/// left the comment block that explains `--tries=5` in place, and the gate
+/// stayed green. These files document their own flags, so a whole-file search
+/// is satisfied by prose ABOUT a retry rather than by a retry.
+#[test]
+fn every_download_in_the_cross_images_is_bounded_and_retried() {
+    for f in &cross_dockerfiles() {
+        let text = read(f);
+        let mut wget_calls = 0usize;
+        let mut apt_calls = 0usize;
+
+        for line in text.lines() {
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
+
+            // `wget -`, not `wget`: the apt line installs a PACKAGE called
+            // wget, and matching the bare word would let that line answer for
+            // a download it says nothing about.
+            if line.contains("wget -") {
+                wget_calls += 1;
+                let w = line.find("wget -").expect("just matched");
+                // `timeout` must precede wget to bound it. A `--timeout=`
+                // flag bounds one stalled read inside wget; it does not bound
+                // wget, and the fifteen-minute 0.5.118 hang was not an error.
+                assert!(
+                    matches!(line.find("timeout "), Some(t) if t < w),
+                    "{f} runs wget without an outer `timeout`, so a host that \
+                     accepts the connection and then trickles holds the \
+                     release build until the job's timeout-minutes kills it \
+                     with no useful message:\n  {}",
+                    line.trim()
+                );
+                assert!(
+                    line.contains("--tries="),
+                    "{f} does not retry this download; a single dropped \
+                     connection fails a build that has a public tag behind \
+                     it:\n  {}",
+                    line.trim()
+                );
+                assert!(
+                    line.contains("--waitretry="),
+                    "{f} retries this download without backing off, which \
+                     turns one unavailable host into five requests in as many \
+                     seconds and no more chance of success:\n  {}",
+                    line.trim()
+                );
+            }
+
+            if line.contains("apt-get ") {
+                apt_calls += 1;
+                assert!(
+                    line.contains("Acquire::Retries"),
+                    "{f} reaches the distribution archives without apt \
+                     retries -- the archives are the host that hung for \
+                     fifteen minutes on 2026-08-20:\n  {}",
+                    line.trim()
+                );
+                assert!(
+                    line.contains("timeout "),
+                    "{f} reaches the distribution archives unbounded:\n  {}",
+                    line.trim()
+                );
+            }
+        }
+
+        assert!(
+            wget_calls > 0 && apt_calls > 0,
+            "{f}: found {wget_calls} download(s) and {apt_calls} package \
+             install(s); a step deleted rather than bounded builds the image \
+             against something else"
+        );
+    }
+}
+
+/// A failed fetch must not be quoted as a failed build.
+///
+/// THE defect from 0.5.120, stated as a property. Docker prints the whole
+/// failing `RUN` instruction, so an instruction that both downloads and
+/// compiles produces a message whose first command is `apt-get install` when
+/// what actually failed was a `wget` forty lines later. Whoever reads it goes
+/// looking at the package list.
+///
+/// Splitting them is the fix, and this is the gate that keeps them split.
+#[test]
+fn no_cross_image_instruction_mixes_a_download_with_a_build() {
+    // Commands that compile or link. If one of these shares an instruction
+    // with a download, the log cannot say which half failed.
+    const BUILD_COMMANDS: &[&str] = &["./configure", "make -j", "make install", "ar t "];
+    let mut offenders = Vec::new();
+    let mut scanned = 0usize;
+
+    for f in &cross_dockerfiles() {
+        let text = read(f);
+        for (line, instr) in dockerfile_instructions(&text) {
+            if !instr.starts_with("RUN ") {
+                continue;
+            }
+            scanned += 1;
+            let downloads = instr.contains("fetch-pinned \"")
+                || instr.contains("wget ")
+                || instr.contains("curl ")
+                || instr.contains("apt-get ");
+            let builds = BUILD_COMMANDS.iter().any(|c| instr.contains(c));
+            if downloads && builds {
+                offenders.push(format!("{f}:{line}: {instr}"));
+            }
+        }
+    }
+
+    assert!(
+        scanned > 0,
+        "no RUN instructions were scanned; this gate is checking nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "these RUN instructions both download and build. Docker quotes the \
+         whole instruction when it fails, so the message names the first \
+         command in the chain rather than the one that failed -- which is \
+         exactly how the 0.5.120 release failure came to blame `apt-get` for \
+         a `wget` that could not reach raw.githubusercontent.com. Put the \
+         downloads in their own RUN.\n\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every package install in the release workflow is bounded by a timeout.
+///
+/// `release.yml` cannot adopt `system-deps`, and that part of the exclusion
+/// recorded at the top of this file still holds: its builds run as root inside
+/// pinned containers where the package set is multiarch and `actions/cache`
+/// has no meaning. What did not survive contact with 0.5.120 is the idea that
+/// the exclusion could simply wait. Bounding is available even where caching
+/// is not, and a release fetch failing is strictly worse than a CI fetch
+/// failing because the tag is already public by the time it happens.
+#[test]
+fn every_package_install_in_the_release_workflow_is_bounded() {
+    let text = read(".github/workflows/release.yml");
+    assert!(
+        text.contains("apt-get install"),
+        "release.yml no longer installs anything; if the dependency was \
+         deleted rather than bounded, the builds link against whatever the \
+         container happens to carry"
+    );
+    let mut offenders = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if line.trim_start().starts_with('#') || is_annotation(line) {
+            continue;
+        }
+        // Every line that INVOKES apt-get, not only the ones naming a
+        // subcommand. Mutation-testing caught the narrower version: the
+        // bounded wrapper reads `timeout "$secs" apt-get ... "$@"`, so
+        // deleting its `timeout` left a file whose only `apt-get install`
+        // text was at a call site that goes through the wrapper, and the
+        // gate stayed green while every install had become unbounded.
+        //
+        // `command -v apt-get` asks whether apt EXISTS. It reaches no
+        // archive and cannot hang, so it is the one exemption.
+        if !line.contains("apt-get ") || line.contains("command -v apt-get") {
+            continue;
+        }
+        if !line.contains("timeout ") {
+            offenders.push(format!("release.yml:{}: {}", i + 1, line.trim()));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these release steps reach the distribution archives unbounded. An \
+         `apt-get install libpcap-dev` that hung for fifteen minutes is what \
+         cancelled the 0.5.118 CI run; the same call in a release job holds a \
+         build that a public tag is waiting on. Wrap it:\n  timeout 600 \
+         apt-get -o Acquire::Retries=5 install -y <pkgs>\n\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every direct download in the release workflow retries and is checksummed.
+///
+/// The bpf-linker tarball was already verified against a recorded sha256 --
+/// this holds that, and adds the retry it lacked. One dropped connection to
+/// `github.com` here fails a gnu build, and every gnu artifact plus both
+/// packages ship from that job.
+#[test]
+fn every_direct_download_in_the_release_workflow_retries_and_is_checksummed() {
+    let text = read(".github/workflows/release.yml");
+    let mut curls = 0usize;
+    let mut offenders = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if line.trim_start().starts_with('#') || is_annotation(line) || !line.contains("curl ") {
+            continue;
+        }
+        curls += 1;
+        if !line.contains("--retry") {
+            offenders.push(format!("release.yml:{}: {}", i + 1, line.trim()));
+        }
+    }
+    assert!(
+        curls > 0,
+        "no curl invocations were scanned; this gate is checking nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "these release downloads do not retry:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        text.contains("sha256sum -c"),
+        "a release download is no longer verified against a pinned checksum; \
+         an artifact built from bytes nobody checked is attested and \
+         published all the same"
+    );
 }

@@ -164,8 +164,13 @@ order*.
   `-include sys/types.h` because musl does not paper over the `u_int` the
   headers use, and an `ar t | grep -qx pcap-netmap.o` assertion so the image
   build fails rather than shipping a binary quietly missing the backend. BSD-2
-  notices row included. **Gap still open:** neither image was built here —
-  x86_64 musl in particular has never been verified end to end.
+  notices row included. The x86_64 image has since been built end to end, on
+  2026-08-21, while REL1 was reworking its fetches: run on an aarch64 host
+  under `qemu-x86_64`, it fetched all four pinned inputs, compiled libpcap and
+  passed its own `ar t | grep -qx pcap-netmap.o` assertion, and the finished
+  image carries all three netmap headers. The aarch64 image has still not been
+  built here, though it differs from the x86_64 one only in the base digest and
+  the target triple.
 - [ ] **CT6b — Report which backends the running binary actually supports.**
   `pcap_lib_version()` and `pcap_findalldevs` already expose this; nothing
   surfaces it. Without it, "set the device string to switch backend" is
