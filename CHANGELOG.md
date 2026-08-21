@@ -10,6 +10,76 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.120] - 2026-08-21
+
+### Fixed
+
+- **A SIP message split across two TLS records lost everything after the
+  first, so an INVITE arrived with no SDP offer.** TLS delivers a byte stream,
+  not messages, and a sender is free to write one SIP message as several
+  records — a real trunk writes the INVITE headers in one and the SDP body in
+  the next. sipnab tested each decrypted record with "does this look like SIP"
+  and emitted the ones that did, which keeps the headers and discards the
+  body.
+
+  The cost is out of all proportion to a missing body. The INVITE carries the
+  ORIGINAL SDP offer, so without it the first SDP sipnab stores is whatever
+  the next hop rewrote — and the run then reports a media/NAT mismatch that is
+  not in the capture. Reported by Dan Jenkins
+  ([@danjenkins](https://github.com/danjenkins)), who found it exactly that
+  way: sipnab kept telling him he had a NAT problem on a trunk that did not.
+  Framing now happens after decryption, on the stream, as it already did for
+  cleartext SIP over TCP.
+
+- **TLS 1.3 handshake plaintext was handed to the SIP layer.** Every protected
+  record in TLS 1.3 carries outer content type 23, so a `NewSessionTicket` is
+  indistinguishable from a SIP message until it is opened; only the inner type
+  separates them (RFC 8446 §5.2). Returning that plaintext looked harmless
+  while each record was judged alone — it does not parse as SIP — and stopped
+  being harmless the moment records became a stream: ticket bytes prepend
+  themselves to the next real message and frame it as garbage. Measured on a
+  generated TLS 1.3 call, two tickets ahead of the responses cost the
+  `100 Trying` outright.
+
+- **Records that arrived before their keys are now recovered rather than
+  dropped.** eCapture and similar `SSLKEYLOGFILE` writers emit a session's
+  traffic secrets only after the handshake completes, so the first application
+  record — the INVITE — is on the wire before any keylog line exists for it.
+  Measured in the field at 56 ms. Polling faster cannot close that: the keys
+  are written after the record they protect, so the only fix is to keep the
+  ciphertext and try it again. Undecryptable ApplicationData is now held per
+  TCP direction, bounded in bytes, and replayed when the keylog grows, keeping
+  the timestamp and endpoints of the packet it arrived in.
+
+  A replay tries the sequence it already has and never advances the lock-on
+  floor. That rule is Dan Jenkins's, and it is what makes the feature safe: in
+  TLS 1.3 the hold fills with handshake-epoch records sealed under a secret no
+  application key can open, and reading each failed open as "the sequence must
+  be later" walks the floor past the INVITE at sequence 0 — burying the record
+  the feature exists to recover. The same rule now applies once the handshake
+  has been seen, because then there is no question where the stream starts.
+
+  The hold is skipped entirely when no further keys can arrive, which is the
+  ordinary `-I capture.pcap --keylog keys.log` run, and retired by age so
+  ciphertext that will never open is not re-swept for the rest of the run.
+  Recovered, evicted and still-held counts are reported.
+
+  On the reproduction capture Dan supplied, sipnab previously decrypted **0 of
+  17 application-data records in 32.9 seconds**. It now reads the whole call —
+  all 8 messages, INVITE carrying its SDP offer — in 0.55 seconds.
+
+### Added
+
+- **The harness can make an encrypted call.** `harness/opensips-tls` builds
+  OpenSIPS 4.0.1 with `tls_mgm`, `proto_tls` and `tls_openssl` and binds
+  `tls:5061`; the stock harness image excludes those modules, so until now the
+  project could not make a TLS call against its own OpenSIPS and every TLS
+  defect had to be chased with someone else's production capture.
+  `harness/tls/make-tls-call.py` generates a real TLS 1.3 call on loopback
+  with the INVITE deliberately split across two records and a keylog written
+  by the client itself, so the keys are correct by construction and the run is
+  not also testing an extraction tool.
+
 ## [0.5.119] - 2026-08-21
 
 ### Added
