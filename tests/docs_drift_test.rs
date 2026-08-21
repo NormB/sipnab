@@ -2738,8 +2738,18 @@ fn no_documentation_table_repeats_a_row() {
         // listing the four surfaces that report the same pair. The cookbook's
         // navigation table gained fourteen ROWS for the new recipes and is
         // still one table, so it does not move this count.
-        587,
-        "walked {tables} tables, expected 587. More is fine — bump this. FEWER \
+        //
+        // Raised 587 -> 589 by two more tables in
+        // docs/design/simultaneous-capture-sources.md when SRC1 stage 1
+        // shipped: the F1 measurement (advertised vs observed media endpoints,
+        // per tracer scope and topology) and the map from each test the design
+        // asked for to the name it shipped under. A design doc has no site
+        // mirror, so two and not four. Attributed per file against HEAD:
+        // docs/examples.md gained recipe 6d and docs/cli-reference.md a
+        // rewritten `--hep-listen` row, both PROSE and rows inside an existing
+        // table, so both held their counts along with their mirrors.
+        589,
+        "walked {tables} tables, expected 589. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

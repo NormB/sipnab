@@ -176,6 +176,78 @@ pub enum CaptureSource {
         #[cfg(feature = "hep")]
         hmac_window_secs: u64,
     },
+    /// Several sources feeding ONE pipeline in one process.
+    ///
+    /// Built for the pair `-d <iface>` + `-L <addr>`: OpenSIPS mirrors its own
+    /// signaling over HEP — already plaintext at the source, with no key
+    /// extraction anywhere in the path — while the NIC supplies the RTP that a
+    /// HEP mirror cannot carry. Before this existed the two flags parsed
+    /// happily together and `-d` simply won, so the listener evaporated with
+    /// no diagnostic and the operator got signaling with no media or media
+    /// with signaling that depends on key extraction holding up. Raised by Dan
+    /// Jenkins (@danjenkins) from OpenSIPS deployment experience; designed in
+    /// `docs/design/simultaneous-capture-sources.md`.
+    ///
+    /// **Members are restricted to [`Live`](Self::Live) and [`Hep`](Self::Hep),
+    /// and [`start_capture`] refuses anything else.** A `File` member is a
+    /// SECURITY refusal rather than a scheduling one: file packets parse as
+    /// `InputOrigin::Wire`, which `security::scanner_kill::kill_response_eligible`
+    /// admits unconditionally, and that conflation is safe today only because
+    /// `security::transmit_guard::TransmitPermit::for_source` refuses a `File`
+    /// run outright. Pair `File` with `Hep` and the source-level refusal
+    /// disappears while the per-packet gate waves file-origin packets through.
+    /// A `Uprobe` member carries no addressing at all.
+    ///
+    /// The members feed one `PacketTx` — already many-producer — and the batch
+    /// receive loop already ends when the LAST sender clone drops, so a
+    /// composite needs no new channel and no new ordering guarantee. What it
+    /// does need is stated in the design: two clocks in one run, and a shared
+    /// slot pool whose backpressure is counted on the live member and
+    /// invisible on the HEP one.
+    Composite(Vec<CaptureSource>),
+}
+
+impl CaptureSource {
+    /// A short operator-facing name for this source.
+    ///
+    /// Exists because every readiness and teardown message in
+    /// [`run_multi_capture`] used to say "Device 'eth0'", which is a lie the
+    /// moment a member is a HEP listener. An error that names the wrong KIND
+    /// of member sends the operator to the wrong subsystem.
+    ///
+    /// A `File` member reports a COUNT rather than its paths: these strings
+    /// reach logs, and a capture path routinely names a customer or an
+    /// incident.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::Live { device } => format!("device '{device}'"),
+            Self::File { paths } => format!("{} capture file(s)", paths.len()),
+            Self::Uprobe { targets, .. } => format!("{} uprobe target(s)", targets.len()),
+            Self::Hep { bind_addr, .. } => format!("HEP listener {bind_addr}"),
+            Self::Composite(members) => members
+                .iter()
+                .map(Self::label)
+                .collect::<Vec<_>>()
+                .join(" + "),
+        }
+    }
+
+    /// Whether this source reads a live interface, directly or as a composite
+    /// member.
+    ///
+    /// The BPF filter, the auto-generated one included, is a LIVE-member
+    /// concern: the HEP reader never looks at `CaptureConfig::bpf_filter`. So
+    /// a composite has to answer yes here or its NIC member would open with no
+    /// filter at all and process every frame on the link.
+    #[must_use]
+    pub fn has_live_member(&self) -> bool {
+        match self {
+            Self::Live { .. } => true,
+            Self::Composite(members) => members.iter().any(Self::has_live_member),
+            _ => false,
+        }
+    }
 }
 
 /// Aggregated configuration for the capture subsystem.
@@ -458,12 +530,74 @@ pub fn start_capture(
             let _ = (bind_addr, rate_limit);
             anyhow::bail!("HEP support requires the 'hep' feature: cargo build --features hep");
         }
+        CaptureSource::Composite(members) => {
+            // Checked HERE as well as in `app::bootstrap`, because this is the
+            // function that spawns the threads and the membership rule is a
+            // security property (see `CaptureSource::Composite`). A caller that
+            // builds a composite by hand — a test, an embedder, a future mode —
+            // must hit the same wall the CLI does.
+            check_composite_members(members)?;
+            let members = members.clone();
+            thread::Builder::new()
+                .name("capture-composite".to_string())
+                .spawn(move || {
+                    run_multi_capture(
+                        &members,
+                        &config,
+                        tx,
+                        ready_tx,
+                        spawn_capture_member,
+                        signals::request_shutdown,
+                    )
+                })
+                .context("Failed to spawn composite capture coordinator thread")?
+        }
     };
 
     Ok(CaptureHandle {
         thread,
         source: source_clone,
     })
+}
+
+/// Refuse a composite whose membership is not `Live` and/or `Hep`.
+///
+/// Two members minimum, because a one-member composite is a single source
+/// wearing a costume: it would take the coordinator path, report a composite
+/// label in every message, and refuse `-O` — all for a run that has exactly
+/// one source and none of the reasons those rules exist.
+///
+/// The `File` refusal names the reason rather than saying "unsupported": see
+/// [`CaptureSource::Composite`] for why admitting one would let file-origin
+/// packets reach the scanner-kill transmit path.
+fn check_composite_members(members: &[CaptureSource]) -> Result<()> {
+    if members.len() < 2 {
+        anyhow::bail!(
+            "a composite capture source needs at least two members; got {}",
+            members.len()
+        );
+    }
+    for m in members {
+        match m {
+            CaptureSource::Live { .. } | CaptureSource::Hep { .. } => {}
+            CaptureSource::File { .. } => anyhow::bail!(
+                "a capture FILE cannot be a member of a composite source: file \
+                 packets parse as InputOrigin::Wire, which the per-packet \
+                 scanner-kill gate admits unconditionally, and only the \
+                 source-level refusal of a File run keeps them off the wire \
+                 today. Read the file in its own run."
+            ),
+            CaptureSource::Uprobe { .. } => anyhow::bail!(
+                "a uprobe read cannot be a member of a composite source: it \
+                 carries no addressing at all, so nothing downstream can place \
+                 it against the other member's traffic."
+            ),
+            CaptureSource::Composite(_) => {
+                anyhow::bail!("a composite capture source cannot contain another composite")
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Start captures on multiple devices simultaneously.
@@ -538,15 +672,20 @@ pub fn start_multi_capture(
         device: devices.to_string(),
     };
 
+    let members: Vec<CaptureSource> = device_list
+        .into_iter()
+        .map(|device| CaptureSource::Live { device })
+        .collect();
+
     let thread = thread::Builder::new()
         .name("capture-multi".to_string())
         .spawn(move || {
             run_multi_capture(
-                &device_list,
+                &members,
                 &config,
                 tx,
                 ready_tx,
-                spawn_live_device,
+                spawn_capture_member,
                 signals::request_shutdown,
             )
         })
@@ -555,56 +694,72 @@ pub fn start_multi_capture(
     Ok(CaptureHandle { thread, source })
 }
 
-/// One-shot readiness signal a per-device capture thread reports through.
-type DeviceReadyTx = crossbeam_channel::Sender<Result<(), String>>;
+/// One-shot readiness signal a per-member capture thread reports through.
+type MemberReadyTx = crossbeam_channel::Sender<Result<(), String>>;
 
-/// Spawn the real per-device live-capture thread (production `spawn_device`
-/// for [`run_multi_capture`]).
-fn spawn_live_device(
-    device: String,
+/// Spawn the real per-member capture thread (production `spawn_member` for
+/// [`run_multi_capture`]).
+///
+/// Delegates to [`start_capture`] rather than reaching for `capture_live_fanout`
+/// directly, so a member is opened by exactly the code that opens a single
+/// source. That is what makes a HEP member in a composite behave identically to
+/// a `-L`-only run — including the "HEP support requires the 'hep' feature"
+/// refusal, which surfaces here as a spawn failure and dooms the session the
+/// same way a bad device name does.
+fn spawn_capture_member(
+    source: CaptureSource,
     config: CaptureConfig,
     tx: PacketTx,
-    ready: DeviceReadyTx,
+    ready: MemberReadyTx,
 ) -> Result<thread::JoinHandle<Result<()>>> {
-    let dev_ctx = device.clone(); // for error context
-    thread::Builder::new()
-        .name(format!("capture-{device}"))
-        .spawn(move || {
-            let sockets = config.fanout_sockets;
-            live::capture_live_fanout(&device, &config, tx, Some(ready), sockets)
-        })
-        .with_context(|| format!("Failed to spawn capture thread for '{dev_ctx}'"))
+    let label = source.label(); // for error context
+    start_capture(source, config, tx, Some(ready))
+        .map(|h| h.thread)
+        .with_context(|| format!("Failed to spawn capture thread for {label}"))
 }
 
 /// Body of the multi-capture coordinator thread: spawn one capture thread per
-/// device (via `spawn_device`), aggregate their readiness, then reap them.
+/// member (via `spawn_member`), aggregate their readiness, then reap them.
 ///
-/// Parameterized over the device spawner and the sibling-stop signal so the
+/// Parameterized over the member spawner and the sibling-stop signal so the
 /// startup/teardown logic is testable without capture privileges; production
-/// passes [`spawn_live_device`] and [`signals::request_shutdown`].
+/// passes [`spawn_capture_member`] and [`signals::request_shutdown`].
+///
+/// The member list is `CaptureSource` rather than device names because the same
+/// coordinator now serves `--multi-device` (a list of `Live`) and the
+/// `-d` + `-L` composite (one `Live`, one `Hep`). Every structural question a
+/// mixed list raises — readiness aggregation, one-fails-all teardown, a single
+/// join handle, channel close on the last producer — this function had already
+/// answered for devices; what it could not do was mix KINDS, and the only thing
+/// that stopped it was the `String` in this signature.
 fn run_multi_capture<S, K>(
-    device_list: &[String],
+    members: &[CaptureSource],
     config: &CaptureConfig,
     tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
-    spawn_device: S,
+    spawn_member: S,
     stop_siblings: K,
 ) -> Result<()>
 where
-    S: Fn(String, CaptureConfig, PacketTx, DeviceReadyTx) -> Result<thread::JoinHandle<Result<()>>>,
+    S: Fn(
+        CaptureSource,
+        CaptureConfig,
+        PacketTx,
+        MemberReadyTx,
+    ) -> Result<thread::JoinHandle<Result<()>>>,
     K: Fn(),
 {
     let mut handles = Vec::new();
     let mut per_device_ready_rxs = Vec::new();
     let mut first_err: Option<String> = None;
 
-    for dev in device_list {
+    for member in members {
         // Each sub-thread gets its own ready signal so we can
         // aggregate them before signaling the caller.
         let (dev_ready_tx, dev_ready_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
-        per_device_ready_rxs.push((dev.clone(), dev_ready_rx));
+        per_device_ready_rxs.push((member.label(), dev_ready_rx));
 
-        match spawn_device(dev.clone(), config.clone(), tx.clone(), dev_ready_tx) {
+        match spawn_member(member.clone(), config.clone(), tx.clone(), dev_ready_tx) {
             Ok(h) => handles.push(h),
             Err(e) => {
                 // A failed spawn dooms the session like a failed open: stop
@@ -625,18 +780,18 @@ where
     // (`handles` may be shorter than the rx list after a spawn failure; a
     // dropped ready sender then surfaces as a disconnect, which the spawn
     // error already outranks via `first_err`.)
-    for (dev_name, dev_rx) in per_device_ready_rxs.iter().take(handles.len()) {
+    for (label, dev_rx) in per_device_ready_rxs.iter().take(handles.len()) {
         match dev_rx.recv() {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 if first_err.is_none() {
-                    first_err = Some(format!("Device '{dev_name}' failed to open: {e}"));
+                    first_err = Some(format!("Capture member {label} failed to open: {e}"));
                 }
             }
             Err(_) => {
                 if first_err.is_none() {
                     first_err = Some(format!(
-                        "Device '{dev_name}' capture thread exited before signaling ready"
+                        "Capture member {label} exited before signaling ready"
                     ));
                 }
             }
@@ -835,14 +990,20 @@ mod tests {
             stop: Arc<AtomicBool>,
             opened: Arc<AtomicU64>,
         ) -> impl Fn(
-            String,
+            CaptureSource,
             CaptureConfig,
             channel::PacketTx,
-            DeviceReadyTx,
+            MemberReadyTx,
         ) -> Result<thread::JoinHandle<Result<()>>> {
-            move |dev, _config, _tx, ready| {
+            move |member, _config, _tx, ready| {
                 let stop = stop.clone();
                 let opened = opened.clone();
+                // The fakes are named by their member label, so a mixed list
+                // fails with the label an operator would see.
+                let dev = match &member {
+                    CaptureSource::Live { device } => device.clone(),
+                    other => other.label(),
+                };
                 thread::Builder::new()
                     .name(format!("fake-{dev}"))
                     .spawn(move || {
@@ -876,7 +1037,12 @@ mod tests {
         ) {
             let stop = Arc::new(AtomicBool::new(false));
             let opened = Arc::new(AtomicU64::new(0));
-            let devs: Vec<String> = devs.iter().map(|d| d.to_string()).collect();
+            let devs: Vec<CaptureSource> = devs
+                .iter()
+                .map(|d| CaptureSource::Live {
+                    device: (*d).to_string(),
+                })
+                .collect();
             // The fakes never send packets, so the receiver half can drop.
             let (tx, _rx) = channel::packet_channel(16);
             let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
@@ -961,6 +1127,269 @@ mod tests {
                 .recv_timeout(Duration::from_secs(5))
                 .expect("coordinator finishes after siblings stop")
                 .expect("clean shutdown is Ok");
+        }
+    }
+
+    // ── A composite of DIFFERENT kinds ──────────────────────────────────
+    /// The coordinator was a device list; a composite makes it a source list.
+    /// These drive it with a mixed roster and no capture privileges, the same
+    /// way `multi_teardown` drives it with device names.
+    mod mixed_members {
+        use super::*;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        /// A HEP listener member, shaped as `plan` builds one.
+        fn hep_member(bind_addr: &str) -> CaptureSource {
+            CaptureSource::Hep {
+                bind_addr: bind_addr.to_string(),
+                #[cfg(feature = "hep")]
+                allowlist: Vec::new(),
+                rate_limit: 0,
+                per_peer_rate_limit: 0,
+                max_tracked_peers: crate::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
+                auth_key: None,
+                #[cfg(feature = "hep")]
+                auth_mode: crate::cli::HepAuthMode::default(),
+                #[cfg(feature = "hep")]
+                hmac_window_secs: crate::capture::hep::DEFAULT_HMAC_WINDOW_SECS,
+            }
+        }
+
+        /// A packet naming its producer, so the receiver can tell the two
+        /// members apart.
+        fn stamped(label: &str) -> super::super::super::packet::Packet {
+            super::super::super::packet::Packet::with_source(
+                chrono::Utc::now(),
+                b"INVITE sip:x SIP/2.0\r\n\r\n".to_vec(),
+                24,
+                24,
+                Some(std::sync::Arc::from(label)),
+                1,
+            )
+        }
+
+        /// A spawner where a member whose label contains `bad` fails to open,
+        /// and every other member sends ONE packet stamped with its own source
+        /// name and then waits for the stop flag.
+        fn fake_members(
+            stop: Arc<AtomicBool>,
+        ) -> impl Fn(
+            CaptureSource,
+            CaptureConfig,
+            channel::PacketTx,
+            MemberReadyTx,
+        ) -> Result<thread::JoinHandle<Result<()>>> {
+            move |member, _config, tx, ready| {
+                let stop = stop.clone();
+                let label = member.label();
+                thread::Builder::new()
+                    .name("fake-member".into())
+                    .spawn(move || {
+                        if label.contains("bad") {
+                            let _ = ready.send(Err("no such source".to_string()));
+                            return Err(anyhow::anyhow!("no such source"));
+                        }
+                        let _ = ready.send(Ok(()));
+                        let _ = tx.send(stamped(&label));
+                        while !stop.load(Ordering::SeqCst) {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Ok(())
+                    })
+                    .map_err(Into::into)
+            }
+        }
+
+        /// **The composition.** An interface member and a HEP member feed ONE
+        /// channel, and the consumer sees both. This is the whole of what
+        /// `-d eth0 -L :9060` had to become: the channel was already
+        /// many-producer and the receive loop already ends on the last
+        /// producer, so the only thing that stopped a mixed run was that the
+        /// coordinator took device NAMES.
+        #[test]
+        fn an_interface_and_a_hep_listener_feed_one_channel() {
+            let stop = Arc::new(AtomicBool::new(false));
+            let members = vec![
+                CaptureSource::Live {
+                    device: "eth9".into(),
+                },
+                hep_member("127.0.0.1:19060"),
+            ];
+            let (tx, rx) = channel::packet_channel(64);
+            let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
+            let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+            let spawner = fake_members(stop.clone());
+            let stop2 = stop.clone();
+            thread::Builder::new()
+                .name("test-composite".into())
+                .spawn(move || {
+                    let res = run_multi_capture(
+                        &members,
+                        &CaptureConfig::default(),
+                        tx,
+                        Some(ready_tx),
+                        spawner,
+                        move || stop2.store(true, Ordering::SeqCst),
+                    );
+                    let _ = done_tx.send(res);
+                })
+                .expect("spawn coordinator");
+
+            ready_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("readiness must aggregate across kinds")
+                .expect("both members opened");
+
+            let mut sources = Vec::new();
+            for _ in 0..2 {
+                let p = rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("both members must reach the same receiver");
+                sources.push(p.interface.as_deref().unwrap_or("").to_string());
+            }
+            sources.sort();
+            assert_eq!(
+                sources,
+                vec![
+                    "HEP listener 127.0.0.1:19060".to_string(),
+                    "device 'eth9'".to_string()
+                ],
+                "one channel must carry both kinds; a run that delivers only \
+                 one of them is the defect SRC1 names"
+            );
+
+            stop.store(true, Ordering::SeqCst);
+            done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("coordinator finishes after both members stop")
+                .expect("clean shutdown is Ok");
+            // The coordinator dropped its own `tx` clone and both members are
+            // gone, so the channel is closed — which is what makes
+            // `source_exhausted` mean "every source is done" for two sources
+            // exactly as it did for one.
+            assert!(
+                rx.recv_timeout(Duration::from_millis(200)).is_err(),
+                "the channel must close once the last producer exits"
+            );
+        }
+
+        /// A HEP member that cannot bind tears the interface member down and
+        /// surfaces ONE error naming the failed member by KIND.
+        ///
+        /// The message used to be built as "Device '<name>'" unconditionally,
+        /// which sends an operator whose LISTENER failed to look at their
+        /// interface.
+        #[test]
+        fn a_hep_bind_failure_tears_the_interface_member_down() {
+            let stop = Arc::new(AtomicBool::new(false));
+            let members = vec![
+                CaptureSource::Live {
+                    device: "eth9".into(),
+                },
+                // `fake_members` fails any member whose LABEL contains "bad";
+                // for a HEP member the label is its bind address.
+                hep_member("bad-address:19060"),
+            ];
+            let (tx, _rx) = channel::packet_channel(64);
+            let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
+            let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+            let spawner = fake_members(stop.clone());
+            let stop2 = stop.clone();
+            thread::Builder::new()
+                .name("test-composite-fail".into())
+                .spawn(move || {
+                    let res = run_multi_capture(
+                        &members,
+                        &CaptureConfig::default(),
+                        tx,
+                        Some(ready_tx),
+                        spawner,
+                        move || stop2.store(true, Ordering::SeqCst),
+                    );
+                    let _ = done_tx.send(res);
+                })
+                .expect("spawn coordinator");
+
+            let msg = ready_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("aggregated ready signal must arrive")
+                .expect_err("a failed HEP bind must surface as Err");
+            assert!(
+                msg.contains("HEP listener"),
+                "the error must name the KIND that failed, not call it a \
+                 device: {msg}"
+            );
+            assert!(msg.contains("bad-address:19060"), "and which one: {msg}");
+            assert!(
+                stop.load(Ordering::SeqCst),
+                "the interface member must be told to stop; a run that keeps \
+                 capturing media with no signaling is worse than no run"
+            );
+            done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("coordinator must reap the sibling, not hang")
+                .expect_err("coordinator must fail when a member fails");
+        }
+
+        /// `start_capture` refuses a composite whose membership is not
+        /// `Live`/`Hep`, independently of anything `app::bootstrap` checks.
+        ///
+        /// The `File` case is the one that matters: admitting it would remove
+        /// the source-level transmit refusal that is the ONLY thing keeping
+        /// file-origin packets — which parse as `InputOrigin::Wire` — off the
+        /// scanner-kill path.
+        #[test]
+        fn a_composite_refuses_members_it_cannot_place() {
+            let live = CaptureSource::Live {
+                device: "eth9".into(),
+            };
+            let file = CaptureSource::File {
+                paths: vec![std::path::PathBuf::from("/tmp/evidence.pcap")],
+            };
+
+            let (tx, _rx) = channel::packet_channel(16);
+            let e = start_capture(
+                CaptureSource::Composite(vec![live.clone(), file]),
+                CaptureConfig::default(),
+                tx,
+                None,
+            )
+            .err()
+            .expect("a File member must be refused");
+            let m = format!("{e:#}");
+            assert!(
+                m.contains("InputOrigin::Wire") || m.contains("scanner-kill"),
+                "the refusal must state the security reason: {m}"
+            );
+
+            let (tx, _rx) = channel::packet_channel(16);
+            let e = start_capture(
+                CaptureSource::Composite(vec![live.clone()]),
+                CaptureConfig::default(),
+                tx,
+                None,
+            )
+            .err()
+            .expect("a one-member composite must be refused");
+            assert!(
+                format!("{e:#}").contains("at least two members"),
+                "got: {e:#}"
+            );
+
+            let (tx, _rx) = channel::packet_channel(16);
+            let e = start_capture(
+                CaptureSource::Composite(vec![
+                    live.clone(),
+                    CaptureSource::Composite(vec![live.clone(), live]),
+                ]),
+                CaptureConfig::default(),
+                tx,
+                None,
+            )
+            .err()
+            .expect("a nested composite must be refused");
+            assert!(format!("{e:#}").contains("another composite"), "got: {e:#}");
         }
     }
 }

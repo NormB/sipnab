@@ -399,11 +399,65 @@ Watch dialogs accumulate live:
 watch -n 1 'curl -s http://localhost:9100/v1/dialogs?limit=5 | jq ".dialogs[] | {call_id, state}"'
 ```
 
+### 6d. Take signaling from HEP and media off the wire, in one process
+
+**Problem:** the HEP mirror is the robust way to get decrypted SIP — it is
+already plaintext at the source, so there is no TLS key extraction to go wrong —
+but a HEP feed carries no RTP, so a `--hep-listen` run measures no media at all.
+Capturing the interface instead gets you media and puts you back on key
+extraction for the signaling.
+
+Run both in one sipnab. HEP supplies the signaling, the NIC supplies the RTP for
+the same calls, and streams bind to dialogs by SDP media endpoint:
+
+```bash
+sipnab -N -d eth0 --hep-listen 127.0.0.1:9060 "udp portrange 10000-20000"
+```
+
+Raised by Dan Jenkins ([@danjenkins](https://github.com/danjenkins)) from
+OpenSIPS deployment experience.
+
+The BPF expression is not optional decoration. Without one, the interface gets
+sipnab's auto-generated *signaling* filter and captures no media whatsoever —
+while every message the mirror already sent also arrives off the wire, doubling
+each dialog's message ladder. Name your media ports and nothing else; sipnab
+warns if you forget.
+
+**Trace both directions, or this measures nothing.** In OpenSIPS, use
+transaction scope so the tracer mirrors the message it *sent* as well as the one
+it received:
+
+```cfg
+route {
+    $var(tid) = "hep_central";
+    trace($var(tid), "t", "sip");   # "t", not "m"
+}
+```
+
+At `"m"` (message) scope only the received copy is mirrored. That matters the
+moment rtpengine or any other relay rewrites the SDP: the address OpenSIPS
+received is not the address the media flows to, so every stream comes out
+orphaned. Measured on OpenSIPS 3.6.7 with rtpengine 12.5.1 anchoring: at `"t"`
+every advertised media endpoint was a socket the capture actually saw RTP on
+(4 of 4); at `"m"`, 1 of 4.
+
+Note also that `proto_hep` refuses to start without a HEP *listener* socket even
+when the config only sends — add `socket=hep_udp:127.0.0.1:9061` alongside your
+`hep_id` or OpenSIPS exits with `No HEP listener defined!`.
+
+**Where this helps, and where it cannot.** It helps where media transits the
+machine running the mirror — a proxy anchoring media through rtpengine on the
+same box is the case it was built for. Where media flows end-to-end and never
+crosses that machine, no capture there can see it, and no amount of correlation
+changes that: put sipnab's `-d` where the media actually is.
+
 **Pitfalls:**
 
 - HEP is UDP — silently drops if the listener can't keep up. The `--hep-rate-limit 50000` default lets you tune.
 - A routable HEP listener needs a guard: sipnab refuses a non-loopback `--hep-listen` bind unless you pass `--hep-allow 192.0.2.0/24` (repeatable) or `--hep-auth`/`--hep-auth-file`. A loopback bind needs neither.
 - If your central host is reachable by hostname only, set `--mcp-allowed-host` for the MCP transport too (see Recipe 8).
+- `-d` with `--hep-listen` takes exactly one interface and one listener. `-I` with `--hep-listen` is refused (a file's addresses are historical and belong to third parties, and sipnab keeps them off its active-response path by refusing to transmit for a file run at all); so are `--multi-device` with `--hep-listen`, and `-O` with the pair — the two sources disagree about the link layer, so there is no honest pcap to write. Use `--hep-send` to forward the signaling instead.
+- One sipnab, one mirroring node. The SDP endpoint index is keyed on address and port with no node dimension, so two nodes advertising the same RFC 1918 socket would overwrite each other and a stream would bind to whichever offer arrived last.
 
 ---
 
@@ -6453,7 +6507,7 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--api-max-rows` | `<N>` | `1000` | Rows one list-style REST response returns. The REST counterpart of `--mcp-max-rows`, settable for the same reason: the right ceiling belongs to the consumer, not to sipnab. A batch consumer piping `/v1/dialogs` to a file wants every row; a dashboard drawing a table wants far fewer. A caller may always ask for less with `?limit=`, and nothing it sends asks for more than this. Config: `[limits] api_max_rows` Feature: `api` |
 | `--api-rate-limit-per-peer` | `<N>` | `100` | REST requests one client IP may make per second; `0` disables the cap, the reading `--mcp-rate-limit-per-peer` and `--hep-rate-limit` also give it. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance. A refusal is `503` rather than `429` because the limiter runs before authentication, so it says nothing about the credential. Config: `[limits] api_rate_limit_per_peer` Feature: `api` |
 | `--metrics-max-conn` | `<N>` | `16` | Metrics scrapes served at once before further ones get `503`. The gate stops a burst of slow clients exhausting threads and taking monitoring down, and sixteen suits one Prometheus; an HA pair, a federating parent, a `remote_write` shard, an alertmanager sidecar and one engineer's `curl` reach it without anything unusual happening. A refused scrape leaves a hole in the series that reads as a capture that died rather than as a busy endpoint. Config: `[limits] metrics_max_conn` Feature: `metrics` |
-| `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. Feature: `hep` |
+| `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. Give that run an explicit media-only BPF expression (`sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"`) — without one the interface gets the auto-generated *signaling* filter, captures no media, and sees every mirrored message a second time. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe 6d](examples.md). Feature: `hep` |
 | `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector: SIP as protocol type 1 and RTCP as type 5, so the collector can report media quality and not only call setup. RTP is never forwarded. **On `-I <file>` this forwards the file's contents**: every SIP message and RTCP report sipnab reads out of the capture goes to `<ADDR>` as recorded, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what---hep-send-sends). Feature: `hep` |
 | `--hep-id` | `<ID>` | `1` | Capture-agent id (HEP `0x000c` chunk) stamped on packets sent via `--hep-send`. Feature: `hep` |
 | `--hep-auth` | `<KEY>` | -- | Homer authenticate key (HEP `0x000e` chunk). On `--hep-send` sipnab stamps it on every outgoing packet; on `--hep-listen` it **enables receiver-side authentication** — incoming packets must carry a matching key, which sipnab compares in constant time, or it drops them. Also read from `SIPNAB_HEP_AUTH`. **Security note:** the key travels in cleartext inside the HEP datagram, so it defeats blind/off-path spoofing but an on-path sniffer can capture and replay it. Over an untrusted path, tunnel HEP through WireGuard/IPsec/stunnel (the same posture as terminating API TLS in a reverse proxy) rather than relying on the key alone. Feature: `hep` |
