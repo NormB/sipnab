@@ -909,8 +909,12 @@ reads, so the packets it discards are invisible to sipnab — and on a live SIP
 server they are the production traffic being observed. It is the wrong side of
 the hook. Note that it fails on **architecture, not permissions**: do not
 re-propose it on the grounds that the privilege drop now allows it. The one
-surviving eBPF use is `PACKET_FANOUT_EBPF`/`_CBPF` for fanout steering, which
-is a different mechanism at a fraction of the cost — see `CT11`. Full verdict:
+surviving eBPF use was `PACKET_FANOUT_EBPF`/`_CBPF` for fanout steering, a
+different mechanism at a fraction of the cost — and that use, `CT11`, has since
+been **measured and refused**: the correlation it would fix costs nothing while
+live capture has one processing thread, and its program widens the SIP/media
+split rather than closing it (§6 of [`live-fanout.md`](live-fanout.md)). So no
+eBPF use survives on the capture path today. Full verdict:
 [`backlog.md`](backlog.md) **`CT12`**.
 
 ---

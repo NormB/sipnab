@@ -131,12 +131,18 @@ order*.
   normal libpcap handle — **no libpcap fork**. `PACKET_FANOUT_HASH` uses
   `__skb_get_hash_symmetric()`, so bidirectional RTP affinity is already free.
   Unblocked: [`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs) was the CT7 agent's and CT7 has landed.
-- [ ] **CT11 — Call-aware fanout steering via `PACKET_FANOUT_CBPF`.** Only
-  after CT4, and only if cross-worker SIP/media correlation is *measured* to
-  cost something. Hand-written cBPF returning a worker index; no `CAP_BPF`, no
-  clang, no BTF. *Unverified:* that `bpf_prog_create_from_user()` has no
-  capability check beyond `SOCK_FILTER_LOCKED` — confirm in
-  `net/core/filter.c` first.
+- [x] **CT11 — Call-aware fanout steering via `PACKET_FANOUT_CBPF`.** Closed as
+  **refused on measurement**, not shipped. Its own condition — that cross-worker
+  SIP/media correlation cost something — was tested once CT4 wired `--cores`
+  live, and it costs zero: the fanout is capture-only, so `--cores 1` and
+  `--cores 4` produce identical dialogs and identical stream-to-call links.
+  The program was written and run anyway, and pinning 5060/5061 to worker 0
+  takes the SIP/media split from 70% of calls to 100% — it widens the gap it
+  was written to close. The *unverified* caveat is now **confirmed** both from
+  `net/core/filter.c` and against the running kernel: `setsockopt` succeeded
+  after a full drop to an unprivileged uid with an empty capability set.
+  Numbers, method and the veth caveat: §6 of
+  [`live-fanout.md`](live-fanout.md).
 - [ ] **CT3 — `--snaplen` capture profiles.** Not a bare default change:
   truncation breaks audio reconstruction and degrades `-O` re-emit. Ship named
   profiles, refuse/warn on the incompatible combinations, and surface
