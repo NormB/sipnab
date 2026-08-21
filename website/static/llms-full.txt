@@ -3781,7 +3781,7 @@ sipnab -D
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```text
-sipnab 0.5.121 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf
+sipnab 0.5.122 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf
 ```
 
 This is the fastest way to confirm a build carries the feature set
@@ -9836,7 +9836,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.121 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf
+   # sipnab 0.5.122 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -11462,7 +11462,7 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
-  "version": "0.5.121",
+  "version": "0.5.122",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -14364,7 +14364,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.121",
+  "version": "0.5.122",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep

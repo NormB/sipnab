@@ -10,6 +10,8 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.122] - 2026-08-21
+
 ### Fixed
 
 - **Offline reconstruction was 27% slower than this project measured, for ten
