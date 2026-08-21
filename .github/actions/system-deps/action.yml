@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name: Install system packages (local first)
+description: >
+  Install Debian packages from a local actions/cache using dpkg, which performs
+  no network access. The Ubuntu archives are consulted only to populate a cold
+  cache, and only under a bounded timeout.
+
+# WHY THIS EXISTS
+#
+# On 2026-08-20 the `Security audit` job sat in `apt-get install -y
+# libpcap-dev` for fifteen minutes (23:44:35Z to 23:59:51Z) and was cancelled,
+# which failed the aggregate `CI success` job and blocked the 0.5.118 release
+# tag. The code was fine; azure.archive.ubuntu.com did not answer.
+#
+# Every apt step already carried a `dpkg -s` guard meant to skip the install
+# when the package was present. That guard was written for the self-hosted box,
+# where libpcap-dev is installed once and stays. On a GitHub-hosted runner the
+# package is never present, so the guard resolved to "install everything" on
+# every job of every run -- it could not fire by construction. Caching the
+# .deb files is what actually removes the fetch, because a cache hit installs
+# with `dpkg -i` and reaches nothing.
+
+inputs:
+  packages:
+    description: Space-separated Debian package names.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Kept from the original steps: on the self-hosted box these genuinely are
+    # already installed, and there the whole action should cost one dpkg query.
+    - name: Decide what is missing
+      id: probe
+      shell: bash
+      run: |
+        need=""
+        for p in ${{ inputs.packages }}; do
+          dpkg -s "$p" >/dev/null 2>&1 || need="$need $p"
+        done
+        need="$(echo $need | xargs || true)"
+        echo "need=$need" >> "$GITHUB_OUTPUT"
+        if [ -z "$need" ]; then
+          echo "already installed: ${{ inputs.packages }}"
+        else
+          echo "missing:$need"
+        fi
+        # A stable key for this exact package set, so two jobs asking for
+        # different sets cannot share (and clobber) one cache entry.
+        echo "slug=$(echo '${{ inputs.packages }}' | tr ' ' '-' | tr -cd 'a-zA-Z0-9.-')" \
+          >> "$GITHUB_OUTPUT"
+
+    - name: Restore the .deb cache
+      if: steps.probe.outputs.need != ''
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ~/.cache/sipnab-apt
+        # ImageOS pins the runner image generation: a .deb built for a newer
+        # Ubuntu must not be installed onto an older image just because the
+        # package names matched.
+        key: sipnab-apt-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageOS }}-${{ steps.probe.outputs.slug }}
+
+    - name: Install
+      if: steps.probe.outputs.need != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        cache="$HOME/.cache/sipnab-apt"
+        mkdir -p "$cache"
+
+        # THE COMMON PATH: no network. dpkg cannot reach one.
+        if compgen -G "$cache/*.deb" > /dev/null; then
+          echo "installing $(ls "$cache"/*.deb | wc -l) cached .deb files"
+          sudo dpkg -i "$cache"/*.deb
+        else
+          # Cold cache only. Bounded, because the whole point is that an
+          # unresponsive archive costs minutes instead of a cancelled run.
+          # `|| true` on update: a flaky third-party repo (packages.microsoft
+          # .com has 403'd here) must not fail the job when the packages we
+          # need are in the main archives.
+          echo "cold cache: populating from the archives"
+          timeout 180 sudo apt-get update || true
+          # --download-only fetches the full dependency closure, which is what
+          # makes the later `dpkg -i` of the whole directory resolvable.
+          timeout 420 sudo apt-get install --download-only -y ${{ steps.probe.outputs.need }}
+          sudo cp /var/cache/apt/archives/*.deb "$cache"/
+          sudo chown -R "$(id -u):$(id -g)" "$cache"
+          sudo dpkg -i "$cache"/*.deb
+        fi
+
+    # An install that half-worked must not read as success. dpkg -i on a
+    # partial dependency closure exits non-zero, but a cache holding the wrong
+    # .deb set can leave a package unconfigured while the step still passes --
+    # and the build then fails later, somewhere that does not name the cause.
+    - name: Verify
+      if: steps.probe.outputs.need != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        missing=""
+        for p in ${{ inputs.packages }}; do
+          dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"
+        done
+        if [ -n "$missing" ]; then
+          echo "::error::system-deps did not install:$missing"
+          echo "The cache may hold a .deb set from a different runner image."
+          exit 1
+        fi
+        echo "verified: ${{ inputs.packages }}"

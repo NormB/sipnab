@@ -50,7 +50,9 @@ jobs:
           # wiki-sync and release pass the token explicitly via GH_TOKEN.
           persist-credentials: false
       - name: Install system deps
-        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
+        uses: ./.github/actions/system-deps
+        with:
+          packages: libpcap-dev libasound2-dev
 
       - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -118,7 +120,9 @@ jobs:
           df -h /
 
       - name: Install system deps
-        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
+        uses: ./.github/actions/system-deps
+        with:
+          packages: libpcap-dev libasound2-dev
 
       - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
         with:
@@ -245,7 +249,9 @@ jobs:
           df -h /
 
       - name: Install system deps
-        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
+        uses: ./.github/actions/system-deps
+        with:
+          packages: libpcap-dev libasound2-dev
 
       - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
         with:

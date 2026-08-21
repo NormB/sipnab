@@ -79,25 +79,9 @@ jobs:
 
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
-        # --all-features pulls in `audio` -> alsa-sys, which needs the ALSA headers.
-        # `|| true`: don't let a flaky preconfigured third-party apt repo
-        # (e.g. packages.microsoft.com 403s) fail the job; the packages we
-        # need are in the main Ubuntu archives, which still refresh.
-        # Skip when already present. Kept after the move to hosted runners:
-        # a hosted image may already carry these, and the check costs one
-        # dpkg -s. It also stays correct if a job is ever moved back to the
-        # self-hosted box, where several runner instances share ONE apt lock --
-        # concurrent installs there failed a dependabot PR with
-        # 'Could not get lock /var/lib/dpkg/lock-frontend'.
-        run: |
-          need=""
-          for p in libpcap-dev libasound2-dev; do dpkg -s "$p" >/dev/null 2>&1 || need="$need $p"; done
-          if [ -n "$need" ]; then
-            sudo apt-get update || true
-            sudo apt-get install -y $need
-          else
-            echo "already installed: libpcap-dev libasound2-dev"
-          fi
+        uses: ./.github/actions/system-deps
+        with:
+          packages: libpcap-dev libasound2-dev
 
       - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
         with:
@@ -290,9 +274,9 @@ jobs:
         # calling the builder; ubuntu-latest ships neither. gcc builds the
         # harness's ELF fixtures — the runner has it, but naming it keeps the
         # job from depending on an image detail nothing here controls.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y rpm patchelf gcc
+        uses: ./.github/actions/system-deps
+        with:
+          packages: rpm patchelf gcc
       - name: Test build-rpm.sh (full + noaudio variants)
         run: bash packaging/rpm/test-build-rpm.sh
 
@@ -478,24 +462,9 @@ jobs:
           df -h /
 
       - name: Install system deps
-        # `|| true`: don't let a flaky preconfigured third-party apt repo
-        # (e.g. packages.microsoft.com 403s) fail the job; the packages we
-        # need are in the main Ubuntu archives, which still refresh.
-        # Skip when already present. Kept after the move to hosted runners:
-        # a hosted image may already carry these, and the check costs one
-        # dpkg -s. It also stays correct if a job is ever moved back to the
-        # self-hosted box, where several runner instances share ONE apt lock --
-        # concurrent installs there failed a dependabot PR with
-        # 'Could not get lock /var/lib/dpkg/lock-frontend'.
-        run: |
-          need=""
-          for p in libpcap-dev libasound2-dev; do dpkg -s "$p" >/dev/null 2>&1 || need="$need $p"; done
-          if [ -n "$need" ]; then
-            sudo apt-get update || true
-            sudo apt-get install -y $need
-          else
-            echo "already installed: libpcap-dev libasound2-dev"
-          fi
+        uses: ./.github/actions/system-deps
+        with:
+          packages: libpcap-dev libasound2-dev
 
       - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -557,21 +526,9 @@ jobs:
           # wiki-sync and release pass the token explicitly via GH_TOKEN.
           persist-credentials: false
       - name: Install libpcap
-        # Skip when already present. Kept after the move to hosted runners:
-        # a hosted image may already carry these, and the check costs one
-        # dpkg -s. It also stays correct if a job is ever moved back to the
-        # self-hosted box, where several runner instances share ONE apt lock --
-        # concurrent installs there failed a dependabot PR with
-        # 'Could not get lock /var/lib/dpkg/lock-frontend'.
-        run: |
-          need=""
-          for p in libpcap-dev; do dpkg -s "$p" >/dev/null 2>&1 || need="$need $p"; done
-          if [ -n "$need" ]; then
-            sudo apt-get update || true
-            sudo apt-get install -y $need
-          else
-            echo "already installed: libpcap-dev"
-          fi
+        uses: ./.github/actions/system-deps
+        with:
+          packages: libpcap-dev
 
       - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
       - name: Install cargo-audit
@@ -623,21 +580,9 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
       - name: Install libpcap
-        # Skip when already present. Kept after the move to hosted runners:
-        # a hosted image may already carry these, and the check costs one
-        # dpkg -s. It also stays correct if a job is ever moved back to the
-        # self-hosted box, where several runner instances share ONE apt lock --
-        # concurrent installs there failed a dependabot PR with
-        # 'Could not get lock /var/lib/dpkg/lock-frontend'.
-        run: |
-          need=""
-          for p in libpcap-dev; do dpkg -s "$p" >/dev/null 2>&1 || need="$need $p"; done
-          if [ -n "$need" ]; then
-            sudo apt-get update || true
-            sudo apt-get install -y $need
-          else
-            echo "already installed: libpcap-dev"
-          fi
+        uses: ./.github/actions/system-deps
+        with:
+          packages: libpcap-dev
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz
       - name: Check fuzz targets

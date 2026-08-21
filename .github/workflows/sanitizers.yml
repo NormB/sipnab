@@ -57,7 +57,9 @@ jobs:
           persist-credentials: false
 
       - name: Install system deps
-        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
+        uses: ./.github/actions/system-deps
+        with:
+          packages: libpcap-dev libasound2-dev
 
       # rust-src is required by -Zbuild-std: the standard library has to be
       # rebuilt with instrumentation, or TSan sees std's synchronisation as

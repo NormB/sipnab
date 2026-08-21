@@ -3946,6 +3946,14 @@ fn vale_style_package_is_pinned_to_a_release() {
 /// and `directories: ["/**"]` now brings compose files under Dependabot.
 /// Digest-freezing a dev stack nobody regenerates would trade a small risk for
 /// the larger one of an unmaintained pin.
+///
+/// Repo-local actions (`uses: ./.github/actions/...`) are exempt, narrowly and
+/// at the definition site below. They are not fetched: the path resolves to
+/// this repository's own checkout at the commit being tested, which is the
+/// same trust domain as the workflow file naming it. A path also takes no
+/// `@sha`, so requiring one would make the rule unsatisfiable rather than
+/// strict -- a gate demanding output its fixer can never produce. They still
+/// count toward the totals, because they are dependencies.
 #[test]
 fn ci_actions_and_base_images_are_pinned_by_digest() {
     let digest = regex::Regex::new(r"@sha256:[0-9a-f]{64}").unwrap();
@@ -3967,6 +3975,23 @@ fn ci_actions_and_base_images_are_pinned_by_digest() {
             let t = line.trim_start();
             // A commented-out example is documentation, not a dependency.
             if t.starts_with('#') || !t.starts_with("uses:") && !t.starts_with("- uses:") {
+                continue;
+            }
+            // A repo-local action (`uses: ./.github/actions/x`) is not fetched
+            // from anywhere. It is THIS repository's content at the commit
+            // under test, so it is already pinned by whatever pins the
+            // workflow file that names it -- there is no upstream owner, no
+            // moving tag, and no ref to compromise independently. There is
+            // also no syntax to pin: a path takes no `@sha`, so demanding one
+            // makes the rule unsatisfiable rather than strict. Counted as an
+            // action for the totals, because it IS a dependency; just one
+            // whose trust domain is identical to the caller's.
+            let local = t
+                .split_once("uses:")
+                .map(|(_, v)| v.trim().starts_with("./"))
+                .unwrap_or(false);
+            if local {
+                actions += 1;
                 continue;
             }
             actions += 1;

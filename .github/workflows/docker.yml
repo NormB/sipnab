@@ -87,6 +87,24 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # The DB is ~60 MB pulled from mirror.gcr.io, and on 2026-08-20 that
+      # download stalled and took the whole Docker job with it -- the image had
+      # already built and passed smoke. Cached per day: a re-run on the same day
+      # reaches no network, and `restore-keys` falls back to the previous day's
+      # DB if today's fetch fails, so a scan still runs against slightly older
+      # data instead of the job dying. The date, not a fixed key, because a
+      # vulnerability DB that never refreshes is a scan that stops finding things.
+      - name: Date stamp for the vulnerability DB cache
+        id: trivy-day
+        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Trivy vulnerability DB
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ github.workspace }}/.cache/trivy
+          key: trivy-db-${{ steps.trivy-day.outputs.day }}
+          restore-keys: trivy-db-
+
       # Scan the image BEFORE it is pushed, so a vulnerable layer never
       # reaches ghcr.io in the first place.
       #
@@ -97,6 +115,8 @@ jobs:
       # no vulnerability scan at all.
       - name: Scan the image for vulnerable OS packages
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_CACHE_DIR: ${{ github.workspace }}/.cache/trivy
         with:
           image-ref: sipnab:smoke
           format: sarif
@@ -109,10 +129,17 @@ jobs:
           ignore-unfixed: true
           exit-code: '1'
 
-      # Uploaded even when the scan failed, or the findings that caused the
-      # failure would never be visible anywhere.
+      # Uploaded even when the scan FOUND something, or the findings that
+      # caused the failure would never be visible anywhere.
+      #
+      # `hashFiles` guard: a scan that dies before writing the report is a
+      # different thing from a scan that reports findings, and `always()` alone
+      # conflated them -- on 2026-08-20 the DB download stalled, no SARIF was
+      # written, and this step turned one infrastructure failure into two by
+      # failing with `Path does not exist: trivy.sarif`. The scan step's own
+      # non-zero exit is what should fail the job; this one has nothing to say.
       - name: Upload image scan results
-        if: always()
+        if: always() && hashFiles('trivy.sarif') != ''
         uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4
         with:
           sarif_file: trivy.sarif
