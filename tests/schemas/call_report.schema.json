@@ -833,6 +833,128 @@
             }
           ]
         },
+        "source_disagreement": {
+          "description": "The run's two capture sources do not tell the same story about this call. A HEP mirror reports what the proxy BELIEVES it did; a local capture reports what actually left the box, so the two are complementary rather than redundant and their disagreement is the finding. Omitted entirely (not null) when absent, because the comparison can only run when BOTH witnesses carried this call: null would claim they were compared and agreed. A call one witness never saw at all is deliberately silent here -- from inside such a call, a proxy that mirrored a phantom cannot be told from a witness that was not watching that call's signaling. A message either capture dropped also looks exactly like one a source never carried, which is why this is a finding to investigate rather than a verdict.",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "agreed",
+                "mirror_only",
+                "wire_only",
+                "sdp_differs",
+                "evidence"
+              ],
+              "properties": {
+                "agreed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "How many messages both witnesses carried -- the denominator that makes the gap counts mean something."
+                },
+                "mirror_only": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "summary",
+                      "index"
+                    ],
+                    "properties": {
+                      "summary": {
+                        "type": "string",
+                        "description": "What the message is -- `INVITE`, `200 OK` -- so a report pasted into a ticket says something without the reader joining `index` against a message list they do not have."
+                      },
+                      "index": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Index into this dialog's own message list, the same coordinate every `evidence` array uses."
+                      }
+                    }
+                  },
+                  "description": "Messages the HEP mirror reported that the wire never carried: a proxy that believes it sent something this capture never saw leave the box."
+                },
+                "wire_only": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "summary",
+                      "index"
+                    ],
+                    "properties": {
+                      "summary": {
+                        "type": "string",
+                        "description": "What the message is -- `INVITE`, `200 OK` -- so a report pasted into a ticket says something without the reader joining `index` against a message list they do not have."
+                      },
+                      "index": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Index into this dialog's own message list, the same coordinate every `evidence` array uses."
+                      }
+                    }
+                  },
+                  "description": "Messages the wire carried that the mirror never reported: the box did something its own trace does not admit to."
+                },
+                "sdp_differs": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "summary",
+                      "mirror",
+                      "wire",
+                      "mirror_index",
+                      "wire_index"
+                    ],
+                    "properties": {
+                      "summary": {
+                        "type": "string"
+                      },
+                      "mirror": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Media endpoints the HEP mirror's copy advertised, `<media> <addr>:<port>` in `m=` order. Empty when that copy carried no SDP at all, which is itself a disagreement."
+                      },
+                      "wire": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Media endpoints the copy captured on the wire advertised. Reported beside `mirror` and never instead of it: there is no expected/actual pair here, because an SDP rewritten between the proxy's account and the wire is sometimes the SBC doing its job and sometimes the bug."
+                      },
+                      "mirror_index": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "wire_index": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    }
+                  },
+                  "description": "Messages both witnesses carried whose SDP named different media endpoints -- a rewrite."
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "description": "Every message index this finding drew on, sorted and deduplicated."
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "hints": {
           "type": "array",
           "items": {

@@ -200,7 +200,79 @@ fn signaling_findings(dialog: &SipDialog) -> Vec<(String, String)> {
         ));
     }
 
+    // The two witnesses SRC2 exists to compare. HEP is the proxy's account of
+    // what it did; the wire is what actually left the box. Every clause names
+    // the source beside the value, and there is no "expected"/"actual" pair,
+    // because the mirror usually arrives FIRST and a line shaped "the wire is
+    // missing X" would hand the account under investigation the authority the
+    // wire capture exists to withhold.
+    if let Some(s) = &diag.source_disagreement {
+        let mut head = format!(
+            "Capture sources disagree: {} matched on both",
+            plural_messages(s.agreed)
+        );
+        if !s.mirror_only.is_empty() {
+            let _ = write!(
+                head,
+                ", {} only the HEP mirror reported ({})",
+                plural_messages(s.mirror_only.len()),
+                name_messages(&s.mirror_only)
+            );
+        }
+        if !s.wire_only.is_empty() {
+            let _ = write!(
+                head,
+                ", {} only the wire carried ({})",
+                plural_messages(s.wire_only.len()),
+                name_messages(&s.wire_only)
+            );
+        }
+        for d in &s.sdp_differs {
+            let _ = write!(
+                head,
+                "; {} #{} advertises {} on the mirror and {} on the wire",
+                d.summary,
+                d.mirror_index,
+                endpoint_list(&d.mirror),
+                endpoint_list(&d.wire)
+            );
+        }
+        out.push((head, evidence_label(dialog, &s.evidence)));
+    }
+
     out
+}
+
+/// `1 message` / `4 messages`, so a report never reads "1 messages".
+fn plural_messages(n: usize) -> String {
+    if n == 1 {
+        "1 message".to_string()
+    } else {
+        format!("{n} messages")
+    }
+}
+
+/// Name the messages one witness carried alone, `200 OK #2`-style.
+///
+/// Not capped, unlike the plain-language hint the same finding renders: a hint
+/// is one line in a TUI row and an MCP payload, and this is the report a
+/// reader opened to see the whole list.
+fn name_messages(items: &[crate::sip::diagnosis::UnwitnessedMessage]) -> String {
+    items
+        .iter()
+        .map(|item| format!("{} #{}", item.summary, item.index))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// One witness's media endpoints, or the fact that its copy carried no SDP —
+/// which is itself a disagreement and must not render as an empty gap.
+fn endpoint_list(endpoints: &[String]) -> String {
+    if endpoints.is_empty() {
+        "no SDP".to_string()
+    } else {
+        endpoints.join(", ")
+    }
 }
 
 /// Render evidence indices as something a reader can act on.

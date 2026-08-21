@@ -620,8 +620,10 @@ to "why" lives:
 
 Inside `signaling_diagnosis` the convention inverts: the seven always-checked
 detections are present as `null` when they found nothing, so `null` there means
-"checked, nothing found". `icmp_unreachable` is the one exception and drops out
-entirely, because it cannot run at all unless the capture holds ICMP. [Output Formats](output-formats.md#one-object-per-dialog) covers every field
+"checked, nothing found". Two drop out entirely instead, because neither can run
+on every capture: `icmp_unreachable` needs a capture that holds ICMP at all, and
+`source_disagreement` needs a run reading from two capture sources that both
+carried the call. [Output Formats](output-formats.md#one-object-per-dialog) covers every field
 and the detection threshold behind each.
 
 **Additional dialog fields:**

@@ -2559,8 +2559,10 @@ to "why" lives:
 
 Inside `signaling_diagnosis` the convention inverts: the seven always-checked
 detections are present as `null` when they found nothing, so `null` there means
-"checked, nothing found". `icmp_unreachable` is the one exception and drops out
-entirely, because it cannot run at all unless the capture holds ICMP. [Output Formats](output-formats.md#one-object-per-dialog) covers every field
+"checked, nothing found". Two drop out entirely instead, because neither can run
+on every capture: `icmp_unreachable` needs a capture that holds ICMP at all, and
+`source_disagreement` needs a run reading from two capture sources that both
+carried the call. [Output Formats](output-formats.md#one-object-per-dialog) covers every field
 and the detection threshold behind each.
 
 **Additional dialog fields:**
@@ -8536,7 +8538,7 @@ sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \
 A `signaling_diagnosis` object sits beside `diagnosis` when something is wrong
 with the signaling rather than the media, and **drops out entirely** when
 the detections found nothing — so a healthy dialog serializes exactly as before
-the field existed. Eight detections run over every dialog, each naming the
+the field existed. Nine detections run over every dialog, each naming the
 messages it drew on as indices into the dialog's own message list:
 
 | Field | Meaning |
@@ -8549,15 +8551,16 @@ messages it drew on as indices into the dialog's own message list:
 | `post_dial_delay` | `INVITE` to first provisional response over 11 s, the ITU-T E.721 Table 2 ninety-fifth-percentile target for an international connection. Carries `delay_sec`, the `threshold_sec` it exceeded, and the `responded_with` code that ended the wait. |
 | `registration_failure` | A `REGISTER` rejected (`kind: rejected`), or granted less time than it asked for (`kind: shortened_expiry`, `code: 200`). Carries `requested_expiry_sec` and `granted_expiry_sec` when the messages said. Kept separate from `final_failure` because "is this phone online?" is a different question from "why did this call fail?". |
 | `icmp_unreachable` | An ICMP or ICMPv6 error quoting one of this dialog's requests. Carries `unreachable_endpoint` (the host that did not answer), `reported_by` (the router or host that sent the error — a *different* machine), `description` of the ICMP cause, the raw `icmp_type` / `icmp_code` bytes, the quoted request's `method`, an exact `errors` count, and `truncated`. |
+| `source_disagreement` | Present only on a run reading from TWO capture sources at once (`-d` with `-L`), and only when they told different stories about this call. A HEP mirror reports what the proxy *believes* it did; the local capture reports what actually left the box, which is why the pair is worth having and why the disagreement is the finding. Carries `agreed` (messages both witnesses carried -- the denominator), `mirror_only` (the proxy believes it sent something that never left the box), `wire_only` (the box did something its own trace does not admit to) and `sdp_differs` (both carried it, and each advertised different media endpoints -- a rewrite). Each `sdp_differs` entry names `mirror` and `wire` side by side and neither as the truth. |
 
 Every finding carries an `evidence` array of message indices, and `hints`
 carries one plain-language line per finding.
 
 The first seven fields are always present: `null` there means "checked, nothing
-found". `icmp_unreachable` is the exception and is **omitted** when absent,
-because it is the one detection that cannot run unless the capture holds ICMP at
-all — a `null` on a capture that carried none would claim a check that never
-happened.
+found". The last two are **omitted** when absent, because neither can run on
+every capture and a `null` would claim a check that never happened:
+`icmp_unreachable` needs a capture that holds ICMP at all, and
+`source_disagreement` needs two capture sources that both carried the call.
 
 `icmp_unreachable` is worth singling out because it is the only finding that
 reports a **fact** rather than an inference. The others read the SIP and reason
