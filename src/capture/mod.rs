@@ -439,6 +439,16 @@ pub struct TlsDecryptReport {
     pub app_data_records: u64,
     /// ApplicationData records that were opened.
     pub decrypted_records: u64,
+    /// Records recovered by a late replay: held because no key existed when
+    /// they arrived, then opened once one did.
+    pub late_recovered: u64,
+    /// Records dropped from the hold before a key ever arrived, because the
+    /// byte budget filled. Reported beside `late_recovered` on purpose --
+    /// without it "we never had the keys" and "we had them and had already
+    /// discarded the ciphertext" are the same silence.
+    pub late_evicted: u64,
+    /// Records still held at the end of the run, i.e. keys that never came.
+    pub late_still_held: u64,
 }
 
 impl TlsDecryptReport {
@@ -1172,7 +1182,7 @@ impl Default for PacketProcessor {
 /// Returns the byte ranges of the complete messages plus `consumed` — the index
 /// where the first incomplete (held-back) message begins. `data[consumed..]`
 /// should be retained and prepended to the next flush of the same stream.
-fn frame_tcp_sip(data: &[u8]) -> (Vec<std::ops::Range<usize>>, usize) {
+pub(crate) fn frame_tcp_sip(data: &[u8]) -> (Vec<std::ops::Range<usize>>, usize) {
     let mut ranges = Vec::new();
     let mut pos = 0;
     while pos < data.len() {

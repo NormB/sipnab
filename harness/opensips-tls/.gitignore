@@ -1,0 +1,4 @@
+# Generated at run time by make-certs.sh. A private key does not belong in a
+# repository even when it protects nothing: secret scanners cannot tell a
+# throwaway harness key from a real one, and neither can the next reader.
+tls/

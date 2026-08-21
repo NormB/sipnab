@@ -251,6 +251,15 @@ struct TlsSession {
     /// role turns out to be right. Two entries in practice, so a Vec beats a
     /// map.
     lockon_floor: Vec<((IpAddr, IpAddr), u64)>,
+    /// True when this session's own ClientHello was seen on the wire.
+    ///
+    /// It settles a question lock-on otherwise has to guess: where the record
+    /// stream STARTS. Having watched the handshake, sequence 0 is the first
+    /// application record, so a record that fails to open is the wrong key --
+    /// not a later sequence. Widening the search on that failure walks the
+    /// floor past 0 and buries the INVITE, which is the same way a replay can
+    /// take a call dark. Found by Dan Jenkins on a live trunk.
+    handshake_seen: bool,
     /// Current TLS 1.3 traffic secrets, kept so a KeyUpdate can ratchet them.
     ///
     /// `HKDF-Expand-Label(secret, "traffic upd", "", Hash.length)` needs the
@@ -574,6 +583,77 @@ const MAX_PENDING_HANDSHAKE_CONNS: usize = 4096;
 /// repeats); the oldest is dropped so one connection cannot pin memory either.
 const MAX_PENDING_PER_CONN: usize = 32;
 
+/// Ciphertext held for a second try once keys arrive, in BYTES.
+///
+/// Bytes and not a record count, for the reason the multi-file reader learned
+/// the same lesson: a TLS record can carry up to 16 KiB, so "64 records" is
+/// anywhere from a few kilobytes to a megabyte and the ceiling means nothing.
+/// 4 MiB is roughly 256 full-size records — far more than the handful that can
+/// precede a keylog write, and small enough that a capture full of traffic
+/// nothing will ever decrypt cannot grow into a leak.
+///
+/// The buffer holds CIPHERTEXT, which is the same material already in the
+/// packet buffers it was read from, so this widens no exposure that the
+/// capture itself did not already have. It is dropped the moment a record
+/// decrypts or the budget evicts it.
+const REWIND_BUDGET_BYTES: usize = 4 * 1024 * 1024;
+
+/// How far behind the newest packet a held record may be before it is retired.
+///
+/// The race this hold exists for is tens of milliseconds -- measured at 56 ms
+/// on a live trunk. Five seconds is two orders of magnitude of slack and still
+/// bounds the pathological case: without it, ciphertext that will never open
+/// (a handshake flight, an unrelated HTTPS flow, a cipher sipnab refuses) is
+/// re-swept against every session on every key load, forever, on the single
+/// consumer thread.
+const REWIND_MAX_AGE_SECS: i64 = 5;
+
+/// Trial decryptions one sweep may attempt before stopping and resuming at the
+/// next key load. A full hold is 4096 directions x 16 records against every
+/// session; unbounded, one keylog line could stall the packet loop.
+const REWIND_TRIALS_PER_SWEEP: usize = 2048;
+
+/// One ApplicationData record that no session could open yet, kept so it can
+/// be tried again after keys load.
+///
+/// Carries the packet context, not just the bytes. A recovered INVITE stamped
+/// with the time it was RECOVERED rather than the time it arrived would move
+/// every timing figure derived from it -- post-dial delay, ring time, call
+/// duration -- by however long the keys took. Recovering the message and then
+/// lying about when it happened trades one wrong answer for another.
+#[derive(Debug, Clone)]
+struct PendingRecord {
+    /// The undecrypted record, held verbatim.
+    record: TlsRecord,
+    /// Source endpoint of the packet it arrived in.
+    src: SocketAddr,
+    /// Destination endpoint of the packet it arrived in.
+    dst: SocketAddr,
+    /// Capture time of the packet this record came out of.
+    timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+/// A record held from before its keys existed, opened by a later replay.
+#[derive(Debug, Clone)]
+pub struct RecoveredRecord {
+    /// The decrypted bytes.
+    pub plaintext: Vec<u8>,
+    /// The capture time of the packet it arrived in, not of the replay.
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Source endpoint of the original packet.
+    pub src: SocketAddr,
+    /// Destination endpoint of the original packet.
+    pub dst: SocketAddr,
+}
+
+/// Held records per TCP direction, so one noisy direction cannot starve the
+/// others out of the shared byte budget.
+const MAX_REWIND_PER_DIRECTION: usize = 16;
+
+/// Directions tracked at once. Matches the ClientHello cap for the same
+/// reason: a peer opening many connections must not pin memory.
+const MAX_REWIND_DIRECTIONS: usize = 4096;
+
 /// Direction-normalized TCP connection key: the 4-tuple as an ordered
 /// (lower, higher) endpoint pair, so a ClientHello seen client→server and its
 /// ServerHello seen server→client map to the same connection.
@@ -638,6 +718,40 @@ pub struct TlsDecryptor {
     /// Number of keylog entries already processed into sessions.
     /// Avoids rebuilding the group map on every ApplicationData record.
     keylog_processed_count: usize,
+    /// ApplicationData records held for a retry once keys load, per TCP
+    /// direction, oldest first within each.
+    rewind_pending: IndexMap<(SocketAddr, SocketAddr), std::collections::VecDeque<PendingRecord>>,
+    /// Bytes currently held in `rewind_pending`, kept alongside so enforcing
+    /// the budget costs no walk of the queue.
+    rewind_bytes: usize,
+    /// Bumped whenever keylog entries load. A caller replays only when this
+    /// moves, so a quiet capture pays nothing for the feature.
+    keylog_generation: u64,
+    /// Generation the last replay ran at, so a caller can ask "anything new?"
+    /// without tracking it itself.
+    last_rewind_generation: u64,
+    /// Newest capture timestamp seen, for ageing the hold.
+    ///
+    /// Capture time, not wall clock: reading a file recorded last week would
+    /// otherwise retire every held record instantly.
+    newest_seen: Option<chrono::DateTime<chrono::Utc>>,
+    /// Whether more keys can still arrive after a record is seen.
+    ///
+    /// False for the ordinary `-I capture.pcap --keylog keys.log` run: the file
+    /// is read once at startup and nothing will ever add to it, so a record
+    /// that cannot be opened now can never be opened later and holding it is
+    /// pure cost -- a record clone each, up to the whole budget, for a replay
+    /// that by construction can never recover anything. Only a watched keylog,
+    /// an inherited descriptor, or DSB blocks embedded in the capture can
+    /// change the key set mid-run. The decryptor cannot tell these apart from
+    /// the inside (a static file also has a `keylog_source`), so the caller
+    /// that chose the source says so.
+    keys_may_still_arrive: bool,
+    /// Records dropped because the budget was full.
+    rewind_evicted: u64,
+    /// Records a rewind recovered. Both counters are reported: a rewind that
+    /// silently evicted would be the missing-measurement shape again.
+    rewind_recovered: u64,
     /// RSA private-key handshake state (`--tls-key`); `None` unless a key is set.
     rsa: Option<RsaHandshakeState>,
 }
@@ -688,6 +802,14 @@ impl TlsDecryptor {
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
+            rewind_pending: IndexMap::new(),
+            rewind_bytes: 0,
+            keylog_generation: 0,
+            last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
+            rewind_evicted: 0,
+            rewind_recovered: 0,
             rsa: None,
         })
     }
@@ -703,6 +825,9 @@ impl TlsDecryptor {
             sessions_with_keys: self.sessions.len(),
             app_data_records: self.app_data_records,
             decrypted_records: self.decrypted_count,
+            late_recovered: self.rewind_recovered,
+            late_evicted: self.rewind_evicted,
+            late_still_held: self.rewind_pending.values().map(|q| q.len() as u64).sum(),
         }
     }
 
@@ -744,7 +869,11 @@ impl TlsDecryptor {
                 self.keylog_entries.push(entry);
             }
         }
-        self.keylog_entries.len() - before
+        let added = self.keylog_entries.len() - before;
+        if added > 0 {
+            self.keylog_generation += 1;
+        }
+        added
     }
 
     /// Adopt a keylog source opened elsewhere.
@@ -942,6 +1071,38 @@ impl TlsDecryptor {
                             self.pending_client_randoms.shift_remove(&conn);
                         }
                     }
+                    // Tell the session, if it already exists, that we watched
+                    // its handshake.
+                    //
+                    // Order is why this is here and not only where sessions are
+                    // built. With a complete keylog on disk, every session is
+                    // derived at STARTUP -- before a single packet is read --
+                    // so a flag computed at construction is computed against an
+                    // empty observed-handshake list and is false forever.
+                    // Measured on Dan Jenkins's reproduction capture: two
+                    // sessions ready before packet one, `observed=0`, and the
+                    // handshake-seen path never engaged. The information
+                    // arrives later than the session does, so it has to be
+                    // delivered when it arrives.
+                    if let Some(cr) = info.client_random {
+                        let key = TlsSessionKey { client_random: cr };
+                        if let Some(session) = self.sessions.get_mut(&key) {
+                            session.handshake_seen = true;
+                            // Learning that we watched the handshake INVALIDATES
+                            // every floor already drawn for this session, because
+                            // each one was inferred while sipnab still believed
+                            // it might have joined mid-stream. Measured on Dan
+                            // Jenkins's capture: by the time the ServerHello was
+                            // paired the floor stood at 16, so the INVITE at
+                            // sequence 0 was tried at 16 and failed -- the flag
+                            // was set, the guard held, and the record was still
+                            // buried by a conclusion drawn before the guard
+                            // existed. Stopping further advance is not enough;
+                            // the earlier advances have to go too.
+                            session.lockon_floor.clear();
+                            session.lockon_attempts = 0;
+                        }
+                    }
                     self.observed_handshakes.push(info);
                     // Drop only TLS 1.2 sessions, not TLS 1.3 ones.
                     //
@@ -1048,15 +1209,37 @@ impl TlsDecryptor {
                 locked_server: false,
                 lockon_attempts: 0,
                 lockon_floor: Vec::new(),
+                handshake_seen: false,
                 client_addr: None,
             },
         ))
+    }
+
+    /// Decrypt one record, remembering enough about the packet to recover it
+    /// later if the keys are not here yet.
+    ///
+    /// The context is what separates this from [`Self::try_decrypt`]: a record
+    /// held for a replay must come back with the time and endpoints it
+    /// actually arrived on, or every timing figure derived from the recovered
+    /// message is wrong by however long the keys took.
+    pub fn try_decrypt_at(
+        &mut self,
+        record: &TlsRecord,
+        src: SocketAddr,
+        dst: SocketAddr,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) -> Option<Vec<u8>> {
+        self.decrypt_inner(record, src, dst, Some(timestamp))
     }
 
     /// Attempt to decrypt a TLS ApplicationData record.
     ///
     /// Returns `Some(plaintext)` if decryption succeeds, `None` if no
     /// matching session keys are found or decryption fails.
+    ///
+    /// Holds for replay under port 0 with no capture time, so a caller that
+    /// wants recovered records placed correctly in time wants
+    /// [`Self::try_decrypt_at`] instead.
     ///
     /// # Arguments
     ///
@@ -1069,6 +1252,27 @@ impl TlsDecryptor {
         src_addr: IpAddr,
         dst_addr: IpAddr,
     ) -> Option<Vec<u8>> {
+        self.decrypt_inner(
+            record,
+            SocketAddr::new(src_addr, 0),
+            SocketAddr::new(dst_addr, 0),
+            None,
+        )
+    }
+
+    /// The shared body of [`Self::try_decrypt`] and [`Self::try_decrypt_at`].
+    ///
+    /// One body rather than two, so the hold-for-replay decision cannot drift
+    /// between the entry point tests use and the one production calls.
+    fn decrypt_inner(
+        &mut self,
+        record: &TlsRecord,
+        src: SocketAddr,
+        dst: SocketAddr,
+        timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Option<Vec<u8>> {
+        let src_addr = src.ip();
+        let dst_addr = dst.ip();
         if record.content_type != TlsContentType::ApplicationData {
             return None;
         }
@@ -1101,8 +1305,11 @@ impl TlsDecryptor {
                 record,
                 src_addr,
                 dst_addr,
-                lockon_budget,
-                lockon_window,
+                LockOn {
+                    budget: lockon_budget,
+                    window: lockon_window,
+                    replay: false,
+                },
             ) {
                 *decrypted_count += 1;
                 tracing::info!(
@@ -1114,7 +1321,256 @@ impl TlsDecryptor {
             }
         }
 
+        // Nothing opened it. Hold the ciphertext rather than dropping it: the
+        // keys for this session may not exist yet. eCapture writes a session's
+        // secrets only after the handshake, so the FIRST application record --
+        // which for a call is the INVITE, carrying the original SDP offer --
+        // is on the wire before any keylog line for it. Narrowing the watch
+        // interval cannot close that; the keys are written after the record
+        // they protect, so the only fix is to try it again later.
+        self.hold_for_rewind(record, src, dst, timestamp.unwrap_or_else(chrono::Utc::now));
         None
+    }
+
+    /// Keep one unopened record for a later retry, within the byte budget.
+    ///
+    /// Evicts oldest-first, and COUNTS what it evicted. A buffer that quietly
+    /// forgot would turn "we never had the keys" and "we had them and threw
+    /// the record away" into the same silent outcome.
+    fn hold_for_rewind(
+        &mut self,
+        record: &TlsRecord,
+        src: SocketAddr,
+        dst: SocketAddr,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) {
+        // The capture clock advances whether or not anything is held, so a
+        // run that stops holding still ages what it already has.
+        if self.newest_seen.is_none_or(|n| timestamp > n) {
+            self.newest_seen = Some(timestamp);
+        }
+        // Nothing to wait for, so nothing to hold. See `keys_may_still_arrive`.
+        if !self.keys_may_still_arrive {
+            return;
+        }
+        let cost = record.payload.len();
+        // A single record larger than the whole budget is not held: evicting
+        // everything to make room for one that may never open trades a
+        // certainty for a maybe.
+        if cost > REWIND_BUDGET_BYTES {
+            self.rewind_evicted += 1;
+            return;
+        }
+        if !self.rewind_pending.contains_key(&(src, dst))
+            && self.rewind_pending.len() >= MAX_REWIND_DIRECTIONS
+            && let Some((_, dropped)) = self.rewind_pending.shift_remove_index(0)
+        {
+            {
+                for r in &dropped {
+                    self.rewind_bytes -= r.record.payload.len();
+                    self.rewind_evicted += 1;
+                }
+            }
+        }
+        let queue = self.rewind_pending.entry((src, dst)).or_default();
+        if queue.len() >= MAX_REWIND_PER_DIRECTION
+            && let Some(old) = queue.pop_front()
+        {
+            self.rewind_bytes -= old.record.payload.len();
+            self.rewind_evicted += 1;
+        }
+        queue.push_back(PendingRecord {
+            record: record.clone(),
+            src,
+            dst,
+            timestamp,
+        });
+        self.rewind_bytes += cost;
+
+        // Global budget last, across every direction.
+        while self.rewind_bytes > REWIND_BUDGET_BYTES {
+            let Some((key, queue)) = self.rewind_pending.iter_mut().next() else {
+                break;
+            };
+            let key = *key;
+            match queue.pop_front() {
+                Some(old) => {
+                    self.rewind_bytes -= old.record.payload.len();
+                    self.rewind_evicted += 1;
+                    if self
+                        .rewind_pending
+                        .get(&key)
+                        .is_some_and(std::collections::VecDeque::is_empty)
+                    {
+                        self.rewind_pending.shift_remove(&key);
+                    }
+                }
+                None => {
+                    self.rewind_pending.shift_remove(&key);
+                }
+            }
+        }
+    }
+
+    /// Try every held record again, returning the ones that now open.
+    ///
+    /// Call this after keys load. A record that opens is removed; one that
+    /// still does not is KEPT, because a keylog is written per session and one
+    /// session's secrets arriving says nothing about another's.
+    ///
+    /// The replay tries the sequence it already has and never moves the
+    /// lock-on floor -- see the note in `try_decrypt_with_session`. Reading a
+    /// failed replay as "the sequence must be later" walks the floor past the
+    /// INVITE at seq 0 and takes the whole call dark.
+    pub fn rewind(&mut self) -> Vec<RecoveredRecord> {
+        if self.rewind_pending.is_empty() {
+            return Vec::new();
+        }
+        self.ensure_sessions_populated();
+
+        let mut recovered = Vec::new();
+        let mut still: IndexMap<
+            (SocketAddr, SocketAddr),
+            std::collections::VecDeque<PendingRecord>,
+        > = IndexMap::new();
+        let mut held_bytes = 0usize;
+
+        let cutoff = self
+            .newest_seen
+            .map(|n| n - chrono::Duration::seconds(REWIND_MAX_AGE_SECS));
+        let mut trials = 0usize;
+
+        let drained: Vec<(
+            (SocketAddr, SocketAddr),
+            std::collections::VecDeque<PendingRecord>,
+        )> = self.rewind_pending.drain(..).collect();
+        for (dir, queue) in drained {
+            for item in queue {
+                // Too old to still be waiting on a key: retire it rather
+                // than re-sweep it on every key load for the rest of the run.
+                if cutoff.is_some_and(|c| item.timestamp < c) {
+                    self.rewind_evicted += 1;
+                    continue;
+                }
+                // Trial budget spent: keep the rest untried and pick them up
+                // at the next key load rather than stalling the packet loop.
+                if trials >= REWIND_TRIALS_PER_SWEEP {
+                    held_bytes += item.record.payload.len();
+                    still.entry(dir).or_default().push_back(item);
+                    continue;
+                }
+                let Self {
+                    sessions,
+                    crypto,
+                    decrypted_count,
+                    lockon_budget,
+                    lockon_window,
+                    ..
+                } = self;
+                let lockon_window = *lockon_window;
+                let crypto = crypto.as_ref();
+                let mut opened = None;
+                for session in sessions.values_mut() {
+                    // A session pinned to a different connection cannot open
+                    // this record; skipping saves two AEAD opens per session.
+                    if session
+                        .client_addr
+                        .is_some_and(|a| a != item.src.ip() && a != item.dst.ip())
+                    {
+                        continue;
+                    }
+                    trials += 1;
+                    if let Some(plaintext) = try_decrypt_with_session(
+                        session,
+                        crypto,
+                        &item.record,
+                        item.src.ip(),
+                        item.dst.ip(),
+                        LockOn {
+                            budget: lockon_budget,
+                            window: lockon_window,
+                            replay: true,
+                        },
+                    ) {
+                        *decrypted_count += 1;
+                        opened = Some(plaintext);
+                        break;
+                    }
+                }
+                match opened {
+                    Some(plaintext) => {
+                        self.rewind_recovered += 1;
+                        recovered.push(RecoveredRecord {
+                            plaintext,
+                            timestamp: item.timestamp,
+                            src: item.src,
+                            dst: item.dst,
+                        });
+                    }
+                    None => {
+                        held_bytes += item.record.payload.len();
+                        still.entry(dir).or_default().push_back(item);
+                    }
+                }
+            }
+        }
+
+        self.rewind_pending = still;
+        self.rewind_bytes = held_bytes;
+        // Oldest first, by the time each record ARRIVED. The hold is drained
+        // one direction at a time, and the server's handshake flight is held
+        // first, so without this a recovered 183 or 200 carrying the rewritten
+        // SDP is emitted ahead of the INVITE that offered it -- and the
+        // offer/answer pass then labels the rewrite as the offer. That is the
+        // same false media mismatch this work exists to remove, arriving by a
+        // different route. Stable, so records from one packet keep wire order.
+        recovered.sort_by_key(|r| r.timestamp);
+        if !recovered.is_empty() {
+            tracing::info!(
+                "TLS late decrypt: recovered {} record(s) that arrived before their keys",
+                recovered.len()
+            );
+        }
+        recovered
+    }
+
+    /// Replay held records, but only if keys have loaded since the last time.
+    ///
+    /// The guard is what keeps this off the hot path: without it every packet
+    /// would retry the whole hold against an unchanged key set -- work that
+    /// cannot succeed by construction, paid per packet against a stated
+    /// 100K pps target.
+    pub fn rewind_if_keys_changed(&mut self) -> Vec<RecoveredRecord> {
+        if self.keylog_generation == self.last_rewind_generation {
+            return Vec::new();
+        }
+        self.last_rewind_generation = self.keylog_generation;
+        self.rewind()
+    }
+
+    /// Declare that more key material can still arrive during this run.
+    ///
+    /// Set for `--keylog-watch`, `--keylog-fd`, and captures carrying DSB
+    /// blocks. Without it the late-decrypt hold is disabled, because a record
+    /// that cannot open against a key set that will never change cannot open
+    /// later either.
+    pub fn set_keys_may_still_arrive(&mut self, yes: bool) {
+        self.keys_may_still_arrive = yes;
+    }
+
+    /// Generation of the loaded keylog; bumped whenever entries load.
+    ///
+    /// A caller replays only when this moves. Without it every packet would
+    /// re-try the whole hold against an unchanged key set -- work that cannot
+    /// succeed, on the hot path.
+    pub fn keylog_generation(&self) -> u64 {
+        self.keylog_generation
+    }
+
+    /// How many held records a rewind has recovered, and how many the byte
+    /// budget dropped before one could.
+    pub fn rewind_stats(&self) -> (u64, u64) {
+        (self.rewind_recovered, self.rewind_evicted)
     }
 
     /// Set how wide the sequence search may become, in records.
@@ -1228,6 +1684,13 @@ impl TlsDecryptor {
                 }
             }
 
+            // Did we watch this session's own handshake? If so the record
+            // stream starts at 0 and a failed open is the wrong key, not a
+            // later sequence -- see `TlsSession::handshake_seen`.
+            let saw_handshake = observed_handshakes
+                .iter()
+                .any(|h| h.client_random.as_ref().is_some_and(|r| r == cr));
+
             if let (Some(cs), Some(ss)) = (client_secret, server_secret) {
                 // Determine cipher suite from secret length:
                 // - 32 bytes (SHA-256 output) -> AES-128-GCM
@@ -1271,6 +1734,7 @@ impl TlsDecryptor {
                                 locked_server: false,
                                 lockon_attempts: 0,
                                 lockon_floor: Vec::new(),
+                                handshake_seen: saw_handshake,
                                 client_addr: None,
                             },
                         );
@@ -1345,6 +1809,7 @@ impl TlsDecryptor {
                                     locked_server: false,
                                     lockon_attempts: 0,
                                     lockon_floor: Vec::new(),
+                                    handshake_seen: false,
                                     client_addr: None,
                                 },
                             );
@@ -1410,7 +1875,31 @@ const LOCKON_TRIAL_BUDGET: u64 = 1 << 22;
 /// place without cloning session keys. Key material stays owned by `session`;
 /// its `Drop`/zeroize behavior is unaffected.
 ///
-/// `lockon_budget` is the run's remaining allowance for searching a sequence
+/// How much searching one decrypt attempt may do, and whether it may move
+/// the floor afterwards.
+///
+/// Bundled rather than passed loose because the three travel together and are
+/// only meaningful together: `replay` decides whether `budget` and `window`
+/// are consulted at all.
+struct LockOn<'a> {
+    /// The run's remaining allowance for searching an unestablished sequence.
+    budget: &'a mut u64,
+    /// Ceiling on how far forward one record may search.
+    window: u64,
+    /// True when this is a replay of a record held from before its keys
+    /// existed. A replay tries the sequence it already has and never advances
+    /// the lock-on floor.
+    replay: bool,
+}
+
+/// Try to decrypt a record using a specific session's keys.
+///
+/// Borrows a single [`TlsSession`] and the crypto backend directly (rather than
+/// re-looking-up the session by key), so the caller can iterate `sessions` in
+/// place without cloning session keys. Key material stays owned by `session`;
+/// its `Drop`/zeroize behavior is unaffected.
+///
+/// `lockon.budget` is the run's remaining allowance for searching a sequence
 /// number that has not been established yet; see [`LOCKON_TRIAL_BUDGET`].
 fn try_decrypt_with_session(
     session: &mut TlsSession,
@@ -1418,9 +1907,13 @@ fn try_decrypt_with_session(
     record: &TlsRecord,
     src_addr: IpAddr,
     dst_addr: IpAddr,
-    lockon_budget: &mut u64,
-    lockon_window: u64,
+    lockon: LockOn<'_>,
 ) -> Option<Vec<u8>> {
+    let LockOn {
+        budget: lockon_budget,
+        window: lockon_window,
+        replay,
+    } = lockon;
     // Determine direction: try both if we haven't established client_addr yet.
     //
     // An address only discriminates when the two ends have different ones. A
@@ -1493,7 +1986,19 @@ fn try_decrypt_with_session(
         // only to step over records the capture missed; one that has not is
         // guessing from zero, and the capture may have joined an established
         // connection at any record number.
-        let window = if locked {
+        // A replay tries the sequence it already has and nothing beyond it.
+        // Widening is how a failed replay would consume the run's lock-on
+        // budget on ciphertext that can never open, starving the live path
+        // that needs it.
+        let window = if replay {
+            // Replay, or a session whose handshake we watched: the sequence is
+            // known, so a failed open is the wrong key rather than a later
+            // record. Widening here is what lets handshake-epoch
+            // ApplicationData -- which TLS 1.3 disguises under the same
+            // content type, sealed with the HANDSHAKE secret no application
+            // key will open -- walk the floor past the INVITE at seq 0.
+            1
+        } else if locked {
             SEQ_RESYNC_WINDOW
         } else {
             // Widen with each failed RECORD, not each direction: see
@@ -1529,7 +2034,7 @@ fn try_decrypt_with_session(
             )
             .map(|(pt, seq)| (pt, seq, None)),
         };
-        if !locked {
+        if !locked && !replay {
             *lockon_budget = lockon_budget.saturating_sub(trials);
             if decrypted.is_none() {
                 // Only a direction still guessing escalates. A failure here is
@@ -1626,6 +2131,19 @@ fn try_decrypt_with_session(
                 }
             }
 
+            // Only real application data reaches the caller. In TLS 1.3 the
+            // OUTER content type of every protected record is 23, so a
+            // NewSessionTicket or a KeyUpdate is indistinguishable from a SIP
+            // message until it is opened -- the INNER type is the only thing
+            // that separates them (RFC 8446 5.2). Handing handshake plaintext
+            // on looks harmless because it does not parse as SIP, and is not:
+            // the caller reassembles a BYTE STREAM, so ticket bytes prepend
+            // themselves to the next real message and frame it as garbage.
+            // Measured on a loopback TLS call: two NewSessionTickets ahead of
+            // the responses cost the `100 Trying` outright.
+            if inner_type.is_some_and(|t| t != 23) {
+                return None;
+            }
             return Some(plaintext);
         }
     }
@@ -1633,7 +2151,23 @@ fn try_decrypt_with_session(
     // Every key guess failed over `[pair_floor, pair_floor + searched)`, so
     // this direction's own number is past that span whichever role is right.
     // Advance once, here, rather than inside the loop.
-    if let Some(width) = searched {
+    //
+    // NEVER on a replay. A replayed record is one held from before the keys
+    // existed, and in TLS 1.3 the record layer disguises handshake records as
+    // ApplicationData -- so the hold is full of EncryptedExtensions,
+    // Certificate and Finished, sealed under the HANDSHAKE traffic secret that
+    // no application key will ever open. Reading those failures as "the
+    // sequence must be further on" walks the floor past 0, and the INVITE at
+    // seq 0 is then permanently below it: the feature buries the record it was
+    // written to recover. Found by Dan Jenkins on a live trunk, against a
+    // first draft that replayed through this same search -- it reported
+    // `recovered 0 of 3` and then decrypted nothing for the rest of the call,
+    // which is worse than the defect it fixes. A failed replay means "not this
+    // key", never "later than this".
+    if let Some(width) = searched
+        && !replay
+        && !session.handshake_seen
+    {
         // Once per record, for the same reason the window is: advancing per
         // direction gives the two key guesses different spans.
         session.lockon_attempts = session.lockon_attempts.saturating_add(1);
@@ -2004,6 +2538,14 @@ mod tests {
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
+            rewind_pending: IndexMap::new(),
+            rewind_bytes: 0,
+            keylog_generation: 0,
+            last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
+            rewind_evicted: 0,
+            rewind_recovered: 0,
             rsa: None,
         };
 
@@ -2067,6 +2609,14 @@ mod tests {
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
+            rewind_pending: IndexMap::new(),
+            rewind_bytes: 0,
+            keylog_generation: 0,
+            last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
+            rewind_evicted: 0,
+            rewind_recovered: 0,
             rsa: None,
         };
 
@@ -2111,6 +2661,14 @@ mod tests {
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
+            rewind_pending: IndexMap::new(),
+            rewind_bytes: 0,
+            keylog_generation: 0,
+            last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
+            rewind_evicted: 0,
+            rewind_recovered: 0,
             rsa: None,
         };
 
@@ -2152,6 +2710,14 @@ mod tests {
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
+            rewind_pending: IndexMap::new(),
+            rewind_bytes: 0,
+            keylog_generation: 0,
+            last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
+            rewind_evicted: 0,
+            rewind_recovered: 0,
             rsa: None,
         };
 
@@ -2191,6 +2757,14 @@ mod tests {
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
+            rewind_pending: IndexMap::new(),
+            rewind_bytes: 0,
+            keylog_generation: 0,
+            last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
+            rewind_evicted: 0,
+            rewind_recovered: 0,
             rsa: None,
         };
 
@@ -2431,6 +3005,10 @@ mod tests {
         let (key, iv) =
             derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm).unwrap();
         let mut d = decryptor_with(Box::new(RingCryptoBackend));
+        // These tests describe a WATCHED keylog: keys arrive after the
+        // record does. Without saying so the hold is disabled, exactly as
+        // it is for a plain `--keylog` file that can never grow.
+        d.set_keys_may_still_arrive(true);
         d.keylog_entries = make_keylog_entries();
         (d, key, iv)
     }
@@ -3041,6 +3619,288 @@ mod tests {
         assert_eq!(d.decrypted_count, 2);
     }
 
+    /// A record that arrived BEFORE its keys must decrypt once they load.
+    ///
+    /// Reported by Dan Jenkins ([@danjenkins](https://github.com/danjenkins))
+    /// against a live iQ trunk. eCapture writes a session's secrets only after
+    /// the handshake completes, and the INVITE is the FIRST application record
+    /// on those keys, so it is on the wire before any keylog line exists.
+    /// Measured on his capture: the INVITE at 09:52:55.606, the keys at
+    /// 09:52:55.662 — 56 ms later. Everything after the session was "ready"
+    /// decrypted; the INVITE never did.
+    ///
+    /// Narrowing the watch interval cannot fix this. The race is not the poll
+    /// period, it is the ORDER: the keys are written after the record they
+    /// protect. A 100 ms watch still loses the first message, and so would a
+    /// 1 ms one. The only fix is to keep the ciphertext and try it again.
+    ///
+    /// The cost of losing it is out of proportion to one record. That first
+    /// message is the INVITE, which carries the original SDP offer — so
+    /// without it the first SDP in the store is whatever the next hop
+    /// rewrote, and the run reports a NAT mismatch that is not in the
+    /// capture. A dropped record does not merely omit a message; it changes
+    /// the answer.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn a_record_that_arrived_before_its_keys_is_decrypted_once_they_load() {
+        use crate::crypto::RingCryptoBackend;
+
+        let (key, iv) =
+            derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm).unwrap();
+        let mut d = decryptor_with(Box::new(RingCryptoBackend));
+        // These tests describe a WATCHED keylog: keys arrive after the
+        // record does. Without saying so the hold is disabled, exactly as
+        // it is for a plain `--keylog` file that can never grow.
+        d.set_keys_may_still_arrive(true);
+
+        let invite = b"INVITE sip:iq@example.net SIP/2.0\r\nCSeq: 1 INVITE\r\n\r\n";
+        let record = seal_tls13_record(&key, &iv, 0, invite);
+        let client: IpAddr = "10.0.0.1".parse().unwrap();
+        let server: IpAddr = "10.0.0.2".parse().unwrap();
+
+        // The INVITE reaches sipnab with no keys loaded: this is the moment
+        // the old code dropped it for good.
+        assert!(
+            d.try_decrypt(&record, client, server).is_none(),
+            "with no keys loaded nothing can decrypt yet"
+        );
+
+        // eCapture writes the secrets 56 ms later and the watch picks them up.
+        d.keylog_entries = make_keylog_entries();
+
+        let recovered = d.rewind();
+        assert_eq!(
+            recovered.len(),
+            1,
+            "the record held from before the keys must be recovered, not dropped"
+        );
+        assert_eq!(
+            recovered[0].plaintext, invite,
+            "and it must decrypt to the INVITE that was actually on the wire"
+        );
+    }
+
+    /// A held record whose keys never arrive stays held, not dropped.
+    ///
+    /// A keylog is written per SESSION. One session's secrets appearing says
+    /// nothing about another's, so a rewind that discarded everything it could
+    /// not open on the first attempt would throw away records whose keys are
+    /// still seconds away — reintroducing the defect one retry later.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn a_record_that_still_has_no_key_stays_held_rather_than_being_dropped() {
+        use crate::crypto::RingCryptoBackend;
+
+        let (key, iv) =
+            derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm).unwrap();
+        let mut d = decryptor_with(Box::new(RingCryptoBackend));
+        // These tests describe a WATCHED keylog: keys arrive after the
+        // record does. Without saying so the hold is disabled, exactly as
+        // it is for a plain `--keylog` file that can never grow.
+        d.set_keys_may_still_arrive(true);
+        let client: IpAddr = "10.0.0.1".parse().unwrap();
+        let server: IpAddr = "10.0.0.2".parse().unwrap();
+
+        let record = seal_tls13_record(&key, &iv, 0, b"INVITE sip:x SIP/2.0\r\n\r\n");
+        assert!(d.try_decrypt(&record, client, server).is_none());
+
+        // A rewind with still no keys recovers nothing and keeps the record.
+        assert!(
+            d.rewind().is_empty(),
+            "no keys yet, so nothing can be recovered"
+        );
+        assert_eq!(
+            d.rewind_pending.len(),
+            1,
+            "the record must still be held for the keys that have not arrived yet"
+        );
+
+        // The keys finally land, and the SAME record still opens.
+        d.keylog_entries = make_keylog_entries();
+        assert_eq!(
+            d.rewind().len(),
+            1,
+            "a record held across an empty rewind must still open once its keys load"
+        );
+        assert_eq!(d.rewind_pending.len(), 0, "and is released once recovered");
+    }
+
+    /// A replay must not raise the lock-on floor past the record it is for.
+    ///
+    /// Found by Dan Jenkins ([@danjenkins](https://github.com/danjenkins)) on a
+    /// live trunk, against a first draft of this feature that replayed through
+    /// the ordinary lock-on search. His run reported `recovered 0 of 3
+    /// buffered record(s)` and then decrypted NOTHING for the rest of the
+    /// call — worse than before the feature existed, where everything after
+    /// the session was ready decrypted and only the INVITE was lost.
+    ///
+    /// The cause is that in TLS 1.3 the record layer disguises handshake
+    /// records as ApplicationData, so the buffer holds EncryptedExtensions,
+    /// Certificate and Finished — sealed under the HANDSHAKE traffic secret,
+    /// which no application-traffic key will ever open. Replaying those
+    /// through lock-on reads each failure as "the sequence must be further
+    /// on" and advances `lockon_floor` past 0, so the INVITE at seq 0 is then
+    /// permanently below the floor. The feature buried the very record it was
+    /// written to recover.
+    ///
+    /// So a replay tries the sequence it already has and does not move the
+    /// floor. A failed replay means "not this key", never "later than this".
+    #[cfg(feature = "tls")]
+    #[test]
+    fn a_replay_that_cannot_open_does_not_bury_the_record_it_was_written_to_recover() {
+        use crate::crypto::RingCryptoBackend;
+
+        let (key, iv) =
+            derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm).unwrap();
+        let mut d = decryptor_with(Box::new(RingCryptoBackend));
+        // These tests describe a WATCHED keylog: keys arrive after the
+        // record does. Without saying so the hold is disabled, exactly as
+        // it is for a plain `--keylog` file that can never grow.
+        d.set_keys_may_still_arrive(true);
+        let client: IpAddr = "10.0.0.1".parse().unwrap();
+        let server: IpAddr = "10.0.0.2".parse().unwrap();
+
+        // Handshake-epoch ApplicationData: right content type, wrong epoch,
+        // and nothing in any keylog will ever open it.
+        let junk = TlsRecord {
+            content_type: TlsContentType::ApplicationData,
+            version: TlsVersion::Tls12,
+            length: 64,
+            payload: vec![0xCDu8; 64],
+        };
+        for _ in 0..3 {
+            assert!(d.try_decrypt(&junk, client, server).is_none());
+        }
+
+        // The keys land, and the replay cannot open that junk — as expected.
+        d.keylog_entries = make_keylog_entries();
+        assert!(
+            d.rewind().is_empty(),
+            "handshake-epoch records cannot open under application traffic keys"
+        );
+
+        // The INVITE is at sequence 0. It must still decrypt: the failed
+        // replay above must not have moved the floor past it.
+        let invite = b"INVITE sip:iq@example.net SIP/2.0\r\nCSeq: 1 INVITE\r\n\r\n";
+        let record = seal_tls13_record(&key, &iv, 0, invite);
+        let out = d.try_decrypt(&record, client, server);
+        assert_eq!(
+            out.as_deref(),
+            Some(&invite[..]),
+            "the record at seq 0 must still open after a failed replay — if the replay \
+             raised the lock-on floor, the INVITE is now below it and the whole call \
+             goes dark, which is worse than the defect this feature fixes"
+        );
+    }
+
+    /// Handshake junk must not bury the INVITE on the LIVE path either.
+    ///
+    /// The replay is only half the race Dan Jenkins
+    /// ([@danjenkins](https://github.com/danjenkins)) found. The other half is
+    /// live: once keys load mid-connection, the NEXT records off the wire can
+    /// still be handshake-epoch ApplicationData -- TLS 1.3 seals
+    /// EncryptedExtensions, Certificate and Finished under the handshake
+    /// secret and labels them content type 23, indistinguishable at the record
+    /// layer from real traffic. Those cannot open under an application key, and
+    /// lock-on reads each failure as "the sequence must be later", walking the
+    /// floor past 0.
+    ///
+    /// When sipnab watched the ClientHello it does not have to guess where the
+    /// stream starts: sequence 0 is the first application record. A failed
+    /// open is then the wrong key, never a later sequence. Mid-stream joins,
+    /// which never saw a handshake, keep the widening search -- that is what
+    /// `tls13_locks_on_to_a_trunk_that_has_been_up_far_longer_than_a_few_thousand_records`
+    /// covers, and it must not regress to buy this.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn handshake_epoch_junk_does_not_bury_seq_zero_when_the_handshake_was_seen() {
+        use crate::crypto::RingCryptoBackend;
+
+        let (key, iv) =
+            derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm).unwrap();
+        let (mut d, _k, _v) = tls13_decryptor_and_client_keys();
+        let client: IpAddr = "10.0.0.1".parse().unwrap();
+        let server: IpAddr = "10.0.0.2".parse().unwrap();
+
+        // Populate sessions, then mark this one as having been watched from
+        // its ClientHello — the state a live capture of a fresh call is in.
+        d.ensure_sessions_populated();
+        for session in d.sessions.values_mut() {
+            session.handshake_seen = true;
+        }
+
+        // Handshake-epoch ApplicationData arrives first and cannot open.
+        let junk = TlsRecord {
+            content_type: TlsContentType::ApplicationData,
+            version: TlsVersion::Tls12,
+            length: 64,
+            payload: vec![0xCDu8; 64],
+        };
+        for _ in 0..3 {
+            assert!(d.try_decrypt(&junk, client, server).is_none());
+        }
+
+        // The INVITE at sequence 0 must still open.
+        let invite = b"INVITE sip:iq@example.net SIP/2.0\r\nCSeq: 1 INVITE\r\n\r\n";
+        let record = seal_tls13_record(&key, &iv, 0, invite);
+        assert_eq!(
+            d.try_decrypt(&record, client, server).as_deref(),
+            Some(&invite[..]),
+            "with the handshake seen, failed opens must not advance the floor past seq 0 — \
+             otherwise junk arriving between the keys and the INVITE takes the call dark"
+        );
+    }
+
+    /// The hold is bounded in BYTES, and says what it dropped.
+    ///
+    /// Records, not seconds, and bytes, not records: a TLS record carries up
+    /// to 16 KiB, so a count-based cap is anywhere from kilobytes to a
+    /// megabyte and bounds nothing an operator can reason about. A capture
+    /// full of traffic nothing will ever decrypt must not grow without limit,
+    /// and what it discarded must be countable — a buffer that silently
+    /// forgot would make "we never had the keys" and "we had them and threw
+    /// the record away" the same outcome.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn the_rewind_hold_is_bounded_in_bytes_and_counts_what_it_dropped() {
+        use crate::crypto::RingCryptoBackend;
+
+        let mut d = decryptor_with(Box::new(RingCryptoBackend));
+        // These tests describe a WATCHED keylog: keys arrive after the
+        // record does. Without saying so the hold is disabled, exactly as
+        // it is for a plain `--keylog` file that can never grow.
+        d.set_keys_may_still_arrive(true);
+        let client: IpAddr = "10.0.0.1".parse().unwrap();
+        let server: IpAddr = "10.0.0.2".parse().unwrap();
+
+        // Records that will never open, offered until well past the budget.
+        let big = vec![0xABu8; 64 * 1024];
+        let record = TlsRecord {
+            content_type: TlsContentType::ApplicationData,
+            version: TlsVersion::Tls12,
+            length: big.len() as u16,
+            payload: big,
+        };
+        let offered = (REWIND_BUDGET_BYTES / (64 * 1024)) + 8;
+        for _ in 0..offered {
+            d.try_decrypt(&record, client, server);
+        }
+
+        assert!(
+            d.rewind_bytes <= REWIND_BUDGET_BYTES,
+            "the hold must stay inside its byte budget, not grow with the capture: {} > {}",
+            d.rewind_bytes,
+            REWIND_BUDGET_BYTES
+        );
+        let (recovered, evicted) = d.rewind_stats();
+        assert_eq!(recovered, 0, "nothing could open, so nothing was recovered");
+        assert!(
+            evicted > 0,
+            "records dropped for the budget must be counted, or the report cannot \
+             distinguish never having the keys from discarding the ciphertext"
+        );
+    }
+
     /// The counters behind the operator-facing report: every ApplicationData
     /// record offered is counted, and one that no session could open is
     /// counted as undecrypted. Without this the run has no basis for telling
@@ -3138,6 +3998,14 @@ mod tests {
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
+            rewind_pending: IndexMap::new(),
+            rewind_bytes: 0,
+            keylog_generation: 0,
+            last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
+            rewind_evicted: 0,
+            rewind_recovered: 0,
             rsa: None,
         };
 
@@ -3188,6 +4056,14 @@ mod tests {
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
+            rewind_pending: IndexMap::new(),
+            rewind_bytes: 0,
+            keylog_generation: 0,
+            last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
+            rewind_evicted: 0,
+            rewind_recovered: 0,
             rsa: None,
         };
 
@@ -3245,6 +4121,14 @@ mod tests {
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
+            rewind_pending: IndexMap::new(),
+            rewind_bytes: 0,
+            keylog_generation: 0,
+            last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
+            rewind_evicted: 0,
+            rewind_recovered: 0,
             rsa: None,
         }
     }
@@ -3975,6 +4859,7 @@ mod tests {
                 locked_server: false,
                 lockon_attempts: 0,
                 lockon_floor: Vec::new(),
+                handshake_seen: false,
                 client_addr: None,
             },
         );

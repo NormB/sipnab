@@ -2359,6 +2359,13 @@ impl BatchRunner {
                     if let Some(records) = cli.tls_args.tls_lockon_window {
                         d.set_lockon_window(records);
                     }
+                    // Only a source that can GROW mid-run makes the
+                    // late-decrypt hold worth paying for: a plain `--keylog`
+                    // file is read once and a record that fails against it now
+                    // fails against it forever.
+                    d.set_keys_may_still_arrive(
+                        cli.tls_args.keylog_watch || cli.tls_args.keylog_fd.is_some(),
+                    );
                     if let Some(source) = preopened {
                         d.set_keylog_source(source);
                         // Drain once, HERE, before a single packet is
@@ -3324,6 +3331,27 @@ impl BatchRunner {
             // What TLS decryption achieved. Reported whether or not any SIP
             // was found, because a run that read nine records of ten and
             // printed the nine has said nothing about the tenth.
+            // One last replay before the counters are read. A capture that
+            // ends moments after its keys arrive -- a test call, a Ctrl-C --
+            // would otherwise discard the held INVITE with nothing said: the
+            // only other trigger is the next TLS packet, and there is not
+            // going to be one. The recovered messages are too late to enter
+            // the pipeline here, but they are NOT too late to be counted, and
+            // a run that silently dropped what it was holding is exactly the
+            // missing measurement this feature exists to remove.
+            #[cfg(feature = "tls")]
+            if let Some(ref mut d) = tls_decryptor {
+                let late = d.rewind();
+                if !late.is_empty() {
+                    tracing::warn!(
+                        "TLS late decrypt: {} record(s) opened only after the capture ended \
+                         -- their keys arrived too late to place the messages in this run. \
+                         Re-read the saved capture with the same keylog to see them.",
+                        late.len()
+                    );
+                }
+            }
+
             #[cfg(feature = "tls")]
             let tls_report = tls_decryptor
                 .as_ref()
@@ -3989,8 +4017,54 @@ fn try_tls_decrypt(
         return capture::ParsedPackets::new();
     };
 
+    let mut out = capture::ParsedPackets::new();
+
+    // Records held from before their keys existed come FIRST, because they
+    // are older than the packet in hand. eCapture writes a session's secrets
+    // only after the handshake, so the first application record -- the INVITE,
+    // carrying the original SDP offer -- is on the wire before any keylog line
+    // for it. Emitting the recovery after the current packet would reconstruct
+    // the dialog out of order and put the answer before the offer.
+    //
+    // Each recovered message keeps the timestamp and endpoints of the packet
+    // it actually arrived in, not of the replay: a recovered INVITE stamped
+    // now would move post-dial delay and call duration by however long the
+    // keys took.
+    for recovered in decryptor.rewind_if_keys_changed() {
+        // Framed, not sniffed -- for the same reason the live path below is.
+        // A recovered INVITE split across two records would otherwise emit its
+        // headers and drop its SDP body, which is precisely the defect this
+        // whole path exists to fix, reintroduced on the recovery side.
+        for msg in
+            tls_reassembler.frame_plaintext(recovered.src, recovered.dst, &recovered.plaintext)
+        {
+            if !sip::is_sip_message(&msg) {
+                continue;
+            }
+            let mut late = pp.clone();
+            late.timestamp = recovered.timestamp;
+            late.src_addr = recovered.src.ip();
+            late.dst_addr = recovered.dst.ip();
+            late.src_port = recovered.src.port();
+            late.dst_port = recovered.dst.port();
+            // The frame pointer and DSCP belong to whatever packet happened to
+            // trigger the sweep, not to this message. An honest absence beats
+            // another packet's ordinal and digest on the one message an
+            // operator is most likely to trace back to bytes.
+            late.frame = None;
+            late.payload = msg.into();
+            late.transport = TransportProto::Tls;
+            out.push(late);
+        }
+    }
+
+    // Non-TCP packets carry no TLS, but reaching this line still served a
+    // purpose: the recovery above runs on ANY packet. Gating it behind the
+    // TLS checks below meant a session whose keys arrived last could wait for
+    // the next TLS-looking packet on that same connection -- which on a quiet
+    // trunk may never come, and at end of capture never does.
     if pp.transport != TransportProto::Tcp {
-        return capture::ParsedPackets::new();
+        return out;
     }
 
     let src = std::net::SocketAddr::new(pp.src_addr, pp.src_port);
@@ -4008,12 +4082,11 @@ fn try_tls_decrypt(
     // reassembly this same patch added: the SIP message inside kept getting
     // lost the same way, just one layer further down.
     if !tls_reassembler.has_held(src, dst) && !tls::is_tls(&pp.payload) {
-        return capture::ParsedPackets::new();
+        return out;
     }
 
     let records = tls_reassembler.insert(src, dst, &pp.payload);
 
-    let mut out = capture::ParsedPackets::new();
     for record in &records {
         // Feed Handshake records (ClientHello/ServerHello/ClientKeyExchange) so
         // the decryptor can capture randoms + the RSA-encrypted pre-master for
@@ -4022,16 +4095,26 @@ fn try_tls_decrypt(
             decryptor.process_record(record, src, dst);
             continue;
         }
-        if let Some(plaintext) = decryptor.try_decrypt(record, pp.src_addr, pp.dst_addr)
-            && sip::is_sip_message(&plaintext)
-        {
-            // Build a synthetic ParsedPacket with the decrypted SIP payload,
-            // stamped Tls so the pipeline parses (and reports) the true
-            // transport origin.
-            let mut decrypted_pp = pp.clone();
-            decrypted_pp.payload = plaintext.into();
-            decrypted_pp.transport = TransportProto::Tls;
-            out.push(decrypted_pp);
+        if let Some(plaintext) = decryptor.try_decrypt_at(record, src, dst, pp.timestamp) {
+            // Frame the decrypted BYTES into SIP messages rather than testing
+            // this record for "does it look like SIP". A sender may write one
+            // message as several records -- a real trunk sends the INVITE
+            // headers in one and the SDP body in the next -- and the per-record
+            // test keeps the headers while discarding the body, leaving an
+            // INVITE with no offer. sipnab then stores whatever SDP the next
+            // hop rewrote and reports a media mismatch that is not in the
+            // capture.
+            for msg in tls_reassembler.frame_plaintext(src, dst, &plaintext) {
+                if !sip::is_sip_message(&msg) {
+                    continue;
+                }
+                // A synthetic ParsedPacket carrying the decrypted SIP, stamped
+                // Tls so the pipeline reports the true transport origin.
+                let mut decrypted_pp = pp.clone();
+                decrypted_pp.payload = msg.into();
+                decrypted_pp.transport = TransportProto::Tls;
+                out.push(decrypted_pp);
+            }
         }
     }
 
@@ -4705,6 +4788,9 @@ mod tests {
             sessions_with_keys: sessions,
             app_data_records: seen,
             decrypted_records: decrypted,
+            late_recovered: 0,
+            late_evicted: 0,
+            late_still_held: 0,
         }
     }
 
@@ -4722,6 +4808,9 @@ mod tests {
                 sessions_with_keys: 0,
                 app_data_records: 4,
                 decrypted_records: 0,
+                late_recovered: 0,
+                late_evicted: 0,
+                late_still_held: 0,
             },
             &[],
         );
