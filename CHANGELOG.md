@@ -63,7 +63,10 @@ entry that carries them.
 
 - **A merged pcapng could not be read at all.** libpcap refuses a file whose
   interfaces disagree, and it refuses on two independent grounds. Measured
-  against a real one carrying 313 interface description blocks: first the
+  against [The Ultimate PCAP](https://weberblog.net/the-ultimate-pcap/) by
+  Johannes Weber ([@webernetz](https://github.com/webernetz)), a real capture
+  carrying 313 interface description blocks — it is what surfaced this, and it
+  is published precisely so tools can be held to it: first the
   snapshot lengths — the file declares six distinct ones — and then, once every
   one of those is rewritten to a single value, the link types, because it
   carries four encapsulations at once. Per-packet encapsulation is the *point*
