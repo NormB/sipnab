@@ -789,7 +789,7 @@ Tiers:
   with its complement test rewritten rather than deleted; and the success log
   says the run bought capture width, not cores of analysis. `--cores 1` and
   every non-Linux host still capture on one socket, with the reason logged.
-- [ ] **CT11 — Call-aware fanout steering with CLASSIC BPF (no eBPF toolchain).**
+- [x] **CT11 — Call-aware fanout steering with CLASSIC BPF (no eBPF toolchain).**
   Follows CT4 and closes its one remaining gap. Symmetric flow hashing keeps
   each RTP stream on one worker but cannot put a call's SIP signaling on the
   same worker as its media. `fanout_set_data_cbpf()`
@@ -806,6 +806,31 @@ Tiers:
   *(Unverified: that `bpf_prog_create_from_user()` contains no internal
   capability check beyond `SOCK_FILTER_LOCKED` — confirm in
   `net/core/filter.c` before relying on the "no CAP_BPF" claim.)*
+
+  **Closed as REFUSED ON MEASUREMENT, not shipped.** Its own precondition —
+  that cross-worker SIP/media correlation cost something — was tested once CT4
+  wired `--cores` through to live capture, and it costs zero. The gap CT11
+  names is real (140 of 200 calls had SIP and RTP on unrelated sockets, 70%)
+  but the fanout is CAPTURE-only: every socket feeds one channel and one
+  processing loop, so `--cores 1` and `--cores 4` produced identical dialogs,
+  400 of 400 streams linked to their call, and no orphans.
+
+  The program was hand-written and run anyway, which is what settled it.
+  Pinning 5060/5061 to worker 0 co-locates signaling with other SIGNALING, not
+  with its media, and took the split from 70% of calls to **100%** — it widens
+  the gap it was written to close. It also costs the property CT4 depends on:
+  `PACKET_FANOUT_CBPF` REPLACES the symmetric hash rather than adding to it,
+  and the only hash classic BPF can reach (`SKF_AD_RXHASH`) measured 0 on all
+  5412 packets.
+
+  The unverified caveat above is now **confirmed both ways**: no `capable()`
+  on the path in v6.8 `net/core/filter.c:1411`, and `setsockopt` succeeded on
+  the running kernel after a full drop to an unprivileged uid with an empty
+  capability set. That half of the entry was true; it just does not rescue the
+  design. Method, numbers and the veth caveat: §6 of
+  [`live-fanout.md`](https://github.com/NormB/sipnab/blob/main/docs/design/live-fanout.md).
+  If a live worker pool is ever built, the shape to reach for is an
+  address-pair hash — what `shard_for` already does offline — not a port pin.
 - [x] **CT5 — `immediate_mode(true)` is hardcoded, defeating kernel batching.**
   [`src/capture/live.rs:152`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L152) set it unconditionally, with the comment that the
   `poll()`-driven non-blocking loop requires it. That is the right call for an
