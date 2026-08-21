@@ -298,7 +298,7 @@ to answer is what replaces `final_sweep`'s single well-defined moment.
 ### Instruments
 
 `KERNEL_DROPPED` / `IFACE_DROPPED`
-([`live.rs:811`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L811)) are the loss counters;
+([`live.rs:831`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L831)) are the loss counters;
 `sipnab_capture_queue_depth_packets` and
 `sipnab_capture_backpressure_blocks_total` are the regime discriminator (§3).
 Both are read from the same process under test, which is why the controls below

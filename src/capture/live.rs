@@ -172,7 +172,7 @@ pub fn capture_live(
     tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
-    capture_live_group(device, config, tx, ready_tx, None)
+    capture_live_group(device, config, tx, ready_tx, None, None)
 }
 
 /// How many sockets a fanout request resolves to, and why.
@@ -201,33 +201,48 @@ pub(crate) fn plan_fanout(sockets: usize) -> FanoutPlan {
     }
 }
 
-/// The frame counter this socket may keep, or `None` when it must not number
-/// its frames at all.
+/// A frame pointer is `<source>#<ordinal>`. Under `PACKET_FANOUT` the source
+/// used to be the DEVICE NAME -- one string for however many sockets the group
+/// opened on it -- so a counter per socket would mint `eth0#0` from every one
+/// of them: several different frames sharing one name. Following such a
+/// pointer returns bytes that are not the ones described, which is worse than
+/// following nothing, and no `is_some()` check downstream can tell them apart.
 ///
-/// A frame pointer is `<source>#<ordinal>`, and the source here is the DEVICE
-/// NAME — one string for however many sockets `PACKET_FANOUT` opened on it.
-/// Under a group, `capture_live_group` runs once per socket, so a counter per
-/// socket would mint `eth0#0` from every one of them: several different frames
-/// with one name. Following such a pointer returns bytes that are not the ones
-/// described, which is worse than following nothing, and no `is_some()` check
-/// downstream can tell the two apart.
+/// Stage two withheld the ordinal for that reason, which left `--cores N` on a
+/// live device -- the mode carrying the MOST frames -- as the only one with no
+/// provenance at all. The collision was never in the counter, though. It was
+/// in the NAME. A socket stamping `eth0[2]` cannot mint the same pointer as
+/// one stamping `eth0[3]`, whatever either counter does, so naming the sockets
+/// apart removes the collision and each can number its own frames.
 ///
-/// So a grouped socket stamps nothing and `Packet::frame_ref` keeps returning
-/// `None` for it — the behaviour every live capture had before stage two, which
-/// is a MISSING answer rather than a wrong one. The alternative, one shared
-/// atomic across the group's sockets, buys provenance for the one live mode
-/// that exists to shed load, at a per-packet atomic on the contended path; it
-/// has not been measured, and this repo does not upgrade a reasoned claim to a
-/// measured one.
+/// The rejected alternative was one shared atomic across the group, and the
+/// objection to it stands: a per-packet atomic on the contended path, bought
+/// for the one live mode that exists to shed load. Naming them apart costs no
+/// shared state at all, so it needs no measurement to justify.
 ///
-/// Pure so the decision is testable without a capture device, exactly as
-/// [`plan_fanout`] is.
+/// What the pointer promises is unchanged. A live frame is gone the instant it
+/// is read and resolves on no source; an ordinal buys identity and ORDER, and
+/// per-socket order is the real order for a socket that is its own shard.
+///
+/// Pure so the decision is testable without a capture device.
 pub(crate) fn frame_counter_for(
-    fanout_group: Option<u16>,
+    _fanout_group: Option<u16>,
 ) -> Option<crate::capture::packet::FrameCounter> {
-    fanout_group
-        .is_none()
-        .then(crate::capture::packet::FrameCounter::new)
+    Some(crate::capture::packet::FrameCounter::new())
+}
+
+/// The source name a socket stamps on its frames.
+///
+/// Qualified by socket index under a fanout group, bare otherwise. The
+/// qualified form is what lets each socket keep its own numbering; see
+/// [`frame_counter_for`]. `[` and `]` cannot appear in an interface name, and
+/// `FrameSource::from_source_name` only special-cases a `uprobe:` prefix, so a
+/// qualified name still classifies as wire-captured.
+pub(crate) fn fanout_source_name(device: &str, socket_index: Option<usize>) -> String {
+    match socket_index {
+        Some(i) => format!("{device}[{i}]"),
+        None => device.to_string(),
+    }
 }
 
 /// Group id for this process.
@@ -312,7 +327,9 @@ pub fn capture_live_fanout(
         handles.push(
             std::thread::Builder::new()
                 .name(format!("capture-{device}-{index}"))
-                .spawn(move || capture_live_group(&device, &config, tx, ready, Some(group)))?,
+                .spawn(move || {
+                    capture_live_group(&device, &config, tx, ready, Some(group), Some(index))
+                })?,
         );
     }
 
@@ -389,6 +406,7 @@ fn capture_live_group(
     tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
     fanout_group: Option<u16>,
+    socket_index: Option<usize>,
 ) -> Result<()> {
     // Promiscuous mode is opt-out (`--no-promisc` / `config.promisc`). The "any"
     // pseudo-device on Linux does not support it regardless.
@@ -559,7 +577,9 @@ fn capture_live_group(
     }
 
     let link_type = cap.get_datalink().0;
-    let interface_name = Some(device.to_string());
+    // Qualified by socket index under a fanout group, so this socket's
+    // ordinals cannot name a sibling's frames. See `fanout_source_name`.
+    let interface_name = Some(fanout_source_name(device, socket_index));
     let start = std::time::Instant::now();
     let mut count: u64 = 0;
     // This device's frame numbering, kept separately from `count` because the
@@ -988,20 +1008,21 @@ mod fanout_plan_tests {
         );
     }
 
-    /// A lone socket numbers its frames; a socket in a fanout group does not.
+    /// Every socket numbers its own frames, under a name no sibling shares.
     ///
-    /// `capture_live_group` runs once per socket and every one of them stamps
-    /// the same DEVICE NAME, so a counter per socket in a group would mint
-    /// `eth0#0` from each of them — several different frames sharing one name.
-    /// Following such a pointer returns bytes that are not the ones described,
-    /// which is worse than following nothing and which nothing downstream can
-    /// tell apart from a correct pointer. Withholding the ordinal restores the
-    /// pre-stage-two behaviour for that mode, which is a MISSING answer.
+    /// This replaces a rule that said the opposite: a grouped socket used to
+    /// stamp NOTHING, because all of them shared the device name and a
+    /// per-socket counter would mint several different `eth0#0`. That was
+    /// right while the name was shared. It is wrong now the name carries the
+    /// socket index, and the old assertion is inverted here rather than
+    /// deleted so the reason stays visible: the collision lived in the NAME,
+    /// never in the counter.
     ///
-    /// Both directions, because a rule that always refuses would silently undo
-    /// the whole of this stage for ordinary single-socket capture.
+    /// Both directions. A rule that always refused would silently undo stage
+    /// two for ordinary single-socket capture; one that always allowed would
+    /// bring the duplicate pointers back.
     #[test]
-    fn only_an_ungrouped_socket_numbers_its_own_frames() {
+    fn every_socket_numbers_its_own_frames_under_a_name_no_sibling_shares() {
         let mut solo = frame_counter_for(None).expect("a lone socket owns its device's numbering");
         assert_eq!(solo.next_origin().ordinal, 0);
         assert_eq!(
@@ -1010,10 +1031,31 @@ mod fanout_plan_tests {
             "and it advances, or every stream would cite frame 0"
         );
 
+        let mut grouped = frame_counter_for(Some(0xA1B2))
+            .expect("a grouped socket numbers its own frames too, under its own name");
+        assert_eq!(grouped.next_origin().ordinal, 0);
+
+        // Both counters DO start at zero. That is safe only because the names
+        // differ, which is the entire basis of the change.
+        let names: std::collections::BTreeSet<String> = (0..4)
+            .map(|i| fanout_source_name("eth0", Some(i)))
+            .collect();
+        assert_eq!(
+            names.len(),
+            4,
+            "four sockets must produce four distinct source names; if any two \
+             collapse, their identical ordinals name each other's frames"
+        );
         assert!(
-            frame_counter_for(Some(0xA1B2)).is_none(),
-            "a socket sharing a device name with its siblings must stamp \
-             nothing rather than mint a second frame 0 for that device"
+            !names.contains("eth0"),
+            "a grouped socket must not stamp the bare device name, or it \
+             collides with the ungrouped form"
+        );
+        assert_eq!(
+            fanout_source_name("eth0", None),
+            "eth0",
+            "a lone socket keeps the plain device name -- the pointer is \
+             operator-facing and it has nothing to disambiguate from"
         );
     }
 }

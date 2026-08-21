@@ -252,7 +252,7 @@ compliant proxy keeps an unanswered INVITE transaction alive.
 *sender's* clock, read from the `TS_SEC`/`TS_USEC` chunks by `parse_hep_v3`
 ([`src/capture/hep.rs:745`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L745) onward) and carried verbatim into `Packet::timestamp`
 by `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)). A live packet's timestamp comes
-from the local kernel (`pcap_ts_to_chrono`, [`src/capture/live.rs:908`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L908)). Two
+from the local kernel (`pcap_ts_to_chrono`, [`src/capture/live.rs:928`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L928)). Two
 clocks, no discipline between them. Every figure that subtracts a signaling time
 from a media time — post-dial delay against first RTP, ringback analysis,
 one-way-audio onset — inherits the offset.
@@ -410,7 +410,7 @@ blocks at the cap ([`src/capture/channel.rs:225`](https://github.com/NormB/sipna
 on one slot pool with one `CaptureMeter`. A burst on either source blocks the
 other, and the two then fail *differently*: a blocked live reader stops calling
 `pcap_next`, the kernel ring overflows, and libpcap counts it — surfaced by
-`fold_stats` ([`src/capture/live.rs:857`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L857)) and reported at
+`fold_stats` ([`src/capture/live.rs:877`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L877)) and reported at
 [`src/capture/live.rs:653`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L653). A blocked HEP listener stops calling `recv_from`, the
 kernel UDP receive buffer overflows, and **nothing counts it**, because UDP
 reports nothing to a receiver that was not listening. So the same backpressure

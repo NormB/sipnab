@@ -342,7 +342,7 @@ Tiers:
   found, which the RDR1 reader fixes for exactly one class of unreadable file
   and leaves in place for every future class.
 
-  **Shipped in 0.5.119.** `tests/corpus_readability_gate_test.rs` sweeps the
+  **Shipped in 0.5.119.** [`tests/corpus_readability_gate_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/corpus_readability_gate_test.rs) sweeps the
   corpus once, counts every capture it could not read, prints the count whether
   or not it is zero, and fails when it rises. An empty sweep is also a failure:
   a directory with no captures would otherwise satisfy "nothing was unread"
@@ -542,7 +542,7 @@ Tiers:
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:2580`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2580)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:2659`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2659)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -642,7 +642,7 @@ Tiers:
 - [x] src/sip/dialog.rs (update_register_state) — [missed-edge-case] 401/407 challenge marks REGISTER dialog Failed; challenge-only capture reads as failure rather than auth-pending. **Done:** 401/407 leave the state unchanged (auth pending); only a genuine 4xx-6xx marks Failed, a later 2xx marks Registered.
 - [x] src/sip/timing.rs:135 — [edge-case] `answered_at` matches any 200-to-INVITE without CSeq check; re-INVITE 200 can be recorded as answer time. **Done:** `DialogTiming` records the initial INVITE's CSeq; the 100/180/200 INVITE-response milestones are pinned to it (fallback to first-match when the INVITE wasn't captured).
 - [x] src/sip/message.rs:117 — [edge-case] `cseq()` keeps trailing garbage in method (`"INVITE extra"`), defeating comparisons in timing.rs; untested. **Done:** `cseq()` returns only the single method token via `split_whitespace`.
-- [x] src/sip/message.rs:294 — [adversarial] `extract_uri_user` finds `sip:` anywhere; crafted display name parses from wrong position. **Done for `extract_uri_user`, and this line claimed the defect class was closed until 2026-08-06.** That function is fixed ([`src/sip/message.rs:276`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L276)): the user is read from inside the `<...>` name-addr (or the bare addr-spec), never a quoted display name; a non-sip URI (e.g. `tel:`) yields None. Its sibling **thirty lines below it has the identical bug**: `extract_uri_host_port` ([`src/sip/message.rs:375`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L375)) is `find("<sip:").or_else(|| find("<sips:")).or_else(|| find("sip:")).or_else(|| find("sips:"))`, and the last two arms are the anywhere-scan — a `From: "sip:evil@attacker.test" <sip:alice@real.test>` with no name-addr on the fallback path resolves the host from the display name. Same file, same header values, same crafted input; the fix stopped at the first function. **Done, and verified 2026-08-17 rather than assumed.** Both functions now locate the URI through one `addr_spec` helper, whose doc records why a second scanner was the bug: *"the user side was hardened against a decoy and the host side was not, thirty lines below it. One locator is the fix; a second scanner was the bug."* Four tests drive the crafted inputs this entry names — a bracketed decoy, a bare scheme, a `\"` quoted-pair, and an unterminated display name — and assert the user AND the host on each. Mutation-checked: replacing `skip_quoted_display_name` with the raw header kills three of them, so they are guards rather than restatements.
+- [x] src/sip/message.rs:294 — [adversarial] `extract_uri_user` finds `sip:` anywhere; crafted display name parses from wrong position. **Done for `extract_uri_user`, and this line claimed the defect class was closed until 2026-08-06.** That function is fixed ([`src/sip/message.rs:276`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L276)): the user is read from inside the `<...>` name-addr (or the bare addr-spec), never a quoted display name; a non-sip URI (e.g. `tel:`) yields None. Its sibling **thirty lines below it has the identical bug**: `extract_uri_host_port` ([`src/sip/message.rs:395`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L395)) is `find("<sip:").or_else(|| find("<sips:")).or_else(|| find("sip:")).or_else(|| find("sips:"))`, and the last two arms are the anywhere-scan — a `From: "sip:evil@attacker.test" <sip:alice@real.test>` with no name-addr on the fallback path resolves the host from the display name. Same file, same header values, same crafted input; the fix stopped at the first function. **Done, and verified 2026-08-17 rather than assumed.** Both functions now locate the URI through one `addr_spec` helper, whose doc records why a second scanner was the bug: *"the user side was hardened against a decoy and the host side was not, thirty lines below it. One locator is the fix; a second scanner was the bug."* Four tests drive the crafted inputs this entry names — a bracketed decoy, a bare scheme, a `\"` quoted-pair, and an unterminated display name — and assert the user AND the host on each. Mutation-checked: replacing `skip_quoted_display_name` with the raw header kills three of them, so they are guards rather than restatements.
 - [x] src/sip/siprec.rs:66 — [adversarial] `split_multipart` splits on `--boundary` anywhere, not line-anchored per [RFC 2046](https://www.rfc-editor.org/rfc/rfc2046). **Done:** the split is a manual scan that only accepts `--boundary` at the start of a line (body start or preceded by `\n`, covering CRLF and the parser's existing bare-LF tolerance); mid-line occurrences inside part content are literal text. Preamble, missing-terminator, and `--boundary--` handling unchanged.
 - [x] src/sip/sdp_timeline.rs:184 — [bug-risk] repeated T.38 re-INVITEs re-emit T38Switch every other exchange (suppression checks only previous event). **Done:** `SdpExchange` now records `is_t38` and suppression compares the previous exchange's media *state* (`is_t38 && !prev.is_t38`), matching how hold/resume compare `prev.mode` — one T38Switch per genuine audio→T.38 transition, re-emitted only after a real return to audio.
 - [x] src/sip/dsl.rs:1069 — [correctness] `compare_num` absolute-epsilon equality is effectively exact for values ≥2; `duration == 5.0` ~never matches. **Done:** `==`/`!=` use `NUM_EQ_TOLERANCE = 5e-4` — half the finest domain step, since every numeric field is integral (ports, counts) or millisecond-derived (duration/pdd/setup, jitter, MOS/loss to ≥0.1) — absorbing float noise while keeping adjacent domain values (5.001 vs 5.0) distinct.
@@ -790,7 +790,7 @@ Tiers:
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2740`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2740),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2819`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2819),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -3203,7 +3203,7 @@ a web-filtering appliance silently discarding UDP. sipnab read one of them as
   unfragmented DATA chunk per packet. Enables SIGTRAN/Diameter (3GPP IMS).
   **Corrected 2026-08-06:** this used to end *"multi-packet fragment reassembly
   (B/E spanning) is a documented follow-up"*, and that follow-up shipped —
-  `SctpReassembler` ([`src/capture/parse.rs:1782`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1782)), constructed on every
+  `SctpReassembler` ([`src/capture/parse.rs:1804`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1804)), constructed on every
   `PacketProcessor` ([`src/capture/mod.rs:760`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs#L760), `:651`, `:686`). The P2 entry
   above records it as done. Two entries in one file disagreeing about the same
   feature is the cheapest kind of wrong to produce and the most expensive to
