@@ -1486,6 +1486,78 @@ fn fuzz_target_count_and_names_match_the_tree() {
     );
 }
 
+/// The ROOT `Cargo.lock` pins sipnab's own version and must match the crate.
+///
+/// The sibling gate below has covered `fuzz/Cargo.lock` since 0.5.48. This one
+/// did not exist, and the asymmetry had exactly the effect you would predict:
+/// the fuzz lockfile was caught at every release and the root lockfile was
+/// caught by nobody. 0.5.120 shipped a tag naming 0.5.119 here, and 0.5.121
+/// shipped a tag naming 0.5.120 — the second one AFTER the first was noticed,
+/// because the only thing standing between it and the tag was somebody
+/// remembering to look.
+///
+/// The artefacts are unaffected: cargo rewrites the lockfile during the build,
+/// so the published binaries carry the right version. What ships wrong is the
+/// tagged SOURCE — a tree whose `Cargo.toml` and `Cargo.lock` disagree about
+/// what release it is, which is a thing anyone reproducing a build has to
+/// explain to themselves.
+///
+/// It is the same failure mode the fuzz gate was written for, and the fix is
+/// the same: `cargo update -p sipnab` (or any cargo command) and commit the
+/// result with the bump.
+#[test]
+fn root_lockfile_pins_the_current_crate_version() {
+    let manifest = std::fs::read_to_string("Cargo.toml").expect("Cargo.toml");
+    let crate_version = manifest
+        .lines()
+        .find_map(|l| l.strip_prefix("version = \""))
+        .and_then(|v| v.split('"').next())
+        .expect("Cargo.toml carries a version");
+
+    // Read what GIT holds, never the working tree.
+    //
+    // Any cargo command rewrites Cargo.lock to match Cargo.toml, and a test
+    // runs under cargo -- so by the time this line executes, the file on disk
+    // has already been repaired and agrees with the manifest no matter what
+    // was committed. A first version of this gate read the file and could not
+    // fail: mutating the lockfile to the previous version left the test green,
+    // because cargo had fixed it before the assertion ran.
+    //
+    // That self-healing is also WHY the defect ships. Locally everything looks
+    // right; the staleness exists only in the committed bytes. So the index is
+    // what gets checked, which is the content about to become a commit.
+    //
+    // The sibling fuzz gate below reads its file directly and is sound doing
+    // so, for a reason worth stating: `cargo test` at the repository root
+    // never touches `fuzz/Cargo.lock`, so nothing repairs it underfoot.
+    let staged = std::process::Command::new("git")
+        .args(["show", ":Cargo.lock"])
+        .output()
+        .expect("git show :Cargo.lock");
+    assert!(
+        staged.status.success(),
+        "could not read Cargo.lock from the git index: {}",
+        String::from_utf8_lossy(&staged.stderr)
+    );
+    let lock = String::from_utf8(staged.stdout).expect("Cargo.lock is utf8");
+    let locked = lock
+        .split("\n[[package]]\n")
+        .find(|block| block.starts_with("name = \"sipnab\"\n"))
+        .and_then(|block| block.lines().find_map(|l| l.strip_prefix("version = \"")))
+        .and_then(|v| v.split('"').next())
+        .expect("Cargo.lock carries a [[package]] entry for sipnab");
+
+    assert_eq!(
+        locked, crate_version,
+        "the COMMITTED Cargo.lock pins sipnab {locked} but the crate is \
+         {crate_version}. The file on disk is already correct -- cargo repairs \
+         it -- so this is only ever fixed by STAGING it: `cargo update -p \
+         sipnab && git add Cargo.lock`, with the version bump. Left behind, \
+         the tag carries a tree whose manifest and lockfile disagree about \
+         which release it is, which is what 0.5.120 and 0.5.121 both shipped."
+    );
+}
+
 /// `fuzz/Cargo.lock` pins sipnab's own version and must match the crate.
 ///
 /// The fuzz workspace is separate, so a hand-edited version bump updates
