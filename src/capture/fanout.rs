@@ -23,16 +23,24 @@
 //! never split.
 //!
 //! It does NOT co-locate a call's SIP (port 5060) with its media (ephemeral,
-//! SDP-negotiated) — different 5-tuples hash differently. That is deliberate
-//! here: this module fans out CAPTURE only. Every socket feeds the same
-//! channel and the same single processing loop, so the stores never see a
-//! shard and the SIP-to-media association is exactly what it is today.
+//! SDP-negotiated) — different 5-tuples hash differently. Measured on a 200-call
+//! corpus across four sockets in one group: 140 of 200 calls had their SIP and
+//! their RTP on sockets with nothing in common, 70%. That is deliberate here,
+//! and it costs nothing, because this module fans out CAPTURE only. Every
+//! socket feeds the same channel and the same single processing loop, so the
+//! stores never see a shard: the same corpus captured at `--cores 1` and
+//! `--cores 4` produced identical dialogs, 400 of 400 streams linked to their
+//! call, and zero orphans.
 //!
 //! Fanning out PROCESSING is a different and larger change: the offline
 //! `--cores` path resolves cross-worker splits at merge time
 //! (`StreamStore::reassociate_all`) with `final_sweep` running once after the
 //! merge, and a live capture has no EOF at which to merge. Nothing here moves
-//! toward that; see CT11 in the backlog before attempting it.
+//! toward that. CT11 proposed steering the 70% away with a classic-BPF program;
+//! it was measured and refused — the program pins all signaling to worker 0,
+//! which takes that 70% to 100%, and `PACKET_FANOUT_CBPF` replaces the
+//! symmetric hash rather than adding to it. See §6 of
+//! `docs/design/live-fanout.md` before reaching for either.
 //!
 //! `ROLLOVER` is set alongside `HASH` so a socket whose ring is momentarily
 //! full spills to another member instead of dropping — which is the whole point
@@ -169,10 +177,17 @@ mod tests {
     ///
     /// If that were false, fanout would require opening the socket by hand and
     /// re-implementing what `pcap` does — a fork, in effect. The backlog entry
-    /// asserts it from reading `fanout_add()` in `net/packet/af_packet.c`, and
-    /// flags a sibling claim about `bpf_prog_create_from_user()` as unverified.
+    /// asserts it from reading `fanout_add()` in `net/packet/af_packet.c`.
     /// Reading kernel source is not the same as running against the kernel that
     /// is installed, so this runs it.
+    ///
+    /// The sibling claim that entry flagged as unverified — that
+    /// `bpf_prog_create_from_user()` gates on nothing but `SOCK_FILTER_LOCKED`,
+    /// so cBPF fanout steering needs no `CAP_BPF` — has since been confirmed
+    /// the same two ways, source and running kernel, and recorded in §6 of
+    /// `docs/design/live-fanout.md`. There is no test for it here because
+    /// nothing here uses it: CT11 was refused on other grounds in the same
+    /// measurement.
     ///
     /// Ignored by default because it needs `CAP_NET_RAW`. Run with:
     /// `sudo <test-binary> --ignored fanout_applies_to_an_open_pcap_handle`

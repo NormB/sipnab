@@ -1991,13 +1991,26 @@ fn line_citations_point_at_the_code_they_name() {
     // guard heavily on purpose — the design's central claim is that the
     // correlation SRC1 calls the hard part is already implemented, and a claim
     // like that is only checkable if it names the code making it true.
+    // Raised 190 -> 191 by docs/design/live-fanout.md §6, which cites
+    // `shard_for` at src/parallel.rs:72 while recording that the OFFLINE engine
+    // shards on the address pair and therefore never had the SIP/media split
+    // CT11 was written to fix. Attributed by measurement, not by adding up:
+    // reverting that one file to HEAD and re-running
+    // scripts/check-line-drift.py reported 190, and restoring it reported 191.
+    // No other file's count moved.
+    //
+    // The number is bound rather than written twice. It used to appear as a
+    // pinned 190 in the assert and a stale 141 in the message under it, so the
+    // gate's own explanation named a count that had not been true for two
+    // moves — the reader most in need of it is the one who just made it wrong.
+    let expected = 191;
     assert_eq!(
-        checked, 190,
-        "the drift checker examined {checked} citations, not the 141 this tree \
-         holds. FEWER means its resolution or symbol-extraction narrowed and the \
-         gate is proving less than it claims — fix that rather than moving this \
-         number. MORE means the corpus grew: attribute the new citations, then \
-         raise it.\n{report}"
+        checked, expected,
+        "the drift checker examined {checked} citations, not the {expected} \
+         this tree holds. FEWER means its resolution or symbol-extraction \
+         narrowed and the gate is proving less than it claims — fix that rather \
+         than moving this number. MORE means the corpus grew: attribute the new \
+         citations, then raise it.\n{report}"
     );
 
     assert!(

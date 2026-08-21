@@ -460,7 +460,7 @@ not become an exclusion in the code: a run with both should get both.
 
 **Rule: never refuse to capture because a hardening feature was unavailable.**
 The precedent is in this repo and should be cited rather than re-argued —
-`join_fanout_group` ([`src/capture/fanout.rs:71-74`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L71-L74)):
+`join_fanout_group` ([`src/capture/fanout.rs:79-82`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L79-L82)):
 
 > The caller must treat every error as advisory. Capture works without fanout;
 > refusing to capture because an optimisation was unavailable would trade a

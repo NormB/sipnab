@@ -1,29 +1,35 @@
 # Making `PACKET_FANOUT` reachable
 
-**Status:** DESIGN, on a mechanism that is already BUILT and deliberately not
-wired. [`src/capture/fanout.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs) (221 lines) and
-[`capture_live_fanout`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L224) are written and tested; no
-caller and no flag reach them. That is the decision in section 7 — **measure
-before wiring** — not an oversight, and section 7 names the result that would
-mean "do not ship".
-**Verified against:** `3267b08`, working tree.
-**Backlog:** [`backlog.md`](backlog.md) **CT4** (`:473`) and **CT11** (`:496`).
-**Check:** `grep -rn 'fanout' src/cli.rs` exits 1 — no flag reaches the mechanism.
+**Status:** WIRED. `--cores N` on a live device now asks for N capture sockets
+([`bootstrap.rs:1958`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1958)), so §1's "no caller" table
+row and §2's flag argument are history rather than proposals. What remains open
+is §5, the experiment that would say whether the sockets help. §6 is closed:
+CT11 was measured and refused.
+**Verified against:** `8c03a453`, working tree.
+**Backlog:** [`backlog.md`](backlog.md) **CT4** (`:749`) and **CT11** (`:792`).
+**Check:** `grep -rn 'fanout_sockets' src/app/bootstrap.rs` exits 0 — a flag
+reaches the mechanism.
 
-That check is about REACHABILITY, and this Status line used to read "Nothing
-here is implemented" above it. The check passed the whole time, because it was
-never testing that claim: a grep of `cli.rs` cannot see 221 lines of built
-mechanism in `capture/`. Evidence that verifies a narrower proposition than the
-sentence it sits under is how a false claim survives a gate designed to catch
-false claims.
+The Check used to read `grep -rn 'fanout' src/cli.rs` exits 1, under a Status
+line claiming no flag reached the mechanism. **The same defect happened twice on
+this one line.** First the line said "Nothing here is implemented" while 221
+lines of [`src/capture/fanout.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs) sat outside what a
+grep of `cli.rs` could see. That was fixed in the sentence and not in the
+command — so when CT4 wired the flag through
+[`bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs) rather than through `cli.rs`, the grep
+kept exiting 1 and kept reporting a false sentence as checked. Evidence that
+verifies a narrower proposition than the sentence it sits under is how a false
+claim survives a gate designed to catch false claims, and correcting the
+sentence while leaving the command is how it survives being caught once.
 
-**No number in this document is measured.** The repo's standing caveat applies
-in full — [`capture-tuning-tasks.md:22`](https://github.com/NormB/sipnab/blob/main/docs/design/capture-tuning-tasks.md#L22): *"Nothing on
+**§6 is measured; nothing else on this page is.** The repo's standing caveat
+still applies to every throughput and sizing claim here —
+[`capture-tuning-tasks.md:22`](https://github.com/NormB/sipnab/blob/main/docs/design/capture-tuning-tasks.md#L22): *"Nothing on
 this page has been measured on a live NIC. Every throughput claim is reasoned
 from syscall counts and ring arithmetic. Do not upgrade a reasoned claim to a
-measured one without the measurement."* Section 5 is about turning that
-sentence off for this one feature, and nothing else here should be read as
-having done so.
+measured one without the measurement."* §5 is about turning that sentence off
+for the throughput question and has not been run. §6 turned it off for the
+correlation question only, and says on which link and with what corpus.
 
 ## 1. What exists, and the one thing that does not
 
@@ -34,23 +40,27 @@ narrower and more interesting:
 
 | Piece | Where | State |
 |---|---|---|
-| `setsockopt(SOL_PACKET, PACKET_FANOUT, …)` | [`fanout.rs:76`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L76) | written, unit-tested, and **verified against the running kernel** by an `#[ignore]`d root test |
-| Platform split | [`fanout.rs:101`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L101) | non-Linux returns `ErrorKind::Unsupported`; the call site is unconditional so it cannot go unused (`82eb8ff`) |
+| `setsockopt(SOL_PACKET, PACKET_FANOUT, …)` | [`fanout.rs:84`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L84) | written, unit-tested, and **verified against the running kernel** by an `#[ignore]`d root test |
+| Platform split | [`fanout.rs:109`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L109) | non-Linux returns `ErrorKind::Unsupported`; the call site is unconditional so it cannot go unused (`82eb8ff`) |
 | Plan / group id | [`live.rs:194`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L194), [`:209`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L209) | pure, tested without a device |
 | Kernel probe | [`live.rs:293`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L293) | throwaway handle, so refusal is discovered once |
 | N-socket driver | `capture_live_fanout`, [`live.rs:224`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L224) | complete, joins all threads, first error wins |
-| **A caller** | — | **none** |
+| **A caller** | [`bootstrap.rs:1958`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1958), [`native.rs:397`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L397) | **CT4 shipped it**: `--cores N` becomes `fanout_sockets`, and the `Live` arm calls `capture_live_fanout` |
 
-`grep -rn 'capture_live_fanout' src/ tests/ benches/` returns the definition and
-one doc-comment mention. Every path into live capture goes through
-`start_capture`, whose `Live` arm spawns exactly one thread running
-`capture_live` ([`native.rs:256-262`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L256-L262)), and
-`capture_live` is a one-line wrapper that passes `None` for the group
-([`live.rs:175`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L175)).
+That last row is the one thing this section got to change. When the page was
+written the `Live` arm spawned exactly one thread running `capture_live`, a
+one-line wrapper passing `None` for the group
+([`live.rs:175`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L175)); CT4 replaced that call with
+`capture_live_fanout` and gave it `config.fanout_sockets`. Confirmed by running
+it: `sipnab -d <veth> --cores 4` logs *"capturing on 4 sockets, fanout group
+…"*.
 
-So this is not "build fanout". It is "decide what a flag means, wire one call
-site, and prove the thing was worth wiring". The third is the expensive part and
-the rest of this page is mostly about it.
+So the remaining work is not "build fanout" and no longer "wire one call site".
+It is only the third thing this page named — **prove the sockets were worth
+wiring** — and §5, which is that proof, has still not been run. §2 and §7 below
+argue for decisions that have since been taken; they are kept because §7's
+sequencing was not followed and a reader deciding whether to run §5 should see
+what the page asked for.
 
 ## 2. The flag surface
 
@@ -157,7 +167,7 @@ process**, not per device.
 interfaces in one fanout group, and what it does with the hash if it does. Until
 someone reads `fanout_add()` for the device check and confirms it against a
 running kernel — the same standard `fanout_applies_to_an_open_pcap_handle`
-([`fanout.rs:183`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L183)) already set for the single-device
+([`fanout.rs:198`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L198)) already set for the single-device
 claim — `--cores` with `--multi-device` must keep its existing refusal.
 
 ## 3. What widening CAPTURE buys, exactly
@@ -212,7 +222,7 @@ prerequisite of any field measurement rather than a nice-to-have.
 
 ## 4. Fanning out PROCESSING is a different design, not a bigger CT4
 
-[`fanout.rs:31-35`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L31-L35) already says this, and
+[`fanout.rs:35-43`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L35-L43) already says this, and
 [`parallel.rs`](../../src/parallel.rs) says why in detail. Restating the
 constraint in the form that matters here: **the offline engine is correct because
 it has an EOF, and a live capture does not.**
@@ -328,41 +338,162 @@ necessary and not sufficient; V1 is not closed by it. That is why §3's
 `capture_health` gap matters — the field script reads counters over MCP, and
 today it cannot read the two that decide this question.
 
-## 6. CT11 is not next, and its own entry says so
+## 6. CT11: measured, and refused
 
 CT11 proposes a hand-written cBPF program passed to `fanout_set_data_cbpf()`
 that returns a worker index, pinning ports 5060/5061 to worker 0 so all
 signaling is co-located with nothing having to hash it. Its stated condition:
 *"Worth doing only after CT4 ships and only if cross-worker call correlation is
-measured to be a real cost."*
+measured to be a real cost."* CT4 has shipped, so the condition was tested
+rather than argued.
 
-**Under CT4 as built, cross-worker correlation is not a cost at all — there are
-no workers.** Every socket feeds one channel and one store, so `HASH`'s inability
-to co-locate a call's SIP with its media is invisible: the association happens
-downstream of the merge point that does not exist, in a single loop that sees
-both. CT11's premise is a processing pool, which §4 recommends against building.
+### How it was measured
 
-Two further reasons not to reach for it even then:
+`thor-02`, Linux 6.8.12-rt-tegra aarch64. A private network namespace holding
+one veth pair, both ends inside it and neither carrying an address, so the only
+traffic is the corpus. The corpus is 200 calls from
+[`bench/carrier.py`](../../bench/carrier.py) with a unique Call-ID and a unique
+endpoint pair per call — 5400 packets, 1400 SIP on 5060 and 4000 RTP on
+10000+ — replayed with `tcpreplay --pps=4000`. A call's SIP and its media
+therefore share an address pair and differ only in ports, which is the case
+`HASH` is claimed to get wrong. Packet totals below run a few above 5400
+because the namespace emits its own IPv6 link-local frames when the links come
+up; those are not IPv4 UDP and enter no per-call figure.
 
-- **It fixes one of the two cross-worker problems.** cBPF steering puts SIP and
-  media on one worker. It does nothing for the proxied-dialog split — one
-  Call-ID on two host pairs — which `parallel.rs` measured at 1173 of 2311
-  dialogs and which `DialogStore::merge` exists to repair.
+A veth is not a driver, so §5's closing caveat applies here too. It bites the
+fourth finding below and not the first three, which are about which socket a
+packet reaches rather than how fast it gets there.
+
+### The gap CT11 names is real, and it is 70% of calls
+
+Four sockets, one `PACKET_FANOUT_HASH | ROLLOVER` group built from sipnab's own
+constant ([`fanout.rs:55`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L55)), counting per socket which
+call's SIP and which call's media arrived where: **140 of 200 calls had their
+SIP and their RTP on sockets with nothing in common** — 70.0%, against the 75%
+an independent uniform hash would give. The group really was demuxing rather
+than broadcasting: the four sockets took 1296 / 1498 / 1414 / 1202 packets, a
+maximum share of 0.277.
+
+So the mechanism CT11 describes is not imaginary. The rest of this section is
+about what it would buy.
+
+### The gap costs sipnab nothing, because there is still one worker
+
+The same corpus, replayed at the same rate, captured by sipnab itself at
+`--cores 1` and at `--cores 4`, compared on `--json-dialogs`:
+
+- 200 dialogs both times, the same Call-ID set, and **0 dialogs differing** on
+  state, message count, final status, media diagnosis or stream list.
+- 400 RTP streams both times, **400 of 400 linked to their dialog, 0 orphaned**,
+  4000 RTP packets accounted for, 0 one-way-audio and 0 no-media findings.
+
+Two controls make that a measurement rather than a coincidence. Four sockets
+NOT in one group would each see every packet, so the `--cores 4` run would have
+reported 40 packets per stream rather than 10 and 28 messages per dialog rather
+than 7; it reported 10 and 7. And the log line naming the group and the socket
+count ([`live.rs:267`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L267)) was present, so the fanout path
+ran rather than falling back.
+
+**This is the condition CT11 sets, and it fails.** Cross-worker correlation
+costs zero because the workers do not exist: every socket feeds one channel and
+one store, so `HASH`'s inability to co-locate a call's SIP with its media is
+invisible to everything downstream. CT11's premise is a processing pool, which
+§4 recommends against building.
+
+### CT11's own program makes the split 100%, not 0%
+
+Worth stating separately, because the backlog entry reads as though the program
+closes the gap it names. It does not. The 19-instruction program was written
+and run — ports 5060/5061 to worker 0, everything else spread over `1..N-1`:
+
+- Every SIP packet landed on socket 0. All 1400 of them, for all 200 calls.
+- **All 200 calls then had their SIP and their media on different sockets**, up
+  from 140.
+
+Pinning signaling to worker 0 co-locates signaling with OTHER SIGNALING. It
+guarantees, deterministically, the very separation the entry opens by calling a
+gap. That is a coherent thing to want — one worker holding every dialog is what
+a proxied call needs — but it is not the thing the entry claims, and the entry
+should not be picked up as written.
+
+### And it costs the property CT4 relies on
+
+`PACKET_FANOUT_CBPF` REPLACES `PACKET_FANOUT_HASH` for the whole group: the
+mode is one field on the group and the demux switches on it, so
+`fanout_demux_hash()`'s `__skb_get_hash_symmetric()` — the symmetric hash that
+keeps both directions of an RTP stream on one socket — is not computed at all
+under CBPF. The program has to supply its own stickiness, and the only hash a
+classic program can reach is the `SKF_AD_RXHASH` ancillary load, which is
+`skb->hash`, not the symmetric one.
+
+Measured with a two-instruction program that returns nothing but that hash:
+**all 5412 packets went to socket 0**, so `skb->hash` was 0 for every packet on
+this path. On the veth the value is simply never computed. A physical NIC with
+RSS would fill it, which is the finding a veth cannot settle — but a steering
+program cannot RELY on it, and where it is unset the whole media plane
+collapses onto one worker. Reproducing CT4's guarantee needs a symmetric hash
+computed from header bytes inside the program, which is more instructions and
+more to get wrong than "~15".
+
+Two older objections still stand:
+
+- **It fixes one of the two cross-worker problems.** It does nothing for the
+  proxied-dialog split — one Call-ID on two host pairs — which `parallel.rs`
+  measured at 1173 of 2311 dialogs and which `DialogStore::merge` exists to
+  repair.
 - **Worker 0 becomes the signaling hotspot.** All 5060/5061 on one core is a new
   serial stage on a signaling-heavy link, which is the load a SIP capture tool
   most often meets.
 
-CT11's own unverified caveat also stands and should be carried forward verbatim:
-that `bpf_prog_create_from_user()` contains no capability check beyond
-`SOCK_FILTER_LOCKED` is *"unverified — confirm in `net/core/filter.c` before
-relying on the 'no CAP_BPF' claim."* The neighboring claim about
-`fanout_add()` was verified by running it
-([`fanout.rs:183`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L183)); this one has not been, and
-reading kernel source is not the same as running against the kernel that is
-installed.
+### The capability caveat: CONFIRMED, both ways
 
-**Recommendation: re-file CT11 as blocked on a design that does not exist**,
-rather than as CT4's follow-on.
+CT11 flags as unverified that `bpf_prog_create_from_user()` contains no
+capability check beyond `SOCK_FILTER_LOCKED`. It does not, and this was checked
+the way the sibling `fanout_add()` claim was
+([`fanout.rs:198`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L198)) — by reading the source AND by
+running it, because those answer different questions.
+
+In v6.8 `net/core/filter.c`, `bpf_prog_create_from_user()` holds no `capable()`,
+`ns_capable()` or `bpf_capable()` call: its gates are `bpf_check_basics_ok()`
+for program length and `bpf_prepare_filter()` for opcode legality. Its caller
+`fanout_set_data_cbpf()` in `net/packet/af_packet.c` adds exactly one check,
+`sock_flag(&po->sk, SOCK_FILTER_LOCKED)` returning `-EPERM`. The only capability
+on the path is `ns_capable(CAP_NET_RAW)` in `packet_create()`, needed to open
+the socket at all — which a capture already had.
+
+Run on the installed kernel: four sockets opened as root, then a full drop to
+uid 1000 with `CapEff` and `CapPrm` both `0x0`, verified from
+`/proc/self/status` before the call. `setsockopt(PACKET_FANOUT_DATA)` with the
+19-instruction program then SUCCEEDED. So the "no `CAP_BPF`, works after the
+privilege drop" half of the entry is true, and it is the only half that is.
+
+### If a live pool is ever built, this is not the program to write
+
+`shard_for` ([`parallel.rs:72`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L72)) hashes the ORDERED ADDRESS
+PAIR and nothing else — no ports. That is why the offline engine has never had
+CT11's problem: a call's SIP and its media flow between the same two addresses,
+so they shard to the same worker by construction. Reading the same corpus from
+the file instead of the wire, `--cores 1` and `--cores 4` again produced
+identical dialogs, 400 of 400 streams linked and 0 orphans. (That corpus has no
+proxied dialogs and no separately-anchored media address, so it exercises the
+sharding and not `DialogStore::merge`.)
+
+The kernel's `HASH` splits on the 5-tuple, which is the whole reason it
+separates SIP from media. So the cBPF shape that would match the engine sipnab
+already has is a symmetric hash over the ADDRESS PAIR with the ports ignored —
+not "pin 5060 to worker 0". Unbuilt and unmeasured, written down only so the
+next reader does not start from CT11's program. It would still leave both of
+§4's problems standing: the proxied dialog on two host pairs, and the carrier
+that anchors media on a third address.
+
+### Recommendation
+
+**CT11 is refused on measurement, not deferred.** Its condition was tested and
+came back zero; its program widens the gap it was written to close; and it
+trades away the symmetric hash that CT4's RTP stickiness depends on. If a live
+processing pool is ever built, this page's §4 is the prerequisite and CT11 is
+not the follow-on — a new entry would be, written against whatever §4's
+successor decides a worker is.
 
 ## 7. Recommendation
 
@@ -371,9 +502,15 @@ rather than as CT4's follow-on.
 2. **Add a per-thread packet counter to `capture_live_group`.** Needed as the
    third control; without it "fanout worked" is unfalsifiable.
 3. **Run §5.** In the netns first, then via `field-report.sh` on a real NIC.
+   **Still not run.**
 4. **Wire `--cores` into the `Live` arm only if §5 says drainer-bound**, with
    §2's three obligations and §2.1's buffer question answered by the same data.
-5. **Leave CT11 filed as blocked**, and leave live processing fan-out unbuilt.
+   **Shipped in CT4 ahead of §5**, with the obligations met (the log line names
+   the socket count, the total ring and that processing stays on one thread) and
+   §2.1's multiply-or-divide question still answered by "multiply, and say so"
+   rather than by data.
+5. ~~**Leave CT11 filed as blocked**~~ — **refused on measurement**, see §6.
+   Live processing fan-out stays unbuilt.
 
 ## 8. Open questions
 
@@ -389,14 +526,14 @@ not mistake them for settled.
   cannot make `--cores 1` drop, the whole experiment relocates to a real NIC and
   the netns result is a control, not a measurement.
 - **Does `ROLLOVER` change the answer?** `FANOUT_HASH_WITH_ROLLOVER`
-  ([`fanout.rs:47`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L47)) lets a full ring spill to
+  ([`fanout.rs:55`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L55)) lets a full ring spill to
   another member. That should reduce drops and also breaks the symmetric-hash
   guarantee for the spilled packets. Harmless under capture-only fanout (one
   store), and a correctness question the moment processing is sharded. Nobody has
   measured how often rollover fires.
 - **What does `PACKET_FANOUT` do on the `any` pseudo-device?**
   `join_fanout_group`'s doc names `any` as a possible `ENOPROTOOPT` source
-  ([`fanout.rs:67-68`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L67-L68)) but marks it "on some
+  ([`fanout.rs:75-76`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L75-L76)) but marks it "on some
   kernels". The zero-argument default sniffs all interfaces via `any`
   ([`cli.rs:348-349`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L348-L349)), so this is the *default* invocation,
   not an edge case. The probe at [`live.rs:293`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L293) will
