@@ -37,6 +37,7 @@
 //! committed, so a gate proved only against it is proved nowhere CI can see.
 #![cfg(feature = "native")]
 
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
@@ -322,6 +323,19 @@ fn the_report_survives_libtests_output_capture() {
 #[test]
 fn every_capture_under_the_corpus_root_is_actually_read() {
     let Some(root) = corpus_support::root() else {
+        // Audible, and to the REAL stderr, for the same reason `announce()`
+        // writes there: libtest throws its buffer away when a test passes, so
+        // a skip announced with `eprintln!` is printed on exactly the runs
+        // nobody reads. A silent skip here would be this gate committing the
+        // defect it exists to catch -- a measurement that did not happen,
+        // reported as one that passed.
+        let mut err = std::io::stderr();
+        let _ = writeln!(
+            err,
+            "CORPUS READABILITY: SKIPPED — SIPNAB_CORPUS is unset, so no \
+             capture was checked. Set it to validate: \
+             SIPNAB_CORPUS=/path/to/pcaps cargo test --features full"
+        );
         return;
     };
     readability::survey(&root).assert_every_capture_was_read();

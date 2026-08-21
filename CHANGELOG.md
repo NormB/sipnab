@@ -10,6 +10,72 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.119] - 2026-08-21
+
+### Added
+
+- **A live interface and a HEP listener can now run in one process.** Until
+  now `plan()` resolved the capture source as a single if/else chain — File >
+  Live > Uprobe > Hep > None — so one run got exactly one source, and an
+  operator had to choose between signaling that always works and having any
+  media at all. Taking HEP cost RTP entirely: a stream is only ever created
+  from real RTP packets, and RTCP arriving over HEP has nothing to attach to
+  without them.
+
+  Raised by Dan Jenkins ([@danjenkins](https://github.com/danjenkins))
+  alongside #245, from real deployment experience — when eCapture keylog
+  extraction proves fragile against a given daemon, OpenSIPS's own HEP mirror
+  is a far more robust way to obtain decrypted SIP, because it is already
+  plaintext at the source and involves no key extraction at all. Now HEP
+  supplies the signaling and the NIC supplies the RTP for the same calls:
+
+  ```bash
+  sipnab -N -d eth0 -L 0.0.0.0:9060 --hep-allow 192.0.2.0/24
+  ```
+
+  The correlation this needed turned out to already exist, which reverses the
+  original framing of the problem. The dialog-to-stream binding keys on the SDP
+  media endpoint and never reads the capture source, so a HEP-delivered dialog
+  already claims a locally-captured stream. What this release adds is tests
+  pinning that across sources rather than a new mechanism.
+
+  Two things only running it could find: a composite with no BPF filter
+  captures **no media**, because the generated filter is signaling-only —
+  self-defeating for two sources, and it doubled every dialog's message ladder;
+  and `is_live` did not recognise a composite, so the interface would have
+  opened with no filter at all. Both are now handled, the first with a warning
+  that names the fix.
+
+  Refused, deliberately and with the reason stated: `-I` with `-L` (a file run
+  must not open a listening socket), `--multi-device` with `-L`, and writing a
+  capture file from a composite.
+
+  This is stage 1. Per-source frame ordinals, `input_origin` on dialogs and
+  streams, a weaker-tie flag for cross-source bindings, and multi-node keying
+  remain open and are tracked rather than implied.
+
+### Fixed
+
+- **The corpus gate could not tell "read it, found nothing" from "never opened
+  it".** Every corpus suite walked its capture directory the same way: take
+  each file, try to open it, `continue` on the error. A file the reader refused
+  contributed nothing to the totals and said nothing on the way out, so the
+  binary reported `ok` having measured one capture fewer than the operator
+  believed. That is how a merged pcapng sat unread while all fourteen corpus
+  binaries passed — the condition 0.5.118's reader fixed for exactly one class
+  of unreadable file, leaving the silence in place for the next one.
+
+  The sweep now counts every capture it could not read, prints the count
+  **whether or not it is zero**, and fails when it rises. A count rather than a
+  per-file warning, because a warning inside a passing run is not read — that
+  is the same defect at a lower volume. An empty sweep is also a failure: a
+  directory with no captures would otherwise satisfy "nothing was unread"
+  perfectly, which is the shape of passing over nothing.
+
+  It checks both read paths — the suites' own and the product's merged-pcapng
+  routing — because gating only the former would leave it blind to the very
+  file that prompted it.
+
 ## [0.5.118] - 2026-08-20
 
 ### Fixed
