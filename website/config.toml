@@ -48,7 +48,7 @@ version = "0.5.118"
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.117"
+published_version = "0.5.118"
 # Release date of `published_version` above -- NOT of `version`, further up.
 # `download.html` renders this beside `published_version` in a single sentence,
 # so the date belongs to the release a reader can actually download.
