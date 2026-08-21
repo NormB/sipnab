@@ -219,7 +219,7 @@ alone.
   capture-tuning pages are clean. Still carrying it:
   `threat-mitigation-hooks.md` (its header pins the whole page to "`63b771b`
   plus an uncommitted in-flight change", and §119 repeats it) and
-  `backlog.md:865`. Neither is capture work, which is why they were left rather
+  `backlog.md:874`. Neither is capture work, which is why they were left rather
   than swept blind.
 - [ ] **D7 — Sweep the two implementation plans** (`implementation-plan-v6.md`
   ~185 KB, `implementation-plan-phases-8-10.md` ~180 KB) for unchecked `- [ ]`

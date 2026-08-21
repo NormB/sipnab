@@ -334,13 +334,22 @@ Tiers:
   gate half — the last sentence above — was NOT built, and is tracked as RDR2
   rather than left inside a ticked box. Half a fix under an `[x]` is the same
   missing measurement this entry was written about.
-- [ ] **RDR2 — the corpus gate still cannot tell "read it, found nothing" from
+- [x] **RDR2 — the corpus gate still cannot tell "read it, found nothing" from
   "never opened it".** The walker takes every regular file under
   `SIPNAB_CORPUS`, and a capture it cannot open contributes nothing and reports
   nothing, so the suite says `ok`. That is how one of 63 captures went entirely
   unread while every one of the 14 corpus binaries passed — the condition RDR1
   found, which the RDR1 reader fixes for exactly one class of unreadable file
   and leaves in place for every future class.
+
+  **Shipped in 0.5.119.** `tests/corpus_readability_gate_test.rs` sweeps the
+  corpus once, counts every capture it could not read, prints the count whether
+  or not it is zero, and fails when it rises. An empty sweep is also a failure:
+  a directory with no captures would otherwise satisfy "nothing was unread"
+  perfectly. It probes BOTH read paths -- the corpus suites' own and the
+  product's merged-pcapng routing -- because gating only the former would leave
+  it blind to RDR1 itself. Measured against the real corpus: 121 captures, 121
+  read, 14,200,071 packets, 0 unread.
 
   **Do:** count captures that fail to open, report the count, and fail the gate
   when it rises. The count is the point: a per-file skip that only warns
@@ -910,7 +919,7 @@ Tiers:
   escape hatch to force immediate mode back on for a headless run; that is
   re-scoped and tracked as CT7b in `capture-tuning-tasks.md` rather than left
   implied here.
-- [ ] **PR1 — `--cores` plateaus at 4 because one thread reads the whole `-I`
+- [x] **PR1 — `--cores` plateaus at 4 because one thread reads the whole `-I`
   set serially.** **Re-measured 2026-08-17 on 0.5.108, and this entry's headline
   premise no longer holds: throughput no longer declines past four.** On
   released artifacts, interleaved against 0.5.107 as a control: 1 core 1.29M
