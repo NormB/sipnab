@@ -10,6 +10,77 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.121] - 2026-08-21
+
+### Added
+
+- **When two capture sources disagree, sipnab now says so.** 0.5.120 let a live
+  interface and a HEP listener run in one process, and sold it as redundancy:
+  the mirror as a robust path when key extraction is fragile. Dan Jenkins
+  ([@danjenkins](https://github.com/danjenkins)) reframed it after using it,
+  and his framing is the better one — HEP reports what the proxy *believes* it
+  did, the wire reports what actually left the box. When the question is "is
+  the proxy misbehaving, or did I configure it to", a mirror produced by the
+  suspect cannot answer it: it is the same witness twice.
+
+  So the two sources are complementary rather than redundant, and their
+  DISAGREEMENT is the finding. A composite run now reports, per call: messages
+  seen by both, mirror-only, wire-only, and present on both but with differing
+  SDP — the last carrying both accounts of the media endpoint side by side. A
+  mirrored message the wire never carried is a proxy that believes it sent
+  something it did not. A message on the wire the mirror never reported is
+  tracing that is lying to its operator.
+
+  The trap here is that the mirror usually arrives FIRST, because the proxy
+  mirrors as it processes while the wire copy takes a network hop — so any
+  rule shaped "first one wins" silently makes the proxy's account
+  authoritative, which is the one thing the wire capture exists to check.
+  Three things prevent it: copies are paired by transaction identity
+  (RFC 3261 §17.1.3/§17.2.3), never by arrival position; both accounts are
+  reported by name, with no expected/actual pair a surface could render as
+  truth-and-deviation; and the two gap lists come from one closure applied
+  twice with its arguments swapped, so a rule favouring either witness would
+  have to be written where it is visible.
+
+  A single-source run reports nothing new and allocates nothing.
+
+- **Every frame from a live or HEP source now carries a resolvable ordinal.**
+  Both readers stamped a source name without one, so `first_frame` was absent
+  for everything except a file. Ordinals are per SOURCE, not per reader: a HEP
+  listener is a fan-in, so each sending node gets its own sequence rather than
+  a listener-wide counter full of holes.
+
+  Under `PACKET_FANOUT` — `--cores N` on a live device — several sockets share
+  one device, so a per-socket counter would mint `eth0#0` from each of them:
+  different frames under one name, which is worse than no pointer at all. The
+  source name now carries the socket index (`eth0[2]`), which removes the
+  collision without a shared counter on the very path fanout exists to relieve.
+
+  `input_origin` reaches the dialog and the stream, a stream records when its
+  dialog arrived over a *different* source, and SDP endpoints expire after
+  300 s — grounded on RFC 3261 §16.8 Timer C, measured on the capture clock so
+  a replay behaves like the live run.
+
+### Fixed
+
+- **Every download the release makes is now pinned, bounded and retried.** Four
+  builds failed on a fetch in a single session and none on the code: the Ubuntu
+  archives hung fifteen minutes and cancelled the CI gate; Trivy's DB mirror
+  stalled and failed Docker after the image had already passed its smoke test;
+  and the 0.5.120 release died on netmap headers from `raw.githubusercontent.com`.
+  That last one published **nothing** — the release and the Homebrew bump were
+  skipped, so a public tag existed with no artefacts behind it.
+
+  These inputs are fixed and versioned, so they are now fetched under a timeout
+  with retries and verified against a recorded sha256 — checksums confirmed
+  against a second independent source before being written down. Previously the
+  netmap headers were pulled from a mutable host with no integrity check at all.
+
+  A failed fetch is also no longer indistinguishable from a failed build. The
+  cross image was one long `&&` chain, so Docker quoted the `apt-get` at its
+  head when a `wget` forty lines later failed — naming a command that had in
+  fact succeeded. It is now one step per stage, and a fetch failure says so.
+
 ## [0.5.120] - 2026-08-21
 
 ### Fixed
