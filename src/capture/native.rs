@@ -211,7 +211,7 @@ impl CaptureSource {
     /// A short operator-facing name for this source.
     ///
     /// Exists because every readiness and teardown message in
-    /// [`run_multi_capture`] used to say "Device 'eth0'", which is a lie the
+    /// `run_multi_capture` used to say "Device 'eth0'", which is a lie the
     /// moment a member is a HEP listener. An error that names the wrong KIND
     /// of member sends the operator to the wrong subsystem.
     ///

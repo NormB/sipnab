@@ -1788,7 +1788,7 @@ fn dispatch_in_file_order(
 ///
 /// That fused stage is SERIAL for one file and is what `--cores` then
 /// plateaued on. A set of several files no longer runs it in one thread: see
-/// [`shard_set_parallel`], which reads the files concurrently and releases
+/// `shard_set_parallel`, which reads the files concurrently and releases
 /// what they read in file order, so the workers see exactly the sequence the
 /// serial reader gave them. One file still means one reader — a pcap record's
 /// length is only known from the record before it, so a single file cannot be
