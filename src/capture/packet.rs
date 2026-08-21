@@ -65,6 +65,63 @@ pub struct FrameOrigin {
     pub digest: Option<u64>,
 }
 
+/// One capture source's own frame counter.
+///
+/// The offline readers numbered their frames all along; the live and HEP
+/// readers stamped only a source NAME, and [`Packet::frame_ref`] requires both
+/// halves. So every dialog and every stream built from those two sources
+/// reported no opening frame at all, and a mixed live-plus-HEP run — the whole
+/// point of `docs/design/simultaneous-capture-sources.md` — could not say
+/// which packet any fact came from. This is that counter, spelled once so a
+/// third reader cannot invent a different rule.
+///
+/// **One instance per SOURCE, never per run.** A frame's identity is its
+/// source plus its position within that source, so two sources sharing a
+/// counter would hand each of them a sequence full of holes — a pointer naming
+/// a position no reader of that source can find, which is worse than no
+/// pointer because it looks like one. [`FrameOrigin`]'s own docs make the same
+/// argument for capture files.
+///
+/// # Why no digest
+///
+/// [`FrameOrigin::digest`] exists so a resolver can prove it found the same
+/// bytes a second time. A live frame and a HEP datagram are gone the instant
+/// they are read: there is no capture to seek back into, so a digest here
+/// would attest to bytes nobody can re-read. [`FrameRef::uprobe`] refuses one
+/// for exactly this reason. It would not be free either — hashing in a serial
+/// read stage cost 39% of two-core throughput when `--cores` did it, which is
+/// why `parallel::stamp_digest` moved it to the workers.
+#[derive(Debug, Default, Clone)]
+pub struct FrameCounter {
+    /// Position the next frame from this source will be given, 0-based to
+    /// match every other reader.
+    next: u64,
+}
+
+impl FrameCounter {
+    /// A counter for a source whose first frame has not been read yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Position of the next frame from this source, and advance.
+    ///
+    /// Saturating rather than wrapping. At 10 Mpps a `u64` takes ~58,000 years
+    /// to overflow, so this cannot happen in practice — but wrapping to 0
+    /// would silently mint a SECOND frame 0 for the same source, which is the
+    /// one outcome a provenance pointer must never produce. Repeating the last
+    /// ordinal instead is visible in the output as a stuck number.
+    pub fn next_origin(&mut self) -> FrameOrigin {
+        let ordinal = self.next;
+        self.next = self.next.saturating_add(1);
+        FrameOrigin {
+            ordinal,
+            digest: None,
+        }
+    }
+}
+
 /// FNV-1a over a frame's bytes.
 ///
 /// Deliberately not `DefaultHasher`: its output is explicitly not guaranteed

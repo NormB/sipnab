@@ -42,6 +42,15 @@
       "type": "string",
       "description": "Pointer to the frame the dialog opened in, as `<source>#<ordinal>@<digest>` — feed it to `sipnab --show-frame` to retrieve the bytes, which either returns the frame or refuses because the capture changed. Optional, and absent rather than null when the dialog has no frame (live capture). Not in `required` for that reason: an absent key means unknown, and a present one is always a real pointer.",
       "pattern": "^.+#[0-9]+(@[0-9a-f]{16})?$"
+    },
+    "input_origin": {
+      "type": "string",
+      "enum": [
+        "wire",
+        "hep",
+        "uprobe"
+      ],
+      "description": "Which capture source delivered the message that OPENED this dialog. First, never latest: one process can capture from an interface and a HEP mirror at once, and with no BPF filter excluding the mirrored signaling ports the same message arrives from both, so a field reassigned per message would report whichever spoke last. Absent rather than null when the opening message came from no captured packet."
     }
   }
 }

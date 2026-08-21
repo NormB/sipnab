@@ -648,6 +648,14 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         None => true,
     };
 
+    // The fact no mechanism can fix (F4): a composite's two members timestamp
+    // their packets from two clocks. Said once at startup rather than beside
+    // each suspect figure, because the affected figures are exactly the ones
+    // sipnab cannot tell are affected.
+    if let Some(msg) = two_clocks_warning(source.as_ref()) {
+        tracing::warn!("{msg}");
+    }
+
     // Two sources with a signaling-only filter is a run that measures no media
     // and doubles every dialog. Emitted before the filter is built so the
     // operator reads it beside the "Auto-generated BPF filter:" line it
@@ -2557,6 +2565,74 @@ fn composite_filter_warning(source: Option<&CaptureSource>, has_filter: bool) ->
          `sipnab -N -d eth0 -L 127.0.0.1:9060 \"udp portrange 10000-20000\"`."
             .to_string(),
     )
+}
+
+/// The message to log when a run reads its timestamps from two clocks, or
+/// `None` when one clock covers every packet.
+///
+/// A HEP v3 packet's time comes from the SENDER: `parse_hep_v3` reads the
+/// `TS_SEC`/`TS_USEC` chunks and `hep_to_packet` carries them verbatim into
+/// `Packet::timestamp`. A locally captured packet's time comes from this
+/// host's kernel via `pcap_ts_to_chrono`. Two clocks, nothing disciplining
+/// them, and every figure that subtracts a signaling time from a media time —
+/// post-dial delay against first RTP, ringback analysis, one-way-audio onset —
+/// inherits the offset.
+///
+/// Two details soften this and one sharpens it. HEP v2 carries no timestamp,
+/// so `parse_hep_v2` stamps local receive time and a v2 mirror has ONE clock;
+/// v3 falls back the same way when the chunk pair is unrepresentable. And when
+/// the skew runs backwards, `sip::timing::elapsed_ms` refuses the pair rather
+/// than publishing it, so the visible symptom is a MISSING duration rather
+/// than a negative one. The sharpening detail is that a FORWARD skew has no
+/// such guard and sipnab cannot detect it in general.
+///
+/// Which is the whole reason this exists. No mechanism can fix the offset;
+/// saying that the run mixed two clocks costs nothing and lets a reader
+/// discount a figure that looks wrong instead of treating it as measured.
+///
+/// Keyed on the RESOLVED source rather than on the flags, like
+/// [`hep_listen_ignored_warning`], so a future arm that composes a HEP member
+/// some other way cannot reintroduce the silence.
+///
+/// Returns the message rather than logging it, so it can be asserted on.
+fn two_clocks_warning(source: Option<&CaptureSource>) -> Option<String> {
+    let CaptureSource::Composite(members) = source? else {
+        return None;
+    };
+    // Both halves required. A composite of two HEP listeners would read every
+    // timestamp from a remote clock and a composite of two interfaces from the
+    // local one; neither MIXES, and warning about a disagreement that cannot
+    // happen is how a warning becomes noise.
+    let hep: Vec<&str> = members
+        .iter()
+        .filter_map(|m| match m {
+            CaptureSource::Hep { bind_addr, .. } => Some(bind_addr.as_str()),
+            _ => None,
+        })
+        .collect();
+    if hep.is_empty() {
+        return None;
+    }
+    let local: Vec<String> = members
+        .iter()
+        .filter(|m| !matches!(m, CaptureSource::Hep { .. }))
+        .map(CaptureSource::label)
+        .collect();
+    if local.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "this run reads timestamps from TWO clocks: {} is stamped by the \
+         remote HEP sender (HEP v3 carries the sender's own TS_SEC/TS_USEC; a \
+         v2 mirror carries none and is stamped locally, which is one clock), \
+         while {} is stamped by this host's kernel. Nothing disciplines them. \
+         Any figure subtracting a signaling time from a media time — post-dial \
+         delay against first RTP, ringback, one-way-audio onset — carries the \
+         offset between them; a backwards pair is withheld rather than \
+         reported, but a forward skew is undetectable. Run NTP on both hosts.",
+        hep.join(", "),
+        local.join(", "),
+    ))
 }
 
 /// The message to log when `--cores N` was asked for on a run that cannot use
@@ -5030,6 +5106,49 @@ mod tests {
             "the interface member needs a filter; without one the composite \
              opens the link wide"
         );
+    }
+
+    /// A run mixing a HEP member with a locally-captured one mixes two clocks
+    /// (F4), and must say so.
+    ///
+    /// Nothing can fix the skew, and sipnab cannot detect a forward one at
+    /// all. What it can do costs nothing: state that the run mixed two clocks,
+    /// so a reader can discount a duration that looks wrong instead of
+    /// treating it as measured.
+    #[test]
+    fn two_clocks_warning_fires_on_a_hep_member_beside_a_local_one() {
+        let composite = CaptureSource::Composite(vec![
+            CaptureSource::Live {
+                device: "eth0".into(),
+            },
+            hep_src("127.0.0.1:19060"),
+        ]);
+        let msg = two_clocks_warning(Some(&composite)).expect(
+            "a HEP member beside a live one is two clocks with no discipline \
+             between them",
+        );
+        assert!(
+            msg.contains("clock"),
+            "name the thing that disagrees: {msg}"
+        );
+        assert!(
+            msg.contains("eth0") && msg.contains("127.0.0.1:19060"),
+            "name BOTH members, so an operator reading a log knows which run \
+             they are looking at: {msg}"
+        );
+    }
+
+    /// Silent on one clock. A `-L`-only run reads every timestamp from the
+    /// same senders it always did, and a `-d`-only run from the local kernel;
+    /// a warning that fires on every run is one operators skim past.
+    #[test]
+    fn two_clocks_warning_is_silent_on_a_single_source() {
+        let live = CaptureSource::Live {
+            device: "eth0".into(),
+        };
+        assert_eq!(two_clocks_warning(Some(&live)), None);
+        assert_eq!(two_clocks_warning(Some(&hep_src("127.0.0.1:19060"))), None);
+        assert_eq!(two_clocks_warning(None), None);
     }
 }
 

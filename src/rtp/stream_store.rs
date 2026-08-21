@@ -79,6 +79,115 @@ struct SdpEndpoint {
     /// one learned after). `RtpStream::ptime_ms` prefers a measurement, and
     /// falls back to this on the streams too short to measure.
     ptime: Option<u32>,
+    /// Which capture source delivered the message that advertised it, and
+    /// when. See [`SdpProvenance`].
+    provenance: SdpProvenance,
+}
+
+/// Where an SDP media endpoint came from, and when.
+///
+/// Both halves answer questions a single-source run never had to ask. **Which
+/// source** decides whether a binding made from this endpoint is a
+/// cross-source one, which is a weaker tie than a same-source one and has to
+/// say so ([`crate::rtp::stream::RtpStream::dialog_bound_across_sources`]).
+/// **When** decides whether the endpoint may still name a NEW stream's dialog
+/// at all: a media gateway cycles a finite RTP port range, so on a process
+/// running for days — the deployment shape this feature is for, unlike the
+/// minutes-long pcap read the map's insertion-order eviction was sized for — a
+/// stale entry can outlive its call and claim the next stream on that socket
+/// (F3 in `docs/design/simultaneous-capture-sources.md`).
+///
+/// Both are `Option`, and absent means "nobody said" rather than a default. An
+/// endpoint with no time cannot be judged stale and one with no source cannot
+/// be judged cross-source; in each case the answer is to withhold the claim,
+/// not to invent one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SdpProvenance {
+    /// Capture source the advertising message arrived over.
+    pub origin: Option<crate::capture::parse::InputOrigin>,
+    /// Capture-clock time of that message.
+    ///
+    /// The capture clock, never `Utc::now()`: replaying a saved capture must
+    /// reach the same answer as the live run that produced it, and a
+    /// wall-clock TTL would expire every endpoint in an archived file.
+    pub observed_at: Option<DateTime<Utc>>,
+}
+
+impl SdpProvenance {
+    /// What a caller holding no message knows: nothing.
+    ///
+    /// Named rather than spelled `Default::default()` at each site, so the
+    /// absence reads as a decision. The callers that genuinely have no message
+    /// — [`StreamStore::link_endpoint`], the post-merge re-link, tests that
+    /// build an rtpmap by hand — say this and get no cross-source claim and no
+    /// expiry.
+    #[must_use]
+    pub fn unknown() -> Self {
+        Self::default()
+    }
+
+    /// What the capture pipeline knows: the message's source and its capture
+    /// time.
+    #[must_use]
+    pub fn observed(
+        origin: crate::capture::parse::InputOrigin,
+        observed_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            origin: Some(origin),
+            observed_at: Some(observed_at),
+        }
+    }
+}
+
+/// How long an SDP media endpoint may sit before it stops being allowed to
+/// name a NEW stream's dialog (F3).
+///
+/// Grounded on the longest an offer can legitimately wait for its media.
+/// [RFC 3261 §16.8](https://www.rfc-editor.org/rfc/rfc3261#section-16.8)
+/// requires a proxy's Timer C to be **greater than 3 minutes**; when it fires
+/// the INVITE transaction is cancelled and no media follows. So an offer
+/// unclaimed for longer than that will not be claimed legitimately through a
+/// compliant proxy.
+///
+/// 300 s is the next round figure above that floor. The margin is a CHOICE and
+/// not a measurement: it covers a proxy configured above the RFC minimum.
+/// Wrong in the short direction this withholds a true binding, which surfaces
+/// as an orphan; wrong in the long direction it permits a false one, which
+/// arrives looking like a measurement. That asymmetry is why the margin is
+/// small.
+///
+/// It bounds only the window in which an UNREFRESHED entry can mis-claim. A
+/// re-offer for the same socket refreshes the entry, so a long call is
+/// unaffected — its stream is created at first RTP, and the entry is not what
+/// holds the binding afterwards.
+const SDP_ENDPOINT_TTL_SECS: i64 = 300;
+
+/// Has this endpoint sat long enough that a stream starting `now` must not be
+/// bound from it?
+///
+/// Forward staleness only. A NEGATIVE difference means the media is older than
+/// the offer describing it, which is ordinary in a composite run rather than
+/// suspicious: a HEP hop is a network delay, so locally captured RTP routinely
+/// reaches the pipeline before the mirrored INVITE (F5), and the two members'
+/// timestamps come from two clocks with nothing disciplining them (F4).
+/// Expiring on that would refuse exactly the bindings this feature exists to
+/// make.
+///
+/// The skew cuts the other way too: a HEP sender running minutes AHEAD of this
+/// host makes its offers look older than they are, and one running far enough
+/// ahead ages a live offer out early. That costs an orphan — a missing
+/// attribution, which is the safe direction — and it needs a clock more than
+/// five minutes out, which `two_clocks_warning` already tells the operator to
+/// go and fix.
+fn sdp_endpoint_expired(endpoint: &SdpEndpoint, now: DateTime<Utc>) -> bool {
+    let Some(learned) = endpoint.provenance.observed_at else {
+        // Nobody recorded when it was learned, so nothing here can call it
+        // stale. Guessing an age would be the fabrication the TTL exists to
+        // prevent, one layer down.
+        return false;
+    };
+    now.signed_duration_since(learned).num_seconds() > SDP_ENDPOINT_TTL_SECS
 }
 
 /// How a stream's RTP clock rate — the divisor every jitter figure depends on
@@ -486,6 +595,12 @@ impl StreamStore {
             // STREAM, not per packet -- and now the refcount is paid here
             // too, once per stream, rather than once per parsed frame.
             stream.first_frame = parsed.frame.map(|l| l.to_frame_ref());
+            // Which source carried the media, stamped in the same branch and
+            // from the same packet as `first_frame`. Without it a stream can
+            // be told which source its DIALOG came from and still not know
+            // whether that is the same one — so the cross-source flag would be
+            // unanswerable from the half that is easiest to record.
+            stream.input_origin = Some(parsed.input_origin);
             // The marking this stream started with, stamped in the same branch
             // and for the same reason as `first_frame`: this is by
             // construction the first packet of the key. `dscp_last` starts
@@ -863,12 +978,51 @@ impl StreamStore {
         call_id: &str,
         media: &SdpMedia,
     ) {
+        self.link_to_dialog_with_sdp_from(
+            media_addr,
+            media_port,
+            call_id,
+            media,
+            SdpProvenance::unknown(),
+        );
+    }
+
+    /// [`link_to_dialog_with_sdp`](Self::link_to_dialog_with_sdp) plus where
+    /// the advertising message came from and when.
+    ///
+    /// Split rather than added to the existing signature, following the same
+    /// rule as the `ptime` split below: the callers that genuinely hold no
+    /// message say nothing and get [`SdpProvenance::unknown`], instead of every
+    /// call site growing two trailing arguments it has no answer for. The
+    /// capture pipeline holds both and passes them.
+    ///
+    /// # Side effects
+    ///
+    /// As [`link_to_dialog_with_sdp`](Self::link_to_dialog_with_sdp), and
+    /// additionally records the endpoint's provenance so a stream created
+    /// later can be aged out (F3) and can say whether its binding crossed
+    /// sources.
+    pub fn link_to_dialog_with_sdp_from(
+        &mut self,
+        media_addr: IpAddr,
+        media_port: u16,
+        call_id: &str,
+        media: &SdpMedia,
+        provenance: SdpProvenance,
+    ) {
         let rtpmap: Vec<(u8, String, u32)> = media
             .rtpmap
             .iter()
             .map(|rm| (rm.payload_type, rm.encoding.clone(), rm.clock_rate))
             .collect();
-        self.link_endpoint_with_ptime(media_addr, media_port, call_id, &rtpmap, media.ptime);
+        self.link_endpoint_from(
+            media_addr,
+            media_port,
+            call_id,
+            &rtpmap,
+            media.ptime,
+            provenance,
+        );
     }
 
     /// Associate every RTP stream on `media_addr:media_port` to `call_id` and,
@@ -919,9 +1073,37 @@ impl StreamStore {
         rtpmap: &[(u8, String, u32)],
         ptime: Option<u32>,
     ) {
+        self.link_endpoint_from(
+            media_addr,
+            media_port,
+            call_id,
+            rtpmap,
+            ptime,
+            SdpProvenance::unknown(),
+        );
+    }
+
+    /// [`link_endpoint_with_ptime`](Self::link_endpoint_with_ptime) plus where
+    /// the advertising message came from and when — the one that does the
+    /// work; the three above are its no-provenance spellings.
+    ///
+    /// # Side effects
+    ///
+    /// As [`link_endpoint_with_ptime`](Self::link_endpoint_with_ptime), and
+    /// additionally stores `provenance` against the endpoint and stamps
+    /// `RtpStream::dialog_origin` on every stream this call binds.
+    pub fn link_endpoint_from(
+        &mut self,
+        media_addr: IpAddr,
+        media_port: u16,
+        call_id: &str,
+        rtpmap: &[(u8, String, u32)],
+        ptime: Option<u32>,
+        provenance: SdpProvenance,
+    ) {
         // Remember this endpoint so a stream created *later* (the common
         // ordering) resolves codec/clock/dialog at creation — see process_rtp.
-        self.remember_sdp_endpoint(media_addr, media_port, call_id, rtpmap, ptime);
+        self.remember_sdp_endpoint(media_addr, media_port, call_id, rtpmap, ptime, provenance);
 
         // Indexed lookup (SNB-0015): the endpoint index yields exactly the streams
         // whose src or dst is this endpoint — the same set the old full-store scan
@@ -939,6 +1121,12 @@ impl StreamStore {
             };
             if stream.associated_dialog.is_none() {
                 stream.associated_dialog = Some(call_id.to_string());
+                // The RTP-before-SDP direction of the same binding
+                // `resolve_from_sdp` makes, so it records the same fact. Both
+                // sites write this beside `associated_dialog` rather than
+                // afterwards, so a binding without a recorded source is
+                // unrepresentable rather than merely tested for.
+                stream.dialog_origin = provenance.origin;
                 self.generation += 1;
             }
             // Only fills an unset one, for the same reason the codec branch
@@ -991,6 +1179,7 @@ impl StreamStore {
         call_id: &str,
         rtpmap: &[(u8, String, u32)],
         ptime: Option<u32>,
+        provenance: SdpProvenance,
     ) {
         match self.sdp_endpoints.get_mut(&(addr, port)) {
             Some(existing) => {
@@ -1000,6 +1189,18 @@ impl StreamStore {
                 }
                 if ptime.is_some() {
                     existing.ptime = ptime;
+                }
+                // Each half refreshed only when the caller HAS one, for the
+                // same reason the rtpmap and the ptime are: a re-offer that
+                // arrives through a path carrying no provenance must not erase
+                // what the original exchange recorded. The time half matters
+                // most — clearing it would make an entry unexpirable, which is
+                // the F3 failure with the guard removed.
+                if provenance.origin.is_some() {
+                    existing.provenance.origin = provenance.origin;
+                }
+                if provenance.observed_at.is_some() {
+                    existing.provenance.observed_at = provenance.observed_at;
                 }
             }
             None => {
@@ -1021,6 +1222,7 @@ impl StreamStore {
                         call_id: call_id.to_string(),
                         rtpmap: rtpmap.to_vec(),
                         ptime,
+                        provenance,
                     },
                 );
             }
@@ -1039,8 +1241,24 @@ impl StreamStore {
             let Some(endpoint) = self.sdp_endpoints.get(&(ip, port)) else {
                 continue;
             };
+            // The ONE place the TTL bites, and deliberately so. This is the
+            // path where an endpoint learned earlier claims a stream that did
+            // not exist yet — the F3 shape exactly. The other direction
+            // (`link_endpoint_with_ptime`) sweeps streams that already exist
+            // using an entry it has just written, so there is nothing stale
+            // there to guard against.
+            //
+            // Measured against the stream's own first packet, not `now()`: a
+            // replay of a saved capture has to reach the same answer as the
+            // live run that produced it.
+            if sdp_endpoint_expired(endpoint, stream.first_seen) {
+                continue;
+            }
             if stream.associated_dialog.is_none() {
                 stream.associated_dialog = Some(endpoint.call_id.clone());
+                // Written in the same breath as the binding, so the two can
+                // never describe different things.
+                stream.dialog_origin = endpoint.provenance.origin;
             }
             if stream.sdp_ptime_ms.is_none() {
                 stream.sdp_ptime_ms = endpoint.ptime;
@@ -1330,7 +1548,12 @@ impl StreamStore {
             .map(|(k, v)| (*k, v.clone()))
             .collect();
         for ((addr, port), ep) in eps {
-            self.link_endpoint_with_ptime(addr, port, &ep.call_id, &ep.rtpmap, ep.ptime);
+            // Carried through, not defaulted: this re-link is a REPLAY of
+            // endpoints already learned, so dropping their provenance would
+            // silently turn every cross-source binding a `--cores` run makes
+            // into one that looks same-source, and would clear the time that
+            // makes an entry expirable.
+            self.link_endpoint_from(addr, port, &ep.call_id, &ep.rtpmap, ep.ptime, ep.provenance);
         }
     }
 

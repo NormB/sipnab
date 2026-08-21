@@ -146,6 +146,65 @@ fn hep_to_packet(hep: HepPacket, source: &str) -> Packet {
     )
 }
 
+/// One listener's frame numbering, kept per SENDER.
+///
+/// A HEP listener is a fan-in: one socket, many nodes. Ordinals are per source
+/// and a source here is a sender, not the listener — the same distinction
+/// [`hep_source_label`] exists to make. One listener-wide counter would number
+/// an SBC's frames with a PBX's positions, so every pointer either side minted
+/// would name a gap, and following one would find nothing where a real frame
+/// was claimed to be.
+///
+/// # Why the table is bounded, and why it refuses instead of recycling
+///
+/// The label is built from the sender's capture-agent id, which absent
+/// `--hep-auth` is a number an unauthenticated peer chooses freely — so one
+/// host can mint unbounded distinct labels and this map is attacker-growable
+/// exactly as the rate limiter's peer table is. It therefore shares that
+/// table's bound.
+///
+/// At the bound a new sender gets NO ordinal rather than a recycled counter.
+/// Recycling would mint a second frame 0 for a source that already had one:
+/// two different datagrams with the same name, which is precisely the
+/// confident wrong answer the pointer system exists to prevent.
+/// [`crate::capture::packet::Packet::frame_ref`] already needs both halves, so
+/// an unstamped packet reports "unknown" downstream, which is true.
+struct HepFrameOrdinals {
+    /// Source label (`<capture-id>@<peer>`) to that sender's own counter.
+    counters: std::collections::HashMap<String, crate::capture::packet::FrameCounter>,
+    /// Distinct senders this listener will number, matching the rate
+    /// limiter's per-peer bound.
+    max_sources: usize,
+}
+
+impl HepFrameOrdinals {
+    /// A listener that will number at most `max_sources` distinct senders.
+    fn new(max_sources: usize) -> Self {
+        Self {
+            counters: std::collections::HashMap::new(),
+            max_sources,
+        }
+    }
+
+    /// Where the next frame from `source` sits in that sender's own stream, or
+    /// `None` once this listener is already numbering `max_sources` senders
+    /// and this is a new one.
+    fn next_origin(&mut self, source: &str) -> Option<crate::capture::packet::FrameOrigin> {
+        if let Some(counter) = self.counters.get_mut(source) {
+            return Some(counter.next_origin());
+        }
+        if self.counters.len() >= self.max_sources {
+            return None;
+        }
+        Some(
+            self.counters
+                .entry(source.to_string())
+                .or_default()
+                .next_origin(),
+        )
+    }
+}
+
 // ── Receiver-side authentication & bind policy ───────────────────────
 
 /// Decide whether a received HEP packet's auth-key chunk satisfies the
@@ -1544,6 +1603,10 @@ pub fn capture_hep(
     let mut count: u64 = 0;
     let mut buf = vec![0u8; 65535];
     let mut rate_limiter = HepRateLimiter::new(rate_limit, per_peer_rate_limit, max_tracked_peers);
+    // Per-SENDER frame numbering. Bounded by the same figure as the rate
+    // limiter's peer table, and for the same reason: the label is built from a
+    // capture-agent id an unauthenticated peer chooses.
+    let mut frames = HepFrameOrdinals::new(max_tracked_peers);
     // Per-listener replay cache for HMAC auth mode (SN-01 residual).
     let mut hmac_nonce_cache = HmacNonceCache::new();
 
@@ -1692,7 +1755,14 @@ pub fn capture_hep(
         // PreParsed so the parser short-circuits the IP-header walk.
         // Provenance is the SENDER, not this listener — see hep_source_label.
         let source = hep_source_label(hep.capture_id, peer.ip());
-        let packet = hep_to_packet(hep, &source);
+        let mut packet = hep_to_packet(hep, &source);
+        // The other half of the pointer. Stamped from the SENDER's counter,
+        // not the listener's, and before the send for the same reason the
+        // offline readers stamp before theirs: once the packet is on the
+        // shared channel this thread cannot amend it, and the live member of a
+        // composite is interleaving its own packets onto the same channel, so
+        // arrival order says nothing about position.
+        packet.origin = frames.next_origin(&source);
 
         if tx.send(packet).is_err() {
             tracing::debug!("Receiver dropped, stopping HEP listener");
@@ -4048,6 +4118,172 @@ mod tests {
             rx.recv_timeout(Duration::from_millis(100)).is_err(),
             "allowlist drops everything; no packet should reach the pipeline"
         );
+    }
+
+    // ── Per-source frame ordinals (SRC1 stage 2) ─────────────────────────
+    //
+    // `Packet::frame_ref` requires BOTH a source name and an ordinal. The HEP
+    // listener stamped only the name, so every fact built from a HEP-delivered
+    // message reported no opening frame at all.
+
+    /// Drive the real listener and read back the ordinals it stamped.
+    ///
+    /// Returns `(source label, ordinal)` per packet that reached the pipeline,
+    /// in arrival order. One datagram per entry in `capture_ids`, in order, so
+    /// a caller can interleave senders.
+    fn hep_ordinals_for(capture_ids: &[u32]) -> Vec<(String, Option<u64>)> {
+        use std::sync::mpsc;
+
+        // Reserve an ephemeral loopback port, then hand it to the listener so
+        // the test knows where to send without scraping logs.
+        let probe = UdpSocket::bind("127.0.0.1:0").expect("reserve port");
+        let port = probe.local_addr().expect("local_addr").port();
+        drop(probe);
+        let bind = format!("127.0.0.1:{port}");
+
+        let (tx, rx) = crate::capture::channel::packet_channel(64);
+        let config = CaptureConfig {
+            count: Some(capture_ids.len() as u64),
+            // Safety net so a listener that never reaches the count still ends
+            // its thread instead of hanging the suite.
+            duration: Some(Duration::from_secs(8)),
+            ..CaptureConfig::default()
+        };
+        let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
+        let (done_tx, done_rx) = mpsc::channel();
+        let bind_thread = bind.clone();
+        std::thread::spawn(move || {
+            let opts = HepListenerOpts {
+                allowlist: &[],
+                rate_limit: 1_000_000,
+                per_peer_rate_limit: 0,
+                max_tracked_peers: crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS,
+                auth_key: None,
+                auth_mode: HepAuthMode::Plain,
+                hmac_window_secs: DEFAULT_HMAC_WINDOW_SECS,
+            };
+            let r = capture_hep(&bind_thread, &config, tx, &opts, Some(ready_tx));
+            let _ = done_tx.send(r.is_ok());
+        });
+
+        assert!(
+            matches!(ready_rx.recv_timeout(Duration::from_secs(5)), Ok(Ok(()))),
+            "listener must report a successful bind"
+        );
+
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
+        let ts = Utc
+            .timestamp_opt(1_700_000_000, 0)
+            .single()
+            .unwrap_or_default();
+        for id in capture_ids {
+            let pkt = build_hep_v3(
+                &v4_endpoint(),
+                ts,
+                HepProtocol::Sip,
+                *id,
+                None,
+                b"INVITE sip:x SIP/2.0\r\n\r\n",
+            );
+            sender.send_to(&pkt, &bind).expect("send datagram");
+            // Serialised so arrival order is send order: the assertions are
+            // about which COUNTER advanced, never about scheduling.
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let mut got = Vec::new();
+        for _ in 0..capture_ids.len() {
+            match rx.recv_timeout(Duration::from_secs(3)) {
+                Ok(p) => got.push((
+                    p.interface.as_deref().unwrap_or("<none>").to_string(),
+                    p.origin.map(|o| o.ordinal),
+                )),
+                Err(e) => panic!("expected {} packets, got {got:?}: {e}", capture_ids.len()),
+            }
+        }
+        let _ = done_rx.recv_timeout(Duration::from_secs(5));
+        got
+    }
+
+    /// **Ordinals are per source and monotonic.**
+    ///
+    /// One sender, three datagrams: its frames must be numbered 0, 1, 2 within
+    /// its own source name. Without an ordinal `Packet::frame_ref` returns
+    /// `None` — it requires both halves — so no fact HEP delivered could name
+    /// the datagram it came from.
+    #[test]
+    fn ordinals_are_per_source_and_monotonic() {
+        let got = hep_ordinals_for(&[7, 7, 7]);
+        let ordinals: Vec<Option<u64>> = got.iter().map(|(_, o)| *o).collect();
+        assert_eq!(
+            ordinals,
+            vec![Some(0), Some(1), Some(2)],
+            "one sender's frames must be numbered 0,1,2 within its own \
+             source: {got:?}"
+        );
+        let labels: std::collections::BTreeSet<&str> =
+            got.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(
+            labels.len(),
+            1,
+            "one capture id from one peer is ONE source: {labels:?}"
+        );
+    }
+
+    /// **Two members interleaving do not share a counter.**
+    ///
+    /// A frame's identity is its source plus its position in that source, so
+    /// two senders alternating through one listener must each count from zero.
+    /// One listener-wide counter would number them 0..5 and hand each source a
+    /// sequence full of holes — a pointer naming a position no reader of that
+    /// source can find, which is worse than no pointer because it looks like
+    /// one.
+    #[test]
+    fn two_members_interleaving_do_not_share_an_ordinal_counter() {
+        let got = hep_ordinals_for(&[7, 9, 7, 9, 7, 9]);
+        let mut per_source: std::collections::BTreeMap<&str, Vec<Option<u64>>> =
+            std::collections::BTreeMap::new();
+        for (label, ord) in &got {
+            per_source.entry(label.as_str()).or_default().push(*ord);
+        }
+        assert_eq!(
+            per_source.len(),
+            2,
+            "two capture ids are two sources: {per_source:?}"
+        );
+        for (label, ordinals) in &per_source {
+            assert_eq!(
+                *ordinals,
+                vec![Some(0), Some(1), Some(2)],
+                "'{label}' must count its OWN frames from zero rather than \
+                 share a listener-wide counter: {per_source:?}"
+            );
+        }
+    }
+
+    /// The sender table is bounded, and at the bound it withholds an ordinal
+    /// rather than recycling one.
+    ///
+    /// The label carries a capture-agent id an unauthenticated peer chooses,
+    /// so one host can mint unbounded labels. Recycling a counter would give a
+    /// source a SECOND frame 0 — two datagrams with one name — so a new sender
+    /// past the bound gets nothing, and `frame_ref` then reports unknown,
+    /// which is true.
+    #[test]
+    fn a_new_hep_sender_past_the_bound_gets_no_ordinal_rather_than_a_recycled_one() {
+        let mut ord = HepFrameOrdinals::new(2);
+        assert_eq!(ord.next_origin("1@10.0.0.1").map(|o| o.ordinal), Some(0));
+        assert_eq!(ord.next_origin("2@10.0.0.1").map(|o| o.ordinal), Some(0));
+        assert_eq!(
+            ord.next_origin("3@10.0.0.1").map(|o| o.ordinal),
+            None,
+            "a third sender past a bound of two must be left unnumbered"
+        );
+        // The senders already being counted keep counting: the bound must not
+        // turn into a denial of provenance for the nodes that were there
+        // first.
+        assert_eq!(ord.next_origin("1@10.0.0.1").map(|o| o.ordinal), Some(1));
+        assert_eq!(ord.next_origin("2@10.0.0.1").map(|o| o.ordinal), Some(1));
     }
 
     /// A bare address is a HOST, so `--hep-allow 10.0.0.40` works without the

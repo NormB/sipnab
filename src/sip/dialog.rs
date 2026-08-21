@@ -146,6 +146,23 @@ pub struct SipDialog {
     /// `None` for live capture and any path where the message carried no
     /// frame. Absent means unknown, never guessed.
     pub first_frame: Option<crate::capture::packet::FrameRef>,
+    /// Which capture source delivered the message that OPENED this dialog.
+    ///
+    /// First, never latest, exactly as [`first_frame`](Self::first_frame) is
+    /// and for the same reason: reassigning per message would leave every
+    /// dialog reporting whichever source happened to speak last. In a
+    /// composite run that is a real possibility rather than a theoretical one
+    /// — with no BPF filter excluding the signaling ports the mirror already
+    /// covers, the SAME message arrives from both sources (F6).
+    ///
+    /// So this answers "where did this dialog come from", not "was every
+    /// message of it from there". The second question needs a per-message
+    /// tally, which nothing asks for yet; `SipMessage::input_origin` carries
+    /// what it would be built from.
+    ///
+    /// `None` when the opening message carried no origin — hand-built, or
+    /// synthesised for a report.
+    pub input_origin: Option<crate::capture::parse::InputOrigin>,
     /// Destination port of the initial message.
     pub dst_port: u16,
     /// Transaction timing measurements.
@@ -316,6 +333,9 @@ impl SipDialog {
             src_port: msg.src_port,
             dst_port: msg.dst_port,
             first_frame: msg.frame.clone(),
+            // Taken from the SAME message as `first_frame`, so the two cannot
+            // name different packets.
+            input_origin: msg.input_origin,
             tags: Vec::new(),
             timing: DialogTiming::default(),
             sdp_timeline: Vec::new(),

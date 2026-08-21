@@ -259,7 +259,7 @@ the capture's INVITE dialogs by `src_addr`, the only grouping key that exists â€
 "trunk" and "gateway" are still not modeled, and inventing them is a second
 feature. For each source carrying enough dialogs, compare its distribution of
 final status codes, which `final_status_code`
-([`src/sip/dialog.rs:220`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L220))
+([`src/sip/dialog.rs:237`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L237))
 already returns, against the pooled distribution of the other sources in the
 same capture. Report the sources that diverge, printing both distributions and
 the dialog identifiers behind them, so an operator opens the calls rather than

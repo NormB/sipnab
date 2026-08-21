@@ -98,6 +98,26 @@ pub struct SipMessage {
     /// a different fact from `Some(0)` — 0 is the default PHB, a real and
     /// frequently wrong marking.
     pub dscp: Option<u8>,
+    /// Which capture source delivered this message.
+    ///
+    /// `ParsedPacket` has carried this since scanner-kill needed it, and it
+    /// died at the SIP parse boundary: the only consumer was the transmit
+    /// gate, and `grep -rn input_origin src/sip/ src/rtp/ src/output/` found
+    /// nothing but test fixtures. In a single-source run that cost nothing,
+    /// because the answer was the same for every packet.
+    ///
+    /// It stops being free the moment two sources feed one process. HEP
+    /// reports what the proxy BELIEVES it did and the wire reports what
+    /// actually left the box; when those disagree the disagreement is the
+    /// finding, and a disagreement between two facts is only visible once each
+    /// fact knows where it came from. Per MESSAGE rather than per run for the
+    /// same reason: a mixed run has no run-level answer.
+    ///
+    /// `None` for a message that came from no captured packet — hand-built in
+    /// a test, or synthesised for a report. Deliberately not defaulted to
+    /// `Wire`: "sipnab saw this on a wire" is a claim, and a synthetic message
+    /// must not make it.
+    pub input_origin: Option<crate::capture::parse::InputOrigin>,
 }
 
 impl SipMessage {

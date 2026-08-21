@@ -537,3 +537,321 @@ fn two_hep_nodes_advertising_one_socket_collide_and_the_last_offer_wins() {
          node dimension lands this assertion must be updated deliberately"
     );
 }
+
+// ── Stage 2: provenance and honest limits ───────────────────────────────
+//
+// Stage one made the two sources run together. Nothing downstream could then
+// say which of them produced any given fact, which is the substrate the next
+// item (SRC2) needs: HEP reports what the proxy BELIEVES it did, the wire
+// reports what actually left the box, and their DISAGREEMENT is the finding.
+// A disagreement between two facts is only visible once each fact knows where
+// it came from.
+
+/// The same HEP packet as [`hep_packet`], at a chosen capture-clock time.
+///
+/// Timestamps are a parameter here because the endpoint TTL is measured on
+/// the CAPTURE clock, not on wall time: a run replaying a capture must reach
+/// the same answer as the live run that produced it.
+fn hep_packet_at(payload: Vec<u8>, capture_id: u32, ts: chrono::DateTime<chrono::Utc>) -> Packet {
+    let mut p = hep_packet(payload, capture_id);
+    p.timestamp = ts;
+    p
+}
+
+/// A SIP message the NIC captured itself: a real Ethernet frame on 5060, so
+/// it parses as `InputOrigin::Wire` exactly as a live-captured INVITE does.
+fn wire_sip(payload: &[u8], ts: chrono::DateTime<chrono::Utc>) -> Packet {
+    let frame = udp_frame([203, 0, 113, 1], [203, 0, 113, 2], 5060, 5060, payload);
+    let len = frame.len();
+    let mut p = Packet::with_source(ts, frame, len, len, Some(Arc::from("eth9")), 1);
+    p.timestamp = ts;
+    p
+}
+
+/// [`wire_rtp`] at a chosen capture-clock time.
+fn wire_rtp_at(
+    src: [u8; 4],
+    sport: u16,
+    dst: [u8; 4],
+    dport: u16,
+    seq: u16,
+    ts: chrono::DateTime<chrono::Utc>,
+) -> Packet {
+    let mut p = wire_rtp(src, sport, dst, dport, seq);
+    p.timestamp = ts;
+    p
+}
+
+/// A fixed capture-clock origin, so every timing assertion below is a
+/// difference between two stated instants rather than a race with `now()`.
+fn t0() -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap_or_default()
+}
+
+/// **An SDP endpoint older than the TTL does not claim a new stream (F3).**
+///
+/// `sdp_endpoints` was bounded by insertion order with oldest-out eviction and
+/// no notion of age, which was sized for a minutes-long pcap read. This
+/// feature's deployment shape is a process running for days beside a media
+/// gateway that cycles a finite RTP port range, so a stale entry can outlive
+/// its call and claim the next stream on that socket — a wrong attribution,
+/// which arrives looking like a measurement.
+///
+/// Both directions asserted: fresh still binds, stale does not.
+#[test]
+fn an_sdp_endpoint_older_than_the_ttl_does_not_claim_a_new_stream() {
+    // Control: within the TTL the binding is unchanged.
+    let mut fresh = Mixed::new();
+    fresh.feed(&hep_packet_at(
+        invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT),
+        2001,
+        t0(),
+    ));
+    for seq in 0..5u16 {
+        fresh.feed(&wire_rtp_at(
+            PEER_IP,
+            PEER_PORT,
+            MEDIA_IP,
+            MEDIA_PORT,
+            seq,
+            t0() + chrono::Duration::seconds(10),
+        ));
+    }
+    assert_eq!(
+        fresh.only_stream_dialog().as_deref(),
+        Some(CALL_ID),
+        "media 10s after the offer is the ordinary case and must still bind"
+    );
+
+    // The failure this exists to prevent: media on the same socket long after
+    // the offer that named it, which on a port-cycling gateway is a DIFFERENT
+    // call.
+    let mut stale = Mixed::new();
+    stale.feed(&hep_packet_at(
+        invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT),
+        2001,
+        t0(),
+    ));
+    for seq in 0..5u16 {
+        stale.feed(&wire_rtp_at(
+            PEER_IP,
+            PEER_PORT,
+            MEDIA_IP,
+            MEDIA_PORT,
+            seq,
+            t0() + chrono::Duration::seconds(3600),
+        ));
+    }
+    assert_eq!(
+        stale.stream_count(),
+        1,
+        "the stream still exists — the TTL withholds an attribution, it does \
+         not discard media"
+    );
+    assert_eq!(
+        stale.only_stream_dialog(),
+        None,
+        "an offer an hour stale must not name a new stream's dialog. A media \
+         gateway cycles a finite port range, so the next call on that socket \
+         would inherit the previous call's identity"
+    );
+}
+
+/// **The cross-source flag marks a stream bound ACROSS sources, and only
+/// one.**
+///
+/// A cross-source binding is a weaker tie than a same-source one: the SDP came
+/// from what the proxy said it did, the media from what the NIC saw, and the
+/// two can disagree. The output must say so rather than present both as
+/// "associated", which is what lets an operator discount a suspicious
+/// attribution instead of trusting it.
+///
+/// The second half is the half that can rot: a flag that is always set says
+/// nothing at all.
+#[test]
+fn the_cross_source_flag_marks_only_a_stream_bound_across_sources() {
+    // HEP signaling, wire media — the deployment this whole feature is for.
+    let mut across = Mixed::new();
+    across.feed(&hep_packet_at(
+        invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT),
+        2001,
+        t0(),
+    ));
+    for seq in 0..5u16 {
+        across.feed(&wire_rtp_at(
+            PEER_IP,
+            PEER_PORT,
+            MEDIA_IP,
+            MEDIA_PORT,
+            seq,
+            t0() + chrono::Duration::seconds(1),
+        ));
+    }
+    let flagged = {
+        let s = across.streams.read();
+        let st = s.iter().next().expect("one stream").clone();
+        assert_eq!(
+            st.associated_dialog.as_deref(),
+            Some(CALL_ID),
+            "the binding itself must still happen"
+        );
+        st.dialog_bound_across_sources()
+    };
+    assert!(
+        flagged,
+        "a stream whose media came off the NIC and whose dialog came over HEP \
+         is a weaker tie than a same-source one and must say so"
+    );
+
+    // Same INVITE, captured on the NIC instead. Same binding, no flag.
+    let mut within = Mixed::new();
+    within.feed(&wire_sip(
+        &invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT),
+        t0(),
+    ));
+    for seq in 0..5u16 {
+        within.feed(&wire_rtp_at(
+            PEER_IP,
+            PEER_PORT,
+            MEDIA_IP,
+            MEDIA_PORT,
+            seq,
+            t0() + chrono::Duration::seconds(1),
+        ));
+    }
+    let same_source = {
+        let s = within.streams.read();
+        let st = s.iter().next().expect("one stream").clone();
+        assert_eq!(
+            st.associated_dialog.as_deref(),
+            Some(CALL_ID),
+            "a same-source run must bind exactly as before"
+        );
+        st.dialog_bound_across_sources()
+    };
+    assert!(
+        !same_source,
+        "signaling and media from the SAME source must not be flagged; a flag \
+         that is always set carries no information"
+    );
+
+    // Reverse order, which a HEP hop makes ordinary rather than exotic: the
+    // media arrives first and the mirrored INVITE sweeps the endpoint index
+    // afterwards. That is a SECOND place the binding is made, and a flag
+    // written at only one of them would report a cross-source tie as a
+    // same-source one exactly when the network is slowest.
+    let mut reversed = Mixed::new();
+    for seq in 0..5u16 {
+        reversed.feed(&wire_rtp_at(
+            PEER_IP,
+            PEER_PORT,
+            MEDIA_IP,
+            MEDIA_PORT,
+            seq,
+            t0(),
+        ));
+    }
+    reversed.feed(&hep_packet_at(
+        invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT),
+        2001,
+        t0() + chrono::Duration::seconds(1),
+    ));
+    let late_bind = {
+        let s = reversed.streams.read();
+        let st = s.iter().next().expect("one stream").clone();
+        assert_eq!(
+            st.associated_dialog.as_deref(),
+            Some(CALL_ID),
+            "the late INVITE must still claim the stream"
+        );
+        st.dialog_bound_across_sources()
+    };
+    assert!(
+        late_bind,
+        "a binding made by the endpoint sweep must record its source exactly \
+         as one made at stream creation does"
+    );
+}
+
+/// **A live-captured stream has a resolvable `first_frame`.**
+///
+/// `Packet::frame_ref` requires BOTH a source name and an ordinal, and the
+/// live reader stamped only the name — so in a mixed run every `first_frame`
+/// was `None` and no stream could name the packet it began at. No test could
+/// assert this before stage two, because there was nothing to assert.
+///
+/// "Resolvable" here means the pointer is well-formed and round-trips through
+/// the text form an operator types. A live frame's bytes are gone the instant
+/// they are read, so nothing can hand them back and `resolve` refusing is the
+/// honest answer rather than a defect — which is also why the stamp carries no
+/// digest.
+///
+/// **What this does not reach.** `capture_live_fanout` needs a real device and
+/// CAP_NET_RAW, so no test drives its loop. This exercises the two production
+/// pieces the loop composes — the counter it holds and the propagation from
+/// packet to stream — and the one line joining them is covered only by review.
+#[test]
+fn a_live_captured_stream_has_a_resolvable_first_frame() {
+    use sipnab::capture::packet::FrameCounter;
+
+    let mut m = Mixed::new();
+    // One counter for the device, exactly as the live reader keeps one.
+    let mut frames = FrameCounter::new();
+    let mut feed = |m: &mut Mixed, dport: u16, seq: u16| {
+        let mut pkt = wire_rtp_at(PEER_IP, PEER_PORT, MEDIA_IP, dport, seq, t0());
+        pkt.origin = Some(frames.next_origin());
+        m.feed(&pkt);
+    };
+    // Frames 0..2 open one stream, frames 3..4 a second on another socket, so
+    // the SECOND stream's pointer can only be right if the counter advanced
+    // across the first stream's frames. A stuck counter passes an assertion
+    // about frame 0 alone.
+    for seq in 0..3u16 {
+        feed(&mut m, MEDIA_PORT, seq);
+    }
+    for seq in 0..2u16 {
+        feed(&mut m, MEDIA_PORT + 2, seq);
+    }
+
+    let mut pointers: Vec<String> = {
+        let s = m.streams.read();
+        s.iter()
+            .map(|st| {
+                st.first_frame
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "a live-captured stream must name the frame it \
+                             began at; before stage two the live reader \
+                             stamped no ordinal, so this was always None"
+                        )
+                    })
+            })
+            .collect()
+    };
+    pointers.sort();
+    assert_eq!(
+        pointers,
+        vec!["eth9#0".to_string(), "eth9#3".to_string()],
+        "FIRST frame, never latest, and numbered within the device: a stream \
+         citing whichever frame arrived last names real bytes that are not the \
+         ones described"
+    );
+
+    let minted = {
+        let s = m.streams.read();
+        s.iter()
+            .find(|st| st.key.dst.port() == MEDIA_PORT)
+            .and_then(|st| st.first_frame.clone())
+            .expect("the first stream keeps its pointer")
+    };
+    let round_trip = sipnab::capture::resolve::parse_pointer("eth9#0").expect(
+        "the pointer an operator reads off a report must parse back to the \
+         one the run minted",
+    );
+    assert_eq!(
+        round_trip, minted,
+        "the text form and the in-memory form must be the same pointer"
+    );
+}
