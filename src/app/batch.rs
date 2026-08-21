@@ -4027,18 +4027,31 @@ fn try_tls_decrypt(
     // now would move post-dial delay and call duration by however long the
     // keys took.
     for recovered in decryptor.rewind_if_keys_changed() {
-        if !sip::is_sip_message(&recovered.plaintext) {
-            continue;
+        // Framed, not sniffed -- for the same reason the live path below is.
+        // A recovered INVITE split across two records would otherwise emit its
+        // headers and drop its SDP body, which is precisely the defect this
+        // whole path exists to fix, reintroduced on the recovery side.
+        for msg in
+            tls_reassembler.frame_plaintext(recovered.src, recovered.dst, &recovered.plaintext)
+        {
+            if !sip::is_sip_message(&msg) {
+                continue;
+            }
+            let mut late = pp.clone();
+            late.timestamp = recovered.timestamp;
+            late.src_addr = recovered.src.ip();
+            late.dst_addr = recovered.dst.ip();
+            late.src_port = recovered.src.port();
+            late.dst_port = recovered.dst.port();
+            // The frame pointer and DSCP belong to whatever packet happened to
+            // trigger the sweep, not to this message. An honest absence beats
+            // another packet's ordinal and digest on the one message an
+            // operator is most likely to trace back to bytes.
+            late.frame = None;
+            late.payload = msg.into();
+            late.transport = TransportProto::Tls;
+            out.push(late);
         }
-        let mut late = pp.clone();
-        late.timestamp = recovered.timestamp;
-        late.src_addr = recovered.src.ip();
-        late.dst_addr = recovered.dst.ip();
-        late.src_port = recovered.src.port();
-        late.dst_port = recovered.dst.port();
-        late.payload = recovered.plaintext.into();
-        late.transport = TransportProto::Tls;
-        out.push(late);
     }
 
     for record in &records {

@@ -1444,6 +1444,14 @@ impl TlsDecryptor {
 
         self.rewind_pending = still;
         self.rewind_bytes = held_bytes;
+        // Oldest first, by the time each record ARRIVED. The hold is drained
+        // one direction at a time, and the server's handshake flight is held
+        // first, so without this a recovered 183 or 200 carrying the rewritten
+        // SDP is emitted ahead of the INVITE that offered it -- and the
+        // offer/answer pass then labels the rewrite as the offer. That is the
+        // same false media mismatch this work exists to remove, arriving by a
+        // different route. Stable, so records from one packet keep wire order.
+        recovered.sort_by_key(|r| r.timestamp);
         if !recovered.is_empty() {
             tracing::info!(
                 "TLS late decrypt: recovered {} record(s) that arrived before their keys",
@@ -1899,7 +1907,7 @@ fn try_decrypt_with_session(
         // Widening is how a failed replay would consume the run's lock-on
         // budget on ciphertext that can never open, starving the live path
         // that needs it.
-        let window = if replay || session.handshake_seen {
+        let window = if replay {
             // Replay, or a session whose handshake we watched: the sequence is
             // known, so a failed open is the wrong key rather than a later
             // record. Widening here is what lets handshake-epoch
@@ -1943,7 +1951,7 @@ fn try_decrypt_with_session(
             )
             .map(|(pt, seq)| (pt, seq, None)),
         };
-        if !locked {
+        if !locked && !replay {
             *lockon_budget = lockon_budget.saturating_sub(trials);
             if decrypted.is_none() {
                 // Only a direction still guessing escalates. A failure here is

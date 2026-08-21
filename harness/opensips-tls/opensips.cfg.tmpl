@@ -13,10 +13,27 @@ stderror_enabled=yes
 udp_workers=4
 
 socket=udp:@OPENSIPS_IP@:5060
+# The TLS leg. This is what the stock harness image cannot do at all: its
+# OpenSIPS is built without tls_mgm/proto_tls, so an encrypted call could
+# never be made against it, and every TLS defect had to be chased with
+# captures from someone else's production trunk.
+socket=tls:@OPENSIPS_IP@:5061
 
 mpath="@MPATH@"
 
 loadmodule "proto_udp.so"
+loadmodule "tls_mgm.so"
+loadmodule "tls_openssl.so"
+loadmodule "proto_tls.so"
+
+# OpenSIPS 3.x carries the domain name INSIDE the value, not as a separate
+# argument: "[dom]value", not ("dom", "value").
+modparam("tls_mgm", "server_domain", "srv")
+modparam("tls_mgm", "certificate", "[srv]/etc/opensips/tls/cert.pem")
+modparam("tls_mgm", "private_key", "[srv]/etc/opensips/tls/key.pem")
+modparam("tls_mgm", "verify_cert", "[srv]0")
+modparam("tls_mgm", "require_cert", "[srv]0")
+modparam("tls_mgm", "tls_method", "[srv]TLSv1_3")
 loadmodule "signaling.so"
 loadmodule "sl.so"
 loadmodule "tm.so"
