@@ -54,6 +54,54 @@ entry that carries them.
   streams, a weaker-tie flag for cross-source bindings, and multi-node keying
   remain open and are tracked rather than implied.
 
+### Changed
+
+- **A multi-file `-I` set is now read by one thread per file.** `--cores`
+  stopped paying past four because a single thread read the whole set: open a
+  file, read and copy and host-pair-peek every packet of it, then the next,
+  while N workers waited. Since `-I` routinely names a directory or a glob of
+  rotated captures, there are N files to read and no reason one thread should
+  read them all.
+
+  Measured over eight rotated members of 535,000 packets, two builds of the
+  same tree alternated run by run, median of nine, on an idle host:
+
+  | `--cores` | before | after | after pkts/s | change |
+  |---|---|---|---|---|
+  | 1 | 2.815s | 2.822s | 1,516,403 | -0.3% (control) |
+  | 2 | 1.794s | 1.821s | 2,350,470 | **-1.5%** |
+  | 4 | 1.168s | 1.215s | 3,521,261 | **-4.0%** |
+  | 8 | 1.146s | 0.909s | 4,707,963 | +20.7% |
+  | 12 | 1.228s | 0.957s | 4,471,376 | +22.1% |
+
+  Peak throughput moves from 3.66M packets/s at four cores to 4.71M at eight,
+  a 28% higher ceiling.
+
+  **The two- and four-core rows are a real regression, and they are the trade
+  rather than an oversight.** Where the workers are the bottleneck the
+  read-ahead buys nothing and still costs a second reader competing for memory
+  bandwidth, one more channel hop, and 48 MiB of buffered packets moving
+  through the caches the workers are using. `--cores 1` is the control — it
+  does not use this path in either build — and its 0.3% is the noise floor the
+  rest sit against. Peak RSS rises with the runway: 168 to 286 MiB at two
+  cores, 205 to 293 MiB at eight.
+
+  **Ordering is preserved exactly, and that is what shapes the design.** The
+  readers cannot send to the workers directly: a worker must see its shard in
+  capture order, because `RtpStream::update` derives loss and jitter from
+  consecutive sequence numbers and arrival gaps. A reader that let file 3
+  overtake file 1 would not merely reorder output — it would report loss that
+  is not in the capture. So each reader fills its own queue and a dispatcher
+  releases them file by file, and every worker's inbox is packet-for-packet
+  the sequence the serial reader gave it. Verified against a private corpus:
+  serial and parallel `--report` output compare identical across 71 files.
+
+  A single-file `-I` is unchanged, and that is not a limitation to lift later:
+  a pcap record's length is known only from the record before it, so a lone
+  file cannot be cut into pieces without first walking it. `--count` also
+  keeps the serial reader, because "the first N packets of the set" is defined
+  in read order.
+
 ### Fixed
 
 - **The corpus gate could not tell "read it, found nothing" from "never opened

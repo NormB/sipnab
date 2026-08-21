@@ -2764,8 +2764,14 @@ fn no_documentation_table_repeats_a_row() {
         // docs/examples.md gained recipe 6d and docs/cli-reference.md a
         // rewritten `--hep-listen` row, both PROSE and rows inside an existing
         // table, so both held their counts along with their mirrors.
-        589,
-        "walked {tables} tables, expected 589. More is fine — bump this. FEWER \
+        //
+        // Raised 589 -> 590 by the PR1 before/after throughput table in the
+        // 0.5.119 CHANGELOG entry. One table and not two: CHANGELOG.md has no
+        // site mirror. It is a table rather than prose because the two- and
+        // four-core rows are a REGRESSION, and a reader owed that number is
+        // owed it beside the rows it is being traded against.
+        590,
+        "walked {tables} tables, expected 590. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
