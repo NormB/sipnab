@@ -4014,6 +4014,33 @@ fn try_tls_decrypt(
     let records = tls_reassembler.insert(src, dst, &pp.payload);
 
     let mut out = capture::ParsedPackets::new();
+
+    // Records held from before their keys existed come FIRST, because they
+    // are older than the packet in hand. eCapture writes a session's secrets
+    // only after the handshake, so the first application record -- the INVITE,
+    // carrying the original SDP offer -- is on the wire before any keylog line
+    // for it. Emitting the recovery after the current packet would reconstruct
+    // the dialog out of order and put the answer before the offer.
+    //
+    // Each recovered message keeps the timestamp and endpoints of the packet
+    // it actually arrived in, not of the replay: a recovered INVITE stamped
+    // now would move post-dial delay and call duration by however long the
+    // keys took.
+    for recovered in decryptor.rewind_if_keys_changed() {
+        if !sip::is_sip_message(&recovered.plaintext) {
+            continue;
+        }
+        let mut late = pp.clone();
+        late.timestamp = recovered.timestamp;
+        late.src_addr = recovered.src.ip();
+        late.dst_addr = recovered.dst.ip();
+        late.src_port = recovered.src.port();
+        late.dst_port = recovered.dst.port();
+        late.payload = recovered.plaintext.into();
+        late.transport = TransportProto::Tls;
+        out.push(late);
+    }
+
     for record in &records {
         // Feed Handshake records (ClientHello/ServerHello/ClientKeyExchange) so
         // the decryptor can capture randoms + the RSA-encrypted pre-master for
@@ -4022,7 +4049,7 @@ fn try_tls_decrypt(
             decryptor.process_record(record, src, dst);
             continue;
         }
-        if let Some(plaintext) = decryptor.try_decrypt(record, pp.src_addr, pp.dst_addr)
+        if let Some(plaintext) = decryptor.try_decrypt_at(record, src, dst, pp.timestamp)
             && sip::is_sip_message(&plaintext)
         {
             // Build a synthetic ParsedPacket with the decrypted SIP payload,
