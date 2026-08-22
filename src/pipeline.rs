@@ -1662,6 +1662,30 @@ pub fn extract_sdp_links(
         .collect()
 }
 
+/// Apply media-relay-asserted SDP links to the stream store.
+///
+/// The relay half of what the `Sip` arm does inline, factored out because it
+/// has to happen identically on all FOUR packet appliers — the live router,
+/// the `--cores` shard, the batch path and the TUI's file-open — and this
+/// codebase's most-named defect is a change that reached some of them and not
+/// the others. One definition means the drift is not available to be made.
+///
+/// The provenance is [`rtp::stream_store::SdpProvenance::relay_asserted`] and
+/// not `observed`: this endpoint is rtpengine describing a port it allocated
+/// itself, which is authoritative about the socket and says nothing about
+/// either party's own address (RE3).
+pub fn apply_relay_control_links(
+    ss: &mut rtp::stream_store::StreamStore,
+    sdp_links: &[(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)],
+    input_origin: crate::capture::parse::InputOrigin,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) {
+    let provenance = rtp::stream_store::SdpProvenance::relay_asserted(input_origin, timestamp);
+    for (ip, port, call_id, media) in sdp_links {
+        ss.link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
+    }
+}
+
 /// Check if a UDP payload looks like RTCP.
 ///
 /// Two conventions are recognized:
@@ -1823,6 +1847,20 @@ pub enum PacketAction {
     Sip {
         /// The parsed message, to move into the dialog store.
         msg: sip::message::SipMessage,
+        /// `(media_ip, media_port, call_id, media)` links to apply to streams.
+        sdp_links: Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)>,
+    },
+    /// SDP media endpoints a MEDIA RELAY asserted about its own allocation,
+    /// decoded from rtpengine's `ng` control plane.
+    ///
+    /// Deliberately not `Sip`. No SIP message was observed, and synthesizing
+    /// one to reuse that variant would put signaling into the dialog store
+    /// that nobody sent — in a tool whose whole value is saying what it
+    /// actually saw. The links carry the same tuple shape as `Sip::sdp_links`
+    /// so the appliers can share their linking code, but they are applied with
+    /// relay provenance (`SdpProvenance::relay_asserted`) rather than the
+    /// signaled provenance an SDP body on the wire would get.
+    RelayControl {
         /// `(media_ip, media_port, call_id, media)` links to apply to streams.
         sdp_links: Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)>,
     },
@@ -2029,6 +2067,40 @@ pub fn classify_packet(
         return PacketAction::None;
     }
 
+    // rtpengine's `ng` control plane, mirrored over HEP and observed HERE
+    // rather than delivered to our own listener (RE6).
+    //
+    // On a standalone media relay this is the only thing that names a call.
+    // Without it every stream on the box is an orphan: the relay carries no
+    // SIP, so a capture there is media with nothing to attribute it to.
+    //
+    // Claimed off the wire on purpose. rtpengine takes exactly ONE Homer
+    // destination — `--homer` is a single string, not a repeatable option —
+    // so pointing it at sipnab would TAKE IT AWAY from the collector it is
+    // already feeding. Reading the copy it already sends needs no
+    // configuration change anywhere and leaves that pipeline untouched.
+    //
+    // Scoped to `ng` and nothing else. HEP carrying SIP or RTP is left to fall
+    // through exactly as before, because claiming those here would change what
+    // every existing capture containing HEP reports, which is a much larger
+    // decision than this requirement asked for.
+    //
+    // Ahead of the RTP pre-filter for the same reason LLMNR is: whatever else
+    // happens, these bytes must not be read as media.
+    #[cfg(feature = "hep")]
+    if pp.transport == TransportProto::Udp
+        && let Ok(hep) = crate::capture::hep::parse_hep(&pp.payload)
+        && crate::rtpengine::is_ng_over_hep(hep.protocol.to_byte(), &hep.payload)
+    {
+        let sdp_links =
+            crate::rtpengine::sdp_links_from_ng(&hep.payload, hep.correlation_id.as_deref());
+        // Consumed either way. A datagram that parsed as HEP and decoded as
+        // `ng` is control traffic; that it named no endpoint this time (a
+        // `delete`, a `ping`, a reply to one) is not a reason to reconsider it
+        // as media.
+        return PacketAction::RelayControl { sdp_links };
+    }
+
     // RTP/RTCP detection
     if opts.no_rtp || pp.transport != TransportProto::Udp {
         return PacketAction::None;
@@ -2195,6 +2267,21 @@ pub fn process_packet(
                 for (ip, port, call_id, media) in &sdp_links {
                     ss.link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
                 }
+            }
+        }
+        PacketAction::RelayControl { sdp_links } => {
+            // Same gate the SIP arm uses: `--no-dialog` opts out of call
+            // association, and a relay-derived association is still one.
+            if opts.no_dialog {
+                return;
+            }
+            if !sdp_links.is_empty() {
+                apply_relay_control_links(
+                    &mut stream_store.write(),
+                    &sdp_links,
+                    pp.input_origin,
+                    pp.timestamp,
+                );
             }
         }
         PacketAction::Rtcp(rtcp_packets) => {
@@ -2574,6 +2661,46 @@ mod quiet_bad_parse_tests {
 /// lives in `tests/icmp_media_test.rs`; this is the one piece that is a pure
 /// function of bytes, and it is the piece where a loose check turns unrelated
 /// traffic into a fabricated media diagnosis.
+#[cfg(test)]
+mod relay_control_tests {
+    /// RE3, at the point it actually matters: the endpoint WRITTEN to the
+    /// store must record that a media relay asserted it.
+    ///
+    /// The type-level test in `rtp::stream_store` proves the two provenances
+    /// are distinguishable; this proves the pipeline picks the right one.
+    /// Without it, swapping `relay_asserted` for `observed` here changes
+    /// nothing observable and no test notices.
+    #[test]
+    fn relay_control_links_reach_the_store_as_a_relay_assertion() {
+        use crate::capture::parse::InputOrigin;
+        use crate::rtp::stream_store::{EndpointAssertion, StreamStore};
+
+        let sdp = "v=0\r\nc=IN IP4 10.0.0.40\r\nm=audio 38664 RTP/AVP 0";
+        let raw = format!("ck d3:sdp{}:{sdp}6:result2:oke", sdp.len());
+        let links = crate::rtpengine::sdp_links_from_ng(raw.as_bytes(), Some("cid1"));
+        assert_eq!(links.len(), 1, "fixture must yield exactly one endpoint");
+
+        let mut store = StreamStore::new(1000);
+        let ts = chrono::Utc::now();
+        super::apply_relay_control_links(&mut store, &links, InputOrigin::Hep, ts);
+
+        let (ip, port, ..) = &links[0];
+        let provenance = store
+            .sdp_endpoint_provenance(*ip, *port)
+            .expect("the endpoint must be registered");
+        assert_eq!(
+            provenance.asserted_by,
+            EndpointAssertion::MediaRelay,
+            "an ng endpoint is the relay's assertion about its own allocation"
+        );
+        assert_eq!(
+            provenance.origin,
+            Some(InputOrigin::Hep),
+            "and the transport it arrived over is recorded independently"
+        );
+    }
+}
+
 #[cfg(test)]
 mod quoted_media_tests {
     use super::{QuotedMediaKind, quoted_media_kind};

@@ -84,6 +84,54 @@ struct SdpEndpoint {
     provenance: SdpProvenance,
 }
 
+/// WHO asserted a media endpoint — as opposed to how the assertion reached
+/// sipnab, which is [`crate::capture::parse::InputOrigin`].
+///
+/// These are two independent axes, and collapsing them loses a real
+/// distinction. `InputOrigin` is a TRANSPORT fact: the bytes arrived on the
+/// wire, over HEP, or out of a process. This is a fact about the CLAIM: an
+/// endpoint parsed from a SIP body is a negotiating party describing where it
+/// wants media sent, while an endpoint taken from rtpengine's `ng` control
+/// plane is a relay describing a port it has itself already allocated.
+///
+/// The two cross freely. A relay's assertion reaches sipnab over HEP today and
+/// could reach it off the wire tomorrow through the same decoder, and ordinary
+/// signaling arrives over every origin there is. So `origin` cannot answer
+/// this question, and a fourth `InputOrigin` variant would have made every
+/// match on transport handle a value that is not about transport.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EndpointAssertion {
+    /// An SDP body carried in signaling: the party's own advertised address.
+    ///
+    /// The default, because it is what every pre-existing caller means. A new
+    /// source of endpoints has to say it is something else.
+    #[default]
+    Signaled,
+    /// A media relay describing its OWN allocation, from rtpengine's `ng`
+    /// control plane.
+    ///
+    /// Stronger than a signaled endpoint in one way and weaker in another. The
+    /// relay cannot be wrong about which port it opened, so the address is
+    /// authoritative. But it is a statement about the relay's socket, not
+    /// about either party's, so it names the leg's midpoint rather than its
+    /// far end.
+    MediaRelay,
+}
+
+impl EndpointAssertion {
+    /// The name this assertion is written under on every output surface.
+    ///
+    /// One spelling in one place, for the same reason
+    /// [`crate::capture::parse::InputOrigin::as_str`] has one.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Signaled => "signaled",
+            Self::MediaRelay => "media-relay",
+        }
+    }
+}
+
 /// Where an SDP media endpoint came from, and when.
 ///
 /// Both halves answer questions a single-source run never had to ask. **Which
@@ -111,6 +159,11 @@ pub struct SdpProvenance {
     /// reach the same answer as the live run that produced it, and a
     /// wall-clock TTL would expire every endpoint in an archived file.
     pub observed_at: Option<DateTime<Utc>>,
+    /// Who made the claim. See [`EndpointAssertion`].
+    ///
+    /// Not an `Option`: every endpoint was asserted by someone, and
+    /// [`EndpointAssertion::Signaled`] is what the existing callers mean.
+    pub asserted_by: EndpointAssertion,
 }
 
 impl SdpProvenance {
@@ -136,6 +189,25 @@ impl SdpProvenance {
         Self {
             origin: Some(origin),
             observed_at: Some(observed_at),
+            asserted_by: EndpointAssertion::Signaled,
+        }
+    }
+
+    /// What the rtpengine control plane knows: the relay's own allocation.
+    ///
+    /// Same two transport facts as [`Self::observed`], and a different claim.
+    /// Kept as its own constructor rather than a flag on `observed`, so a
+    /// caller cannot reach a relay assertion by passing a boolean it did not
+    /// think about.
+    #[must_use]
+    pub fn relay_asserted(
+        origin: crate::capture::parse::InputOrigin,
+        observed_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            origin: Some(origin),
+            observed_at: Some(observed_at),
+            asserted_by: EndpointAssertion::MediaRelay,
         }
     }
 }
@@ -1037,6 +1109,17 @@ impl StreamStore {
     ///
     /// # Side effects
     ///
+    /// What is known about the SDP endpoint registered for `(addr, port)`.
+    ///
+    /// Exposed because provenance is an ANSWER, not just an internal guard: it
+    /// is what separates "a party advertised this address" from "a media relay
+    /// allocated this port", and a caller diagnosing an attribution needs to
+    /// be able to ask which one it got.
+    #[must_use]
+    pub fn sdp_endpoint_provenance(&self, addr: IpAddr, port: u16) -> Option<SdpProvenance> {
+        self.sdp_endpoints.get(&(addr, port)).map(|e| e.provenance)
+    }
+
     /// Records/refreshes the endpoint in `sdp_endpoints` (for streams
     /// created later), then for each already-existing matching stream
     /// fills an unset `associated_dialog` and/or resolves an unknown
@@ -1127,6 +1210,7 @@ impl StreamStore {
                 // afterwards, so a binding without a recorded source is
                 // unrepresentable rather than merely tested for.
                 stream.dialog_origin = provenance.origin;
+                stream.dialog_assertion = Some(provenance.asserted_by);
                 self.generation += 1;
             }
             // Only fills an unset one, for the same reason the codec branch
@@ -1259,6 +1343,7 @@ impl StreamStore {
                 // Written in the same breath as the binding, so the two can
                 // never describe different things.
                 stream.dialog_origin = endpoint.provenance.origin;
+                stream.dialog_assertion = Some(endpoint.provenance.asserted_by);
             }
             if stream.sdp_ptime_ms.is_none() {
                 stream.sdp_ptime_ms = endpoint.ptime;
@@ -1608,6 +1693,35 @@ fn is_audio_capturable(codec: Option<&str>) -> bool {
 /// merge, and the SNB-0015 performance probes.
 #[cfg(test)]
 mod tests {
+    /// RE3: an endpoint rtpengine asserted about ITSELF is not the same claim
+    /// as one observed in signaling, and the difference must survive into
+    /// provenance rather than being flattened at the point of use.
+    ///
+    /// The two are deliberately separable from transport: both of these arrive
+    /// over HEP, so `origin` alone cannot tell them apart. That is the whole
+    /// reason this is a field rather than a fourth `InputOrigin`.
+    #[test]
+    fn a_relay_asserted_endpoint_is_distinguishable_from_a_signaled_one() {
+        use super::{EndpointAssertion, SdpProvenance};
+        let t = chrono::Utc::now();
+        let origin = crate::capture::parse::InputOrigin::Hep;
+        let signaled = SdpProvenance::observed(origin, t);
+        let relay = SdpProvenance::relay_asserted(origin, t);
+
+        assert_eq!(
+            signaled.origin, relay.origin,
+            "both arrived over the same transport"
+        );
+        assert_ne!(signaled, relay, "but they are not the same claim");
+        assert_eq!(signaled.asserted_by, EndpointAssertion::Signaled);
+        assert_eq!(relay.asserted_by, EndpointAssertion::MediaRelay);
+        assert_eq!(
+            SdpProvenance::unknown().asserted_by,
+            EndpointAssertion::Signaled,
+            "the no-message default must not silently claim a relay said it"
+        );
+    }
+
     use std::net::Ipv4Addr;
 
     use super::*;

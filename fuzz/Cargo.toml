@@ -77,3 +77,7 @@ path = "fuzz_targets/tcp_reassembly.rs"
 [[bin]]
 name = "fuzz_siprec"
 path = "fuzz_targets/siprec.rs"
+
+[[bin]]
+name = "fuzz_rtpengine_ng"
+path = "fuzz_targets/rtpengine_ng.rs"

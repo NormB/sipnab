@@ -374,6 +374,16 @@ fn reconstruct(
                 }
             }
         }
+        PacketAction::RelayControl { sdp_links } => {
+            if !cfg.no_dialog && !sdp_links.is_empty() {
+                crate::pipeline::apply_relay_control_links(
+                    ss,
+                    &sdp_links,
+                    pp.input_origin,
+                    pp.timestamp,
+                );
+            }
+        }
         PacketAction::Rtcp(pkts) => {
             ss.process_rtcp(&pkts, pp.timestamp);
         }

@@ -124,10 +124,10 @@ protection, and sipnab does not.
 | `static_analysis_fixed` | Met | Both gate the merge, so findings block rather than accumulate |
 
 The SUGGESTED dynamic-analysis items are met beyond what the level asks:
-15 fuzz targets under [`fuzz/fuzz_targets/`](https://github.com/NormB/sipnab/tree/main/fuzz/fuzz_targets) — `sip_parser`, `sdp_parser`,
+16 fuzz targets under [`fuzz/fuzz_targets/`](https://github.com/NormB/sipnab/tree/main/fuzz/fuzz_targets) — `sip_parser`, `sdp_parser`,
 `rtp_parser`, `rtcp_parser`, `hep_parser`, `dtls`, `tls_records`, `srtp_keys`,
 `stir_shaken`, `siprec`, `tcp_reassembly`, `websocket_frame`, `pcap_reader`,
-`keylog_line` and `filter_dsl` — with `fuzz-check` keeping them compiling in CI
+`keylog_line`, `filter_dsl` and `rtpengine_ng` — with `fuzz-check` keeping them compiling in CI
 and [`tests/smoke_fuzz_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/smoke_fuzz_test.rs) running a no-nightly smoke tier.
 
 Every one of those targets sits on an attack surface that eats

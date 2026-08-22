@@ -654,7 +654,12 @@ impl HepProtocol {
     }
 
     /// Encode the enum back to a HEP protocol type byte.
-    fn to_byte(self) -> u8 {
+    ///
+    /// Public because the capture path has to ask what protocol a HEP packet
+    /// declares before deciding whether to claim it — rtpengine's mirrored
+    /// `ng` control plane arrives under its own protocol number, and
+    /// `Unknown(0x3d)` is a meaningful answer rather than a parse failure.
+    pub fn to_byte(self) -> u8 {
         match self {
             Self::Sip => 1,
             Self::Rtcp => 5,
