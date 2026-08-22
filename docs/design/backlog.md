@@ -3024,12 +3024,22 @@ the two: a call answered with no media is a negotiation failure, and a relay
 out of ports looks random from the proxy and obvious from the relay. Those
 are exactly the cases a signaling-only view gets wrong.
 
-- [ ] **RE-T — prove the pair, not just the relay.** RE1/RE2 prove one hop
+- [x] **RE-T — prove the pair, not just the relay.** RE1/RE2 prove one hop
   against a recorded capture. The deployment is two machines: OpenSIPS
   handling signaling, rtpengine handling media, on `opensips-1`. The next
   proof is a two-unit test where sipnab correlates the proxy's SIP dialog
   with the relay's media into ONE call. Everything above depends on that
   join working, and nothing currently tests it.
+  DONE. [`tests/fixtures/rtpengine-opensips-ng.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/rtpengine-opensips-ng.pcap) is a SIPp call driven
+  through OpenSIPS and rtpengine, filtered to what a separate relay host
+  sees, and the OpenSIPS Call-ID is recovered there with no SIP in the
+  capture. Two findings came out of it that the synthetic test could not
+  reach. The report claimed "no SIP for them in this capture" about calls
+  whose signaling was three lines above it, because the predicate tested
+  provenance alone -- a co-resident relay produces exactly that shape. And
+  rtpengine will not mirror into the void: it connects its Homer socket, so
+  an unreachable destination returns ICMP port-unreachable and it drops the
+  trace, which is why the harness now ships a sink.
 
 - [ ] **RE4 — reconcile calls already in progress, by asking.** A passive
   decoder learns nothing about a call whose offer happened before sipnab

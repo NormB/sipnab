@@ -229,11 +229,26 @@ pub fn print_dialog_report_as(
     // relay-named would be a confident wrong answer about where the name came
     // from. This exact mistake shipped for one gate run and was caught by
     // `limit_caps_tracked_dialogs`.
+    // BOTH conditions, and the heading is why. Provenance alone says a relay
+    // named the stream, which is true and useful but is ALSO true when the
+    // call's signaling is right here in the same capture -- a proxy anchoring
+    // media through a co-resident relay produces exactly that. Listing those
+    // under a heading that says "no SIP for them in this capture" states
+    // something false about a call whose SIP is three lines further up.
+    //
+    // Absence of a dialog alone is the other half, and is what the first
+    // version used on its own. That is wrong the other way: it is also true of
+    // a dialog `--limit` evicted, whose streams were named by ordinary
+    // signaling. Neither test is sufficient; the section is about calls that
+    // are BOTH relay-named AND unrepresented here.
+    let signaled: std::collections::HashSet<&str> =
+        dialogs.iter().map(|d| d.call_id.as_str()).collect();
     let mut relay_named: std::collections::BTreeMap<&str, usize> =
         std::collections::BTreeMap::new();
     for stream in streams {
         if stream.dialog_bound_from_relay()
             && let Some(id) = stream.associated_dialog.as_deref()
+            && !signaled.contains(id)
         {
             *relay_named.entry(id).or_default() += 1;
         }

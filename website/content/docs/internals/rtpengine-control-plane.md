@@ -195,6 +195,42 @@ the control plane and every stream returns to being an orphan with no codec
 and no call. Without a paired negative, "sipnab attributed the streams" stays
 consistent with sipnab attributing them for some unrelated reason.
 
+### The pair, not just the relay
+
+Both fixtures above carry an `ng` exchange this project generated itself. That
+proves the decoder and proves nothing about whether a real proxy and a real
+relay, talking to each other, produce something sipnab can use.
+
+`rtpengine-opensips-ng.pcap` closes that. It is a SIPp call driven through
+OpenSIPS and rtpengine in the harness, with `--homer-enable-ng` set, filtered
+to what a SEPARATE relay host would see: media and the relay's own control
+plane, no SIP. The Call-ID it recovers is OpenSIPS's, so the name travels
+proxy to rtpengine to HEP to sipnab and arrives on a host that captured no
+signaling at all. `rtpengine-opensips-media-only.pcap` is the same capture
+with the sixteen control-plane packets removed.
+
+Two things came out of building it that the synthetic test could not reach.
+
+**The report lied when signaling WAS present.** The relay-named section keyed
+on provenance alone, so a co-resident relay -- where the proxy anchors media
+through an rtpengine on the same box -- produced rows under a heading reading
+"no SIP for them in this capture" about calls whose signaling was three lines
+above. The predicate now requires both halves: relay-named AND unrepresented
+here. Neither test is sufficient alone, and the file says why.
+
+**rtpengine refuses to mirror into the void.** It CONNECTS its Homer socket,
+so an unreachable destination answers with ICMP port-unreachable, rtpengine
+logs `Connection error from Homer ... Connection refused` and stops tracing.
+Aiming `--homer` at an address nobody answers therefore yields no control
+plane at all, which looks exactly like a broken feature. The harness
+ships `hep-sink` to stand in for Homer for that reason.
+
+**What the pair also shows is where this feature does NOT help.** Measured on
+the unfiltered capture, a co-resident relay needs none of it: the proxy's own
+rewritten SDP already names both sockets, and stripping the control plane
+changes nothing. The filtered view is the honest one to assert against
+because it is the only topology where the control plane adds anything.
+
 Every gate here was mutation-tested and none survived:
 
 | Mutation | Caught by |

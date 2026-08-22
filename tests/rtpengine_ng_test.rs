@@ -255,3 +255,92 @@ fn stripping_the_control_plane_returns_every_stream_to_orphan() {
         );
     }
 }
+
+// ── RE-T: the pair, not just the relay ──────────────────────────────────────
+//
+// Everything above drives an `ng` exchange this project generated itself. That
+// proves the decoder and proves nothing about whether a real proxy and a real
+// relay, talking to each other, produce something sipnab can use.
+//
+// These two fixtures come from the harness: OpenSIPS 3.x handling signaling,
+// rtpengine 12.5.1 anchoring media, a SIPp call driven through both, and
+// rtpengine mirroring its control plane with `--homer-enable-ng`. The capture
+// is then filtered to what a SEPARATE relay host would see -- media and the
+// relay's own control plane, no SIP -- because that is the deployment the
+// feature exists for. A co-resident relay needs none of this: the proxy's own
+// rewritten SDP already names both sockets, which was measured on this same
+// capture and is why the filtered view is the honest one to assert against.
+//
+// The Call-ID below is OpenSIPS's, not this project's. That is the whole
+// point: the name travels proxy -> rtpengine -> HEP -> sipnab, and arrives on
+// a host where no SIP was ever captured.
+
+/// The OpenSIPS-assigned Call-ID, recoverable on a host with no SIP in it.
+const OPENSIPS_CALL_ID: &str = "1-4062@172.28.0.21";
+
+fn relay_report(fixture: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(fixture);
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args([
+            "-N",
+            "-I",
+            &path.to_string_lossy(),
+            "--report",
+            "--no-cli-print",
+        ])
+        .env("SIPNAB_LOG", "warn")
+        .output()
+        .expect("run sipnab");
+    assert!(
+        out.status.success(),
+        "sipnab exited {:?}",
+        out.status.code()
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// RE-T: a call OpenSIPS named is recoverable on the relay, from the relay's
+/// own control plane, with no SIP anywhere in the capture.
+#[test]
+fn an_opensips_call_is_named_on_a_relay_that_captured_no_sip() {
+    let out = relay_report("rtpengine-opensips-ng.pcap");
+    assert!(
+        out.contains(OPENSIPS_CALL_ID),
+        "the proxy's Call-ID must survive the trip to the relay:\n{out}"
+    );
+    assert!(
+        !out.contains("Orphaned Streams"),
+        "no stream may remain orphaned once the relay named the call:\n{out}"
+    );
+    // Both legs: the relay holds a socket per side, and both belong to the
+    // one call. An implementation that recovered only the leg described by the
+    // offer would pass a weaker test than this.
+    let row = out
+        .lines()
+        .find(|l| l.starts_with(OPENSIPS_CALL_ID))
+        .unwrap_or_else(|| panic!("no relay-named row for the call:\n{out}"));
+    assert!(
+        row.contains('2'),
+        "both legs must count against the call; row was {row:?}"
+    );
+}
+
+/// The control case, from the SAME capture with only the control plane removed.
+///
+/// This is what makes the test above a measurement rather than a coincidence:
+/// identical media, identical sockets, and without the sixteen control-plane
+/// packets every stream is an unattributable orphan again.
+#[test]
+fn the_same_relay_capture_orphans_without_the_control_plane() {
+    let out = relay_report("rtpengine-opensips-media-only.pcap");
+    assert!(
+        out.contains("Orphaned Streams"),
+        "with no control plane the relay's media is unattributable:\n{out}"
+    );
+    assert!(
+        !out.contains(OPENSIPS_CALL_ID),
+        "nothing may name the call once the control plane is gone:\n{out}"
+    );
+}

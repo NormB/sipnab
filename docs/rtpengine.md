@@ -134,8 +134,27 @@ does not, work down this list:
 |---|---|---|
 | No relay-named calls, streams still orphaned | rtpengine sends RTCP stats only | Set `homer-enable-ng = true` and restart |
 | Nothing at all on the wire | rtpengine has no `homer` destination | Set one |
+| Configured, but still nothing on the wire | The destination refuses the datagrams | See below |
 | Control traffic visible, streams still orphaned | Capture missed the HEP, or a filter excluded it | Widen the filter; the default filter excludes media |
 | Relay-named calls appear but media does not | The media is on ports your filter drops | Include the `port-min`–`port-max` range |
+
+### The destination has to accept the traffic
+
+rtpengine CONNECTS its Homer socket, so a destination that answers with ICMP
+port-unreachable makes it give up and log this:
+
+```text
+ERR: [core] Connection error from Homer at 10.0.0.1:9060: Connection refused
+```
+
+After that it sends nothing, which looks exactly like the feature not working.
+Pointing `--homer` at an address nobody listens on is therefore not a way to
+"just put it on the wire" — something has to absorb it.
+
+In the deployment this targets, that something is your real Homer collector,
+which is already there. If you are testing without one, run any UDP sink at
+the address. The harness ships one for exactly this reason — see
+`harness/hep-sink`.
 
 ## What rtpengine's forwarding mode changes
 
