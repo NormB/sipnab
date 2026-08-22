@@ -30,6 +30,7 @@ ordinary update.
 |---|---|---|
 | [`list_dialogs`](#list-dialogs) | `filter?`, `limit?`, `cursor?` | A page of dialog summaries, with the total behind it |
 | [`get_dialog_report`](#get-dialog-report) | `call_id`, `format?` | Structured per-call report (JSON / Markdown / text) |
+| [`get_capture_report`](#get-capture-report) | `format?` | Whole-capture analysis: findings, orphaned media, STUN/ICMP evidence, what the caps shed |
 | [`find_problems`](#find-problems) | `kinds?`, `filter?`, `limit?`, `cursor?` | A page of dialogs matching one or more diagnostic alias names |
 | [`get_dialog`](#get-dialog) | `call_id`, `max_messages?`, `cursor?` | Paginated dialog with full SIP messages |
 | [`get_message`](#get-message) | `call_id`, `index` | Single SIP message at a given index |
@@ -276,6 +277,35 @@ The two tools page on different clocks, deliberately. `tail_dialogs` follows
 `created_at`, which never moves: a dialog that gains one more message mid-sweep
 would jump forward in an `updated_at` ordering, past a cursor that had already
 gone by, and vanish from the listing.
+
+### `get_capture_report`
+
+The whole-capture analysis, the one `--report` prints. Backed by
+[`analysis::analyze`](https://github.com/NormB/sipnab/blob/main/src/analysis.rs)
+and rendered by `output::analysis_report`.
+
+[`get_dialog_report`](#get-dialog-report) and [`render_ladder`](#render-ladder)
+both answer for ONE Call-ID, so everything the report says about the capture as
+a whole had no MCP path: orphaned media, STUN, ICMP errors quoting SIP or RTP,
+and what the retention caps shed. An agent could be handed a count by
+[`capture_status`](#capture-status) and had no tool that could expand it.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `format` | string? | `"json"`, `"markdown"` or `"text"`. Anything else fails with `unknown format 'x', expected json\|markdown\|text`. | `"json"`. |
+
+Frames read comes from the same process-global counter the Prometheus scrape
+reports (`sipnab_capture_packets_total`), so the denominator here is the one
+every other number in the run is read against.
+
+A capture with no findings still answers with the clean line rather than an
+empty body, because silence is indistinguishable from the tool not having run:
+
+```jsonc
+// get_capture_report { "format": "text" }
+// A capture with findings names each one; a clean capture says so outright.
+"Capture analysis: 2 finding(s) across 1 dialog(s), 2 stream(s), 535000 frame(s) read."
+```
 
 ### `get_dialog_report`
 

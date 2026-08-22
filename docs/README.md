@@ -42,7 +42,7 @@ you want.
   decryption, MCP, observability, scanner blocking, and audio export, plus a
   quick-reference of one-liners. Includes cross-checking a HEP mirror against
   the wire, where the DISAGREEMENT between the two is the finding.
-- **[Drive sipnab from an AI agent](mcp.md)** — expose the analysis as 35
+- **[Drive sipnab from an AI agent](mcp.md)** — expose the analysis as 36
   Model Context Protocol tools over stdio or HTTP, so an agent queries a
   capture directly instead of shelling out and parsing text. What the tools
   return, what stays off unless you enable it, and why none of them write

@@ -722,6 +722,18 @@ pub struct GetDialogReportParams {
     pub format: Option<String>,
 }
 
+/// Parameters for `get_capture_report`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct GetCaptureReportParams {
+    /// Output format: "json", "markdown", or "text". Default "json".
+    ///
+    /// The same vocabulary `get_dialog_report` takes, deliberately: an agent
+    /// that learned one should not have to learn the other.
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
 /// Parameters for `media_diagnostics`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -809,6 +821,18 @@ pub struct RtpStatsParams {
     /// byte-identical to an unidentified stream's, and `ungrounded_excluded`
     /// reports how many streams the bound therefore could not judge.
     pub max_mos: Option<f64>,
+    /// Capture-wide sweep only: keep only orphaned streams (`true`) or only
+    /// streams a dialog claimed (`false`). Omit to sweep both.
+    ///
+    /// Orphaned media is the signature of an RTP proxy or a NAT fault, and
+    /// `capture_status` reports how many exist as a bare number. Without this
+    /// the count could not be expanded into the rows behind it -- the same
+    /// defect the page object fixed for dialogs, one surface over.
+    ///
+    /// Independent of `min_mos`/`max_mos`: an orphan usually has no dialog to
+    /// ground its clock, so requiring a MOS bound alongside would filter out
+    /// most of what this exists to find.
+    pub orphaned: Option<bool>,
     /// Capture-wide sweep only: maximum streams to return (1..=1000,
     /// default 50).
     pub limit: Option<u32>,
@@ -3032,6 +3056,13 @@ impl SipnabMcp {
             let mut ungrounded_excluded = 0usize;
             let mut matched: Vec<&crate::rtp::stream::RtpStream> = Vec::new();
             for s in ss.iter() {
+                // Applied before the MOS bounds and independently of them: an
+                // orphan has no dialog to ground its clock, so folding this
+                // into the `bounded` arm would drop most orphans on a query
+                // that asked for exactly them.
+                if params.orphaned.is_some_and(|want| s.orphaned() != want) {
+                    continue;
+                }
                 if !bounded {
                     matched.push(s);
                     continue;
@@ -3134,6 +3165,71 @@ impl SipnabMcp {
             },
         )?;
         Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
+    }
+
+    /// The whole-capture report, the one `--report` prints.
+    ///
+    /// `get_dialog_report` and `render_ladder` both answer for ONE Call-ID, so
+    /// everything `--report` says about the capture as a whole -- orphaned
+    /// streams, STUN, ICMP evidence quoting SIP or media, what the retention
+    /// caps shed -- had no MCP path. An agent could be told a count and had no
+    /// tool that could expand it.
+    ///
+    /// Frames read comes from [`crate::capture::captured_packets`], the same
+    /// process-global the Prometheus scrape reports, so the denominator here
+    /// is the one every other number in the run is read against. Passing a
+    /// zero would have been worse than the missing tool: "0 frame(s) read" on
+    /// a live capture is a wrong number, not a missing one.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) for an unknown `format`.
+    #[tool(
+        name = "get_capture_report",
+        description = "Returns the whole-capture analysis report: findings \
+                       across every dialog and stream, orphaned media, STUN and \
+                       ICMP evidence, and what the retention caps shed. This is \
+                       the capture-level view; get_dialog_report answers for one \
+                       Call-ID. Format 'json', 'markdown', or 'text'.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn get_capture_report(
+        &self,
+        Parameters(params): Parameters<GetCaptureReportParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let format = match params.format.as_deref() {
+            Some("markdown") | Some("md") => ReportFormat::Markdown,
+            Some("text") | Some("txt") => ReportFormat::Text,
+            None | Some("json") => ReportFormat::Json,
+            Some(other) => {
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!("unknown format '{other}', expected json|markdown|text"),
+                    None,
+                ));
+            }
+        };
+
+        let report = {
+            // Dialogs then streams, the order `CaptureState` documents, so the
+            // two halves of the analysis describe one store revision.
+            let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
+            let analysis =
+                crate::analysis::analyze(&ds, &ss, None, crate::capture::captured_packets());
+            crate::output::analysis_report::print_analysis_report_as(&analysis, format)
+        };
+
+        let content = if format == ReportFormat::Json {
+            // Re-parse so the response is structured JSON rather than a
+            // stringified blob, matching `get_dialog_report`.
+            match serde_json::from_str::<serde_json::Value>(&report) {
+                Ok(v) => ContentBlock::json(v)?,
+                Err(_) => ContentBlock::text(report),
+            }
+        } else {
+            ContentBlock::text(report)
+        };
+        Ok(CallToolResult::success(vec![content]))
     }
 
     /// Returns a structured per-call report (timing, parties, RTP quality,
@@ -8007,6 +8103,134 @@ mod tests {
         assert_eq!(v["call_id"], "rtp@x");
         assert!(v["streams"].as_array().unwrap().is_empty());
         assert!(v.get("diagnosis").is_some());
+    }
+
+    /// Build a server holding two streams: one linked to a dialog, one
+    /// orphaned. Orphaned media is the signature of an RTP proxy or a NAT
+    /// fault, and it is one of the few findings sngrep cannot produce.
+    fn server_with_one_orphan_and_one_linked() -> SipnabMcp {
+        use crate::rtp::parser::RtpHeader;
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+
+        let hdr = |ssrc: u32| RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 160,
+            ssrc,
+            payload_offset: 12,
+        };
+        let parsed = |dst_port: u16| crate::capture::parse::ParsedPacket {
+            frame: None,
+            timestamp: base_ts(),
+            src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: 40000,
+            dst_port,
+            transport: TransportProto::Udp,
+            payload: vec![0u8; 12 + 160].into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            dscp: None,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
+        };
+        {
+            let mut s = ss.write();
+            s.process_rtp(&parsed(30000), &hdr(0xAAAA), base_ts());
+            s.process_rtp(&parsed(30002), &hdr(0xBBBB), base_ts());
+            // Claim exactly one of them through the production linking path.
+            s.link_to_dialog(
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                30000,
+                "linked@example.invalid",
+            );
+        }
+        SipnabMcp::new(ds, ss)
+    }
+
+    /// `capture_status` reports `orphaned_stream_count` as a NUMBER, and until
+    /// now an agent told "three orphaned streams exist" had no way to list
+    /// them: `rtp_stats` carried `orphaned` per row but took no filter, and
+    /// the filter DSL docs redirected the question to `--report` or the REST
+    /// API. Telling an agent a count it cannot expand is the same defect the
+    /// page object was added to fix, one surface over.
+    #[tokio::test]
+    async fn rtp_stats_can_return_only_the_orphaned_streams() {
+        let server = server_with_one_orphan_and_one_linked();
+
+        let only_orphans = server
+            .rtp_stats(Parameters(RtpStatsParams {
+                orphaned: Some(true),
+                ..Default::default()
+            }))
+            .await
+            .expect("sweep should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&only_orphans)).unwrap();
+        let rows = v["streams"].as_array().expect("streams array");
+        assert_eq!(rows.len(), 1, "one of the two streams is orphaned: {v}");
+        assert_eq!(rows[0]["orphaned"], true);
+
+        let only_linked = server
+            .rtp_stats(Parameters(RtpStatsParams {
+                orphaned: Some(false),
+                ..Default::default()
+            }))
+            .await
+            .expect("sweep should succeed");
+        let v2: serde_json::Value = serde_json::from_str(&text_of(&only_linked)).unwrap();
+        let rows2 = v2["streams"].as_array().expect("streams array");
+        assert_eq!(rows2.len(), 1, "the other one is claimed: {v2}");
+        assert_eq!(rows2[0]["orphaned"], false);
+
+        // Omitting the filter still sweeps everything, which is the behaviour
+        // every existing caller depends on.
+        let all = server
+            .rtp_stats(Parameters(RtpStatsParams::default()))
+            .await
+            .expect("sweep should succeed");
+        let v3: serde_json::Value = serde_json::from_str(&text_of(&all)).unwrap();
+        assert_eq!(v3["streams"].as_array().unwrap().len(), 2);
+    }
+
+    /// `get_dialog_report` and `render_ladder` are per-Call-ID, so the
+    /// whole-capture `--report` view -- the one that names orphaned streams,
+    /// STUN, ICMP evidence and what the caps shed -- had no MCP path at all.
+    /// The test is surface parity: nothing reachable from `--report` should be
+    /// unreachable to an agent.
+    #[tokio::test]
+    async fn get_capture_report_answers_for_the_whole_capture() {
+        let server = server_with_one_orphan_and_one_linked();
+
+        let text = server
+            .get_capture_report(Parameters(GetCaptureReportParams { format: None }))
+            .await
+            .expect("report should render");
+        let body = text_of(&text);
+        assert!(
+            !body.trim().is_empty(),
+            "a capture with no findings still gets a line, because silence is \
+             indistinguishable from the tool not having run"
+        );
+
+        // The format argument is the same vocabulary get_dialog_report takes,
+        // and an unknown one must be refused rather than silently defaulted.
+        let err = server
+            .get_capture_report(Parameters(GetCaptureReportParams {
+                format: Some("yaml".to_string()),
+            }))
+            .await
+            .expect_err("unknown format must error");
+        let json = serde_json::to_value(err).unwrap();
+        assert_eq!(json["code"], -32602);
     }
 
     // ── search_messages ──────────────────────────────────────────────
