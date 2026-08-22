@@ -380,6 +380,32 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
   </div>
 </section>
 
+<!-- Engineering notes: the three most recent, pulled from the section so this
+     cannot go stale the way a hand-written list would. -->
+{% set notes = get_section(path="notes/_index.md") %}
+{% if notes.pages | length > 0 %}
+<section class="notes-callout" id="notes">
+  <div class="notes-inner">
+    <header class="notes-head">
+      <h2>Engineering notes</h2>
+      <p>How sipnab is actually built and debugged &mdash; regressions found and fixed, protocol traps, and reasoning that is hard to see from the outside. Real problems, real numbers.</p>
+    </header>
+    <ul class="notes-grid">
+      {% for p in notes.pages | slice(end=3) %}
+      <li class="notes-card">
+        <a href="{{ p.permalink }}">
+          {% if p.date %}<span class="notes-card-date"><time datetime="{{ p.date }}">{{ p.date | date(format="%e %B %Y") }}</time></span>{% endif %}
+          <span class="notes-card-title">{{ p.title }}</span>
+          {% if p.description %}<span class="notes-card-desc">{{ p.description }}</span>{% endif %}
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+    <p class="notes-more"><a href="{{ get_url(path='@/notes/_index.md') }}">All engineering notes &rarr;</a></p>
+  </div>
+</section>
+{% endif %}
+
 <!-- Contributor License Agreement / OpenSSF Best Practices -->
 <section style="text-align:center; padding:0 1rem 2.5rem; display:flex; flex-wrap:wrap; gap:.6rem; justify-content:center;">
   <a href="{{ get_url(path='@/cla.md') }}"

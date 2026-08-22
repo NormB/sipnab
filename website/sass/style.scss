@@ -2547,3 +2547,79 @@ input:focus-visible,
     background: linear-gradient(90deg, rgba($bg, 0), $bg);
   }
 }
+
+// -- Engineering notes on the homepage --
+//
+// Three cards pulled from the notes section. Deliberately quiet: this sits
+// below the architecture callout and must not compete with it, so the cards
+// carry a border and a hover lift rather than a fill.
+.notes-callout {
+  padding: 0 1rem 3.5rem;
+
+  .notes-inner {
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  .notes-head {
+    text-align: center;
+    margin-bottom: 1.75rem;
+
+    h2 { margin: 0 0 0.6rem; }
+    p {
+      margin: 0 auto;
+      max-width: 68ch;
+      color: $text-dim;
+      line-height: 1.6;
+    }
+  }
+
+  .notes-grid {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 1rem;
+  }
+
+  .notes-card {
+    a {
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+      height: 100%;
+      padding: 1.1rem 1.15rem;
+      border: 1px solid $border;
+      border-radius: 10px;
+      text-decoration: none;
+      transition: border-color 0.15s ease, transform 0.15s ease;
+
+      &:hover {
+        border-color: $accent;
+        transform: translateY(-2px);
+      }
+    }
+  }
+
+  .notes-card-date {
+    font-size: 0.8rem;
+    color: $text-dim;
+  }
+
+  .notes-card-title {
+    font-weight: 600;
+    line-height: 1.35;
+  }
+
+  .notes-card-desc {
+    font-size: 0.9rem;
+    color: $text-dim;
+    line-height: 1.55;
+  }
+
+  .notes-more {
+    margin: 1.5rem 0 0;
+    text-align: center;
+  }
+}
