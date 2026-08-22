@@ -2842,6 +2842,113 @@ neither visible to `--features full`:**
 There is no `hex` crate in this tree — neither a regular nor a dev dependency —
 so tests that need hex encode it by hand.
 
+## RE — rtpengine control-plane visibility (added 2026-08-21)
+
+Raised by the observation that sipnab installed ON an rtpengine host is
+passive, sees the RTP the relay forwards on BOTH legs, and sees the ng control
+protocol on the same box. Outside the P0-P5 scale for the reason NAT is: a
+capability sipnab lacks rather than a defect in one it has.
+
+- [ ] **RE1 — on a dedicated rtpengine host every media stream is an orphan,
+  because the only signalling on the box is a protocol sipnab does not read.**
+  A standalone media relay carries no SIP. sipnab there sees two sockets of RTP
+  per call and nothing that names the call, so every stream comes out
+  `RtpStream::orphaned` — a capture full of evidence reported as
+  unattributable noise. Same shape as NAT1: true and useless.
+
+  The signalling IS on the box. rtpengine's ng control protocol carries it, and
+  it carries exactly the missing key. Verified against
+  [the protocol](https://github.com/sipwise/rtpengine/blob/master/docs/ng_control_protocol.md)
+  rather than assumed: an `offer` request requires `sdp`, `call-id` and
+  `from-tag`, an `answer` adds `to-tag`, and the reply to either "contains only
+  the key `sdp` in addition to `result`, which contains the re-written SDP
+  body". So one offer/answer pair reveals all four media sockets of both legs
+  under one Call-ID -- the requests give the endpoints as the parties offered
+  them, the replies give the relay's own allocated ports.
+
+  **The reply carries no `call-id`.** The envelope is a message cookie and a
+  bencoded dict separated by one space (`5323_1 d7:command4:pinge`), and the
+  cookie is what matches replies to requests. Attributing a rewritten SDP needs
+  transaction state, not a stateless decode -- same shape as `StunTransaction`,
+  bounded the same way.
+
+  **The contribution is the Call-ID, not the port pairing.** In plain relay
+  mode rtpengine does not rewrite the SSRC (a new one appears only under
+  transcoding, MoH, DTMF injection or playback), so `ssrc_index` may already
+  group the two legs' streams to each other on that box today. What no amount
+  of media inspection supplies is the NAME of the call, which is the only thing
+  that joins a locally captured stream to a dialog captured on another host.
+
+  **Where it does not help, measured.** On a proxy anchoring media through a
+  co-resident rtpengine, sipnab already has this: `simultaneous-capture-sources
+  .md` §8.1 measured OpenSIPS 3.6.7 + rtpengine 12.5.1 at `tracer()`
+  transaction scope, and advertised endpoints matched observed sockets 4 of 4,
+  because the SENT copy of the INVITE carries the rewritten `c=`/`m=`. ng's
+  narrower advantage is worth naming honestly: it needs no configuration change
+  on the proxy at all, and it is not OpenSIPS-specific.
+
+  **Do:** decode `offer`/`answer`/`delete` requests and `offer`/`answer`
+  replies on operator-named ports, keyed by cookie, and feed both SDP bodies
+  through the existing `extract_sdp_links` into `link_endpoint_from`. Claim the
+  packet in `classify_packet` alongside LLMNR -- by port and structure, before
+  the RTP pre-filter -- and return a NEW `PacketAction` variant rather than
+  reusing `Sip { sdp_links }`, so the compiler enumerates the four independent
+  appliers (`pipeline.rs`, `parallel.rs`, `batch.rs`, `file_open.rs`) instead
+  of one working and three not. Bencode is ~100 lines on the `nom` already in
+  the tree, so no new dependency, and it gets a fuzz target like every other
+  parser here.
+
+  **Four things settled before code, in this order:**
+
+  1. **Does kernel-mode forwarding stay visible to libpcap?** The harness runs
+     `--table=-1` (userspace) so it cannot answer this, and production runs the
+     other way. Reading the kernel module, the re-injected packet leaves via
+     `ip_local_out()` into `dev_queue_xmit_nit()` -- the AF_PACKET tap -- and
+     ingress is tapped before PREROUTING, so it should be fully visible.
+     Reasoned from source, NOT measured. If it is wrong the feature is inert on
+     every deployment that matters, and it is an hour's measurement.
+  2. **No default port, ever.** rtpengine defaults nothing and requires a
+     listen option; upstream examples use 2223, the OpenSIPS module defaults to
+     22222, the harness uses 22222. A constant here is a pinned-value defect.
+  3. **A UNIX-socket control channel makes this a silent no-op.** rtpengine's
+     own `--listen-ng` takes host:port only, but the OpenSIPS module speaks
+     `AF_LOCAL` for a `unix:` spec, and AF_UNIX is invisible to AF_PACKET. Emit
+     "ng control traffic expected on <ports>, none observed", the way CT1 made
+     lost evidence say so.
+  4. **The BPF must admit fragments.** A full offer SDP with ICE candidates
+     exceeds 1500 bytes on the proxy-to-relay link, which is precisely the
+     topology this is for, and `udp port N` does not match non-first fragments.
+     sipnab reassembles them once they arrive; the trap is the kernel filter.
+
+  **Declined as part of this, not deferred:** polling `query`/`list`/
+  `statistics`. That is sipnab sending packets to a production media relay,
+  which [`docs/mcp-protocol.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-protocol.md) already settles, and it needs a configured
+  control address the passive path does not. Aggregating rtpengine's own
+  counters is Homer/HEPIC territory that `positioning.md` puts outside sipnab.
+  The remaining ~27 ng commands carry no join key.
+
+  **Known limits, so the feature cannot produce a confident partial answer:**
+  through a true B2BUA the two legs are two ng sessions under two call-ids, so
+  ng gives per-leg ports and no tie between them; and rtpengine advertises RTCP
+  only via `a=rtcp:`, never `m=`/`c=`, so this path inherits §8.1 caveat 4.
+
+- [ ] **RE2 — the harness has an rtpengine and cannot see its control plane, so
+  there is no fixture to test RE1 against.** [`harness/docker-compose.yml`](https://github.com/NormB/sipnab/blob/main/harness/docker-compose.yml)
+  already runs rtpengine with `--listen-ng=127.0.0.1:22222` inside opensips-1's
+  network namespace, which sipnab shares, so the traffic is on that namespace's
+  `lo` -- one interface away. sipnab captures `-d eth0` with a BPF of
+  `udp and (portrange 5060-5061 or portrange 30000-30050)`, so it is excluded
+  twice over. **Do:** `-d eth0,lo --multi-device` plus the ng port in the BPF,
+  then record one SIPp call's offer/answer/delete cycle as a golden pcap. No
+  new container, no new image.
+
+- [ ] **RE3 — an ng-derived endpoint is the relay's assertion about itself, and
+  `InputOrigin` cannot say that.** `Wire | Hep | Uprobe` would record it as
+  `Wire`, the same label a directly observed SDP gets. It is not the same
+  claim, and `dialog_bound_across_sources` is the consumer that would quietly
+  stop being able to tell. Settle whether this is a fourth origin or a field on
+  `SdpProvenance` BEFORE RE1 writes to `sdp_endpoints`, not after.
+
 ## NAT — STUN/TURN visibility (added 2026-08-17)
 
 Raised by two field captures of a one-way-audio complaint, whose root cause was
