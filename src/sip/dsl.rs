@@ -126,6 +126,24 @@ enum Field {
     Duration,
     /// `msg_count` — number of SIP messages stored in the dialog.
     MsgCount,
+    /// `response_class` — the IANA class of the final response, as `'2xx'`
+    /// through `'6xx'`.
+    ///
+    /// Never `'1xx'`, and that is not an omission: this is the class of the
+    /// FINAL response, and a provisional one is by definition not final. A
+    /// call sitting on 183 has no outcome, so it has no class. Anyone reaching
+    /// for `'1xx'` wants `state`.
+    ///
+    /// The registry groups every code into six classes and an operator asks in
+    /// those terms: "any server failure", not "500 through 599". The
+    /// arithmetic form says the same thing, but getting a bound wrong by one
+    /// is silent, and `response_class == '5xx'` cannot be off by one.
+    ///
+    /// Distinct from [`crate::sip::response_codes::ResponseClass`], which is a
+    /// DIAGNOSIS taxonomy (a challenge and a cancellation are not failures)
+    /// rather than the numeric one. Both are useful and they are not the same
+    /// question, so neither is named for the other.
+    ResponseClass,
     /// `response_code` (or `final_status_code`) — the dialog's final INVITE
     /// response code, absent while the call is still in progress.
     ///
@@ -851,6 +869,7 @@ pub const FIELD_NAMES: &[&str] = &[
     "msg_count",
     "response_code",
     "final_status_code",
+    "response_class",
     "pdd",
     "setup_time",
     "retransmits",
@@ -869,6 +888,41 @@ pub const FIELD_NAMES: &[&str] = &[
     "duration_asymmetry",
     "late_media",
 ];
+
+/// The classes a `response_class` literal names.
+///
+/// The [IANA registry](https://www.iana.org/assignments/sip-parameters/sip-parameters.xhtml#sip-parameters-7)
+/// names six classes -- Provisional, Successful, Redirection, Request Failure,
+/// Server Failure, Global Failures -- and an operator types either those or
+/// `5xx`. Accepting one vocabulary and not the other would make the field's own
+/// documentation a trap.
+///
+/// `failure` names all THREE failure classes, because that is what the word
+/// means at a console: 4xx, 5xx and 6xx together. Naming one class is how you
+/// ask for one class. It is deliberately a different question from the
+/// `failure` classification on the response-code reference page, which is
+/// NARROWER -- there a challenge, a cancellation and a decline are each not
+/// failures, because each tells the operator to do something different. This
+/// field is the numeric registry and nothing else.
+///
+/// Tolerant of case, and of a hyphen or an underscore where a space belongs,
+/// because those are typing variants rather than different questions. Anything
+/// unrecognised returns `None` and the caller falls back to a plain string
+/// comparison, which matches nothing -- the same way every other string field
+/// here treats a value it does not know.
+fn response_class_set(value: &str) -> Option<&'static [u16]> {
+    let folded = value.trim().to_ascii_lowercase().replace(['-', '_'], " ");
+    Some(match folded.as_str() {
+        "1xx" | "provisional" => &[1][..],
+        "2xx" | "successful" | "success" => &[2][..],
+        "3xx" | "redirection" | "redirect" => &[3][..],
+        "4xx" | "request failure" | "client failure" => &[4][..],
+        "5xx" | "server failure" => &[5][..],
+        "6xx" | "global failures" | "global failure" => &[6][..],
+        "failure" | "failures" | "failed" => &[4, 5, 6][..],
+        _ => return None,
+    })
+}
 
 /// Parse a dotted field identifier (one or two `.`-separated segments of
 /// ASCII alphanumerics/underscores) into its `Field`.
@@ -907,6 +961,7 @@ fn parse_field(input: &str) -> IResult<&str, Field, NomErr<'_>> {
         "duration" => Field::Duration,
         "msg_count" => Field::MsgCount,
         "response_code" | "final_status_code" => Field::ResponseCode,
+        "response_class" => Field::ResponseClass,
         "pdd" => Field::Pdd,
         "setup_time" => Field::SetupTime,
         "retransmits" => Field::Retransmits,
@@ -1377,6 +1432,44 @@ fn eval_compare(
         Field::ResponseCode => {
             compare_opt_num(dialog.final_status_code().map(f64::from), op, value)
         }
+        // An in-progress call is in NO class. Rendering it as an empty string
+        // would make `response_class != '2xx'` true for every ringing call,
+        // which is a wrong answer rather than a missing one -- the same trap
+        // `response_code` avoids by refusing to default to zero.
+        Field::ResponseClass => match dialog.final_status_code() {
+            None => false,
+            Some(code) => {
+                let digit = code / 100;
+                let canonical = format!("{digit}xx");
+                // A literal can name ONE class or several -- `failure` names
+                // three -- so equality is MEMBERSHIP, not string equality.
+                // Doing it this way is what keeps `!=` honest: comparing the
+                // field against each accepted spelling in turn would make
+                // `response_class != 'server failure'` true for a 503, by way
+                // of whichever spelling did not match.
+                match (op, value) {
+                    (Operator::Eq | Operator::Ne, Value::Str(s)) => {
+                        match response_class_set(s) {
+                            Some(set) => {
+                                let member = set.contains(&digit);
+                                if matches!(op, Operator::Eq) {
+                                    member
+                                } else {
+                                    !member
+                                }
+                            }
+                            // Not a class this DSL knows: fall through so a
+                            // typo matches nothing, exactly as it would on any
+                            // other string field.
+                            None => compare_str(&canonical, op, value),
+                        }
+                    }
+                    // `=~ '^[45]xx$'` and the ordering operators still read the
+                    // canonical form.
+                    _ => compare_str(&canonical, op, value),
+                }
+            }
+        },
         Field::Pdd => {
             // PDD in seconds (convert from milliseconds)
             let pdd = dialog.timing.pdd_ms().map(|ms| ms as f64 / 1000.0);
@@ -2413,6 +2506,217 @@ mod tests {
             assert!(
                 !f.matches_dialog(&ringing, &[], CaptureMedia::Absent, MosDelay::unknown()),
                 "{expr} must not match a dialog with no final response"
+            );
+        }
+    }
+
+    /// The IANA registry groups every response code into six classes, and an
+    /// operator asks in those terms: "any server failure", not "500 through
+    /// 599". `response_code >= 500 AND response_code < 600` says it, but it
+    /// says it as arithmetic, and getting the bound wrong by one is silent.
+    #[test]
+    fn response_class_matches_the_iana_class_of_the_final_response() {
+        for (code, class) in [
+            (200u16, "2xx"),
+            (302, "3xx"),
+            (486, "4xx"),
+            (503, "5xx"),
+            (603, "6xx"),
+        ] {
+            let dialog = make_dialog_with_response(code, "Reason");
+            let f =
+                FilterExpr::parse(&format!("response_class == '{class}'")).expect("should parse");
+            assert!(
+                f.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
+                "{code} is {class}"
+            );
+            // And it belongs to exactly one class.
+            for other in ["1xx", "2xx", "3xx", "4xx", "5xx", "6xx"] {
+                if other == class {
+                    continue;
+                }
+                let g = FilterExpr::parse(&format!("response_class == '{other}'"))
+                    .expect("should parse");
+                assert!(
+                    !g.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
+                    "{code} must not also be {other}"
+                );
+            }
+        }
+    }
+
+    /// The registry names the classes, and an operator types the name as
+    /// readily as the number. Accepting one and not the other would make the
+    /// field's own documentation a trap.
+    #[test]
+    fn a_response_class_can_be_named_the_way_iana_names_it() {
+        let busy = make_dialog_with_response(486, "Busy Here");
+        let unavailable = make_dialog_with_response(503, "Service Unavailable");
+        let ok = make_dialog_with_response(200, "OK");
+        let gone = make_dialog_with_response(603, "Decline");
+
+        for (dialog, spellings) in [
+            (&ok, vec!["2xx", "Successful", "successful"]),
+            (&busy, vec!["4xx", "Request Failure", "request-failure"]),
+            (
+                &unavailable,
+                vec!["5xx", "Server Failure", "server failure"],
+            ),
+            (&gone, vec!["6xx", "Global Failures", "global failure"]),
+        ] {
+            for spelling in spellings {
+                let f = FilterExpr::parse(&format!("response_class == '{spelling}'"))
+                    .expect("should parse");
+                assert!(
+                    f.matches_dialog(dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
+                    "'{spelling}' must name the same class as its number"
+                );
+            }
+        }
+
+        // And `!=` stays honest: a 503 is NOT anything but a server failure,
+        // by either spelling. Matching against two forms at once would have
+        // made this true.
+        let not_server = FilterExpr::parse("response_class != 'Server Failure'").expect("parses");
+        assert!(
+            !not_server.matches_dialog(
+                &unavailable,
+                &[],
+                CaptureMedia::Absent,
+                MosDelay::unknown()
+            ),
+            "503 is a server failure, so `!= 'Server Failure'` must be false"
+        );
+    }
+
+    /// At a console "failure" means all three failure classes, and a specific
+    /// class is how you ask for one. Both have to work, and `!=` has to stay
+    /// honest across the union.
+    #[test]
+    fn failure_names_all_three_failure_classes_and_a_class_names_one() {
+        let ok = make_dialog_with_response(200, "OK");
+        let busy = make_dialog_with_response(486, "Busy Here");
+        let unavailable = make_dialog_with_response(503, "Service Unavailable");
+        let declined = make_dialog_with_response(603, "Decline");
+        let m = |d: &SipDialog, e: &str| {
+            FilterExpr::parse(e).expect("should parse").matches_dialog(
+                d,
+                &[],
+                CaptureMedia::Absent,
+                MosDelay::unknown(),
+            )
+        };
+
+        // The union.
+        for d in [&busy, &unavailable, &declined] {
+            assert!(
+                m(d, "response_class == 'failure'"),
+                "4xx/5xx/6xx are failures"
+            );
+        }
+        assert!(
+            !m(&ok, "response_class == 'failure'"),
+            "200 is not a failure"
+        );
+        assert!(m(&ok, "response_class != 'failure'"), "and != says so");
+
+        // One class at a time still means one class, and the number and the
+        // registry's name are interchangeable for EACH of the three -- not
+        // only for 4xx.
+        for (dialog, number, name, label) in [
+            (&busy, "4xx", "Request Failure", "486"),
+            (&unavailable, "5xx", "Server Failure", "503"),
+            (&declined, "6xx", "Global Failures", "603"),
+        ] {
+            assert!(
+                m(dialog, &format!("response_class == '{number}'")),
+                "{label} is {number}"
+            );
+            assert!(
+                m(dialog, &format!("response_class == '{name}'")),
+                "{label} is '{name}'"
+            );
+            // And it is in no OTHER class, by either spelling.
+            for (other_num, other_name) in [
+                ("4xx", "Request Failure"),
+                ("5xx", "Server Failure"),
+                ("6xx", "Global Failures"),
+            ] {
+                if other_num == number {
+                    continue;
+                }
+                assert!(
+                    !m(dialog, &format!("response_class == '{other_num}'")),
+                    "{label} must not be {other_num}"
+                );
+                assert!(
+                    !m(dialog, &format!("response_class == '{other_name}'")),
+                    "{label} must not be '{other_name}'"
+                );
+            }
+        }
+
+        // `!=` against a single class does not leak through a second spelling.
+        assert!(
+            !m(&unavailable, "response_class != 'Server Failure'"),
+            "503 IS a server failure, so != must be false whichever spelling"
+        );
+    }
+
+    /// A dialog is never `1xx`, and that is not an omission.
+    ///
+    /// `response_class` is the class of the FINAL response, and a provisional
+    /// one is by definition not final -- a call sitting on 183 has no outcome
+    /// yet, so it has no class, the same as a call that has heard nothing.
+    /// Anyone reaching for `response_class == '1xx'` wants `state`.
+    #[test]
+    fn a_ringing_call_is_in_no_class_rather_than_in_1xx() {
+        let mut ringing = make_dialog("1001", "2002", "INVITE");
+        let raw = build_sip(
+            "SIP/2.0 183 Session Progress",
+            &[
+                "From: <sip:1001@example.com>;tag=t1",
+                "To: <sip:2002@example.com>;tag=t2",
+                "Call-ID: test-call-id@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = parse_sip(
+            &raw,
+            base_ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("183 should parse");
+        crate::sip::dialog::update_state(&mut ringing, &msg);
+        ringing.messages.push(msg);
+
+        assert_eq!(
+            ringing.final_status_code(),
+            None,
+            "a provisional response is not an outcome"
+        );
+        let f = FilterExpr::parse("response_class == '1xx'").expect("parses");
+        assert!(
+            !f.matches_dialog(&ringing, &[], CaptureMedia::Absent, MosDelay::unknown()),
+            "183 gives no class, because it is not final"
+        );
+    }
+
+    /// A call with no final response has no class, exactly as it has no code.
+    #[test]
+    fn a_dialog_with_no_final_response_has_no_response_class() {
+        let ringing = make_dialog("1001", "2002", "INVITE");
+        for class in ["1xx", "4xx", "5xx"] {
+            let f = FilterExpr::parse(&format!("response_class == '{class}'")).expect("parses");
+            assert!(
+                !f.matches_dialog(&ringing, &[], CaptureMedia::Absent, MosDelay::unknown()),
+                "an in-progress call is in no class, not in {class}"
             );
         }
     }

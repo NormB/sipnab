@@ -52,6 +52,7 @@ All 30 addressable fields, organized by type.
 | `src.ip` | Source IP address (first message) | `"192.0.2.1"` |
 | `dst.ip` | Destination IP address (first message) | `"192.0.2.2"` |
 | `state` | Dialog state machine value | `"Trying"`, `"InCall"`, `"Failed"` |
+| `response_class` | IANA class of the final response | `"2xx"`, `"4xx"`, `"5xx"`, `"6xx"` |
 | `rtp.codec` | RTP codec name (matches if ANY linked stream matches) | `"PCMU"`, `"opus"` |
 | `rtp.ssrc` | RTP SSRC in hex format (matches if ANY linked stream matches) | `"0x12345678"` |
 
@@ -99,6 +100,53 @@ All 30 addressable fields, organized by type.
 > **Pair any `rtp.*` threshold with `rtp.packets > 0`** to ask about calls that
 > actually had media.
 
+
+### Asking by class
+
+The [IANA registry](https://www.iana.org/assignments/sip-parameters/sip-parameters.xhtml#sip-parameters-7)
+groups every response code into six classes, and `response_class` is that
+class. Ask by number or by the registry's own name — they mean the same thing:
+
+| Class | Number | Name |
+|---|---|---|
+| Provisional | `1xx` | `provisional` |
+| Successful | `2xx` | `successful` |
+| Redirection | `3xx` | `redirection` |
+| Request Failure | `4xx` | `request failure` |
+| Server Failure | `5xx` | `server failure` |
+| Global Failures | `6xx` | `global failures` |
+
+```bash
+sipnab -N -I capture.pcap --filter "response_class == 'server failure'"
+```
+
+**`failure` means all three failure classes** — 4xx, 5xx and 6xx together —
+because that is what the word means at a console. Naming one class is how you
+ask for one class:
+
+```bash
+sipnab -N -I capture.pcap --filter "response_class == 'failure'"
+```
+
+Matching is membership, not string equality, so `!=` stays honest: a 503 is a
+server failure by every spelling, and `response_class != 'Server Failure'` is
+false for it. Case, hyphens and underscores are typing variants, not different
+questions.
+
+`response_code >= 500 AND response_code < 600` says the same as `'5xx'`, and
+says it as arithmetic. A bound wrong by one is silent.
+
+**A dialog is never `1xx`, and that is not an omission.** This is the class of
+the FINAL response, and a provisional one is by definition not final — a call
+sitting on 183 has no outcome yet, so it has no class at all, the same as a
+call that has heard nothing. Reach for `state` there instead.
+
+**This is not the classification on the
+[response-code reference](@/docs/sip-response-codes.md).** That page groups codes by
+what they mean for a CALL, and it is narrower: there a challenge, a
+cancellation and a decline are each *not* failures, because each tells the
+operator to do something different. `response_class` is the numeric registry
+and nothing else. Neither one borrows the other's name, deliberately.
 
 ### Why `response_code` and not just `state`
 

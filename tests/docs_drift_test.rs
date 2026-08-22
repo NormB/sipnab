@@ -2892,8 +2892,12 @@ fn no_documentation_table_repeats_a_row() {
         //
         // Raised 599 -> 601 by MCPX2's `aggregate_dialogs`, the same way: one
         // parameter table, doubled by the mirror.
-        601,
-        "walked {tables} tables, expected 601. More is fine — bump this. FEWER \
+        //
+        // Raised 601 -> 603 by the response-class table in docs/filter-dsl.md,
+        // which lists the six IANA classes against both the number and the
+        // registry's own name. Doubled by the generated site mirror.
+        603,
+        "walked {tables} tables, expected 603. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
@@ -3487,4 +3491,54 @@ fn prose_mcp_tool_counts_match_the_server() {
              table must list every one of them."
         );
     }
+}
+
+/// No parameter doc may state a row ceiling as a fixed number.
+///
+/// `--mcp-max-rows` exists because, in the CLI's own words, "the right ceiling
+/// belongs to the CONSUMER, not to sipnab". Five parameter docs and eight
+/// table rows nonetheless said `1..=1000` or "1 to 1000", and one section
+/// called the bounds "hard-coded" outright -- which is false, and tells an
+/// operator who raised the cap that their setting does nothing.
+///
+/// The failure mode is not a stale number. It is a document that overrules a
+/// setting, so the gate is on the PHRASING rather than on the value: a doc may
+/// name 1000 as the DEFAULT, and may not present it as the limit.
+#[test]
+fn no_parameter_doc_states_a_row_ceiling_as_a_fixed_number() {
+    let banned = [
+        "1..=1000",
+        "1 to 1000",
+        "1-1000",
+        "hard-coded to keep tool-call costs",
+    ];
+    let mut hits: Vec<String> = Vec::new();
+    for (path, text) in [
+        ("src/mcp/server.rs", include_str!("../src/mcp/server.rs")),
+        ("docs/mcp-tools.md", include_str!("../docs/mcp-tools.md")),
+        ("docs/mcp.md", include_str!("../docs/mcp.md")),
+        (
+            "website/content/docs/mcp-tools.md",
+            include_str!("../website/content/docs/mcp-tools.md"),
+        ),
+    ] {
+        for phrase in banned {
+            if text.contains(phrase) {
+                hits.push(format!("{path}: {phrase:?}"));
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "these state a row ceiling as a fixed number instead of naming \
+         --mcp-max-rows, which an operator can raise: {hits:?}"
+    );
+
+    // A scan that matches nothing would pass whatever the docs said.
+    let tools = include_str!("../docs/mcp-tools.md");
+    assert!(
+        tools.contains("--mcp-max-rows"),
+        "docs/mcp-tools.md must name the knob somewhere, or this gate is \
+         checking that a phrase is absent from a page it never read"
+    );
 }

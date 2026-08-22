@@ -703,7 +703,7 @@ pub struct ListDialogsParams {
     /// Optional filter — either a named alias (e.g. "problems",
     /// "codec-asym") or a raw DSL expression.
     pub filter: Option<String>,
-    /// Maximum dialogs to return (1..=1000, default 50).
+    /// Maximum dialogs to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     pub limit: Option<u32>,
     /// Cursor: pass back the previous response's `next_cursor` verbatim
     /// (`<RFC 3339>|<Call-ID>`) to continue after that page. Omit on the
@@ -750,8 +750,16 @@ pub struct AggregateDialogsParams {
     /// Optional filter (alias or DSL) applied before grouping, so an
     /// aggregate can be scoped the same way a listing is.
     pub filter: Option<String>,
-    /// Buckets to return, largest first (1..=100, default 20). Everything
-    /// beyond this is summed into `other_count` rather than dropped: a
+    /// Buckets to return, largest first. Bounded by `--mcp-max-rows`, the same
+    /// knob that bounds dialog rows, and defaulted the same way.
+    ///
+    /// Not a separate ceiling of its own: `--mcp-max-rows` exists because "the
+    /// right ceiling belongs to the CONSUMER, not to sipnab", and a second
+    /// invented limit here would overrule the operator who already answered
+    /// that question. A bucket is a value and a count -- far smaller than a
+    /// dialog row -- so anywhere N rows are allowed, N buckets cost less.
+    ///
+    /// Everything past it is summed into `other_count` rather than dropped: a
     /// truncated aggregate that does not say what it left out is a wrong
     /// total, not a partial one.
     pub top_n: Option<u32>,
@@ -820,7 +828,7 @@ pub struct FindProblemsParams {
     /// expression. Narrows "anything problematic" to "problems on this
     /// trunk".
     pub filter: Option<String>,
-    /// Maximum dialogs to return (1..=1000, default 50).
+    /// Maximum dialogs to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     pub limit: Option<u32>,
     /// Cursor: pass back the previous response's `next_cursor` verbatim
     /// (`<RFC 3339>|<Call-ID>`). Omit on the first call.
@@ -906,8 +914,9 @@ pub struct RtpStatsParams {
     /// ground its clock, so requiring a MOS bound alongside would filter out
     /// most of what this exists to find.
     pub orphaned: Option<bool>,
-    /// Capture-wide sweep only: maximum streams to return (1..=1000,
-    /// default 50).
+    /// Capture-wide sweep only: maximum streams to return (default 50,
+    /// ceiling `--mcp-max-rows`, itself 1000 unless the operator says
+    /// otherwise).
     pub limit: Option<u32>,
     /// Capture-wide sweep only: pass back the previous response's
     /// `next_cursor` verbatim. Omit on the first call.
@@ -1039,7 +1048,7 @@ pub struct CompareDialogsParams {
 pub struct FindCorrelatedParams {
     /// Call-ID of the leg to correlate FROM.
     pub call_id: String,
-    /// Maximum legs to return (1..=1000, default 50).
+    /// Maximum legs to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     pub limit: Option<u32>,
 }
 
@@ -1567,7 +1576,7 @@ pub struct SearchByTimeParams {
     /// or a raw DSL expression, so "failed calls between 14:00 and 14:05" is
     /// one call rather than two.
     pub filter: Option<String>,
-    /// Maximum dialogs to return (1..=1000, default 50).
+    /// Maximum dialogs to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     pub limit: Option<u32>,
     /// Cursor: pass back the previous response's `next_cursor` verbatim
     /// (`<RFC 3339 created_at>|<Call-ID>`) to continue after that page. Omit
@@ -3473,7 +3482,7 @@ impl SipnabMcp {
             ));
         }
 
-        let top_n = params.top_n.unwrap_or(20).clamp(1, 100) as usize;
+        let top_n = resolve_limit_with_cap(params.top_n, self.row_cap);
         let filter = self.compile_filter(params.filter.as_deref())?;
 
         let (mut tally, total_matched, capture_identity) = {

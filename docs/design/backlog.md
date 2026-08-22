@@ -1943,7 +1943,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:6921`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6921), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:6945`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6945), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the

@@ -1671,7 +1671,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | MCP tool | Wraps |
 |---|---|
-| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:939`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L939)) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:500`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L500)) + `expand_alias` ([`src/sip/dsl.rs:340`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L340)) |
+| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:939`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L939)) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:530`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L530)) + `expand_alias` ([`src/sip/dsl.rs:358`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L358)) |
 | `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:184`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L184)) + iterate `dialog.messages` + `output::json::message_to_json` |
 | `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:53`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L53)) with `ReportFormat::Json/Markdown/Text` |
 | `get_message` | `output::json::message_to_json` ([`src/output/json.rs:553`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L553)) |
@@ -1737,7 +1737,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `late_media` | Compares first RTP packet timestamp against dialog's 200 OK timestamp (already tracked in `dialog.timing`) |
 | `one_sided_silence` | New analysis on decoded PCM samples from `audio_export`; energy threshold computation |
 | All six tags | Extend existing `MediaDiagnosis` struct in [`src/rtp/diagnosis.rs:66`](https://github.com/NormB/sipnab/blob/main/src/rtp/diagnosis.rs#L66) (additive — backwards compatible JSON) |
-| Six new diagnostic aliases | Extend `expand_alias` in [`src/sip/dsl.rs:340`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L340) |
+| Six new diagnostic aliases | Extend `expand_alias` in [`src/sip/dsl.rs:358`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L358) |
 | TUI badges | Extend existing badge column in [`src/tui/call_list.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/call_list.rs) |
 | MCP `find_problems` integration | No code change — it consumes `expand_alias` already (Phase 8.3) |
 

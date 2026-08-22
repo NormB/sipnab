@@ -169,7 +169,7 @@ Returns one page of dialog summaries from the live capture store.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `filter` | string? | A diagnostic alias name — `problems`, `slow-setup`, `short-calls`, `one-way`, `nat-issues`, `codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media` — **or** a raw [filter DSL](@/docs/filter-dsl.md) expression. Anything else fails with `invalid_params` naming the position it stopped parsing at. | Every dialog in the store matches. |
-| `limit` | u32? | 1 to 1000. Higher clamps to the cap, `0` means the default. | 50 rows. |
+| `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 unless the operator changed it). Higher clamps to it, `0` means the default. | 50 rows. |
 | `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest dialog. |
 
 **Returns** — a page object, not a bare array:
@@ -322,7 +322,7 @@ filtered queries with the buckets guessed in advance.
 |---|---|---|---|
 | `group_by` | string | One of `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, `rtp.codec`. Anything else fails with `invalid_params` naming the legal set. | Required. |
 | `filter` | string? | Alias or DSL, applied before grouping. | No filter — the whole store. |
-| `top_n` | integer? | 1–100. Anything past it lands in `other_count` rather than disappearing. | 20. |
+| `top_n` | integer? | Bounded by `--mcp-max-rows`, the same knob that bounds dialog rows — not a second ceiling of sipnab's own. Anything past it lands in `other_count` rather than disappearing. | The same default as any row limit. |
 
 ```jsonc
 // aggregate_dialogs { "group_by": "response_code", "filter": "state == 'Failed'" }
@@ -452,7 +452,7 @@ the optional `filter`.
 |---|---|---|---|
 | `kinds` | string[]? | One or more of the ten diagnostic aliases listed under [`list_dialogs`](#list-dialogs), OR-ed together. An unknown name fails with `invalid_params`. An empty array behaves as omitted. | `["problems"]`. |
 | `filter` | string? | An alias name or a raw [DSL](@/docs/filter-dsl.md) expression, **ANDed** with the alias match. | The alias match alone decides the page. |
-| `limit` | u32? | 1 to 1000. Higher clamps, `0` means the default. | 50 rows. |
+| `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 rows. |
 | `cursor` | string? | The previous response's `next_cursor`, verbatim. | Starts at the oldest match. |
 
 Returns the same page object as [`list_dialogs`](#list-dialogs) — `dialogs`,
@@ -516,7 +516,7 @@ Paginated dialog with full SIP messages.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `call_id` | string | A Call-ID the store holds. An unknown one fails with `call_id 'x' not found`. | Required — the call fails. |
-| `max_messages` | u32? | 1 to 1000. Higher clamps to the cap, `0` means the default. | 100 messages. |
+| `max_messages` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 100 messages. |
 | `cursor` | u32? | A message index, counting from 0. Unlike the dialog cursors elsewhere, this one is a plain integer, and past-the-end returns an empty page rather than an error. | Starts at message 0. |
 
 **Returns:**
@@ -711,7 +711,7 @@ than quietly doing nothing:
 | `call_id` | string? | A Call-ID the store holds. | **Switches modes** — the tool sweeps every stream in the capture, orphans included. |
 | `min_mos` | f64? | Sweep only. Keeps streams scoring at or above this. Rejected alongside `call_id`. | No lower bound. |
 | `max_mos` | f64? | Sweep only. Keeps streams scoring strictly below this. Rejected alongside `call_id`. | No upper bound. |
-| `limit` | u32? | Sweep only. 1 to 1000, higher clamps, `0` means the default. | 50 streams. |
+| `limit` | u32? | Sweep only. Ceiling is `--mcp-max-rows` (1000 by default), higher clamps to it, `0` means the default. | 50 streams. |
 | `cursor` | string? | Sweep only. The previous response's `next_cursor`, verbatim (`<RFC 3339>\|0xSSRC@src>dst`). | Starts at the earliest stream. |
 
 **With `call_id`** the answer keeps its existing shape — `{ call_id, streams, diagnosis }`,
@@ -986,7 +986,7 @@ User-Agent, and body across all dialogs.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `query` | string | Any substring. Matching ignores case. | Required — the call fails. |
-| `limit` | u32? | 1 to 1000. Higher clamps, `0` means the default. | 50 hits. |
+| `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 hits. |
 | `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>#<zero-padded message index>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest match. |
 
 **Returns** — the same page shape [`list_dialogs`](#list-dialogs) returns, not
@@ -1053,7 +1053,7 @@ Incremental fetch of the dialogs updated after a cursor position.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339>\|<Call-ID>`). A bare RFC 3339 timestamp also parses, and filters strictly after it. | Starts from the beginning of the store. |
-| `limit` | u32? | 1 to 1000. Higher clamps, `0` means the default. | 50 rows. |
+| `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 rows. |
 
 Returns `{ dialogs, next_cursor, source_exhausted, capture_identity }`, where
 `dialogs` holds the same summary rows [`list_dialogs`](#list-dialogs) returns,
@@ -1124,7 +1124,7 @@ reg-flood, etc.). Backed by the AlertEngine's bounded ring buffer
 |---|---|---|---|
 | `kinds` | string[]? | Exactly four names: `scanner`, `fraud`, `digest`, `reg_flood`. Anything else fails with `invalid_params` naming all four — including `reg-flood` with a hyphen, which suggests the underscore spelling. | Findings of every kind. |
 | `since` | string? | RFC 3339. Keeps findings recorded strictly after it. A malformed value fails with `since must be RFC 3339`. | The whole retained history. |
-| `limit` | u32? | 1 to 1000. Higher clamps, `0` means the default. | 50 findings. |
+| `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 findings. |
 
 **Returns** — a page object, not a bare array:
 
@@ -1708,7 +1708,7 @@ Finds the other legs of one call — the far side of a B2BUA, SBC or PBX hop.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `call_id` | string | A Call-ID the store holds — the leg to correlate **from**. | Required — the call fails. |
-| `limit` | u32? | 1 to 1000. Higher clamps, `0` means the default. | 50 legs. |
+| `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 legs. |
 
 Returns `source_call_id`, `legs`, `total_matched`, `heuristic_only`,
 `capture_identity`, `timing_clock` and `schema_version`. A leg the source has no
@@ -1878,7 +1878,7 @@ Returns dialogs whose first message falls in the window, oldest first.
 | `start` | string | An inclusive RFC 3339 instant, such as `"2026-07-31T14:00:00Z"`. A malformed one fails with `start 'x' is not RFC 3339`. | Required — the call fails. |
 | `end` | string? | An exclusive RFC 3339 instant after `start`. At or before `start` fails with `invalid_params` (-32602). | Everything from `start` onward. |
 | `filter` | string? | An alias name or a raw [DSL](@/docs/filter-dsl.md) expression, ANDed with the window. | The window alone decides the page. |
-| `limit` | u32? | 1 to 1000. Higher clamps, `0` means the default. | 50 rows. |
+| `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 rows. |
 | `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest dialog in the window. |
 
 **Returns** `{ dialogs, returned, total_matched, truncated, next_cursor,
@@ -2724,22 +2724,28 @@ rather than an empty result.
 
 ### Response bounding
 
-| Limit | Value |
-|---|---|
-| Default `limit` for list-style tools | 50 |
-| Maximum `limit` (clamps higher requests) | 1000 |
-| Maximum SIP body / snippet bytes | 4096 |
-| Maximum messages per `get_dialog` page | 1000 |
+| Limit | Default | Set by |
+|---|---|---|
+| Default `limit` for list-style tools | 50 | the per-call `limit` |
+| Ceiling on `limit` (clamps higher requests) | 1000 | `--mcp-max-rows` |
+| SIP body / snippet bytes | 4096 | `--mcp-max-body-bytes` |
+| Messages per `get_dialog` page | 1000 | `--mcp-max-rows` |
 
-These are hard-coded to keep tool-call costs predictable for chatty
-agents. Override via the per-call `limit` parameter where supported.
+**These are defaults, not laws.** The right ceiling belongs to the CONSUMER
+rather than to sipnab: an agent with a small context window wants far fewer
+than a thousand rows and a batch consumer piping to a file wants far more, so
+no single number serves both. Raise or lower them with `--mcp-max-rows` and
+`--mcp-max-body-bytes`, or the matching `[limits]` keys in the config file.
+The per-call `limit` narrows an answer below the ceiling, and cannot exceed
+it.
 
 A bound is not a loss. `list_dialogs`, `find_problems`, `search_by_time`,
 `search_messages`, `security_findings` and the capture-wide `rtp_stats` sweep
 each report `total_matched` beside their page, so a caller sees how much of the
 answer it holds. All of those except `security_findings` carry a cursor to the
-rest, as do `tail_dialogs` and `get_dialog`. Raising `limit` past 1000 does
-nothing: the cap clamps it. Page instead.
+rest, as do `tail_dialogs` and `get_dialog`. Asking for a `limit` above the
+ceiling does nothing — the ceiling clamps it — so either raise the ceiling with
+`--mcp-max-rows` or page.
 
 **Two tools remain exceptions, and a caller has to know which:**
 
