@@ -126,6 +126,18 @@ enum Field {
     Duration,
     /// `msg_count` — number of SIP messages stored in the dialog.
     MsgCount,
+    /// `response_code` (or `final_status_code`) — the dialog's final INVITE
+    /// response code, absent while the call is still in progress.
+    ///
+    /// Two spellings, one field, on purpose: `response_code` is what an
+    /// operator types and what every CDR calls it, and `final_status_code` is
+    /// what the JSON, the schema and the MCP answers already return. Filtering
+    /// by a name the row does not carry is friction with no upside.
+    ///
+    /// Separate from [`Field::State`] because `state` answers what HAPPENED
+    /// and this answers WHY: 403, 404, 408, 486, 503 and 603 are all
+    /// `'Failed'`, and they have different owners.
+    ResponseCode,
     /// `pdd` — post-dial delay in seconds (0 when unknown).
     Pdd,
     /// `setup_time` — call setup time in seconds (0 when unknown).
@@ -837,6 +849,8 @@ pub const FIELD_NAMES: &[&str] = &[
     "state",
     "duration",
     "msg_count",
+    "response_code",
+    "final_status_code",
     "pdd",
     "setup_time",
     "retransmits",
@@ -892,6 +906,7 @@ fn parse_field(input: &str) -> IResult<&str, Field, NomErr<'_>> {
         "state" => Field::State,
         "duration" => Field::Duration,
         "msg_count" => Field::MsgCount,
+        "response_code" | "final_status_code" => Field::ResponseCode,
         "pdd" => Field::Pdd,
         "setup_time" => Field::SetupTime,
         "retransmits" => Field::Retransmits,
@@ -1356,6 +1371,12 @@ fn eval_compare(
             compare_num(dur, op, value)
         }
         Field::MsgCount => compare_num(dialog.messages.len() as f64, op, value),
+        // `compare_opt_num`, never a 0 default: a ringing call has no final
+        // response, and defaulting to 0 would make `response_code < 400` sweep
+        // up every call still in progress as a success.
+        Field::ResponseCode => {
+            compare_opt_num(dialog.final_status_code().map(f64::from), op, value)
+        }
         Field::Pdd => {
             // PDD in seconds (convert from milliseconds)
             let pdd = dialog.timing.pdd_ms().map(|ms| ms as f64 / 1000.0);
@@ -2301,6 +2322,99 @@ mod tests {
         assert_eq!(*dialog.state(), DialogState::Failed);
         let filter = FilterExpr::parse("state == 'Failed'").expect("should parse");
         assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+    }
+
+    // ── Response code ───────────────────────────────────────────────
+
+    /// Build a dialog driven to a final INVITE response.
+    fn make_dialog_with_response(code: u16, reason: &str) -> SipDialog {
+        let mut dialog = make_dialog("1001", "2002", "INVITE");
+        let raw = build_sip(
+            &format!("SIP/2.0 {code} {reason}"),
+            &[
+                "From: <sip:1001@example.com>;tag=t1",
+                "To: <sip:2002@example.com>;tag=t2",
+                "Call-ID: test-call-id@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = parse_sip(
+            &raw,
+            base_ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("response should parse");
+        crate::sip::dialog::update_state(&mut dialog, &msg);
+        // `update_state` drives the state machine; it does not store the
+        // message, and `final_status_code` reads the stored ones.
+        dialog.messages.push(msg);
+        dialog
+    }
+
+    /// `state == 'Failed'` collapses every release cause into one bucket, so
+    /// the release cause has to be reachable on its own. A trunk incident asks
+    /// "which cause dominates", and 403, 404, 408, 486, 503 and 603 are six
+    /// different answers with six different owners.
+    #[test]
+    fn response_code_separates_causes_that_state_collapses() {
+        let busy = make_dialog_with_response(486, "Busy Here");
+        let unavailable = make_dialog_with_response(503, "Service Unavailable");
+
+        // Both are Failed, which is the whole problem.
+        assert_eq!(*busy.state(), DialogState::Failed);
+        assert_eq!(*unavailable.state(), DialogState::Failed);
+
+        let is_503 = FilterExpr::parse("response_code == 503").expect("should parse");
+        assert!(
+            is_503.matches_dialog(&unavailable, &[], CaptureMedia::Absent, MosDelay::unknown()),
+            "503 must match response_code == 503"
+        );
+        assert!(
+            !is_503.matches_dialog(&busy, &[], CaptureMedia::Absent, MosDelay::unknown()),
+            "486 must NOT match response_code == 503; that is the collapse this field removes"
+        );
+
+        // Ranges are the point of a numeric field: 5xx as a class.
+        let server_error =
+            FilterExpr::parse("response_code >= 500 AND response_code < 600").expect("parses");
+        assert!(server_error.matches_dialog(
+            &unavailable,
+            &[],
+            CaptureMedia::Absent,
+            MosDelay::unknown()
+        ));
+        assert!(!server_error.matches_dialog(
+            &busy,
+            &[],
+            CaptureMedia::Absent,
+            MosDelay::unknown()
+        ));
+    }
+
+    /// A call still in progress has no final response, and must not read as
+    /// zero -- `response_code < 400` would otherwise sweep up every ringing
+    /// call as a success.
+    #[test]
+    fn a_dialog_with_no_final_response_matches_no_response_code() {
+        let ringing = make_dialog("1001", "2002", "INVITE");
+        assert_eq!(ringing.final_status_code(), None, "no final response yet");
+        for expr in [
+            "response_code < 400",
+            "response_code >= 400",
+            "response_code == 0",
+        ] {
+            let f = FilterExpr::parse(expr).expect("should parse");
+            assert!(
+                !f.matches_dialog(&ringing, &[], CaptureMedia::Absent, MosDelay::unknown()),
+                "{expr} must not match a dialog with no final response"
+            );
+        }
     }
 
     // ── Complex compound expression ─────────────────────────────────

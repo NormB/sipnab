@@ -56,6 +56,20 @@ pub struct DialogSummary {
     pub to_user: Option<String>,
     /// Number of SIP messages in the dialog.
     pub msg_count: usize,
+    /// Final INVITE response code, when the call reached one.
+    ///
+    /// Carried beside `state` because `state` collapses every release cause
+    /// into one word: 403, 404, 408, 486, 503 and 603 are all `Failed`, and an
+    /// agent asked "which cause dominates" cannot answer it from the state.
+    /// Named for the wire contract that already carries it -- `DialogJson`,
+    /// `tests/schemas/dialog.schema.json` and three MCP answers all say
+    /// `final_status_code`, and a second name for one value is the drift this
+    /// field exists to remove. The filter DSL spells it `response_code` and
+    /// accepts this name too.
+    /// Omitted, never null and never zero, while a call is still in progress --
+    /// a zero would read as a real code to anything doing arithmetic on it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_status_code: Option<u16>,
     /// Wall-clock span from first to last message, seconds (0 for
     /// single-message dialogs).
     pub duration_sec: f64,
@@ -111,6 +125,7 @@ impl From<&SipDialog> for DialogSummary {
             from_user: d.from_user.clone(),
             to_user: d.to_user.clone(),
             msg_count: d.messages.len(),
+            final_status_code: d.final_status_code(),
             duration_sec,
             created_at: d.created_at.to_rfc3339(),
             updated_at: d.updated_at.to_rfc3339(),
