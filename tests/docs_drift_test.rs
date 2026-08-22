@@ -2524,6 +2524,8 @@ fn sequence_marker_admits_a_declared_procedure() {
 /// show a repeated line.
 #[test]
 fn no_documentation_table_repeats_a_row() {
+    /// Tracked markdown files this walk expects to see.
+    const EXPECTED_MARKDOWN_FILES: usize = 163;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -2593,8 +2595,13 @@ fn no_documentation_table_repeats_a_row() {
         // Raised 159 -> 163 by the rtpengine pages: docs/rtpengine.md and
         // docs/internals/rtpengine-control-plane.md, each with its generated
         // website mirror. Two sources, two mirrors, attributed per file.
-        163,
-        "found {} tracked markdown files, expected 159. More is fine — bump \
+        //
+        // The number was written twice, and raising it left the message still
+        // naming 159 -- a gate reporting the wrong expectation to whoever it
+        // fails next. One const now.
+        EXPECTED_MARKDOWN_FILES,
+        "found {} tracked markdown files, expected {EXPECTED_MARKDOWN_FILES}. \
+         More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()
@@ -3300,6 +3307,8 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() {
 /// trusted.
 #[test]
 fn the_published_amr_wb_tables_match_the_model() {
+    /// AMR-WB rows the codec table is expected to carry.
+    const EXPECTED_AMR_WB_ROWS: usize = 15;
     use sipnab::rtp::emodel_wb::{ListeningContext, amr_wb_ie, amr_wb_mos};
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -3347,8 +3356,9 @@ fn the_published_amr_wb_tables_match_the_model() {
     // Nine monotic rows plus six diotic. Fewer means the regex stopped matching
     // the table and this gate silently checked nothing.
     assert_eq!(
-        checked, 15,
-        "expected 15 AMR-WB rows in docs/mos-and-codecs.md, matched {checked}. \
+        checked, EXPECTED_AMR_WB_ROWS,
+        "expected {EXPECTED_AMR_WB_ROWS} AMR-WB rows in docs/mos-and-codecs.md, \
+         matched {checked}. \
          More is fine — bump this. FEWER means the table shape changed and the \
          gate is no longer reading it."
     );
@@ -4186,4 +4196,59 @@ fn the_vale_version_pin_has_one_source() {
             );
         }
     }
+}
+
+/// No ratchet writes its expected value twice.
+///
+/// A ratchet carries a maintained count raised by hand as the repository grows,
+/// and the idiom writes the number once as the assertion's expected value and
+/// again in its own failure message. Raising one and not the other is a single
+/// keystroke, produces no error, and leaves the gate telling whoever it fails
+/// next to expect a number nobody expects.
+///
+/// Found three times in one day: the table-count ratchet, the packaging-path
+/// ratchet, and `no_documentation_table_repeats_a_row`, where the value had
+/// already been raised 159 -> 163 with the message still reading 159. It is the
+/// defect the ratchets exist to catch -- a documented value drifting from what
+/// produces it -- occurring inside the gates themselves, which is why finding it
+/// by eye had not worked.
+///
+/// The checker is `scripts/check-ratchet-messages.py`, and it is the only
+/// implementation: a Rust reimplementation would be a second rule that agrees
+/// today and drifts tomorrow, which is the shape this whole area has spent the
+/// week removing.
+#[test]
+fn no_ratchet_repeats_its_own_expected_value() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let script = repo.join("scripts/check-ratchet-messages.py");
+    assert!(script.exists(), "missing {}", script.display());
+
+    let out = std::process::Command::new("python3")
+        .arg(&script)
+        .current_dir(repo)
+        .output()
+        .expect("run scripts/check-ratchet-messages.py (python3 must be on PATH)");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "a ratchet names its expected value in its own message.\n\
+         Reproduce: python3 scripts/check-ratchet-messages.py\n\n{stdout}\n{stderr}"
+    );
+
+    // The checker reports what it read. A parser that stopped matching would
+    // print a clean tree having examined nothing, which is the failure this
+    // assertion -- and the checker's own floor -- exist to refuse.
+    let scanned: u32 = stdout
+        .split_whitespace()
+        .skip_while(|w| *w != "checked")
+        .nth(1)
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    assert!(
+        scanned > 500,
+        "the checker reported {scanned} assertions scanned, which is too few to \
+         be the real tree -- it passed by reading almost nothing:\n{stdout}"
+    );
 }

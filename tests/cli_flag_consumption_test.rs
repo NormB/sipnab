@@ -64,6 +64,8 @@ fn cli_fields(src: &str) -> Vec<String> {
 
 #[test]
 fn every_cli_flag_reaches_something_that_reads_it() {
+    /// Fewest Cli fields the parser must still find.
+    const MIN_CLI_FIELDS: usize = 140;
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let cli_src = repo_file("src/cli.rs");
     let fields: BTreeSet<String> = cli_fields(&cli_src).into_iter().collect();
@@ -71,8 +73,9 @@ fn every_cli_flag_reaches_something_that_reads_it() {
     // Pinned. A parser that silently stops matching would make this gate pass
     // while checking nothing, which is the failure mode it exists to prevent.
     assert!(
-        fields.len() >= 140,
-        "found only {} Cli fields, expected at least 140 — the field parser \
+        fields.len() >= MIN_CLI_FIELDS,
+        "found only {} Cli fields, expected at least {MIN_CLI_FIELDS} — the \
+         field parser \
          stopped matching and this gate is checking less than it claims",
         fields.len()
     );

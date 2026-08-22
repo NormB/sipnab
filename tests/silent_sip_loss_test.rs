@@ -205,6 +205,8 @@ fn extension_method_acceptance_stays_strict() {
 /// parse-succeeds qualifier is what distinguishes the two.
 #[test]
 fn no_message_the_old_sniff_analysed_is_lost() {
+    /// Inputs the old sniff accepted and parsed.
+    const EXPECTED_OLD_SNIFF_INPUTS: usize = 18;
     const METHODS: [&str; 14] = [
         "INVITE",
         "ACK",
@@ -270,8 +272,9 @@ fn no_message_the_old_sniff_analysed_is_lost() {
     // comparison at all, and the property above would then be passing
     // vacuously rather than proving anything.
     assert_eq!(
-        checked, 18,
-        "expected 18 inputs to be accepted-and-parseable under the old sniff"
+        checked, EXPECTED_OLD_SNIFF_INPUTS,
+        "expected {EXPECTED_OLD_SNIFF_INPUTS} inputs to be \
+         accepted-and-parseable under the old sniff"
     );
 }
 

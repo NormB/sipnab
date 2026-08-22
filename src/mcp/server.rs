@@ -11305,9 +11305,12 @@ mod tests {
         // Raised 40 -> 44 by `clock`: four leaves (synchronized, max_error_us,
         // est_error_us, available), all bools and integers, which is why the
         // string check above still passes with the field present.
+        /// Leaf values the response shape is expected to carry.
+        const EXPECTED_LEAVES: usize = 44;
         assert_eq!(
-            leaves, 44,
-            "the response shape changed: 44 leaf values were expected. Recount \
+            leaves, EXPECTED_LEAVES,
+            "the response shape changed: {EXPECTED_LEAVES} leaf values were \
+             expected. Recount \
              deliberately — a drop here means the walker stopped reaching part \
              of the tree, which is how the string check goes quietly vacuous."
         );

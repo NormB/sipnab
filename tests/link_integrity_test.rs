@@ -675,6 +675,8 @@ fn wiki_intra_docs_links_resolve() {
 /// reference, not less.
 #[test]
 fn root_community_file_links_resolve() {
+    /// Root community links the extractor is expected to find.
+    const EXPECTED_COMMUNITY_LINKS: usize = 46;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
@@ -728,8 +730,9 @@ fn root_community_file_links_resolve() {
     // Pinned for the same reason as the wiki pin above: a floor cannot tell a
     // healthy repo from an extractor that stopped matching.
     assert_eq!(
-        seen, 46,
-        "extractor found {seen} root community links, expected 46. More is \
+        seen, EXPECTED_COMMUNITY_LINKS,
+        "extractor found {seen} root community links, expected \
+         {EXPECTED_COMMUNITY_LINKS}. More is \
          fine — bump this. FEWER means the regex stopped matching and this \
          gate narrowed silently."
     );
@@ -1050,6 +1053,8 @@ fn slugify_matches_known_rendered_anchors() {
 /// is.
 #[test]
 fn every_docs_page_is_linked_from_the_index() {
+    /// Pages the docs walk is expected to reach.
+    const EXPECTED_DOCS_PAGES: usize = 47;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from
@@ -1128,8 +1133,9 @@ fn every_docs_page_is_linked_from_the_index() {
     // `internals/rtpengine-control-plane.md` for the maintainer, both
     // registered in their indexes. Attributed per file before the number moved.
     assert_eq!(
-        checked, 47,
-        "docs-page walk saw {checked} pages, expected 47. More is fine — bump \
+        checked, EXPECTED_DOCS_PAGES,
+        "docs-page walk saw {checked} pages, expected {EXPECTED_DOCS_PAGES}. \
+         More is fine — bump \
          this. FEWER means the walk stopped reading part of docs/ and every \
          reachability assertion above it silently narrowed."
     );
