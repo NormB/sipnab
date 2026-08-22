@@ -28,6 +28,12 @@ max_concurrency = 8
 # 30s, raised from 20 after kamailio.org timed out a release commit's Quality
 # job with ZERO dead links -- one timeout was enough to fail the run.
 #
+# SUPERSEDED for that host, and kept because the value still serves every other
+# slow page. kamailio.org later moved from slow to REFUSING -- "Connection
+# reset by peer" -- which no timeout fixes, and it now sits in `exclude` with
+# that evidence. Read the two together: this note explains the number, the
+# exclusion explains why the number stopped being enough.
+#
 # Not tuned away: the page is alive and merely slow. Measured three times in a
 # row from here, back to back: 18.5s, 9.2s, 9.0s, all HTTP 200. A first hit
 # landing at 18.5s against a 20s ceiling is not a transient blip, it is a
@@ -122,6 +128,28 @@ exclude = [
   # check the numbers against the body that assigns them; dropping the URL to
   # satisfy a link checker would remove the provenance the page exists to carry.
   'standards-oui\.ieee\.org',
+  # Kamailio's module documentation, cited by docs/mcp-estate.md for the
+  # siptrace modparams an operator has to set. The `timeout` note above raised
+  # 20 -> 30 for this host and recorded the reason: the page is alive and
+  # merely slow. That reasoning no longer covers what it does now.
+  #
+  # The failure CLASS moved. Two consecutive Quality runs on main reported
+  # different ones -- 1 TIMEOUT / 0 errors, then 0 timeouts / 1 ERROR
+  # "Connection reset by peer (os error 104)". Measured from two machines
+  # inside minutes: HTTP 200 in 28.7s (1.3s inside the 30s ceiling), a timeout
+  # at 27.9s, a connection failure in 0.1s, and a curl that never returned.
+  #
+  # No timeout value fixes a reset, which is why this is an exclusion and not
+  # another bump. Three straight Quality failures on main with ZERO dead links
+  # in the repository, and `pre-push` refuses a `v*` tag whose commit has a
+  # failed run -- so a live host's bad week would have blocked the next
+  # release.
+  #
+  # Excluded rather than delinked, for the same reason as the IEEE entry: the
+  # page is the canonical documentation for the modparams the surrounding
+  # prose tells the reader to set, and dropping the URL to satisfy a link
+  # checker would take that away from the reader to buy a green run.
+  'kamailio\.org',
   # The OpenSSF Best Practices badge, cited in README.md and in
   # docs/design/openssf-badge-answers.md. It answered a Quality job with 503
   # Service Unavailable on four links at once and failed the run with ZERO dead

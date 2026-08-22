@@ -601,6 +601,8 @@ fn rust_files_under(path: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn linked_symbols_resolve_to_a_definition() {
+    /// Symbol claims the developer docs are expected to cite.
+    const EXPECTED_SYMBOL_CLAIMS: usize = 66;
     // A definition boundary, not a substring. `source.contains("fn run_offline_paral")`
     // was satisfied by `fn run_offline_parallel`, so a doc could name a function
     // that has never existed and resolve against a real one whose name merely
@@ -661,8 +663,9 @@ fn linked_symbols_resolve_to_a_definition() {
     // function bounds them. Attributed per file: `internals/threading.md` +1,
     // every other developer page unchanged.
     assert_eq!(
-        seen, 66,
-        "symbol extraction found {seen} claims, expected 66. Bump when the \
+        seen, EXPECTED_SYMBOL_CLAIMS,
+        "symbol extraction found {seen} claims, expected {EXPECTED_SYMBOL_CLAIMS}. \
+         Bump when the \
          developer docs cite more symbols; a drop means the `()`-suffix pattern \
          stopped matching and unresolvable symbols pass unseen."
     );
@@ -958,13 +961,16 @@ fn build_wiki_leaves_no_relative_links_in_the_output() {
 /// would strip the pages of half their meaning.
 #[test]
 fn developer_docs_carry_their_diagram_set() {
+    /// Fewest sequence diagrams docs/internals may carry.
+    const MIN_SEQUENCE_DIAGRAMS: usize = 17;
     let total: usize = internals_pages()
         .iter()
         .map(|p| mermaid_fences(&read(p)).len())
         .sum();
     assert!(
-        total >= 17,
-        "expected at least 17 sequence diagrams across docs/internals, found {total}"
+        total >= MIN_SEQUENCE_DIAGRAMS,
+        "expected at least {MIN_SEQUENCE_DIAGRAMS} sequence diagrams across \
+         docs/internals, found {total}"
     );
 }
 

@@ -3089,6 +3089,70 @@ are exactly the cases a signaling-only view gets wrong.
   test that fails if "the call was silent" and "this run did not keep it"
   collapse into one string.
 
+## BA — bad actors: identify, evidence, recommend (added 2026-08-22)
+
+Raised by traffic that arrived while proving RE-T, not by speculation. The
+harness OpenSIPS publishes 5060 on 0.0.0.0, and `51.75.106.116` -- a public
+address, confirmed by Norm as a bad actor -- placed calls into it that
+OpenSIPS answered and rtpengine anchored media for. Twelve of its calls' ng
+control planes had to be filtered out of a committed fixture by correlation-id
+before it was safe to commit, which is how it was noticed at all.
+
+That is the shape of the case: an operator ALREADY HAS the evidence in a
+capture, and today sipnab tells them nothing about it. Everything below is
+defensive -- identify, evidence, recommend. sipnab recommends; the operator
+applies.
+
+- [ ] **BA1 — say who is attacking, from the capture already taken.** The
+  signals are all present and none are currently read as a set: a source
+  placing calls with no prior REGISTER, dialed numbers matching international
+  premium ranges, sequential or dictionary extension probing, a `User-Agent`
+  from a known scanner (friendly-scanner, sipvicious, sipcli), OPTIONS/REGISTER
+  sweeps, and call attempts at machine cadence. Individually each is weak and
+  several are legitimate in isolation -- a real PBX sends OPTIONS too. The
+  finding must therefore report WHICH signals fired and how many, not a
+  verdict, and must never name a source on one weak signal. Precedent for the
+  honesty rule already exists in this codebase; the mistake to avoid is a
+  confident accusation about somebody's address.
+
+- [ ] **BA2 — turn that into a rule the operator can apply.** Emit a concrete
+  fail2ban filter/jail or nftables/iptables rule for what BA1 identified,
+  with the evidence attached to it. Bounded hard: sipnab RECOMMENDS and does
+  not apply, does not reach a firewall, and does not hold a credential. The
+  output is text the operator reads and runs, which keeps this on the right
+  side of the line the transmit-permit rules already draw. Include the
+  counter-evidence too -- an address that also completed a normal registered
+  call should say so in the same block, because a rule that blocks a customer
+  is worse than the scan it stopped.
+
+- [ ] **BA3 — read the fraud from the MEDIA, not just the signaling.** What a
+  bad actor DOES once answered is the part signaling cannot show, and it is
+  the part that distinguishes the fraud types: silence with a held channel
+  (capacity/tarpit probing), DTMF bursts (IVR/PIN hunting), a single tone or
+  announcement (dial-through detection), a recorded prompt (wangiri callback
+  bait), and audio that arrives from an unexpected third address (media
+  hijack). sipnab already has the media half -- RTP quality, DTMF extraction
+  and audio retention -- and RE1 supplies the Call-ID that ties a relay's
+  streams to the offending call. The missing piece is presenting them together
+  as one answer about one caller.
+
+- [ ] **BA4 — a Lenny plugin, and the tension it creates.** Lenny is a
+  well-known anti-scam project: a chatbot of recorded audio that keeps a
+  caller talking indefinitely, wasting the attacker's most expensive resource.
+  Pairing it with BA3 is genuinely interesting, because a tarpited call is a
+  LONG media sample from a confirmed bad actor, which is exactly the evidence
+  BA3 wants and exactly what a normal capture never gets.
+  The tension is real and belongs in the entry rather than in a surprise
+  later. sipnab is a passive capture tool that does not sit in the production
+  path and does not answer calls; a Lenny plugin makes it originate media and
+  hold a session, which is a different product. It probably belongs BESIDE
+  sipnab -- something answers, sipnab watches -- rather than inside it. Decide
+  that before building, and check it against the positioning doc rather than
+  against how appealing the feature is. Note also that engaging an attacker is
+  a legal and policy question in some jurisdictions, and that is the
+  operator's call to make, not a default to ship.
+
+
 ## NAT — STUN/TURN visibility (added 2026-08-17)
 
 Raised by two field captures of a one-way-audio complaint, whose root cause was
