@@ -125,11 +125,11 @@ directory builds and starts it, and `make down` tears it down.
 every function the site calls.
 
 A second gate once demanded a freshly built bundle alongside any staged
-[`src/wasm.rs`](../../src/wasm.rs). It is gone, with the binary it guarded: the published
+[`src/wasm.rs`](../../src/wasm.rs). It no longer exists, nor does the binary it guarded: the published
 analyzer went eleven releases stale while that gate stayed green, because
 [`src/wasm.rs`](../../src/wasm.rs) had no commits in the window — the interface held still while the
 implementation behind it moved. The Pages workflow builds the bundle at deploy
-time now, so what ships is generated rather than committed and cannot go stale.
+time now, so the build produces what ships rather than the tree carrying it, and it cannot go stale.
 
 **Feature matrices.** A green `cargo test --features full` is not proof: CI
 also builds reduced feature sets, and code behind `#[cfg(not(feature = ...))]`

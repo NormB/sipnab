@@ -221,7 +221,8 @@ cross-thread coordination.
 
 Each worker owns a private `PacketProcessor` and thread-local stores, so the
 hot path takes no STORE lock, and the stores merge only at EOF. The three
-process-global side-tallies are the exception and are shared across workers, so
+process-global side-tallies are the exception -- every worker writes the same
+one -- so
 a capture that trips one of them often contends on one mutex regardless of
 worker count.
 
