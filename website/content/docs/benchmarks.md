@@ -10,7 +10,7 @@ how much of an estate one binary can take at once, and therefore whether you
 stand up a collector tier at all. **Every table on this page comes from one
 session on 2026-08-21.**
 
-Taken on the released 0.5.121 artifact, checksum-verified, 2026-08-21, on an
+Taken on the released 0.5.122 artifact, checksum-verified, 2026-08-21, on an
 idle host, against the released 0.5.108 and 0.5.117 artifacts as controls and a
 local release build of the fix. Every artifact figure below is a published
 binary whose checksum verifies. The 0.5.122 column is a local release build,
@@ -45,7 +45,7 @@ exists to skip.
 
 Put the figures next to the load. A proxy running 100 calls per second at
 roughly ten SIP messages per call emits about 1,000 signaling packets per
-second. The tables below measure 1.14M packets per second on one core and 3.26M
+second. The tables below measure 1.13M packets per second on one core and 3.23M
 on four, on a corpus that is 93.5% RTP — media a signaling-only HEP feed never
 carries at all. Three orders of magnitude separate that proxy from a single
 core's budget.
@@ -69,8 +69,8 @@ discover:
   G.711 PCMU at 20 ms, 93.5% RTP by packet count.
 - **Method:** offline pcap reconstruction (`-I file`), median-of-5 after one
   discarded warmup. `pkts/s = packets ÷ wall-clock seconds`, startup included.
-- **Version:** sipnab 0.5.121 (release artifact), with the released 0.5.108
-  and 0.5.117 artifacts as controls and a local release build of the fix.
+- **Version:** sipnab 0.5.122 (release artifact), with the released 0.5.108,
+  0.5.117 and 0.5.121 artifacts as controls.
   **Date:** 2026-08-21.
 
 ## Multi-core offline reconstruction
@@ -84,13 +84,13 @@ discarded warmup, on the same idle host:
 
 | cores | 0.5.117 | 0.5.121 | 0.5.122 |      |
 |------:|--------:|--------:|--------:|-----:|
-| 1 | 1.15M | 1.02M | 1.14M | — |
-| 2 | 2.19M | 1.78M | 2.16M | — |
-| 4 | 3.29M | 2.40M | **3.26M** | **+36%** |
-| 8 | 3.31M | 2.46M | **3.37M** | **+37%** |
+| 1 | 1.15M | 1.02M | 1.13M | — |
+| 2 | 2.19M | 1.78M | 2.17M | — |
+| 4 | 3.29M | 2.40M | **3.23M** | **+35%** |
+| 8 | 3.31M | 2.46M | **3.24M** | **+32%** |
 
 The percentage is the repair, not a gain: 0.5.122 returns to where 0.5.117 was.
-Resident memory returns with it, 143 MiB back to 97 MiB at four cores, because
+Resident memory returns with it, 143 MiB back to 99 MiB at four cores, because
 the capture is no longer loaded twice — once to reject it, once to read it.
 
 **0.5.108 raised the multi-core ceiling by removing a read, and the sizing

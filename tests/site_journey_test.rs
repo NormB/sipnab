@@ -1444,10 +1444,11 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
     // 0.5.118 and survived to 0.5.121. `is_merged` read the ENTIRE capture into
     // memory and then rejected it on the first four bytes, costing 0.06 s of a
     // 0.16 s run: four cores fell 3.29 -> 2.40M. The tile is back where 0.5.117
-    // was, not somewhere new. The TILE stays at 0.5.121's 2.40M until the fix
-    // ships: the released binary is what a visitor downloads, and quoting a
-    // number no published artifact produces is the failure this gate exists to
-    // prevent. It moves to 3.26M with the release that carries the fix.
+    // was, not somewhere new. The tile held 0.5.121's 2.40M until the fix
+    // shipped, because the released binary is what a visitor downloads and
+    // quoting a number no published artifact produces is the failure this gate
+    // exists to prevent. 0.5.122 published on 2026-08-21 and its own artifact
+    // measures 3.23M at four cores, so the tile moved with it.
     // Note what let the regression ship for ten releases -- the
     // benchmark gate's baseline still recorded 0.5.104's 2.28M, so 2.40M read
     // as 105% of baseline and passed. THIS gate is the other half: it forces
@@ -1467,7 +1468,7 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
     // One tile now, where there were two. Written as a binding rather than a
     // one-element loop because clippy::single_element_loop rejects the latter;
     // if a second throughput tile ever returns, restore the loop.
-    let (count, suffix) = ("2.40", "M pkts/s");
+    let (count, suffix) = ("3.23", "M pkts/s");
     let tile = format!(r#"data-count="{count}" data-suffix="{suffix}""#);
     assert!(
         idx.contains(&tile),
