@@ -735,6 +735,61 @@ pub struct GetDialogReportParams {
     pub format: Option<String>,
 }
 
+/// Parameters for `aggregate_dialogs`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct AggregateDialogsParams {
+    /// The ONE field to group by: `state`, `response_code`, `method`,
+    /// `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, or `rtp.codec`.
+    ///
+    /// One dimension, deliberately. Two is a pivot table and a pivot table
+    /// wants a UI, which is the line `docs/design/positioning.md` draws
+    /// between an analysis tool and a query engine. There is no time bucketing
+    /// for the same reason -- narrow the window with `filter` instead.
+    pub group_by: String,
+    /// Optional filter (alias or DSL) applied before grouping, so an
+    /// aggregate can be scoped the same way a listing is.
+    pub filter: Option<String>,
+    /// Buckets to return, largest first (1..=100, default 20). Everything
+    /// beyond this is summed into `other_count` rather than dropped: a
+    /// truncated aggregate that does not say what it left out is a wrong
+    /// total, not a partial one.
+    pub top_n: Option<u32>,
+}
+
+/// One bucket of an [`AggregateDialogsParams`] answer.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct AggregateBucket {
+    /// The grouped value, rendered as a string. `null` in the data becomes
+    /// the literal `"(none)"` rather than being dropped, because "how many
+    /// dialogs have no User-Agent" is a real question.
+    pub value: String,
+    /// Dialogs in this bucket.
+    pub count: usize,
+}
+
+/// Answer shape for `aggregate_dialogs`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct AggregateDialogsResponse {
+    /// Version of this response schema.
+    pub schema_version: u32,
+    /// Echo of the field grouped on, so an answer is self-describing.
+    pub group_by: String,
+    /// Buckets, largest first, ties broken by value for a stable answer.
+    pub buckets: Vec<AggregateBucket>,
+    /// Dialogs in buckets beyond `top_n`. Zero when nothing was truncated.
+    pub other_count: usize,
+    /// Distinct values seen, whether or not each got a bucket.
+    pub distinct_values: usize,
+    /// Dialogs the filter matched across the WHOLE store. `buckets` sum plus
+    /// `other_count` equals this, always.
+    pub total_matched: usize,
+    /// Which capture this answer came from, and which revision of its stores.
+    pub capture_identity: crate::provenance::CaptureEtag,
+}
+
 /// Parameters for `get_capture_report`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -3249,6 +3304,166 @@ impl SipnabMcp {
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
         Self::project_page_fields(&mut page, params.fields.as_deref())?;
         Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
+    }
+
+    /// Count dialogs by one field, inside the store.
+    ///
+    /// Counting is the operation a language model gets wrong most reliably,
+    /// and this surface already documents the failure: an agent asked "how
+    /// many calls failed" counts the rows it is holding and answers with that
+    /// number. The page object fixed exactly one count -- `total_matched` for
+    /// one filter. Every other count still meant fetching pages and tallying
+    /// them in the model's head, or issuing N filtered queries with the
+    /// buckets guessed in advance.
+    ///
+    /// One dimension only, and no time bucketing. That is a deliberate cap
+    /// rather than an unfinished feature: two dimensions is a pivot table,
+    /// a pivot table wants a UI, and `docs/design/positioning.md` puts that
+    /// outside what sipnab is. Narrow with `filter` instead.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) for an unknown or multi-valued `group_by`,
+    /// or an unparseable `filter`.
+    #[tool(
+        name = "aggregate_dialogs",
+        description = "Counts dialogs grouped by ONE field (state, \
+                       response_code, method, from.user, to.user, ua, src.ip, \
+                       dst.ip, rtp.codec), optionally filtered. Returns buckets \
+                       largest-first plus other_count, so the buckets and the \
+                       remainder always account for total_matched. Use this \
+                       instead of paging rows and counting them.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn aggregate_dialogs(
+        &self,
+        Parameters(params): Parameters<AggregateDialogsParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        /// Every groupable key. Listed once, used by both the dispatch and the
+        /// refusal message, so a key can never be accepted without being
+        /// offered or offered without being accepted.
+        const GROUPABLE: &[&str] = &[
+            "state",
+            "response_code",
+            "method",
+            "from.user",
+            "to.user",
+            "ua",
+            "src.ip",
+            "dst.ip",
+            "rtp.codec",
+        ];
+
+        let key = params.group_by.trim();
+        if !GROUPABLE.contains(&key) {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "cannot group by '{key}'; one of: {}. One dimension only -- \
+                     narrow with `filter` rather than adding a second.",
+                    GROUPABLE.join(", ")
+                ),
+                None,
+            ));
+        }
+
+        let top_n = params.top_n.unwrap_or(20).clamp(1, 100) as usize;
+        let filter = self.compile_filter(params.filter.as_deref())?;
+
+        let (mut tally, total_matched, capture_identity) = {
+            // Capture, dialogs, streams -- the order `CaptureState` documents.
+            let state = self.capture.read();
+            let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
+            let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
+            let capture = CaptureMedia::of_store(&ss);
+
+            let mut tally: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            let mut total = 0usize;
+            for d in ds.iter() {
+                let streams: Vec<&crate::rtp::stream::RtpStream> =
+                    ss.streams_for(&d.call_id).collect();
+                if let Some(expr) = filter.as_ref()
+                    && !expr.matches_dialog(d, &streams, capture, delay)
+                {
+                    continue;
+                }
+                total += 1;
+                // `(none)` rather than dropping the row: "how many dialogs
+                // carry no User-Agent" is a real question, and a bucket set
+                // that silently omits them would not sum to total_matched.
+                let value = match key {
+                    "state" => d.state().to_string(),
+                    "response_code" => d
+                        .final_status_code()
+                        .map_or_else(|| "(none)".to_string(), |c| c.to_string()),
+                    "method" => d.method.as_str().to_string(),
+                    "from.user" => d.from_user.clone().unwrap_or_else(|| "(none)".into()),
+                    "to.user" => d.to_user.clone().unwrap_or_else(|| "(none)".into()),
+                    // Across all messages, matching `Field::Ua`: the UA can
+                    // sit on any of them, not only the first.
+                    "ua" => d
+                        .messages
+                        .iter()
+                        .find_map(|m| m.user_agent().map(str::to_string))
+                        .unwrap_or_else(|| "(none)".into()),
+                    "src.ip" => d.src_addr.to_string(),
+                    "dst.ip" => d.dst_addr.to_string(),
+                    "rtp.codec" => streams
+                        .first()
+                        .and_then(|s| s.codec.clone())
+                        .unwrap_or_else(|| "(none)".to_string()),
+                    // GROUPABLE gated this above; a new key added there without
+                    // an arm here is a compile-time-invisible bug, so it fails
+                    // loudly rather than silently bucketing everything as one.
+                    other => {
+                        return Err(rmcp::ErrorData::internal_error(
+                            format!("groupable key '{other}' has no extractor"),
+                            None,
+                        ));
+                    }
+                };
+                // Three of these keys carry text the packet's SENDER wrote --
+                // `from.user`, `to.user` and `ua` are attacker-controlled on a
+                // public interface. They reach a language model here exactly
+                // as they would in a row, so they are fenced exactly as a row
+                // fences them (#139). The rest are values sipnab derived: a
+                // state name, a status code, an IP, a codec from a payload
+                // type table.
+                let value = if matches!(key, "from.user" | "to.user" | "ua") {
+                    super::shape::fence(&value)
+                } else {
+                    value
+                };
+                *tally.entry(value).or_insert(0) += 1;
+            }
+            (tally, total, capture_identity)
+        };
+
+        let distinct_values = tally.len();
+        let mut ordered: Vec<(String, usize)> = tally.drain().collect();
+        // Largest first, ties broken by value so the same store always gives
+        // the same answer -- a cursor-free aggregate that reordered between
+        // calls would look like the capture changed.
+        ordered.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let other_count: usize = ordered.iter().skip(top_n).map(|(_, c)| *c).sum();
+        let buckets: Vec<AggregateBucket> = ordered
+            .into_iter()
+            .take(top_n)
+            .map(|(value, count)| AggregateBucket { value, count })
+            .collect();
+
+        let response = AggregateDialogsResponse {
+            schema_version: 1,
+            group_by: key.to_string(),
+            buckets,
+            other_count,
+            distinct_values,
+            total_matched,
+            capture_identity,
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(response)?]))
     }
 
     /// The whole-capture report, the one `--report` prints.
@@ -8389,6 +8604,103 @@ mod tests {
         assert!(
             msg.contains("statte") && msg.contains("state"),
             "the error must name the typo AND the legal set: {msg}"
+        );
+    }
+
+    // ── aggregate_dialogs ────────────────────────────────────────────
+
+    /// Counting is the operation a language model gets wrong most reliably,
+    /// and `docs/mcp-tools.md` already documents this exact failure: "an agent
+    /// asked 'how many calls failed?' counts the rows it holds and answers
+    /// with that number." The page object fixed ONE count. Every other count
+    /// was still done in the model's head, over a page it had to fetch first.
+    #[tokio::test]
+    async fn aggregate_dialogs_counts_in_the_store_not_in_the_model() {
+        let server = server_with_dialog("agg@x");
+
+        let result = server
+            .aggregate_dialogs(Parameters(AggregateDialogsParams {
+                group_by: "state".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("aggregate should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+
+        assert_eq!(v["group_by"], "state");
+        let buckets = v["buckets"].as_array().expect("buckets array");
+        assert!(!buckets.is_empty(), "one dialog produces one bucket: {v}");
+        let total: u64 = buckets.iter().map(|b| b["count"].as_u64().unwrap()).sum();
+        assert_eq!(
+            total + v["other_count"].as_u64().unwrap(),
+            v["total_matched"].as_u64().unwrap(),
+            "the buckets plus the remainder must account for every matched \
+             dialog, or the agent is counting a subset it cannot see: {v}"
+        );
+    }
+
+    /// One dimension only. The positioning doc draws the line at analysis
+    /// rather than a query engine, and this is where the slope starts: two
+    /// dimensions is a pivot table, and a pivot table wants a UI.
+    #[tokio::test]
+    async fn aggregate_dialogs_refuses_a_second_dimension_and_an_unknown_one() {
+        let server = server_with_dialog("agg2@x");
+
+        for bad in ["state,method", "created_at", "payload"] {
+            let err = server
+                .aggregate_dialogs(Parameters(AggregateDialogsParams {
+                    group_by: bad.to_string(),
+                    ..Default::default()
+                }))
+                .await
+                .expect_err("a second dimension or an unknown key must be refused");
+            let json = serde_json::to_value(err).unwrap();
+            assert_eq!(json["code"], -32602, "refused as invalid_params: {bad}");
+            let msg = json["message"].as_str().unwrap_or_default();
+            assert!(
+                msg.contains("state"),
+                "the refusal must name what IS groupable, or the agent guesses \
+                 again: {msg}"
+            );
+        }
+    }
+
+    /// Grouping by a sender-written field puts attacker-controlled text in
+    /// front of a language model, exactly as a row does. `ua`, `from.user` and
+    /// `to.user` are fenced here for the same reason `fenced_dialog_summary`
+    /// fences them (#139); a state name or a status code is not, because
+    /// sipnab derived those.
+    #[tokio::test]
+    async fn sender_written_bucket_values_are_fenced_and_derived_ones_are_not() {
+        let server = server_with_dialog("fence-agg@x");
+
+        let ua = server
+            .aggregate_dialogs(Parameters(AggregateDialogsParams {
+                group_by: "ua".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("aggregate should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&ua)).unwrap();
+        let value = v["buckets"][0]["value"].as_str().expect("a bucket value");
+        assert!(
+            value.contains(super::super::shape::UNTRUSTED_OPEN),
+            "a User-Agent is written by the sender and must be fenced: {value:?}"
+        );
+
+        let state = server
+            .aggregate_dialogs(Parameters(AggregateDialogsParams {
+                group_by: "state".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("aggregate should succeed");
+        let v2: serde_json::Value = serde_json::from_str(&text_of(&state)).unwrap();
+        let derived = v2["buckets"][0]["value"].as_str().expect("a bucket value");
+        assert!(
+            !derived.contains(super::super::shape::UNTRUSTED_OPEN),
+            "a dialog state is sipnab's own word and fencing it would tell the \
+             agent to distrust the analysis: {derived:?}"
         );
     }
 

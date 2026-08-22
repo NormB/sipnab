@@ -593,7 +593,7 @@ fn wiki_intra_docs_links_resolve() {
     // Raised 433 -> 441 by the MCP split: mcp.md shed its tool reference and
     // protocol contract into two new pages, and the four-page set cross-links
     // where one page used to link internally.
-    const EXPECTED_WIKI_LINKS: usize = 471;
+    const EXPECTED_WIKI_LINKS: usize = 472;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -640,6 +640,8 @@ fn wiki_intra_docs_links_resolve() {
     // it links analysis.rs, get_dialog_report, render_ladder and
     // capture_status rather than restating what each already says. Four links,
     // one page -- the site mirror is generated and this gate reads docs/.
+    // 471 -> 472 by MCPX2's `aggregate_dialogs` section, which links
+    // positioning.md for the one-dimension cap rather than re-arguing it.
 
     assert_eq!(
         seen, EXPECTED_WIKI_LINKS,

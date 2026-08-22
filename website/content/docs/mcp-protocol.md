@@ -58,8 +58,8 @@ For the tools themselves see [MCP tool reference](@/docs/mcp-tools.md).
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 36 carry MCP annotations, so a host
-  can decide what to call without asking. Twenty-nine are `readOnlyHint: true`.
+- **Every tool declares what it does.** All 37 carry MCP annotations, so a host
+  can decide what to call without asking. Thirty are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the five that are
   not. Every tool sets `openWorldHint` to `false`, because sipnab answers from
   the loaded capture and contacts no external service.
@@ -113,7 +113,7 @@ For the tools themselves see [MCP tool reference](@/docs/mcp-tools.md).
 
 ## What the write verbs do
 
-Twenty-nine of the 36 tools are `readOnlyHint: true`. These seven are not, and
+Thirty of the 37 tools are `readOnlyHint: true`. These seven are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 

@@ -25,6 +25,7 @@ ordinary update.
 |---|---|---|
 | [`list_dialogs`](#list_dialogs) | `filter?`, `limit?`, `cursor?` | A page of dialog summaries, with the total behind it |
 | [`get_dialog_report`](#get_dialog_report) | `call_id`, `format?` | Structured per-call report (JSON / Markdown / text) |
+| [`aggregate_dialogs`](#aggregate_dialogs) | `group_by`, `filter?`, `top_n?` | Counts dialogs grouped by ONE field, in the store rather than in the model |
 | [`get_capture_report`](#get_capture_report) | `format?` | Whole-capture analysis: findings, orphaned media, STUN/ICMP evidence, what the caps shed |
 | [`find_problems`](#find_problems) | `kinds?`, `filter?`, `limit?`, `cursor?` | A page of dialogs matching one or more diagnostic alias names |
 | [`get_dialog`](#get_dialog) | `call_id`, `max_messages?`, `cursor?` | Paginated dialog with full SIP messages |
@@ -301,6 +302,50 @@ Three rules, each there for a reason:
 A field already absent from a row stays absent rather than reappearing as
 null: the projection runs on the serialized page, so `skip_serializing_if`
 still decides what exists.
+
+### `aggregate_dialogs`
+
+Counts dialogs grouped by one field, inside the store.
+
+Counting is the operation a language model gets wrong most reliably, and this
+page documents that failure elsewhere: an agent asked "how many calls failed?"
+counts the rows it is holding and answers with that number. The page object
+fixed exactly one count — `total_matched`, for one filter. Every other count
+still meant fetching pages and tallying them in the model's head, or issuing N
+filtered queries with the buckets guessed in advance.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `group_by` | string | One of `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, `rtp.codec`. Anything else fails with `invalid_params` naming the legal set. | Required. |
+| `filter` | string? | Alias or DSL, applied before grouping. | No filter — the whole store. |
+| `top_n` | integer? | 1–100. Buckets beyond it are summed into `other_count`, never dropped. | 20. |
+
+```jsonc
+// aggregate_dialogs { "group_by": "response_code", "filter": "state == 'Failed'" }
+{
+  "group_by": "response_code",
+  "buckets": [ { "value": "503", "count": 412 }, { "value": "486", "count": 77 } ],
+  "other_count": 11,
+  "distinct_values": 6,
+  "total_matched": 500
+}
+```
+
+**The buckets plus `other_count` always equal `total_matched`.** A truncated
+aggregate that does not say what it left out is a wrong total rather than a
+partial one, so nothing is silently dropped — including nulls, which become the
+literal `(none)`: "how many dialogs carry no User-Agent" is a real question.
+
+**One dimension, and no time bucketing.** That is a deliberate cap, not an
+unfinished feature. Two dimensions is a pivot table, a pivot table wants a UI,
+and [positioning](https://github.com/NormB/sipnab/blob/main/docs/design/positioning.md)
+puts that outside what sipnab is. Narrow the window with `filter` instead.
+
+**Grouping by `from.user`, `to.user` or `ua` returns fenced values.** Those are
+text the packet's sender wrote, and they reach a model here exactly as they
+would in a row. A state name, a status code, an IP or a codec is sipnab's own
+derivation and is returned verbatim — fencing those would tell the agent to
+distrust the analysis.
 
 ### `get_capture_report`
 

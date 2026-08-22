@@ -2066,7 +2066,7 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // from no MCP tool. An agent could be handed a count it could not expand.
     assert_eq!(
         registered.len(),
-        36,
+        37,
         "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -2889,8 +2889,11 @@ fn no_documentation_table_repeats_a_row() {
         //
         // Raised 597 -> 599 by MCPX5's `get_capture_report`: its parameter
         // table in docs/mcp-tools.md, doubled by the generated site mirror.
-        599,
-        "walked {tables} tables, expected 599. More is fine — bump this. FEWER \
+        //
+        // Raised 599 -> 601 by MCPX2's `aggregate_dialogs`, the same way: one
+        // parameter table, doubled by the mirror.
+        601,
+        "walked {tables} tables, expected 601. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );
