@@ -282,10 +282,9 @@ gone by, and vanish from the listing.
 ### Narrowing a row with `fields`
 
 `list_dialogs`, `find_problems`, `tail_dialogs` and `search_by_time` take an
-optional `fields` array. Rows on this surface are bounded three ways already --
-`limit`, `--mcp-max-rows`, and cursors -- and columns were not bounded at all,
-so asking for a page in order to read two values off it still paid for every
-other value on every row.
+optional `fields` array. This surface already bounds rows three ways -- `limit`, `--mcp-max-rows`, and
+cursors -- and it bounded columns not at all, so asking for a page to read two
+values off it still paid for every other value on every row.
 
 ```jsonc
 // list_dialogs { "limit": 200, "fields": ["state", "final_status_code"] }
@@ -296,7 +295,7 @@ Three rules, each there for a reason:
 
 - **`call_id` always survives**, listed or not. Every follow-up tool here takes
   a Call-ID, so a row an agent cannot address is a row it can do nothing with.
-- **An unknown name is refused**, naming both the typo and the fields the row
+- **An unknown name fails**, naming both the typo and the fields the row
   actually carries. Silently returning rows without the field asked for reads
   as "no such data", which is a wrong answer rather than an error.
 - **The envelope is never projected.** `total_matched`, `truncated`,
@@ -323,7 +322,7 @@ filtered queries with the buckets guessed in advance.
 |---|---|---|---|
 | `group_by` | string | One of `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, `rtp.codec`. Anything else fails with `invalid_params` naming the legal set. | Required. |
 | `filter` | string? | Alias or DSL, applied before grouping. | No filter — the whole store. |
-| `top_n` | integer? | 1–100. Buckets beyond it are summed into `other_count`, never dropped. | 20. |
+| `top_n` | integer? | 1–100. Anything past it lands in `other_count` rather than disappearing. | 20. |
 
 ```jsonc
 // aggregate_dialogs { "group_by": "response_code", "filter": "state == 'Failed'" }
@@ -349,7 +348,7 @@ puts that outside what sipnab is. Narrow the window with `filter` instead.
 **Grouping by `from.user`, `to.user` or `ua` returns fenced values.** Those are
 text the packet's sender wrote, and they reach a model here exactly as they
 would in a row. A state name, a status code, an IP or a codec is sipnab's own
-derivation and is returned verbatim — fencing those would tell the agent to
+derivation and comes back verbatim — fencing those would tell the agent to
 distrust the analysis.
 
 ### `get_capture_report`
@@ -361,8 +360,8 @@ and rendered by `output::analysis_report`.
 [`get_dialog_report`](#get-dialog-report) and [`render_ladder`](#render-ladder)
 both answer for ONE Call-ID, so everything the report says about the capture as
 a whole had no MCP path: orphaned media, STUN, ICMP errors quoting SIP or RTP,
-and what the retention caps shed. An agent could be handed a count by
-[`capture_status`](#capture-status) and had no tool that could expand it.
+and what the retention caps shed. [`capture_status`](#capture-status) could hand an agent a count, and no tool
+could expand it.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
@@ -370,7 +369,7 @@ and what the retention caps shed. An agent could be handed a count by
 
 Frames read comes from the same process-global counter the Prometheus scrape
 reports (`sipnab_capture_packets_total`), so the denominator here is the one
-every other number in the run is read against.
+every other number in the run measures against.
 
 A capture with no findings still answers with the clean line rather than an
 empty body, because silence is indistinguishable from the tool not having run:
