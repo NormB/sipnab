@@ -1,0 +1,44 @@
+# Paths codespell runs over. ONE list, three consumers:
+#
+#   .githooks/pre-push              the gate that blocks a push
+#   scripts/preflight.sh            the same gate, run early and on demand
+#   .github/workflows/quality.yml   the gate that blocks a merge
+#
+# They used to be three hand-kept copies, under a comment in the hook reading
+# "CI invokes codespell over this exact path list; keep them identical". They
+# were not identical: the hook omitted `bench` -- the operator harness and its
+# README -- while the other two carried it. So a misspelling in bench/ passed
+# the hook that exists to catch it and turned main red instead, and nothing
+# checked the property the comment asserted.
+#
+# `examples/` was in none of them. Vale skips .rs entirely and codespell was
+# never pointed at that tree, so every word of prose in examples/*.rs was
+# ungated -- which mattered little at two files and matters at five.
+#
+# This is the same fix `.config/code-trees.txt` already carries for the tree
+# list, and its header records what that drift cost when the list was typed
+# out five times. Same grammar: one path per line, blank lines and `#`
+# comments ignored.
+#
+# `the_codespell_path_list_has_one_source` in tests/docs_drift_test.rs holds
+# all three consumers to this file and fails when one restates the list
+# instead of reading it.
+#
+# Not listed and deliberately so: `src` carries prose in doc comments and IS
+# listed; `target`, `build` and `website/public` are generated; `fuzz` holds
+# corpus artifacts, not prose.
+src
+tests
+docs
+website
+bench
+benches
+harness
+scripts
+examples
+README.md
+CONTRIBUTING.md
+SECURITY.md
+CHANGELOG.md
+SUPPORT.md
+MAINTAINERS.md

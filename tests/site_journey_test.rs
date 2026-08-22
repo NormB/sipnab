@@ -3799,9 +3799,23 @@ fn packaging_scripts_reference_existing_paths() {
     // nothing else stopped being checked. The path is spelled out rather than
     // described precisely because this gate then verifies it still exists —
     // a note pointing at a directory that has moved is worse than no note.
+    // Raised 73 -> 78 by the prose-gate path lists getting one source each.
+    // Every one of the five is in .github/workflows/quality.yml, the only
+    // scanned file the change touched: the two `run:` lines that now read
+    // .config/codespell-paths.txt and .config/vale-paths.txt, and the comments
+    // beside them naming those files and the two other runners that read them.
+    // Attributed by measurement — .githooks/pre-push and scripts/preflight.sh
+    // gained references too and are outside the four scanned directories, so
+    // they contribute nothing here. No path went missing; only the count moved.
+    //
+    // The expected figure was written twice, in the assertion and again in its
+    // own failure message, so raising one left the other naming the old number
+    // — the drift this file exists to catch, in this file. One const now.
+    const EXPECTED_REFERENCES: usize = 78;
     assert_eq!(
-        checked, 73,
-        "packaging path scan saw {checked} references, expected 73. More is \
+        checked, EXPECTED_REFERENCES,
+        "packaging path scan saw {checked} references, expected \
+         {EXPECTED_REFERENCES}. More is \
          fine — bump this. FEWER means the candidate extractor stopped matching \
          and unverified paths pass unseen."
     );

@@ -185,9 +185,12 @@ elif ! "$VALE" --version 2>/dev/null | grep -qF "$WANT_VALE"; then
     note "Different dictionaries: a green run here is NOT evidence about CI."
     note "Fetch the pinned build for this arch and point VALE_BIN at it."
 else
-    # CI's exact path list. Adding anything to it -- CHANGELOG.md especially --
-    # invents errors CI will never report.
-    if "$VALE" docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md >"$VALE_OUT" 2>&1; then
+    # CI's exact path list, because it is literally the same file CI reads --
+    # see .config/vale-paths.txt. Adding anything to it, CHANGELOG.md
+    # especially, invents errors CI will never report; it now takes editing
+    # that one file, and all three runners move together.
+    # shellcheck disable=SC2086
+    if "$VALE" $(sed 's/#.*//' .config/vale-paths.txt | tr '\n' ' ') >"$VALE_OUT" 2>&1; then
         ok
     else
         bad
@@ -207,7 +210,7 @@ fi
 # <<< END vale-gate
 
 # ---------------------------------------------------------------------------
-# 2. codespell, over CI's own path list (both `bench` AND `benches`).
+# 2. codespell, over the shared list in .config/codespell-paths.txt.
 # ---------------------------------------------------------------------------
 # >>> BEGIN codespell-gate
 step "codespell"
@@ -226,9 +229,10 @@ if [ -z "$CS" ]; then
     note "not installed; CI runs it and it blocks. pipx install codespell"
     note "(or point CODESPELL_BIN at one in a venv, as the hook accepts)"
 else
-    if $CS src tests docs website bench benches harness scripts examples \
-        README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md SUPPORT.md \
-        MAINTAINERS.md \
+    # Same one file the hook and CI read -- see .config/codespell-paths.txt.
+    # Unquoted on purpose: the list is a word list, not one path.
+    # shellcheck disable=SC2086
+    if $CS $(sed 's/#.*//' .config/codespell-paths.txt | tr '\n' ' ') \
         >"$CS_OUT" 2>&1; then
         ok
     else

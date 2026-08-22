@@ -6,8 +6,8 @@
 #   * `cargo clippy --workspace --all-features --all-targets -- -D warnings`,
 #   * `cargo doc --no-deps --all-features --workspace` (RUSTDOCFLAGS -D warnings),
 #   * `cd fuzz && cargo check`,
-#   * `vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md`, or
-#   * `codespell` over the same paths CI passes it.
+#   * `vale` over .config/vale-paths.txt, or
+#   * `codespell` over .config/codespell-paths.txt.
 # These are the exact gaps that break CI -- unformatted, lint-dirty, doc-broken,
 # fuzz-broken, or misspelt work must never reach the remote, since CI runs all
 # six as blocking gates. The two prose gates arrived last and for cause: on
@@ -736,7 +736,13 @@ prose_fail=0
 # version in quality.yml before believing a local run.
 #
 # VALE_BIN points at a pinned binary, exactly as CODESPELL_BIN does below.
-VALE_PIN='3.16.0'
+# Derived, never restated. scripts/preflight.sh already read the pin out of
+# quality.yml and this hook carried its own literal beside it, so a bump in CI
+# would leave the hook comparing a correct binary against a stale number and
+# reporting NOT CHECKED -- a gate switching itself off quietly. Empty when the
+# workflow cannot be read, which the comparison below treats as "unknown"
+# rather than as a match.
+VALE_PIN=$(grep -oE "VALE_VERSION: '[0-9.]+'" .github/workflows/quality.yml 2>/dev/null | grep -oE '[0-9.]+' | head -1)
 if [ -n "${VALE_BIN:-}" ] && [ -x "${VALE_BIN}" ]; then
 	VALE="$VALE_BIN"
 elif command -v vale >/dev/null 2>&1; then
@@ -758,7 +764,9 @@ elif [ "$VALE_HAVE" != "$VALE_PIN" ]; then
 	printf '    A different binary reports a different count on the same bytes, so\n'
 	printf '    this run would be evidence about nothing. Point VALE_BIN at a\n'
 	printf '    v%s binary to check here; CI still enforces it.\n' "$VALE_PIN"
-elif "$VALE" docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md >/tmp/.sipnab-vale.$$ 2>&1; then
+# Paths from the shared list -- see .config/vale-paths.txt.
+# shellcheck disable=SC2086
+elif "$VALE" $(sed 's/#.*//' .config/vale-paths.txt | tr '\n' ' ') >/tmp/.sipnab-vale.$$ 2>&1; then
 	printf '%bOK%b\n' "$GREEN" "$NC"
 	rm -f /tmp/.sipnab-vale.$$
 else
@@ -768,17 +776,13 @@ else
 	prose_fail=1
 fi
 
-# CI invokes codespell over this exact path list; keep them identical.
-#
-# They were NOT identical. CI carried `bench` -- the operator harness and its
-# README -- and this copy did not, so a misspelling there passed the hook that
-# exists to catch it and turned main red instead. The comment above claimed the
-# property nothing checked.
-#
-# `examples` is new to both. Vale skips `.rs` entirely and codespell was never
-# pointed at that tree, so every word of prose in examples/*.rs was ungated --
-# which mattered little at two files and matters at five.
-CODESPELL_PATHS="src tests docs website bench benches harness scripts examples README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md SUPPORT.md MAINTAINERS.md"
+# The paths codespell runs over live in ONE file, read by this hook, by
+# scripts/preflight.sh and by .github/workflows/quality.yml. They used to be
+# three copies kept identical by a comment saying so, and they were not: this
+# copy omitted `bench`, so a misspelling in the operator harness passed here
+# and failed in CI. `the_codespell_path_list_has_one_source` now fails when a
+# runner restates the list instead of reading it.
+CODESPELL_PATHS=$(sed 's/#.*//' .config/codespell-paths.txt | tr '\n' ' ')
 printf '  codespell (spelling) ... '
 CS=""
 if command -v codespell >/dev/null 2>&1; then
