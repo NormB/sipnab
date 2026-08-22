@@ -184,6 +184,7 @@ dlopen
 DMZs
 Dockerfile
 Dockerfiles
+doctest
 doctests
 Docusaurus
 downloader

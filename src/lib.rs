@@ -115,3 +115,21 @@ pub use sip::dialog::{DialogState, SipDialog};
 pub use sip::dialog_store::DialogStore;
 pub use sip::dsl::FilterExpr;
 pub use sip::message::SipMessage;
+
+// `docs/library.md` is the page a library consumer reads before writing a
+// line against this crate, and until now nothing compiled a word of it. Its
+// `PcapReader` snippet used `?` in what a doctest wraps as a `()`-returning
+// `main` — E0277, code that has never once built, sitting under a heading
+// that says "Crate-root surface". A consumer's first paste failed, and the
+// suite stayed green because no target ever read the file.
+//
+// `#[cfg(doctest)]` is true only while rustdoc collects doctests, so this
+// module exists for `cargo test` and for nothing else: it is absent from
+// every normal build and from the rendered docs, which keeps the page's
+// prose out of the crate root where the Quick Start above already lives.
+// Including the file rather than copying its blocks is the point — a mirror
+// would need its own drift gate, and a drift gate that can disagree with the
+// thing it mirrors is a second source of truth.
+#[cfg(doctest)]
+#[doc = include_str!("../docs/library.md")]
+mod library_md_is_compiled {}
