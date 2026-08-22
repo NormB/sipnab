@@ -34,7 +34,7 @@ use anyhow::{Result, bail, ensure};
 /// The limit exists because [`Value`] is a recursive type and decoding it
 /// recurses: without a bound, `llll...` in a hostile datagram is a stack
 /// overflow, which is a crash rather than a parse error.
-const MAX_DEPTH: usize = 16;
+pub const MAX_DEPTH: usize = 16;
 
 /// One bencode value, borrowing from the buffer it was decoded from.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -354,9 +354,9 @@ pub struct RtpStream {
     ///
     /// `None` while the stream is orphaned, or when the binding came from a
     /// path carrying no provenance. Absent is "nobody said" — it must not be
-    /// read as [`EndpointAssertion::Signaled`], because the whole reason to
-    /// record it is to be able to distinguish a relay's claim from a party's,
-    /// and a default would quietly answer that question without evidence.
+    /// read as `Signaled`, because the whole reason to record it is to be able
+    /// to distinguish a relay's claim from a party's, and a default would
+    /// quietly answer that question without evidence.
     pub dialog_assertion: Option<crate::rtp::stream_store::EndpointAssertion>,
     /// Timestamp of the first packet seen for this stream.
     pub first_seen: DateTime<Utc>,
