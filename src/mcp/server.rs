@@ -6023,9 +6023,24 @@ impl SipnabMcp {
                 continue;
             }
             let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            // First packet time, which costs one open and one record read. It
+            // is what lets an agent narrow forty rotated files to the two that
+            // could hold the call it is asking about, instead of calling
+            // `open_capture` on each in turn -- a tool documented as
+            // destructive, which voids every cursor it holds.
+            //
+            // Deliberately NOT dialog_count or a last-packet time: both need
+            // the whole file parsed or seeked, and a listing that costs a full
+            // read of every capture in the root is a listing nobody runs.
+            let first_packet = crate::capture::input_set::first_packet_time(&path)
+                .ok()
+                .flatten()
+                .and_then(|secs| chrono::DateTime::from_timestamp(secs as i64, 0))
+                .map(|dt| dt.to_rfc3339());
             files.push(serde_json::json!({
                 "filename": path.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
                 "bytes": size,
+                "first_packet": first_packet,
             }));
         }
         files.sort_by(|a, b| a["filename"].as_str().cmp(&b["filename"].as_str()));
@@ -8842,6 +8857,37 @@ mod tests {
             !derived.contains(super::super::shape::UNTRUSTED_OPEN),
             "a dialog state is sipnab's own word and fencing it would tell the \
              agent to distrust the analysis: {derived:?}"
+        );
+    }
+
+    /// `list_captures` returned `{filename, bytes}` and nothing else, so the
+    /// only way to learn what was inside a second file was `open_capture` --
+    /// documented "Destructive. Replaces every dialog and stream", minting a
+    /// new `capture_identity` that voids every cursor the agent holds. Asking
+    /// "which of these rotated files could hold this call" cost the capture
+    /// the agent was already working on.
+    #[tokio::test]
+    async fn list_captures_says_when_each_file_starts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/pcap-samples/sip-rtp-g711.pcap"),
+            root.join("rotated-01.pcap"),
+        )
+        .expect("seed a real capture");
+
+        let srv = server_with_dialog("caps@x").with_file_root(&root);
+        let result = srv.list_captures().await.expect("list_captures");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        let row = &v["captures"][0];
+
+        assert_eq!(row["filename"], "rotated-01.pcap");
+        let first = row["first_packet"].as_str().unwrap_or_default();
+        assert!(
+            first.contains('T') && first.contains(':'),
+            "a real capture must report when it starts, as RFC 3339: {row}"
         );
     }
 

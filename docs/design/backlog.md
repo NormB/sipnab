@@ -3101,6 +3101,24 @@ ones that fit an analysis tool.
   cheap header read, plus a read-only `find_in_captures { filter, limit }` that
   names matching files without swapping the active store. No database.
 
+  **PARTLY DONE.** `list_captures` now reports `first_packet` as RFC 3339,
+  which costs one open and one record read, and is what narrows forty rotated
+  files to the two that could hold the call being asked about. `last_packet`
+  and `dialog_count` were NOT added and should not be: a last-packet time needs
+  a seek to the end of every file and `dialog_count` needs each one fully
+  parsed, so a listing carrying them would cost a full read of every capture in
+  the root -- a listing nobody runs is worse than a listing that answers less.
+
+  **What remains is the part with the value: `find_in_captures`.** Narrowing by
+  time is a filter, not an answer; "which of these files holds Call-ID X" still
+  cannot be asked. That needs a real sweep -- a scratch store per file, the
+  filter applied, the active store untouched -- and it needs three decisions
+  first, none of which the metadata half forced: what bounds the sweep (files?
+  bytes? wall-clock?), whether it can be cancelled once running, and what it
+  reports for a file it could not open. Those are why this half did not ship
+  alongside the other: half a sweep that silently skips an unreadable file is
+  the CT1 defect again, in a new place.
+
 - [x] **MCPX4 — exports are unreachable from the deployment shape that needs
   them most.** `export_capture` and `export_audio` return a server-local
   absolute path. Over stdio that is fine. Over the HTTP transport that

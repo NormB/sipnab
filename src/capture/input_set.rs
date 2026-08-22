@@ -559,7 +559,7 @@ fn report_unusable_entry(
 /// Doubles as the "is this a capture file" test — see the module docs. Uses
 /// the same opener as the read path, so gzip members are handled identically
 /// and a mixed compressed/uncompressed set needs no special case here.
-fn first_packet_time(path: &Path) -> Result<Option<f64>> {
+pub(crate) fn first_packet_time(path: &Path) -> Result<Option<f64>> {
     // A merged pcapng must be recognised BEFORE libpcap touches it. libpcap
     // opens such a file happily and fails on the first packet that names a
     // second interface, so there is no open-time error to catch -- and this
