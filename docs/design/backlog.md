@@ -669,7 +669,7 @@ Tiers:
 
 ## P2 — robustness, observability & efficiency
 
-- [ ] **TLSHOLD — two of the three late-decrypt counters never reach the
+- [x] **TLSHOLD — two of the three late-decrypt counters never reach the
   operator, so an eviction and a key that never came look identical.** The
   late-keylog hold added in 0.5.120 keeps three tallies:
   [`late_recovered`, `late_evicted`, `late_still_held`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs).
@@ -692,6 +692,13 @@ Tiers:
   knob the eviction argues for. Documented behaviour is in
   [`docs/tls-capture.md`](https://github.com/NormB/sipnab/blob/main/docs/tls-capture.md);
   keep the two in step.
+
+  **DONE.** Both counters print through `late_hold_guidance`, on runs that
+  decrypted as well as runs that did not, and each names the bound it hit.
+  The three bounds moved to [`src/capture/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs) beside the report they
+  describe, so the message and the enforcement share one definition instead
+  of restating each other -- a message naming a bound the code does not
+  enforce is worse than no message.
 
 - [ ] **REL1 — the release build fetches from four external hosts and a
   failure at any of them costs a re-run of the whole tag.** Measured over one

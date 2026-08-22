@@ -596,7 +596,7 @@ const MAX_PENDING_PER_CONN: usize = 32;
 /// packet buffers it was read from, so this widens no exposure that the
 /// capture itself did not already have. It is dropped the moment a record
 /// decrypts or the budget evicts it.
-const REWIND_BUDGET_BYTES: usize = 4 * 1024 * 1024;
+use super::REWIND_BUDGET_BYTES;
 
 /// How far behind the newest packet a held record may be before it is retired.
 ///
@@ -606,7 +606,7 @@ const REWIND_BUDGET_BYTES: usize = 4 * 1024 * 1024;
 /// (a handshake flight, an unrelated HTTPS flow, a cipher sipnab refuses) is
 /// re-swept against every session on every key load, forever, on the single
 /// consumer thread.
-const REWIND_MAX_AGE_SECS: i64 = 5;
+use super::REWIND_MAX_AGE_SECS;
 
 /// Trial decryptions one sweep may attempt before stopping and resuming at the
 /// next key load. A full hold is 4096 directions x 16 records against every
@@ -648,7 +648,7 @@ pub struct RecoveredRecord {
 
 /// Held records per TCP direction, so one noisy direction cannot starve the
 /// others out of the shared byte budget.
-const MAX_REWIND_PER_DIRECTION: usize = 16;
+use super::MAX_REWIND_PER_DIRECTION;
 
 /// Directions tracked at once. Matches the ClientHello cap for the same
 /// reason: a peer opening many connections must not pin memory.

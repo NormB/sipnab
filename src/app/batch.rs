@@ -1461,6 +1461,52 @@ fn tls_decrypt_guidance(
     tls: &crate::capture::TlsDecryptReport,
     mapped_libs: &[String],
 ) -> Vec<String> {
+    let mut lines = late_hold_guidance(tls);
+    lines.extend(unread_guidance(tls, mapped_libs));
+    lines
+}
+
+/// What the late-keylog hold discarded, and what it was still holding when the
+/// run ended.
+///
+/// Reported on runs that decrypted successfully as well as runs that did not,
+/// which is the whole point: an eviction only happens on a capture that was
+/// otherwise working, so the early return in [`unread_guidance`] is exactly
+/// where this fact was being dropped. Both counters existed and reached
+/// nobody.
+///
+/// The two are separate lines because they are separate problems. Ciphertext
+/// discarded before a key arrived is fixed by starting the key source earlier
+/// or raising the bound. Records still held at the end mean the keys never
+/// came at all, and starting earlier fixes nothing.
+fn late_hold_guidance(tls: &crate::capture::TlsDecryptReport) -> Vec<String> {
+    let mut lines = Vec::new();
+    if tls.late_evicted > 0 {
+        lines.push(format!(
+            "sipnab discarded {} TLS record(s) held from before a key arrived: the \
+             late-decrypt hold is bounded ({} MiB total, {} record(s) per direction, \
+             {}s), and it filled before any key matched them. Start the key source \
+             before the capture, or expect the first message of a call to be missing.",
+            tls.late_evicted,
+            crate::capture::REWIND_BUDGET_BYTES / (1024 * 1024),
+            crate::capture::MAX_REWIND_PER_DIRECTION,
+            crate::capture::REWIND_MAX_AGE_SECS,
+        ));
+    }
+    if tls.late_still_held > 0 {
+        lines.push(format!(
+            "{} TLS record(s) were still waiting when the run ended: no key ever \
+             arrived for them. Nothing was discarded and starting the capture \
+             earlier would not have helped -- the key source never produced those \
+             secrets.",
+            tls.late_still_held
+        ));
+    }
+    lines
+}
+
+/// Why ciphertext went unread, and what to change.
+fn unread_guidance(tls: &crate::capture::TlsDecryptReport, mapped_libs: &[String]) -> Vec<String> {
     // Any successful decrypt at all proves the keys, the sequence numbers and
     // the session matching work, so the run has nothing to explain.
     if !tls.read_nothing() {
@@ -4933,6 +4979,47 @@ mod tests {
         assert!(
             tls_decrypt_guidance(&tls_report(1, 12, 7), &[]).is_empty(),
             "seven of twelve is a normal TLS 1.3 handshake, not five lost records"
+        );
+    }
+
+    /// Records the hold discarded before a key arrived must be reported on a
+    /// run that decrypted everything ELSE, which is exactly the run the old
+    /// early return stayed silent on.
+    ///
+    /// Without the eviction count, "we never had the keys for those records"
+    /// and "we had them and had already thrown the ciphertext away" produce
+    /// the same output, and only one of them is fixed by starting the key
+    /// source earlier.
+    #[test]
+    fn an_eviction_is_reported_on_a_run_that_decrypted_everything_else() {
+        let mut report = tls_report(1, 12, 12);
+        report.late_evicted = 3;
+        let joined = tls_decrypt_guidance(&report, &[]).join("\n");
+        assert!(
+            joined.contains('3'),
+            "the eviction count must reach the operator, got: {joined:?}"
+        );
+        assert!(
+            joined.contains("before a key"),
+            "the line must say WHY the records went, got: {joined:?}"
+        );
+    }
+
+    /// Keys that never came are a different fact from ciphertext already
+    /// discarded, and the run has to separate them.
+    #[test]
+    fn records_still_waiting_at_the_end_are_reported_separately() {
+        let mut report = tls_report(1, 12, 12);
+        report.late_still_held = 5;
+        let joined = tls_decrypt_guidance(&report, &[]).join("\n");
+        assert!(
+            joined.contains('5') && joined.contains("no key"),
+            "records still held must be named as keys that never arrived, got: {joined:?}"
+        );
+        // And the two must not be conflated.
+        assert!(
+            !joined.contains("before a key"),
+            "nothing was evicted, so no eviction line: {joined:?}"
         );
     }
 
