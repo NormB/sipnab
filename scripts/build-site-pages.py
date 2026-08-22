@@ -251,11 +251,21 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "endpoints, fleets, and headless automation.",
     ),
     (
+        "docs/mcp-estate.md",
+        "mcp-estate.md",
+        "Run MCP across an estate, not one box",
+        "MCP Across an Estate",
+        16,
+        "Several SIP servers feeding one capture host, reaching sipnab from "
+        "outside the network, one agent holding many capture hosts, and "
+        "following one call across an SBC, a proxy and a PBX.",
+    ),
+    (
         "docs/mcp-tools.md",
         "mcp-tools.md",
         "MCP tool reference",
         "MCP Tools",
-        16,
+        17,
         "Every MCP tool sipnab exposes, what question each answers, and the "
         "fields it returns.",
     ),
@@ -264,7 +274,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "mcp-protocol.md",
         "MCP protocol",
         "MCP Protocol",
-        17,
+        18,
         "The MCP wire contract: security model, what the write verbs may do, "
         "untrusted capture text, the stdio invariant, and error semantics.",
     ),

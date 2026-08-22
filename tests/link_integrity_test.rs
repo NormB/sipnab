@@ -593,7 +593,7 @@ fn wiki_intra_docs_links_resolve() {
     // Raised 433 -> 441 by the MCP split: mcp.md shed its tool reference and
     // protocol contract into two new pages, and the four-page set cross-links
     // where one page used to link internally.
-    const EXPECTED_WIKI_LINKS: usize = 464;
+    const EXPECTED_WIKI_LINKS: usize = 467;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -629,6 +629,13 @@ fn wiki_intra_docs_links_resolve() {
     // any of them. docs/architecture.md +1, pointing at design/mcp-write-back
     // .md from the sentence that says no MCP tool mutates the analysis, so the
     // reason lives in one place. Every other changed page held its count.
+    // 464 -> 467: splitting docs/mcp-deploy.md into docs/mcp-estate.md.
+    // Attributed per file against HEAD. docs/README.md +1 for the new How-to
+    // entry. docs/mcp-deploy.md's six same-page anchors into the moved
+    // sections became cross-page links to mcp-estate.md, and the extracted
+    // text's own links back into what stayed behind became cross-page links
+    // the other way -- those are counted links where a same-page `#anchor` is
+    // not, which is where the remaining +2 comes from.
 
     assert_eq!(
         seen, EXPECTED_WIKI_LINKS,
@@ -1100,10 +1107,12 @@ fn every_docs_page_is_linked_from_the_index() {
     // `prometheus-metrics.md`, split out of the REST API page. Raised 42 -> 44
     // by the MCP split: `mcp-walkthrough.md` became `mcp-deploy.md` (no
     // change), and `mcp.md` shed its tool reference and protocol contract into
-    // `mcp-tools.md` and `mcp-protocol.md`.
+    // `mcp-tools.md` and `mcp-protocol.md`. Raised 44 -> 45 by the second MCP
+    // split: `mcp-deploy.md` shed its four estate scenarios into
+    // `mcp-estate.md`, taking the page from 2386 lines to 1840.
     assert_eq!(
-        checked, 44,
-        "docs-page walk saw {checked} pages, expected 44. More is fine — bump \
+        checked, 45,
+        "docs-page walk saw {checked} pages, expected 45. More is fine — bump \
          this. FEWER means the walk stopped reading part of docs/ and every \
          reachability assertion above it silently narrowed."
     );

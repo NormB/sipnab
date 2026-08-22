@@ -182,6 +182,7 @@ DOCS_TO_SITE = {
     "rest-api.md": "api.md",
     "mcp.md": "mcp.md",
     "mcp-deploy.md": "mcp-deploy.md",
+    "mcp-estate.md": "mcp-estate.md",
     "mcp-tools.md": "mcp-tools.md",
     "mcp-protocol.md": "mcp-protocol.md",
     "uprobe-walkthrough.md": "uprobe-walkthrough.md",

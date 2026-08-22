@@ -48,6 +48,11 @@ you want.
   return, what stays off unless you enable it, and why none of them write
   back. Deployment is a [tutorial of its own](mcp-deploy.md); the
   [tool reference](mcp-tools.md) is the complete list.
+- **[Run MCP across an estate](mcp-estate.md)** — after one sipnab answers one
+  agent: several SIP servers feeding one capture host over HEP, reaching it
+  from outside the network, one agent holding many hosts, and following a
+  single call across an SBC, a proxy and a PBX that each give it a different
+  Call-ID.
 - **[Troubleshooting](troubleshooting.md)** — symptom → command. Failed calls,
   one-way audio, high loss, NAT issues: what to run and what to look for.
 - **[Tuning capture](tuning-capture.md)** — are you dropping packets, and what

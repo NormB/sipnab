@@ -1,6 +1,6 @@
 +++
 title = "Build from Source"
-weight = 18
+weight = 30
 description = "Build sipnab from source: cargo, the feature-flag matrix, release profile, and cross-compilation."
 +++
 

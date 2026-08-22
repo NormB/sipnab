@@ -378,7 +378,12 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     ),
     (
         "nginx",
-        &["docs/mcp-deploy.md", "website/content/docs/mcp-deploy.md"],
+        &[
+            "docs/mcp-deploy.md",
+            "website/content/docs/mcp-deploy.md",
+            "docs/mcp-estate.md",
+            "website/content/docs/mcp-estate.md",
+        ],
     ),
     (
         "allowedTools",
@@ -645,6 +650,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/mcp.md",
             "docs/mcp-deploy.md",
             "website/content/docs/mcp-deploy.md",
+            "docs/mcp-estate.md",
+            "website/content/docs/mcp-estate.md",
         ],
     ),
     // voipmonitor (benchmark comparison command lines)
@@ -660,6 +667,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/mcp.md",
             "docs/mcp-deploy.md",
             "website/content/docs/mcp-deploy.md",
+            "docs/mcp-estate.md",
+            "website/content/docs/mcp-estate.md",
         ],
     ),
     (
@@ -669,6 +678,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/mcp.md",
             "docs/mcp-deploy.md",
             "website/content/docs/mcp-deploy.md",
+            "docs/mcp-estate.md",
+            "website/content/docs/mcp-estate.md",
         ],
     ),
 ];
@@ -2518,10 +2529,15 @@ fn no_documentation_table_repeats_a_row() {
     // notes/_index.md and two posts. Three files and not six -- notes are
     // written for the website directly and have no docs/ source, which is the
     // mirror relationship inverted from every entry above.
+    // Raised 157 -> 159 by splitting docs/mcp-deploy.md: the estate scenarios
+    // (several SIP servers into one capture host, reaching it from outside,
+    // many hosts under one agent, one call across an SBC and its PBXes) became
+    // docs/mcp-estate.md. Two files and not one -- this page IS mirrored to the
+    // site, unlike the notes above. mcp-deploy.md went 2386 -> 1840 lines.
     assert_eq!(
         files.len(),
-        157,
-        "found {} tracked markdown files, expected 157. More is fine — bump \
+        159,
+        "found {} tracked markdown files, expected 159. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
         files.len()

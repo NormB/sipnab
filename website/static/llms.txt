@@ -26,6 +26,7 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [Config Reference](https://sipnab.com/docs/config/): TOML configuration file format and all configurable sections.
 - [TLS Without Keys](https://sipnab.com/docs/uprobe-walkthrough/): What uprobe and eBPF capture is and is NOT, its security implications, whether your kernel supports it at all, and how to run both backends step by step.
 - [MCP Deployment](https://sipnab.com/docs/mcp-deploy/): Step-by-step MCP deployment scenarios: same-box stdio, remote production servers over SSH or HTTP, HEP capture hosts, TLS endpoints, fleets, and headless automation.
+- [MCP Across an Estate](https://sipnab.com/docs/mcp-estate/): Several SIP servers feeding one capture host, reaching sipnab from outside the network, one agent holding many capture hosts, and following one call across an SBC, a proxy and a PBX.
 - [MCP Tools](https://sipnab.com/docs/mcp-tools/): Every MCP tool sipnab exposes, what question each answers, and the fields it returns.
 - [MCP Protocol](https://sipnab.com/docs/mcp-protocol/): The MCP wire contract: security model, what the write verbs may do, untrusted capture text, the stdio invariant, and error semantics.
 - [SIP Conformance Rules](https://sipnab.com/docs/sip-lint-rules/): Every rule the SIP conformance linter runs, the RFC section behind it, the severity and basis it reports under, and how to suppress it in CI.
