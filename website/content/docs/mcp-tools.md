@@ -278,6 +278,35 @@ The two tools page on different clocks, deliberately. `tail_dialogs` follows
 would jump forward in an `updated_at` ordering, past a cursor that had already
 gone by, and vanish from the listing.
 
+### Narrowing a row with `fields`
+
+`list_dialogs`, `find_problems`, `tail_dialogs` and `search_by_time` take an
+optional `fields` array. Rows on this surface are bounded three ways already --
+`limit`, `--mcp-max-rows`, and cursors -- and columns were not bounded at all,
+so asking for a page in order to read two values off it still paid for every
+other value on every row.
+
+```jsonc
+// list_dialogs { "limit": 200, "fields": ["state", "final_status_code"] }
+{ "call_id": "1-1966@10.0.2.20", "state": "Completed", "final_status_code": 200 }
+```
+
+Three rules, each there for a reason:
+
+- **`call_id` always survives**, listed or not. Every follow-up tool here takes
+  a Call-ID, so a row an agent cannot address is a row it can do nothing with.
+- **An unknown name is refused**, naming both the typo and the fields the row
+  actually carries. Silently returning rows without the field asked for reads
+  as "no such data", which is a wrong answer rather than an error.
+- **The envelope is never projected.** `total_matched`, `truncated`,
+  `next_cursor` and `capture_identity` are how a caller knows what it did NOT
+  get, and dropping them to save bytes would trade away the very thing the
+  bounds exist to report.
+
+A field already absent from a row stays absent rather than reappearing as
+null: the projection runs on the serialized page, so `skip_serializing_if`
+still decides what exists.
+
 ### `get_capture_report`
 
 The whole-capture analysis, the one `--report` prints. Backed by

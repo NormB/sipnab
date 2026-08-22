@@ -709,6 +709,19 @@ pub struct ListDialogsParams {
     /// (`<RFC 3339>|<Call-ID>`) to continue after that page. Omit on the
     /// first call.
     pub cursor: Option<String>,
+    /// Return only these fields on each row, plus `call_id`.
+    ///
+    /// Rows on this surface are bounded by `limit`, `--mcp-max-rows` and
+    /// cursors. Columns were not bounded at all, so asking for a page to read
+    /// two fields off it still paid for every other field on every row. Omit
+    /// to get the whole row, which is what every existing caller gets.
+    ///
+    /// `call_id` is always included, whether or not it is listed: every
+    /// follow-up tool here takes a Call-ID, so a row an agent cannot address
+    /// is a row it can do nothing with. An unknown name is refused by name
+    /// rather than ignored -- a silently dropped typo reads as "no such data".
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
 }
 
 /// Parameters for `get_dialog_report`.
@@ -757,6 +770,11 @@ pub struct FindProblemsParams {
     /// Cursor: pass back the previous response's `next_cursor` verbatim
     /// (`<RFC 3339>|<Call-ID>`). Omit on the first call.
     pub cursor: Option<String>,
+    /// Return only these fields on each row, plus `call_id`. See
+    /// [`ListDialogsParams::fields`] -- same rules, same refusal on a name
+    /// this row does not carry.
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
 }
 
 // ── Dialog-inspection parameter structs ─────────────────────────────
@@ -901,6 +919,11 @@ pub struct TailDialogsParams {
     pub cursor: Option<String>,
     /// Maximum dialogs to return (default 50, max 1000).
     pub limit: Option<u32>,
+    /// Return only these fields on each row, plus `call_id`. See
+    /// [`ListDialogsParams::fields`] -- same rules, same refusal on a name
+    /// this row does not carry.
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -1495,6 +1518,11 @@ pub struct SearchByTimeParams {
     /// (`<RFC 3339 created_at>|<Call-ID>`) to continue after that page. Omit
     /// on the first call.
     pub cursor: Option<String>,
+    /// Return only these fields on each row, plus `call_id`. See
+    /// [`ListDialogsParams::fields`] -- same rules, same refusal on a name
+    /// this row does not carry.
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -2884,6 +2912,59 @@ impl SipnabMcp {
         })
     }
 
+    /// Narrow every row of a rendered page to `fields`, plus `call_id`.
+    ///
+    /// Applied to the SERIALIZED page rather than to `DialogSummary`, because
+    /// the projection has to survive `skip_serializing_if` -- a field already
+    /// absent from a row (no `frame`, no `input_origin`) must stay absent
+    /// rather than reappear as null just because it was asked for.
+    ///
+    /// The envelope is never projected. `total_matched`, `truncated`,
+    /// `next_cursor` and `capture_identity` are how the caller knows what it
+    /// did NOT get, and dropping them to save bytes would trade the bound for
+    /// the thing the bound exists to report.
+    fn project_page_fields(
+        page: &mut serde_json::Value,
+        fields: Option<&[String]>,
+    ) -> Result<(), rmcp::ErrorData> {
+        let Some(fields) = fields else { return Ok(()) };
+
+        // Legal names come from a row the server actually produced, so this
+        // cannot drift from `DialogSummary`. An empty page has no row to read
+        // them off, and also no row to project, so it is simply left alone.
+        let Some(first) = page
+            .get("dialogs")
+            .and_then(|d| d.as_array())
+            .and_then(|a| a.first())
+            .and_then(|r| r.as_object())
+        else {
+            return Ok(());
+        };
+        let mut legal: Vec<String> = first.keys().cloned().collect();
+        legal.sort();
+
+        for f in fields {
+            if !legal.iter().any(|k| k == f) {
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!(
+                        "unknown field '{f}'; this row carries: {}",
+                        legal.join(", ")
+                    ),
+                    None,
+                ));
+            }
+        }
+
+        if let Some(rows) = page.get_mut("dialogs").and_then(|d| d.as_array_mut()) {
+            for row in rows.iter_mut() {
+                if let Some(obj) = row.as_object_mut() {
+                    obj.retain(|k, _| k == "call_id" || fields.iter().any(|f| f == k));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Build one bounded page of dialogs from a predicate over the store.
     ///
     /// The single implementation behind `list_dialogs` and `find_problems`,
@@ -3164,6 +3245,9 @@ impl SipnabMcp {
                     .is_none_or(|expr| expr.matches_dialog(d, streams, capture, delay))
             },
         )?;
+        let mut page = serde_json::to_value(page)
+            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
+        Self::project_page_fields(&mut page, params.fields.as_deref())?;
         Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
     }
 
@@ -3382,6 +3466,9 @@ impl SipnabMcp {
                         .is_none_or(|expr| expr.matches_dialog(d, streams, capture, delay))
             },
         )?;
+        let mut page = serde_json::to_value(page)
+            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
+        Self::project_page_fields(&mut page, params.fields.as_deref())?;
         Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
     }
 
@@ -3981,6 +4068,9 @@ impl SipnabMcp {
             }
         };
 
+        let mut response = serde_json::to_value(response)
+            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
+        Self::project_page_fields(&mut response, params.fields.as_deref())?;
         Ok(CallToolResult::success(vec![ContentBlock::json(response)?]))
     }
 
@@ -4814,6 +4904,8 @@ impl SipnabMcp {
                 "capture_identity": capture_identity,
             })
         };
+        let mut payload = payload;
+        Self::project_page_fields(&mut payload, params.fields.as_deref())?;
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
@@ -7606,6 +7698,7 @@ mod tests {
                 filter: None,
                 limit: Some(limit),
                 cursor: cursor.map(str::to_string),
+                fields: None,
             }))
             .await
             .expect("list_dialogs should succeed");
@@ -8233,6 +8326,72 @@ mod tests {
         assert_eq!(json["code"], -32602);
     }
 
+    /// Rows are bounded on this surface with unusual rigour -- `--mcp-max-rows`,
+    /// `limit`, cursors. Columns were not bounded at all, so an agent wanting
+    /// `call_id` and `state` for a page of dialogs still paid for `timing`,
+    /// `frame`, `updated_at` and two fenced display names on every row.
+    #[tokio::test]
+    async fn a_fields_projection_narrows_the_row_without_losing_its_identity() {
+        let server = server_with_dialog("fields@x");
+
+        let full = server
+            .list_dialogs(Parameters(ListDialogsParams::default()))
+            .await
+            .expect("list should succeed");
+        let fv: serde_json::Value = serde_json::from_str(&text_of(&full)).unwrap();
+        let wide = fv["dialogs"][0].as_object().expect("a row").len();
+        assert!(wide > 3, "the unprojected row is wide: {wide}");
+
+        let narrow = server
+            .list_dialogs(Parameters(ListDialogsParams {
+                fields: Some(vec!["state".to_string()]),
+                ..Default::default()
+            }))
+            .await
+            .expect("projection should succeed");
+        let nv: serde_json::Value = serde_json::from_str(&text_of(&narrow)).unwrap();
+        let row = nv["dialogs"][0].as_object().expect("a row");
+
+        assert!(
+            row.contains_key("state"),
+            "asked-for field present: {row:?}"
+        );
+        // `call_id` survives every projection: a row an agent cannot address
+        // is a row it cannot do anything with, and every follow-up tool on
+        // this surface takes a Call-ID.
+        assert!(
+            row.contains_key("call_id"),
+            "the identifier must survive any projection: {row:?}"
+        );
+        assert_eq!(row.len(), 2, "and nothing else: {row:?}");
+
+        // The envelope is not a row and must not be projected away -- the
+        // counts and the cursor are how the agent knows what it did not get.
+        assert!(nv.get("total_matched").is_some());
+        assert!(nv.get("capture_identity").is_some());
+    }
+
+    /// A typo must fail loudly. Silently returning rows missing the field the
+    /// caller asked for is the shape of bug that gets read as "no such data".
+    #[tokio::test]
+    async fn an_unknown_projection_field_is_refused_by_name() {
+        let server = server_with_dialog("typo@x");
+        let err = server
+            .list_dialogs(Parameters(ListDialogsParams {
+                fields: Some(vec!["statte".to_string()]),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("an unknown field must error");
+        let json = serde_json::to_value(err).unwrap();
+        assert_eq!(json["code"], -32602);
+        let msg = json["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("statte") && msg.contains("state"),
+            "the error must name the typo AND the legal set: {msg}"
+        );
+    }
+
     // ── search_messages ──────────────────────────────────────────────
 
     /// Parameters for a plain `search_messages` call: query and limit only.
@@ -8445,6 +8604,7 @@ mod tests {
             .tail_dialogs(Parameters(TailDialogsParams {
                 cursor: Some("not-a-timestamp".to_string()),
                 limit: None,
+                fields: None,
             }))
             .await
             .expect_err("bad cursor must error");
@@ -8479,6 +8639,7 @@ mod tests {
             .tail_dialogs(Parameters(TailDialogsParams {
                 cursor: Some(future),
                 limit: None,
+                fields: None,
             }))
             .await
             .expect("tail should succeed");
@@ -8498,6 +8659,7 @@ mod tests {
                 .tail_dialogs(Parameters(TailDialogsParams {
                     cursor: cursor.clone(),
                     limit: Some(limit),
+                    fields: None,
                 }))
                 .await
                 .expect("tail should succeed");
@@ -8579,6 +8741,7 @@ mod tests {
             .tail_dialogs(Parameters(TailDialogsParams {
                 cursor: Some(base_ts().to_rfc3339()),
                 limit: None,
+                fields: None,
             }))
             .await
             .expect("tail should succeed");
@@ -8959,6 +9122,7 @@ mod tests {
                     filter: None,
                     limit: None,
                     cursor: None,
+                    fields: None,
                 }))
                 .await
                 .is_err()
@@ -8976,6 +9140,7 @@ mod tests {
                     filter: None,
                     limit: None,
                     cursor: None,
+                    fields: None,
                 }))
                 .await
                 .is_err()
@@ -8999,6 +9164,7 @@ mod tests {
             filter: None,
             limit: Some(1),
             cursor,
+            fields: None,
         };
 
         let mut seen: Vec<String> = Vec::new();
@@ -9046,6 +9212,7 @@ mod tests {
                 filter: None,
                 limit: None,
                 cursor: Some("not-a-time|abc@x".into()),
+                fields: None,
             }))
             .await
             .expect_err("a non-RFC-3339 cursor must be refused");
@@ -9701,6 +9868,7 @@ mod tests {
                         .tail_dialogs(Parameters(TailDialogsParams {
                             cursor: None,
                             limit: None,
+                            fields: None,
                         }))
                         .await
                         .expect("tail"),
@@ -11678,6 +11846,7 @@ mod tests {
                             cursor: None,
                             limit: None,
                             filter: None,
+                            fields: None,
                         }))
                         .await
                         .expect("list"),
@@ -11690,6 +11859,7 @@ mod tests {
                         .tail_dialogs(Parameters(TailDialogsParams {
                             cursor: None,
                             limit: None,
+                            fields: None,
                         }))
                         .await
                         .expect("tail"),
