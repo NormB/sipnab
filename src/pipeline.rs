@@ -1793,7 +1793,7 @@ pub struct MediaDecrypt<'a> {
 }
 
 /// The store-mutation intent produced by `classify_packet` — the outcome of
-/// classifying one packet *without touching any store or lock*. Each router
+/// classifying one packet without touching either DIALOG STORE. Each router
 /// applies it with its own store access: the live path takes brief per-store
 /// write locks (`process_packet`); the offline `--cores` and batch paths call
 /// plain `&mut` stores directly. Separating the (duplicated) classification
@@ -1845,12 +1845,24 @@ pub enum PacketAction {
     },
 }
 
-/// Classify one parsed packet into a `PacketAction` — the lock-free core of
+/// Classify one parsed packet into a `PacketAction` — the store-free core of
 /// the per-packet pipeline. WebSocket unwrap, SIP parse + SDP-link extraction,
 /// DTLS/SRTP key learning, RTCP parse, and RTP (header or heuristic) detection
-/// all happen here, touching no store. `decrypt` is mutated in place to learn
-/// SDES/DTLS keys and to decrypt SRTP payloads; `rtp_heuristic` is advanced for
-/// RTP discovery. The caller applies the returned action to its stores.
+/// all happen here, touching neither the dialog store nor the stream store.
+/// `decrypt` is mutated in place to learn SDES/DTLS keys and to decrypt SRTP
+/// payloads; `rtp_heuristic` is advanced for RTP discovery. The caller applies
+/// the returned action to its stores.
+///
+/// NOT lock-free, and this doc said it was until 0.5.122. Three process-global
+/// side-tallies are written from here when they have something to record: the
+/// `--portrange` skip counter, the LLMNR store, and the STUN tracker. Each
+/// takes a mutex, and each is conditional -- a packet that is neither skipped
+/// nor LLMNR nor STUN takes none of them.
+///
+/// The distinction matters under `--cores`. Those tallies are process-global,
+/// not per-worker, so on a capture that trips one of them often, every worker
+/// contends on one mutex. "Lock-free" read as a promise that adding workers
+/// adds no shared state, and that is not what this function does.
 pub fn classify_packet(
     pp: &ParsedPacket,
     rtp_heuristic: &mut rtp::heuristic::RtpHeuristic,

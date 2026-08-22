@@ -146,10 +146,13 @@ advisory notice when a commit touches code these pages cite. The TODO scan and
 that notice are the two advisory gates, printing `WARN`/`REVIEW` and letting the
 commit through). Sub-gate 5c no longer exists: it re-implemented a Rust test in shell,
 the copies diverged, and the surviving Rust version runs here *and* in CI. Also
-four in
-[`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) (`fmt`,
-`clippy --workspace --all-features --all-targets`, `cargo doc` with `-D warnings`, and a
-`fuzz` workspace check), and the CI jobs behind them.
+eight in [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push), each marked
+`# -- Hard gate` in the hook: `fmt`,
+`clippy --workspace --all-features --all-targets`, `cargo doc` with `-D warnings`,
+a `fuzz` workspace check, the reduced feature combinations, the non-Linux arm of
+every platform cfg, the refusal to tag `v*` at a commit whose CI is not green,
+and the prose linters. Plus the conditional corpus gate, and the CI jobs behind
+them.
 
 **The drift tests** — the subset of the gate suite that compares documentation
 and configuration against the code and fails on divergence:

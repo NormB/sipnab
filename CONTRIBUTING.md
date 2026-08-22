@@ -141,9 +141,8 @@ git config core.hooksPath .githooks
 --check`, clippy (`--features full`, `-D warnings`), the full
 `cargo test --features full` suite, no `unwrap()`/`expect()` in production
 code, WASM exports in sync with the site's JS, the homepage test count plus the
-site version matching `Cargo.toml`, no TODO stubs, a refusal to commit a staged
-`src/wasm.rs` without a rebuilt bundle, and an advisory developer-docs coupling
-notice. Gates 0–5 and 7 block the commit. Gate 6 prints
+site version matching `Cargo.toml`, no TODO stubs, and an advisory
+developer-docs coupling notice. Gates 0-5b block the commit. Gate 6 prints
 `WARN: N TODO/FIXME comments` and falls through — a count, not a veto — and
 gate 8 only prints `REVIEW` and a file list.
 
