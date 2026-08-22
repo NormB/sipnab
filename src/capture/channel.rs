@@ -590,14 +590,26 @@ mod tests {
         consumer.join().unwrap();
         let blocks = tx.meter().backpressure_blocks();
         let hits = tx.meter().capacity_hits();
-        assert!(
-            blocks < 100,
-            "instant recoveries must not count as genuine blocks, got {blocks}"
-        );
         assert!(hits > 0, "a cap-1 ping-pong must hit the cap");
+        // The bound is a RATIO, not a count. This measures the OS scheduler as
+        // much as the meter: whether a fall-back send returns within the same
+        // instant depends on whether the consumer thread happens to be on a
+        // core. An absolute `blocks < 100` passed on an idle machine and failed
+        // the macOS runner at 149 while the code was correct, which blocked the
+        // 0.5.122 release for a scheduling artifact.
+        //
+        // Loosening a red assertion is normally the wrong move, so be precise
+        // about why this one is not: the invariant under test is the doc
+        // comment above -- instant recoveries must not be counted one-for-one
+        // with cap hits, which would overstate blocking "by orders of
+        // magnitude". A ratio states exactly that and this one is TIGHTER than
+        // the 2x it replaces. The bug it guards against makes blocks == hits,
+        // which fails at any multiplier.
         assert!(
-            blocks * 2 < hits,
-            "genuine blocks ({blocks}) must be far rarer than raw capacity hits ({hits})"
+            blocks * 10 < hits,
+            "genuine blocks ({blocks}) must be an order of magnitude rarer than \
+             raw capacity hits ({hits}); one count per cap hit is the defect \
+             this guards"
         );
     }
 
