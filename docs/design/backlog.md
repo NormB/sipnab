@@ -3060,7 +3060,7 @@ live PBX and would turn a read-only analyser into a UAC with a blast radius
 reachable from attacker-controlled capture text. The items below are only the
 ones that fit an analysis tool.
 
-- [ ] **MCPX1 — the final response code is not queryable, so every failure
+- [x] **MCPX1 — the final response code is not queryable, so every failure
   looks the same.** The filter DSL has 30 fields and `state` collapses 403,
   404, 408, 486, 503 and 603 into `Failed`. `triage_call` returns
   `final_status_code` for ONE call and `explain_response_code` explains one
@@ -3074,7 +3074,7 @@ ones that fit an analysis tool.
   **Do:** `response_code` as a first-class DSL numeric field and on
   `DialogSummary`, so `response_code == 503 and dst.ip =~ '^198\.51\.'` works.
 
-- [ ] **MCPX2 — no server-side aggregation, so the agent counts, and counting
+- [x] **MCPX2 — no server-side aggregation, so the agent counts, and counting
   is what it gets wrong.** The only aggregate on the surface is
   `total_matched`. A response-code histogram, top destinations by failure rate,
   MOS percentiles or ASR by trunk all require N guessed queries or paging every
@@ -3115,7 +3115,7 @@ ones that fit an analysis tool.
   keeps the `--mcp-file-root` sandbox and adds no unauthenticated HTTP.
   Needs MCPX6.
 
-- [ ] **MCPX5 — MCP is behind `--report` and the REST API on two answers.**
+- [x] **MCPX5 — MCP is behind `--report` and the REST API on two answers.**
   (a) `get_dialog_report` and `render_ladder` are per-Call-ID, so the
   whole-capture `--report` view has no MCP path. (b) `capture_status` gives
   `orphaned_stream_count` as a NUMBER, `rtp_stats` carries `orphaned` per row
@@ -3139,7 +3139,7 @@ ones that fit an analysis tool.
   resource reads without granting tool calls. None of the six surveyed servers
   exposes resources either, so this is a differentiator rather than catch-up.
 
-- [ ] **MCPX7 — rows are bounded with unusual rigour; columns are not bounded
+- [x] **MCPX7 — rows are bounded with unusual rigour; columns are not bounded
   at all.** `--mcp-max-rows`, `limit` and cursors bound how MANY dialogs come
   back. Nothing bounds how WIDE each one is, so an agent wanting `call_id` and
   `state` for 500 dialogs still pays for `timing`, `frame`, `updated_at` and
