@@ -251,7 +251,7 @@ Two cleanups land before any MCP work because every subsequent sub-phase builds 
 
 **8.0a — Parse-path consolidation** (~1.5 days)
 
-- [ ] **Audit the double-parse in batch+API mode.** Verified call chain today: `processor.process()` ([`src/app/batch.rs:2196`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2196)) does Ethernet/IP/TCP/UDP reassembly only — no SIP parsing. `process_parsed_packet()` ([`src/app/batch.rs:3538`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3538)) does the first SIP parse + `dialog_store.process_message` against the local store. `mirror_to_shared_stores()` (`:1326` invocation, `:2142` definition) does a second full SIP parse + a second `dialog_store.process_message` against the `Arc<RwLock<...>>` shared store. Result: every matching packet is parsed twice when `--api` is on in batch mode.
+- [ ] **Audit the double-parse in batch+API mode.** Verified call chain today: `processor.process()` ([`src/app/batch.rs:2196`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2196)) does Ethernet/IP/TCP/UDP reassembly only — no SIP parsing. `process_parsed_packet()` ([`src/app/batch.rs:3584`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3584)) does the first SIP parse + `dialog_store.process_message` against the local store. `mirror_to_shared_stores()` (`:1326` invocation, `:2142` definition) does a second full SIP parse + a second `dialog_store.process_message` against the `Arc<RwLock<...>>` shared store. Result: every matching packet is parsed twice when `--api` is on in batch mode.
 - [ ] **Refactor batch mode to share stores from the start**, mirroring the TUI mode pattern (which already passes `Arc<RwLock<...>>` between the processing thread and `start_api_server`). After the refactor: one parse per packet, regardless of how many output sinks are attached. The EventBus from 8.4a will subscribe off this single parse path.
 - [ ] **Gate:** `cargo bench parser_bench` shows no regression in batch-without-API throughput, and shows the previous batch-with-API throughput approximately double (because the second parse is gone). An end-to-end test confirms `cargo run -- -I <pcap> --api :0 --json` produces JSON output identical to the pre-refactor output.
 
@@ -1671,7 +1671,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | MCP tool | Wraps |
 |---|---|
-| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:939`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L939)) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:500`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L500)) + `expand_alias` ([`src/sip/dsl.rs:322`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L322)) |
+| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:939`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L939)) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:500`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L500)) + `expand_alias` ([`src/sip/dsl.rs:340`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L340)) |
 | `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:184`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L184)) + iterate `dialog.messages` + `output::json::message_to_json` |
 | `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:53`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L53)) with `ReportFormat::Json/Markdown/Text` |
 | `get_message` | `output::json::message_to_json` ([`src/output/json.rs:553`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L553)) |
@@ -1737,7 +1737,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `late_media` | Compares first RTP packet timestamp against dialog's 200 OK timestamp (already tracked in `dialog.timing`) |
 | `one_sided_silence` | New analysis on decoded PCM samples from `audio_export`; energy threshold computation |
 | All six tags | Extend existing `MediaDiagnosis` struct in [`src/rtp/diagnosis.rs:66`](https://github.com/NormB/sipnab/blob/main/src/rtp/diagnosis.rs#L66) (additive — backwards compatible JSON) |
-| Six new diagnostic aliases | Extend `expand_alias` in [`src/sip/dsl.rs:322`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L322) |
+| Six new diagnostic aliases | Extend `expand_alias` in [`src/sip/dsl.rs:340`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L340) |
 | TUI badges | Extend existing badge column in [`src/tui/call_list.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/call_list.rs) |
 | MCP `find_problems` integration | No code change — it consumes `expand_alias` already (Phase 8.3) |
 

@@ -3224,7 +3224,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.121 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.122 sh
 ```
 
 To install somewhere other than `/usr/local/bin` — a directory you already own,
@@ -3323,7 +3323,7 @@ canonical triples deliberately: they match `rustc -vV`, they are what
 script constructs them.
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
-Alpine included. Replace `<version>` with the latest, e.g. 0.5.121:
+Alpine included. Replace `<version>` with the latest, e.g. 0.5.122:
 
 ```bash
 # Run all of these, in order.
@@ -3342,7 +3342,7 @@ sudo install -m 755 sipnab-<version>-aarch64-unknown-linux-musl/sipnab /usr/loca
 ```
 
 Manual download with checksum verification (replace `<version>` with the
-latest, e.g. 0.5.121):
+latest, e.g. 0.5.122):
 
 ```bash
 # Run all of these, in order.
@@ -3384,7 +3384,7 @@ cargo install sipnab --features full
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.36, i.e. Debian 12+ / Ubuntu 23.04+ -- on older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package — replace `<version>` with the
-latest, e.g. 0.5.121:
+latest, e.g. 0.5.122:
 
 ```bash
 # Run all of these, in order.
@@ -3443,26 +3443,26 @@ dependency — for headless servers, mirroring the `.deb` variants).
 The standard package on an x86_64 host:
 
 ```bash
-sudo rpm -i sipnab-0.5.121-1.x86_64.rpm
+sudo rpm -i sipnab-0.5.122-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo rpm -i sipnab-0.5.121-1.x86_64-noaudio.rpm
+sudo rpm -i sipnab-0.5.122-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host — pick the variant matching
 `uname -m`:
 
 ```bash
-sudo rpm -i sipnab-0.5.121-1.aarch64.rpm
+sudo rpm -i sipnab-0.5.122-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo rpm -i sipnab-0.5.121-1.aarch64-noaudio.rpm
+sudo rpm -i sipnab-0.5.122-1.aarch64-noaudio.rpm
 ```
 
 ### Homebrew (macOS)
@@ -6894,6 +6894,7 @@ All 30 addressable fields, organized by type.
 | `dst.port` | Destination port (first message) | port number |
 | `duration` | Dialog duration | seconds (float) |
 | `msg_count` | Number of SIP messages in dialog | count |
+| `response_code` | Final INVITE response code. Also spelled `final_status_code`, which is the name the JSON, the schema and the MCP answers return. Unknown while the call is in progress, so a ringing dialog matches no comparison at all | 100-699 |
 | `pdd` | Post-dial delay (time to first ringing/response) | seconds (float) |
 | `setup_time` | Call setup time (INVITE to 200 OK) | seconds (float) |
 | `retransmits` | Total retransmit count in dialog | count |
@@ -6919,6 +6920,36 @@ All 30 addressable fields, organized by type.
 > == 0` is a real count of zero, and `no_media` is the diagnosis itself.
 > **Pair any `rtp.*` threshold with `rtp.packets > 0`** to ask about calls that
 > actually had media.
+
+
+### Why `response_code` and not just `state`
+
+`state` answers what happened. `response_code` answers why, and they are not
+the same question. Every one of 403, 404, 408, 486, 503 and 603 is
+`state == 'Failed'`, and they have different owners: a 403 is authorization, a
+408 is a timer, a 486 is the callee, a 503 is capacity upstream. Asking "which
+release cause dominates on this trunk in the last ten minutes" needs the code,
+and asking it by class needs a numeric field rather than a set of names:
+
+Every server-side failure, whatever the specific cause:
+
+```bash
+sipnab -N -I capture.pcap --filter "response_code >= 500 AND response_code < 600"
+```
+
+The one cause you suspect, on the carrier you suspect:
+
+```bash
+sipnab -N -I capture.pcap --filter "response_code == 503 AND dst.ip == '198.51.100.7'"
+```
+
+A call still in progress has no final response. It matches NOTHING -- not
+`response_code < 400`, not `>= 400`, not `== 0` -- because a zero default would
+sweep every ringing call into the success bucket. Auth challenges follow
+[`final_status_code`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs):
+a call challenged and then answered reports 200, not the 407, because the
+challenge was intermediate. A call only ever challenged reports the challenge,
+because then it was the outcome.
 
 ### Boolean fields
 
@@ -12152,6 +12183,8 @@ ordinary update.
 |---|---|---|
 | [`list_dialogs`](#list_dialogs) | `filter?`, `limit?`, `cursor?` | A page of dialog summaries, with the total behind it |
 | [`get_dialog_report`](#get_dialog_report) | `call_id`, `format?` | Structured per-call report (JSON / Markdown / text) |
+| [`aggregate_dialogs`](#aggregate_dialogs) | `group_by`, `filter?`, `top_n?` | Counts dialogs grouped by ONE field, in the store rather than in the model |
+| [`get_capture_report`](#get_capture_report) | `format?` | Whole-capture analysis: findings, orphaned media, STUN/ICMP evidence, what the caps shed |
 | [`find_problems`](#find_problems) | `kinds?`, `filter?`, `limit?`, `cursor?` | A page of dialogs matching one or more diagnostic alias names |
 | [`get_dialog`](#get_dialog) | `call_id`, `max_messages?`, `cursor?` | Paginated dialog with full SIP messages |
 | [`get_message`](#get_message) | `call_id`, `index` | Single SIP message at a given index |
@@ -12398,6 +12431,107 @@ The two tools page on different clocks, deliberately. `tail_dialogs` follows
 `created_at`, which never moves: a dialog that gains one more message mid-sweep
 would jump forward in an `updated_at` ordering, past a cursor that had already
 gone by, and vanish from the listing.
+
+### Narrowing a row with `fields`
+
+`list_dialogs`, `find_problems`, `tail_dialogs` and `search_by_time` take an
+optional `fields` array. This surface already bounds rows three ways -- `limit`, `--mcp-max-rows`, and
+cursors -- and it bounded columns not at all, so asking for a page to read two
+values off it still paid for every other value on every row.
+
+```jsonc
+// list_dialogs { "limit": 200, "fields": ["state", "final_status_code"] }
+{ "call_id": "1-1966@10.0.2.20", "state": "Completed", "final_status_code": 200 }
+```
+
+Three rules, each there for a reason:
+
+- **`call_id` always survives**, listed or not. Every follow-up tool here takes
+  a Call-ID, so a row an agent cannot address is a row it can do nothing with.
+- **An unknown name fails**, naming both the typo and the fields the row
+  actually carries. Silently returning rows without the field asked for reads
+  as "no such data", which is a wrong answer rather than an error.
+- **The envelope is never projected.** `total_matched`, `truncated`,
+  `next_cursor` and `capture_identity` are how a caller knows what it did NOT
+  get, and dropping them to save bytes would trade away the very thing the
+  bounds exist to report.
+
+A field already absent from a row stays absent rather than reappearing as
+null: the projection runs on the serialized page, so `skip_serializing_if`
+still decides what exists.
+
+### `aggregate_dialogs`
+
+Counts dialogs grouped by one field, inside the store.
+
+Counting is the operation a language model gets wrong most reliably, and this
+page documents that failure elsewhere: an agent asked "how many calls failed?"
+counts the rows it is holding and answers with that number. The page object
+fixed exactly one count — `total_matched`, for one filter. Every other count
+still meant fetching pages and tallying them in the model's head, or issuing N
+filtered queries with the buckets guessed in advance.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `group_by` | string | One of `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, `rtp.codec`. Anything else fails with `invalid_params` naming the legal set. | Required. |
+| `filter` | string? | Alias or DSL, applied before grouping. | No filter — the whole store. |
+| `top_n` | integer? | 1–100. Anything past it lands in `other_count` rather than disappearing. | 20. |
+
+```jsonc
+// aggregate_dialogs { "group_by": "response_code", "filter": "state == 'Failed'" }
+{
+  "group_by": "response_code",
+  "buckets": [ { "value": "503", "count": 412 }, { "value": "486", "count": 77 } ],
+  "other_count": 11,
+  "distinct_values": 6,
+  "total_matched": 500
+}
+```
+
+**The buckets plus `other_count` always equal `total_matched`.** A truncated
+aggregate that does not say what it left out is a wrong total rather than a
+partial one, so nothing is silently dropped — including nulls, which become the
+literal `(none)`: "how many dialogs carry no User-Agent" is a real question.
+
+**One dimension, and no time bucketing.** That is a deliberate cap, not an
+unfinished feature. Two dimensions is a pivot table, a pivot table wants a UI,
+and [positioning](https://github.com/NormB/sipnab/blob/main/docs/design/positioning.md)
+puts that outside what sipnab is. Narrow the window with `filter` instead.
+
+**Grouping by `from.user`, `to.user` or `ua` returns fenced values.** Those are
+text the packet's sender wrote, and they reach a model here exactly as they
+would in a row. A state name, a status code, an IP or a codec is sipnab's own
+derivation and comes back verbatim — fencing those would tell the agent to
+distrust the analysis.
+
+### `get_capture_report`
+
+The whole-capture analysis, the one `--report` prints. Backed by
+[`analysis::analyze`](https://github.com/NormB/sipnab/blob/main/src/analysis.rs)
+and rendered by `output::analysis_report`.
+
+[`get_dialog_report`](#get_dialog_report) and [`render_ladder`](#render_ladder)
+both answer for ONE Call-ID, so everything the report says about the capture as
+a whole had no MCP path: orphaned media, STUN, ICMP errors quoting SIP or RTP,
+and what the retention caps shed. [`capture_status`](#capture_status) could hand an agent a count, and no tool
+could expand it.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `format` | string? | `"json"`, `"markdown"` or `"text"`. Anything else fails with `unknown format 'x', expected json\|markdown\|text`. | `"json"`. |
+
+Frames read comes from the same process-global counter the Prometheus scrape
+reports (`sipnab_capture_packets_total`), so the denominator here is the one
+every other number in the run measures against.
+
+A capture with no findings still answers with the clean line rather than an
+empty body, because silence is indistinguishable from the tool not having run:
+
+```jsonc
+// get_capture_report { "format": "text" }
+// A capture with findings names each one; a clean capture says so outright.
+"Capture analysis: 2 finding(s) across 1 dialog(s), 2 stream(s), 535000 frame(s) read."
+```
 
 ### `get_dialog_report`
 
@@ -14833,8 +14967,8 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 35 carry MCP annotations, so a host
-  can decide what to call without asking. Twenty-eight are `readOnlyHint: true`.
+- **Every tool declares what it does.** All 37 carry MCP annotations, so a host
+  can decide what to call without asking. Thirty are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the five that are
   not. Every tool sets `openWorldHint` to `false`, because sipnab answers from
   the loaded capture and contacts no external service.
@@ -14886,9 +15020,40 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
   SIPNAB_LOG=mcp_audit=info sipnab -N --mcp --quiet -I capture.pcap
   ```
 
+## Resources
+
+sipnab exposes the files under `--mcp-file-root` as MCP **resources**.
+`resources/list` enumerates them and `resources/read` fetches one at
+`sipnab:///<filename>`.
+
+This exists because of `export_capture`. That tool returns a server-LOCAL
+absolute path, which works over stdio and does nothing over the HTTP transport:
+the client is elsewhere and has no filesystem, so the tool reports success and
+the agent still cannot obtain the bytes it just asked sipnab to preserve —
+which is the point of exporting before stopping a live capture.
+
+The protocol makes a resource read-only by construction, and that strengthens
+rather than dilutes the argument above: a host can grant resource reads WITHOUT
+granting tool calls, a distinction no tool annotation can express.
+
+Two bounds:
+
+- **The URI is another way to name a file, not another way to leave the root.**
+  The name goes through the same single-component check and symlink resolution
+  guarding the file tools — one sandbox, not two that can drift apart.
+- **8 MiB per read.** JSON-RPC carrying base64 is not a bulk transfer channel:
+  a 128 MB capture becomes roughly 170 MB of one JSON string, which no client
+  wants and no model can read. Past the bound the read fails and names the
+  bound, rather than truncating in silence. Copy the file from
+  `--mcp-file-root` for anything larger.
+
+A file that is valid UTF-8 comes back as text, and anything else comes back as
+a base64 blob. A capture is bytes, and a lossy conversion would hand the model
+something the file does not contain.
+
 ## What the write verbs do
 
-Twenty-eight of the 35 tools are `readOnlyHint: true`. These seven are not, and
+Thirty of the 37 tools are `readOnlyHint: true`. These seven are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 

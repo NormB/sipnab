@@ -577,8 +577,8 @@ Tiers:
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:3902`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3902)) currently takes
-  nowhere; `security_findings` ([`src/mcp/server.rs:3902`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3902)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:4428`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4428)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:4428`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4428)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -669,7 +669,7 @@ Tiers:
 
 ## P2 — robustness, observability & efficiency
 
-- [ ] **TLSHOLD — two of the three late-decrypt counters never reach the
+- [x] **TLSHOLD — two of the three late-decrypt counters never reach the
   operator, so an eviction and a key that never came look identical.** The
   late-keylog hold added in 0.5.120 keeps three tallies:
   [`late_recovered`, `late_evicted`, `late_still_held`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs).
@@ -692,6 +692,13 @@ Tiers:
   knob the eviction argues for. Documented behaviour is in
   [`docs/tls-capture.md`](https://github.com/NormB/sipnab/blob/main/docs/tls-capture.md);
   keep the two in step.
+
+  **DONE.** Both counters print through `late_hold_guidance`, on runs that
+  decrypted as well as runs that did not, and each names the bound it hit.
+  The three bounds moved to [`src/capture/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs) beside the report they
+  describe, so the message and the enforcement share one definition instead
+  of restating each other -- a message naming a bound the code does not
+  enforce is worse than no message.
 
 - [ ] **REL1 — the release build fetches from four external hosts and a
   failure at any of them costs a re-run of the whole tag.** Measured over one
@@ -788,8 +795,8 @@ Tiers:
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:3999`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3999),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:3999`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3999),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:4525`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4525),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:4525`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4525),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -1435,16 +1442,16 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:94`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L94)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:5322`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5322), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:5832`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5832), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1212`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1212)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1319`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1319)), which attaches `frame_ref`
     (`#[tool(` at [`src/mcp/server.rs:4528`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4528), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1212`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1212)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1319`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1319)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -1936,7 +1943,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:6411`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6411), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:6921`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6921), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -2835,6 +2842,113 @@ neither visible to `--features full`:**
 There is no `hex` crate in this tree — neither a regular nor a dev dependency —
 so tests that need hex encode it by hand.
 
+## RE — rtpengine control-plane visibility (added 2026-08-21)
+
+Raised by the observation that sipnab installed ON an rtpengine host is
+passive, sees the RTP the relay forwards on BOTH legs, and sees the ng control
+protocol on the same box. Outside the P0-P5 scale for the reason NAT is: a
+capability sipnab lacks rather than a defect in one it has.
+
+- [ ] **RE1 — on a dedicated rtpengine host every media stream is an orphan,
+  because the only signalling on the box is a protocol sipnab does not read.**
+  A standalone media relay carries no SIP. sipnab there sees two sockets of RTP
+  per call and nothing that names the call, so every stream comes out
+  `RtpStream::orphaned` — a capture full of evidence reported as
+  unattributable noise. Same shape as NAT1: true and useless.
+
+  The signalling IS on the box. rtpengine's ng control protocol carries it, and
+  it carries exactly the missing key. Verified against
+  [the protocol](https://github.com/sipwise/rtpengine/blob/master/docs/ng_control_protocol.md)
+  rather than assumed: an `offer` request requires `sdp`, `call-id` and
+  `from-tag`, an `answer` adds `to-tag`, and the reply to either "contains only
+  the key `sdp` in addition to `result`, which contains the re-written SDP
+  body". So one offer/answer pair reveals all four media sockets of both legs
+  under one Call-ID -- the requests give the endpoints as the parties offered
+  them, the replies give the relay's own allocated ports.
+
+  **The reply carries no `call-id`.** The envelope is a message cookie and a
+  bencoded dict separated by one space (`5323_1 d7:command4:pinge`), and the
+  cookie is what matches replies to requests. Attributing a rewritten SDP needs
+  transaction state, not a stateless decode -- same shape as `StunTransaction`,
+  bounded the same way.
+
+  **The contribution is the Call-ID, not the port pairing.** In plain relay
+  mode rtpengine does not rewrite the SSRC (a new one appears only under
+  transcoding, MoH, DTMF injection or playback), so `ssrc_index` may already
+  group the two legs' streams to each other on that box today. What no amount
+  of media inspection supplies is the NAME of the call, which is the only thing
+  that joins a locally captured stream to a dialog captured on another host.
+
+  **Where it does not help, measured.** On a proxy anchoring media through a
+  co-resident rtpengine, sipnab already has this: `simultaneous-capture-sources
+  .md` §8.1 measured OpenSIPS 3.6.7 + rtpengine 12.5.1 at `tracer()`
+  transaction scope, and advertised endpoints matched observed sockets 4 of 4,
+  because the SENT copy of the INVITE carries the rewritten `c=`/`m=`. ng's
+  narrower advantage is worth naming honestly: it needs no configuration change
+  on the proxy at all, and it is not OpenSIPS-specific.
+
+  **Do:** decode `offer`/`answer`/`delete` requests and `offer`/`answer`
+  replies on operator-named ports, keyed by cookie, and feed both SDP bodies
+  through the existing `extract_sdp_links` into `link_endpoint_from`. Claim the
+  packet in `classify_packet` alongside LLMNR -- by port and structure, before
+  the RTP pre-filter -- and return a NEW `PacketAction` variant rather than
+  reusing `Sip { sdp_links }`, so the compiler enumerates the four independent
+  appliers (`pipeline.rs`, `parallel.rs`, `batch.rs`, `file_open.rs`) instead
+  of one working and three not. Bencode is ~100 lines on the `nom` already in
+  the tree, so no new dependency, and it gets a fuzz target like every other
+  parser here.
+
+  **Four things settled before code, in this order:**
+
+  1. **Does kernel-mode forwarding stay visible to libpcap?** The harness runs
+     `--table=-1` (userspace) so it cannot answer this, and production runs the
+     other way. Reading the kernel module, the re-injected packet leaves via
+     `ip_local_out()` into `dev_queue_xmit_nit()` -- the AF_PACKET tap -- and
+     ingress is tapped before PREROUTING, so it should be fully visible.
+     Reasoned from source, NOT measured. If it is wrong the feature is inert on
+     every deployment that matters, and it is an hour's measurement.
+  2. **No default port, ever.** rtpengine defaults nothing and requires a
+     listen option; upstream examples use 2223, the OpenSIPS module defaults to
+     22222, the harness uses 22222. A constant here is a pinned-value defect.
+  3. **A UNIX-socket control channel makes this a silent no-op.** rtpengine's
+     own `--listen-ng` takes host:port only, but the OpenSIPS module speaks
+     `AF_LOCAL` for a `unix:` spec, and AF_UNIX is invisible to AF_PACKET. Emit
+     "ng control traffic expected on <ports>, none observed", the way CT1 made
+     lost evidence say so.
+  4. **The BPF must admit fragments.** A full offer SDP with ICE candidates
+     exceeds 1500 bytes on the proxy-to-relay link, which is precisely the
+     topology this is for, and `udp port N` does not match non-first fragments.
+     sipnab reassembles them once they arrive; the trap is the kernel filter.
+
+  **Declined as part of this, not deferred:** polling `query`/`list`/
+  `statistics`. That is sipnab sending packets to a production media relay,
+  which [`docs/mcp-protocol.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-protocol.md) already settles, and it needs a configured
+  control address the passive path does not. Aggregating rtpengine's own
+  counters is Homer/HEPIC territory that `positioning.md` puts outside sipnab.
+  The remaining ~27 ng commands carry no join key.
+
+  **Known limits, so the feature cannot produce a confident partial answer:**
+  through a true B2BUA the two legs are two ng sessions under two call-ids, so
+  ng gives per-leg ports and no tie between them; and rtpengine advertises RTCP
+  only via `a=rtcp:`, never `m=`/`c=`, so this path inherits §8.1 caveat 4.
+
+- [ ] **RE2 — the harness has an rtpengine and cannot see its control plane, so
+  there is no fixture to test RE1 against.** [`harness/docker-compose.yml`](https://github.com/NormB/sipnab/blob/main/harness/docker-compose.yml)
+  already runs rtpengine with `--listen-ng=127.0.0.1:22222` inside opensips-1's
+  network namespace, which sipnab shares, so the traffic is on that namespace's
+  `lo` -- one interface away. sipnab captures `-d eth0` with a BPF of
+  `udp and (portrange 5060-5061 or portrange 30000-30050)`, so it is excluded
+  twice over. **Do:** `-d eth0,lo --multi-device` plus the ng port in the BPF,
+  then record one SIPp call's offer/answer/delete cycle as a golden pcap. No
+  new container, no new image.
+
+- [ ] **RE3 — an ng-derived endpoint is the relay's assertion about itself, and
+  `InputOrigin` cannot say that.** `Wire | Hep | Uprobe` would record it as
+  `Wire`, the same label a directly observed SDP gets. It is not the same
+  claim, and `dialog_bound_across_sources` is the consumer that would quietly
+  stop being able to tell. Settle whether this is a fourth origin or a field on
+  `SdpProvenance` BEFORE RE1 writes to `sdp_endpoints`, not after.
+
 ## NAT — STUN/TURN visibility (added 2026-08-17)
 
 Raised by two field captures of a one-way-audio complaint, whose root cause was
@@ -2946,7 +3060,7 @@ live PBX and would turn a read-only analyser into a UAC with a blast radius
 reachable from attacker-controlled capture text. The items below are only the
 ones that fit an analysis tool.
 
-- [ ] **MCPX1 — the final response code is not queryable, so every failure
+- [x] **MCPX1 — the final response code is not queryable, so every failure
   looks the same.** The filter DSL has 30 fields and `state` collapses 403,
   404, 408, 486, 503 and 603 into `Failed`. `triage_call` returns
   `final_status_code` for ONE call and `explain_response_code` explains one
@@ -2960,7 +3074,7 @@ ones that fit an analysis tool.
   **Do:** `response_code` as a first-class DSL numeric field and on
   `DialogSummary`, so `response_code == 503 and dst.ip =~ '^198\.51\.'` works.
 
-- [ ] **MCPX2 — no server-side aggregation, so the agent counts, and counting
+- [x] **MCPX2 — no server-side aggregation, so the agent counts, and counting
   is what it gets wrong.** The only aggregate on the surface is
   `total_matched`. A response-code histogram, top destinations by failure rate,
   MOS percentiles or ASR by trunk all require N guessed queries or paging every
@@ -2987,7 +3101,25 @@ ones that fit an analysis tool.
   cheap header read, plus a read-only `find_in_captures { filter, limit }` that
   names matching files without swapping the active store. No database.
 
-- [ ] **MCPX4 — exports are unreachable from the deployment shape that needs
+  **PARTLY DONE.** `list_captures` now reports `first_packet` as RFC 3339,
+  which costs one open and one record read, and is what narrows forty rotated
+  files to the two that could hold the call being asked about. `last_packet`
+  and `dialog_count` were NOT added and should not be: a last-packet time needs
+  a seek to the end of every file and `dialog_count` needs each one fully
+  parsed, so a listing carrying them would cost a full read of every capture in
+  the root -- a listing nobody runs is worse than a listing that answers less.
+
+  **What remains is the part with the value: `find_in_captures`.** Narrowing by
+  time is a filter, not an answer; "which of these files holds Call-ID X" still
+  cannot be asked. That needs a real sweep -- a scratch store per file, the
+  filter applied, the active store untouched -- and it needs three decisions
+  first, none of which the metadata half forced: what bounds the sweep (files?
+  bytes? wall-clock?), whether it can be cancelled once running, and what it
+  reports for a file it could not open. Those are why this half did not ship
+  alongside the other: half a sweep that silently skips an unreadable file is
+  the CT1 defect again, in a new place.
+
+- [x] **MCPX4 — exports are unreachable from the deployment shape that needs
   them most.** `export_capture` and `export_audio` return a server-local
   absolute path. Over stdio that is fine. Over the HTTP transport that
   [`docs/mcp-deploy.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md) documents for remote/service use, the client has no
@@ -3001,7 +3133,7 @@ ones that fit an analysis tool.
   keeps the `--mcp-file-root` sandbox and adds no unauthenticated HTTP.
   Needs MCPX6.
 
-- [ ] **MCPX5 — MCP is behind `--report` and the REST API on two answers.**
+- [x] **MCPX5 — MCP is behind `--report` and the REST API on two answers.**
   (a) `get_dialog_report` and `render_ladder` are per-Call-ID, so the
   whole-capture `--report` view has no MCP path. (b) `capture_status` gives
   `orphaned_stream_count` as a NUMBER, `rtp_stats` carries `orphaned` per row
@@ -3015,7 +3147,7 @@ ones that fit an analysis tool.
   { format }`. The test is surface parity: nothing reachable from `--report` or
   `/v1/*` should be unreachable over MCP.
 
-- [ ] **MCPX6 — `tools/list` is 35 schemas deep and the server enables nothing
+- [x] **MCPX6 — `tools/list` is 35 schemas deep and the server enables nothing
   else.** `ServerCapabilities::builder().enable_tools()` is the whole
   declaration: no resources, no prompts. Three things here are more naturally
   RESOURCES than tools — the files under `--mcp-file-root`, the
@@ -3025,7 +3157,7 @@ ones that fit an analysis tool.
   resource reads without granting tool calls. None of the six surveyed servers
   exposes resources either, so this is a differentiator rather than catch-up.
 
-- [ ] **MCPX7 — rows are bounded with unusual rigour; columns are not bounded
+- [x] **MCPX7 — rows are bounded with unusual rigour; columns are not bounded
   at all.** `--mcp-max-rows`, `limit` and cursors bound how MANY dialogs come
   back. Nothing bounds how WIDE each one is, so an agent wanting `call_id` and
   `state` for 500 dialogs still pays for `timing`, `frame`, `updated_at` and

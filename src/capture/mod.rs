@@ -447,13 +447,29 @@ pub struct TlsDecryptReport {
     /// "we never had the keys" and "we had them and had already discarded the
     /// ciphertext" are the same silence.
     ///
-    /// NOT yet surfaced to the operator: only `late_recovered` reaches the log,
-    /// so today that silence is exactly what a run with evictions produces.
-    /// Tracked as TLSHOLD in docs/design/backlog.md.
+    /// Reaches the operator through `late_hold_guidance`, which runs on
+    /// successful runs as well as failed ones -- an eviction only happens on a
+    /// capture that was otherwise working, so reporting it only when nothing
+    /// decrypted would be reporting it never.
     pub late_evicted: u64,
     /// Records still held at the end of the run, i.e. keys that never came.
     pub late_still_held: u64,
 }
+
+/// Total ciphertext the late-keylog hold may keep across every session at once.
+///
+/// Defined here rather than in [`decrypt`] because the operator-facing message
+/// that quotes it lives outside the `tls` feature while the enforcement lives
+/// inside it. One definition, both readers -- a message naming a bound the code
+/// does not enforce is worse than no message.
+pub const REWIND_BUDGET_BYTES: usize = 4 * 1024 * 1024;
+
+/// Held records per TCP direction, so one noisy direction cannot starve the
+/// others out of the shared byte budget.
+pub const MAX_REWIND_PER_DIRECTION: usize = 16;
+
+/// How far behind the newest packet a held record may be before it is retired.
+pub const REWIND_MAX_AGE_SECS: i64 = 5;
 
 impl TlsDecryptReport {
     /// ApplicationData records seen and not opened.

@@ -2059,9 +2059,14 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // whether that is a fact about the host or about this server's privilege.
     // Raised 33 -> 35 by `start_tls_capture` and `stop_tls_capture`: the first
     // tools on this surface that create KERNEL state, behind their own opt-in.
+    // Raised 35 -> 36 by `get_capture_report` (MCPX5). `get_dialog_report` and
+    // `render_ladder` both answer for one Call-ID, so everything `--report`
+    // says about the capture as a whole -- orphaned media, STUN, ICMP evidence,
+    // what the caps shed -- was reachable from the CLI and the REST API and
+    // from no MCP tool. An agent could be handed a count it could not expand.
     assert_eq!(
         registered.len(),
-        35,
+        37,
         "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -2881,8 +2886,14 @@ fn no_documentation_table_repeats_a_row() {
         // Raised 596 -> 597 by the release-comparison table in the engineering
         // note on the 0.5.118 regression. One and not two: a note is written
         // for the website directly and has no docs/ source to mirror.
-        597,
-        "walked {tables} tables, expected 597. More is fine — bump this. FEWER \
+        //
+        // Raised 597 -> 599 by MCPX5's `get_capture_report`: its parameter
+        // table in docs/mcp-tools.md, doubled by the generated site mirror.
+        //
+        // Raised 599 -> 601 by MCPX2's `aggregate_dialogs`, the same way: one
+        // parameter table, doubled by the mirror.
+        601,
+        "walked {tables} tables, expected 601. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."
     );

@@ -218,6 +218,21 @@ Those bounds are the reason to start the key source **before** the capture
 wherever you can. Recovery closes a gap measured in packets, not one measured
 in minutes.
 
+The run also says what the hold could NOT recover, because "we never had the
+keys for those records" and "we had them and had already discarded the
+ciphertext" are different problems with different fixes:
+
+```text
+sipnab discarded 3 TLS record(s) held from before a key arrived: the
+late-decrypt hold is bounded (4 MiB total, 16 record(s) per direction, 5s)
+```
+
+That one argues for starting the key source earlier, or for a bigger bound. A
+line reporting records **still waiting when the run ended** argues for neither
+-- the key source never produced those secrets, and capturing sooner would not
+have helped.
+
+
 ## What does not work, and why
 
 Stated plainly, because time spent here is time people lose:

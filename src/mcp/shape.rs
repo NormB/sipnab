@@ -178,6 +178,10 @@ pub const DIALOG_VERBATIM_FIELDS: &[&str] = &[
     "state",
     "method",
     "msg_count",
+    // A u16 the responder chose from a bounded set, not text it wrote. There
+    // is no prompt to inject into an integer, and an agent passes it straight
+    // to `explain_response_code`, which a fence would break.
+    "final_status_code",
     "duration_sec",
     "created_at",
     "updated_at",

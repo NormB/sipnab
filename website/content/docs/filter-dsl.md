@@ -72,6 +72,7 @@ All 30 addressable fields, organized by type.
 | `dst.port` | Destination port (first message) | port number |
 | `duration` | Dialog duration | seconds (float) |
 | `msg_count` | Number of SIP messages in dialog | count |
+| `response_code` | Final INVITE response code. Also spelled `final_status_code`, which is the name the JSON, the schema and the MCP answers return. Unknown while the call is in progress, so a ringing dialog matches no comparison at all | 100-699 |
 | `pdd` | Post-dial delay (time to first ringing/response) | seconds (float) |
 | `setup_time` | Call setup time (INVITE to 200 OK) | seconds (float) |
 | `retransmits` | Total retransmit count in dialog | count |
@@ -97,6 +98,36 @@ All 30 addressable fields, organized by type.
 > == 0` is a real count of zero, and `no_media` is the diagnosis itself.
 > **Pair any `rtp.*` threshold with `rtp.packets > 0`** to ask about calls that
 > actually had media.
+
+
+### Why `response_code` and not just `state`
+
+`state` answers what happened. `response_code` answers why, and they are not
+the same question. Every one of 403, 404, 408, 486, 503 and 603 is
+`state == 'Failed'`, and they have different owners: a 403 is authorization, a
+408 is a timer, a 486 is the callee, a 503 is capacity upstream. Asking "which
+release cause dominates on this trunk in the last ten minutes" needs the code,
+and asking it by class needs a numeric field rather than a set of names:
+
+Every server-side failure, whatever the specific cause:
+
+```bash
+sipnab -N -I capture.pcap --filter "response_code >= 500 AND response_code < 600"
+```
+
+The one cause you suspect, on the carrier you suspect:
+
+```bash
+sipnab -N -I capture.pcap --filter "response_code == 503 AND dst.ip == '198.51.100.7'"
+```
+
+A call still in progress has no final response. It matches NOTHING -- not
+`response_code < 400`, not `>= 400`, not `== 0` -- because a zero default would
+sweep every ringing call into the success bucket. Auth challenges follow
+[`final_status_code`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs):
+a call challenged and then answered reports 200, not the 407, because the
+challenge was intermediate. A call only ever challenged reports the challenge,
+because then it was the outcome.
 
 ### Boolean fields
 

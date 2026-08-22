@@ -709,6 +709,19 @@ pub struct ListDialogsParams {
     /// (`<RFC 3339>|<Call-ID>`) to continue after that page. Omit on the
     /// first call.
     pub cursor: Option<String>,
+    /// Return only these fields on each row, plus `call_id`.
+    ///
+    /// Rows on this surface are bounded by `limit`, `--mcp-max-rows` and
+    /// cursors. Columns were not bounded at all, so asking for a page to read
+    /// two fields off it still paid for every other field on every row. Omit
+    /// to get the whole row, which is what every existing caller gets.
+    ///
+    /// `call_id` is always included, whether or not it is listed: every
+    /// follow-up tool here takes a Call-ID, so a row an agent cannot address
+    /// is a row it can do nothing with. An unknown name is refused by name
+    /// rather than ignored -- a silently dropped typo reads as "no such data".
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
 }
 
 /// Parameters for `get_dialog_report`.
@@ -718,6 +731,73 @@ pub struct GetDialogReportParams {
     /// Call-ID identifying the dialog.
     pub call_id: String,
     /// Output format: "json", "markdown", or "text". Default "json".
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+/// Parameters for `aggregate_dialogs`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct AggregateDialogsParams {
+    /// The ONE field to group by: `state`, `response_code`, `method`,
+    /// `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, or `rtp.codec`.
+    ///
+    /// One dimension, deliberately. Two is a pivot table and a pivot table
+    /// wants a UI, which is the line `docs/design/positioning.md` draws
+    /// between an analysis tool and a query engine. There is no time bucketing
+    /// for the same reason -- narrow the window with `filter` instead.
+    pub group_by: String,
+    /// Optional filter (alias or DSL) applied before grouping, so an
+    /// aggregate can be scoped the same way a listing is.
+    pub filter: Option<String>,
+    /// Buckets to return, largest first (1..=100, default 20). Everything
+    /// beyond this is summed into `other_count` rather than dropped: a
+    /// truncated aggregate that does not say what it left out is a wrong
+    /// total, not a partial one.
+    pub top_n: Option<u32>,
+}
+
+/// One bucket of an [`AggregateDialogsParams`] answer.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct AggregateBucket {
+    /// The grouped value, rendered as a string. `null` in the data becomes
+    /// the literal `"(none)"` rather than being dropped, because "how many
+    /// dialogs have no User-Agent" is a real question.
+    pub value: String,
+    /// Dialogs in this bucket.
+    pub count: usize,
+}
+
+/// Answer shape for `aggregate_dialogs`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct AggregateDialogsResponse {
+    /// Version of this response schema.
+    pub schema_version: u32,
+    /// Echo of the field grouped on, so an answer is self-describing.
+    pub group_by: String,
+    /// Buckets, largest first, ties broken by value for a stable answer.
+    pub buckets: Vec<AggregateBucket>,
+    /// Dialogs in buckets beyond `top_n`. Zero when nothing was truncated.
+    pub other_count: usize,
+    /// Distinct values seen, whether or not each got a bucket.
+    pub distinct_values: usize,
+    /// Dialogs the filter matched across the WHOLE store. `buckets` sum plus
+    /// `other_count` equals this, always.
+    pub total_matched: usize,
+    /// Which capture this answer came from, and which revision of its stores.
+    pub capture_identity: crate::provenance::CaptureEtag,
+}
+
+/// Parameters for `get_capture_report`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct GetCaptureReportParams {
+    /// Output format: "json", "markdown", or "text". Default "json".
+    ///
+    /// The same vocabulary `get_dialog_report` takes, deliberately: an agent
+    /// that learned one should not have to learn the other.
     #[serde(default)]
     pub format: Option<String>,
 }
@@ -745,6 +825,11 @@ pub struct FindProblemsParams {
     /// Cursor: pass back the previous response's `next_cursor` verbatim
     /// (`<RFC 3339>|<Call-ID>`). Omit on the first call.
     pub cursor: Option<String>,
+    /// Return only these fields on each row, plus `call_id`. See
+    /// [`ListDialogsParams::fields`] -- same rules, same refusal on a name
+    /// this row does not carry.
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
 }
 
 // ── Dialog-inspection parameter structs ─────────────────────────────
@@ -809,6 +894,18 @@ pub struct RtpStatsParams {
     /// byte-identical to an unidentified stream's, and `ungrounded_excluded`
     /// reports how many streams the bound therefore could not judge.
     pub max_mos: Option<f64>,
+    /// Capture-wide sweep only: keep only orphaned streams (`true`) or only
+    /// streams a dialog claimed (`false`). Omit to sweep both.
+    ///
+    /// Orphaned media is the signature of an RTP proxy or a NAT fault, and
+    /// `capture_status` reports how many exist as a bare number. Without this
+    /// the count could not be expanded into the rows behind it -- the same
+    /// defect the page object fixed for dialogs, one surface over.
+    ///
+    /// Independent of `min_mos`/`max_mos`: an orphan usually has no dialog to
+    /// ground its clock, so requiring a MOS bound alongside would filter out
+    /// most of what this exists to find.
+    pub orphaned: Option<bool>,
     /// Capture-wide sweep only: maximum streams to return (1..=1000,
     /// default 50).
     pub limit: Option<u32>,
@@ -877,6 +974,11 @@ pub struct TailDialogsParams {
     pub cursor: Option<String>,
     /// Maximum dialogs to return (default 50, max 1000).
     pub limit: Option<u32>,
+    /// Return only these fields on each row, plus `call_id`. See
+    /// [`ListDialogsParams::fields`] -- same rules, same refusal on a name
+    /// this row does not carry.
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -1471,6 +1573,11 @@ pub struct SearchByTimeParams {
     /// (`<RFC 3339 created_at>|<Call-ID>`) to continue after that page. Omit
     /// on the first call.
     pub cursor: Option<String>,
+    /// Return only these fields on each row, plus `call_id`. See
+    /// [`ListDialogsParams::fields`] -- same rules, same refusal on a name
+    /// this row does not carry.
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -2860,6 +2967,166 @@ impl SipnabMcp {
         })
     }
 
+    /// Files under `--mcp-file-root`, as MCP resources.
+    ///
+    /// Resources are read-only by protocol construction, which STRENGTHENS the
+    /// argument in `docs/mcp-protocol.md` rather than diluting it: a host can
+    /// grant resource reads without granting tool calls, which no tool
+    /// annotation can express.
+    ///
+    /// The reason this exists is `export_capture`. It returns a server-local
+    /// absolute path, which is fine over stdio and useless over the HTTP
+    /// transport, where the client has no filesystem -- the tool succeeded and
+    /// the agent still could not obtain the bytes it had just asked sipnab to
+    /// preserve.
+    fn resource_list(&self) -> Result<Vec<rmcp::model::Resource>, rmcp::ErrorData> {
+        let root = self.file_root.as_ref().ok_or_else(|| {
+            rmcp::ErrorData::invalid_params(
+                "resources are disabled: start sipnab with --mcp-file-root <DIR>".to_string(),
+                None,
+            )
+        })?;
+        let entries = std::fs::read_dir(root).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("cannot read the file root: {e}"), None)
+        })?;
+
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let size = entry.metadata().ok().map(|m| m.len());
+            let mime = match path.extension().and_then(|e| e.to_str()) {
+                Some("pcap" | "pcapng") => "application/vnd.tcpdump.pcap",
+                Some("wav") => "audio/wav",
+                Some("json") => "application/json",
+                _ => "application/octet-stream",
+            };
+            let mut r = rmcp::model::Resource::new(format!("sipnab:///{name}"), name.to_string())
+                .with_mime_type(mime);
+            r.size = size;
+            out.push(r);
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
+    /// Read one resource by URI.
+    ///
+    /// The URI is another way to NAME a file, so it must not become another
+    /// way to leave the root: the path half goes through `resolve_in_root`,
+    /// the same single-component check and symlink resolution the file tools
+    /// use. One sandbox, not two that can drift.
+    fn resource_read(
+        &self,
+        uri: &str,
+    ) -> Result<Vec<rmcp::model::ResourceContents>, rmcp::ErrorData> {
+        /// Bytes a single resource read may return.
+        ///
+        /// JSON-RPC with base64 is not a bulk transfer channel -- a 128 MB
+        /// capture becomes ~170 MB of one JSON string, which no client wants
+        /// and no model can read. Refusing past a bound, and SAYING the bound,
+        /// beats returning something unusable or truncating in silence.
+        const MAX_RESOURCE_BYTES: u64 = 8 * 1024 * 1024;
+
+        let name = uri.strip_prefix("sipnab:///").ok_or_else(|| {
+            rmcp::ErrorData::invalid_params(
+                format!("'{uri}' is not a sipnab resource URI; expected sipnab:///<filename>"),
+                None,
+            )
+        })?;
+        let path = self.resolve_in_root(name)?;
+
+        let size = std::fs::metadata(&path)
+            .map_err(|e| rmcp::ErrorData::invalid_params(format!("'{name}': {e}"), None))?
+            .len();
+        if size > MAX_RESOURCE_BYTES {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "'{name}' is {size} bytes, past the {MAX_RESOURCE_BYTES}-byte resource                      limit. JSON-RPC carrying base64 is not a bulk transfer channel; copy                      the file from --mcp-file-root instead."
+                ),
+                None,
+            ));
+        }
+
+        let bytes = std::fs::read(&path)
+            .map_err(|e| rmcp::ErrorData::internal_error(format!("'{name}': {e}"), None))?;
+
+        // A capture is bytes, not text, and a lossy UTF-8 conversion would
+        // hand the model something that is not what the file holds. Text only
+        // when it genuinely is text.
+        let contents = match String::from_utf8(bytes) {
+            Ok(text) => rmcp::model::ResourceContents::text(text, uri),
+            Err(e) => {
+                use base64::Engine as _;
+                rmcp::model::ResourceContents::BlobResourceContents {
+                    uri: uri.to_string(),
+                    mime_type: Some("application/octet-stream".to_string()),
+                    blob: base64::engine::general_purpose::STANDARD.encode(e.as_bytes()),
+                    meta: None,
+                }
+            }
+        };
+        Ok(vec![contents])
+    }
+
+    /// Narrow every row of a rendered page to `fields`, plus `call_id`.
+    ///
+    /// Applied to the SERIALIZED page rather than to `DialogSummary`, because
+    /// the projection has to survive `skip_serializing_if` -- a field already
+    /// absent from a row (no `frame`, no `input_origin`) must stay absent
+    /// rather than reappear as null just because it was asked for.
+    ///
+    /// The envelope is never projected. `total_matched`, `truncated`,
+    /// `next_cursor` and `capture_identity` are how the caller knows what it
+    /// did NOT get, and dropping them to save bytes would trade the bound for
+    /// the thing the bound exists to report.
+    fn project_page_fields(
+        page: &mut serde_json::Value,
+        fields: Option<&[String]>,
+    ) -> Result<(), rmcp::ErrorData> {
+        let Some(fields) = fields else { return Ok(()) };
+
+        // Legal names come from a row the server actually produced, so this
+        // cannot drift from `DialogSummary`. An empty page has no row to read
+        // them off, and also no row to project, so it is simply left alone.
+        let Some(first) = page
+            .get("dialogs")
+            .and_then(|d| d.as_array())
+            .and_then(|a| a.first())
+            .and_then(|r| r.as_object())
+        else {
+            return Ok(());
+        };
+        let mut legal: Vec<String> = first.keys().cloned().collect();
+        legal.sort();
+
+        for f in fields {
+            if !legal.iter().any(|k| k == f) {
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!(
+                        "unknown field '{f}'; this row carries: {}",
+                        legal.join(", ")
+                    ),
+                    None,
+                ));
+            }
+        }
+
+        if let Some(rows) = page.get_mut("dialogs").and_then(|d| d.as_array_mut()) {
+            for row in rows.iter_mut() {
+                if let Some(obj) = row.as_object_mut() {
+                    obj.retain(|k, _| k == "call_id" || fields.iter().any(|f| f == k));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Build one bounded page of dialogs from a predicate over the store.
     ///
     /// The single implementation behind `list_dialogs` and `find_problems`,
@@ -3032,6 +3299,13 @@ impl SipnabMcp {
             let mut ungrounded_excluded = 0usize;
             let mut matched: Vec<&crate::rtp::stream::RtpStream> = Vec::new();
             for s in ss.iter() {
+                // Applied before the MOS bounds and independently of them: an
+                // orphan has no dialog to ground its clock, so folding this
+                // into the `bounded` arm would drop most orphans on a query
+                // that asked for exactly them.
+                if params.orphaned.is_some_and(|want| s.orphaned() != want) {
+                    continue;
+                }
                 if !bounded {
                     matched.push(s);
                     continue;
@@ -3133,7 +3407,235 @@ impl SipnabMcp {
                     .is_none_or(|expr| expr.matches_dialog(d, streams, capture, delay))
             },
         )?;
+        let mut page = serde_json::to_value(page)
+            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
+        Self::project_page_fields(&mut page, params.fields.as_deref())?;
         Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
+    }
+
+    /// Count dialogs by one field, inside the store.
+    ///
+    /// Counting is the operation a language model gets wrong most reliably,
+    /// and this surface already documents the failure: an agent asked "how
+    /// many calls failed" counts the rows it is holding and answers with that
+    /// number. The page object fixed exactly one count -- `total_matched` for
+    /// one filter. Every other count still meant fetching pages and tallying
+    /// them in the model's head, or issuing N filtered queries with the
+    /// buckets guessed in advance.
+    ///
+    /// One dimension only, and no time bucketing. That is a deliberate cap
+    /// rather than an unfinished feature: two dimensions is a pivot table,
+    /// a pivot table wants a UI, and `docs/design/positioning.md` puts that
+    /// outside what sipnab is. Narrow with `filter` instead.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) for an unknown or multi-valued `group_by`,
+    /// or an unparseable `filter`.
+    #[tool(
+        name = "aggregate_dialogs",
+        description = "Counts dialogs grouped by ONE field (state, \
+                       response_code, method, from.user, to.user, ua, src.ip, \
+                       dst.ip, rtp.codec), optionally filtered. Returns buckets \
+                       largest-first plus other_count, so the buckets and the \
+                       remainder always account for total_matched. Use this \
+                       instead of paging rows and counting them.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn aggregate_dialogs(
+        &self,
+        Parameters(params): Parameters<AggregateDialogsParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        /// Every groupable key. Listed once, used by both the dispatch and the
+        /// refusal message, so a key can never be accepted without being
+        /// offered or offered without being accepted.
+        const GROUPABLE: &[&str] = &[
+            "state",
+            "response_code",
+            "method",
+            "from.user",
+            "to.user",
+            "ua",
+            "src.ip",
+            "dst.ip",
+            "rtp.codec",
+        ];
+
+        let key = params.group_by.trim();
+        if !GROUPABLE.contains(&key) {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "cannot group by '{key}'; one of: {}. One dimension only -- \
+                     narrow with `filter` rather than adding a second.",
+                    GROUPABLE.join(", ")
+                ),
+                None,
+            ));
+        }
+
+        let top_n = params.top_n.unwrap_or(20).clamp(1, 100) as usize;
+        let filter = self.compile_filter(params.filter.as_deref())?;
+
+        let (mut tally, total_matched, capture_identity) = {
+            // Capture, dialogs, streams -- the order `CaptureState` documents.
+            let state = self.capture.read();
+            let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
+            let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
+            let capture = CaptureMedia::of_store(&ss);
+
+            let mut tally: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            let mut total = 0usize;
+            for d in ds.iter() {
+                let streams: Vec<&crate::rtp::stream::RtpStream> =
+                    ss.streams_for(&d.call_id).collect();
+                if let Some(expr) = filter.as_ref()
+                    && !expr.matches_dialog(d, &streams, capture, delay)
+                {
+                    continue;
+                }
+                total += 1;
+                // `(none)` rather than dropping the row: "how many dialogs
+                // carry no User-Agent" is a real question, and a bucket set
+                // that silently omits them would not sum to total_matched.
+                let value = match key {
+                    "state" => d.state().to_string(),
+                    "response_code" => d
+                        .final_status_code()
+                        .map_or_else(|| "(none)".to_string(), |c| c.to_string()),
+                    "method" => d.method.as_str().to_string(),
+                    "from.user" => d.from_user.clone().unwrap_or_else(|| "(none)".into()),
+                    "to.user" => d.to_user.clone().unwrap_or_else(|| "(none)".into()),
+                    // Across all messages, matching `Field::Ua`: the UA can
+                    // sit on any of them, not only the first.
+                    "ua" => d
+                        .messages
+                        .iter()
+                        .find_map(|m| m.user_agent().map(str::to_string))
+                        .unwrap_or_else(|| "(none)".into()),
+                    "src.ip" => d.src_addr.to_string(),
+                    "dst.ip" => d.dst_addr.to_string(),
+                    "rtp.codec" => streams
+                        .first()
+                        .and_then(|s| s.codec.clone())
+                        .unwrap_or_else(|| "(none)".to_string()),
+                    // GROUPABLE gated this above; a new key added there without
+                    // an arm here is a compile-time-invisible bug, so it fails
+                    // loudly rather than silently bucketing everything as one.
+                    other => {
+                        return Err(rmcp::ErrorData::internal_error(
+                            format!("groupable key '{other}' has no extractor"),
+                            None,
+                        ));
+                    }
+                };
+                // Three of these keys carry text the packet's SENDER wrote --
+                // `from.user`, `to.user` and `ua` are attacker-controlled on a
+                // public interface. They reach a language model here exactly
+                // as they would in a row, so they are fenced exactly as a row
+                // fences them (#139). The rest are values sipnab derived: a
+                // state name, a status code, an IP, a codec from a payload
+                // type table.
+                let value = if matches!(key, "from.user" | "to.user" | "ua") {
+                    super::shape::fence(&value)
+                } else {
+                    value
+                };
+                *tally.entry(value).or_insert(0) += 1;
+            }
+            (tally, total, capture_identity)
+        };
+
+        let distinct_values = tally.len();
+        let mut ordered: Vec<(String, usize)> = tally.drain().collect();
+        // Largest first, ties broken by value so the same store always gives
+        // the same answer -- a cursor-free aggregate that reordered between
+        // calls would look like the capture changed.
+        ordered.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let other_count: usize = ordered.iter().skip(top_n).map(|(_, c)| *c).sum();
+        let buckets: Vec<AggregateBucket> = ordered
+            .into_iter()
+            .take(top_n)
+            .map(|(value, count)| AggregateBucket { value, count })
+            .collect();
+
+        let response = AggregateDialogsResponse {
+            schema_version: 1,
+            group_by: key.to_string(),
+            buckets,
+            other_count,
+            distinct_values,
+            total_matched,
+            capture_identity,
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(response)?]))
+    }
+
+    /// The whole-capture report, the one `--report` prints.
+    ///
+    /// `get_dialog_report` and `render_ladder` both answer for ONE Call-ID, so
+    /// everything `--report` says about the capture as a whole -- orphaned
+    /// streams, STUN, ICMP evidence quoting SIP or media, what the retention
+    /// caps shed -- had no MCP path. An agent could be told a count and had no
+    /// tool that could expand it.
+    ///
+    /// Frames read comes from [`crate::capture::captured_packets`], the same
+    /// process-global the Prometheus scrape reports, so the denominator here
+    /// is the one every other number in the run is read against. Passing a
+    /// zero would have been worse than the missing tool: "0 frame(s) read" on
+    /// a live capture is a wrong number, not a missing one.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) for an unknown `format`.
+    #[tool(
+        name = "get_capture_report",
+        description = "Returns the whole-capture analysis report: findings \
+                       across every dialog and stream, orphaned media, STUN and \
+                       ICMP evidence, and what the retention caps shed. This is \
+                       the capture-level view; get_dialog_report answers for one \
+                       Call-ID. Format 'json', 'markdown', or 'text'.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn get_capture_report(
+        &self,
+        Parameters(params): Parameters<GetCaptureReportParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let format = match params.format.as_deref() {
+            Some("markdown") | Some("md") => ReportFormat::Markdown,
+            Some("text") | Some("txt") => ReportFormat::Text,
+            None | Some("json") => ReportFormat::Json,
+            Some(other) => {
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!("unknown format '{other}', expected json|markdown|text"),
+                    None,
+                ));
+            }
+        };
+
+        let report = {
+            // Dialogs then streams, the order `CaptureState` documents, so the
+            // two halves of the analysis describe one store revision.
+            let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
+            let analysis =
+                crate::analysis::analyze(&ds, &ss, None, crate::capture::captured_packets());
+            crate::output::analysis_report::print_analysis_report_as(&analysis, format)
+        };
+
+        let content = if format == ReportFormat::Json {
+            // Re-parse so the response is structured JSON rather than a
+            // stringified blob, matching `get_dialog_report`.
+            match serde_json::from_str::<serde_json::Value>(&report) {
+                Ok(v) => ContentBlock::json(v)?,
+                Err(_) => ContentBlock::text(report),
+            }
+        } else {
+            ContentBlock::text(report)
+        };
+        Ok(CallToolResult::success(vec![content]))
     }
 
     /// Returns a structured per-call report (timing, parties, RTP quality,
@@ -3286,6 +3788,9 @@ impl SipnabMcp {
                         .is_none_or(|expr| expr.matches_dialog(d, streams, capture, delay))
             },
         )?;
+        let mut page = serde_json::to_value(page)
+            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
+        Self::project_page_fields(&mut page, params.fields.as_deref())?;
         Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
     }
 
@@ -3885,6 +4390,9 @@ impl SipnabMcp {
             }
         };
 
+        let mut response = serde_json::to_value(response)
+            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
+        Self::project_page_fields(&mut response, params.fields.as_deref())?;
         Ok(CallToolResult::success(vec![ContentBlock::json(response)?]))
     }
 
@@ -4718,6 +5226,8 @@ impl SipnabMcp {
                 "capture_identity": capture_identity,
             })
         };
+        let mut payload = payload;
+        Self::project_page_fields(&mut payload, params.fields.as_deref())?;
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
@@ -5513,9 +6023,24 @@ impl SipnabMcp {
                 continue;
             }
             let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            // First packet time, which costs one open and one record read. It
+            // is what lets an agent narrow forty rotated files to the two that
+            // could hold the call it is asking about, instead of calling
+            // `open_capture` on each in turn -- a tool documented as
+            // destructive, which voids every cursor it holds.
+            //
+            // Deliberately NOT dialog_count or a last-packet time: both need
+            // the whole file parsed or seeked, and a listing that costs a full
+            // read of every capture in the root is a listing nobody runs.
+            let first_packet = crate::capture::input_set::first_packet_time(&path)
+                .ok()
+                .flatten()
+                .and_then(|secs| chrono::DateTime::from_timestamp(secs as i64, 0))
+                .map(|dt| dt.to_rfc3339());
             files.push(serde_json::json!({
                 "filename": path.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
                 "bytes": size,
+                "first_packet": first_packet,
             }));
         }
         files.sort_by(|a, b| a["filename"].as_str().cmp(&b["filename"].as_str()));
@@ -6587,6 +7112,32 @@ fn audit_args(arguments: Option<&rmcp::model::JsonObject>) -> String {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for SipnabMcp {
+    /// Files under `--mcp-file-root`, listed as resources.
+    ///
+    /// Delegates to `resource_list` so the logic is testable without
+    /// fabricating a `RequestContext`, and so the sandbox has exactly one
+    /// implementation.
+    async fn list_resources(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListResourcesResult, rmcp::ErrorData> {
+        Ok(rmcp::model::ListResourcesResult::with_all_items(
+            self.resource_list()?,
+        ))
+    }
+
+    /// Read one file under `--mcp-file-root` by resource URI.
+    async fn read_resource(
+        &self,
+        request: rmcp::model::ReadResourceRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ReadResourceResponse, rmcp::ErrorData> {
+        // `ReadResourceResponse` is the SDK's request/response envelope; the
+        // result converts into it.
+        Ok(rmcp::model::ReadResourceResult::new(self.resource_read(&request.uri)?).into())
+    }
+
     /// Dispatch a tool call through the generated router, leaving an audit
     /// line either way.
     ///
@@ -6690,7 +7241,15 @@ impl ServerHandler for SipnabMcp {
     /// Advertise server capabilities (tools only) and the human-readable
     /// instructions string shown to MCP clients.
     fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+        let mut info = ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                // Resources are read-only by protocol construction, so a
+                // host can grant them without granting tool calls -- a
+                // distinction no tool annotation can express.
+                .enable_resources()
+                .build(),
+        );
         // Name ourselves. The default comes from `Implementation::from_build_env`,
         // whose `env!("CARGO_CRATE_NAME")` expands when *rmcp* compiles, so a
         // client asking what it is connected to was told "rmcp" and rmcp's
@@ -7510,6 +8069,7 @@ mod tests {
                 filter: None,
                 limit: Some(limit),
                 cursor: cursor.map(str::to_string),
+                fields: None,
             }))
             .await
             .expect("list_dialogs should succeed");
@@ -8009,6 +8569,380 @@ mod tests {
         assert!(v.get("diagnosis").is_some());
     }
 
+    /// Build a server holding two streams: one linked to a dialog, one
+    /// orphaned. Orphaned media is the signature of an RTP proxy or a NAT
+    /// fault, and it is one of the few findings sngrep cannot produce.
+    fn server_with_one_orphan_and_one_linked() -> SipnabMcp {
+        use crate::rtp::parser::RtpHeader;
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+
+        let hdr = |ssrc: u32| RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 160,
+            ssrc,
+            payload_offset: 12,
+        };
+        let parsed = |dst_port: u16| crate::capture::parse::ParsedPacket {
+            frame: None,
+            timestamp: base_ts(),
+            src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: 40000,
+            dst_port,
+            transport: TransportProto::Udp,
+            payload: vec![0u8; 12 + 160].into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            dscp: None,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
+        };
+        {
+            let mut s = ss.write();
+            s.process_rtp(&parsed(30000), &hdr(0xAAAA), base_ts());
+            s.process_rtp(&parsed(30002), &hdr(0xBBBB), base_ts());
+            // Claim exactly one of them through the production linking path.
+            s.link_to_dialog(
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                30000,
+                "linked@example.invalid",
+            );
+        }
+        SipnabMcp::new(ds, ss)
+    }
+
+    /// `capture_status` reports `orphaned_stream_count` as a NUMBER, and until
+    /// now an agent told "three orphaned streams exist" had no way to list
+    /// them: `rtp_stats` carried `orphaned` per row but took no filter, and
+    /// the filter DSL docs redirected the question to `--report` or the REST
+    /// API. Telling an agent a count it cannot expand is the same defect the
+    /// page object was added to fix, one surface over.
+    #[tokio::test]
+    async fn rtp_stats_can_return_only_the_orphaned_streams() {
+        let server = server_with_one_orphan_and_one_linked();
+
+        let only_orphans = server
+            .rtp_stats(Parameters(RtpStatsParams {
+                orphaned: Some(true),
+                ..Default::default()
+            }))
+            .await
+            .expect("sweep should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&only_orphans)).unwrap();
+        let rows = v["streams"].as_array().expect("streams array");
+        assert_eq!(rows.len(), 1, "one of the two streams is orphaned: {v}");
+        assert_eq!(rows[0]["orphaned"], true);
+
+        let only_linked = server
+            .rtp_stats(Parameters(RtpStatsParams {
+                orphaned: Some(false),
+                ..Default::default()
+            }))
+            .await
+            .expect("sweep should succeed");
+        let v2: serde_json::Value = serde_json::from_str(&text_of(&only_linked)).unwrap();
+        let rows2 = v2["streams"].as_array().expect("streams array");
+        assert_eq!(rows2.len(), 1, "the other one is claimed: {v2}");
+        assert_eq!(rows2[0]["orphaned"], false);
+
+        // Omitting the filter still sweeps everything, which is the behaviour
+        // every existing caller depends on.
+        let all = server
+            .rtp_stats(Parameters(RtpStatsParams::default()))
+            .await
+            .expect("sweep should succeed");
+        let v3: serde_json::Value = serde_json::from_str(&text_of(&all)).unwrap();
+        assert_eq!(v3["streams"].as_array().unwrap().len(), 2);
+    }
+
+    /// `get_dialog_report` and `render_ladder` are per-Call-ID, so the
+    /// whole-capture `--report` view -- the one that names orphaned streams,
+    /// STUN, ICMP evidence and what the caps shed -- had no MCP path at all.
+    /// The test is surface parity: nothing reachable from `--report` should be
+    /// unreachable to an agent.
+    #[tokio::test]
+    async fn get_capture_report_answers_for_the_whole_capture() {
+        let server = server_with_one_orphan_and_one_linked();
+
+        let text = server
+            .get_capture_report(Parameters(GetCaptureReportParams { format: None }))
+            .await
+            .expect("report should render");
+        let body = text_of(&text);
+        assert!(
+            !body.trim().is_empty(),
+            "a capture with no findings still gets a line, because silence is \
+             indistinguishable from the tool not having run"
+        );
+
+        // The format argument is the same vocabulary get_dialog_report takes,
+        // and an unknown one must be refused rather than silently defaulted.
+        let err = server
+            .get_capture_report(Parameters(GetCaptureReportParams {
+                format: Some("yaml".to_string()),
+            }))
+            .await
+            .expect_err("unknown format must error");
+        let json = serde_json::to_value(err).unwrap();
+        assert_eq!(json["code"], -32602);
+    }
+
+    /// Rows are bounded on this surface with unusual rigour -- `--mcp-max-rows`,
+    /// `limit`, cursors. Columns were not bounded at all, so an agent wanting
+    /// `call_id` and `state` for a page of dialogs still paid for `timing`,
+    /// `frame`, `updated_at` and two fenced display names on every row.
+    #[tokio::test]
+    async fn a_fields_projection_narrows_the_row_without_losing_its_identity() {
+        let server = server_with_dialog("fields@x");
+
+        let full = server
+            .list_dialogs(Parameters(ListDialogsParams::default()))
+            .await
+            .expect("list should succeed");
+        let fv: serde_json::Value = serde_json::from_str(&text_of(&full)).unwrap();
+        let wide = fv["dialogs"][0].as_object().expect("a row").len();
+        assert!(wide > 3, "the unprojected row is wide: {wide}");
+
+        let narrow = server
+            .list_dialogs(Parameters(ListDialogsParams {
+                fields: Some(vec!["state".to_string()]),
+                ..Default::default()
+            }))
+            .await
+            .expect("projection should succeed");
+        let nv: serde_json::Value = serde_json::from_str(&text_of(&narrow)).unwrap();
+        let row = nv["dialogs"][0].as_object().expect("a row");
+
+        assert!(
+            row.contains_key("state"),
+            "asked-for field present: {row:?}"
+        );
+        // `call_id` survives every projection: a row an agent cannot address
+        // is a row it cannot do anything with, and every follow-up tool on
+        // this surface takes a Call-ID.
+        assert!(
+            row.contains_key("call_id"),
+            "the identifier must survive any projection: {row:?}"
+        );
+        assert_eq!(row.len(), 2, "and nothing else: {row:?}");
+
+        // The envelope is not a row and must not be projected away -- the
+        // counts and the cursor are how the agent knows what it did not get.
+        assert!(nv.get("total_matched").is_some());
+        assert!(nv.get("capture_identity").is_some());
+    }
+
+    /// A typo must fail loudly. Silently returning rows missing the field the
+    /// caller asked for is the shape of bug that gets read as "no such data".
+    #[tokio::test]
+    async fn an_unknown_projection_field_is_refused_by_name() {
+        let server = server_with_dialog("typo@x");
+        let err = server
+            .list_dialogs(Parameters(ListDialogsParams {
+                fields: Some(vec!["statte".to_string()]),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("an unknown field must error");
+        let json = serde_json::to_value(err).unwrap();
+        assert_eq!(json["code"], -32602);
+        let msg = json["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("statte") && msg.contains("state"),
+            "the error must name the typo AND the legal set: {msg}"
+        );
+    }
+
+    // ── aggregate_dialogs ────────────────────────────────────────────
+
+    /// Counting is the operation a language model gets wrong most reliably,
+    /// and `docs/mcp-tools.md` already documents this exact failure: "an agent
+    /// asked 'how many calls failed?' counts the rows it holds and answers
+    /// with that number." The page object fixed ONE count. Every other count
+    /// was still done in the model's head, over a page it had to fetch first.
+    #[tokio::test]
+    async fn aggregate_dialogs_counts_in_the_store_not_in_the_model() {
+        let server = server_with_dialog("agg@x");
+
+        let result = server
+            .aggregate_dialogs(Parameters(AggregateDialogsParams {
+                group_by: "state".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("aggregate should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+
+        assert_eq!(v["group_by"], "state");
+        let buckets = v["buckets"].as_array().expect("buckets array");
+        assert!(!buckets.is_empty(), "one dialog produces one bucket: {v}");
+        let total: u64 = buckets.iter().map(|b| b["count"].as_u64().unwrap()).sum();
+        assert_eq!(
+            total + v["other_count"].as_u64().unwrap(),
+            v["total_matched"].as_u64().unwrap(),
+            "the buckets plus the remainder must account for every matched \
+             dialog, or the agent is counting a subset it cannot see: {v}"
+        );
+    }
+
+    /// One dimension only. The positioning doc draws the line at analysis
+    /// rather than a query engine, and this is where the slope starts: two
+    /// dimensions is a pivot table, and a pivot table wants a UI.
+    #[tokio::test]
+    async fn aggregate_dialogs_refuses_a_second_dimension_and_an_unknown_one() {
+        let server = server_with_dialog("agg2@x");
+
+        for bad in ["state,method", "created_at", "payload"] {
+            let err = server
+                .aggregate_dialogs(Parameters(AggregateDialogsParams {
+                    group_by: bad.to_string(),
+                    ..Default::default()
+                }))
+                .await
+                .expect_err("a second dimension or an unknown key must be refused");
+            let json = serde_json::to_value(err).unwrap();
+            assert_eq!(json["code"], -32602, "refused as invalid_params: {bad}");
+            let msg = json["message"].as_str().unwrap_or_default();
+            assert!(
+                msg.contains("state"),
+                "the refusal must name what IS groupable, or the agent guesses \
+                 again: {msg}"
+            );
+        }
+    }
+
+    /// Grouping by a sender-written field puts attacker-controlled text in
+    /// front of a language model, exactly as a row does. `ua`, `from.user` and
+    /// `to.user` are fenced here for the same reason `fenced_dialog_summary`
+    /// fences them (#139); a state name or a status code is not, because
+    /// sipnab derived those.
+    #[tokio::test]
+    async fn sender_written_bucket_values_are_fenced_and_derived_ones_are_not() {
+        let server = server_with_dialog("fence-agg@x");
+
+        let ua = server
+            .aggregate_dialogs(Parameters(AggregateDialogsParams {
+                group_by: "ua".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("aggregate should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&ua)).unwrap();
+        let value = v["buckets"][0]["value"].as_str().expect("a bucket value");
+        assert!(
+            value.contains(super::super::shape::UNTRUSTED_OPEN),
+            "a User-Agent is written by the sender and must be fenced: {value:?}"
+        );
+
+        let state = server
+            .aggregate_dialogs(Parameters(AggregateDialogsParams {
+                group_by: "state".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("aggregate should succeed");
+        let v2: serde_json::Value = serde_json::from_str(&text_of(&state)).unwrap();
+        let derived = v2["buckets"][0]["value"].as_str().expect("a bucket value");
+        assert!(
+            !derived.contains(super::super::shape::UNTRUSTED_OPEN),
+            "a dialog state is sipnab's own word and fencing it would tell the \
+             agent to distrust the analysis: {derived:?}"
+        );
+    }
+
+    /// `list_captures` returned `{filename, bytes}` and nothing else, so the
+    /// only way to learn what was inside a second file was `open_capture` --
+    /// documented "Destructive. Replaces every dialog and stream", minting a
+    /// new `capture_identity` that voids every cursor the agent holds. Asking
+    /// "which of these rotated files could hold this call" cost the capture
+    /// the agent was already working on.
+    #[tokio::test]
+    async fn list_captures_says_when_each_file_starts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/pcap-samples/sip-rtp-g711.pcap"),
+            root.join("rotated-01.pcap"),
+        )
+        .expect("seed a real capture");
+
+        let srv = server_with_dialog("caps@x").with_file_root(&root);
+        let result = srv.list_captures().await.expect("list_captures");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        let row = &v["captures"][0];
+
+        assert_eq!(row["filename"], "rotated-01.pcap");
+        let first = row["first_packet"].as_str().unwrap_or_default();
+        assert!(
+            first.contains('T') && first.contains(':'),
+            "a real capture must report when it starts, as RFC 3339: {row}"
+        );
+    }
+
+    // ── resources ────────────────────────────────────────────────────
+
+    /// `export_capture` returns a server-LOCAL absolute path. Over stdio that
+    /// is fine. Over the HTTP transport -- the remote shape `mcp-deploy.md`
+    /// documents, and the one where preserving signalling before stopping a
+    /// live capture matters most -- the client has no filesystem, so the tool
+    /// succeeded and the agent still could not obtain the bytes.
+    #[test]
+    fn an_exported_file_is_readable_as_a_resource() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::write(root.join("evidence.pcap"), b"\xd4\xc3\xb2\xa1rest").expect("seed");
+
+        let srv = server_with_dialog("res@x").with_file_root(&root);
+
+        let listed = srv.resource_list().expect("resource_list should succeed");
+        assert!(
+            listed.iter().any(|r| r.name == "evidence.pcap"),
+            "the file under --mcp-file-root must be listed: {listed:?}"
+        );
+        let uri = listed
+            .iter()
+            .find(|r| r.name == "evidence.pcap")
+            .map(|r| r.uri.clone())
+            .expect("a uri");
+
+        let read = srv
+            .resource_read(&uri)
+            .expect("resource_read should succeed");
+        assert_eq!(read.len(), 1, "one file, one content block");
+    }
+
+    /// The sandbox is the SAME one the file tools use. A resource URI is
+    /// another way to name a file, so it must not be another way to leave the
+    /// root.
+    #[test]
+    fn a_resource_uri_cannot_escape_the_file_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        let srv = server_with_dialog("esc@x").with_file_root(&root);
+
+        for bad in ["sipnab:///../etc/passwd", "sipnab:///sub/dir.pcap"] {
+            let err = srv
+                .resource_read(bad)
+                .expect_err("a path must be refused, not resolved");
+            let json = serde_json::to_value(err).unwrap();
+            assert_eq!(json["code"], -32602, "refused as invalid_params: {bad}");
+        }
+    }
+
     // ── search_messages ──────────────────────────────────────────────
 
     /// Parameters for a plain `search_messages` call: query and limit only.
@@ -8221,6 +9155,7 @@ mod tests {
             .tail_dialogs(Parameters(TailDialogsParams {
                 cursor: Some("not-a-timestamp".to_string()),
                 limit: None,
+                fields: None,
             }))
             .await
             .expect_err("bad cursor must error");
@@ -8255,6 +9190,7 @@ mod tests {
             .tail_dialogs(Parameters(TailDialogsParams {
                 cursor: Some(future),
                 limit: None,
+                fields: None,
             }))
             .await
             .expect("tail should succeed");
@@ -8274,6 +9210,7 @@ mod tests {
                 .tail_dialogs(Parameters(TailDialogsParams {
                     cursor: cursor.clone(),
                     limit: Some(limit),
+                    fields: None,
                 }))
                 .await
                 .expect("tail should succeed");
@@ -8355,6 +9292,7 @@ mod tests {
             .tail_dialogs(Parameters(TailDialogsParams {
                 cursor: Some(base_ts().to_rfc3339()),
                 limit: None,
+                fields: None,
             }))
             .await
             .expect("tail should succeed");
@@ -8735,6 +9673,7 @@ mod tests {
                     filter: None,
                     limit: None,
                     cursor: None,
+                    fields: None,
                 }))
                 .await
                 .is_err()
@@ -8752,6 +9691,7 @@ mod tests {
                     filter: None,
                     limit: None,
                     cursor: None,
+                    fields: None,
                 }))
                 .await
                 .is_err()
@@ -8775,6 +9715,7 @@ mod tests {
             filter: None,
             limit: Some(1),
             cursor,
+            fields: None,
         };
 
         let mut seen: Vec<String> = Vec::new();
@@ -8822,6 +9763,7 @@ mod tests {
                 filter: None,
                 limit: None,
                 cursor: Some("not-a-time|abc@x".into()),
+                fields: None,
             }))
             .await
             .expect_err("a non-RFC-3339 cursor must be refused");
@@ -9477,6 +10419,7 @@ mod tests {
                         .tail_dialogs(Parameters(TailDialogsParams {
                             cursor: None,
                             limit: None,
+                            fields: None,
                         }))
                         .await
                         .expect("tail"),
@@ -11454,6 +12397,7 @@ mod tests {
                             cursor: None,
                             limit: None,
                             filter: None,
+                            fields: None,
                         }))
                         .await
                         .expect("list"),
@@ -11466,6 +12410,7 @@ mod tests {
                         .tail_dialogs(Parameters(TailDialogsParams {
                             cursor: None,
                             limit: None,
+                            fields: None,
                         }))
                         .await
                         .expect("tail"),
