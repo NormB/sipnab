@@ -1266,6 +1266,60 @@ Tiers:
 - [x] src/wasm.rs:24 — [style] new() without Default (intentional; note). **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/crypto.rs:13 — [doc-staleness] CryptoBackend doc mentions wolfSSL/OpenSSL backends that don't exist (removed by decision). **Done (P3 code-health wave, 2026-07-24).**
 
+### GATE — a gate that does not enforce what it claims (added 2026-08-22)
+
+Both found while single-sourcing the prose-gate path lists. Grouped because
+they are the same failure in two places: something states a rule, and nothing
+holds anything to it.
+
+- [ ] **GATE1 — the prose gates run only at pre-push, so a commit can be made
+  and not pushed.** `vale` and `codespell` are in
+  [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) and not in
+  [`.githooks/pre-commit`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-commit), which runs fmt, clippy and the suite. Work that
+  satisfies the first gate meets the second only at the push, with the commit
+  already made — and each rejection costs a full gate cycle to redo, roughly
+  ten minutes. It cost two of them on 2026-08-22 alone: one passive-voice line
+  in [`docs/internals/walkthroughs.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/walkthroughs.md) that blocked a release push, and a second
+  in the same session.
+
+  The hook already made this argument for formatting and acted on it: fmt moved
+  into pre-commit because "Formatting is now checked where it is cheap to fix,
+  and re-checked where it matters that it is true". Vale is about a second, and
+  codespell about the same. The same reasoning reaches the same conclusion for
+  both.
+
+  **Not a paste job.** Both gates carry tool detection the naive fix would
+  duplicate a third time: `VALE_BIN`/`CODESPELL_BIN` escape hatches, the
+  version pin, and the skip-with-a-stated-reason path that keeps a missing tool
+  from reading as a pass. Pasting that into `pre-commit` would recreate exactly
+  the duplication [`.config/vale-paths.txt`](https://github.com/NormB/sipnab/blob/main/.config/vale-paths.txt) and [`.config/codespell-paths.txt`](https://github.com/NormB/sipnab/blob/main/.config/codespell-paths.txt)
+  were added to remove. The shape is a shared script both hooks source —
+  [`scripts/preflight.sh`](https://github.com/NormB/sipnab/blob/main/scripts/preflight.sh) already brackets its two gates with
+  `BEGIN`/`END` markers, which is most of the extraction.
+
+- [ ] **GATE2 — branch protection on `main` is bypassed on every push, so
+  neither rule it declares is enforced.** Every push to `main` reports:
+
+  - `Required status check "CI success" is expected` — the rule wants CI green
+    *before* the push, and admin bypass waves it through. So the check that is
+    supposed to gate a merge gates nothing on this path, and a red commit can
+    land exactly as a green one does.
+  - `This branch must not contain merge commits` — `main` has 125 of them. The
+    rule has never matched how this repository works.
+
+  Both are pre-existing and neither was introduced by the work that found them.
+  The decision is a fork, not a fix: either the rules describe the intended
+  workflow and something must change to satisfy them, or they do not and they
+  should be dropped. A rule that is bypassed on every push is worse than no
+  rule, because it reads as protection to anyone auditing the settings — the
+  same class as the comment that claimed three copies of a path list were
+  identical while one omitted `bench`.
+
+  One consequence is concrete rather than theoretical:
+  [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) refuses a `v*` tag whose commit has a failed
+  run, so a red `main` blocks the next release tag whatever the protection
+  settings say.
+
 ## P4 — test quality
 
 - [x] **Unlabeled code fences carry a copy button no gate reads** (2026-07-28).
