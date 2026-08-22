@@ -30,13 +30,13 @@
 # the local rpm or gcc is not a gate. Two things are therefore built by hand
 # rather than inherited from the toolchain:
 #   * the fixtures' DT_NEEDED is written with patchelf, not produced by
-#     linking against stub libraries -- link behaviour (--as-needed, default
+#     linking against stub libraries -- link behavior (--as-needed, default
 #     dtags, -l: support) varies by distro and would decide the result;
 #   * the package is unpacked with `rpm2archive -`, the one spelling that
 #     behaves the same on rpm 4 and rpm 6 (see extract_needed below).
 # Verified identical on ubuntu:24.04 (rpm 4.18.2, gcc 13.3, ld 2.42) and
 # fedora:44 (rpm 6.0.x, gcc 16.1, ld 2.46) -- the rpm 4 / rpm 6 split is where
-# rpm2archive's behaviour changes, not any particular patch release.
+# rpm2archive's behavior changes, not any particular patch release.
 #
 # Usage: bash packaging/rpm/test-build-rpm.sh   (from anywhere)
 set -u
@@ -83,7 +83,7 @@ if [ -n "$MISSING" ]; then
 fi
 
 # The ELF fixtures are whatever gcc produces here, so the package must be
-# labelled with the arch this host actually builds. Labelling it otherwise
+# labeled with the arch this host actually builds. Labeling it otherwise
 # would put a foreign-arch ELF in the package and leave the arch-dependent
 # assertions passing for a reason unrelated to what they claim to test.
 case "$(uname -m)" in
@@ -251,7 +251,7 @@ else
     fail "noaudio build failed or did not produce $PKG"
 fi
 
-# --- 3. Cross-arch: plugin missing, and a package labelled for the other arch
+# --- 3. Cross-arch: plugin missing, and a package labeled for the other arch
 # The ELF inside is this host's -- rpm labels the package from --target and
 # never inspects the payload's machine type, so this case exercises the arch
 # plumbing and the filename, and deliberately makes no claim about the binary.

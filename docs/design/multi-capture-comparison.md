@@ -114,7 +114,7 @@ strength:
    not minutes. This is the strongest signal that survives a B2BUA — and it is
    the one that fails hardest on two captures taken hours apart, which is
    question A's shape, which is why A and B must not share a screen.
-3. **Called-number equality after normalisation.** `to_user` survives a
+3. **Called-number equality after normalization.** `to_user` survives a
    transparent proxy and survives many B2BUAs. It does not survive number
    translation, and translation is the case an operator most wants to inspect.
 4. **Media correlation.** Two legs of one call through a media-relaying B2BUA

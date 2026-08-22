@@ -535,7 +535,7 @@ impl ScannerDetector {
             self.latest_packet = Some(msg.timestamp);
         }
 
-        // `None` when the request line carried no recognisable method. It used
+        // `None` when the request line carried no recognizable method. It used
         // to substitute the literal "UNKNOWN", which is a value a `Custom`
         // method can also hold — the same collision the `ua` field had.
         let method = if msg.is_request {

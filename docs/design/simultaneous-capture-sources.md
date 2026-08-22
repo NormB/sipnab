@@ -28,7 +28,7 @@ the original paragraph warned about and then walked into.
 ## 1. The problem in one paragraph
 
 Written before the fix; kept in the present tense because it describes the
-behaviour up to 0.5.118, which is what the rest of the page reasons against.
+behavior up to 0.5.118, which is what the rest of the page reasons against.
 
 An operator running OpenSIPS has two ways to see decrypted SIP. eCapture plus
 `--keylog` lifts TLS session keys out of the daemon, which works but depends on
@@ -434,7 +434,7 @@ run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
 **Metrics and the writer read the source as a scalar.** The `-O` writer is the
-concrete casualty. It initialises on the first packet's `link_type`
+concrete casualty. It initializes on the first packet's `link_type`
 ([`src/app/batch.rs:2846`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2846)), and the two members disagree: live capture yields
 `DLT_EN10MB`, while `Packet::with_pre_parsed` ([`src/capture/packet.rs:597`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L597)) sets
 `link_type = 0` and a `data` buffer holding the bare transport payload — no
@@ -570,7 +570,7 @@ disjunctive and cannot be widened by adding a member.
   Assert the stream is orphaned. This is the test that fails if someone
   "improves" matching with a timing fallback.
 - *Wrong-node collision.* Two HEP dialogs advertising the same `(addr, port)`,
-  then RTP on it. Today the last offer wins silently. Pin the current behaviour
+  then RTP on it. Today the last offer wins silently. Pin the current behavior
   so the fix in stage three is visible as a change, and assert the run does not
   claim more confidence than it has.
 - *Refusals.* `-I` plus `-L` exits 2 with the security reason. `-O` plus a
@@ -580,7 +580,7 @@ disjunctive and cannot be widened by adding a member.
 - *Shutdown.* One member ends, the run continues; both end, the channel closes
   and `source_exhausted` flips exactly once.
 - *Readiness.* A HEP bind failure tears down the live member and surfaces one
-  error naming the failed member — the behaviour `run_multi_capture` already has
+  error naming the failed member — the behavior `run_multi_capture` already has
   for devices, asserted for a mixed list.
 
 **What shipped, and where each test lives.** [`tests/composite_source_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/composite_source_test.rs)
@@ -694,7 +694,7 @@ Six departures from the plan above, each for a reason:
    live device opens N sockets that all stamp the SAME device name, so a counter
    per socket would mint `eth0#0` from each of them — the same collision as (5)
    in the live reader. A grouped socket therefore stamps nothing, which is
-   `--cores`' pre-stage-two behaviour rather than a regression. See
+   `--cores`' pre-stage-two behavior rather than a regression. See
    [`docs/design/live-fanout.md`](https://github.com/NormB/sipnab/blob/main/docs/design/live-fanout.md) §2.3.
 
 **What this stage did not close.** `capture_live_fanout` needs a real device and
@@ -765,7 +765,7 @@ the one the design expected to have to write. Run 3 is F1 reproduced on demand.
 
 **Four caveats the measurement produced, none of which changes the design:**
 
-1. `proto_hep` refuses to initialise without a HEP *listener* even when the
+1. `proto_hep` refuses to initialize without a HEP *listener* even when the
    config only sends — `No HEP listener defined!`, exit 255. A
    `socket=hep_udp:<ip>:<port>` line is mandatory alongside `hep_id`. Purely an
    OpenSIPS-side documentation point.

@@ -1007,11 +1007,11 @@ async fn get_stats(
             "in_call": active_calls,
             "completed": completed_count,
             "failed": failed_count,
-            // WIRE FORMAT, not prose: this key shipped as `cancelled` and
+            // WIRE FORMAT, not prose: this key shipped as `canceled` and
             // dashboards read it by name. The US-English sweep renamed the
             // Rust identifiers around it; the key a consumer matches on
             // does not move for a spelling preference.
-            "cancelled": cancelled_count,
+            "canceled": cancelled_count,
         },
         "streams": {
             "total": total_streams,

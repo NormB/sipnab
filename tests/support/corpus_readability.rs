@@ -238,7 +238,7 @@ pub fn walk(root: &Path) -> Vec<PathBuf> {
 /// Does `path` claim to be a capture by its name?
 ///
 /// Name and magic are both needed and neither subsumes the other. A file
-/// truncated before its header carries no magic to recognise and would be waved
+/// truncated before its header carries no magic to recognize and would be waved
 /// through as "not a capture" — the most silent outcome on offer — while the
 /// corpus's ring-buffer members (`.pcap0` … `.pcap9`) and its epoch-suffixed
 /// rotations carry magic and nothing name-shaped at all.

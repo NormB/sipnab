@@ -224,7 +224,7 @@ pub fn portrange_skip_report() -> PortrangeSkipReport {
 
 /// Clear the skip tally and re-arm the warning escalation.
 ///
-/// The tally is process-global, so a process that analyses several captures in
+/// The tally is process-global, so a process that analyzes several captures in
 /// sequence (and a test that asserts on the counts) needs a way back to zero.
 ///
 /// # Side effects
@@ -1298,7 +1298,7 @@ pub fn icmp_media_report(streams: &StreamStore) -> IcmpMediaReport {
         if attribution.matched != MediaMatch::None {
             attributed += evidence.errors;
         }
-        // Either proof will do: a recognisable RTP header, or a match onto
+        // Either proof will do: a recognizable RTP header, or a match onto
         // media sipnab watched. A quote can have one without the other.
         if payload.is_media() || attribution.matched != MediaMatch::None {
             media += evidence.errors;

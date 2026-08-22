@@ -307,7 +307,7 @@ List all tracked SIP dialogs with optional filtering and pagination.
 |-----------|--------|---------|-------------|
 | `state`   | string | --      | Filter by dialog state (`Trying`, `Ringing`, `InCall`, `Completed`, `Failed`, `Canceled`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`) |
 | `from`    | string | --      | Filter by From user (regex pattern) |
-| `limit`   | int    | 50      | Maximum results (capped at 1000) |
+| `limit`   | int    | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`  | int    | 0       | Pagination offset |
 
 **curl:**
@@ -746,7 +746,7 @@ List all tracked RTP streams with quality metrics.
 |------------|-------|---------|-------------|
 | `orphaned` | bool  | --      | `true` keeps only streams no dialog claims, `false` only those one does. From 0.5.98 the test is the stream's dialog association; before it, a 30-second sweep decided, so `orphaned=true` missed short unclaimed streams |
 | `mos_below`| float | --      | Filter streams with MOS below this threshold |
-| `limit`    | int   | 50      | Maximum results (capped at 1000) |
+| `limit`    | int   | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`   | int   | 0       | Pagination offset |
 
 **curl** — every tracked stream:

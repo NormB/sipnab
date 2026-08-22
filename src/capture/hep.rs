@@ -4186,7 +4186,7 @@ mod tests {
                 b"INVITE sip:x SIP/2.0\r\n\r\n",
             );
             sender.send_to(&pkt, &bind).expect("send datagram");
-            // Serialised so arrival order is send order: the assertions are
+            // Serialized so arrival order is send order: the assertions are
             // about which COUNTER advanced, never about scheduling.
             std::thread::sleep(Duration::from_millis(20));
         }

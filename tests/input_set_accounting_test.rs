@@ -132,7 +132,7 @@ fn a_fifo_in_a_capture_directory_is_named() {
         &["-N", "-I", &root.path().to_string_lossy(), "--quiet"],
         Some("warn"),
     );
-    assert_eq!(code, Some(0), "the real capture still analyses:\n{err}");
+    assert_eq!(code, Some(0), "the real capture still analyzes:\n{err}");
     assert!(
         err.contains("live.pcap") && err.contains("not a file"),
         "the fifo must be named:\n{err}"

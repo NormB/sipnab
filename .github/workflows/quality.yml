@@ -178,7 +178,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Coverage was measured, summarised, uploaded to Codecov with
+      # Coverage was measured, summarized, uploaded to Codecov with
       # fail_ci_if_error: false — and gated by nothing. It could decline release
       # after release with every run staying green: measured, reported,
       # unenforced, the same shape as the glibc floor and the binary-size claim.

@@ -29,7 +29,7 @@ jobs:
   # Every artifact filename, the .deb Version:, the .rpm version and the
   # Homebrew formula are all derived from ${GITHUB_REF_NAME#v}. The version the
   # binary reports comes from Cargo.toml. Tag v0.6.0 without bumping the crate
-  # and the release ships packages labelled 0.6.0 containing a binary that says
+  # and the release ships packages labeled 0.6.0 containing a binary that says
   # 0.5.49 — into users' package managers, attested and checksummed, with every
   # badge green. The failure is silent precisely because both halves are
   # internally consistent.
@@ -69,7 +69,7 @@ jobs:
     name: Build (${{ matrix.target }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }})
     runs-on: ${{ matrix.os }}
     # GitHub's default is six hours. A smoke test that hung once already held a
-    # release for 37 minutes before it was cancelled by hand; this is the
+    # release for 37 minutes before it was canceled by hand; this is the
     # backstop that does not depend on any shell utility being present.
     timeout-minutes: 45
     # gnu Linux targets build inside rust:1-bookworm so the binaries (and the
@@ -155,7 +155,7 @@ jobs:
       # measured on 0.5.120. Bounding and retrying are available even where
       # caching is not, so the fetch stays and is made to fail fast and to
       # NAME ITSELF: an unbounded apt-get that hung for fifteen minutes is
-      # what cancelled the 0.5.118 CI run, and the log said nothing useful.
+      # what canceled the 0.5.118 CI run, and the log said nothing useful.
       - name: Install build deps (bookworm container)
         if: matrix.container
         shell: bash
@@ -213,7 +213,7 @@ jobs:
       # the published floor silently: it is set here, `published_macos_floors`
       # asserts website/config.toml matches these two lines, and the same gate
       # asserts neither is below what the compiler would produce -- a floor lower
-      # than the compiler's is a claim the binary cannot honour.
+      # than the compiler's is a claim the binary cannot honor.
       #
       # To change real support, change these and let the gate walk the published
       # numbers to match.
@@ -410,7 +410,7 @@ jobs:
       #
       # A separate `strip` invocation used to run here under `|| true`. On the
       # cross-compiled targets the host's GNU strip cannot even read the output
-      # ("Unable to recognise the format of the input file") and had been
+      # ("Unable to recognize the format of the input file") and had been
       # failing on every single release for the project's history; on native
       # targets it was a no-op against an already-stripped binary. `|| true`
       # meant neither outcome was visible, so it looked like the thing doing the

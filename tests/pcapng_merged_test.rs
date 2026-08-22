@@ -10,14 +10,14 @@
 //! of the first interface
 //! ```
 //!
-//! and then, once every snaplen is normalised to one value, on link type:
+//! and then, once every snaplen is normalized to one value, on link type:
 //!
 //! ```text
 //! an interface has a type 274 different from the type of the first interface
 //! ```
 //!
 //! Per-packet encapsulation is the *point* of a merged capture, so no
-//! normalisation makes libpcap read one. The fix is a reader that takes the
+//! normalization makes libpcap read one. The fix is a reader that takes the
 //! link type from each packet's own interface, which the parser already
 //! supports: `Packet::from_bytes` has always taken `link_type` per packet, and
 //! only the readers treated it as one value for a whole file.

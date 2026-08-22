@@ -212,7 +212,7 @@ checking STUN before RTP cannot swallow media.
 | `FINGERPRINT` | Verified. A CRC-32 over the message with no key involved, so a passive reader can check it honestly -- and it is what separates a real STUN message from a payload that merely carried the cookie bytes. Reported as verified, present-and-wrong, or absent, which stay distinct |
 | ICE `USE-CANDIDATE`, `PRIORITY`, `ICE-CONTROLLING`/`ICE-CONTROLLED` | The nomination is the finding: without it, an ICE exchange that converged and one that never did look alike. Both sides claiming controlling is a role conflict whose only other symptom is media that never starts |
 | TURN `CHANNEL-NUMBER`, `REQUESTED-TRANSPORT` | So sipnab can describe a relay path, not merely detect one |
-| ChannelData framing | sipnab recognises **and unwraps** it, so RTP relayed through TURN reaches reconstruction. Without that a relayed call reports as having no media — the same answer sipnab gives for a call that carried none, which are opposite findings |
+| ChannelData framing | sipnab recognizes **and unwraps** it, so RTP relayed through TURN reaches reconstruction. Without that a relayed call reports as having no media — the same answer sipnab gives for a call that carried none, which are opposite findings |
 
 sipnab tracks transactions, so it reports a request that never came back along
 with the number of attempts. A retransmission is one unanswered question, not

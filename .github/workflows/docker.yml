@@ -215,4 +215,4 @@ jobs:
             [.. | objects | select(has("buildDefinition"))][0]
             | "  workflow: \(.buildDefinition.externalParameters.workflow.path // "?")",
               "  ref:      \(.buildDefinition.externalParameters.workflow.ref // "?")"
-          ' || echo "  (verified; summary shape not recognised)"
+          ' || echo "  (verified; summary shape not recognized)"

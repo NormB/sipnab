@@ -8,7 +8,7 @@ description: >
 # WHY THIS EXISTS
 #
 # On 2026-08-20 the `Security audit` job sat in `apt-get install -y
-# libpcap-dev` for fifteen minutes (23:44:35Z to 23:59:51Z) and was cancelled,
+# libpcap-dev` for fifteen minutes (23:44:35Z to 23:59:51Z) and was canceled,
 # which failed the aggregate `CI success` job and blocked the 0.5.118 release
 # tag. The code was fine; azure.archive.ubuntu.com did not answer.
 #
@@ -91,7 +91,7 @@ runs:
           sudo dpkg -i "$cache"/*.deb
         else
           # Cold cache only. Bounded, because the whole point is that an
-          # unresponsive archive costs minutes instead of a cancelled run.
+          # unresponsive archive costs minutes instead of a canceled run.
           # `|| true` on update: a flaky third-party repo (packages.microsoft
           # .com has 403'd here) must not fail the job when the packages we
           # need are in the main archives.

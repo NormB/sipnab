@@ -90,7 +90,7 @@ searches for "2A".
 adapting for the same reason: it leads with the reader's *problem*, so scanning
 the page means scanning problems rather than mechanisms.
 
-**Kubernetes' Tasks section** organises by real-world use case rather than by
+**Kubernetes' Tasks section** organizes by real-world use case rather than by
 subsystem, and is searchable by what you are trying to do. The lesson sipnab
 needs is narrower: an entry point that maps goals to pages.
 

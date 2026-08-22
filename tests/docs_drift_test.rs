@@ -2518,7 +2518,7 @@ fn no_documentation_table_repeats_a_row() {
     // docs/design/packet-path-allocation.md, which is a design doc and costs
     // one. Also from a failing run.
     // Raised 148 -> 149 by `docs/design/documentation-pattern.md`, the record
-    // of how prose docs are organised (split by task, depth in `<details>`).
+    // of how prose docs are organized (split by task, depth in `<details>`).
     // A design doc, so one file and not two. Also from a failing run.
     // Raised 149 -> 153 by the MCP split: docs/mcp-walkthrough.md became
     // docs/mcp-deploy.md (a rename, no change), and docs/mcp.md shed its tool
@@ -3510,6 +3510,7 @@ fn no_parameter_doc_states_a_row_ceiling_as_a_fixed_number() {
         "1..=1000",
         "1 to 1000",
         "1-1000",
+        "capped at 1000",
         "hard-coded to keep tool-call costs",
     ];
     let mut hits: Vec<String> = Vec::new();
@@ -3520,6 +3521,14 @@ fn no_parameter_doc_states_a_row_ceiling_as_a_fixed_number() {
         (
             "website/content/docs/mcp-tools.md",
             include_str!("../website/content/docs/mcp-tools.md"),
+        ),
+        // The REST surface has the same shape and the same knob
+        // (`--api-max-rows`), and it had the same defect: two rows said
+        // "capped at 1000" where the ceiling is the operator's.
+        ("docs/rest-api.md", include_str!("../docs/rest-api.md")),
+        (
+            "website/content/docs/api.md",
+            include_str!("../website/content/docs/api.md"),
         ),
     ] {
         for phrase in banned {
@@ -3540,5 +3549,158 @@ fn no_parameter_doc_states_a_row_ceiling_as_a_fixed_number() {
         tools.contains("--mcp-max-rows"),
         "docs/mcp-tools.md must name the knob somewhere, or this gate is \
          checking that a phrase is absent from a page it never read"
+    );
+}
+
+/// The tree spells in US English, and nothing held it there.
+///
+/// 0.5.105 made 2,904 replacements across 274 files for exactly this reason: a
+/// repository that spells one word two ways teaches a reader that neither
+/// spelling is meant, and a grep for either finds half the matches. That sweep
+/// shipped with NO gate, so by 0.5.122 the tree had drifted back to 166
+/// British spellings across 80 files -- including test function names.
+///
+/// The lesson is the one bench/baseline.json learned the hard way: a one-time
+/// correction with nothing holding it is a correction with a half-life. This
+/// is the thing that holds it.
+///
+/// CHANGELOG.md is exempt and that is not laziness: 0.5.105's entry QUOTES the
+/// British spellings as examples of what it replaced, so "fixing" them would
+/// leave the entry saying a word was replaced by itself. LICENSES/ and
+/// THIRD-PARTY-NOTICES.md are other people's text, and website/static/llms*.txt
+/// is generated.
+#[test]
+fn the_tree_spells_in_us_english() {
+    // WHOLE words, not stems. `aria-labelledby` is a standard HTML attribute
+    // spelled that way by the spec and `analysis` is correct US English, so a
+    // stem match flags both -- and a gate that cries wolf gets switched off.
+    const BRITISH: &[&str] = &[
+        "honour",
+        "honours",
+        "honoured",
+        "honouring",
+        "behaviour",
+        "behaviours",
+        "behavioural",
+        "normalise",
+        "normalised",
+        "normalises",
+        "normalising",
+        "normalisation",
+        "recognise",
+        "recognised",
+        "recognises",
+        "recognising",
+        "recognisable",
+        "initialise",
+        "initialised",
+        "initialises",
+        "initialising",
+        "initialisation",
+        "analyse",
+        "analysed",
+        "analyses",
+        "analysing",
+        "catalogue",
+        "catalogues",
+        "catalogued",
+        "cataloguing",
+        "colour",
+        "colours",
+        "coloured",
+        "colouring",
+        "licence",
+        "licences",
+        "cancelled",
+        "cancelling",
+        "labelled",
+        "labelling",
+        "modelled",
+        "modelling",
+        "organise",
+        "organised",
+        "organises",
+        "organising",
+        "organisation",
+        "authorise",
+        "authorised",
+        "authorises",
+        "authorising",
+        "authorisation",
+        "optimise",
+        "optimised",
+        "optimises",
+        "optimising",
+        "optimisation",
+        "serialise",
+        "serialised",
+        "serialises",
+        "serialising",
+        "serialisation",
+        "summarise",
+        "summarised",
+        "summarises",
+        "summarising",
+        "signalling",
+        "signalled",
+        "travelled",
+        "travelling",
+    ];
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let out = std::process::Command::new("git")
+        .args(["ls-files"])
+        .current_dir(root)
+        .output()
+        .expect("git ls-files");
+    let listing = String::from_utf8_lossy(&out.stdout);
+
+    let patterns: Vec<regex::Regex> = BRITISH
+        .iter()
+        .map(|w| {
+            regex::Regex::new(&format!(r"(?i)\b{w}\b"))
+                .unwrap_or_else(|e| panic!("bad pattern for {w}: {e}"))
+        })
+        .collect();
+
+    let mut hits: Vec<String> = Vec::new();
+    let mut scanned = 0usize;
+    for f in listing.split_whitespace() {
+        if f.starts_with("target/")
+            || f.starts_with("LICENSES/")
+            || f.starts_with("website/static/")
+            || f == "THIRD-PARTY-NOTICES.md"
+            || f == "CHANGELOG.md"
+            // This file LISTS every word it forbids, so it necessarily
+            // contains all of them. Exempting it is not a loophole: the list
+            // is the gate, and a gate cannot be its own violation.
+            || f == "tests/docs_drift_test.rs"
+            || f.ends_with(".lock")
+        {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(root.join(f)) else {
+            continue;
+        };
+        scanned += 1;
+        for (w, re) in BRITISH.iter().zip(patterns.iter()) {
+            if re.is_match(&text) {
+                hits.push(format!("{f}: {w:?}"));
+            }
+        }
+    }
+
+    // A walk that read nothing would report a clean tree.
+    assert!(
+        scanned > 200,
+        "only scanned {scanned} tracked files — the walk stopped early, so \
+         this gate is reporting a clean tree it never looked at"
+    );
+    assert!(
+        hits.is_empty(),
+        "British spellings, {} of them. This tree is US English and 0.5.105 \
+         already swept it once; without this gate it drifted back:\n  {}",
+        hits.len(),
+        hits.join("\n  ")
     );
 }

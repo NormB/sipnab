@@ -985,7 +985,7 @@ st_bpf_uses_effective_pool() {
   st_eq "S13 a positive flag is used as given" "100" "$(effective_pairs 100 5000)"
   st_try bpf_for 0
   st_true "S13 a zero pool is refused, not inverted" test "$ST_RC" -ne 0
-  st_has "S13 the refusal cites the normalisation" "carrier.py:245-248" "$ST_OUT"
+  st_has "S13 the refusal cites the normalization" "carrier.py:245-248" "$ST_OUT"
 }
 
 st_filter_is_the_trailing_positional() {

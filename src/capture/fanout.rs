@@ -78,7 +78,7 @@ const PACKET_FANOUT: libc::c_int = 18;
 /// * `EALREADY` — already in a group.
 ///
 /// The caller must treat every error as advisory. Capture works without fanout;
-/// refusing to capture because an optimisation was unavailable would trade a
+/// refusing to capture because an optimization was unavailable would trade a
 /// throughput problem for a total outage.
 #[cfg(target_os = "linux")]
 pub fn join_fanout_group(fd: std::os::fd::RawFd, group_id: u16) -> std::io::Result<()> {

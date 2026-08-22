@@ -4943,7 +4943,7 @@ impl SipnabMcp {
         name = "explain_response_code",
         description = "Explains a SIP response status code from the IANA \
                        registry: its reason phrase, class (provisional, \
-                       success, redirect, challenge, cancelled, declined, \
+                       success, redirect, challenge, canceled, declined, \
                        failure) and what it means operationally. Use this \
                        instead of recalling codes from memory.",
         annotations(read_only_hint = true, open_world_hint = false)
@@ -4966,7 +4966,7 @@ impl SipnabMcp {
             ResponseClass::Redirect => "redirect",
             ResponseClass::Challenge => "challenge",
             // Wire value, unchanged: an agent matches this string.
-            ResponseClass::Canceled => "cancelled",
+            ResponseClass::Canceled => "canceled",
             ResponseClass::Declined => "declined",
             ResponseClass::Failure => "failure",
         };
@@ -5286,7 +5286,7 @@ impl SipnabMcp {
             let verdict = match (sig_bad, media_bad) {
                 (true, true) => "both",
                 // Wire value, unchanged for the same reason.
-                (true, false) => "signalling",
+                (true, false) => "signaling",
                 (false, true) => "media",
                 (false, false) => "none",
             };
@@ -5297,7 +5297,7 @@ impl SipnabMcp {
                 "verdict": verdict,
                 "state": format!("{:?}", dialog.state()),
                 "final_status_code": dialog.final_status_code(),
-                "signalling": {
+                "signaling": {
                     "problem": sig_bad,
                     "hints": sig.hints,
                 },
@@ -8664,7 +8664,7 @@ mod tests {
         assert_eq!(rows2.len(), 1, "the other one is claimed: {v2}");
         assert_eq!(rows2[0]["orphaned"], false);
 
-        // Omitting the filter still sweeps everything, which is the behaviour
+        // Omitting the filter still sweeps everything, which is the behavior
         // every existing caller depends on.
         let all = server
             .rtp_stats(Parameters(RtpStatsParams::default()))
@@ -8904,7 +8904,7 @@ mod tests {
 
     /// `export_capture` returns a server-LOCAL absolute path. Over stdio that
     /// is fine. Over the HTTP transport -- the remote shape `mcp-deploy.md`
-    /// documents, and the one where preserving signalling before stopping a
+    /// documents, and the one where preserving signaling before stopping a
     /// live capture matters most -- the client has no filesystem, so the tool
     /// succeeded and the agent still could not obtain the bytes.
     #[test]

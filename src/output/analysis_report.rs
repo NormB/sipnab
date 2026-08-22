@@ -197,7 +197,7 @@ mod tests {
 
     /// A clean capture must produce exactly one line, and that line must carry
     /// the denominators. An empty scaffold — headings with nothing under them
-    /// — reads as "analysed and fine" for a capture that was never read.
+    /// — reads as "analyzed and fine" for a capture that was never read.
     #[test]
     fn a_clean_capture_gets_one_honest_line() {
         let analysis = CaptureAnalysis {

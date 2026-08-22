@@ -689,7 +689,7 @@ fn an_unreadable_subdirectory_is_named_not_silently_skipped() {
     );
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 
-    assert_eq!(code, Some(0), "the readable file still analyses:\n{err}");
+    assert_eq!(code, Some(0), "the readable file still analyzes:\n{err}");
     assert!(
         err.contains("locked") && err.contains("Skipping"),
         "the unreadable directory must be named:\n{err}"
@@ -720,7 +720,7 @@ fn a_symlink_with_no_target_is_named() {
         &["-N", "-I", &dir.path().to_string_lossy(), "--no-cli-print"],
         Some("warn"),
     );
-    assert_eq!(code, Some(0), "the real capture still analyses:\n{err}");
+    assert_eq!(code, Some(0), "the real capture still analyzes:\n{err}");
     assert!(
         err.contains("dangling.pcap") && err.contains("Skipping"),
         "a symlink with no target must be named:\n{err}"
@@ -746,7 +746,7 @@ fn a_glob_match_that_cannot_be_read_is_named() {
     let (_out, err, code) = run_support::run(&["-N", "-I", &pattern], Some("warn"));
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 
-    assert_eq!(code, Some(0), "the readable match still analyses:\n{err}");
+    assert_eq!(code, Some(0), "the readable match still analyzes:\n{err}");
     assert!(
         err.contains("locked") && err.contains("Skipping"),
         "a glob match that cannot be read must be named:\n{err}"

@@ -632,7 +632,7 @@ pub fn undecodable_report() -> UndecodableReport {
 
 /// Clear the undecodable tally.
 ///
-/// The counters are process-global, so a process that analyses several
+/// The counters are process-global, so a process that analyzes several
 /// captures in sequence (and a test that asserts on exact counts) needs a way
 /// back to zero — the same reason [`crate::pipeline::reset_portrange_skips`]
 /// exists.

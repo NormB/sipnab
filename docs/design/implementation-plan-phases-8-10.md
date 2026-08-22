@@ -731,7 +731,7 @@ Wrap-up tasks tying Phase 8 into the v0.4.0 release. Two ★ priority items adde
 
 **Docs — 8.6 deliverables:**
 - [ ] `docs/mcp-overview.md`, [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md), `docs/mcp-deployment.md`, `docs/mcp-agent-cookbook.md`, `docs/mcp-notifications.md`, `docs/mcp-hep-deployment.md` all complete and cross-linked
-- [ ] **★** `docs/sipnab-project-format.md` — `.sipnab` directory layout, manifest schema, schema versioning policy, sharing analyses across machines
+- [ ] **★** `docs/sipnab-project-format.md` — `.sipnab` directory layout, manifest schema, schema versioning policy, sharing analyzes across machines
 - [ ] CHANGELOG entry for v0.4.0
 - [ ] Updated man page
 
@@ -995,7 +995,7 @@ The design notes — subject hierarchy, NDJSON envelope, NATS message headers, J
 
 ## Phase 11 — Statistical Analysis & Perceptual MOS  *(not started)*
 
-**Goal:** Add two analyses that commercial tools (Pcaptix, Sevana AQuA) ship and that sipnab currently lacks: cross-stream feature regression and perceptual MOS scoring of decoded audio.
+**Goal:** Add two analyzes that commercial tools (Pcaptix, Sevana AQuA) ship and that sipnab currently lacks: cross-stream feature regression and perceptual MOS scoring of decoded audio.
 **Milestone (11.1):** `sipnab -I large_corpus.pcap --stats-analyze --target=mos --json` returns a feature-importance ranking ("loss_ratio explains 73% of MOS variance, jitter_max is second") that an operator can use to identify the dominant cause of quality issues across a fleet.
 **Milestone (11.2):** `sipnab -I foo.pcap --features perceptual_mos --json` produces both `network_mos` (existing E-model) and `perceptual_mos` (NISQA score) for every stream, with the two values diverging on streams where the network looks fine but the audio sounds bad (transcoding artifacts, codec mismatch, DTX bugs).
 **Release target:** v0.6.0.
@@ -1632,7 +1632,7 @@ Each item lists the trigger condition (what would have to be true for this to be
 These are features Pcaptix ships that sipnab evaluated and deferred. Each fits the WASM browser path or a future HTML viewer mode, not the TUI (which can't render waveforms or PDFs natively).
 
 **Waveform display with marker overlay**
-- *Trigger:* the WASM browser path (`wasm` feature) or a new HTML-viewer mode in `--api` becomes the primary surface for sharing analyses with non-terminal users (sales engineers, customer support, customers themselves).
+- *Trigger:* the WASM browser path (`wasm` feature) or a new HTML-viewer mode in `--api` becomes the primary surface for sharing analyzes with non-terminal users (sales engineers, customer support, customers themselves).
 - *Scope:* substantial — render decoded RTP audio as a waveform using Web Audio API in the WASM build, overlay marker tracks for re-INVITEs, SIP messages, DTMF events, packet loss bursts, and detected impairments. Coalesce nearby markers automatically. Likely 2–3 weeks of UI work, plus a design pass on the marker model.
 - *Why interesting:* this is Pcaptix's most visceral feature. Seeing the loss burst land on the waveform exactly when the call sounds bad is the kind of demo that closes deals.
 - *Why deferred:* sipnab's identity is "engineer at terminal," not "QoE specialist at desktop." Adding this is fine if it goes in the WASM path (preserves the no-install story); building a Qt or Electron app to compete with Pcaptix on its own ground is the wrong fight.
@@ -1645,7 +1645,7 @@ These are features Pcaptix ships that sipnab evaluated and deferred. Each fits t
 - *Why deferred:* Pcaptix calls these out individually as features but the combined value is moderate. Ship clipping detection as a Phase 11.3 sub-item if Phase 11 ships and bandwidth allows; treat noise and echo as research-grade and skip until someone has a compelling use case.
 
 **PDF export of reports (including LLM responses)**
-- *Trigger:* a real user asks for it — typically when sipnab analyses are being handed to customers or pulled into ticket systems that prefer PDF over Markdown.
+- *Trigger:* a real user asks for it — typically when sipnab analyzes are being handed to customers or pulled into ticket systems that prefer PDF over Markdown.
 - *Scope:* small. `typst-rs` (pure Rust, no LaTeX) or `printpdf` for the rendering. Take the existing Markdown report from `generate_call_report(format=Markdown)`, run it through the rendering pipeline. Add LLM-response capture from MCP/REST sessions when `--include-llm` is set. ~1–2 days when triggered.
 - *Why deferred:* the existing Markdown report covers most needs — it pastes cleanly into tickets, GitHub, Confluence, Slack, etc. PDF is a "nice to have" that has not yet had a real user request. Ship reactively when one does.
 

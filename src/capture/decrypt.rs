@@ -1660,7 +1660,7 @@ impl TlsDecryptor {
             // than one means the log was reloaded across an extractor restart.
             // If a KeyUpdate happened in between, OpenSSL's tls13_update_key()
             // overwrote the traffic secret in place and the later entry is a
-            // ratcheted secret still labelled _0, which cannot open records
+            // ratcheted secret still labeled _0, which cannot open records
             // from before the ratchet. Say so rather than pick silently: the
             // operator can restart the connection and get an unambiguous log.
             for label in ["CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"] {
@@ -3134,7 +3134,7 @@ mod tests {
         );
     }
 
-    /// A warning is behaviour with a contract, so it gets a test.
+    /// A warning is behavior with a contract, so it gets a test.
     ///
     /// Two entries under one label for one client_random that DISAGREE are the
     /// signature of a key log reloaded across an extractor restart, and a TLS
@@ -3220,7 +3220,7 @@ mod tests {
     /// `--tls-lockon-window 0` reads like "do not search", and obeying it would
     /// mean a capture that joined an established connection never decrypts —
     /// silently, since a record that opens under no key looks exactly like a
-    /// record that is not SIP. The documented behaviour is that zero is
+    /// record that is not SIP. The documented behavior is that zero is
     /// ignored; this pins it, with the non-zero case as the control proving
     /// the setter is not simply inert.
     #[cfg(feature = "tls")]

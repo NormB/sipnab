@@ -235,7 +235,7 @@ fn allocation_table(report: &StunReport, md: bool, out: &mut String) {
         let _ = writeln!(
             out,
             "{} relayed ChannelData frame(s), {} byte(s) of application data, crossed these \
-             allocations. Those bytes are also analysed as ordinary media: the frame is \
+             allocations. Those bytes are also analyzed as ordinary media: the frame is \
              unwrapped and the RTP inside it reaches the stream store, so a relayed call \
              appears in the stream list rather than as a call with no media.",
             report.channel_data_frames, report.channel_data_bytes

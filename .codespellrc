@@ -12,7 +12,7 @@
 #   tests/snapshots/  insta snapshots of TUI frames, clipped to terminal width,
 #                     so "FAILE" and "fo" are the rendered output, not typos
 #   tests/cli/out/    trycmd transcripts, same reason ("Fro" from a cut hexdump)
-#   THIRD-PARTY-NOTICES.md  vendored licence text; not ours to correct
+#   THIRD-PARTY-NOTICES.md  vendored license text; not ours to correct
 #
 # Patterns are written WITHOUT a leading `./`. codespell matches each skip entry
 # against the path as it walks it, so `./tests/snapshots` matches only when the

@@ -355,7 +355,7 @@ still crossing threads and the pool is not doing its job.
 The `--cores` path is one serial reader feeding N workers. A conventional
 profiler cannot say whether making a worker stage faster changes end-to-end
 throughput, because the reader may gate it. `coz` answers exactly that and is
-not yet installed. Worth doing before any further micro-optimisation, so effort
+not yet installed. Worth doing before any further micro-optimization, so effort
 lands where it changes the number.
 
 ## Targets

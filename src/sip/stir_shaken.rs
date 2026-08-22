@@ -19,7 +19,7 @@
 //!
 //! RFC 8224 §4.4 gives the `iat` claim a ±60 s window, and the only clock that
 //! window may be read against is the timestamp of the packet that carried the
-//! header. sipnab analyses files: a capture taken last Tuesday is read today,
+//! header. sipnab analyzes files: a capture taken last Tuesday is read today,
 //! and against the wall clock every Identity header in it is minutes, days or
 //! years stale — so every token would report
 //! [`Expired`](VerificationStatus::Expired) and the check would be reporting

@@ -167,7 +167,7 @@ fn uses(hay: &str, needle: &str) -> bool {
     })
 }
 
-/// The metrics that decide whether a call was acceptable, plus the analyses
+/// The metrics that decide whether a call was acceptable, plus the analyzes
 /// that explain them. Named explicitly because this IS the domain — it is not
 /// a list of what happens to be implemented, and an entry absent everywhere is
 /// a legitimate state.

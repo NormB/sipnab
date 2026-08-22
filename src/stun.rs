@@ -2135,7 +2135,7 @@ pub fn unanswered_requests() -> (Vec<UnansweredRequest>, u64) {
     (out, answered)
 }
 
-/// Clear the tracker, for a process that analyses several captures in sequence
+/// Clear the tracker, for a process that analyzes several captures in sequence
 /// and for tests that assert on exact counts.
 pub fn reset() {
     if let Ok(mut guard) = TRACKER.lock() {
@@ -2678,7 +2678,7 @@ mod turn_allocation_attribute_tests {
 
     /// RESERVATION-TOKEN is what claims the port an earlier EVEN-PORT
     /// reserved, so a capture where the second Allocate carries no token
-    /// explains why the pair was not honoured.
+    /// explains why the pair was not honored.
     #[test]
     fn a_reservation_token_survives_as_all_sixty_four_bits() {
         let token: u64 = 0x0123_4567_89ab_cdef;

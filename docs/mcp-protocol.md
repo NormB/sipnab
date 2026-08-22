@@ -1,6 +1,6 @@
 # MCP protocol
 
-What an MCP client must honour, and what an auditor needs: the security model,
+What an MCP client must honor, and what an auditor needs: the security model,
 what the write verbs may do, how sipnab treats untrusted capture text, the
 stdio invariant, and the error and bounding semantics.
 

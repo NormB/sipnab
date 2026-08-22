@@ -46,7 +46,7 @@ skip() { SKIP=$((SKIP + 1)); printf 'SKIP: %s\n' "$1"; }
 # Three scenarios below feed a multi-line Rust fixture to `scan_v`. They were
 # written as `BODY=$(cat <<-'RS' ... RS)`, and that construct is UNPARSEABLE by
 # bash 3.2 -- which is `/bin/sh` on macOS, and this file's shebang is
-# `#!/bin/sh`. bash 3.2 does not honour the heredoc's `'RS'` quoting while it is
+# `#!/bin/sh`. bash 3.2 does not honor the heredoc's `'RS'` quoting while it is
 # inside a command substitution: it keeps scanning the body for shell quotes, so
 # the first apostrophe or backtick in the FIXTURE opens a quote that never
 # closes.

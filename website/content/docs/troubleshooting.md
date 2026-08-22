@@ -479,7 +479,7 @@ is a different fault from a reply that says no:
 
 | What you see | What it means |
 |---|---|
-| No reply at all | Something in the path is discarding the packets. On school, campus and corporate networks that is most often a security appliance -- web filter, secure web gateway, firewall or IPS -- dropping UDP it does not recognise. Check whether one sits in this path and whether it permits UDP to the STUN/TURN port **before** suspecting the server. |
+| No reply at all | Something in the path is discarding the packets. On school, campus and corporate networks that is most often a security appliance -- web filter, secure web gateway, firewall or IPS -- dropping UDP it does not recognize. Check whether one sits in this path and whether it permits UDP to the STUN/TURN port **before** suspecting the server. |
 | An error response | The server was reachable and refused. sipnab counts this as ANSWERED, because chasing a blocked path here would waste the effort. Look at the code: `401`/`438` are authentication, not connectivity. |
 | A reply arrives, media still one-way | STUN worked. The fault is downstream -- check the SDP the far end actually received, and see the private-address section above. |
 

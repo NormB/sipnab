@@ -32,7 +32,7 @@ panic = "unwind"
 cargo build --features full --profile profiling
 ```
 
-Never profile a debug build. It measures the absence of optimisation.
+Never profile a debug build. It measures the absence of optimization.
 
 ## perf, and the trap on this box
 

@@ -99,7 +99,7 @@ if [ -z "${SKIP_BUILD:-}" ]; then
         echo "         so this build cannot be compared against what CI publishes." >&2
     elif [ "$ZOLA_HAVE" != "$ZOLA_PIN" ]; then
         echo "warning: local zola ${ZOLA_HAVE:-unknown}, but CI publishes with ${ZOLA_PIN}." >&2
-        echo "         Renderer and heading-slug behaviour differ between releases, so" >&2
+        echo "         Renderer and heading-slug behavior differ between releases, so" >&2
         echo "         this deploy may not match what the Pages workflow would produce." >&2
         echo "         Set ZOLA_BIN to a v${ZOLA_PIN} binary to publish the same bytes CI does." >&2
     fi

@@ -1,6 +1,6 @@
 # Documentation pattern
 
-How sipnab's prose documentation is organised, and why. Written 2026-08-18
+How sipnab's prose documentation is organized, and why. Written 2026-08-18
 against [`docs/mcp.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md), which is the page that made the question unavoidable.
 
 This is a decision record, not a style guide. It settles one question — *when a
@@ -53,7 +53,7 @@ were written without doing so completely, and the audit found three more:
   "The pattern" below.
 
 **The lesson stands, sharpened: read `docs/design/` first, and read
-`backlog.md` §CR with it.** A page that looks badly organised may be the
+`backlog.md` §CR with it.** A page that looks badly organized may be the
 deliberate outcome of a decision that is still sound, and the work you are
 about to propose may already be accepted and waiting under a different name.
 
@@ -82,7 +82,7 @@ each has been observed rather than theorised:
   first example. `mcp.md` and `mcp-deploy.md` are already a live instance
   of this, split by no principle at all.
 - **Experts need the simple page too.** Someone fluent in the tool but new to
-  *this* task needs the five-minute version, and a page labelled for beginners
+  *this* task needs the five-minute version, and a page labeled for beginners
   discourages them from opening it.
 
 Splitting by **task** produces the same depth gradient without any of that,
@@ -96,7 +96,7 @@ content instead of being asserted by a label.
 
 **Corrected 2026-08-19.** The first draft invented four kinds — Introduction /
 How-to / Reference / Protocol — without noticing that [`docs/README.md`](https://github.com/NormB/sipnab/blob/main/docs/README.md) already
-organises this same corpus by **Diataxis**, and that `task-first-docs.md`
+organizes this same corpus by **Diataxis**, and that `task-first-docs.md`
 argues from Diataxis by name. Shipping a taxonomy that disagrees with the page
 readers navigate from is worse than having none. The published one wins, plus
 one addition this corpus genuinely needs:

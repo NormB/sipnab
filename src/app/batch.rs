@@ -1077,7 +1077,7 @@ fn report_stun_failures() {
              rather than at the server refusing them, and on school, campus and \
              corporate networks the usual culprit is a security appliance — web \
              filter, secure web gateway, firewall or IPS — discarding UDP it does \
-             not recognise. Check whether such a device sits in this path and \
+             not recognize. Check whether such a device sits in this path and \
              whether it permits UDP to the STUN/TURN port before suspecting the \
              server.",
             req.from,
@@ -1702,7 +1702,7 @@ fn no_sip_guidance(
              something in the path discarding them rather than at the server. On \
              school, campus and corporate networks that is most often a security \
              appliance — web filter, secure web gateway, firewall or IPS — dropping \
-             UDP it does not recognise. Confirm whether one sits in this path and \
+             UDP it does not recognize. Confirm whether one sits in this path and \
              whether it permits UDP to the STUN/TURN port."
                 .to_string(),
         ];

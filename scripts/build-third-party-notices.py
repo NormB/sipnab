@@ -132,7 +132,7 @@ RELEASE_FEATURES = "full,bpf"
 def cargo_metadata() -> dict:
     # No --filter-platform: `aya` is a `cfg(target_os = "linux")` dependency and
     # the notices must list it whoever runs the generator. Cargo's resolve graph
-    # is all-platforms by default, which is the wanted behaviour here.
+    # is all-platforms by default, which is the wanted behavior here.
     out = subprocess.run(
         [
             "cargo",

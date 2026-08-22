@@ -161,7 +161,7 @@ fn wasm_plugin_documented_build_produces_a_plugin_this_host_accepts() {
 #[test]
 fn wasm_plugin_detects_a_short_answered_call_and_cites_its_evidence() {
     let plugin = Plugin::load(build_example()).expect("loads");
-    let findings = plugin.analyze(&short_call_input()).expect("analyses");
+    let findings = plugin.analyze(&short_call_input()).expect("analyzes");
 
     assert_eq!(findings.len(), 1, "expected one finding, got {findings:?}");
     let f = &findings[0];
@@ -182,7 +182,7 @@ fn wasm_plugin_stays_quiet_on_a_normal_length_call() {
     let plugin = Plugin::load(build_example()).expect("loads");
     let findings = plugin
         .analyze(&normal_call_input())
-        .expect("analyses a normal call");
+        .expect("analyzes a normal call");
     assert!(
         findings.is_empty(),
         "a 60s call is not a short call; a detection that fires on healthy \

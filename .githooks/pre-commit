@@ -19,7 +19,7 @@ echo -e "${YELLOW}Running pre-commit checks...${NC}"
 # Gates 1 and 2 must capture their tool's output rather than let it stream:
 # gate 5 reads the test run back for the homepage count, and streaming clippy
 # would bury the one-line-per-gate summary this hook is built around. Capturing
-# it is not licence to discard it. Both used to print `FAIL` and a "run it
+# it is not license to discard it. Both used to print `FAIL` and a "run it
 # yourself" line, so whoever hit it paid for a second full run of the same
 # suite just to learn the name of the test — and until that second run finished
 # they could not tell whether the break was theirs or already on HEAD. It cost

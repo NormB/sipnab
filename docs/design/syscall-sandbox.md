@@ -463,7 +463,7 @@ The precedent is in this repo and should be cited rather than re-argued —
 `join_fanout_group` ([`src/capture/fanout.rs:79-82`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L79-L82)):
 
 > The caller must treat every error as advisory. Capture works without fanout;
-> refusing to capture because an optimisation was unavailable would trade a
+> refusing to capture because an optimization was unavailable would trade a
 > throughput problem for a total outage.
 
 The same reasoning applies with one addition: **silence is the failure mode of

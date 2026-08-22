@@ -370,7 +370,7 @@ impl MappedPcap {
         self.released = upto;
     }
 
-    /// Convert a record's seconds/fraction pair to an instant, honouring the
+    /// Convert a record's seconds/fraction pair to an instant, honoring the
     /// file's timestamp resolution. A fraction too large for its unit is
     /// clamped rather than rejected: libpcap hands such a record to the caller,
     /// so dropping it here would lose a frame libpcap keeps.

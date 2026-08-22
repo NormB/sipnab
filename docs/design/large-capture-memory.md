@@ -32,7 +32,7 @@ sections apply only to files.
 
 ## The claim this document exists to test
 
-A 1.3 GB capture set analyses in 4 seconds and 297 MiB. That reads like
+A 1.3 GB capture set analyzes in 4 seconds and 297 MiB. That reads like
 headroom. It is not: it is one point on a line whose slope has nothing to do
 with the 1.3 GB, and the line runs out at a call volume this tool is expressly
 built to handle.
@@ -834,7 +834,7 @@ store.
 The reason it ranks below two-pass is that the capture files are already a
 perfectly good on-disk representation of the messages, already ordered, already
 indexed by the file set. Spilling writes a second copy of data that has not
-moved. It also needs a serialisation format for `SipMessage`, and there is no
+moved. It also needs a serialization format for `SipMessage`, and there is no
 embedded store in the dependency tree to lean on — [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml) carries no
 sqlite, sled or equivalent, and the project's posture on dependencies is not to
 add one lightly. `tempfile` is present (optional, `native` feature) so the file

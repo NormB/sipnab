@@ -288,7 +288,7 @@ fn server_failures_outrank_request_failures() {
     assert!(server < request, "5xx must rank above 4xx: {ranked:?}");
 }
 
-/// The order must be byte-stable across runs, or two analyses of the same
+/// The order must be byte-stable across runs, or two analyzes of the same
 /// capture cannot be diffed and a count that moved is invisible.
 #[test]
 fn the_ranked_output_is_identical_across_runs() {

@@ -457,10 +457,10 @@ done
 #
 # So the whole corpus costs about ninety seconds, and at ninety seconds a subset
 # buys nothing worth its cost. The eleven do not overlap: diagnosis claims and
-# message retention, ICMP evidence for signalling and for media separately,
+# message retention, ICMP evidence for signaling and for media separately,
 # conformance-rule hit rates, `nat_mismatch`/`no_media` firing where they should,
 # detector clocks against the capture's own timeline, every documented filter
-# field and alias, behavioural scanner alerts backed by an outcome, the two
+# field and alias, behavioral scanner alerts backed by an outcome, the two
 # silent-loss fixes, `-I` input-set accounting, and RTP-quality provenance.
 # Dropping any one leaves that class of real-capture regression with nothing
 # watching it -- which is exactly how the failure above survived for weeks.
@@ -515,7 +515,7 @@ CORPUS_TESTS=$(grep -lE '\bSIPNAB_CORPUS\b' tests/*.rs 2>/dev/null \
 # ---- Naming what failed -----------------------------------------------------
 # This gate has to capture cargo's output rather than let it stream: it drives
 # every corpus binary in one run, and the per-gate summary this hook is built
-# around would drown. Capturing is not licence to discard. pre-commit learned
+# around would drown. Capturing is not license to discard. pre-commit learned
 # that the expensive way -- printing `FAIL` and a "run it yourself" line made
 # whoever hit it pay for a SECOND full suite run just to learn the name of the
 # test, and until that run finished they could not tell whether the break was

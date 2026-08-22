@@ -227,7 +227,7 @@ fn triage_calls_one_way_audio_a_media_problem() {
         v["verdict"], "media",
         "clean signaling with one-way audio is a MEDIA problem: {v}"
     );
-    assert_eq!(v["signalling"]["problem"], false);
+    assert_eq!(v["signaling"]["problem"], false);
     assert_eq!(v["media"]["problem"], true);
     assert_eq!(v["media"]["one_way_audio"], true);
 }
@@ -239,10 +239,10 @@ fn triage_calls_a_failed_call_a_signalling_problem() {
     let call_id = first_call_id(FAIL);
     let v = call_tool(FAIL, "triage_call", serde_json::json!({"call_id": call_id}));
     assert_eq!(
-        v["verdict"], "signalling",
+        v["verdict"], "signaling",
         "a 403 with no streams is a signaling problem: {v}"
     );
-    assert_eq!(v["signalling"]["problem"], true);
+    assert_eq!(v["signaling"]["problem"], true);
 }
 
 /// The registry lookup must return the real meaning, not a plausible sentence.

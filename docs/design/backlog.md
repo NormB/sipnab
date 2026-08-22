@@ -298,12 +298,12 @@ Tiers:
   corpus: first `an interface has a snapshot length 8192 different from the
   snapshot length of the first interface` — the file declares six distinct
   snaplens (2048, 8192, 15360, 65535, 262144, 524288) across 313 interface
-  description blocks. Normalising every IDB to one snaplen does not help; it
+  description blocks. Normalizing every IDB to one snaplen does not help; it
   then refuses with `an interface has a type 274 different from the type of the
   first interface`, because the file carries four encapsulations (Ethernet, Raw
   IP, Linux cooked v1, and 802.3br mPackets = LINKTYPE 274) and libpcap wants
   one. Per-packet encapsulation is the *point* of a merged capture, so there is
-  no normalisation that makes libpcap read this class of file. Anything
+  no normalization that makes libpcap read this class of file. Anything
   produced by `mergecap`, or captured across interfaces that differ, is
   unreadable today — and the failure is a hard error at open, so the operator
   at least sees it.
@@ -384,7 +384,7 @@ Tiers:
   rather than the return value and is mutation-verified: a version reporting
   success while pinning nothing fails it. `invariants.md` rule 5 was widened to
   name swap, which it had never mentioned.
-- [x] **TLS13KU — a TLS 1.3 KeyUpdate is neither recognised nor exploited, and
+- [x] **TLS13KU — a TLS 1.3 KeyUpdate is neither recognized nor exploited, and
   it is both a hazard and the best answer to a months-old trunk.** [RFC 8446](https://www.rfc-editor.org/rfc/rfc8446)
   §5.3 resets the record sequence number to zero whenever the key changes, not
   only at the start of a connection, and OpenSSL rekeys on its own once a
@@ -406,7 +406,7 @@ Tiers:
   claims verified against the RFC text first — §5.3 "The 64-bit sequence number
   is reset to zero at each key change" and §4.6.3's
   `HKDF-Expand-Label(secret, "traffic upd", "", Hash.length)`. sipnab now
-  recognises inner content type 22 carrying handshake type 24, derives the next
+  recognizes inner content type 22 carrying handshake type 24, derives the next
   secret, and resets that direction's counter. The SENDER's direction only: a
   peer obliged by `update_requested` sends its own, handled when it arrives.
   Two mutation-verified tests, including a decoy control — application data
@@ -689,7 +689,7 @@ Tiers:
   **Do:** print the two counters when either is non-zero, on runs that
   decrypted as well as runs that did not, and name the bound that was hit
   (4 MiB total, 16 records per direction, 5 s) so the operator knows which
-  knob the eviction argues for. Documented behaviour is in
+  knob the eviction argues for. Documented behavior is in
   [`docs/tls-capture.md`](https://github.com/NormB/sipnab/blob/main/docs/tls-capture.md);
   keep the two in step.
 
@@ -704,7 +704,7 @@ Tiers:
   failure at any of them costs a re-run of the whole tag.** Measured over one
   session on 2026-08-21, four separate builds failed on a fetch and none on
   the code: `apt-get install libpcap-dev` hung fifteen minutes against the
-  Ubuntu archives and was cancelled, taking the aggregate CI gate with it;
+  Ubuntu archives and was canceled, taking the aggregate CI gate with it;
   Trivy's ~60 MB vulnerability DB stalled coming from `mirror.gcr.io` and
   failed the Docker job after the image had already built and passed smoke;
   and the 0.5.120 release build failed outright on the netmap headers pulled
@@ -1664,7 +1664,7 @@ output path.
     with the digits destroyed; `export_audio` either refused or emitting an
     energy-envelope WAV that preserves talk/silence for one-way and clipping
     diagnosis while carrying zero content.
-  - **Redact at the serialisation boundary, not at parse**, so internal stores
+  - **Redact at the serialization boundary, not at parse**, so internal stores
     stay complete and TUI/REST are unaffected, and there is exactly one choke
     point to test. Enforce it in the type system: a `Redacted<T>` newtype the
     rmcp handlers structurally cannot bypass turns "I forgot to redact this new
@@ -2338,7 +2338,7 @@ load-bearing and two of them retire work planned here.
    not build either; adopt this instead.
 2. **A kernel-space prefilter discards non-SIP payloads** before they cost a
    ring-buffer round trip. Uprobes attach to *every* `libssl` on the host, so
-   this is not an optimisation, it is what makes the feature affordable.
+   this is not an optimization, it is what makes the feature affordable.
 3. **eBPF supplements ordinary capture rather than replacing it.** Network
    capture continues alongside, so RTP and cleartext signaling stay visible and
    reading a file still works with the probes attached.
@@ -2873,13 +2873,13 @@ place below rather than quietly dropped, because each one was load-bearing:
    relay-side recording and forking allocate sockets.
 
 - [ ] **RE1 — on a dedicated rtpengine host every media stream is an orphan,
-  because the only signalling on the box is a protocol sipnab does not read.**
+  because the only signaling on the box is a protocol sipnab does not read.**
   A standalone media relay carries no SIP. sipnab there sees two sockets of RTP
   per call and nothing that names the call, so every stream comes out
   `RtpStream::orphaned` -- a capture full of evidence reported as
   unattributable noise. Same shape as NAT1: true and useless.
 
-  The signalling IS on the box, and it carries the missing key. **Measured, not
+  The signaling IS on the box, and it carries the missing key. **Measured, not
   assumed**: a live capture from the harness rtpengine (12.5.1) shows a
   complete cycle. An `offer` request carries `sdp`, `call-id` and `from-tag`;
   an `answer` adds `to-tag`; and each reply carries the rewritten SDP holding
@@ -3014,8 +3014,8 @@ a web-filtering appliance silently discarding UDP. sipnab read one of them as
   STUN header, so `Allocate` parses without the parser knowing TURN exists, but
   its attributes (`XOR-RELAYED-ADDRESS`, `XOR-PEER-ADDRESS`, `LIFETIME`) did
   not, an unanswered `Allocate` is a different fault from an unanswered
-  `Binding` and is labelled as such, and **ChannelData is not STUN-shaped at
-  all** — no cookie, no transaction ID — so it is recognised by its channel
+  `Binding` and is labeled as such, and **ChannelData is not STUN-shaped at
+  all** — no cookie, no transaction ID — so it is recognized by its channel
   number instead. The three multiplexed protocols separate cleanly on their high
   bits: STUN `00`, ChannelData `01`, RTP `10`.
 
@@ -3028,7 +3028,7 @@ a web-filtering appliance silently discarding UDP. sipnab read one of them as
   no Refresh seen, means the relay tore down and the media stopped mid-call with
   no SIP message to say why.
 
-  The ChannelData check was also tightened. Recognising a frame whose declared
+  The ChannelData check was also tightened. Recognizing a frame whose declared
   length merely *fits* let a stray datagram with the right two leading bytes be
   unwrapped and re-classified; the frame must now account for the whole
   datagram, padded or not.
@@ -3037,7 +3037,7 @@ a web-filtering appliance silently discarding UDP. sipnab read one of them as
   than a refusal points at something in the path dropping the packets, and on
   school, campus and corporate networks that is most often a security
   appliance — web filter, secure web gateway, firewall or IPS — discarding UDP
-  it does not recognise. That is the answer the originating investigation
+  it does not recognize. That is the answer the originating investigation
   reached, generalised.
 
 - [x] **NAT2 — a private media address offered to a public peer is not
@@ -3069,7 +3069,7 @@ a web-filtering appliance silently discarding UDP. sipnab read one of them as
   and watched failing before the code emitted it.
 
 - [x] **NAT4 — TURN relayed media is parsed as nothing.** `is_channel_data`
-  recognises the framing, and the pipeline then drops it. Media relayed through
+  recognizes the framing, and the pipeline then drops it. Media relayed through
   TURN is therefore invisible to reconstruction — the RTP inside a ChannelData
   wrapper is never unwrapped, so a call whose media goes through a relay reports
   as having no media at all. Unwrapping it would make relayed calls readable,
@@ -3136,7 +3136,7 @@ ones that fit an analysis tool.
   "**Destructive.** Replaces every dialog and stream" and mints a new
   `capture_identity` that voids every held cursor. So "which of these 40
   rotated files holds Call-ID X" cannot be asked at all. Positioning §3 already
-  authorises the fix and §5 ranks it third.
+  authorizes the fix and §5 ranks it third.
 
   **Do:** `first_packet`/`last_packet`/`dialog_count` on `list_captures` from a
   cheap header read, plus a read-only `find_in_captures { filter, limit }` that
@@ -3155,7 +3155,7 @@ ones that fit an analysis tool.
   cannot be asked. That needs a real sweep -- a scratch store per file, the
   filter applied, the active store untouched -- and it needs three decisions
   first, none of which the metadata half forced: what bounds the sweep (files?
-  bytes? wall-clock?), whether it can be cancelled once running, and what it
+  bytes? wall-clock?), whether it can be canceled once running, and what it
   reports for a file it could not open. Those are why this half did not ship
   alongside the other: half a sweep that silently skips an unreadable file is
   the CT1 defect again, in a new place.

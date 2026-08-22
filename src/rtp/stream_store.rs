@@ -146,7 +146,7 @@ impl SdpProvenance {
 /// Grounded on the longest an offer can legitimately wait for its media.
 /// [RFC 3261 §16.8](https://www.rfc-editor.org/rfc/rfc3261#section-16.8)
 /// requires a proxy's Timer C to be **greater than 3 minutes**; when it fires
-/// the INVITE transaction is cancelled and no media follows. So an offer
+/// the INVITE transaction is canceled and no media follows. So an offer
 /// unclaimed for longer than that will not be claimed legitimately through a
 /// compliant proxy.
 ///

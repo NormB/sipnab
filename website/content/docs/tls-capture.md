@@ -88,7 +88,7 @@ sipnab attaches a uprobe to the TLS library's write function and reads the
 bytes **before** the library encrypts them. It recovers no key, decrypts
 nothing, and touches no other machine.
 
-Dialogs carry **no addresses and port 0**, labelled `uprobe:<process>/<pid>`.
+Dialogs carry **no addresses and port 0**, labeled `uprobe:<process>/<pid>`.
 A uprobe sees the bytes an application handed its TLS library and nothing
 about the socket underneath, so sipnab names the process rather than inventing
 a peer. If you need the addresses, use method 4.
@@ -245,7 +245,7 @@ Stated plainly, because time spent here is time people lose:
   local capture. You still need keys or plaintext from an endpoint.
 - **Any of methods 3–5 against a machine you do not control.** They read
   process memory on the host they run on. That is the whole boundary.
-- **Attaching to a long-lived connection and expecting the back catalogue.**
+- **Attaching to a long-lived connection and expecting the back catalog.**
   Keys extracted from a running process decrypt records captured from that
   point on, provided the capture catches the stream early enough. sipnab does
   recover records that reached it in the moments before the key did, described

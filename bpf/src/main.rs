@@ -76,7 +76,7 @@ static EVENTS: PerfEventArray<TlsRecord> = PerfEventArray::new(0);
 /// The same fifteen tokens the tracefs backend filters on, for the same reason:
 /// these probes fire on every write of every process that maps the library, so
 /// dropping non-SIP traffic here is what makes the feature affordable rather
-/// than an optimisation. A non-SIP write never costs a ring slot or a wakeup.
+/// than an optimization. A non-SIP write never costs a ring slot or a wakeup.
 const SIP_TOKENS: [&[u8]; 15] = [
     b"INVITE", b"ACK", b"BYE", b"CANCEL", b"OPTIONS", b"REGISTER", b"PRACK", b"SUBSCRIBE",
     b"NOTIFY", b"PUBLISH", b"INFO", b"REFER", b"MESSAGE", b"UPDATE", b"SIP/2.0",

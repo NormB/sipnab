@@ -547,7 +547,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     }
 
     // `-O` cannot write a composite, and the failure it would produce is
-    // non-deterministic rather than merely wrong. The writer initialises on the
+    // non-deterministic rather than merely wrong. The writer initializes on the
     // FIRST packet's link type, and the members disagree: live capture yields
     // `DLT_EN10MB`, while a HEP packet carries `link_type = 0` and a `data`
     // buffer holding the bare transport payload — no Ethernet, no IP, no UDP.
@@ -563,7 +563,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     {
         return Err(PlanError::arg(format!(
             "-O/--output cannot write a run that captures from two sources. \
-             '{out}' would be initialised from whichever member's first packet \
+             '{out}' would be initialized from whichever member's first packet \
              arrived first, and the two disagree about the link layer: the \
              interface yields Ethernet frames, while HEP delivers a bare SIP \
              payload with no link, IP or transport header to write. Capture the \

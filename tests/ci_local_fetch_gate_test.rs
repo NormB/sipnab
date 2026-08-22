@@ -5,7 +5,7 @@
 //!
 //! Measured, not theorised. On 2026-08-20 the `Security audit` job of the
 //! 0.5.118 CI run sat in `apt-get install -y libpcap-dev` for **15 minutes**
-//! (`23:44:35Z` to `23:59:51Z`) and was cancelled, which failed the aggregate
+//! (`23:44:35Z` to `23:59:51Z`) and was canceled, which failed the aggregate
 //! `CI success` job and blocked the release tag. Nothing was wrong with the
 //! code: `azure.archive.ubuntu.com` simply did not answer. The same run lost
 //! `Docker` to a second external fetch — Trivy's vulnerability DB download
@@ -24,7 +24,7 @@
 //! restores the `.deb` files from `actions/cache` and installs them with
 //! `dpkg -i`, which touches no network; the archives are consulted only to
 //! populate a cold cache, and even then under a bounded timeout so a stall
-//! costs minutes rather than a cancelled run.
+//! costs minutes rather than a canceled run.
 //!
 //! `release.yml` was deliberately NOT in scope when this file was written, and
 //! that was not an oversight: its builds run inside pinned `bookworm` and
@@ -115,7 +115,7 @@ fn no_hosted_workflow_installs_system_packages_from_the_archives() {
     assert!(
         offenders.is_empty(),
         "these hosted CI steps fetch system packages from the Ubuntu archives \
-         on every run, which is what hung for 15 minutes and cancelled the \
+         on every run, which is what hung for 15 minutes and canceled the \
          0.5.118 CI run.\nUse the shared local-first action instead:\n  \
          - uses: ./.github/actions/system-deps\n    with:\n      packages: \
          libpcap-dev libasound2-dev\n\n{}",
@@ -220,7 +220,7 @@ fn the_shared_action_installs_from_cache_and_bounds_the_cold_path() {
         action.contains("timeout "),
         "the cold-cache path still reaches the archives, so it must be bounded \
          by a timeout -- an unbounded apt-get is exactly what consumed 15 \
-         minutes before being cancelled:\n{action}"
+         minutes before being canceled:\n{action}"
     );
 }
 
@@ -614,7 +614,7 @@ fn every_package_install_in_the_release_workflow_is_bounded() {
         offenders.is_empty(),
         "these release steps reach the distribution archives unbounded. An \
          `apt-get install libpcap-dev` that hung for fifteen minutes is what \
-         cancelled the 0.5.118 CI run; the same call in a release job holds a \
+         canceled the 0.5.118 CI run; the same call in a release job holds a \
          build that a public tag is waiting on. Wrap it:\n  timeout 600 \
          apt-get -o Acquire::Retries=5 install -y <pkgs>\n\n{}",
         offenders.join("\n")

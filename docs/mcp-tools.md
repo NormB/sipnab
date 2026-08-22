@@ -1203,7 +1203,7 @@ returned by [`list_dialogs`](#list_dialogs). An unknown one fails with
 ```jsonc
 // triage_call { "call_id": "1-1966@10.0.2.20" }
 {
-  "verdict": "media",              // "signalling" | "media" | "both" | "none"
+  "verdict": "media",              // "signaling" | "media" | "both" | "none"
   "state": "InCall",
   "final_status_code": 200,
   "signaling": { "problem": false, "hints": [] },

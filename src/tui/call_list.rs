@@ -1548,7 +1548,7 @@ mod tests {
         );
         assert!(
             out.starts_with("203"),
-            "the network prefix must remain recognisable, got {out:?}"
+            "the network prefix must remain recognizable, got {out:?}"
         );
     }
 

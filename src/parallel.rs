@@ -1269,7 +1269,7 @@ struct Runway {
     /// Guards the whole ledger. Taken once per BATCH — 128 packets — so its
     /// cost is 1/128th of a lock per packet.
     state: std::sync::Mutex<RunwayState>,
-    /// Signalled when permits are freed or the run is cancelled.
+    /// Signaled when permits are freed or the run is canceled.
     ready: std::sync::Condvar,
 }
 
@@ -1288,7 +1288,7 @@ struct RunwayState {
     /// a permit, and a claim it holds is one no other file can use.
     finished: Vec<bool>,
     /// Set when the run is over and every waiting reader must give up.
-    cancelled: bool,
+    canceled: bool,
 }
 
 impl RunwayState {
@@ -1314,7 +1314,7 @@ impl Runway {
                 current: 0,
                 held: vec![0; files],
                 finished: vec![false; files],
-                cancelled: false,
+                canceled: false,
             }),
             ready: std::sync::Condvar::new(),
         }
@@ -1322,7 +1322,7 @@ impl Runway {
 
     /// Claim the right to hand one more batch, costing `charge` bytes, to the
     /// dispatcher — blocking until the run-ahead allows it. `false` means the
-    /// run was cancelled and the reader must stop.
+    /// run was canceled and the reader must stop.
     ///
     /// A batch larger than the pool it draws on is still admitted, once that
     /// pool is otherwise untouched. Refusing it would be a deadlock, not a
@@ -1339,7 +1339,7 @@ impl Runway {
     fn acquire(&self, file: usize, charge: usize) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         loop {
-            if state.cancelled {
+            if state.canceled {
                 return false;
             }
             if file <= state.current {
@@ -1396,11 +1396,11 @@ impl Runway {
     /// Whether the run is over. Read by a reader between files, so a set whose
     /// third member was refused does not go on to open the other
     /// twenty-four.
-    fn cancelled(&self) -> bool {
+    fn canceled(&self) -> bool {
         self.state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .cancelled
+            .canceled
     }
 
     /// Move the dispatch point to `file`, releasing everything that file's
@@ -1437,7 +1437,7 @@ impl Runway {
     /// Wakes every reader waiting for a permit.
     fn cancel(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.cancelled = true;
+        state.canceled = true;
         drop(state);
         self.ready.notify_all();
     }
@@ -1577,7 +1577,7 @@ fn read_one_file(
 ///
 /// Never used with one: a budget shared across a set means "the first N
 /// packets in read order", and a reader that does not know how many packets
-/// the files before it held cannot honour it. [`run_offline_parallel_file`]
+/// the files before it held cannot honor it. [`run_offline_parallel_file`]
 /// sends a `--count` run down the serial reader instead, where the semantics
 /// are exact. A `--count` run is a peek at a capture, not a throughput
 /// problem.
@@ -1624,7 +1624,7 @@ fn shard_set_parallel(
             let runway = &runway;
             scope.spawn(move || {
                 for file in (first..paths.len()).step_by(readers) {
-                    if runway.cancelled() {
+                    if runway.canceled() {
                         return;
                     }
                     let outcome =
@@ -1647,7 +1647,7 @@ fn shard_set_parallel(
         // No reader may be left blocked, on ANY path out. This scope joins
         // every thread before it returns, so a reader still waiting for a
         // permit or for room in a queue nobody drains would hang the process
-        // instead of letting the error above be reported. Cancelling releases
+        // instead of letting the error above be reported. Canceling releases
         // the waiters; draining releases the senders.
         runway.cancel();
         for rx in &queues {
@@ -1658,7 +1658,7 @@ fn shard_set_parallel(
         // than assumed because the symptom of the alternative is a hang on a
         // big capture and nothing at all on a small one — the reserve is
         // 8 MiB, so a fixture never reaches it and only a real run does.
-        // Skipped on the error paths, where readers were cancelled holding
+        // Skipped on the error paths, where readers were canceled holding
         // bytes for batches nobody will forward.
         debug_assert!(
             outcome.is_err() || runway.reserve_free() == DISPATCH_RESERVE_BYTES,
@@ -3009,7 +3009,7 @@ mod tests {
     /// The reader of the file being dispatched never waits on the RUNWAY, even
     /// with the runway entirely spent.
     ///
-    /// Not an optimisation: it is what makes the whole arrangement live. The
+    /// Not an optimization: it is what makes the whole arrangement live. The
     /// dispatcher waits on the current file's reader, so a current reader that
     /// waited for a budget only the dispatcher can release would deadlock the
     /// run.
@@ -3138,7 +3138,7 @@ mod tests {
         );
     }
 
-    /// Cancelling releases a reader that is waiting for the runway.
+    /// Canceling releases a reader that is waiting for the runway.
     ///
     /// The run ends on the error paths too — a refused BPF filter, a reader
     /// that will never be reached — and every one of them joins the reader
@@ -3165,7 +3165,7 @@ mod tests {
         assert_eq!(
             rx.recv_timeout(std::time::Duration::from_secs(2)),
             Ok(false),
-            "a cancelled runway must release its waiters, and tell them the \
+            "a canceled runway must release its waiters, and tell them the \
              run is over rather than admitting them"
         );
     }

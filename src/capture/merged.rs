@@ -2,7 +2,7 @@
 //!
 //! `mergecap`, and any capture spanning interfaces with different snapshot
 //! lengths or link types, produces a file libpcap will not open. It rejects on
-//! two independent grounds, and normalising the first only exposes the second.
+//! two independent grounds, and normalizing the first only exposes the second.
 //! Measured against a real merged capture carrying 313 interface description
 //! blocks:
 //!
@@ -157,7 +157,7 @@ impl MergedPcapNg {
     /// # Errors
     ///
     /// Returns an error when the file cannot be read or is not a pcapng the
-    /// decoder recognises.
+    /// decoder recognizes.
     pub fn open(path: &Path) -> Result<Self> {
         use pcap_file::pcapng::{Block, PcapNgReader};
 

@@ -312,7 +312,7 @@ def rtcp_sender_report(ssrc: int, ntp_sec: int, rtp_ts: int, packets: int, octet
 
 #: Every SIP URI host in these fixtures is one of these labels or an IP
 #: literal from a documentation/private range. Nothing resolves to a real
-#: organisation.
+#: organization.
 DOMAIN = "example.com"
 ATLANTA = "atlanta.example.com"
 BILOXI = "biloxi.example.com"

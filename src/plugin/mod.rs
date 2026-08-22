@@ -525,7 +525,7 @@ mod tests {
         let reply = r#"{"findings":[{"id":"custom","summary":"found it","evidence":[2]}]}"#;
         let p = write_plugin("good", &wat_plugin(1, reply));
         let plugin = Plugin::load(&p).expect("loads");
-        let found = plugin.analyze("{}").expect("analyses");
+        let found = plugin.analyze("{}").expect("analyzes");
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id, "custom");
         assert_eq!(found[0].evidence, vec![2]);

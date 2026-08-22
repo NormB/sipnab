@@ -361,7 +361,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > --portrange 1-65535 to include them.
 > ```
 >
-> `--portrange 1-65535` analyses everything the capture holds. Reach for it
+> `--portrange 1-65535` analyzes everything the capture holds. Reach for it
 > first on an unfamiliar capture, then narrow once you know what is in there.
 >
 > **Live capture is different, and worse.** With no explicit BPF filter sipnab

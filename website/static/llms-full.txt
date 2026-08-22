@@ -1924,7 +1924,7 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 | `sipnab_capture_invalid_timestamps_total` | counter | Packets whose pcap timestamp did not parse, which stamped with the wall clock instead. No packet goes missing, so the counts elsewhere in the scrape stay right — but every timing figure derived from the run is not: post-dial delay, [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550) jitter, MOS and call duration all read from a substituted clock. |
 | `sipnab_capture_undecodable_frames_total{reason}` | counter | Frames that reached the parser and produced no packet at all, grouped by why. **The reason label carries the number**, because the number is the whole deliverable: `unsupported_link_type_0` says the file is `DLT_NULL` and `editcap -T ether` converts it, where a bare "unsupported link type" names no format an operator can act on. Labels are `unsupported_link_type_<dlt>`, `not_ip_ethertype_0x<hhhh>`, `no_transport_ip_protocol_<n>`, `truncated_frame`, `decode_error`, the `_unrecorded` variants of the two numbered EtherType/protocol labels (the decoder did not hand the number out), and `reason_not_retained` for frames beyond the tally's slot cap — that last one exists so `sum()` over the family always equals the true total. Emitted by both the `--api` `/metrics` route and the standalone `--metrics` server. Absent entirely on a capture that decoded cleanly, so alert on the fraction below, not on this. |
 | `sipnab_capture_snapped_frames_total` | counter | Frames the capture's own `--snaplen` cut short (`caplen < origlen`). Neither loss nor a decode failure: the frames arrived, most of them decoded, and what is missing is payload — which is exactly what a signaling-only capture sets out to discard. It matters because the `--snaplen` warnings fire once per run and cannot say how MUCH of a capture came in truncated: a run that decoded every packet and snapped 94% of them is not a clean capture, and no other series says so. Raise `--snaplen` if you need RTP payload, audio export, or a faithful `-O` re-emit. |
-| `sipnab_nat_unanswered_requests` | gauge | STUN and TURN transactions that went out and never came back — the signal behind a one-way-audio complaint. **The only capture-quality series about the network rather than about the capture:** these frames arrived perfectly, and the reply to them did not. A gauge and not a counter because a late answer removes one, which a monotonic counter could never record. An endpoint that cannot learn its reflexive address advertises its private address in SDP, and the far end then sends media to an address the internet cannot route, while signaling looks healthy. Silence rather than a refusal points at something in the path discarding the packets — on school, campus and corporate networks most often a security appliance (web filter, secure web gateway, firewall or IPS) dropping UDP it does not recognise. A refusal counts as answered: the server was reachable and said no, which is a different fault. |
+| `sipnab_nat_unanswered_requests` | gauge | STUN and TURN transactions that went out and never came back — the signal behind a one-way-audio complaint. **The only capture-quality series about the network rather than about the capture:** these frames arrived perfectly, and the reply to them did not. A gauge and not a counter because a late answer removes one, which a monotonic counter could never record. An endpoint that cannot learn its reflexive address advertises its private address in SDP, and the far end then sends media to an address the internet cannot route, while signaling looks healthy. Silence rather than a refusal points at something in the path discarding the packets — on school, campus and corporate networks most often a security appliance (web filter, secure web gateway, firewall or IPS) dropping UDP it does not recognize. A refusal counts as answered: the server was reachable and said no, which is a different fault. |
 | `sipnab_nat_lapsed_turn_allocations` | gauge | TURN allocations still carrying traffic past the lifetime the server last granted them, with no Refresh seen in between. The second capture-quality series about the NETWORK rather than about the capture, and the only condition sipnab reports that has **no other symptom anywhere**: a relay tears an allocation down the moment its lifetime lapses, the relayed media stops with it mid-call, and no SIP message says why — the signaling shows a healthy call that went quiet. A gauge and not a counter because a Refresh seen later moves the expiry and unsays it, which a monotonic counter could never record. The wording is "no Refresh SEEN" rather than "none sent", because a capture that started late or lost a packet cannot tell those apart. A deliberate release (a Refresh with `LIFETIME` 0) is never counted — the client asked for the teardown. |
 | `sipnab_nat_lapsed_turn_allocation_streams` | gauge | Media streams observed crossing a TURN allocation that had already lapsed. The scale beside `sipnab_nat_lapsed_turn_allocations`, and the reason that series is worth paging on: an allocation that lapsed with nothing on it cost nobody a call, while one carrying four streams cut off four conversations mid-sentence — and until relayed media became attributable to the allocation that carried it, the two rendered identically. Counted by distinct SSRC seen inside the ChannelData frames on the allocation's channels, so RTCP does not inflate it. A gauge for the same reason the series above is: a Refresh seen later moves the expiry and takes the streams back out of this number. |
 | `sipnab_nat_ice_role_conflicts` | gauge | Candidate pairs where both ICE agents claimed the same role, or where one answered `487 Role Conflict` ([RFC 8445](https://www.rfc-editor.org/rfc/rfc8445) §7.3.1.1). The third capture-quality series about the NETWORK rather than about the capture. ICE resolves this itself — the losing agent switches role and repeats every check it had already sent — so a single conflict is not always fatal, which is exactly why it belongs on a dashboard rather than only in an alert: a fleet where it happens constantly is misconfigured whether or not any individual call survived it. Where no pair between the two was ever nominated, the conflict is a candidate cause of media that never started. The usual source is two endpoints configured with the same role, or a B2BUA relaying one side's role attribute to the other. A gauge because a later nomination on the same pair unsays the severity of it. |
@@ -2271,7 +2271,7 @@ List all tracked SIP dialogs with optional filtering and pagination.
 |-----------|--------|---------|-------------|
 | `state`   | string | --      | Filter by dialog state (`Trying`, `Ringing`, `InCall`, `Completed`, `Failed`, `Canceled`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`) |
 | `from`    | string | --      | Filter by From user (regex pattern) |
-| `limit`   | int    | 50      | Maximum results (capped at 1000) |
+| `limit`   | int    | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`  | int    | 0       | Pagination offset |
 
 **curl:**
@@ -2710,7 +2710,7 @@ List all tracked RTP streams with quality metrics.
 |------------|-------|---------|-------------|
 | `orphaned` | bool  | --      | `true` keeps only streams no dialog claims, `false` only those one does. From 0.5.98 the test is the stream's dialog association; before it, a 30-second sweep decided, so `orphaned=true` missed short unclaimed streams |
 | `mos_below`| float | --      | Filter streams with MOS below this threshold |
-| `limit`    | int   | 50      | Maximum results (capped at 1000) |
+| `limit`    | int   | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`   | int   | 0       | Pagination offset |
 
 **curl** — every tracked stream:
@@ -4369,7 +4369,7 @@ is a different fault from a reply that says no:
 
 | What you see | What it means |
 |---|---|
-| No reply at all | Something in the path is discarding the packets. On school, campus and corporate networks that is most often a security appliance -- web filter, secure web gateway, firewall or IPS -- dropping UDP it does not recognise. Check whether one sits in this path and whether it permits UDP to the STUN/TURN port **before** suspecting the server. |
+| No reply at all | Something in the path is discarding the packets. On school, campus and corporate networks that is most often a security appliance -- web filter, secure web gateway, firewall or IPS -- dropping UDP it does not recognize. Check whether one sits in this path and whether it permits UDP to the STUN/TURN port **before** suspecting the server. |
 | An error response | The server was reachable and refused. sipnab counts this as ANSWERED, because chasing a blocked path here would waste the effort. Look at the code: `401`/`438` are authentication, not connectivity. |
 | A reply arrives, media still one-way | STUN worked. The fault is downstream -- check the SDP the far end actually received, and see the private-address section above. |
 
@@ -6028,7 +6028,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > --portrange 1-65535 to include them.
 > ```
 >
-> `--portrange 1-65535` analyses everything the capture holds. Reach for it
+> `--portrange 1-65535` analyzes everything the capture holds. Reach for it
 > first on an unfamiliar capture, then narrow once you know what is in there.
 >
 > **Live capture is different, and worse.** With no explicit BPF filter sipnab
@@ -13409,7 +13409,7 @@ returned by [`list_dialogs`](#list_dialogs). An unknown one fails with
 ```jsonc
 // triage_call { "call_id": "1-1966@10.0.2.20" }
 {
-  "verdict": "media",              // "signalling" | "media" | "both" | "none"
+  "verdict": "media",              // "signaling" | "media" | "both" | "none"
   "state": "InCall",
   "final_status_code": 200,
   "signaling": { "problem": false, "hints": [] },
@@ -14968,7 +14968,7 @@ it, so any number it gave would describe a moment that has passed.
 
 # MCP protocol
 
-What an MCP client must honour, and what an auditor needs: the security model,
+What an MCP client must honor, and what an auditor needs: the security model,
 what the write verbs may do, how sipnab treats untrusted capture text, the
 stdio invariant, and the error and bounding semantics.
 
@@ -16279,7 +16279,7 @@ checking STUN before RTP cannot swallow media.
 | `FINGERPRINT` | Verified. A CRC-32 over the message with no key involved, so a passive reader can check it honestly -- and it is what separates a real STUN message from a payload that merely carried the cookie bytes. Reported as verified, present-and-wrong, or absent, which stay distinct |
 | ICE `USE-CANDIDATE`, `PRIORITY`, `ICE-CONTROLLING`/`ICE-CONTROLLED` | The nomination is the finding: without it, an ICE exchange that converged and one that never did look alike. Both sides claiming controlling is a role conflict whose only other symptom is media that never starts |
 | TURN `CHANNEL-NUMBER`, `REQUESTED-TRANSPORT` | So sipnab can describe a relay path, not merely detect one |
-| ChannelData framing | sipnab recognises **and unwraps** it, so RTP relayed through TURN reaches reconstruction. Without that a relayed call reports as having no media — the same answer sipnab gives for a call that carried none, which are opposite findings |
+| ChannelData framing | sipnab recognizes **and unwraps** it, so RTP relayed through TURN reaches reconstruction. Without that a relayed call reports as having no media — the same answer sipnab gives for a call that carried none, which are opposite findings |
 
 sipnab tracks transactions, so it reports a request that never came back along
 with the number of attempts. A retransmission is one unanswered question, not
@@ -19131,7 +19131,7 @@ panic = "unwind"
 cargo build --features full --profile profiling
 ```
 
-Never profile a debug build. It measures the absence of optimisation.
+Never profile a debug build. It measures the absence of optimization.
 
 ## perf, and the trap on this box
 

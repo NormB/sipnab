@@ -58,7 +58,7 @@ ARG MUSL_PREFIX=/usr/local/x86_64-linux-musl
 # tests/ci_local_fetch_gate_test.rs keeps them split.
 
 # Acquire::Retries and the timeouts, because the archives are the host that
-# hung for fifteen minutes on 2026-08-20 and cancelled a CI run outright. apt
+# hung for fifteen minutes on 2026-08-20 and canceled a CI run outright. apt
 # will not retry or give up on its own.
 RUN timeout 300 apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update \
     && timeout 600 apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y flex bison wget xz-utils \

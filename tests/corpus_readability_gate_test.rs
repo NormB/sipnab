@@ -187,7 +187,7 @@ fn a_file_that_is_not_a_capture_is_not_counted_as_unread() {
 /// A capture-shaped name is enough to demand a successful open.
 ///
 /// Magic alone is not: a file truncated to nothing, or written by a tool that
-/// died before its header, has no magic to recognise and would be waved through
+/// died before its header, has no magic to recognize and would be waved through
 /// as "not a capture". The corpus is a directory of captures — a `.pcap` in it
 /// that holds no capture is a finding, not a stray file.
 #[test]
@@ -237,7 +237,7 @@ fn a_capture_that_opens_and_yields_no_packets_is_unread() {
 ///
 /// A pcapng whose two interfaces disagree on link type and snaplen is the file
 /// libpcap refuses on two independent grounds, and per-packet encapsulation is
-/// the point of one, so there is no normalisation that makes libpcap read it.
+/// the point of one, so there is no normalization that makes libpcap read it.
 /// `PcapReader` has always taken the link type per packet and accepts it, which
 /// is exactly why the corpus suites were green over a file `sipnab -r` could
 /// not open at all.

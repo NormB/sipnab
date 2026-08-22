@@ -79,7 +79,7 @@ exclude = [
   # user-agent does not change it. Verified in both directions -- 308 (a live
   # redirect) from a residential connection, 403 from the Actions runner on the
   # same URL in the same minute. Excluded rather than adding 403 to `accept`,
-  # which would blind the whole run to real authorisation failures for the sake
+  # which would blind the whole run to real authorization failures for the sake
   # of one sponsor link. This is the failure mode that gets link checkers
   # deleted, so it is written down instead of tuned away.
   'patreon\.com',

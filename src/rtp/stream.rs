@@ -1592,7 +1592,7 @@ mod tests {
     /// window with it.
     ///
     /// The window is the half that is easy to leave behind: raising only the
-    /// log retains ten times the history and then analyses the same tail of
+    /// log retains ten times the history and then analyzes the same tail of
     /// it, which reads to an operator exactly like the setting doing nothing.
     #[test]
     fn a_raised_retention_widens_both_the_log_and_the_burst_window() {

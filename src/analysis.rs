@@ -258,9 +258,9 @@ impl FindingKind {
                 Severity::Blind,
                 "SIP discarded by --portrange",
                 "message",
-                "sipnab recognised these as SIP and then threw them away because neither port \
+                "sipnab recognized these as SIP and then threw them away because neither port \
                  was inside --portrange. They are in no dialog and no count. Widen the range \
-                 (--portrange 1-65535 analyses everything) and read the capture again.",
+                 (--portrange 1-65535 analyzes everything) and read the capture again.",
             ),
             Self::SipDiscardedByWebSocketPorts => m(
                 "sip_discarded_by_websocket_ports",
@@ -663,7 +663,7 @@ impl CaptureAnalysis {
 ///
 /// The third key alone is already a total order, because the aggregation emits
 /// at most one finding per kind. It is there so the output is byte-stable
-/// across runs and therefore diffable: two captures analysed a week apart
+/// across runs and therefore diffable: two captures analyzed a week apart
 /// produce lists that can be compared line by line, and a count that moved is
 /// visible instead of being hidden by a reshuffle.
 pub fn rank(findings: &mut [Finding]) {
@@ -810,7 +810,7 @@ impl CaptureFacts {
     }
 }
 
-/// Analyse a finished capture and rank everything already diagnosed in it.
+/// Analyze a finished capture and rank everything already diagnosed in it.
 ///
 /// # Arguments
 ///
@@ -1663,7 +1663,7 @@ mod tests {
         assert!(!analysis.complete);
     }
 
-    /// A capture with no SIP at all is still a capture worth analysing: a
+    /// A capture with no SIP at all is still a capture worth analyzing: a
     /// STUN-only file has a real finding in it, and the fixture
     /// `tests/fixtures/stun_nat_probe.pcap` is exactly that input.
     #[test]

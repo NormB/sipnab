@@ -4,7 +4,7 @@
 features, not to describe them — if it only ever ratifies what was already
 built, it has failed at its job.
 **Verified against:** `c3befb9`, working tree.
-**Backlog:** the four items this page authorises are tracked separately; §5
+**Backlog:** the four items this page authorizes are tracked separately; §5
 ranks them and §6 lists what it refuses.
 
 **No claim on this page is a measurement.** The capability facts in §2 are

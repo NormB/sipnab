@@ -110,7 +110,7 @@ pub const SIP_START_TOKENS: [&str; 15] = [
 ///
 /// **This is the filter doing the work sngrep needs a BPF program for.** These
 /// probes sit on every process that maps the library, so a filter is what makes
-/// the feature affordable rather than an optimisation — and the kernel
+/// the feature affordable rather than an optimization — and the kernel
 /// evaluates it BEFORE recording the event, so a non-SIP write costs a glob
 /// comparison and never a ring slot or a wakeup.
 ///
@@ -185,7 +185,7 @@ pub fn accept(raw: &mut [u8], len: i32) -> Option<Delivered> {
 /// Whether delivered plaintext is worth carrying further.
 ///
 /// These probes sit on every process mapping the library, so a filter is what
-/// makes the feature affordable at all rather than an optimisation.
+/// makes the feature affordable at all rather than an optimization.
 #[must_use]
 pub fn is_interesting(bytes: &[u8]) -> bool {
     crate::sip::is_sip_message(bytes)

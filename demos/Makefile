@@ -26,7 +26,7 @@
 
 VHS := vhs
 FFMPEG := ffmpeg
-# `abspath` normalises away the `demos/..`. Without it every target carried a
+# `abspath` normalizes away the `demos/..`. Without it every target carried a
 # literal `/demos/../` and make -- which matches goals TEXTUALLY -- reported
 # "Nothing to be done" for the very file it was asked to build, because the
 # path a human types is not the string the pattern rule produced.

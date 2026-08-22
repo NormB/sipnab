@@ -723,9 +723,9 @@ fn checksum16(data: &[u8]) -> u16 {
 ///
 /// `mergecap`, and any capture spanning interfaces that differ, produces this.
 /// libpcap refuses such a file outright, on two independent grounds: first the
-/// snaplen mismatch, and then (even after normalising those) the link-type
+/// snaplen mismatch, and then (even after normalizing those) the link-type
 /// mismatch. Per-packet encapsulation is the point of a merged capture, so
-/// there is no normalisation that makes libpcap read one.
+/// there is no normalization that makes libpcap read one.
 ///
 /// `frames` is `(interface_index, bytes)`. Interface 0 is Ethernet at snaplen
 /// 65535; interface 1 is raw IP (DLT 12) at snaplen 2048.

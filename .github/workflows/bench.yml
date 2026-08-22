@@ -55,7 +55,7 @@ jobs:
 
       - name: Build the release binary
         # Release, not debug: a debug build measures the absence of
-        # optimisation, and the baseline was recorded from a release build.
+        # optimization, and the baseline was recorded from a release build.
         run: cargo build --features full --release
 
       - name: Measure against the committed baseline
