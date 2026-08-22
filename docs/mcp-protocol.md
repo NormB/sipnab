@@ -106,6 +106,37 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
   SIPNAB_LOG=mcp_audit=info sipnab -N --mcp --quiet -I capture.pcap
   ```
 
+## Resources
+
+sipnab exposes the files under `--mcp-file-root` as MCP **resources**.
+`resources/list` enumerates them and `resources/read` fetches one at
+`sipnab:///<filename>`.
+
+This exists because of `export_capture`. That tool returns a server-LOCAL
+absolute path, which works over stdio and does nothing over the HTTP transport:
+the client is elsewhere and has no filesystem, so the tool reports success and
+the agent still cannot obtain the bytes it just asked sipnab to preserve —
+which is the point of exporting before stopping a live capture.
+
+The protocol makes a resource read-only by construction, and that strengthens
+rather than dilutes the argument above: a host can grant resource reads WITHOUT
+granting tool calls, a distinction no tool annotation can express.
+
+Two bounds:
+
+- **The URI is another way to name a file, not another way to leave the root.**
+  The name goes through the same single-component check and symlink resolution
+  guarding the file tools — one sandbox, not two that can drift apart.
+- **8 MiB per read.** JSON-RPC carrying base64 is not a bulk transfer channel:
+  a 128 MB capture becomes roughly 170 MB of one JSON string, which no client
+  wants and no model can read. Past the bound the read fails and names the
+  bound, rather than truncating in silence. Copy the file from
+  `--mcp-file-root` for anything larger.
+
+A file that is valid UTF-8 comes back as text, and anything else comes back as
+a base64 blob. A capture is bytes, and a lossy conversion would hand the model
+something the file does not contain.
+
 ## What the write verbs do
 
 Thirty of the 37 tools are `readOnlyHint: true`. These seven are not, and

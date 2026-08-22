@@ -364,7 +364,7 @@ router name in disguise.
 
 **The good news is that the existing surface already does the right thing and
 needs no new discipline.** `find_correlated`'s response
-([`server.rs:6240`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6240)) returns, per leg, `call_id`,
+([`server.rs:6347`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6347)) returns, per leg, `call_id`,
 `score`, `strategy`, `identifier_match` and `observed_gap_ms` — and never the
 matched identifier. `session_id` matches today without the `Session-ID` value
 ever reaching a client. **A sixth strategy that reports only its name inherits

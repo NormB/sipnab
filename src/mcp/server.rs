@@ -2967,6 +2967,113 @@ impl SipnabMcp {
         })
     }
 
+    /// Files under `--mcp-file-root`, as MCP resources.
+    ///
+    /// Resources are read-only by protocol construction, which STRENGTHENS the
+    /// argument in `docs/mcp-protocol.md` rather than diluting it: a host can
+    /// grant resource reads without granting tool calls, which no tool
+    /// annotation can express.
+    ///
+    /// The reason this exists is `export_capture`. It returns a server-local
+    /// absolute path, which is fine over stdio and useless over the HTTP
+    /// transport, where the client has no filesystem -- the tool succeeded and
+    /// the agent still could not obtain the bytes it had just asked sipnab to
+    /// preserve.
+    fn resource_list(&self) -> Result<Vec<rmcp::model::Resource>, rmcp::ErrorData> {
+        let root = self.file_root.as_ref().ok_or_else(|| {
+            rmcp::ErrorData::invalid_params(
+                "resources are disabled: start sipnab with --mcp-file-root <DIR>".to_string(),
+                None,
+            )
+        })?;
+        let entries = std::fs::read_dir(root).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("cannot read the file root: {e}"), None)
+        })?;
+
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let size = entry.metadata().ok().map(|m| m.len());
+            let mime = match path.extension().and_then(|e| e.to_str()) {
+                Some("pcap" | "pcapng") => "application/vnd.tcpdump.pcap",
+                Some("wav") => "audio/wav",
+                Some("json") => "application/json",
+                _ => "application/octet-stream",
+            };
+            let mut r = rmcp::model::Resource::new(format!("sipnab:///{name}"), name.to_string())
+                .with_mime_type(mime);
+            r.size = size;
+            out.push(r);
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
+    /// Read one resource by URI.
+    ///
+    /// The URI is another way to NAME a file, so it must not become another
+    /// way to leave the root: the path half goes through `resolve_in_root`,
+    /// the same single-component check and symlink resolution the file tools
+    /// use. One sandbox, not two that can drift.
+    fn resource_read(
+        &self,
+        uri: &str,
+    ) -> Result<Vec<rmcp::model::ResourceContents>, rmcp::ErrorData> {
+        /// Bytes a single resource read may return.
+        ///
+        /// JSON-RPC with base64 is not a bulk transfer channel -- a 128 MB
+        /// capture becomes ~170 MB of one JSON string, which no client wants
+        /// and no model can read. Refusing past a bound, and SAYING the bound,
+        /// beats returning something unusable or truncating in silence.
+        const MAX_RESOURCE_BYTES: u64 = 8 * 1024 * 1024;
+
+        let name = uri.strip_prefix("sipnab:///").ok_or_else(|| {
+            rmcp::ErrorData::invalid_params(
+                format!("'{uri}' is not a sipnab resource URI; expected sipnab:///<filename>"),
+                None,
+            )
+        })?;
+        let path = self.resolve_in_root(name)?;
+
+        let size = std::fs::metadata(&path)
+            .map_err(|e| rmcp::ErrorData::invalid_params(format!("'{name}': {e}"), None))?
+            .len();
+        if size > MAX_RESOURCE_BYTES {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "'{name}' is {size} bytes, past the {MAX_RESOURCE_BYTES}-byte resource                      limit. JSON-RPC carrying base64 is not a bulk transfer channel; copy                      the file from --mcp-file-root instead."
+                ),
+                None,
+            ));
+        }
+
+        let bytes = std::fs::read(&path)
+            .map_err(|e| rmcp::ErrorData::internal_error(format!("'{name}': {e}"), None))?;
+
+        // A capture is bytes, not text, and a lossy UTF-8 conversion would
+        // hand the model something that is not what the file holds. Text only
+        // when it genuinely is text.
+        let contents = match String::from_utf8(bytes) {
+            Ok(text) => rmcp::model::ResourceContents::text(text, uri),
+            Err(e) => {
+                use base64::Engine as _;
+                rmcp::model::ResourceContents::BlobResourceContents {
+                    uri: uri.to_string(),
+                    mime_type: Some("application/octet-stream".to_string()),
+                    blob: base64::engine::general_purpose::STANDARD.encode(e.as_bytes()),
+                    meta: None,
+                }
+            }
+        };
+        Ok(vec![contents])
+    }
+
     /// Narrow every row of a rendered page to `fields`, plus `call_id`.
     ///
     /// Applied to the SERIALIZED page rather than to `DialogSummary`, because
@@ -6990,6 +7097,32 @@ fn audit_args(arguments: Option<&rmcp::model::JsonObject>) -> String {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for SipnabMcp {
+    /// Files under `--mcp-file-root`, listed as resources.
+    ///
+    /// Delegates to `resource_list` so the logic is testable without
+    /// fabricating a `RequestContext`, and so the sandbox has exactly one
+    /// implementation.
+    async fn list_resources(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListResourcesResult, rmcp::ErrorData> {
+        Ok(rmcp::model::ListResourcesResult::with_all_items(
+            self.resource_list()?,
+        ))
+    }
+
+    /// Read one file under `--mcp-file-root` by resource URI.
+    async fn read_resource(
+        &self,
+        request: rmcp::model::ReadResourceRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ReadResourceResponse, rmcp::ErrorData> {
+        // `ReadResourceResponse` is the SDK's request/response envelope; the
+        // result converts into it.
+        Ok(rmcp::model::ReadResourceResult::new(self.resource_read(&request.uri)?).into())
+    }
+
     /// Dispatch a tool call through the generated router, leaving an audit
     /// line either way.
     ///
@@ -7093,7 +7226,15 @@ impl ServerHandler for SipnabMcp {
     /// Advertise server capabilities (tools only) and the human-readable
     /// instructions string shown to MCP clients.
     fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+        let mut info = ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                // Resources are read-only by protocol construction, so a
+                // host can grant them without granting tool calls -- a
+                // distinction no tool annotation can express.
+                .enable_resources()
+                .build(),
+        );
         // Name ourselves. The default comes from `Implementation::from_build_env`,
         // whose `env!("CARGO_CRATE_NAME")` expands when *rmcp* compiles, so a
         // client asking what it is connected to was told "rmcp" and rmcp's
@@ -8702,6 +8843,58 @@ mod tests {
             "a dialog state is sipnab's own word and fencing it would tell the \
              agent to distrust the analysis: {derived:?}"
         );
+    }
+
+    // ── resources ────────────────────────────────────────────────────
+
+    /// `export_capture` returns a server-LOCAL absolute path. Over stdio that
+    /// is fine. Over the HTTP transport -- the remote shape `mcp-deploy.md`
+    /// documents, and the one where preserving signalling before stopping a
+    /// live capture matters most -- the client has no filesystem, so the tool
+    /// succeeded and the agent still could not obtain the bytes.
+    #[test]
+    fn an_exported_file_is_readable_as_a_resource() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::write(root.join("evidence.pcap"), b"\xd4\xc3\xb2\xa1rest").expect("seed");
+
+        let srv = server_with_dialog("res@x").with_file_root(&root);
+
+        let listed = srv.resource_list().expect("resource_list should succeed");
+        assert!(
+            listed.iter().any(|r| r.name == "evidence.pcap"),
+            "the file under --mcp-file-root must be listed: {listed:?}"
+        );
+        let uri = listed
+            .iter()
+            .find(|r| r.name == "evidence.pcap")
+            .map(|r| r.uri.clone())
+            .expect("a uri");
+
+        let read = srv
+            .resource_read(&uri)
+            .expect("resource_read should succeed");
+        assert_eq!(read.len(), 1, "one file, one content block");
+    }
+
+    /// The sandbox is the SAME one the file tools use. A resource URI is
+    /// another way to name a file, so it must not be another way to leave the
+    /// root.
+    #[test]
+    fn a_resource_uri_cannot_escape_the_file_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        let srv = server_with_dialog("esc@x").with_file_root(&root);
+
+        for bad in ["sipnab:///../etc/passwd", "sipnab:///sub/dir.pcap"] {
+            let err = srv
+                .resource_read(bad)
+                .expect_err("a path must be refused, not resolved");
+            let json = serde_json::to_value(err).unwrap();
+            assert_eq!(json["code"], -32602, "refused as invalid_params: {bad}");
+        }
     }
 
     // ── search_messages ──────────────────────────────────────────────
