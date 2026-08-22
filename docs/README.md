@@ -70,6 +70,11 @@ you want.
   endpoint, plaintext read out of the process with no keys at all, eBPF
   with peer addresses, or eCapture — and says what does not work, so you
   stop trying it.
+- **[Attribute media on an rtpengine relay](rtpengine.md)** — you captured on
+  a media relay and every stream came back orphaned. A relay carries no SIP,
+  so sipnab reads rtpengine's own control plane to name the calls: what to
+  configure, how to verify it, and why a relay's forwarding mode makes no
+  difference to what you capture.
 - **[Write a WASM plugin](plugins.md)** — add your own detection to sipnab's
   diagnosis without forking it: what the sandbox does and does not bound,
   what trusting a `.wasm` costs you, and a worked example from crate to

@@ -2872,7 +2872,7 @@ place below rather than quietly dropped, because each one was load-bearing:
    `create answer` all carry `call-id` AND return a rewritten SDP, which is how
    relay-side recording and forking allocate sockets.
 
-- [ ] **RE1 — on a dedicated rtpengine host every media stream is an orphan,
+- [x] **RE1 — on a dedicated rtpengine host every media stream is an orphan,
   because the only signaling on the box is a protocol sipnab does not read.**
   A standalone media relay carries no SIP. sipnab there sees two sockets of RTP
   per call and nothing that names the call, so every stream comes out
@@ -2974,7 +2974,7 @@ place below rather than quietly dropped, because each one was load-bearing:
   `positioning.md`'s "operated rather than run" test. Aggregating rtpengine's
   own counters is Homer/HEPIC territory the same document puts outside sipnab.
 
-- [ ] **RE2 — there is no fixture, and the cheapest one no longer needs the
+- [x] **RE2 — there is no fixture, and the cheapest one no longer needs the
   harness rewired.** The first draft asked for `-d eth0,lo --multi-device` plus
   a widened BPF so a sniffer could see loopback ng. Taking the HEP path instead
   makes that unnecessary: rtpengine sends to a listener, so sipnab needs no
@@ -2983,12 +2983,101 @@ place below rather than quietly dropped, because each one was load-bearing:
   rtpengine and record one SIPp call's cycle as a golden fixture. If the
   passive sniffer is ever built, the same bytes serve it.
 
-- [ ] **RE3 — an ng-derived endpoint is the relay's assertion about itself.**
+- [x] **RE3 — an ng-derived endpoint is the relay's assertion about itself.**
   Over HEP this is largely answered -- `InputOrigin::Hep` already says "not
   observed on the wire here" -- but not entirely: `Hep` does not distinguish a
   proxy mirroring SIP it handled from a media relay asserting its own port
   allocation. Settle whether that distinction earns a fourth origin or a field
   on `SdpProvenance` before anything writes ng endpoints into `sdp_endpoints`.
+
+### The goal this series exists to reach
+
+Stated here so the remaining work is built toward something rather than
+toward whatever comes next.
+
+**An MCP client asks about one call and gets that call end to end, across
+every hop it touched — SBC, proxy, rtpengine, PBX — with the signaling and
+the media together.** An operator filters to a customer (caller, callee,
+trunk, address, time window), pulls the whole call rather than one machine's
+view of it, and gets an analysis.
+
+Naming media on a relay (RE1) is the hop that was missing, because it is the
+only hop carrying no SIP of its own. It is a foundation, not the feature.
+
+The use cases that define "done", each needing the same call visible at every
+hop and differing in what evidence answers them:
+
+| The customer says | The question | What answering it needs |
+|---|---|---|
+| "Our calls sound bad" | Where did the media degrade? | Per-hop loss/jitter/MOS on the SAME call, so a clean leg and a bad leg separate |
+| "Calls are not completing" | Which hop rejected it, and saying what? | Final response plus its origin hop, and whether media was ever negotiated |
+| "Calls drop after a while" | Who tore it down, on what clock? | The BYE or the timeout, and which side sent it first |
+| "They can't hear us" | Which direction is missing, and from where? | Both directions at each hop, not a packet count |
+| "Only that carrier fails" | What differs about that path? | The same call shape down two trunks, compared |
+
+Two of these are worth spelling out because they pull in opposite directions.
+A quality complaint is located by comparing the SAME call either side of each
+hop — identical loss everywhere points at the access network, and a codec
+that changes between hops points at transcoding. A completion complaint is
+usually the ABSENCE of media, so it moves to signaling and to the gap between
+the two: a call answered with no media is a negotiation failure, and a relay
+out of ports looks random from the proxy and obvious from the relay. Those
+are exactly the cases a signaling-only view gets wrong.
+
+- [ ] **RE-T — prove the pair, not just the relay.** RE1/RE2 prove one hop
+  against a recorded capture. The deployment is two machines: OpenSIPS
+  handling signaling, rtpengine handling media, on `opensips-1`. The next
+  proof is a two-unit test where sipnab correlates the proxy's SIP dialog
+  with the relay's media into ONE call. Everything above depends on that
+  join working, and nothing currently tests it.
+
+- [ ] **RE4 — reconcile calls already in progress, by asking.** A passive
+  decoder learns nothing about a call whose offer happened before sipnab
+  started, and incident response usually begins mid-call. `list` returns the
+  active Call-IDs and `query` returns, per call, the tags with `in dialogue
+  with`, and per stream the local port, endpoint, advertised endpoint and
+  crypto suite -- a complete join key that works for a running call. Both
+  confirmed working against rtpengine 12.5.1. Bounds that keep it from
+  becoming a service: triggered at startup and on an unexplained stream,
+  NEVER periodic; read-only commands unreachable from this path in code, not
+  by convention; its own transmit permit and an explicit control address.
+  `list` returns 32 Call-IDs by default and rtpengine warns that raising it
+  may exceed a UDP packet, so enumerate over TCP where available and SAY when
+  enumeration was partial -- covering 32 of 400 calls silently reports the
+  other 368 as orphans and looks like it worked. The control client MUST
+  generate a fresh cookie per transaction: rtpengine deduplicates on it and
+  replays cached replies, which during RE1 development returned ports
+  belonging to a call that had already been deleted.
+
+- [ ] **RE5 — attribute recorded streams from the spool, not the commands.**
+  Where relay-side recording is on, read rtpengine's own recording metadata
+  rather than decoding `subscribe`/`publish`/`create`. Those commands carry a
+  join key and decoding them is nearly free; the risk is misattribution, not
+  complexity. rtpengine already publishes the mapping in a documented format
+  designed for a third-party consumer -- that is how `rtpengine-recording`
+  works -- with per-stream PCAP under `pcap/` and a per-call metadata file
+  whose grammar carries `CALL-ID`, `TAG` and a `STREAM n details` line. That
+  turns a protocol problem into an input problem, in a format sipnab reads
+  natively. A spool READER is method-agnostic: files land there whichever
+  `recording-method` is set. Today sipnab already counts these commands
+  (`rtpengine::media_creating_commands_seen`); what is missing is surfacing
+  the count and reading the spool.
+
+- [ ] **RE7 — record from sipnab's own capture, and never command the relay.**
+  `-O` writes captured packets verbatim before parse with real wire
+  timestamps, and RE1's Call-ID now makes them attributable. sipnab must NOT
+  send `start recording`: that changes a production relay's behavior, fills
+  its disk, and is a new outbound capability class for a caller whose entire
+  justification is saving sipnab from doing something it can already do.
+  Reading an operator-engaged spool stays a fallback. The kernel-mode risk
+  this requirement was hedged against is CLOSED -- measured 500/500 ingress
+  and 500/500 egress with `xt_RTPENGINE` confirmed forwarding -- so the
+  fallback does not need to become the primary. What remains is the honesty
+  half: an artefact must name its mechanism (sipnab-capture or
+  rtpengine-spool) and, when partial, name how -- ring wrapped, egress not
+  observed, codec undecodable, retention off, spool entry missing -- with a
+  test that fails if "the call was silent" and "this run did not keep it"
+  collapse into one string.
 
 ## NAT — STUN/TURN visibility (added 2026-08-17)
 

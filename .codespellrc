@@ -45,7 +45,11 @@ skip = */target/*,*/.git/*,*.lock,website/public/*,*/website/public/*,*/js/*,*.m
 #                a Source column narrow enough to render "Sourc" cannot hold an
 #                IPv4 address and must be dropped instead (#151). "Correcting"
 #                it to "Source" would invert what the test checks.
-ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor,Sourc
+#   medias       rtpengine's OWN key name in an `ng` query reply, quoted while
+#                describing the nesting depth a real reply reaches. Correcting
+#                it to "media" would misname a protocol field and make the
+#                sentence wrong about what is on the wire.
+ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor,Sourc,medias
 #
 # Deliberately NOT ignored: "cappable", which codespell wanted to make "capable".
 # It appeared in "both are small, and both are cappable", where the meaning is

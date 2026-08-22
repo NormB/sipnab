@@ -547,7 +547,14 @@ fn linked_code_targets_exist() {
     // deleted WASM-bundle gate left a bare `wasm-pack` recipe path, which
     // `repo_paths_in_docs_are_clickable` then required as a link. One file,
     // one link, same mechanism as the entry above.
-    const EXPECTED_CODE_LINKS: usize = 354;
+    // 354 -> 365: `docs/internals/rtpengine-control-plane.md`, one new page.
+    // Four links are the module's own files plus
+    // `pipeline::apply_relay_control_links`; the other seven came from
+    // `scripts/link-repo-paths.py --apply`, which the sibling gate
+    // `repo_paths_in_docs_are_clickable` demands for the fixtures, the test
+    // file and the fuzz target the page names. Attributed per file before the
+    // number moved: `docs/internals/rtpengine-control-plane.md` +11.
+    const EXPECTED_CODE_LINKS: usize = 365;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

@@ -62,6 +62,30 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/tls-capture.md",
         ],
     ),
+    // `--homer` and `--homer-enable-ng` are RTPENGINE's, named on the pages
+    // that tell an operator how to configure a relay. They have to be written
+    // as flags because the reader types them into rtpengine's config, and they
+    // must never be mistaken for sipnab's own -- scoped to those four pages
+    // (two sources and their generated mirrors), so the same spelling anywhere
+    // else still fails this guard.
+    (
+        "homer",
+        &[
+            "docs/rtpengine.md",
+            "website/content/docs/rtpengine.md",
+            "docs/internals/rtpengine-control-plane.md",
+            "website/content/docs/internals/rtpengine-control-plane.md",
+        ],
+    ),
+    (
+        "homer-enable-ng",
+        &[
+            "docs/rtpengine.md",
+            "website/content/docs/rtpengine.md",
+            "docs/internals/rtpengine-control-plane.md",
+            "website/content/docs/internals/rtpengine-control-plane.md",
+        ],
+    ),
     // `--now` is systemd's, on `systemctl enable --now`. The cookbook's
     // "Run sipnab as a service" recipe gives a unit file and then the two
     // commands that install it, and `enable` without `--now` leaves the
@@ -2541,7 +2565,10 @@ fn no_documentation_table_repeats_a_row() {
     // site, unlike the notes above. mcp-deploy.md went 2386 -> 1840 lines.
     assert_eq!(
         files.len(),
-        159,
+        // Raised 159 -> 163 by the rtpengine pages: docs/rtpengine.md and
+        // docs/internals/rtpengine-control-plane.md, each with its generated
+        // website mirror. Two sources, two mirrors, attributed per file.
+        163,
         "found {} tracked markdown files, expected 159. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
@@ -2896,7 +2923,13 @@ fn no_documentation_table_repeats_a_row() {
         // Raised 601 -> 603 by the response-class table in docs/filter-dsl.md,
         // which lists the six IANA classes against both the number and the
         // registry's own name. Doubled by the generated site mirror.
-        603,
+        // Raised 603 -> 614 by the rtpengine pages. docs/rtpengine.md adds
+        // three (method chooser, verification troubleshooting, the use-case
+        // set) and docs/internals/rtpengine-control-plane.md adds two (module
+        // layout, mutation results); both have generated mirrors, so ten. The
+        // eleventh is the use-case table in docs/design/backlog.md, which has
+        // no mirror. Attributed per file before the number moved.
+        614,
         "walked {tables} tables, expected 603. More is fine — bump this. FEWER \
          means the table detection stopped matching and this gate is checking \
          less than it claims."

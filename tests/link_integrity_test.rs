@@ -593,7 +593,11 @@ fn wiki_intra_docs_links_resolve() {
     // Raised 433 -> 441 by the MCP split: mcp.md shed its tool reference and
     // protocol contract into two new pages, and the four-page set cross-links
     // where one page used to link internally.
-    const EXPECTED_WIKI_LINKS: usize = 473;
+    // 473 -> 479 by the two rtpengine pages: docs/rtpengine.md links three
+    // sibling docs from its "See also" and two from the body, and
+    // docs/internals/rtpengine-control-plane.md links the operator page.
+    // Attributed per file before the number moved.
+    const EXPECTED_WIKI_LINKS: usize = 479;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1119,10 +1123,13 @@ fn every_docs_page_is_linked_from_the_index() {
     // change), and `mcp.md` shed its tool reference and protocol contract into
     // `mcp-tools.md` and `mcp-protocol.md`. Raised 44 -> 45 by the second MCP
     // split: `mcp-deploy.md` shed its four estate scenarios into
-    // `mcp-estate.md`, taking the page from 2386 lines to 1840.
+    // `mcp-estate.md`, taking the page from 2386 lines to 1840. Raised 45 -> 47
+    // by the rtpengine pair: `rtpengine.md` for the operator and
+    // `internals/rtpengine-control-plane.md` for the maintainer, both
+    // registered in their indexes. Attributed per file before the number moved.
     assert_eq!(
-        checked, 45,
-        "docs-page walk saw {checked} pages, expected 45. More is fine — bump \
+        checked, 47,
+        "docs-page walk saw {checked} pages, expected 47. More is fine — bump \
          this. FEWER means the walk stopped reading part of docs/ and every \
          reachability assertion above it silently narrowed."
     );

@@ -35,6 +35,11 @@ Already written, and narrower:
   the lock discipline.
 - [Zero-copy payloads](zero-copy-payloads.md) — the `bytes::Bytes` spine from
   capture to output, including a performance claim the page itself refutes.
+- [The rtpengine control plane](rtpengine-control-plane.md) — naming media
+  captured on a standalone relay: the `ng` wire format, why the Call-ID
+  arrives over HEP rather than off the control socket, the `RelayControl`
+  action and the six appliers it names, and how a paired positive and negative
+  capture together prove the claim.
 - [Uprobe and eBPF TLS capture](uprobe-capture.md) — reading SIP plaintext out
   of a process's TLS library with kernel uprobes, and recovering the peer with
   a real eBPF program: banded fetches, the wipe that keeps adjacent heap from

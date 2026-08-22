@@ -246,8 +246,8 @@ mod tests {
             Value::List(vec![Value::Int(1), Value::Int(2)])
         );
         assert_eq!(
-            decode(b"d3:foti1ee").expect("dict"),
-            Value::Dict(vec![(&b"fot"[..], Value::Int(1))])
+            decode(b"d3:keyi1ee").expect("dict"),
+            Value::Dict(vec![(&b"key"[..], Value::Int(1))])
         );
     }
 

@@ -207,3 +207,51 @@ fn a_dialog_dropped_by_limit_is_not_reported_as_relay_named() {
         "an evicted dialog is not a relay-named call; report was:\n{stdout}"
     );
 }
+
+/// The same media, with and without the control plane.
+///
+/// `rtpengine-media-only.pcap` is `rtpengine-ng-hep.pcap` with its six HEP
+/// packets removed and nothing else changed — same forty RTP packets, same
+/// four sockets, same SSRCs. It is the control case, and it is what makes the
+/// claim falsifiable: strip the control plane and every stream goes back to
+/// being an orphan with no codec and no call.
+///
+/// Without a paired negative like this, "the streams are attributed" is
+/// consistent with sipnab having attributed them for some entirely unrelated
+/// reason, and the suite would never notice.
+#[test]
+fn stripping_the_control_plane_returns_every_stream_to_orphan() {
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args([
+            "-N",
+            "-I",
+            "tests/fixtures/rtpengine-media-only.pcap",
+            "--report",
+            "--no-cli-print",
+        ])
+        .env("SIPNAB_LOG", "warn")
+        .output()
+        .expect("run sipnab");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("Orphaned Streams"),
+        "with no control plane every stream must be an orphan:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains(CALL_ID),
+        "nothing may name the call once the control plane is gone:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("PCMU"),
+        "the codec came from the ng SDP, so it must be gone too:\n{stdout}"
+    );
+    // The media itself is untouched: all four sockets are still present, they
+    // are simply unattributable now.
+    for socket in RELAY_PORTS.iter().chain(PARTY_PORTS.iter()) {
+        assert!(
+            stdout.contains(socket),
+            "socket {socket} must still be in the capture:\n{stdout}"
+        );
+    }
+}

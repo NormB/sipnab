@@ -116,6 +116,16 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "Install sipnab from pre-built binaries, cargo, or package managers.",
     ),
     (
+        "docs/rtpengine.md",
+        "rtpengine.md",
+        "Attribute media on an rtpengine relay",
+        "rtpengine Relays",
+        32,
+        "Media captured on a standalone rtpengine relay comes back orphaned "
+        "because a relay carries no SIP. Read rtpengine's own control plane "
+        "to name the calls, with no change to an existing Homer pipeline.",
+    ),
+    (
         "docs/troubleshooting.md",
         "troubleshooting.md",
         "Troubleshooting",
