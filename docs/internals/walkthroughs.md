@@ -121,8 +121,18 @@ touching the help failed two assertions in `keybinding_drift_test`.
    dangling citation ever comes back.)**
 3. Take the store guard, project what you need into owned data, **drop the
    guard**, and only then `.await`.
-4. Bound the response with [`resolve_limit()`](../../src/mcp/shape.rs) and the
-   `DEFAULT_MAX_BODY_BYTES` cap (`--mcp-max-body-bytes` moves it).
+4. Bound the response with
+   [`resolve_limit_with_cap()`](../../src/mcp/shape.rs) — passing the caller's
+   `limit` and the server's `row_cap` — and the body-bytes cap
+   (`--mcp-max-body-bytes` moves it).
+
+   **Not `resolve_limit()`.** That one takes no ceiling, so a tool wired to it
+   silently ignores `--mcp-max-rows` — the operator sets a limit and the tool
+   does not honor it. `shape.rs` says as much at the definition: it is "kept
+   for callers with no configured ceiling", and the server is not one of them.
+   This step used to name the wrong function, which is how a recipe written
+   for the reader who does not yet know manufactures the defect it was meant
+   to prevent.
 5. Add an end-to-end case to
    [`mcp_stdio_test`](../../tests/mcp_stdio_test.rs) and, for HTTP-visible
    tools, [`mcp_http_test`](../../tests/mcp_http_test.rs).
@@ -148,7 +158,7 @@ sequenceDiagram
     Tool->>Tool: project into owned summaries
     Tool->>DS: drop(guard)
     Note over Tool: the guard is gone — the future is Send again
-    Tool->>Shape: resolve_limit, body cap
+    Tool->>Shape: resolve_limit_with_cap, body cap
     Shape-->>Tool: bounded payload
     Tool-->>Client: CallToolResult
 ```

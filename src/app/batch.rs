@@ -3692,9 +3692,25 @@ fn process_parsed_packet(
                     event_exec.queue_dialog_event(dialog);
                 }
 
-                // Link SDP media endpoints to RTP streams
+                // Link SDP media endpoints to RTP streams, carrying WHERE the
+                // offer came from and WHEN it was seen. Both decide what a
+                // stream created later may claim from it: a binding across
+                // sources is a weaker tie and must say so, and an offer stale
+                // enough to belong to a previous call on the same socket must
+                // claim nothing (F3).
+                //
+                // This applier used the provenance-less call until 0.5.122,
+                // alone among the four, so `sdp_endpoint_expired` refused to
+                // age ANY endpoint on the `-N -I file` path -- it declines to
+                // guess an age it was never given. Nothing errored, which is
+                // why it survived.
+                let provenance = crate::rtp::stream_store::SdpProvenance::observed(
+                    pp.input_origin,
+                    pp.timestamp,
+                );
                 for (ip, port, call_id, media) in &sdp_links {
-                    stream_store.link_to_dialog_with_sdp(*ip, *port, call_id, media);
+                    stream_store
+                        .link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
                 }
             }
 

@@ -3056,7 +3056,10 @@ impl SipnabMcp {
         if size > MAX_RESOURCE_BYTES {
             return Err(rmcp::ErrorData::invalid_params(
                 format!(
-                    "'{name}' is {size} bytes, past the {MAX_RESOURCE_BYTES}-byte resource                      limit. JSON-RPC carrying base64 is not a bulk transfer channel; copy                      the file from --mcp-file-root instead."
+                    "'{name}' is {size} bytes, past the \
+                     {MAX_RESOURCE_BYTES}-byte resource limit. JSON-RPC \
+                     carrying base64 is not a bulk transfer channel; copy the \
+                     file from --mcp-file-root instead."
                 ),
                 None,
             ));
@@ -7152,9 +7155,21 @@ impl ServerHandler for SipnabMcp {
     ///
     /// This is the ONE hand-written point every tool call passes through: the
     /// `#[tool_handler]` macro generates dispatch only when the impl block
-    /// does not already carry a `call_tool`, so writing one here wraps all 28
-    /// tools without touching any of them, and a 29th tool is covered the day
-    /// it is registered. Before this method existed there was no such point,
+    /// does not already carry a `call_tool`, so writing one here wraps every
+    /// registered tool without touching any of them, and the next one is
+    /// covered the day it is registered.
+    ///
+    /// Deliberately not a COUNT. This comment said "all 28" while the router
+    /// registered 37, which is the drift `prose_mcp_tool_counts_match_the_server`
+    /// gates in the docs and cannot gate here -- a number that has to be
+    /// maintained by hand, in a comment, is a number that goes stale.
+    ///
+    /// Resources are NOT tool calls and do not pass through here: `read_resource`
+    /// and `list_resources` reach the store without the audit line, the scope
+    /// check, the rate limit or the concurrency permit. That is defensible --
+    /// a resource is read-only by protocol construction -- but it is a real
+    /// gap in the record, and it is written down rather than left to be
+    /// discovered. Before this method existed there was no such point,
     /// which is why tool calls went unaudited (and why per-tool authorization
     /// had nowhere to live — this is also that future check's home).
     ///

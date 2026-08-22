@@ -3704,3 +3704,71 @@ fn the_tree_spells_in_us_english() {
         hits.join("\n  ")
     );
 }
+
+/// Every packet applier must carry SDP provenance, not just three of four.
+///
+/// There are four independent appliers -- single-threaded live, the `--cores`
+/// shard, batch, and TUI file-open -- and a change made to some of them is the
+/// defect class this codebase names most often. This is that class, caught in
+/// the act: three called `link_to_dialog_with_sdp_from` and passed
+/// `SdpProvenance::observed(..)`, while `app/batch.rs` called
+/// `link_to_dialog_with_sdp`, which hardcodes `SdpProvenance::unknown()`.
+///
+/// The consequence was invisible because nothing errored. Provenance is what
+/// lets a stale offer be aged out (F3) and what makes a binding that crossed
+/// sources say so. With `unknown()`, `sdp_endpoint_expired` returns false for
+/// every endpoint -- it refuses to guess an age it was never told -- so on the
+/// `-N -I file` path, the most-used offline path there is, an offer stale
+/// enough to belong to a PREVIOUS call on the same socket could still claim a
+/// stream. And a comment in the TUI applier asserted parity with batch that
+/// batch did not provide, which is why nobody noticed.
+///
+/// A source scan rather than a behavioural test on purpose: the failure is
+/// "one of four call sites differs", and that is a property of the source.
+#[test]
+fn every_packet_applier_carries_sdp_provenance() {
+    const APPLIERS: &[&str] = &[
+        "src/pipeline.rs",
+        "src/parallel.rs",
+        "src/app/batch.rs",
+        "src/tui/controllers/file_open.rs",
+    ];
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    let mut carrying = 0usize;
+    let mut bare: Vec<&str> = Vec::new();
+    for f in APPLIERS {
+        let text =
+            std::fs::read_to_string(root.join(f)).unwrap_or_else(|e| panic!("read {f}: {e}"));
+        // The provenance-carrying call is a strict superset of the bare one's
+        // name, so count the bare form only where it is NOT the `_from` call.
+        let with = text.matches("link_to_dialog_with_sdp_from(").count();
+        let total = text.matches("link_to_dialog_with_sdp").count();
+        if with > 0 {
+            carrying += 1;
+        }
+        // Every mention must be the `_from` form, discounting doc references.
+        let bare_calls = total
+            - with
+            - text.matches("link_to_dialog_with_sdp`").count()
+            - text.matches("link_to_dialog_with_sdp](").count();
+        if bare_calls > 0 {
+            bare.push(f);
+        }
+    }
+
+    assert_eq!(
+        carrying,
+        APPLIERS.len(),
+        "only {carrying} of {} appliers link SDP with provenance — the scan \
+         may also have stopped matching, so check the call name before \
+         raising this",
+        APPLIERS.len()
+    );
+    assert!(
+        bare.is_empty(),
+        "these appliers call `link_to_dialog_with_sdp`, which hardcodes \
+         SdpProvenance::unknown() and silently disables F3 stale-offer aging \
+         on that surface: {bare:?}"
+    );
+}

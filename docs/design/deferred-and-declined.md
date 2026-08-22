@@ -279,7 +279,7 @@ registry has grown since, and the count is pinned by
 The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
 ([`server.rs:6057`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6057)) writes a pcap, `export_audio`
-([`server.rs:6105`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6105)) writes a WAV, `list_captures`
+([`server.rs:6132`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6132)) writes a WAV, `list_captures`
 ([`server.rs:6005`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6005)) reads a directory, and
 `shutdown_server` ([`server.rs:6570`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6570)) ends the process.
 
