@@ -87,6 +87,12 @@ pub mod provenance;
 #[cfg(any(feature = "hep", feature = "mcp"))]
 pub mod rate_limit;
 pub mod rtp;
+// Native only, exactly as `pipeline` is: this module hands `ng`-derived SDP to
+// `pipeline::extract_sdp_links`, so it cannot compile where that does not. It
+// would also have nothing to do there — an `ng` control plane reaches sipnab
+// over HEP, and `hep` is a native feature, so the browser analyzer can never
+// see one.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod rtpengine;
 pub mod security;
 #[doc(hidden)]

@@ -185,19 +185,34 @@ for combo in tls api; do
 	fi
 done
 
+# --target is LOAD-BEARING, and this hook shipped without it. Without a target
+# cargo compiles for the HOST, where every `#[cfg(not(target_arch = "wasm32"))]`
+# is inert -- so the check proved the `wasm` feature compiles for Linux and
+# NOTHING about wasm. ci.yml found and fixed that in its own copy; this copy was
+# never fixed alongside it, and the two then disagreed silently until a module
+# that was fine on the host failed the real target in CI. Skipped, with a
+# message, when the target is not installed: a contributor without it must still
+# be able to push, and a check that cannot run must SAY so rather than pass.
 if grep -qE '^[[:space:]]*wasm[[:space:]]*=' Cargo.toml; then
-printf '  cargo check --no-default-features --features wasm --lib ... '
-if cargo check --no-default-features --features wasm --lib; then
+WASM_TARGET='wasm32-unknown-unknown'
+if ! rustup target list --installed 2>/dev/null | grep -qx "$WASM_TARGET"; then
+	printf '  cargo check --target %s ... ' "$WASM_TARGET"
+	printf '%bNOT CHECKED -- %s is not installed%b\n' "$YELLOW" "$WASM_TARGET" "$NC"
+	printf '    Install it with: rustup target add %s\n' "$WASM_TARGET"
+else
+printf '  cargo check --target %s --no-default-features --features wasm --lib ... ' "$WASM_TARGET"
+if cargo check --target "$WASM_TARGET" --no-default-features --features wasm --lib; then
 	printf '%bOK%b\n' "$GREEN" "$NC"
 else
 	printf '%bFAIL%b\n' "$RED" "$NC"
 	printf '\n'
 	printf '%bPush blocked: the wasm build is broken.%b\n' "$RED" "$NC"
 	printf 'Reproduce with:\n'
-	printf '    cargo check --no-default-features --features wasm --lib\n'
+	printf '    cargo check --target %s --no-default-features --features wasm --lib\n' "$WASM_TARGET"
 	printf '\n'
 	printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
 	exit 1
+fi
 fi
 fi
 

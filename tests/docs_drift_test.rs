@@ -3928,3 +3928,57 @@ fn the_removed_wasm_bundle_gate_is_not_documented_as_live() {
         );
     }
 }
+
+/// The pre-push wasm check and CI's must compile for the SAME target.
+///
+/// `cargo check --features wasm` without `--target` compiles for the HOST,
+/// where every `#[cfg(not(target_arch = "wasm32"))]` is inert. It then proves
+/// the `wasm` feature compiles for Linux and nothing whatever about wasm.
+///
+/// ci.yml found that and fixed its own copy. The hook's copy was not fixed
+/// alongside it, and the two disagreed silently until a module that compiled
+/// fine on the host failed the real target in CI and blocked a website deploy.
+/// Two copies of one rule, which is the shape this repo has been bitten by
+/// before -- the codespell path list drifted the same way.
+///
+/// Pinned on the flag rather than on the whole command string, so reformatting
+/// either file does not fail this, but dropping the target does.
+#[test]
+fn the_wasm_check_targets_wasm_in_both_the_hook_and_ci() {
+    const TRIPLE: &str = "wasm32-unknown-unknown";
+    let hook = include_str!("../.githooks/pre-push");
+    let ci = include_str!("../.github/workflows/ci.yml");
+
+    for (label, text) in [
+        (".githooks/pre-push", hook),
+        (".github/workflows/ci.yml", ci),
+    ] {
+        // Anti-vacuity: a file that no longer runs a wasm check at all would
+        // otherwise satisfy every assertion below by having nothing to check.
+        let runs: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("cargo check") && l.contains("--features wasm"))
+            .collect();
+        assert!(
+            !runs.is_empty(),
+            "{label} no longer runs a wasm `cargo check` at all — either it was \
+             removed (delete this gate too) or the line changed shape and this \
+             gate is now checking nothing"
+        );
+        // `--target` and not the literal triple: the hook passes it through a
+        // shell variable, so pinning the spelling would fail on a file that is
+        // entirely correct. What must hold is that EVERY wasm check names a
+        // target, and that the only target either file names is the wasm one.
+        for run in &runs {
+            assert!(
+                run.contains("--target"),
+                "{label} runs a wasm check with no `--target`, so it compiles \
+                 for the HOST and proves nothing about wasm:\n  {run}"
+            );
+        }
+        assert!(
+            text.contains(TRIPLE),
+            "{label} passes a `--target` that is never resolved to {TRIPLE}"
+        );
+    }
+}
