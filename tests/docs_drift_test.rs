@@ -3982,3 +3982,208 @@ fn the_wasm_check_targets_wasm_in_both_the_hook_and_ci() {
         );
     }
 }
+
+/// Each prose gate's path list has ONE source, and all three runners read it.
+///
+/// There are two lists -- vale's and codespell's -- and each had three copies:
+/// `.githooks/pre-push`, `scripts/preflight.sh` and
+/// `.github/workflows/quality.yml`. The codespell copies had already drifted,
+/// under a comment in the hook reading "CI invokes codespell over this exact
+/// path list; keep them identical". They were not identical: the hook omitted
+/// `bench`, the operator harness, so a misspelling there passed the gate that
+/// exists to catch it and turned main red instead. Nothing checked the property
+/// that comment asserted. The vale copies still agreed, which is not the same
+/// as being kept in agreement.
+///
+/// That is the shape `.config/code-trees.txt` already exists to end, and its
+/// header records what the same drift cost when that list was typed out five
+/// times. This is the same fix for the other two lists.
+///
+/// The two lists are deliberately two FILES rather than one: vale does not lint
+/// `.rs`, so codespell covers `src` and `examples` and vale must not. Merging
+/// them would either silence codespell on Rust prose or hand vale trees it
+/// cannot read.
+#[test]
+fn the_prose_gate_path_lists_have_one_source() {
+    /// The runners that must READ a list rather than restate it.
+    const RUNNERS: [&str; 3] = [
+        ".githooks/pre-push",
+        "scripts/preflight.sh",
+        ".github/workflows/quality.yml",
+    ];
+    /// (list file, the tool's own name, fewest entries a non-gutted list has).
+    ///
+    /// The tool name scopes the search below. A runner also invokes lychee and
+    /// several cargo gates, and those carry path lists of their own that
+    /// legitimately overlap this one -- lychee's
+    /// `'docs/**/*.md' 'README.md' 'CONTRIBUTING.md' 'SECURITY.md'` shares three
+    /// entries with codespell's list and is not a copy of it. Scanning the whole
+    /// file rejected that line, so the search is confined to each tool's region.
+    const LISTS: [(&str, &str, usize); 2] = [
+        (".config/codespell-paths.txt", "codespell", 10),
+        (".config/vale-paths.txt", "vale", 4),
+    ];
+    /// How far from a mention of the tool a line still counts as its region.
+    const WINDOW: usize = 8;
+
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    for (list_file, tool, floor) in LISTS {
+        let raw = std::fs::read_to_string(repo.join(list_file)).unwrap_or_else(|e| {
+            panic!(
+                "{list_file} is missing ({e}). It is the single source for the \
+                 paths {tool} runs over; all three runners read it."
+            )
+        });
+        let paths: Vec<String> = raw
+            .lines()
+            .map(|l| l.split('#').next().unwrap_or("").trim())
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect();
+
+        // Anti-vacuity. A gutted list satisfies everything below by naming
+        // nothing, and both tools exit 0 over no paths -- a gate reporting
+        // safety it is not providing.
+        assert!(
+            paths.len() >= floor,
+            "{list_file} yielded only {} path(s) ({paths:?}), fewer than {floor} \
+             -- the list or this parser is broken, and every {tool} run built on \
+             it just went blind",
+            paths.len()
+        );
+
+        // A path that is not there is a path the tool silently skips.
+        for p in &paths {
+            assert!(
+                repo.join(p).exists(),
+                "{list_file} names {p}, which is not in the repository"
+            );
+        }
+
+        for runner in RUNNERS {
+            let text = std::fs::read_to_string(repo.join(runner))
+                .unwrap_or_else(|e| panic!("cannot read {runner}: {e}"));
+
+            // On a line that RUNS, not merely one that mentions it. A comment
+            // naming the file satisfied this while the code beside it carried a
+            // hardcoded list -- found by mutation, not by reading.
+            assert!(
+                text.lines()
+                    .any(|l| l.contains(list_file) && !l.trim_start().starts_with('#')),
+                "{runner} does not read {list_file} anywhere outside a comment. \
+                 The list has one source; a runner that only NAMES it and keeps \
+                 its own copy is a second one."
+            );
+
+            let lines: Vec<&str> = text.lines().collect();
+            let near: std::collections::BTreeSet<usize> = lines
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.to_lowercase().contains(tool))
+                .flat_map(|(i, _)| i.saturating_sub(WINDOW)..=(i + WINDOW).min(lines.len() - 1))
+                .collect();
+
+            // If the gate were renamed or removed, every assertion below would
+            // pass by examining nothing.
+            assert!(
+                !near.is_empty(),
+                "{runner} no longer mentions {tool} at all -- either the gate was \
+                 removed (drop it from LISTS here too) or it was renamed, and \
+                 this check now examines nothing"
+            );
+
+            for n in near {
+                let line = lines[n];
+                // Comments are exempt, and only comments. A comment cannot hand
+                // a stale list to a tool, and refusing prose that names three
+                // trees would make this unsatisfiable for any file that explains
+                // itself -- which every file here does, at length.
+                if line.trim_start().starts_with('#') || line.contains(list_file) {
+                    continue;
+                }
+                // Whole tokens, not substrings: `bench` occurs inside
+                // `benchmarks.md`, so a line naming the two benchmark pages
+                // scored three "entries" while restating nothing.
+                // Quotes and `=` separate tokens as surely as a space does:
+                // `CODESPELL_PATHS="src tests docs"` is three paths, and
+                // splitting on whitespace alone saw `CODESPELL_PATHS="src` as
+                // one unmatched token and scored it 2. Mutation caught that;
+                // reading it did not.
+                let normalised: String = line
+                    .chars()
+                    .map(|c| match c {
+                        '"' | '\'' | '=' | '\\' | ',' | ';' | '(' | ')' => ' ',
+                        other => other,
+                    })
+                    .collect();
+                let hits = normalised
+                    .split_whitespace()
+                    .filter(|tok| paths.iter().any(|p| p == tok))
+                    .count();
+                assert!(
+                    hits < 3,
+                    "{runner}:{} restates {list_file} ({hits} of its entries on \
+                     one line, inside the {tool} gate). Read the file instead:\n  {}",
+                    n + 1,
+                    line.trim()
+                );
+            }
+        }
+    }
+}
+
+/// The vale version pin has ONE source, and the runners derive it.
+///
+/// The version is part of the check rather than a detail: Vale.Spelling
+/// consults a vocabulary that resolves differently across binaries, so a run on
+/// the wrong version is evidence about a different tool. `.githooks/pre-push`
+/// says exactly that, and then carried `VALE_PIN='3.16.0'` as its own literal
+/// while `scripts/preflight.sh` derived the same number from
+/// `.github/workflows/quality.yml`. One of the three read the source and two
+/// did not agree by construction.
+///
+/// A bump in CI would have left the hook comparing against a stale pin and
+/// reporting NOT CHECKED for a correct binary -- a gate that turns itself off
+/// and says so quietly, which is the shape the corpus and wasm gates were both
+/// found in this week.
+#[test]
+fn the_vale_version_pin_has_one_source() {
+    const CI: &str = ".github/workflows/quality.yml";
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    let ci = std::fs::read_to_string(repo.join(CI)).expect("read quality.yml");
+    let pin = ci
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("VALE_VERSION:"))
+        .map(|v| v.trim().trim_matches('\'').to_string())
+        .expect("quality.yml declares no VALE_VERSION — this gate now checks nothing");
+    assert!(
+        pin.split('.').all(|p| p.parse::<u32>().is_ok()),
+        "{CI} VALE_VERSION is {pin:?}, which is not a version"
+    );
+
+    for runner in [".githooks/pre-push", "scripts/preflight.sh"] {
+        let text = std::fs::read_to_string(repo.join(runner))
+            .unwrap_or_else(|e| panic!("cannot read {runner}: {e}"));
+
+        assert!(
+            text.contains(CI),
+            "{runner} does not read {CI} for the vale version. The pin has one \
+             source; a runner carrying its own is a second one."
+        );
+
+        for (n, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with('#') || line.contains(CI) {
+                continue;
+            }
+            assert!(
+                !line.contains(&pin),
+                "{runner}:{} hardcodes the vale version {pin}. Derive it from \
+                 {CI} instead, as the other runner does:\n  {}",
+                n + 1,
+                line.trim()
+            );
+        }
+    }
+}

@@ -1,0 +1,26 @@
+# Paths vale runs over. ONE list, three consumers:
+#
+#   .githooks/pre-push              the gate that blocks a push
+#   scripts/preflight.sh            the same gate, run early and on demand
+#   .github/workflows/quality.yml   the gate that blocks a merge
+#
+# Three hand-kept copies before this file, agreeing at the time it was made
+# and with nothing holding them there -- the same shape that had already let
+# the codespell list drift, where the hook silently omitted `bench`. A list
+# that happens to agree is not a list that is kept in agreement.
+#
+# Vale reads .vale.ini for its styles and vocabulary; this file is only WHICH
+# TREES it walks. Note it does not include `src`: vale does not lint .rs, so
+# the prose in doc comments and in examples/*.rs is outside it. codespell is
+# what covers those, which is why the two lists differ and are two files.
+#
+# Same grammar as .config/code-trees.txt and .config/codespell-paths.txt: one
+# path per line, blank lines and `#` comments ignored.
+#
+# `the_prose_gate_path_lists_have_one_source` in tests/docs_drift_test.rs
+# holds all three consumers to this file.
+docs/
+website/content/
+README.md
+SUPPORT.md
+MAINTAINERS.md

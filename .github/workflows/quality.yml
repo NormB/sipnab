@@ -368,17 +368,24 @@ jobs:
       # exempted by glob sections in .vale.ini because they are working
       # documents. Curation brought this from 13,892 alerts to zero.
       - name: Prose style (Vale + Google)
-        run: vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md
+        # Paths from the shared list -- see .config/vale-paths.txt.
+        run: vale $(sed 's/#.*//' .config/vale-paths.txt | tr '\n' ' ')
+
+      # The path list lives in .config/codespell-paths.txt, which this hook,
+      # scripts/preflight.sh and .githooks/pre-push all read. It was three
+      # copies before, and they had already drifted -- the hook omitted
+      # `bench`, so a misspelling in the operator harness passed locally and
+      # failed here. The action needs the paths as an input rather than from
+      # config, so the file is read into one here instead of pasted.
+      - name: Codespell paths
+        id: codespell_paths
+        run: echo "paths=$(sed 's/#.*//' .config/codespell-paths.txt | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
 
       - name: Spelling (codespell)
         uses: codespell-project/actions-codespell@8f01853be192eb0f849a5c7d721450e7a467c579 # v2.2
         with:
-          # Reads .codespellrc for skips and the ignore list. The action needs
-          # the paths passed explicitly rather than inheriting them from config.
-          # `bench` and `benches` are different directories and both are needed:
-          # `benches/` holds the Criterion targets, `bench/` the operator
-          # harness and its README, which was outside every prose gate here.
-          path: src tests docs website bench benches harness scripts examples README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md SUPPORT.md MAINTAINERS.md
+          # Reads .codespellrc for skips and the ignore list.
+          path: ${{ steps.codespell_paths.outputs.paths }}
 
       # Pass one: Markdown that resolves on the filesystem. 257 unique links.
       #
