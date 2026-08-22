@@ -226,8 +226,9 @@ if [ -z "$CS" ]; then
     note "not installed; CI runs it and it blocks. pipx install codespell"
     note "(or point CODESPELL_BIN at one in a venv, as the hook accepts)"
 else
-    if $CS src tests docs website bench benches harness scripts README.md \
-        CONTRIBUTING.md SECURITY.md CHANGELOG.md SUPPORT.md MAINTAINERS.md \
+    if $CS src tests docs website bench benches harness scripts examples \
+        README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md SUPPORT.md \
+        MAINTAINERS.md \
         >"$CS_OUT" 2>&1; then
         ok
     else

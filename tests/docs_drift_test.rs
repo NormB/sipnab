@@ -60,6 +60,11 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             // build that carries it, exactly as the CLI reference does.
             "docs/tls-capture.md",
             "website/content/docs/tls-capture.md",
+            // The library page's worked-examples section gives the cargo
+            // invocations that RUN examples/*.rs. A library consumer builds
+            // against this crate, so `--features native` is the one thing
+            // between them and a compile error.
+            "docs/library.md",
         ],
     ),
     // `--homer` and `--homer-enable-ng` are RTPENGINE's, named on the pages
@@ -97,6 +102,12 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "now",
         &["docs/examples.md", "website/content/docs/cookbook.md"],
     ),
+    // `--example` is cargo's, on `cargo run --example <name>`. It appears
+    // only on the library page, which is the one page whose runnable
+    // commands target `examples/*.rs` rather than the `sipnab` binary.
+    // Scoped there: written anywhere else it would read as a sipnab flag
+    // and must still fail this guard.
+    ("example", &["docs/library.md"]),
     // `--undefined-only` is binutils `nm`, and `--keylogfile` is eCapture's.
     // The TLS chooser names both because the commands it gives have to be
     // runnable as written: one finds which symbol a daemon actually calls,
@@ -2513,6 +2524,20 @@ fn sequence_marker_admits_a_declared_procedure() {
 /// show a repeated line.
 #[test]
 fn no_documentation_table_repeats_a_row() {
+    /// How many tables this gate expects to walk.
+    ///
+    /// Named rather than written twice. The count and the failure message
+    /// used to be separate literals, and bumping the count left the message
+    /// still naming the old number — so the gate that exists to catch a
+    /// documentation value drifting from its source shipped exactly that.
+    // Raised 604 -> 615 by the rtpengine pages. docs/rtpengine.md adds three
+    // (method chooser, verification troubleshooting, the use-case set) and
+    // docs/internals/rtpengine-control-plane.md adds two (module layout,
+    // mutation results); both have generated mirrors, so ten. The eleventh is
+    // the use-case table in docs/design/backlog.md, which has no mirror.
+    // Attributed per file before the number moved.
+    const EXPECTED_TABLES: usize = 615;
+
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
         .args(["ls-files", "-z", "*.md"])
@@ -2923,16 +2948,14 @@ fn no_documentation_table_repeats_a_row() {
         // Raised 601 -> 603 by the response-class table in docs/filter-dsl.md,
         // which lists the six IANA classes against both the number and the
         // registry's own name. Doubled by the generated site mirror.
-        // Raised 603 -> 614 by the rtpengine pages. docs/rtpengine.md adds
-        // three (method chooser, verification troubleshooting, the use-case
-        // set) and docs/internals/rtpengine-control-plane.md adds two (module
-        // layout, mutation results); both have generated mirrors, so ten. The
-        // eleventh is the use-case table in docs/design/backlog.md, which has
-        // no mirror. Attributed per file before the number moved.
-        614,
-        "walked {tables} tables, expected 603. More is fine — bump this. FEWER \
-         means the table detection stopped matching and this gate is checking \
-         less than it claims."
+        // Raised 603 -> 604 by the worked-examples table in docs/library.md,
+        // which lists the three programs in examples/ against what each one
+        // demonstrates. One table, one file, no site mirror: library.md has
+        // no site counterpart. Attributed per file before the number moved.
+        EXPECTED_TABLES,
+        "walked {tables} tables, expected {EXPECTED_TABLES}. More is fine — bump \
+         this. FEWER means the table detection stopped matching and this gate is \
+         checking less than it claims."
     );
     assert!(
         offenders.is_empty(),

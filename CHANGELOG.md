@@ -10,6 +10,131 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.123] - 2026-08-22
+
+### Added
+
+- **MCP gains the two answers only `--report` and the REST API could give.**
+  `get_capture_report` returns the capture-level report -- findings across every
+  dialog and stream, STUN, and ICMP evidence quoting SIP or media -- which
+  `get_dialog_report` and `render_ladder` could only ever answer for one
+  Call-ID. `rtp_stats` gains an `orphaned` filter: `capture_status` reported
+  `orphaned_stream_count` as a bare number, and an agent told "three orphaned
+  streams exist" had no way to list them. The filter is applied before the MOS
+  bounds and independently of them, because an orphan usually has no dialog to
+  ground its clock and folding it into the bounded arm would have dropped most
+  orphans from the query that asked for exactly them.
+
+- **The MCP server exposes resources, so a remote agent can fetch an export.**
+  `export_capture` returns a server-LOCAL absolute path. Over stdio that is
+  fine; over the HTTP transport the client is elsewhere and has no filesystem,
+  so the tool reported success and the agent still could not obtain the bytes.
+  There was no download path at all. A resource is read-only by construction,
+  so a host can grant resource reads WITHOUT granting tool calls -- a
+  distinction no tool annotation can express.
+
+- **Field projection on the four tools that return dialog pages.** `fields` on
+  `list_dialogs`, `find_problems`, `tail_dialogs` and `search_by_time`. Rows
+  were bounded three ways and columns were not bounded at all, so an agent that
+  wanted `call_id` and `state` for 200 dialogs still paid for `timing`,
+  `frame`, `updated_at` and two display names on every one of them. `call_id`
+  survives every projection, listed or not, because every follow-up tool takes
+  a Call-ID and a row an agent cannot address is a row it can do nothing with.
+  An unknown name is refused, naming the typo and the fields the row carries.
+
+- **`aggregate_dialogs`, so counting happens in the store rather than in the
+  model's head.** The only aggregate on this surface was `total_matched` for
+  one filter, so a response-code histogram or a top-destinations-by-failure
+  question meant either N filtered queries with the buckets guessed in advance,
+  or paging every row and tallying it. Counting is the operation a language
+  model gets wrong most reliably. The buckets plus `other_count` always equal
+  `total_matched`, and a null becomes the literal `(none)` rather than
+  vanishing.
+
+- **`response_code` and `response_class` in the filter DSL.** The DSL had 30
+  fields and none of them was the response code, so `state == 'Failed'` was the
+  only way to ask about a failure -- and it collapses 403, 404, 408, 486, 503
+  and 603 into one word, though those have different owners. `response_code` is
+  numeric, so classes work directly. `response_class` takes either the number
+  or the IANA registry's own name, so `5xx` and `server failure` are one query,
+  and `failure` names all three failure classes. Matching is membership rather
+  than string equality, which is what keeps `!=` honest.
+
+- **`list_captures` reports `first_packet`.** It returned `{filename, bytes}`,
+  so the only way to learn anything about a second file was `open_capture` --
+  documented "Destructive. Replaces every dialog and stream", voiding every
+  cursor the agent holds. Asking "which of these rotated files could hold this
+  call" cost the capture the agent was already working on. `first_packet` costs
+  one open and one record read, and it is what narrows forty rotated files to
+  the two worth opening.
+
+- **The library page now carries three worked examples.** `examples/` had two
+  programs, both reporting on the host rather than on a capture, so the library
+  path -- the published crate's actual API -- had none. `call_summary` runs
+  file to frame to message to call; `rtp_quality` reports per-stream jitter,
+  loss and MOS, including a stream `StreamStore` declines to score because no
+  `a=rtpmap` grounded its clock rate; `filter_dialogs` compiles one
+  `FilterExpr` and applies it through `select_dialogs`, the join across both
+  stores that `--report` and `--json-dialogs` also pass through. Each shows
+  something a doctest structurally cannot, because each needs state accumulated
+  across a whole capture.
+
+### Fixed
+
+- **The batch applier dropped SDP provenance, and a comment asserted it did
+  not.** Three of the four packet appliers pass `SdpProvenance::observed(..)`;
+  the batch applier called `link_to_dialog_with_sdp`, which hardcodes
+  `unknown()`. Nothing errored, which is why it survived: with `unknown()`,
+  `sdp_endpoint_expired` returns false for every endpoint, so F3 stale-offer
+  aging was inert on the `-N -I file` path -- the most-used offline path there
+  is. An offer stale enough to belong to a PREVIOUS call on the same socket
+  could still claim a stream, and cross-source binding could not report that it
+  had crossed sources.
+
+- **The late-decrypt hold never reported what it discarded.** `late_evicted`
+  and `late_still_held` were computed, carried through `TlsDecryptReport`, and
+  read by nobody; only `late_recovered` reached a log line. Without the
+  eviction count, "we never had the keys for those records" and "we had them
+  and had already thrown the ciphertext away" produce identical output, and
+  only one of those is fixed by starting the key source earlier. The reason it
+  never fired was structural: `tls_decrypt_guidance` returned early on any run
+  that decrypted anything, and an eviction only happens on a capture that was
+  otherwise working.
+
+- **`docs/library.md`'s only `PcapReader` example had never compiled.** It used
+  `?` inside what rustdoc wraps as a `()`-returning `main`, which is E0277 --
+  so a reader's first paste failed, while the suite stayed green because no
+  target ever read the page. Every Rust block on that page is now a doctest,
+  via a `#[cfg(doctest)]` module that includes the file, so the page is
+  compiled by a suite that already ran. The snippet itself is now the whole
+  bridge from a pcap record to a decoded frame, which is the one step between a
+  path and a parsed frame that a reader cannot guess.
+
+- **The codespell path list had drifted between its three copies.**
+  `.githooks/pre-push` omitted `bench` while `.github/workflows/quality.yml`
+  and `scripts/preflight.sh` carried it, so a misspelling in `bench/` passed
+  the hook that exists to catch it and turned main red instead -- under a
+  comment reading "CI invokes codespell over this exact path list; keep them
+  identical". All three now agree, and all three gained `examples`: Vale skips
+  `.rs` and codespell was never pointed at that tree, so the prose in
+  `examples/*.rs` was ungated.
+
+### Changed
+
+- **The tree spells in US English, and a gate now holds it there.** 0.5.105
+  made 2,904 replacements across 274 files and shipped with no gate; by 0.5.122
+  the tree had drifted back to 166. A repository that spells one word two ways
+  teaches a reader that neither spelling is meant, and a grep for either finds
+  half the matches.
+
+- The MCP deployment page no longer carries the four estate scenarios that are
+  not "get MCP running" -- several SIP servers feeding one capture host over
+  HEP, reaching sipnab from outside the network, one agent holding many capture
+  hosts, and following one call across an estate. They are their own page now.
+
+- The home page carries the three most recent engineering notes, pulled from
+  the section itself rather than hand-listed, so the list cannot go stale.
+
 ## [0.5.122] - 2026-08-21
 
 ### Fixed

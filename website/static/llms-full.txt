@@ -3781,7 +3781,7 @@ sipnab -D
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```text
-sipnab 0.5.122 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf
+sipnab 0.5.123 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf
 ```
 
 This is the fastest way to confirm a build carries the feature set
@@ -10185,7 +10185,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.122 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf
+   # sipnab 0.5.123 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -11264,7 +11264,7 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
-  "version": "0.5.122",
+  "version": "0.5.123",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -14833,7 +14833,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.122",
+  "version": "0.5.123",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -18092,8 +18092,8 @@ touching the help failed two assertions in `keybinding_drift_test`.
    does not honor it. `shape.rs` says as much at the definition: it is "kept
    for callers with no configured ceiling", and the server is not one of them.
    This step used to name the wrong function, which is how a recipe written
-   for the reader who does not yet know manufactures the very defect it exists
-   to prevent.
+   for the reader who does not yet know manufactures the very defect it
+   exists to prevent.
 5. Add an end-to-end case to
    [`mcp_stdio_test`](../../tests/mcp_stdio_test.rs) and, for HTTP-visible
    tools, [`mcp_http_test`](../../tests/mcp_http_test.rs).

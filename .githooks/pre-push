@@ -754,7 +754,16 @@ else
 fi
 
 # CI invokes codespell over this exact path list; keep them identical.
-CODESPELL_PATHS="src tests docs website benches harness scripts README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md SUPPORT.md MAINTAINERS.md"
+#
+# They were NOT identical. CI carried `bench` -- the operator harness and its
+# README -- and this copy did not, so a misspelling there passed the hook that
+# exists to catch it and turned main red instead. The comment above claimed the
+# property nothing checked.
+#
+# `examples` is new to both. Vale skips `.rs` entirely and codespell was never
+# pointed at that tree, so every word of prose in examples/*.rs was ungated --
+# which mattered little at two files and matters at five.
+CODESPELL_PATHS="src tests docs website bench benches harness scripts examples README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md SUPPORT.md MAINTAINERS.md"
 printf '  codespell (spelling) ... '
 CS=""
 if command -v codespell >/dev/null 2>&1; then
