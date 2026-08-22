@@ -17812,8 +17812,8 @@ touching the help failed two assertions in `keybinding_drift_test`.
    does not honor it. `shape.rs` says as much at the definition: it is "kept
    for callers with no configured ceiling", and the server is not one of them.
    This step used to name the wrong function, which is how a recipe written
-   for the reader who does not yet know manufactures the defect it was meant
-   to prevent.
+   for the reader who does not yet know manufactures the very defect it
+   exists to prevent.
 5. Add an end-to-end case to
    [`mcp_stdio_test`](../../tests/mcp_stdio_test.rs) and, for HTTP-visible
    tools, [`mcp_http_test`](../../tests/mcp_http_test.rs).
