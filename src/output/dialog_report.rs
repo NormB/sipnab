@@ -212,6 +212,62 @@ pub fn print_dialog_report_as(
         }
     }
 
+    // ── Calls named by a relay, whose signaling is not in this capture ──
+    //
+    // A stream can be attributed to a Call-ID that has no dialog HERE. That is
+    // not a defect, it is the deployment: on a standalone media relay the SIP
+    // is on another host entirely, and the only thing naming the call is
+    // rtpengine's own control plane. Such a stream is no longer orphaned, so
+    // it correctly leaves the orphan table — and without this section its
+    // Call-ID would then appear nowhere at all, which would be a worse answer
+    // than the orphan row it replaced. The whole point of the attribution is
+    // to be able to say WHICH call, so the report has to say it.
+    // Keyed on the stream's own recorded provenance, NOT on "has a Call-ID
+    // that no dialog here matches". That second test is also true of a dialog
+    // the run simply dropped -- `--limit 1` keeps one dialog while its streams
+    // keep pointing at the calls that were evicted -- and reporting those as
+    // relay-named would be a confident wrong answer about where the name came
+    // from. This exact mistake shipped for one gate run and was caught by
+    // `limit_caps_tracked_dialogs`.
+    let mut relay_named: std::collections::BTreeMap<&str, usize> =
+        std::collections::BTreeMap::new();
+    for stream in streams {
+        if stream.dialog_bound_from_relay()
+            && let Some(id) = stream.associated_dialog.as_deref()
+        {
+            *relay_named.entry(id).or_default() += 1;
+        }
+    }
+    if !relay_named.is_empty() {
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "Calls named by a media relay (no SIP for them in this capture):"
+        );
+        let headers = ["Call-ID", "Streams"];
+        let widths = [60usize, 8];
+        out.push_str(&row(
+            md,
+            &widths,
+            &headers.iter().map(|h| (*h).to_string()).collect::<Vec<_>>(),
+        ));
+        if md {
+            out.push_str(&md_rule(headers.len()));
+        } else {
+            let _ = writeln!(out, "{}", "-".repeat(69));
+        }
+        for (call_id, count) in &relay_named {
+            // Markdown carries the Call-ID in full; the text form truncates to
+            // the column, exactly as the dialog table above does.
+            let shown = if md {
+                (*call_id).to_string()
+            } else {
+                truncate_str(call_id, 60)
+            };
+            out.push_str(&row(md, &widths, &[shown, count.to_string()]));
+        }
+    }
+
     // ── Orphaned RTP streams ────────────────────────────────────────
     let orphaned: Vec<&&RtpStream> = streams.iter().filter(|s| s.orphaned()).collect();
     if !orphaned.is_empty() {

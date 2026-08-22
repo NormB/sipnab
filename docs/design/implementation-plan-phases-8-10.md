@@ -1731,7 +1731,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | Phase 8.7 surface (★) | Wraps |
 |---|---|
 | `codec_asymmetry` | Compares `RtpStream::codec` (`src/rtp/stream.rs:309 codec_from_pt`) across the two streams of a dialog |
-| `ptime_asymmetry` | Inferred from RTP inter-arrival in `RtpStream::update` ([`src/rtp/stream.rs:759`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L759)) or SDP `a=ptime:` parsed in [`src/sip/sdp.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) |
+| `ptime_asymmetry` | Inferred from RTP inter-arrival in `RtpStream::update` ([`src/rtp/stream.rs:791`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L759)) or SDP `a=ptime:` parsed in [`src/sip/sdp.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) |
 | `payload_asymmetry` | Compares payload types across streams; data already in `RtpStream` |
 | `duration_asymmetry` | Compares stream start/end timestamps already tracked in `RtpStream` |
 | `late_media` | Compares first RTP packet timestamp against dialog's 200 OK timestamp (already tracked in `dialog.timing`) |

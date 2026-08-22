@@ -124,6 +124,14 @@ PAGES: list[tuple[str, str, int, str, str]] = [
         "hardware without guessing.",
     ),
     (
+        "rtpengine-control-plane.md",
+        "rtpengine-control-plane.md",
+        12,
+        "The rtpengine Control Plane",
+        "Naming media captured on a standalone relay: the ng wire format, why "
+        "the Call-ID arrives over HEP, and how a paired capture proves it.",
+    ),
+    (
         "uprobe-capture.md",
         "uprobe-capture.md",
         11,
@@ -167,6 +175,7 @@ DOCS_TO_SITE = {
     "prometheus-metrics.md": "metrics.md",
     "examples.md": "cookbook.md",
     "troubleshooting.md": "troubleshooting.md",
+    "rtpengine.md": "rtpengine.md",
     "tui-walkthrough.md": "tui.md",
     "keybindings.md": "keybindings.md",
     "theme-guide.md": "theme.md",

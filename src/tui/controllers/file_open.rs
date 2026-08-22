@@ -471,6 +471,16 @@ fn run_pcap_load(
                     }
                 }
             }
+            crate::pipeline::PacketAction::RelayControl { sdp_links } => {
+                if !sdp_links.is_empty() {
+                    crate::pipeline::apply_relay_control_links(
+                        &mut stream_store.write(),
+                        &sdp_links,
+                        parsed.input_origin,
+                        parsed.timestamp,
+                    );
+                }
+            }
             crate::pipeline::PacketAction::Rtcp(rtcp_packets) => {
                 stream_store
                     .write()

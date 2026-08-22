@@ -344,6 +344,20 @@ pub struct RtpStream {
     /// message — or when the stream is still orphaned. Absent is not "same
     /// source": it is "nobody said", and it must not be read as agreement.
     pub dialog_origin: Option<crate::capture::parse::InputOrigin>,
+    /// WHO asserted the SDP endpoint that named this stream's dialog.
+    ///
+    /// Written in the same breath as [`dialog_origin`](Self::dialog_origin),
+    /// and separate from it because they answer different questions: that one
+    /// says which capture source delivered the assertion, this one says
+    /// whether it was a negotiating party describing its own address or a
+    /// media relay describing a port it allocated.
+    ///
+    /// `None` while the stream is orphaned, or when the binding came from a
+    /// path carrying no provenance. Absent is "nobody said" — it must not be
+    /// read as `Signaled`, because the whole reason to record it is to be able
+    /// to distinguish a relay's claim from a party's, and a default would
+    /// quietly answer that question without evidence.
+    pub dialog_assertion: Option<crate::rtp::stream_store::EndpointAssertion>,
     /// Timestamp of the first packet seen for this stream.
     pub first_seen: DateTime<Utc>,
     /// Timestamp of the most recent packet.
@@ -494,6 +508,23 @@ impl RtpStream {
             (Some(media), Some(signaling)) => media != signaling,
             _ => false,
         }
+    }
+
+    /// Was this stream named by a MEDIA RELAY's own control plane, rather
+    /// than by signaling?
+    ///
+    /// The distinction an operator needs on a relay host: such a stream is
+    /// attributed to a call whose SIP may be nowhere in this capture, so its
+    /// Call-ID came from rtpengine rather than from an INVITE. Reported as a
+    /// fact rather than inferred from "has a Call-ID but no dialog here" —
+    /// that inference is also true of a dialog dropped by `--limit`, which is
+    /// a completely different situation.
+    #[must_use]
+    pub fn dialog_bound_from_relay(&self) -> bool {
+        matches!(
+            self.dialog_assertion,
+            Some(crate::rtp::stream_store::EndpointAssertion::MediaRelay)
+        )
     }
 
     /// Is this stream marked for the queue voice is supposed to be in?
@@ -700,6 +731,7 @@ impl RtpStream {
             // is written only where that is filled, so the two can never
             // describe different bindings.
             dialog_origin: None,
+            dialog_assertion: None,
             first_seen: timestamp,
             last_seen: timestamp,
             packet_count: 1,

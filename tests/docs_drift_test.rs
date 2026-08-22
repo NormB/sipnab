@@ -67,6 +67,30 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "docs/library.md",
         ],
     ),
+    // `--homer` and `--homer-enable-ng` are RTPENGINE's, named on the pages
+    // that tell an operator how to configure a relay. They have to be written
+    // as flags because the reader types them into rtpengine's config, and they
+    // must never be mistaken for sipnab's own -- scoped to those four pages
+    // (two sources and their generated mirrors), so the same spelling anywhere
+    // else still fails this guard.
+    (
+        "homer",
+        &[
+            "docs/rtpengine.md",
+            "website/content/docs/rtpengine.md",
+            "docs/internals/rtpengine-control-plane.md",
+            "website/content/docs/internals/rtpengine-control-plane.md",
+        ],
+    ),
+    (
+        "homer-enable-ng",
+        &[
+            "docs/rtpengine.md",
+            "website/content/docs/rtpengine.md",
+            "docs/internals/rtpengine-control-plane.md",
+            "website/content/docs/internals/rtpengine-control-plane.md",
+        ],
+    ),
     // `--now` is systemd's, on `systemctl enable --now`. The cookbook's
     // "Run sipnab as a service" recipe gives a unit file and then the two
     // commands that install it, and `enable` without `--now` leaves the
@@ -2506,7 +2530,13 @@ fn no_documentation_table_repeats_a_row() {
     /// used to be separate literals, and bumping the count left the message
     /// still naming the old number — so the gate that exists to catch a
     /// documentation value drifting from its source shipped exactly that.
-    const EXPECTED_TABLES: usize = 604;
+    // Raised 604 -> 615 by the rtpengine pages. docs/rtpengine.md adds three
+    // (method chooser, verification troubleshooting, the use-case set) and
+    // docs/internals/rtpengine-control-plane.md adds two (module layout,
+    // mutation results); both have generated mirrors, so ten. The eleventh is
+    // the use-case table in docs/design/backlog.md, which has no mirror.
+    // Attributed per file before the number moved.
+    const EXPECTED_TABLES: usize = 615;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -2560,7 +2590,10 @@ fn no_documentation_table_repeats_a_row() {
     // site, unlike the notes above. mcp-deploy.md went 2386 -> 1840 lines.
     assert_eq!(
         files.len(),
-        159,
+        // Raised 159 -> 163 by the rtpengine pages: docs/rtpengine.md and
+        // docs/internals/rtpengine-control-plane.md, each with its generated
+        // website mirror. Two sources, two mirrors, attributed per file.
+        163,
         "found {} tracked markdown files, expected 159. More is fine — bump \
          this. FEWER means the sweep stopped reading part of the tree and this \
          gate narrowed silently.",
@@ -3794,4 +3827,104 @@ fn every_packet_applier_carries_sdp_provenance() {
          SdpProvenance::unknown() and silently disables F3 stale-offer aging \
          on that surface: {bare:?}"
     );
+}
+
+/// The documented pre-push gate count must match the hook.
+///
+/// Three documents carried hand-maintained copies of the hook's gate list and
+/// all three were wrong, differently: `docs/internals/README.md` said four
+/// where the hook has eight, `CONTRIBUTING.md` listed a WASM-bundle gate that
+/// had been DELETED, and `docs/internals/testing.md` described that same dead
+/// gate as live. Nothing compared the prose to `.githooks/*`, so the only way
+/// to notice was to read both.
+///
+/// Derived from the hook's own `# -- Hard gate` markers rather than restated,
+/// which is the difference between a number that stays true and a number that
+/// was true once.
+#[test]
+fn documented_pre_push_gate_count_matches_the_hook() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let hook =
+        std::fs::read_to_string(root.join(".githooks/pre-push")).expect("read .githooks/pre-push");
+    let gates = hook.matches("\n# -- Hard gate").count();
+
+    // A marker that stopped matching would report zero gates and agree with
+    // nothing, which is indistinguishable from a hook that lost them all.
+    assert!(
+        gates >= 5,
+        "found only {gates} `# -- Hard gate` markers — the marker shape \
+         changed, so this gate is comparing prose against nothing"
+    );
+
+    let spelled = match gates {
+        4 => "four",
+        5 => "five",
+        6 => "six",
+        7 => "seven",
+        8 => "eight",
+        9 => "nine",
+        10 => "ten",
+        n => panic!("no spelling for {n} gates; add one rather than dropping the check"),
+    };
+
+    for (path, text) in [
+        ("CONTRIBUTING.md", include_str!("../CONTRIBUTING.md")),
+        (
+            "docs/internals/build-ci-release.md",
+            include_str!("../docs/internals/build-ci-release.md"),
+        ),
+        (
+            "docs/internals/README.md",
+            include_str!("../docs/internals/README.md"),
+        ),
+    ] {
+        // Each of these names a count of pre-push gates somewhere. Any OTHER
+        // spelled number next to "hard gate" is the drift this catches.
+        for wrong in ["four", "five", "six", "seven", "eight", "nine", "ten"] {
+            if wrong == spelled {
+                continue;
+            }
+            let phrase = format!("{wrong} hard gates");
+            assert!(
+                !text.contains(&phrase),
+                "{path} says \"{phrase}\" but .githooks/pre-push has {gates} \
+                 (`# -- Hard gate` markers). Derive it or fix it — three \
+                 documents already drifted here, in three different directions."
+            );
+        }
+    }
+}
+
+/// The deleted WASM-bundle gate must not be documented as live.
+///
+/// It guarded a committed binary that is no longer committed. It was described
+/// as an active blocking gate in three prose files and their published
+/// mirrors, long after the hook block became a comment explaining its own
+/// removal — which is a documentation failure with a very long tail, because
+/// a contributor reads it as a rule they are breaking.
+#[test]
+fn the_removed_wasm_bundle_gate_is_not_documented_as_live() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let hook = std::fs::read_to_string(root.join(".githooks/pre-commit"))
+        .expect("read .githooks/pre-commit");
+    // The hook keeps the reasoning as a comment; it must stay a comment.
+    assert!(
+        hook.contains("That gate is gone with the binary it guarded"),
+        "the removal rationale left .githooks/pre-commit — if the gate came \
+         back, delete this test and the one above it deliberately"
+    );
+
+    for (path, text) in [
+        ("CONTRIBUTING.md", include_str!("../CONTRIBUTING.md")),
+        (
+            "docs/internals/testing.md",
+            include_str!("../docs/internals/testing.md"),
+        ),
+    ] {
+        assert!(
+            !text.contains("without a rebuilt bundle")
+                && !text.contains("without staging a rebuilt bundle"),
+            "{path} describes the deleted WASM-bundle gate as live"
+        );
+    }
 }

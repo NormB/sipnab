@@ -87,6 +87,7 @@ pub mod provenance;
 #[cfg(any(feature = "hep", feature = "mcp"))]
 pub mod rate_limit;
 pub mod rtp;
+pub mod rtpengine;
 pub mod security;
 #[doc(hidden)]
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]

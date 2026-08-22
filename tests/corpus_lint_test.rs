@@ -135,6 +135,14 @@ fn ingest(path: &Path) -> Option<Ingested> {
                         .link_to_dialog_with_sdp(*ip, *port, call_id, media);
                 }
             }
+            PacketAction::RelayControl { sdp_links } => {
+                sipnab::pipeline::apply_relay_control_links(
+                    &mut out.streams,
+                    &sdp_links,
+                    parsed.input_origin,
+                    parsed.timestamp,
+                );
+            }
             PacketAction::Rtcp(packets) => {
                 out.streams.process_rtcp(&packets, parsed.timestamp);
                 let key = (

@@ -11,6 +11,7 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [REST API](https://sipnab.com/docs/api/): sipnab's REST API: authentication, every endpoint with its response shape, status codes, curl recipes, and the security model. Metric names and their meaning are on the Prometheus metrics page.
 - [MCP Server](https://sipnab.com/docs/mcp/): Drive sipnab from an AI agent over the Model Context Protocol: what it is, a first working example, and where to go for deployment, the tool reference, and the protocol contract.
 - [Installation](https://sipnab.com/docs/install/): Install sipnab from pre-built binaries, cargo, or package managers.
+- [rtpengine Relays](https://sipnab.com/docs/rtpengine/): Media captured on a standalone rtpengine relay comes back orphaned because a relay carries no SIP. Read rtpengine's own control plane to name the calls, with no change to an existing Homer pipeline.
 - [Troubleshooting](https://sipnab.com/docs/troubleshooting/): Real-world VoIP diagnostic workflows with exact commands.
 - [TUI Walkthrough](https://sipnab.com/docs/tui/): Your first analysis in the interactive TUI, step by step -- open a capture, read the ladder, measure a delay, and inspect RTP.
 - [Keybindings](https://sipnab.com/docs/keybindings/): Complete TUI keyboard shortcut reference for all views.
@@ -45,4 +46,5 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [Zero-Copy Payloads](https://sipnab.com/docs/internals/zero-copy-payloads/): The bytes::Bytes spine from capture to output — including a performance claim the page itself refutes.
 - [TUI Testing](https://sipnab.com/docs/internals/tui-testing/): Snapshot, state and interaction testing for the terminal UI.
 - [Profiling](https://sipnab.com/docs/internals/profiling/): Where sipnab's time actually goes, and how to find out on this hardware without guessing.
+- [The rtpengine Control Plane](https://sipnab.com/docs/internals/rtpengine-control-plane/): Naming media captured on a standalone relay: the ng wire format, why the Call-ID arrives over HEP, and how a paired capture proves it.
 - [Uprobe TLS Capture](https://sipnab.com/docs/internals/uprobe-capture/): Reading SIP plaintext out of a process's TLS library with kernel uprobes, and why each step refuses rather than guesses.

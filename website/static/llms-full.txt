@@ -3891,6 +3891,276 @@ sudo rm -rf /etc/sipnab
 
 ---
 
+<!-- source: docs/rtpengine.md -->
+
+# Attribute media on an rtpengine relay
+
+You installed sipnab on a media relay, ran a capture, and got a screen full of
+orphaned RTP streams. Every packet is there and none of it says which call it
+belongs to. This page fixes that.
+
+**The short version.** A standalone relay carries no SIP, so a capture there
+has media and nothing to name it with. rtpengine knows the name — its `ng`
+control protocol carries the Call-ID and the ports it allocated — and it can
+already mirror that control plane to a Homer collector. sipnab reads that
+mirror and ties the media to the call.
+
+## The problem, on a real capture
+
+Both runs below read the same forty RTP packets on the same four sockets. The
+only difference is whether the six control-plane packets are in the file.
+
+Without the control plane, everything orphans:
+
+```text
+Orphaned Streams:
+SSRC         Source                   Destination              Pkts     Duration
+--------------------------------------------------------------------------------
+0x0a0a0a0a   10.0.0.60:40001          10.0.0.40:38156          10       0s
+0x0b0b0b0b   10.0.0.60:40002          10.0.0.40:38664          10       0s
+0x0a0a0a0a   10.0.0.40:38664          10.0.0.60:40002          10       0s
+0x0b0b0b0b   10.0.0.40:38156          10.0.0.60:40001          10       0s
+```
+
+With it, the same media resolves to one call — and gains a codec, because the
+control plane carries the SDP too:
+
+```text
+RTP Streams:
+SSRC         PT   Codec    Clock  Source                Destination           Pkts
+----------------------------------------------------------------------------------
+0x0a0a0a0a   0    PCMU     8000   10.0.0.60:40001       10.0.0.40:38156       10
+0x0b0b0b0b   0    PCMU     8000   10.0.0.60:40002       10.0.0.40:38664       10
+0x0a0a0a0a   0    PCMU     8000   10.0.0.40:38664       10.0.0.60:40002       10
+0x0b0b0b0b   0    PCMU     8000   10.0.0.40:38156       10.0.0.60:40001       10
+
+Calls named by a media relay (no SIP for them in this capture):
+Call-ID                                                      Streams
+---------------------------------------------------------------------
+km-670bd208@sipnab                                           4
+```
+
+Reproduce both from the committed fixtures:
+
+Without the control plane, every stream orphans:
+
+```sh
+sipnab -N -I tests/fixtures/rtpengine-media-only.pcap --report
+```
+
+With it, the same media resolves to one call:
+
+```sh
+sipnab -N -I tests/fixtures/rtpengine-ng-hep.pcap --report
+```
+
+Four streams and not two: the relay holds its own socket per leg, plus the far
+party's on the other side of each. All four belong to one call.
+
+## Which method fits your deployment?
+
+Read down the first column and stop at the first row you can satisfy.
+
+| Your situation | Use | Changes rtpengine? | Notes |
+|---|---|---|---|
+| rtpengine already reports to a Homer collector | Capture on the relay host | **No** | sipnab reads the copy already on the wire. Nothing about your Homer pipeline changes. |
+| rtpengine reports nowhere yet | Turn on `--homer-enable-ng`, point it anywhere sipnab can see | Yes, once | The destination can be a collector, or a host that discards the traffic |
+| You need it delivered rather than sniffed | `--hep-listen` on sipnab, point rtpengine at it | Yes | Costs you the collector — see the warning below |
+
+**rtpengine takes exactly one Homer destination.** `--homer` is a single
+value, not a repeatable option, so "send to the real collector and to sipnab"
+does not exist. Anything that points rtpengine at sipnab takes it away from
+the collector it feeds. That is why sipnab reads the traffic off the wire by
+default: a diagnostic tool has no business in a production data path, and if
+sipnab stops, nothing else notices.
+
+## Set it up
+
+### If rtpengine already reports to Homer
+
+Nothing to configure. Capture on the relay host and sipnab decodes the
+control plane it sees:
+
+```sh
+sudo sipnab -i eth0
+```
+
+Confirm rtpengine is mirroring the control plane and not only RTCP stats:
+
+```sh
+grep -E '^homer' /etc/rtpengine/rtpengine.conf
+```
+
+You want `homer-enable-ng = true` in that output. Without it rtpengine sends
+RTCP statistics only, which carry no Call-ID and no SDP.
+
+### If it reports nowhere yet
+
+Add these to the `[rtpengine]` section of `/etc/rtpengine/rtpengine.conf`:
+
+```ini
+homer = 10.0.0.60:9060
+homer-protocol = udp
+homer-id = 2001
+homer-enable-ng = true
+```
+
+Then restart it:
+
+```sh
+sudo systemctl restart rtpengine
+```
+
+`homer-id` becomes the per-node key when you correlate several nodes, so give
+each relay a distinct one.
+
+## Verify it works
+
+Place one call through the relay, then check that sipnab saw control traffic:
+
+```sh
+sudo sipnab -i eth0 --report
+```
+
+A working setup names the call under **Calls named by a media relay**. If it
+does not, work down this list:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| No relay-named calls, streams still orphaned | rtpengine sends RTCP stats only | Set `homer-enable-ng = true` and restart |
+| Nothing at all on the wire | rtpengine has no `homer` destination | Set one |
+| Control traffic visible, streams still orphaned | Capture missed the HEP, or a filter excluded it | Widen the filter; the default filter excludes media |
+| Relay-named calls appear but media does not | The media is on ports your filter drops | Include the `port-min`–`port-max` range |
+
+## What rtpengine's forwarding mode changes
+
+Nothing, and a measurement says so rather than an assumption.
+
+rtpengine forwards either in userspace or, with `table = N` and the
+`xt_RTPENGINE` kernel module, inside netfilter. If kernel-forwarded media were
+invisible to a capture, attributing it would be pointless — so this run
+checked it against rtpengine 12.5.1, with the module confirmed active and
+accounting the packets itself:
+
+```text
+/proc/rtpengine/0/list   local 10.0.0.40:34232   250 packets   [kernel-forwarded]
+                         output → 10.0.0.60:40001              250 packets
+capture on the relay     ingress 500/500         egress 500/500
+```
+
+Both directions stay fully visible in both modes. The reason is structural: a
+capture's receive tap runs before netfilter, and the module re-injects through
+the normal transmit path, which passes the transmit tap. You do not have to
+know or care which mode a relay runs in.
+
+## What this does not do
+
+Stated here rather than discovered later.
+
+- **It does not tie the two halves of a B2BUA call together.** A B2BUA gives
+  one call two Call-IDs. The control plane names each leg's media and ties
+  neither to the other.
+- **It does not read DTLS-SRTP media.** rtpengine terminates DTLS and emits no
+  key log, so on a WebRTC-facing relay the payload stays unreadable.
+- **It does not attribute recording or forking streams.** Those commands
+  create media that belongs to the call without being one of its two legs, and
+  counting one as an ordinary leg would turn a two-party call into a
+  three-stream one. sipnab counts them and says so instead.
+- **It does not name a call that started before the capture did.** A control
+  message that already happened never reaches the wire, so sipnab cannot read
+  it. Asking rtpengine directly closes that gap, and RE4 tracks that work.
+
+## Where this is going: the next phase
+
+**None of this section describes what sipnab does today.** What this page
+documents above is one hop naming its own media, proven against a recorded
+capture. This section states what that foundation exists FOR, so the next
+phase aims at a goal rather than at whatever comes next.
+
+The goal is a call that crosses an SBC, a proxy, an rtpengine and a PBX,
+assembled end to end, so that an operator can ask a question in their own
+words and an agent answers with evidence from every hop the call touched.
+
+Naming media on the relay is the hop that was missing, because it is the only
+hop that carries no SIP of its own. Once each hop can name a call, an agent
+can filter to a customer — by caller, callee, trunk, address, or time window —
+and pull the whole call rather than one machine's view of it.
+
+These are the questions that arrive, and what answering each one takes.
+
+| The customer says | The question really is | What the answer needs |
+|---|---|---|
+| "Our calls sound bad" | Where in the path did the media degrade? | Per-hop loss, jitter and MOS on the SAME call, so a good leg and a bad leg separate cleanly |
+| "Calls are not completing" | Which hop rejected it, and what did it say? | The final response and its origin hop, plus whether media was ever negotiated |
+| "Calls drop after a while" | Who tore it down, and on what clock? | The BYE or the timeout, and which side sent it |
+| "We hear them, they can't hear us" | Which direction is missing, and from where? | Both directions of media at each hop, not just a packet count |
+| "It only fails for one carrier" | What is different about that path? | The same call shape across two trunks, compared |
+
+### "Our calls sound bad"
+
+The hard part is not measuring quality, it is locating it. A relay reporting
+2% loss tells you nothing on its own — the question is whether the loss was
+already there when the media arrived, or appeared on the way out.
+
+That needs the same call measured on both sides of each hop, which needs each
+hop to agree on the call's name. On the relay that agreement is what
+this page adds. The analysis then reads as a chain: clean into the SBC, clean
+into the relay, lossy out of the relay, and now the fault has an address
+rather than a symptom.
+
+Watch for the answer being "neither hop": identical loss at every hop points
+at the access network, and a codec that changes between hops points at
+transcoding rather than at the network.
+
+### "Calls are not completing"
+
+Same filter, different evidence. Here the media is usually absent rather than
+degraded, so the question moves to signaling — and to the gap between them.
+
+The failure modes separate cleanly once you can see every hop at once:
+
+- **A final response from an upstream hop**, which names the rejecter. The
+  response class matters: a 4xx is the far end declining, a 5xx is a server
+  failing, a 6xx is a global refusal, and they lead to different owners.
+- **No response at all**, which is a timeout, and the hop that stopped
+  answering is the one to look at.
+- **A call answered with no media**, which is a negotiation failure rather
+  than a routing one — the signaling succeeded and the SDP did not.
+- **A relay with no ports left**, which looks like a random failure from the
+  proxy's side and is obvious from the relay's.
+
+The last two are exactly the cases a signaling-only view gets wrong, because
+from the proxy the call looks answered.
+
+### "Calls drop after a while"
+
+A drop has a clock attached, and the clock identifies the cause. A tear-down
+at a round number is a timer — a session timer, a NAT binding, a relay's own
+media timeout. A tear-down when media stopped is the media stopping. Reading
+the relay's teardown against the proxy's BYE says which came first, which is
+the whole question.
+
+### "We hear them, they can't hear us"
+
+One-way audio is a direction problem, and a relay is where directions become
+visible: it holds both parties' sockets, so a leg with media arriving and
+nothing leaving is plainly asymmetric. The value of naming the call is being
+able to say WHICH call is asymmetric on a box carrying hundreds.
+
+### "It only fails for one carrier"
+
+The comparison case. Two calls of the same shape down two trunks, assembled
+the same way, differing in one hop's behavior. Hard to do by hand across
+machines and straightforward once every hop names its calls the same way.
+
+## See also
+
+- [Encapsulations](encapsulations.md) — HEP and the other wrappers sipnab reads
+- [Capture SIP over TLS](tls-capture.md) — when encryption hides the signaling
+- [MCP tools](mcp-tools.md) — the agent-facing surface over these results
+
+---
+
 <!-- source: docs/troubleshooting.md -->
 
 # Troubleshooting
@@ -16821,7 +17091,9 @@ Every mode is the same six hops. Only who performs hop 5 differs.
    `Rtp { .. }`, `Rtcp(..)` or `None`. WebSocket-SIP unwrap, SDP link
    extraction via [`extract_sdp_links()`](../../src/pipeline.rs), SRTP/DTLS
    key learning and heuristic RTP discovery all happen here. **No store is
-   touched and holding no lock.**
+   touched.** It is not lock-free: three process-global side-tallies — the
+   `--portrange` skip counter, the LLMNR store and the STUN tracker — each take
+   a mutex when they have something to record.**
 5. **Apply.** The caller applies that action to its stores —
    [`DialogStore`](../../src/sip/dialog_store.rs) and
    [`StreamStore`](../../src/rtp/stream_store.rs). This is the only hop that
@@ -16839,7 +17111,7 @@ logic that must not vary, application is store access that legitimately does.
 | Path | Applier | Store access |
 |---|---|---|
 | Live (TUI) | [`process_packet()`](../../src/pipeline.rs) | Brief per-store `write()` locks, one store at a time. |
-| Batch | [`process_parsed_packet()`](../../src/app/batch.rs) | Plain `&mut` — single-threaded, no locks. |
+| Batch | [`process_parsed_packet()`](../../src/app/batch.rs) | Plain `&mut`, because the receive loop already holds BOTH store write locks for the whole of a packet's processing. That is why `DeferredEffects` exists. |
 | `--cores N` | [`reconstruct()`](../../src/parallel.rs) | Plain `&mut` on thread-local stores. |
 | TUI file open | [`run_pcap_load()`](../../src/tui/controllers/file_open.rs) | `write()` locks on the live stores, concurrent with the render thread. |
 
@@ -16870,7 +17142,7 @@ sequenceDiagram
     Proc->>PP: process(&Packet)
     PP-->>Proc: ParsedPackets (decap, frag + TCP reassembly)
     Proc->>Cls: classify_packet(pp, ..)
-    Note over Cls: no lock held — parsing is lock-free
+    Note over Cls: no store touched — side-tallies take a mutex when they fire
     Cls-->>Proc: PacketAction::Sip { msg, sdp_links }
     Proc->>DS: write lock
     DS-->>Proc: release
@@ -16935,7 +17207,11 @@ same worker, which rebuilds its bidirectional RTP without any
 cross-thread coordination.
 
 Each worker owns a private `PacketProcessor` and thread-local stores, so the
-hot path takes no locks at all, and the stores merge only at EOF.
+hot path takes no STORE lock, and the stores merge only at EOF. The three
+process-global side-tallies are the exception -- every worker writes the same
+one -- so
+a capture that trips one of them often contends on one mutex regardless of
+worker count.
 
 ```mermaid
 sequenceDiagram
@@ -17664,10 +17940,14 @@ directory builds and starts it, and `make down` tears it down.
 
 **WASM.** Two pre-commit gates cover the browser analyzer: one checks that
 [`website/static/wasm/sipnab.js`](../../website/static/wasm/sipnab.js) still exports
-every function the site calls, and one refuses a commit that stages
-[`src/wasm.rs`](../../src/wasm.rs) without staging a rebuilt bundle alongside it. The rebuild is
-`wasm-pack build --target web --out-dir website/static/wasm --no-typescript --
---no-default-features --features wasm`.
+every function the site calls.
+
+A second gate once demanded a freshly built bundle alongside any staged
+[`src/wasm.rs`](../../src/wasm.rs). It no longer exists, nor does the binary it guarded: the published
+analyzer went eleven releases stale while that gate stayed green, because
+[`src/wasm.rs`](../../src/wasm.rs) had no commits in the window — the interface held still while the
+implementation behind it moved. The Pages workflow builds the bundle at deploy
+time now, so the build produces what ships rather than the tree carrying it, and it cannot go stale.
 
 **Feature matrices.** A green `cargo test --features full` is not proof: CI
 also builds reduced feature sets, and code behind `#[cfg(not(feature = ...))]`
@@ -19303,6 +19583,257 @@ Two rules learned the hard way, both recorded in
 - **Check an unrelated binary.** Comparing 0.5.47 against 0.5.88, voipmonitor
   measured 0.40M in both arms *exactly*. That is what turned "the
   numbers look low" into an attributable regression rather than a suspicion.
+
+---
+
+<!-- source: docs/internals/rtpengine-control-plane.md -->
+
+# The rtpengine control plane
+
+How sipnab names media it captures on a standalone relay, why this delivery
+path won, and which decisions here are load-bearing.
+
+Read [Attribute media on an rtpengine relay](../rtpengine.md) first if you
+want the operator's view. This page is about the code.
+
+## The problem this solves
+
+A media relay carries no SIP. sipnab installed on one sees two sockets of RTP
+per call and nothing that names the call, so `RtpStream::orphaned` is true for
+every stream in the capture. The output is accurate and useless — the same
+shape as the NAT case the codebase already names: an operator can see that
+media exists, how much, and how badly it performs, and cannot say which call
+any of it belongs to.
+
+The name is on the box. rtpengine's `ng` control protocol carries the Call-ID
+and the ports the relay allocated, and that pair is the join key.
+
+## Wire format
+
+An `ng` message is a cookie, one space, and a bencoded dictionary:
+
+```text
+14661e9e...  d7:command5:offer7:call-id18:km-670bd208@sipnab8:from-tag5:ftag13:sdp122:v=0...e
+```
+
+Three properties matter to the parser, all confirmed against rtpengine 12.5.1
+rather than taken from documentation:
+
+**Dictionary keys arrive unsorted.** The bencode specification requires
+lexicographic order and rtpengine does not produce it — a live `offer` arrives
+as `command`, `call-id`, `from-tag`, `sdp`. A decoder that enforced the rule,
+or that binary-searched keys, would fail on every real message.
+`bencode::Value::Dict` therefore keeps arrival order and looks up by scan.
+
+**Replies carry no `call-id`.** An `offer` reply's entire body is
+`d3:sdp136:v=0...e`. This is the single most consequential fact about the
+protocol for our purposes, because the reply is the half that carries the
+relay's OWN allocated ports.
+
+**The cookie is a retransmission key, and rtpengine deduplicates on it.** A
+repeated cookie gets a cached reply instead of reprocessing. Anything that
+SENDS `ng` must generate a fresh cookie per transaction. Reusing one returns
+port allocations belonging to a call rtpengine may already have deleted. This
+cost one wrong measurement during development, until rtpengine's own log —
+`Detected command from 127.0.0.1 as a duplicate` — explained it.
+
+## Why HEP, and not a sniffer on the ng socket
+
+Sniffing `ng` off its own socket needs no configuration anywhere, which is a
+real advantage. It also needs, because of the reply asymmetry above, a
+cookie-to-call transaction map to tie a reply back to the request that named
+the call. Around that it needs UDP, TCP, HTTP and WebSocket handling, plus a
+UNIX socket it cannot capture at all, plus fragment reassembly for an offer
+carrying ICE candidates over an MTU-sized path.
+
+Over HEP every one of those disappears. rtpengine's `--homer-enable-ng`
+mirrors the exact wire bytes of every message in both directions and puts the
+Call-ID in the HEP correlation-id chunk — on requests and replies alike. The
+tie arrives with the message, so there is no transaction state to keep, one
+transport instead of four, and no fragment problem.
+
+Decoded from the committed fixture, every packet carries it:
+
+```text
+HEP #1 capture-proto=0x3d correlation-id='km-670bd208@sipnab'  d7:command5:offer...
+HEP #2 capture-proto=0x3d correlation-id='km-670bd208@sipnab'  d3:sdp136:v=0...   <- reply
+```
+
+The passive sniffer stays on the roadmap as a second delivery path behind the
+same decoder, not as a separate feature.
+
+## Why the wire, and not our own listener
+
+sipnab could receive on `--hep-listen` and have rtpengine send to it. That
+works today with no new parsing at all, and it is the wrong default.
+
+`--homer` is a single `G_OPTION_ARG_STRING`, not a repeatable option, so
+rtpengine has exactly ONE Homer destination. Pointing it at sipnab takes it
+away from the collector it already feeds. Reading the copy already on the wire
+needs no configuration change and leaves that pipeline untouched — and if
+sipnab stops, nothing downstream notices. A diagnostic tool does not belong in
+a production data path.
+
+Relay mode (`--hep-listen` plus `--hep-send`) stays documented as a fallback
+with that cost stated.
+
+## Module layout
+
+| File | Holds |
+|---|---|
+| [`src/rtpengine/bencode.rs`](../../src/rtpengine/bencode.rs) | Bencode decoder. Borrowed values, depth-limited, hostile-input facing |
+| [`src/rtpengine/ng.rs`](../../src/rtpengine/ng.rs) | Cookie/body split, command classification, field extraction |
+| [`src/rtpengine/mod.rs`](../../src/rtpengine/mod.rs) | `sdp_links_from_ng`, the bridge into the existing SDP linking |
+
+The decoder is hostile-input facing on both delivery paths, so every length is
+bounds-checked before use, `bencode::MAX_DEPTH` bounds the recursion, and
+anything malformed is an error rather than a partial value. A truncated
+dictionary is not a dictionary with fewer keys. The decoder rejects duplicate
+keys rather than resolving them, because last-wins and first-wins are both
+silent and a
+message with two `call-id` keys names no call with confidence.
+
+[`fuzz/fuzz_targets/rtpengine_ng.rs`](../../fuzz/fuzz_targets/rtpengine_ng.rs) drives the decoder, the message layer and
+`sdp_links_from_ng`, the last with the correlation-id both present and absent.
+
+## Where it joins the existing machinery
+
+`sdp_links_from_ng` returns the same `(IpAddr, u16, String, SdpMedia)` tuples
+`extract_sdp_links` returns for a SIP body, so no new linking machinery
+exists. The call-id comes from the message body when it has one and from the
+correlation-id otherwise — preferring the body means a passive wire capture,
+which has no correlation-id, still works for the request half.
+
+### `PacketAction::RelayControl`
+
+Classification returns a new variant rather than reusing `Sip`. That is
+deliberate: sipnab observed no SIP message, and synthesizing one to reuse the
+variant would put signaling into the dialog store that nobody sent, in a tool
+whose whole value is saying what it actually saw.
+
+The variant also pays for itself structurally. This codebase's most-named
+defect class is a change that reaches some packet appliers and not the others,
+and adding an enum variant makes the compiler name every one of them. It found
+six: the live router, the `--cores` shard, the batch path, the TUI's
+file-open, and two test harnesses that mirror them
+([`tests/rtp_quality_provenance_test.rs`](../../tests/rtp_quality_provenance_test.rs), [`tests/corpus_lint_test.rs`](../../tests/corpus_lint_test.rs)). The
+behavior itself lives once, in
+[`pipeline::apply_relay_control_links`](../../src/pipeline.rs), so the six
+call sites cannot drift apart.
+
+### `EndpointAssertion`, and why it is not a fourth `InputOrigin`
+
+An `ng` endpoint is the relay asserting a port it allocated itself. That is
+not the same claim as an endpoint parsed from an SDP body on the wire, and the
+difference has to survive into provenance.
+
+It is a field on `SdpProvenance` rather than a fourth `InputOrigin` variant
+because the two are independent axes. `InputOrigin` is a TRANSPORT fact — the
+bytes arrived on the wire, over HEP, or out of a process. `EndpointAssertion`
+is a fact about the CLAIM. They cross freely: a relay's assertion arrives over
+HEP today and would arrive off the wire through the same decoder tomorrow, and
+ordinary signaling arrives over every origin there is. A fourth `InputOrigin`
+would have forced every match on transport to handle a value that is not about
+transport.
+
+`RtpStream::dialog_assertion` carries it onward, written in the same breath as
+`dialog_origin` so the two can never describe different bindings.
+
+## The report surface, and a bug worth remembering
+
+The report gains a section naming calls a relay attributed whose SIP is not in
+the capture. It has to exist: once attributed, those streams correctly leave
+the orphan table, and without the new section their Call-ID would then appear
+nowhere at all — a worse answer than the orphan row it replaced.
+
+The first version keyed on "this stream has a Call-ID that no dialog in this
+report matches". That is wrong, and the way it is wrong is instructive: it is
+also exactly what `--limit 1` produces — one dialog kept, and streams still
+pointing at the calls the run dropped. Ordinary SIP signaling named those
+streams, so reporting them as relay-named gave a confident wrong answer about
+where the name came from.
+
+It now keys on `RtpStream::dialog_bound_from_relay`, which reads recorded
+provenance. `limit_caps_tracked_dialogs` caught the original within one gate
+run, and `a_dialog_dropped_by_limit_is_not_reported_as_relay_named` keeps it
+caught.
+
+## Proving the claim
+
+[`tests/fixtures/rtpengine-ng-hep.pcap`](../../tests/fixtures/rtpengine-ng-hep.pcap) is a live capture, not a construction:
+rtpengine 12.5.1 with `--homer-enable-ng`, six HEP packets covering
+offer/answer/delete with their replies, and forty relayed RTP packets on the
+four sockets those commands allocated.
+
+Two properties make it discriminating rather than merely convenient, and
+[`tests/rtpengine_ng_test.rs`](../../tests/rtpengine_ng_test.rs) asserts both instead of describing them:
+
+- **It contains no SIP whatsoever.** If these streams end up attributed, the
+  attribution can only have come from the control plane, because there is no
+  other source of a Call-ID in the file.
+- **The HEP targets a third party.** The relay reports to a collector
+  at another address and sipnab is a bystander, which is the RE6 deployment.
+
+[`tests/fixtures/rtpengine-media-only.pcap`](../../tests/fixtures/rtpengine-media-only.pcap) is the same capture with the six
+HEP packets removed and nothing else changed. It is the control case: strip
+the control plane and every stream returns to being an orphan with no codec
+and no call. Without a paired negative, "sipnab attributed the streams" stays
+consistent with sipnab attributing them for some unrelated reason.
+
+Every gate here was mutation-tested and none survived:
+
+| Mutation | Caught by |
+|---|---|
+| Classifier claim removed | [`tests/rtpengine_ng_test.rs`](../../tests/rtpengine_ng_test.rs) |
+| Relay links stored with signaled provenance | `pipeline::relay_control_tests` |
+| Correlation-id fallback removed | `rtpengine::ng` tests |
+| Media-creating commands attributed as legs | `rtpengine::ng` tests |
+| Duplicate-key check removed | `rtpengine::bencode` tests |
+| Depth limit removed | `rtpengine::bencode` tests |
+| Trailing-byte check removed | `rtpengine::bencode` tests |
+| Decoder made to require sorted keys | `rtpengine::bencode` tests |
+
+## Kernel forwarding, measured
+
+rtpengine forwards either in userspace or, with `table = N` and the
+`xt_RTPENGINE` module, inside netfilter. If kernel-forwarded media were
+invisible to `AF_PACKET`, attributing it would be pointless, so this run
+measured it rather than reasoning about it.
+
+Against rtpengine 12.5.1 with the module confirmed active and accounting the
+packets itself:
+
+```text
+/proc/rtpengine/0/list   local 10.0.0.40:34232   250 packets  [kernel-forwarded]
+                         output → 10.0.0.60:40001             250 packets
+capture on the relay     ingress 500/500          egress 500/500
+```
+
+Both directions are fully visible in both modes, and nothing in this subsystem
+needs to know which mode a relay is in. The reason is structural: `AF_PACKET`'s
+receive tap runs before netfilter, and the module re-injects through the normal
+transmit path, which passes the transmit tap.
+
+Note the module is still `xt_RTPENGINE` at 12.5.1, not `nft_rtpengine`.
+
+## What is deliberately not here
+
+- **`subscribe` / `publish` / `start recording` and friends.** They carry a
+  join key and decoding them is nearly free. The risk is misattribution, not
+  complexity: a recording subscription creates a stream that belongs to the
+  call without being one of its two legs, and attributed as an ordinary leg a
+  two-party call shows three streams — after which the media analysis that
+  judges one-way audio and asymmetry answers a question nobody asked. They are
+  counted (`rtpengine::media_creating_commands_seen`) so a run can say what it
+  did not attribute.
+- **HEP carrying SIP or RTP off the wire.** The claim covers `ng` only.
+  Claiming those here would change what every existing capture containing HEP
+  reports, which is a much larger decision than this required.
+- **Mid-call reconciliation.** A control message that already happened is not
+  on the wire for sipnab to read, so a call already running when the capture starts stays
+  unnamed until a re-offer. Closing it means asking rtpengine directly, which
+  makes sipnab send packets to a production relay — tracked as RE4 with the
+  bounds that keeps it from becoming a service.
 
 ---
 

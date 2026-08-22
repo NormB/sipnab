@@ -127,10 +127,14 @@ directory builds and starts it, and `make down` tears it down.
 
 **WASM.** Two pre-commit gates cover the browser analyzer: one checks that
 [`website/static/wasm/sipnab.js`](https://github.com/NormB/sipnab/blob/main/website/static/wasm/sipnab.js) still exports
-every function the site calls, and one refuses a commit that stages
-[`src/wasm.rs`](https://github.com/NormB/sipnab/blob/main/src/wasm.rs) without staging a rebuilt bundle alongside it. The rebuild is
-`wasm-pack build --target web --out-dir website/static/wasm --no-typescript --
---no-default-features --features wasm`.
+every function the site calls.
+
+A second gate once demanded a freshly built bundle alongside any staged
+[`src/wasm.rs`](https://github.com/NormB/sipnab/blob/main/src/wasm.rs). It no longer exists, nor does the binary it guarded: the published
+analyzer went eleven releases stale while that gate stayed green, because
+[`src/wasm.rs`](https://github.com/NormB/sipnab/blob/main/src/wasm.rs) had no commits in the window — the interface held still while the
+implementation behind it moved. The Pages workflow builds the bundle at deploy
+time now, so the build produces what ships rather than the tree carrying it, and it cannot go stale.
 
 **Feature matrices.** A green `cargo test --features full` is not proof: CI
 also builds reduced feature sets, and code behind `#[cfg(not(feature = ...))]`

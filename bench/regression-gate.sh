@@ -45,7 +45,12 @@ cd "$(git rev-parse --show-toplevel)" || exit 1
 BIN="${1:?usage: regression-gate.sh <sipnab-binary> [corpus.pcap]}"
 CORPUS="${2:-$(mktemp -d)/corpus.pcap}"
 BASELINE_FILE="bench/baseline.json"
-FLOOR_PCT="${SIPNAB_PERF_FLOOR_PCT:-80}"
+# Read from the baseline file, where the twelve lines of reasoning for this
+# number already live. It used to be a literal 80 here with an env override,
+# so `floor_pct` in bench/baseline.json was a knob nothing read: editing the
+# number next to its own justification changed nothing. The env var still
+# wins, for a one-off run.
+FLOOR_PCT="${SIPNAB_PERF_FLOOR_PCT:-}"
 
 [ -x "$BIN" ] || { echo "not executable: $BIN"; exit 2; }
 [ -r "$BASELINE_FILE" ] || { echo "missing $BASELINE_FILE"; exit 2; }
@@ -59,6 +64,9 @@ fi
 
 PACKETS=535000
 BASE=$(python3 -c "import json,sys; print(json.load(open('$BASELINE_FILE'))['cores_4_pkts_per_s'])")
+if [ -z "$FLOOR_PCT" ]; then
+	FLOOR_PCT=$(python3 -c "import json; print(json.load(open('$BASELINE_FILE'))['floor_pct'])")
+fi
 FLOOR=$(python3 -c "print($BASE * $FLOOR_PCT / 100)")
 
 echo "baseline  ${BASE} pkts/s @ 4 cores"

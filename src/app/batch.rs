@@ -3940,6 +3940,19 @@ fn process_parsed_packet(
 
             *prev_timestamp = Some(sip_msg.timestamp);
         }
+        crate::pipeline::PacketAction::RelayControl { sdp_links } => {
+            // A standalone media relay carries no SIP, so on that host this is
+            // the ONLY thing that names a call. Without it every stream in the
+            // capture reports orphaned.
+            if !sdp_links.is_empty() {
+                crate::pipeline::apply_relay_control_links(
+                    stream_store,
+                    &sdp_links,
+                    pp.input_origin,
+                    pp.timestamp,
+                );
+            }
+        }
         crate::pipeline::PacketAction::Rtcp(rtcp_packets) => {
             stream_store.process_rtcp(&rtcp_packets, pp.timestamp);
         }

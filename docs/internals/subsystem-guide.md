@@ -96,7 +96,9 @@ Every mode is the same six hops. Only who performs hop 5 differs.
    `Rtp { .. }`, `Rtcp(..)` or `None`. WebSocket-SIP unwrap, SDP link
    extraction via [`extract_sdp_links()`](../../src/pipeline.rs), SRTP/DTLS
    key learning and heuristic RTP discovery all happen here. **No store is
-   touched and holding no lock.**
+   touched.** It is not lock-free: three process-global side-tallies — the
+   `--portrange` skip counter, the LLMNR store and the STUN tracker — each take
+   a mutex when they have something to record.**
 5. **Apply.** The caller applies that action to its stores —
    [`DialogStore`](../../src/sip/dialog_store.rs) and
    [`StreamStore`](../../src/rtp/stream_store.rs). This is the only hop that
@@ -114,7 +116,7 @@ logic that must not vary, application is store access that legitimately does.
 | Path | Applier | Store access |
 |---|---|---|
 | Live (TUI) | [`process_packet()`](../../src/pipeline.rs) | Brief per-store `write()` locks, one store at a time. |
-| Batch | [`process_parsed_packet()`](../../src/app/batch.rs) | Plain `&mut` — single-threaded, no locks. |
+| Batch | [`process_parsed_packet()`](../../src/app/batch.rs) | Plain `&mut`, because the receive loop already holds BOTH store write locks for the whole of a packet's processing. That is why `DeferredEffects` exists. |
 | `--cores N` | [`reconstruct()`](../../src/parallel.rs) | Plain `&mut` on thread-local stores. |
 | TUI file open | [`run_pcap_load()`](../../src/tui/controllers/file_open.rs) | `write()` locks on the live stores, concurrent with the render thread. |
 
@@ -145,7 +147,7 @@ sequenceDiagram
     Proc->>PP: process(&Packet)
     PP-->>Proc: ParsedPackets (decap, frag + TCP reassembly)
     Proc->>Cls: classify_packet(pp, ..)
-    Note over Cls: no lock held — parsing is lock-free
+    Note over Cls: no store touched — side-tallies take a mutex when they fire
     Cls-->>Proc: PacketAction::Sip { msg, sdp_links }
     Proc->>DS: write lock
     DS-->>Proc: release
@@ -210,7 +212,11 @@ same worker, which rebuilds its bidirectional RTP without any
 cross-thread coordination.
 
 Each worker owns a private `PacketProcessor` and thread-local stores, so the
-hot path takes no locks at all, and the stores merge only at EOF.
+hot path takes no STORE lock, and the stores merge only at EOF. The three
+process-global side-tallies are the exception -- every worker writes the same
+one -- so
+a capture that trips one of them often contends on one mutex regardless of
+worker count.
 
 ```mermaid
 sequenceDiagram

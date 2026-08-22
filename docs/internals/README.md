@@ -35,6 +35,11 @@ Already written, and narrower:
   the lock discipline.
 - [Zero-copy payloads](zero-copy-payloads.md) — the `bytes::Bytes` spine from
   capture to output, including a performance claim the page itself refutes.
+- [The rtpengine control plane](rtpengine-control-plane.md) — naming media
+  captured on a standalone relay: the `ng` wire format, why the Call-ID
+  arrives over HEP rather than off the control socket, the `RelayControl`
+  action and the six appliers it names, and how a paired positive and negative
+  capture together prove the claim.
 - [Uprobe and eBPF TLS capture](uprobe-capture.md) — reading SIP plaintext out
   of a process's TLS library with kernel uprobes, and recovering the peer with
   a real eBPF program: banded fetches, the wipe that keeps adjacent heap from
@@ -138,10 +143,13 @@ advisory notice when a commit touches code these pages cite. The TODO scan and
 that notice are the two advisory gates, printing `WARN`/`REVIEW` and letting the
 commit through). Sub-gate 5c no longer exists: it re-implemented a Rust test in shell,
 the copies diverged, and the surviving Rust version runs here *and* in CI. Also
-four in
-[`.githooks/pre-push`](../../.githooks/pre-push) (`fmt`,
-`clippy --workspace --all-features --all-targets`, `cargo doc` with `-D warnings`, and a
-`fuzz` workspace check), and the CI jobs behind them.
+eight in [`.githooks/pre-push`](../../.githooks/pre-push), each marked
+`# -- Hard gate` in the hook: `fmt`,
+`clippy --workspace --all-features --all-targets`, `cargo doc` with `-D warnings`,
+a `fuzz` workspace check, the reduced feature combinations, the non-Linux arm of
+every platform cfg, the refusal to tag `v*` at a commit whose CI is not green,
+and the prose linters. Plus the conditional corpus gate, and the CI jobs behind
+them.
 
 **The drift tests** — the subset of the gate suite that compares documentation
 and configuration against the code and fails on divergence:
