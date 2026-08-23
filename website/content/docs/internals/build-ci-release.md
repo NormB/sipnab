@@ -596,8 +596,29 @@ publishes immediately and irreversibly, whatever that commit contains: fourteen
 installable artifacts (six `.tar.gz`, four `.deb`, four `.rpm`), a `.sha256`
 beside each tarball, a combined `SHA256SUMS.txt`, two SBOMs, a provenance
 attestation, a GHCR image, and a Homebrew formula — twenty-three release assets in
-all. The order is therefore: push the release commit, wait for CI, then tag the
+all. The order is therefore: land the release commit, wait for CI, then tag the
 commit that passed.
+
+**`main` takes pull requests, and admins are not exempt.** Branch protection
+requires a PR and a green `CI success` before anything reaches `main`, with
+`enforce_admins` on, so the release commit lands the same way every other
+commit does. It asks for zero approvals — the point is that the commit exists
+and CI has run on it BEFORE it reaches `main`, not that a second person signs
+it off on a repository with one maintainer.
+
+That setting was off until 2026-08-23, and the rules it left in place were
+worse than none: every push reported `Bypassed rule violations` for a required
+check that could never run in time, because a status check gates a commit
+before it lands and a direct push creates the commit and the status together.
+A rule that every push bypasses reads as protection to anyone auditing the
+settings while providing exactly none. The `required_linear_history` rule
+went at the same time and for the same reason — `main` carries 128 merge
+commits and merging feature branches is how this repository works, so that
+rule had never described it.
+
+None of this touches tags: branch protection targets `refs/heads/main`, and a
+release is a pushed `refs/tags/v*`. The `pre-push` gate below is still what stands
+between a red commit and twenty-three published artifacts.
 
 A hook enforces this rather than merely advising it. [`pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push)
 refuses a `v*` tag whose commit has a failed run, has runs still in flight, or
