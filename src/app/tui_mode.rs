@@ -221,7 +221,7 @@ pub fn run_tui_mode(
     cli: Cli,
     config: Config,
     capture_config: CaptureConfig,
-    launched: crate::app::bootstrap::Launched,
+    mut launched: crate::app::bootstrap::Launched,
     policy: CapturePolicy,
     #[cfg(feature = "metrics")] _metrics_bind_addr: Option<std::net::SocketAddr>,
 ) {
@@ -238,13 +238,43 @@ pub fn run_tui_mode(
     // lifetime change nobody asked for.
     let handle = launched.handle;
     let rx = launched.rx;
-    let relay_snapshot = &launched.relay_snapshot;
     let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
 
     // Read before the capture config moves into the processing thread below.
     let bpf_filter = bpf_status_text(&capture_config);
 
-    let (dialog_store, stream_store) = build_stores(&cli, &config, relay_snapshot);
+    let (dialog_store, stream_store) = build_stores(&cli, &config, &launched.relay.snapshot);
+
+    // RE4's second trigger. The store starts recording the sockets of streams
+    // nothing explains only when there is a reconciler to offer them to, and
+    // the reconciler runs on its own thread so the capture path never waits
+    // on a relay. Both ends of the arrangement are set up here, or neither.
+    let (relay_orphans, relay_thread) = match launched.relay.ready.take() {
+        Some(ready) => {
+            let (sink, orphan_rx) = crate::rtpengine::reconcile::orphan_channel();
+            stream_store.write().record_new_orphans(true);
+            match crate::app::relay_reconciler::spawn(
+                ready.reconciler,
+                ready.permit,
+                orphan_rx,
+                Arc::clone(&stream_store),
+            ) {
+                Ok(join) => (Some(sink), Some(join)),
+                Err(e) => {
+                    // A capture is still worth taking when the enrichment
+                    // cannot start. Stop recording, so the store does not
+                    // accumulate sockets nothing will ever drain.
+                    tracing::warn!(
+                        "could not start the rtpengine reconciler ({e}); streams the \
+                         signaling does not explain will stay unattributed"
+                    );
+                    stream_store.write().record_new_orphans(false);
+                    (None, None)
+                }
+            }
+        }
+        None => (None, None),
+    };
 
     // Shared pause flag between TUI and processing thread
     let paused_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -419,6 +449,7 @@ pub fn run_tui_mode(
                                 quiet_bad_parse: cli_clone.capture_args.quiet_bad_parse,
                             },
                             &mut media_decrypt,
+                            relay_orphans.as_ref(),
                         );
                     }
                 }
@@ -541,6 +572,16 @@ pub fn run_tui_mode(
 
     if let Err(e) = processing_thread.join() {
         tracing::error!("Processing thread panicked: {:?}", e);
+    }
+
+    // ONLY after the processing thread is joined. It owned the only sink, so
+    // its exit is what drops the sink, closes the hand-off queue and ends the
+    // reconciler's loop. Joining the reconciler first would wait on a queue
+    // that nothing had closed yet, and the run would never exit.
+    if let Some(join) = relay_thread
+        && join.join().is_err()
+    {
+        tracing::warn!("the rtpengine reconciler thread panicked");
     }
 
     drop(handle);

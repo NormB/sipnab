@@ -7,6 +7,7 @@
 
 pub mod batch;
 pub mod bootstrap;
+pub mod relay_reconciler;
 pub mod servers;
 #[cfg(feature = "tui")]
 pub mod tui_mode;

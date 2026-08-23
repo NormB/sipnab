@@ -297,7 +297,7 @@ pub struct BatchProcessing {
     /// obtained before the capture opened, and it cannot be obtained again
     /// here -- asking a second time would be the periodic behavior RE4 exists
     /// not to have.
-    pub relay_snapshot: crate::rtpengine::reconcile::RelaySnapshot,
+    pub relay: crate::app::bootstrap::RelayControl,
     /// Streaming keylog source opened in the privileged window — a FIFO named
     /// by `--keylog`, or the descriptor given to `--keylog-fd`.
     ///
@@ -2091,6 +2091,15 @@ pub struct BatchRunner {
     dialog_store: Arc<RwLock<DialogStore>>,
     /// RTP stream store; shared with the companion servers via the lock.
     stream_store: Arc<RwLock<StreamStore>>,
+    /// Where a stream nothing explains is offered to the reconciler (RE4).
+    ///
+    /// `None` unless `--rtpengine-control` gave this run a relay to ask, in
+    /// which case the store is also recording those sockets. The two are set
+    /// up together or not at all: recording with nothing to drain the buffer
+    /// would fill it for no one.
+    relay_orphans: Option<crate::rtpengine::reconcile::OrphanSink>,
+    /// The reconciler thread, joined after the loop so its summary prints.
+    relay_thread: Option<std::thread::JoinHandle<()>>,
     /// Heuristic RTP detector for streams with no SDP linkage.
     rtp_heuristic: rtp::heuristic::RtpHeuristic,
     /// Skip all RTP processing (`--no-rtp` or config equivalent).
@@ -2159,7 +2168,7 @@ impl BatchRunner {
     fn new(
         cli: Cli,
         config: &Config,
-        batch: BatchProcessing,
+        mut batch: BatchProcessing,
         policy: CapturePolicy,
         raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
         transmit_permit: Option<crate::security::transmit_guard::TransmitPermit>,
@@ -2249,8 +2258,37 @@ impl BatchRunner {
         ));
         let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
         let stream_store: Arc<RwLock<StreamStore>> = Arc::new(RwLock::new(
-            build_live_stream_store(&cli, config, &batch.relay_snapshot),
+            build_live_stream_store(&cli, config, &batch.relay.snapshot),
         ));
+
+        // RE4's second trigger, set up exactly as the TUI mode sets it up: the
+        // store records the sockets of streams nothing explains only when
+        // there is a reconciler to offer them to, and the reconciler asks on
+        // its own thread so this loop never waits on a relay.
+        let (relay_orphans, relay_thread) = match batch.relay.ready.take() {
+            Some(ready) => {
+                let (sink, orphan_rx) = crate::rtpengine::reconcile::orphan_channel();
+                stream_store.write().record_new_orphans(true);
+                match crate::app::relay_reconciler::spawn(
+                    ready.reconciler,
+                    ready.permit,
+                    orphan_rx,
+                    Arc::clone(&stream_store),
+                ) {
+                    Ok(join) => (Some(sink), Some(join)),
+                    Err(e) => {
+                        tracing::warn!(
+                            "could not start the rtpengine reconciler ({e}); streams the \
+                             signaling does not explain will stay unattributed"
+                        );
+                        stream_store.write().record_new_orphans(false);
+                        (None, None)
+                    }
+                }
+            }
+            None => (None, None),
+        };
+
         let rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
         // 17a. Initialize security detectors
@@ -2674,6 +2712,8 @@ impl BatchRunner {
             dtls_extractor,
             servers,
             policy,
+            relay_orphans,
+            relay_thread,
         })
     }
 
@@ -2738,7 +2778,11 @@ impl BatchRunner {
             mut dtls_extractor,
             servers,
             policy,
+            relay_orphans,
+            relay_thread,
         } = self;
+        // Reused across packets so the hand-off costs no allocation per packet.
+        let mut new_orphans: Vec<(std::net::IpAddr, u16)> = Vec::new();
 
         // Set when writing the -O output fails. The open path a few hundred
         // lines below exits 1; the write and final-flush paths only logged,
@@ -3077,6 +3121,23 @@ impl BatchRunner {
                             &mut counters,
                             &mut effects,
                         );
+                        // RE4's second trigger, drained under the guard this
+                        // scope already holds. Offering happens BELOW, with
+                        // the guards gone: the reconciler takes this same lock
+                        // to apply what it learns, and nothing that waits on
+                        // another thread belongs in here.
+                        if relay_orphans.is_some() {
+                            new_orphans = ss_guard.drain_new_orphan_sockets();
+                        }
+                    }
+
+                    // Hand off anything the packet just created that nothing
+                    // explains. `offer` never blocks -- a full queue drops and
+                    // counts rather than stalling the capture on a relay.
+                    if let Some(ref sink) = relay_orphans {
+                        for (address, port) in new_orphans.drain(..) {
+                            sink.offer(address, port);
+                        }
                     }
 
                     // Both store guards have dropped. Replay what the packet
@@ -3226,6 +3287,19 @@ impl BatchRunner {
         // 19. Shut down scanner-kill worker (D16)
         if let Some(ref mut kill_handle) = engines.kill_handle {
             kill_handle.shutdown();
+        }
+
+        // 19a. Stop the rtpengine reconciler (RE4). Dropping the sink closes
+        //      the hand-off queue, which is what ends its loop -- there is no
+        //      flag to set and no timeout to wait out. Joining lets its
+        //      summary line print, and it happens HERE rather than at the end
+        //      of the function because the reporting below can exit the
+        //      process outright.
+        drop(relay_orphans);
+        if let Some(join) = relay_thread
+            && join.join().is_err()
+        {
+            tracing::warn!("the rtpengine reconciler thread panicked");
         }
 
         // 20. Wait for the capture thread to finish

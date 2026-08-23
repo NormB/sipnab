@@ -212,6 +212,14 @@ pub struct Reconciler<R: ReadOnlyRelay> {
     /// caller's answer is still "not held" -- which is the collapse this
     /// whole type exists to prevent.
     last_ask_failure: Option<String>,
+    /// Sockets learned since the last [`Reconciler::take_new_links`].
+    ///
+    /// Only the NEW ones may be handed back. Re-registering an endpoint the
+    /// relay reported at startup would stamp it with the current time, and
+    /// the store's expiry clock measures from when the relay SAID it -- so
+    /// replaying the whole index would make every endpoint look perpetually
+    /// fresh and quietly disable the staleness bound.
+    new_since_take: Vec<(IpAddr, u16)>,
     /// Calls the relay named that sipnab could not read.
     ///
     /// A set rather than a count because a refresh must be able to CLEAR one
@@ -240,6 +248,7 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
             unkeyable_streams: 0,
             enumeration_partial: false,
             last_ask_failure: None,
+            new_since_take: Vec::new(),
             unread_calls: HashSet::new(),
             spent: 0,
             budget: DEFAULT_BUDGET,
@@ -268,6 +277,21 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
     #[must_use]
     pub fn transactions(&self) -> u32 {
         self.spent
+    }
+
+    /// Where the relay is, for messages an operator reads.
+    #[must_use]
+    pub fn describe_relay(&self) -> String {
+        self.relay.describe()
+    }
+
+    /// The transaction ceiling for this run.
+    ///
+    /// Exposed beside [`Self::transactions`] so a report can state both --
+    /// "8 of 66" says whether the run was bounded by the relay or by sipnab.
+    #[must_use]
+    pub fn budget(&self) -> u32 {
+        self.budget
     }
 
     /// Ports the relay accounted for.
@@ -317,6 +341,32 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
                 })
                 .collect(),
             taken_at: Some(taken_at),
+        }
+    }
+
+    /// Take only what the relay has said SINCE the last call.
+    ///
+    /// The startup snapshot is applied once; everything a later refresh
+    /// learns is applied as it is learned, stamped with the moment the relay
+    /// answered. Handing back the whole index instead would re-stamp every
+    /// startup endpoint with a fresh time and quietly disable the store's
+    /// staleness bound on all of them.
+    #[must_use]
+    pub fn take_new_links(&mut self, taken_at: chrono::DateTime<chrono::Utc>) -> RelaySnapshot {
+        let links: Vec<RelayLink> = self
+            .new_since_take
+            .drain(..)
+            .filter_map(|socket| {
+                self.index.get(&socket).map(|a| RelayLink {
+                    address: socket.0,
+                    port: socket.1,
+                    call_id: a.call_id.clone(),
+                })
+            })
+            .collect();
+        RelaySnapshot {
+            taken_at: (!links.is_empty()).then_some(taken_at),
+            links,
         }
     }
 
@@ -513,17 +563,23 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
                     self.unkeyable_streams += 1;
                     continue;
                 };
-                self.index.insert(
-                    (addr, stream.local_port),
-                    Attribution {
-                        local_address: addr,
-                        call_id: view.call_id.clone(),
-                        tag: tag.tag.clone(),
-                        peer_tags: tag.in_dialogue_with.clone(),
-                        is_rtcp: stream.is_rtcp,
-                        codec: tag.codec.clone(),
-                    },
-                );
+                if self
+                    .index
+                    .insert(
+                        (addr, stream.local_port),
+                        Attribution {
+                            local_address: addr,
+                            call_id: view.call_id.clone(),
+                            tag: tag.tag.clone(),
+                            peer_tags: tag.in_dialogue_with.clone(),
+                            is_rtcp: stream.is_rtcp,
+                            codec: tag.codec.clone(),
+                        },
+                    )
+                    .is_none()
+                {
+                    self.new_since_take.push((addr, stream.local_port));
+                }
             }
         }
     }
@@ -543,6 +599,64 @@ pub struct RelayLink {
     pub port: u16,
     /// The call the relay says holds it.
     pub call_id: String,
+}
+
+/// Sockets the hand-off queue holds before it starts refusing.
+///
+/// A CHOICE sized to absorb a burst while the reconciler is mid-transaction,
+/// not a measurement. The capture path never waits on it: a full queue drops
+/// and counts, because stalling packet processing on a relay round trip is
+/// the trade RE4 exists to avoid.
+pub const ORPHAN_QUEUE_DEPTH: usize = 1024;
+
+/// Where the capture path offers a stream nothing explains.
+///
+/// Non-blocking by construction. There is no `send` that waits: the only way
+/// to hand a socket over cannot block the thread that found it, however long
+/// the relay takes to answer.
+pub struct OrphanSink {
+    /// The hand-off. Bounded, so a stalled reconciler cannot grow it.
+    tx: std::sync::mpsc::SyncSender<(IpAddr, u16)>,
+    /// Sockets the queue had no room for.
+    dropped: std::sync::atomic::AtomicU64,
+}
+
+impl OrphanSink {
+    /// Offer one socket, or count that it could not be offered.
+    pub fn offer(&self, address: IpAddr, port: u16) {
+        if self.tx.try_send((address, port)).is_err() {
+            self.dropped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Sockets never offered because the queue was full, or the reconciler
+    /// had already stopped.
+    ///
+    /// Non-zero means this run asked about fewer unexplained streams than it
+    /// saw. That has to be SAID: a stream never offered is not a stream the
+    /// relay disowned.
+    #[must_use]
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Build a hand-off pair: the sink the capture path offers to, and the
+/// receiver the reconciler drains.
+///
+/// The receiver ends its loop when every sink is dropped, which is how the
+/// run stops the reconciler without a flag to poll or a timeout to pick.
+#[must_use]
+pub fn orphan_channel() -> (OrphanSink, std::sync::mpsc::Receiver<(IpAddr, u16)>) {
+    let (tx, rx) = std::sync::mpsc::sync_channel(ORPHAN_QUEUE_DEPTH);
+    (
+        OrphanSink {
+            tx,
+            dropped: std::sync::atomic::AtomicU64::new(0),
+        },
+        rx,
+    )
 }
 
 /// A relay's startup snapshot, and when it was taken.
@@ -812,6 +926,65 @@ mod tests {
             r.attributed_ports(),
             2,
             "two sockets, not one overwriting the other"
+        );
+    }
+
+    /// What the relay already said is not said again. Re-handing the startup
+    /// snapshot would re-stamp every endpoint with a fresh time, and the
+    /// store measures its staleness bound from that stamp -- so a replayed
+    /// index would make every endpoint look perpetually current.
+    #[test]
+    fn a_socket_already_handed_over_is_not_handed_over_twice() {
+        let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
+            .holding("call-a", Some(vec![30000, 30001]));
+        let mut r = Reconciler::new(relay);
+        let p = permit();
+        r.at_startup(&p);
+
+        let t0 = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid");
+        let first = r.take_new_links(t0);
+        assert_eq!(first.links.len(), 2, "both ports the relay named");
+        assert_eq!(first.taken_at, Some(t0));
+
+        let second = r.take_new_links(t0);
+        assert!(
+            second.links.is_empty(),
+            "nothing new was learned between the two calls"
+        );
+        assert_eq!(
+            second.taken_at, None,
+            "an empty hand-over must not claim the relay answered at a time"
+        );
+    }
+
+    /// A refresh hands over only what IT learned, stamped with when the relay
+    /// answered rather than when a store happened to be written to.
+    #[test]
+    fn a_refresh_hands_over_only_what_it_learned() {
+        let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
+            .holding("call-a", Some(vec![30000]))
+            .failing_first(1);
+        let mut r = Reconciler::new(relay);
+        let p = permit();
+        r.at_startup(&p);
+
+        let t0 = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid");
+        assert!(
+            r.take_new_links(t0).links.is_empty(),
+            "the startup query failed, so nothing was learned"
+        );
+
+        // The refresh retries the call and this time it answers.
+        assert!(r.on_unexplained_stream(&p, relay_ip(), 30000).is_ok());
+
+        let t1 = chrono::DateTime::from_timestamp(1_700_000_060, 0).expect("valid");
+        let handed = r.take_new_links(t1);
+        assert_eq!(handed.links.len(), 1);
+        assert_eq!(handed.links[0].port, 30000);
+        assert_eq!(
+            handed.taken_at,
+            Some(t1),
+            "stamped with the refresh, not with the startup that learned nothing"
         );
     }
 

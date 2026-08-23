@@ -542,7 +542,7 @@ Tiers:
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:2758`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2758)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:2791`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2791)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -821,7 +821,7 @@ Tiers:
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2918`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2918),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2951`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2951),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -3168,15 +3168,22 @@ are exactly the cases a signaling-only view gets wrong.
   their own stream store, in different files, so both are pinned by a test
   that fails if the snapshot stops reaching that mode's store.
 
-  **The second trigger is written and NOT wired, deliberately.**
-  `Reconciler::on_unexplained_stream` exists and is tested, but nothing calls
-  it: the ask is a UDP round trip with a two-second ceiling, and making it
-  from the packet or processing thread would stall capture for as long as the
-  relay stays quiet -- trading dropped packets for an attribution. It needs a
-  thread of its own that owns the reconciler and applies answers to the shared
-  store, which is the next piece. Until then the flag's help and
-  `CLI_REFERENCE` say "asks once, at startup" rather than describing a trigger
-  that does not fire.
+  **The second trigger landed the same day.** The store reports the sockets of
+  a stream nothing explains at the moment it is CREATED -- an event, not a
+  periodic rescan -- and a thread that owns the reconciler does the asking, so
+  the capture path never waits on a relay that has gone quiet. Both ends of the
+  stream are offered, because which one is the relay's is exactly what is not
+  knowable from the packet. Verified end to end against a live rtpengine
+  12.5.1: `2 unexplained stream(s) offered, 0 attributed, 4 control
+  transaction(s) spent of a ceiling of 66` -- two offers for the one orphan
+  stream, and nothing attributed because the relay genuinely did not hold that
+  port.
+
+  Three things bound it, none of which grow with the traffic: each socket is
+  asked about at most once per run, the transaction ceiling caps the total,
+  and the hand-off queue is bounded so a slow relay cannot grow it. Each of
+  them, when it bites, is counted and said -- a stream never offered is not a
+  stream the relay disowned.
 
   **Enumeration is UDP only.** This entry asks for TCP where available, and a
   capped `list` is instead reported as PARTIAL in the operator's own words, so

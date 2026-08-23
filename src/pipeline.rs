@@ -2280,6 +2280,7 @@ pub fn process_packet(
     rtp_heuristic: &mut rtp::heuristic::RtpHeuristic,
     opts: &PipelineOptions,
     decrypt: &mut MediaDecrypt<'_>,
+    relay_orphans: Option<&crate::rtpengine::reconcile::OrphanSink>,
 ) {
     match classify_packet(pp, rtp_heuristic, opts, decrypt) {
         PacketAction::None => {}
@@ -2332,16 +2333,37 @@ pub fn process_packet(
             hdr,
             decrypted_payload,
             via_heuristic: _,
-        } => match decrypted_payload {
-            Some(payload) => {
-                let mut d = pp.clone();
-                d.payload = payload;
-                stream_store.write().process_rtp(&d, &hdr, d.timestamp);
+        } => {
+            let mut ss = stream_store.write();
+            match decrypted_payload {
+                Some(payload) => {
+                    let mut d = pp.clone();
+                    d.payload = payload;
+                    ss.process_rtp(&d, &hdr, d.timestamp);
+                }
+                None => {
+                    ss.process_rtp(pp, &hdr, pp.timestamp);
+                }
             }
-            None => {
-                stream_store.write().process_rtp(pp, &hdr, pp.timestamp);
+            // RE4's second trigger. Drained under the write lock this branch
+            // already holds -- a second acquisition per packet would be a
+            // contention cost paid on every RTP packet to serve a feature
+            // almost no run enables.
+            let orphans = if relay_orphans.is_some() {
+                ss.drain_new_orphan_sockets()
+            } else {
+                Vec::new()
+            };
+            // Released BEFORE offering. The reconciler takes this same lock to
+            // apply what it learns, and the capture path must not be the one
+            // holding it while handing work to the thread that wants it.
+            drop(ss);
+            if let Some(sink) = relay_orphans {
+                for (address, port) in orphans {
+                    sink.offer(address, port);
+                }
             }
-        },
+        }
     }
 }
 

@@ -192,7 +192,7 @@ fn main() {
                     output_opts: plan.output_opts,
                     event_exec: plan.event_exec,
                     input_files: plan.input_files,
-                    relay_snapshot: launched.relay_snapshot,
+                    relay: launched.relay,
                     #[cfg(feature = "tls")]
                     keylog_source: launched.keylog_source,
                 },

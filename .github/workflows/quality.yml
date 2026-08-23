@@ -451,12 +451,27 @@ jobs:
       # by the tool that resolves them -- the same argument lychee.toml already
       # makes for `@/`-style links. Pass one still checks sipnab.com URLs that
       # appear in Markdown, so install.sh and friends stay covered.
+      #
+      # `--exclude` this repository's own blob/main URLs for the same reason,
+      # one layer down. The site generator rewrites a developer page's relative
+      # link to `src/foo.rs` into an absolute blob/main URL, so a SOURCE FILE
+      # added on a branch 404s on exactly the commit that documents it -- and
+      # only stops 404ing once the branch merges, which is after this gate has
+      # to pass. That made `src/rtpengine/control.rs` and `reconcile.rs` red on
+      # the commit that introduced them.
+      #
+      # Nothing is lost. `dev_docs_drift_test::linked_code_targets_exist`
+      # resolves every one of those links against the working tree and fails if
+      # the file is missing, which is a stronger check than a network 404: it
+      # cannot be satisfied by a stale copy on main, and it cannot be fooled by
+      # branch timing. External github.com links are still checked.
       - name: Dead links (built site)
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
           args: >-
             --no-progress --config lychee.toml
             --exclude '^https://sipnab\.com/'
+            --exclude '^https://github\.com/NormB/sipnab/blob/'
             --root-dir "$GITHUB_WORKSPACE/website/public"
             'website/public/**/*.html'
           fail: true
