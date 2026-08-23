@@ -267,6 +267,31 @@ new token to it — the laptop re-pulls via `make laptop` when it starts seeing
 `401`s. `make laptop` / `make mcp-test` always read the current published token,
 which the rotator keeps valid.
 
+## Recreating opensips-1 strands the containers that share its namespace
+
+`rtpengine`, `sipnab` and anything else with `network_mode: "service:opensips-1"`
+join opensips-1's network namespace by container ID. Recreate opensips-1 --
+which `docker compose up -d` does whenever its definition changes -- and those
+containers keep pointing at the namespace of the container that no longer
+exists. They keep running and lose their addressing: `ip addr` inside them
+shows `lo` and nothing else, and a capture on `eth0` fails with "No such device
+exists" rather than anything that names the cause.
+
+Bring them back with:
+
+```sh
+docker compose up -d rtpengine sipnab
+```
+
+Verify rather than assume, because the symptom is silent:
+
+```sh
+docker exec sipnab ip -4 -o addr show
+```
+
+You want to see eth0 on the sipnet address. If you see only `lo`, they are
+still attached to the dead namespace.
+
 ## Troubleshooting
 
 - **All SIPp calls time out / `make mcp-test` shows `dialog_count: 0`.** The

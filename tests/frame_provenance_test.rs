@@ -270,6 +270,8 @@ fn the_parallel_reader_gives_each_file_of_a_set_its_own_source() {
         quiet_bad_parse: false,
         xcid_headers: Vec::new(),
         leg_correlation_window_ms: sipnab::sip::dialog_store::DEFAULT_LEG_CORRELATION_WINDOW_MS,
+        retain_audio: false,
+        max_audio_frames: 1500,
     };
     let r = sipnab::parallel::run_offline_parallel_file(&[a.clone(), b.clone()], &cc, cfg)
         .expect("the two-file set reconstructs");

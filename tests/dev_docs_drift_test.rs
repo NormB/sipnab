@@ -554,7 +554,14 @@ fn linked_code_targets_exist() {
     // `repo_paths_in_docs_are_clickable` demands for the fixtures, the test
     // file and the fuzz target the page names. Attributed per file before the
     // number moved: `docs/internals/rtpengine-control-plane.md` +11.
-    const EXPECTED_CODE_LINKS: usize = 365;
+    // 365 -> 367: the prose gates moved into pre-commit and the hooks section
+    // gained links to `scripts/prose-gates.sh` and `scripts/preflight.sh`.
+    // Attributed by measurement before the number moved:
+    // `docs/internals/build-ci-release.md` went 35 -> 37, and it is the only
+    // page the change touched. Three link texts, two new targets -- the
+    // `.githooks/pre-commit` link replaced a bare mention that was already
+    // linked earlier on the page.
+    const EXPECTED_CODE_LINKS: usize = 367;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

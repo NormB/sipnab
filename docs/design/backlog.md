@@ -1272,7 +1272,7 @@ Both found while single-sourcing the prose-gate path lists. Grouped because
 they are the same failure in two places: something states a rule, and nothing
 holds anything to it.
 
-- [ ] **GATE1 — the prose gates run only at pre-push, so a commit can be made
+- [x] **GATE1 — the prose gates run only at pre-push, so a commit can be made
   and not pushed.** `vale` and `codespell` are in
   [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) and not in
   [`.githooks/pre-commit`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-commit), which runs fmt, clippy and the suite. Work that
@@ -1297,7 +1297,30 @@ holds anything to it.
   [`scripts/preflight.sh`](https://github.com/NormB/sipnab/blob/main/scripts/preflight.sh) already brackets its two gates with
   `BEGIN`/`END` markers, which is most of the extraction.
 
-- [ ] **GATE2 — branch protection on `main` is bypassed on every push, so
+  **Done 2026-08-23, and the extraction is what shipped rather than a paste.**
+  [`scripts/prose-gates.sh`](https://github.com/NormB/sipnab/blob/main/scripts/prose-gates.sh) owns all four decisions and both path
+  lists; `pre-commit`, `pre-push` and `preflight.sh` source it and keep only
+  their rendering. It returns 0 clean, 1 findings, 2 did-not-run, and 2 never
+  renders as a pass. Gate 0b in `pre-commit` now prints `Vale... OK` and
+  `Codespell... OK` beside `Formatting`, about a second each against gate 2's
+  minutes.
+
+  Two guesses in the paragraph above turned out wrong, and both cost a cycle to
+  learn. The `BEGIN`/`END` markers are not "most of the extraction" — they are a
+  CONSTRAINT: `preflight_strict_test` runs the text between them verbatim and
+  standalone, so anything a block needs must sit inside the markers, and a
+  source line above them is simply absent. And the fixture provisioning added
+  for that suite wrote [`scripts/prose-gates.sh`](https://github.com/NormB/sipnab/blob/main/scripts/prose-gates.sh) into the checkout, because one
+  case runs from `repo()/tests` and `cwd != repo()` read a real subdirectory as
+  a temp tree.
+
+  Mutation-tested after each widening. Two mutants survived the first pass --
+  a runner that hardcoded a list while a comment still named the shared script,
+  and a broken version-pin derivation whose path still appeared in prose --
+  because `contains` proves a string is present, never that it is used. Both
+  now require the string on a line that greps or sources.
+
+- [x] **GATE2 — branch protection on `main` is bypassed on every push, so
   neither rule it declares is enforced.** Every push to `main` reports:
 
   - `Required status check "CI success" is expected` — the rule wants CI green
@@ -1319,6 +1342,29 @@ holds anything to it.
   [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) refuses a `v*` tag whose commit has a failed
   run, so a red `main` blocks the next release tag whatever the protection
   settings say.
+
+  **Decided and applied 2026-08-23.** Both rules were wrong, in different ways,
+  and the fork this entry described got both answers.
+
+  `required_linear_history` is DELETED. `main` carries 128 merge commits and
+  merging feature branches is how the work lands, so the rule had never
+  described this repository.
+
+  The `CI success` check STAYS, and `main` now takes pull requests with
+  `enforce_admins` on, which is what makes the check mean something. A required
+  status check gates a commit before it lands; a direct push creates the commit
+  and its status together, so the check could never run in time and every push
+  bypassed it. PRs give it something to gate. Zero approvals, because the point
+  is that CI has run before the commit reaches `main`, not that a second person
+  signs it off on a one-maintainer repository.
+
+  The switch that mattered was `enforce_admins`, which was off. Everything else
+  was already configured and already bypassed. Turning the rules on without it
+  would have changed the settings page and nothing else.
+
+  Nothing about tags changed: protection targets `refs/heads/main` and a
+  release is a pushed `refs/tags/v*`, so `pre-push` remains the only thing
+  between a red commit and twenty-three published artifacts.
 
 ## P4 — test quality
 
@@ -3143,6 +3189,32 @@ are exactly the cases a signaling-only view gets wrong.
   test that fails if "the call was silent" and "this run did not keep it"
   collapse into one string.
 
+  **Four of the five landed 2026-08-23; the fifth is blocked on RE5.** An
+  exported WAV now carries a RIFF `LIST`/`INFO` comment naming its mechanism
+  and, when partial, how. Ring wrapped, codec undecodable, retention off and
+  egress not observed are all named. The honesty test holds a run-limited
+  message apart from a claim about the traffic.
+
+  **Spool entry missing cannot be written yet.** It is a statement about
+  reading an rtpengine spool, and nothing reads one. RE7 sits at its ceiling
+  until RE5 lands.
+
+  `AudioMechanism` therefore carries ONE variant. It briefly carried both this
+  entry names, with nothing constructing `RtpengineSpool` -- an enum arm no
+  code path produces reads as a capability the tool has. It returns when RE5
+  gives it a producer.
+
+  Two things worth carrying forward. The note is written AFTER the samples:
+  before `data` it moves the audio off the offset a classic 44-byte WAV puts it
+  at, and every reader that seeks rather than walking chunks reads the comment
+  as its sample count -- sipnab's own test helper did exactly that. And the
+  file's note and the summary printed beside it are ONE string, because they
+  were briefly two and immediately disagreed.
+
+  Verified against parsers that are not sipnab: `ffprobe` surfaces the note as
+  a `TAG:comment`, `sox` and Python's `wave` decode the audio unchanged, and
+  the `ICMT` chunk sits past the PCM.
+
 ## BA — bad actors: identify, evidence, recommend (added 2026-08-22)
 
 Raised by traffic that arrived while proving RE-T, not by speculation. The
@@ -3157,7 +3229,7 @@ capture, and today sipnab tells them nothing about it. Everything below is
 defensive -- identify, evidence, recommend. sipnab recommends; the operator
 applies.
 
-- [ ] **BA1 — say who is attacking, from the capture already taken.** The
+- [x] **BA1 — say who is attacking, from the capture already taken.** The
   signals are all present and none are currently read as a set: a source
   placing calls with no prior REGISTER, dialed numbers matching international
   premium ranges, sequential or dictionary extension probing, a `User-Agent`
@@ -3168,6 +3240,41 @@ applies.
   verdict, and must never name a source on one weak signal. Precedent for the
   honesty rule already exists in this codebase; the mistake to avoid is a
   confident accusation about somebody's address.
+
+  **Done 2026-08-23, and NOT the way this entry assumed.** A first pass wrote a
+  new `src/sip/hostile.rs` scoring four signals. Three already existed in
+  [`src/security/scanner_detect.rs`](https://github.com/NormB/sipnab/blob/main/src/security/scanner_detect.rs) in a more developed form, and the fourth --
+  "placed calls and never registered" -- was there too under a better name:
+  `established`, meaning "ever completed a registration OR a call", sticky
+  across windows, and deliberately refusing to count a `2xx` to an OPTIONS,
+  because answering a keepalive is something done for anyone who asks.
+
+  That module also discriminates better than the new one did. It rests on
+  OUTCOME -- a keepalive is answered, a sweep draws `404`, `403` or nothing --
+  rather than on a signal count, and its comments record what was measured when
+  it did not: 2719 detections across 14 peers on an eleven-second carrier trunk,
+  every one a real PBX or desk phone, all of which `--kill-scanner` behind a
+  fail2ban jail would have banned.
+
+  So the 575 lines were retired rather than wired. Shipping them would have put
+  a second, weaker scanner detector beside the existing one, which is the defect
+  this repository spent the week removing from its own gates.
+
+  What was genuinely missing is the SHAPE of the answer, and that is what
+  landed. Every detector answers per message, which is right for
+  `--kill-scanner` acting on one packet and wrong for the question asked after a
+  capture. [`src/security/sources.rs`](https://github.com/NormB/sipnab/blob/main/src/security/sources.rs) groups the findings the detectors already
+  produced, holds no signal logic of its own, and the end-of-capture summary
+  prints one line per source.
+
+  The one idea from the first pass that survived intact is counter-evidence
+  beside the accusation. `established` already SOFTENED the verdict inside the
+  detector via `established_factor` and was shown to nobody; the summary prints
+  it now, because a source that also completed a call is one a block
+  disconnects, and learning that after the block is too late.
+
+  Still open, and now BA1b rather than left implied: premium-range callees, and
+  OPTIONS/REGISTER sweeps counted apart from INVITE attempts.
 
 - [ ] **BA2 — turn that into a rule the operator can apply.** Emit a concrete
   fail2ban filter/jail or nftables/iptables rule for what BA1 identified,
