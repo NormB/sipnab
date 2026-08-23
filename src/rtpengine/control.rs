@@ -176,6 +176,71 @@ impl Enumeration {
         }
     }
 }
+/// What a relay answered, decoded from its reply.
+///
+/// rtpengine answers `{"result": "ok", ...}` or `{"result": "error", ...}`.
+/// An error is not a transport failure and must not be reported as one: the
+/// relay was reached, understood the question, and declined it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlReply {
+    /// A `list` answer.
+    Calls(Enumeration),
+    /// The relay refused, with its own words.
+    Refused {
+        /// What the relay said.
+        reason: String,
+    },
+}
+
+/// Parse a `list` reply.
+///
+/// `requested` is the limit that was asked for, and it decides the truncation
+/// flag: rtpengine returns at most that many and does not say whether it had
+/// more, so a full answer is the only evidence available that there may be
+/// more behind it. Reporting "exactly the limit" as complete is the failure
+/// this flag exists to prevent -- 32 of 400 calls, silently.
+///
+/// # Errors
+///
+/// When the reply is not bencode, carries no `result`, or a `calls` entry is
+/// not a byte string.
+pub fn parse_list_reply(body: &[u8], requested: u32) -> anyhow::Result<ControlReply> {
+    use anyhow::{Context, bail};
+
+    let v = super::bencode::decode(body).context("rtpengine reply is not bencode")?;
+    let result = match v.get(b"result") {
+        Some(Value::Bytes(b)) => *b,
+        _ => bail!("rtpengine reply carries no `result`"),
+    };
+    if result != b"ok" {
+        let reason = match v.get(b"error-reason") {
+            Some(Value::Bytes(b)) => String::from_utf8_lossy(b).into_owned(),
+            // A refusal with no reason is still a refusal; saying "unknown" is
+            // honest where inventing one is not.
+            _ => "no reason given".to_string(),
+        };
+        return Ok(ControlReply::Refused { reason });
+    }
+
+    let mut call_ids = Vec::new();
+    if let Some(Value::List(items)) = v.get(b"calls") {
+        for item in items {
+            match item {
+                Value::Bytes(b) => call_ids.push(String::from_utf8_lossy(b).into_owned()),
+                // A non-string in `calls` means the reply is not what this
+                // parser thinks it is. Skipping it quietly would under-report
+                // the very thing being enumerated.
+                _ => bail!("a `calls` entry is not a byte string"),
+            }
+        }
+    }
+
+    let truncated = call_ids.len() as u32 >= requested && requested > 0;
+    Ok(ControlReply::Calls(Enumeration {
+        call_ids,
+        truncated,
+    }))
+}
 
 #[cfg(test)]
 mod tests {
@@ -290,6 +355,101 @@ mod tests {
                     "a request serialized the mutating verb {destructive:?}:\n{text}"
                 );
             }
+        }
+    }
+
+    /// Build a bencode byte string for a fixture.
+    ///
+    /// Hand-written length prefixes are a reliable source of wrong tests: the
+    /// first draft of the refusal fixture below wrote `14:unknown command`,
+    /// and that string is fifteen bytes. Computed here, but deliberately NOT
+    /// by calling `bencode::encode` -- a fixture built by the encoder under
+    /// test cannot disagree with it, which is the disagreement a parser test
+    /// exists to find.
+    fn bstr(s: &str) -> String {
+        format!("{}:{}", s.len(), s)
+    }
+
+    /// A full answer is reported as possibly truncated, because that is the
+    /// only evidence rtpengine gives.
+    ///
+    /// It returns at most `limit` and never says whether it had more. Treating
+    /// "exactly the limit" as complete is how 32 of 400 calls gets reported as
+    /// the whole estate, with the other 368 looking like orphans.
+    #[test]
+    fn a_full_answer_is_flagged_because_more_may_exist() {
+        // Fewer than asked for: the relay ran out, so this is everything.
+        let body = b"d6:result2:ok5:callsl4:aaaa4:bbbbee";
+        match parse_list_reply(body, 32).expect("parse") {
+            ControlReply::Calls(e) => {
+                assert_eq!(e.call_ids.len(), 2);
+                assert!(!e.truncated, "two of thirty-two is not truncated");
+            }
+            other => panic!("expected calls, got {other:?}"),
+        }
+
+        // Exactly the limit: may be more behind it.
+        match parse_list_reply(body, 2).expect("parse") {
+            ControlReply::Calls(e) => assert!(
+                e.truncated,
+                "a full answer must be flagged; the relay does not say whether \
+                 it had more"
+            ),
+            other => panic!("expected calls, got {other:?}"),
+        }
+    }
+
+    /// A refusal is not a transport failure.
+    ///
+    /// The relay was reached, understood the question and declined it.
+    /// Collapsing that into an I/O error tells an operator to check the
+    /// network when the answer is in the relay's configuration.
+    #[test]
+    fn a_refusal_is_reported_as_a_refusal() {
+        let body = format!(
+            "d{}{}{}{}e",
+            bstr("result"),
+            bstr("error"),
+            bstr("error-reason"),
+            bstr("unknown command")
+        );
+        match parse_list_reply(body.as_bytes(), 32).expect("parse") {
+            ControlReply::Refused { reason } => {
+                assert!(reason.contains("unknown command"), "reason lost: {reason}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+
+        // A refusal with no reason is still a refusal.
+        let bare = format!("d{}{}e", bstr("result"), bstr("error"));
+        match parse_list_reply(bare.as_bytes(), 32).expect("parse") {
+            ControlReply::Refused { reason } => assert!(
+                !reason.is_empty(),
+                "a refusal with no stated reason must still say something"
+            ),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    /// A malformed reply is an error, never a quiet empty answer.
+    ///
+    /// An empty enumeration and an unparseable one look identical downstream:
+    /// both leave every stream unmatched. One is a fact about the relay and
+    /// the other is a fact about this parser.
+    #[test]
+    fn a_malformed_reply_is_refused_rather_than_read_as_empty() {
+        for bad in [
+            b"not bencode at all".as_slice(),
+            // No `result` key.
+            b"d5:callslee",
+            // A non-string inside `calls`.
+            b"d6:result2:ok5:callsli42eee",
+        ] {
+            assert!(
+                parse_list_reply(bad, 32).is_err(),
+                "a malformed reply parsed as a valid empty answer: {:?}",
+                String::from_utf8_lossy(bad)
+            );
         }
     }
 
