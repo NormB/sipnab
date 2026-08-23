@@ -17,7 +17,7 @@ use anyhow::{Result, bail};
 use super::g711::{G711Codec, decode_frame};
 use super::opus_decode::OpusStreamDecoder;
 use super::stream::RtpStream;
-use super::wav::write_wav;
+use super::wav::write_wav_with_provenance;
 
 /// Export a single RTP stream to a mono WAV file.
 ///
@@ -38,7 +38,20 @@ pub fn export_stream_to_wav(stream: &RtpStream, path: &Path) -> Result<String> {
 
     let (pcm_samples, sample_rate, codec_label, decode_failures) = decode_stream_pcm(stream)?;
     let duration_secs = pcm_samples.len() as f64 / sample_rate as f64;
-    write_wav(path, &pcm_samples, sample_rate, 1)?;
+    // Built once and used twice: the note inside the file and the summary
+    // printed beside it say the same thing, because they are the same string.
+    let partial = format!(
+        "{}{}",
+        wrap_clause(stream.payload_frames_dropped),
+        decode_failure_clause(decode_failures)
+    );
+    write_wav_with_provenance(
+        path,
+        &pcm_samples,
+        sample_rate,
+        1,
+        Some(&provenance_note(AudioMechanism::SipnabCapture, &partial)),
+    )?;
 
     Ok(format!(
         "Exported {:.1}s of {} audio ({} frames, {}/{}Hz) to {}{}{}",
@@ -144,7 +157,19 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
     }
 
     let duration_secs = max_len as f64 / output_rate as f64;
-    write_wav(path, &interleaved, output_rate, 2)?;
+    let partial = format!(
+        "{}{}{}",
+        wrap_clause(exportable[0].payload_frames_dropped + exportable[1].payload_frames_dropped),
+        omitted_clause(streams.len(), 2, &skipped_codecs),
+        decode_failure_clause(left_failures + right_failures)
+    );
+    write_wav_with_provenance(
+        path,
+        &interleaved,
+        output_rate,
+        2,
+        Some(&provenance_note(AudioMechanism::SipnabCapture, &partial)),
+    )?;
 
     Ok(format!(
         "Exported {:.1}s stereo audio ({} + {} frames, {}Hz) to {}{}{}{}",
@@ -159,6 +184,60 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
         omitted_clause(streams.len(), 2, &skipped_codecs),
         decode_failure_clause(left_failures + right_failures),
     ))
+}
+
+/// How the audio in an artefact was obtained.
+///
+/// RE7 requires an artefact to NAME this. The two differ in what they can be
+/// trusted to say: `SipnabCapture` is what sipnab saw on the wire, bounded by
+/// where the capture point sits and by what retention kept, while
+/// `RtpengineSpool` is what a relay wrote down, which sipnab did not witness
+/// and cannot vouch for beyond the relay's own honesty.
+///
+/// An operator holding a file months later cannot recover this from the bytes,
+/// so it travels inside them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioMechanism {
+    /// Decoded from RTP payload sipnab captured itself.
+    SipnabCapture,
+    /// Read from a recording an rtpengine relay produced.
+    RtpengineSpool,
+}
+
+impl AudioMechanism {
+    /// The stable token written into the artefact.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::SipnabCapture => "sipnab-capture",
+            Self::RtpengineSpool => "rtpengine-spool",
+        }
+    }
+}
+
+/// The comment recorded inside an exported WAV.
+///
+/// Names the mechanism, the version that wrote it, and -- when the file is
+/// partial -- how, reusing the very clauses the summary prints. One source for
+/// both: a file whose embedded note disagreed with the message printed beside
+/// it would be worse than a file with no note, because it would look
+/// authoritative while contradicting the run that produced it.
+fn provenance_note(mechanism: AudioMechanism, partial: &str) -> String {
+    let completeness = if partial.is_empty() {
+        " No omissions recorded: every stream and frame sipnab held for this \
+         call is in this file."
+            .to_string()
+    } else {
+        format!(" INCOMPLETE.{partial}")
+    };
+    format!(
+        "Produced by sipnab {} via mechanism {}. Audio decoded from RTP payload \
+         this run retained; it is bounded by where the capture point sat and by \
+         what retention kept, and is not a recording made by the endpoints.{}",
+        env!("CARGO_PKG_VERSION"),
+        mechanism.id(),
+        completeness,
+    )
 }
 
 /// A clause naming frames the decoder could not turn into audio.
@@ -479,6 +558,128 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The artefact must name its mechanism, in the FILE.
+    ///
+    /// This is RE7's requirement. Everything sipnab knew about an export used
+    /// to live in a string returned to whoever ran it, and was gone when that
+    /// scrolled away -- while the file went on being forwarded, attached to
+    /// tickets, and played months later by somebody who never saw the run.
+    ///
+    /// Asserted by reading the bytes back, not by inspecting the string that
+    /// was passed in: what matters is that it reached the disk.
+    #[test]
+    fn an_exported_wav_names_its_mechanism_in_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("provenance.wav");
+
+        let stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        export_stream_to_wav(&stream, &path).expect("export");
+
+        let bytes = std::fs::read(&path).expect("read back");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("sipnab-capture"),
+            "the file does not name the mechanism it came from"
+        );
+        assert!(
+            text.contains("ICMT"),
+            "the note must live in a RIFF comment chunk, not be appended loose"
+        );
+        // A complete file must say it is complete, or silence reads as an
+        // omission nobody recorded.
+        assert!(
+            text.contains("No omissions recorded"),
+            "a complete export must say so; absence of a warning is not a claim"
+        );
+    }
+
+    /// A partial file says so INSIDE itself, not only in the summary.
+    #[test]
+    fn a_partial_export_records_its_partialness_in_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("partial.wav");
+
+        let mut stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        // The ring wrapped: frames existed that this file does not hold.
+        stream.payload_frames_dropped = 4200;
+
+        export_stream_to_wav(&stream, &path).expect("export");
+        let bytes = std::fs::read(&path).expect("read back");
+        let text = String::from_utf8_lossy(&bytes);
+
+        assert!(
+            text.contains("INCOMPLETE"),
+            "a file missing 4200 frames must announce it to whoever opens it"
+        );
+        assert!(
+            text.contains("4200"),
+            "how much is missing is the question the file must answer"
+        );
+        assert!(
+            !text.contains("No omissions recorded"),
+            "a partial file must not also claim completeness"
+        );
+    }
+
+    /// A fixed-offset reader must still read the audio correctly.
+    ///
+    /// The note is optional and skippable only for readers that WALK chunks.
+    /// Plenty do not: they seek to the offsets a classic 44-byte WAV puts
+    /// `data` at. Writing the note before `data` moved it, and sipnab's own
+    /// `wav_header` test helper then reported 328 bytes of audio for a file
+    /// holding a second of it -- a naive reader is not a hypothetical, it is
+    /// in this repository.
+    ///
+    /// So the note goes after the samples, and this asserts the property that
+    /// buys: the first 44 bytes are what they always were.
+    #[test]
+    fn the_provenance_chunk_does_not_corrupt_the_audio() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("intact.wav");
+
+        let stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        export_stream_to_wav(&stream, &path).expect("export");
+
+        let bytes = std::fs::read(&path).expect("read back");
+        assert_eq!(&bytes[0..4], b"RIFF", "not a RIFF file");
+        assert_eq!(&bytes[8..12], b"WAVE", "not a WAVE file");
+
+        // The classic layout, at the classic offsets.
+        assert_eq!(
+            &bytes[12..16],
+            b"fmt ",
+            "fmt must stay at offset 12 or a fixed-offset reader misparses"
+        );
+        assert_eq!(
+            &bytes[36..40],
+            b"data",
+            "data must stay at offset 36; moving it is what broke wav_header"
+        );
+        let data_size = u32::from_le_bytes(bytes[40..44].try_into().expect("size")) as usize;
+        assert_eq!(
+            data_size,
+            160 * 2,
+            "the size at offset 40 must be the sample bytes, which is what a \
+             fixed-offset reader takes it for"
+        );
+
+        // The samples are intact and the note lives past them.
+        assert!(
+            bytes.len() > 44 + data_size,
+            "the note should follow the samples, not replace them"
+        );
+        let riff_size = u32::from_le_bytes(bytes[4..8].try_into().expect("size")) as usize;
+        assert_eq!(
+            riff_size + 8,
+            bytes.len(),
+            "the RIFF size field must still describe the whole file, note included"
+        );
+        assert!(
+            String::from_utf8_lossy(&bytes[44 + data_size..]).contains("sipnab-capture"),
+            "the note must be there, after the audio"
+        );
     }
 
     /// The stereo path must actually CALL the omission clause.
