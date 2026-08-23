@@ -16,7 +16,6 @@ pub mod dialog;
 pub(crate) mod dialog_state_machine;
 pub mod dialog_store;
 pub mod dsl;
-pub mod hostile;
 pub mod lint;
 #[cfg(feature = "native")]
 pub mod matcher;

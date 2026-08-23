@@ -1345,6 +1345,14 @@ fn reason_list(report: &crate::capture::UndecodableReport) -> String {
 ///
 /// The defect in full: `tests/pcap-samples/h263-over-rtp.pcap` carries
 /// `INVITE sip:auto@localhost SIP/2.0` on UDP 5060 and, on a link type sipnab
+/// How many stored findings the end-of-capture accusation summary reads.
+///
+/// The alert engine keeps a bounded history; this reads it whole rather than
+/// a page of it, because a summary built from the newest N findings would
+/// silently drop the quietest source -- which is the one an operator is least
+/// likely to have noticed already.
+const ACCUSED_FINDING_SCAN_CAP: usize = 10_000;
+
 /// had no decoder for, produced "49 packets captured, 0 SIP messages, 0 RTP
 /// packets across 0 streams", then "No SIP traffic found.", then exit 0 —
 /// character for character what a perfect read of a capture holding no SIP
@@ -3304,6 +3312,52 @@ impl BatchRunner {
                 counters.sip_count,
                 counters.rtp_count,
             );
+
+            // Who the detectors accused, grouped. Every detector answers per
+            // MESSAGE, which is right for `--kill-scanner` acting on one
+            // packet and wrong for the question asked after a capture: which
+            // addresses were probing me, and how do I know. Nothing here
+            // re-detects -- it groups findings the detectors already produced,
+            // so there is one detector and one set of thresholds.
+            //
+            // `established` is printed with the accusation rather than left in
+            // the detector that already acts on it. A source that also
+            // completed a registration or a call is one a block would
+            // disconnect, and learning that after the block is too late.
+            {
+                let findings = engines
+                    .alerts
+                    .read()
+                    .iter_findings(&[], None, ACCUSED_FINDING_SCAN_CAP)
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let refs: Vec<&crate::security::alerting::Finding> = findings.iter().collect();
+                let mut accused = crate::security::sources::accused(&refs);
+                for a in &mut accused {
+                    a.established = engines.scanner.as_ref().map(|d| d.established(&a.src_ip));
+                }
+                if !accused.is_empty() {
+                    tracing::info!(
+                        "sipnab: {} source(s) named by security detections",
+                        accused.len()
+                    );
+                    for a in &accused {
+                        let rules = a.rules.iter().cloned().collect::<Vec<_>>().join(", ");
+                        let counter = match a.established {
+                            Some(true) => {
+                                "  -- also completed a registration or call, so a block disconnects it"
+                            }
+                            _ => "",
+                        };
+                        tracing::info!(
+                            "sipnab:   {} {} finding(s) [{rules}]{counter}",
+                            a.src_ip,
+                            a.findings
+                        );
+                    }
+                }
+            }
 
             // What `--split-keep` removed, counted beside what the run kept.
             // A run that deleted capture files says so in its closing line,
