@@ -1320,7 +1320,7 @@ holds anything to it.
   because `contains` proves a string is present, never that it is used. Both
   now require the string on a line that greps or sources.
 
-- [ ] **GATE2 — branch protection on `main` is bypassed on every push, so
+- [x] **GATE2 — branch protection on `main` is bypassed on every push, so
   neither rule it declares is enforced.** Every push to `main` reports:
 
   - `Required status check "CI success" is expected` — the rule wants CI green
@@ -1342,6 +1342,29 @@ holds anything to it.
   [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) refuses a `v*` tag whose commit has a failed
   run, so a red `main` blocks the next release tag whatever the protection
   settings say.
+
+  **Decided and applied 2026-08-23.** Both rules were wrong, in different ways,
+  and the fork this entry described got both answers.
+
+  `required_linear_history` is DELETED. `main` carries 128 merge commits and
+  merging feature branches is how the work lands, so the rule had never
+  described this repository.
+
+  The `CI success` check STAYS, and `main` now takes pull requests with
+  `enforce_admins` on, which is what makes the check mean something. A required
+  status check gates a commit before it lands; a direct push creates the commit
+  and its status together, so the check could never run in time and every push
+  bypassed it. PRs give it something to gate. Zero approvals, because the point
+  is that CI has run before the commit reaches `main`, not that a second person
+  signs it off on a one-maintainer repository.
+
+  The switch that mattered was `enforce_admins`, which was off. Everything else
+  was already configured and already bypassed. Turning the rules on without it
+  would have changed the settings page and nothing else.
+
+  Nothing about tags changed: protection targets `refs/heads/main` and a
+  release is a pushed `refs/tags/v*`, so `pre-push` remains the only thing
+  between a red commit and twenty-three published artifacts.
 
 ## P4 — test quality
 
