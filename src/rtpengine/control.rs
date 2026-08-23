@@ -209,6 +209,8 @@ impl Enumeration {
 pub enum ControlReply {
     /// A `list` answer.
     Calls(Enumeration),
+    /// A `query` answer: one call, as the relay holds it.
+    Call(CallView),
     /// The relay refused, with its own words.
     Refused {
         /// What the relay said.
@@ -282,6 +284,232 @@ pub fn parse_list_reply(body: &[u8], requested: u32) -> anyhow::Result<ControlRe
 /// wants periodic behavior has to write the loop themselves, which is a
 /// visible act rather than a default. A poller is a service, and a service that
 /// talks to a production relay is something an operator opts into.
+/// One relay-side port, and who the relay exchanges media with on it.
+///
+/// This is the join key an unexplained stream needs. sipnab sees packets
+/// arriving at the relay's own address and port; the relay is the only thing
+/// that knows which call that port was allocated for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayStream {
+    /// The relay's own address for this stream, as it appears on the wire.
+    pub local_address: String,
+    /// The relay's own port. The half sipnab can see without any signaling.
+    pub local_port: u16,
+    /// Where the relay currently sends, once it has learned it.
+    pub endpoint: Option<String>,
+    /// What the far side advertised in SDP, which may differ from `endpoint`
+    /// behind NAT -- and the difference is often the bug being chased.
+    pub advertised_endpoint: Option<String>,
+    /// Whether this port carries RTCP rather than RTP, from the relay's flags.
+    pub is_rtcp: bool,
+    /// Every SSRC the relay has seen on this port, ingress and egress.
+    ///
+    /// A second join key, and a better one where a capture is taken off-path
+    /// from the relay: an SSRC follows the media even when the addresses do
+    /// not survive the path.
+    pub ssrcs: Vec<u32>,
+}
+
+/// One side of a call, as the relay holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayTag {
+    /// The SIP tag identifying this side.
+    pub tag: String,
+    /// The tags this side exchanges media with.
+    pub in_dialogue_with: Vec<String>,
+    /// The codec the relay recorded for this side, where it recorded one.
+    pub codec: Option<String>,
+    /// Ports the relay holds for this side, RTP and RTCP together.
+    pub streams: Vec<RelayStream>,
+}
+
+/// What a relay knows about one call.
+///
+/// The Call-ID is carried from the REQUEST, not read from the reply: a
+/// rtpengine `query` answer does not echo the Call-ID it was asked about
+/// (verified against 12.5.1), so pairing the answer with its question is the
+/// caller's job and cannot be checked from the bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallView {
+    /// The Call-ID this view answers for, from the request.
+    pub call_id: String,
+    /// Each side of the call.
+    pub tags: Vec<RelayTag>,
+}
+
+impl CallView {
+    /// Find the tag holding a given relay-side port, if any.
+    ///
+    /// This is the whole point of asking: sipnab sees `local_port` in the
+    /// capture and nothing that explains it.
+    #[must_use]
+    pub fn tag_for_port(&self, local_port: u16) -> Option<&RelayTag> {
+        self.tags
+            .iter()
+            .find(|t| t.streams.iter().any(|s| s.local_port == local_port))
+    }
+
+    /// Find the tag the relay has seen a given SSRC on, if any.
+    #[must_use]
+    pub fn tag_for_ssrc(&self, ssrc: u32) -> Option<&RelayTag> {
+        self.tags
+            .iter()
+            .find(|t| t.streams.iter().any(|s| s.ssrcs.contains(&ssrc)))
+    }
+}
+
+/// Read one `endpoint`-shaped sub-dictionary into `address:port`.
+///
+/// rtpengine writes these as `{"family": .., "address": .., "port": ..}`
+/// rather than as a string, so the textual form is assembled here once.
+fn endpoint_str(v: Option<&Value<'_>>) -> Option<String> {
+    let d = v?;
+    let addr = d.get_str(b"address")?;
+    let port = d.get_int(b"port")?;
+    // A v6 literal needs brackets or the result cannot be parsed back.
+    if addr.contains(':') {
+        Some(format!("[{addr}]:{port}"))
+    } else {
+        Some(format!("{addr}:{port}"))
+    }
+}
+
+/// Collect the SSRCs out of an `ingress SSRCs` / `egress SSRCs` list.
+fn ssrcs_from(v: Option<&Value<'_>>, out: &mut Vec<u32>) {
+    let Some(Value::List(items)) = v else { return };
+    for item in items {
+        // rtpengine writes SSRCs as signed integers; the wire value is a
+        // 32-bit unsigned quantity, so it is read back through a cast rather
+        // than rejected for being negative.
+        if let Some(n) = item.get_int(b"SSRC") {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "an SSRC is 32 bits on the wire; bencode has only \
+                          signed integers to carry it in"
+            )]
+            let ssrc = n as u32;
+            if !out.contains(&ssrc) {
+                out.push(ssrc);
+            }
+        }
+    }
+}
+
+/// Parse a `query` reply for `call_id`.
+///
+/// `call_id` is the one that was ASKED about. See [`CallView`] for why it
+/// cannot come from the reply.
+///
+/// # Errors
+///
+/// When the reply is not bencode or carries no `result`. A reply the relay
+/// refused is not an error: see [`ControlReply::Refused`].
+pub fn parse_query_reply(body: &[u8], call_id: &str) -> anyhow::Result<ControlReply> {
+    use anyhow::{Context, bail};
+
+    let v = super::bencode::decode(body).context("rtpengine reply is not bencode")?;
+    let result = match v.get(b"result") {
+        Some(Value::Bytes(b)) => *b,
+        _ => bail!("rtpengine reply carries no `result`"),
+    };
+    if result != b"ok" {
+        let reason = match v.get(b"error-reason") {
+            Some(Value::Bytes(b)) => String::from_utf8_lossy(b).into_owned(),
+            _ => "the relay refused without saying why".to_owned(),
+        };
+        return Ok(ControlReply::Refused { reason });
+    }
+
+    let mut tags = Vec::new();
+    if let Some(Value::Dict(entries)) = v.get(b"tags") {
+        for (key, tv) in entries {
+            // The tag appears both as the key and inside the value. The key is
+            // authoritative: it is what the relay indexes on.
+            let tag = String::from_utf8_lossy(key).into_owned();
+
+            let mut in_dialogue_with = Vec::new();
+            // 12.5.1 writes `subscriptions`; older builds wrote
+            // `in dialogue with`. Both are read, because a version check would
+            // be a worse test than simply looking for the data.
+            for key in [b"subscriptions".as_slice(), b"in dialogue with".as_slice()] {
+                if let Some(Value::List(subs)) = tv.get(key) {
+                    for sub in subs {
+                        if let Some(other) = sub.get_str(b"tag")
+                            && !in_dialogue_with.contains(&other)
+                        {
+                            in_dialogue_with.push(other);
+                        }
+                    }
+                }
+            }
+
+            let mut codec = None;
+            let mut streams = Vec::new();
+            if let Some(Value::List(medias)) = tv.get(b"medias") {
+                for media in medias {
+                    if codec.is_none() {
+                        codec = media.get_str(b"codec");
+                    }
+                    let Some(Value::List(sl)) = media.get(b"streams") else {
+                        continue;
+                    };
+                    for s in sl {
+                        let (Some(local_address), Some(port)) =
+                            (s.get_str(b"local address"), s.get_int(b"local port"))
+                        else {
+                            // A stream with no relay-side port carries no join
+                            // key, so it cannot answer the question that was
+                            // asked. Skipping it is better than inventing a
+                            // port for it.
+                            continue;
+                        };
+                        let Ok(local_port) = u16::try_from(port) else {
+                            continue;
+                        };
+                        let is_rtcp = matches!(s.get(b"flags"), Some(Value::List(f))
+                            if f.iter().any(|x| matches!(x, Value::Bytes(b) if *b == b"RTCP")));
+                        let mut ssrcs = Vec::new();
+                        ssrcs_from(s.get(b"ingress SSRCs"), &mut ssrcs);
+                        ssrcs_from(s.get(b"egress SSRCs"), &mut ssrcs);
+                        streams.push(RelayStream {
+                            local_address,
+                            local_port,
+                            endpoint: endpoint_str(s.get(b"endpoint")),
+                            advertised_endpoint: endpoint_str(s.get(b"advertised endpoint")),
+                            is_rtcp,
+                            ssrcs,
+                        });
+                    }
+                }
+            }
+
+            tags.push(RelayTag {
+                tag,
+                in_dialogue_with,
+                codec,
+                streams,
+            });
+        }
+    }
+
+    // A deterministic order, so two runs against the same relay produce the
+    // same report and a diff of two reports means something changed.
+    tags.sort_by(|a, b| a.tag.cmp(&b.tag));
+
+    Ok(ControlReply::Call(CallView {
+        call_id: call_id.to_owned(),
+        tags,
+    }))
+}
+
+/// A live `ng` control client, pointed at one relay.
+///
+/// Native-only and live-capture-only by construction: every method that
+/// speaks to the relay demands a [`TransmitPermit`], and a permit exists only
+/// where sipnab is already allowed to put packets on the wire. A run reading
+/// a file cannot obtain one, so an analyst opening somebody else's pcap
+/// cannot make sipnab transmit at the addresses inside it.
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub struct ControlClient {
     /// Where to send. Explicit, never derived from observed traffic.
@@ -344,6 +572,29 @@ impl ControlClient {
         let request = ControlRequest::new(ReadOnlyCommand::List { limit }, self.next_seed());
         let body = self.round_trip(&request)?;
         parse_list_reply(&body, limit)
+    }
+
+    /// Ask the relay about ONE call.
+    ///
+    /// Requires a [`TransmitPermit`] for the same reason [`Self::list`] does.
+    ///
+    /// The Call-ID is passed back into the parser because rtpengine's answer
+    /// does not echo it: pairing the answer with its question is this method's
+    /// job, and it is the only place that can do it.
+    ///
+    /// # Errors
+    ///
+    /// When the socket cannot be opened, the send or receive fails or times
+    /// out, or the reply does not parse.
+    pub fn query(&self, _permit: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply> {
+        let request = ControlRequest::new(
+            ReadOnlyCommand::Query {
+                call_id: call_id.to_owned(),
+            },
+            self.next_seed(),
+        );
+        let body = self.round_trip(&request)?;
+        parse_query_reply(&body, call_id)
     }
 
     /// Send one request and read one reply.
@@ -563,7 +814,7 @@ mod tests {
     /// by calling `bencode::encode` -- a fixture built by the encoder under
     /// test cannot disagree with it, which is the disagreement a parser test
     /// exists to find.
-    fn bstr(s: &str) -> String {
+    pub(super) fn bstr(s: &str) -> String {
         format!("{}:{}", s.len(), s)
     }
 
@@ -778,6 +1029,341 @@ mod tests {
             !shown.contains("sensitive-caller"),
             "Display leaked a Call-ID into a string that ends up in logs \
              outliving the capture: {shown}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod query_reply_tests {
+    use super::*;
+
+    /// A real `query` answer from rtpengine 12.5.1, captured off the harness
+    /// relay while two SIPp calls were up.
+    ///
+    /// Recorded rather than hand-written on purpose. A fixture built from the
+    /// same understanding as the parser agrees with the parser and proves
+    /// nothing; this one was produced by the software this code has to read.
+    const REAL_QUERY: &[u8] =
+        include_bytes!("../../tests/fixtures/rtpengine/query-reply-12.5.1.bin");
+
+    fn parsed() -> CallView {
+        match parse_query_reply(REAL_QUERY, "1-9582@172.28.0.21") {
+            Ok(ControlReply::Call(c)) => c,
+            other => panic!("expected a call view, got {other:?}"),
+        }
+    }
+
+    /// Both sides of the call are read, and the Call-ID comes from the ASK.
+    #[test]
+    fn real_reply_yields_both_tags_and_the_requested_call_id() {
+        let call = parsed();
+        assert_eq!(
+            call.call_id, "1-9582@172.28.0.21",
+            "the Call-ID must be the one asked about; rtpengine does not echo \
+             it, so a parser that invented one would be inventing the join key"
+        );
+        let tags: Vec<&str> = call.tags.iter().map(|t| t.tag.as_str()).collect();
+        assert_eq!(tags, ["1SIPpTag0113926", "9582SIPpTag091"]);
+    }
+
+    /// The relay-side ports are what sipnab can see in a capture, so they are
+    /// what an unexplained stream is matched on.
+    #[test]
+    fn real_reply_yields_the_relay_side_ports() {
+        let call = parsed();
+        let mut ports: Vec<u16> = call
+            .tags
+            .iter()
+            .flat_map(|t| t.streams.iter().map(|s| s.local_port))
+            .collect();
+        ports.sort_unstable();
+        assert_eq!(
+            ports,
+            [30000, 30001, 30002, 30003],
+            "one RTP and one RTCP port per side"
+        );
+        for tag in &call.tags {
+            for stream in &tag.streams {
+                assert_eq!(stream.local_address, "172.28.0.10");
+            }
+        }
+    }
+
+    /// RTP and RTCP are told apart, because reporting a relay's RTCP port as
+    /// an unattributed media stream is the confusion this is meant to end.
+    #[test]
+    fn rtcp_ports_are_distinguished_from_rtp_ports() {
+        let call = parsed();
+        let rtcp: Vec<u16> = call
+            .tags
+            .iter()
+            .flat_map(|t| t.streams.iter().filter(|s| s.is_rtcp).map(|s| s.local_port))
+            .collect();
+        let mut rtcp = rtcp;
+        rtcp.sort_unstable();
+        assert_eq!(rtcp, [30001, 30003], "the odd ports carry RTCP");
+    }
+
+    /// The endpoint and what the far side ADVERTISED are kept apart. Behind
+    /// NAT they differ, and the difference is usually the bug.
+    #[test]
+    fn endpoint_and_advertised_endpoint_are_both_kept() {
+        let call = parsed();
+        let stream = call
+            .tags
+            .iter()
+            .flat_map(|t| &t.streams)
+            .find(|s| s.local_port == 30002)
+            .expect("port 30002 is in the fixture");
+        assert_eq!(stream.endpoint.as_deref(), Some("172.28.0.21:6000"));
+        assert_eq!(
+            stream.advertised_endpoint.as_deref(),
+            Some("172.28.0.21:6000"),
+            "on this harness they agree; they are stored separately so that a \
+             capture where they do not can say so"
+        );
+    }
+
+    /// The two endpoints are told apart, which the real fixture CANNOT prove.
+    ///
+    /// The harness has no NAT, so both fields hold the same value there and a
+    /// parser that swapped them passes every test above. That is the failure
+    /// mode of a recorded fixture: it is authoritative about shape and silent
+    /// about any distinction its own traffic does not draw.
+    ///
+    /// So this one case is synthetic -- and it is the case that matters, since
+    /// the two fields exist only to differ. Lengths are computed, never
+    /// counted, for the reason [`super::tests::bstr`] gives.
+    #[test]
+    fn behind_nat_the_endpoint_and_the_advertised_endpoint_do_not_collapse() {
+        use super::tests::bstr;
+
+        // What the far side CLAIMED in SDP is a private address; where the
+        // relay actually sends is the public one it learned from the packets.
+        let ep = |addr: &str, port: u16| {
+            format!(
+                "d{}{}{}{}{}i{port}ee",
+                bstr("family"),
+                bstr("IPv4"),
+                bstr("address"),
+                bstr(addr),
+                bstr("port"),
+            )
+        };
+        let stream = format!(
+            "d{}{}{}i40000e{}{}{}{}e",
+            bstr("local address"),
+            bstr("203.0.113.5"),
+            bstr("local port"),
+            bstr("advertised endpoint"),
+            ep("10.1.1.9", 7000),
+            bstr("endpoint"),
+            ep("198.51.100.77", 34567),
+        );
+        // Assembled in pieces rather than as one dense format string: a
+        // bencode literal is unreadable enough without counting braces too.
+        let media = format!("d{}i1e{}l{stream}ee", bstr("index"), bstr("streams"),);
+        let tag_entry = format!(
+            "d{}l{media}e{}{}e",
+            bstr("medias"),
+            bstr("tag"),
+            bstr("natted-tag"),
+        );
+        let body = format!(
+            "d{}{}{}d{}{tag_entry}ee",
+            bstr("result"),
+            bstr("ok"),
+            bstr("tags"),
+            bstr("natted-tag"),
+        );
+
+        let ControlReply::Call(call) = parse_query_reply(body.as_bytes(), "nat@example.net")
+            .expect("the synthetic reply must parse")
+        else {
+            panic!("expected a call view");
+        };
+        let s = &call.tags[0].streams[0];
+        assert_eq!(
+            s.endpoint.as_deref(),
+            Some("198.51.100.77:34567"),
+            "`endpoint` is where the relay SENDS -- the address it learned"
+        );
+        assert_eq!(
+            s.advertised_endpoint.as_deref(),
+            Some("10.1.1.9:7000"),
+            "`advertised endpoint` is what the far side CLAIMED. Swapping \
+             these reports a private address as reachable, and the gap \
+             between them is usually the bug being chased"
+        );
+    }
+
+    /// The SSRC is the join key that survives a capture taken off-path, where
+    /// the addresses did not.
+    ///
+    /// The fixture's SSRC is INGRESS on one side and EGRESS on the other, so
+    /// each direction is asserted at its own port. An earlier version accepted
+    /// either port and passed with egress parsing deleted entirely.
+    #[test]
+    fn ssrcs_are_read_from_both_directions() {
+        let call = parsed();
+        const SSRC: u32 = 758_599_286;
+
+        let by_port = |port: u16| -> &RelayStream {
+            call.tags
+                .iter()
+                .flat_map(|t| &t.streams)
+                .find(|s| s.local_port == port)
+                .expect("port is in the fixture")
+        };
+
+        assert!(
+            by_port(30002).ssrcs.contains(&SSRC),
+            "the relay recorded this SSRC as INGRESS on port 30002"
+        );
+        assert!(
+            by_port(30000).ssrcs.contains(&SSRC),
+            "and as EGRESS on port 30000 -- reading only one direction loses \
+             half the join keys the relay is holding"
+        );
+        assert!(
+            by_port(30001).ssrcs.is_empty(),
+            "the RTCP port carried no media, so it must claim no SSRC"
+        );
+    }
+
+    /// The lookup an unexplained stream actually performs.
+    ///
+    /// BOTH sides are asserted, and that is the point. Checking only port
+    /// 30000 passes even for a lookup that returns whichever tag comes first,
+    /// because the right answer for 30000 *is* the first tag. Port 30002
+    /// belongs to the other one, so it can tell a real lookup from a lucky
+    /// one -- and a mutant that ignored the port survived until it was here.
+    #[test]
+    fn a_relay_port_finds_its_own_tag_and_its_peer() {
+        let call = parsed();
+
+        let first = call
+            .tag_for_port(30000)
+            .expect("port 30000 is held by a tag in the fixture");
+        assert_eq!(first.tag, "1SIPpTag0113926");
+        assert_eq!(
+            first.in_dialogue_with,
+            ["9582SIPpTag091"],
+            "the other side of the call is what makes this a dialog and not \
+             just a port"
+        );
+
+        let second = call
+            .tag_for_port(30002)
+            .expect("port 30002 is held by the other tag in the fixture");
+        assert_eq!(
+            second.tag, "9582SIPpTag091",
+            "each port must find the tag that actually holds it"
+        );
+        assert_eq!(second.in_dialogue_with, ["1SIPpTag0113926"]);
+
+        assert!(
+            call.tag_for_port(30099).is_none(),
+            "a port the relay does not hold must not match anything; \
+             attributing a stream to the wrong call is worse than leaving it \
+             an orphan"
+        );
+    }
+
+    /// The codec the relay recorded, where it recorded one.
+    #[test]
+    fn codec_is_read_where_the_relay_recorded_one() {
+        let call = parsed();
+        let codecs: Vec<Option<&str>> = call.tags.iter().map(|t| t.codec.as_deref()).collect();
+        assert!(
+            codecs.contains(&Some("G722/8000")),
+            "the relay recorded G722 on one side: {codecs:?}"
+        );
+    }
+
+    /// A v6 endpoint keeps its brackets, so the result parses back.
+    ///
+    /// Without them `::1` and port `5060` render as `::1:5060`, which is not a
+    /// socket address any parser accepts -- the port reads as another hextet.
+    /// A relay on v6 would produce a join key nothing downstream could use.
+    #[test]
+    fn a_v6_endpoint_is_bracketed() {
+        use super::tests::bstr;
+
+        let ep = format!(
+            "d{}{}{}{}{}i5060ee",
+            bstr("family"),
+            bstr("IPv6"),
+            bstr("address"),
+            bstr("2001:db8::5"),
+            bstr("port"),
+        );
+        let stream = format!(
+            "d{}{}{}i40000e{}{ep}e",
+            bstr("local address"),
+            bstr("2001:db8::1"),
+            bstr("local port"),
+            bstr("endpoint"),
+        );
+        let media = format!("d{}i1e{}l{stream}ee", bstr("index"), bstr("streams"));
+        let tag_entry = format!(
+            "d{}l{media}e{}{}e",
+            bstr("medias"),
+            bstr("tag"),
+            bstr("v6-tag"),
+        );
+        let body = format!(
+            "d{}{}{}d{}{tag_entry}ee",
+            bstr("result"),
+            bstr("ok"),
+            bstr("tags"),
+            bstr("v6-tag"),
+        );
+
+        let ControlReply::Call(call) =
+            parse_query_reply(body.as_bytes(), "v6@example.net").expect("must parse")
+        else {
+            panic!("expected a call view");
+        };
+        let rendered = call.tags[0].streams[0]
+            .endpoint
+            .clone()
+            .expect("the stream has an endpoint");
+        assert_eq!(rendered, "[2001:db8::5]:5060");
+        assert!(
+            rendered.parse::<std::net::SocketAddr>().is_ok(),
+            "the rendered endpoint must parse back; that is the whole reason \
+             for the brackets: {rendered}"
+        );
+    }
+
+    /// A refusal is the relay answering, not the transport failing.
+    #[test]
+    fn a_refused_query_is_reported_as_a_refusal() {
+        let body = format!(
+            "d{}{}{}{}e",
+            super::tests::bstr("error-reason"),
+            super::tests::bstr("Unknown call-id"),
+            super::tests::bstr("result"),
+            super::tests::bstr("error"),
+        );
+        match parse_query_reply(body.as_bytes(), "gone@example.net") {
+            Ok(ControlReply::Refused { reason }) => assert_eq!(reason, "Unknown call-id"),
+            other => panic!("a relay error must not read as a transport failure: {other:?}"),
+        }
+    }
+
+    /// A truncated datagram must fail, not read as a call with no tags.
+    ///
+    /// This is the same failure mode the `list` cap guards: a short answer
+    /// that parses is reported as a complete one, and every stream in the call
+    /// stays an orphan with no sign anything went wrong.
+    #[test]
+    fn a_truncated_reply_fails_rather_than_reading_as_an_empty_call() {
+        let short = &REAL_QUERY[..REAL_QUERY.len() / 2];
+        assert!(
+            parse_query_reply(short, "1-9582@172.28.0.21").is_err(),
+            "half a reply must not parse as a call with no streams"
         );
     }
 }
