@@ -36,12 +36,12 @@ pub fn export_stream_to_wav(stream: &RtpStream, path: &Path) -> Result<String> {
         bail!("{}", nothing_to_decode(&[stream]));
     }
 
-    let (pcm_samples, sample_rate, codec_label) = decode_stream_pcm(stream)?;
+    let (pcm_samples, sample_rate, codec_label, decode_failures) = decode_stream_pcm(stream)?;
     let duration_secs = pcm_samples.len() as f64 / sample_rate as f64;
     write_wav(path, &pcm_samples, sample_rate, 1)?;
 
     Ok(format!(
-        "Exported {:.1}s of {} audio ({} frames, {}/{}Hz) to {}{}",
+        "Exported {:.1}s of {} audio ({} frames, {}/{}Hz) to {}{}{}",
         duration_secs,
         codec_label,
         stream.payload_buffer.len(),
@@ -49,6 +49,7 @@ pub fn export_stream_to_wav(stream: &RtpStream, path: &Path) -> Result<String> {
         sample_rate,
         path.display(),
         wrap_clause(stream.payload_frames_dropped),
+        decode_failure_clause(decode_failures),
     ))
 }
 
@@ -88,11 +89,18 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
         bail!("No RTP streams to export");
     }
 
-    // Filter to streams with decodable audio payload data
+    // Filter to streams with decodable audio payload data, KEEPING what the
+    // filter rejected. Discarding it was the bug: the summary then described
+    // the file without describing the call it came from.
     let exportable: Vec<&RtpStream> = streams
         .iter()
         .filter(|s| is_exportable_codec(s.codec.as_deref()) && !s.payload_buffer.is_empty())
         .copied()
+        .collect();
+    let skipped_codecs: Vec<&str> = streams
+        .iter()
+        .filter(|s| !is_exportable_codec(s.codec.as_deref()))
+        .map(|s| s.codec.as_deref().unwrap_or("unidentified"))
         .collect();
 
     if exportable.is_empty() {
@@ -100,12 +108,19 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
     }
 
     if exportable.len() == 1 {
-        return export_stream_to_wav(exportable[0], path);
+        // The single-stream path writes its own summary, so the omission
+        // clause is appended here rather than inside it -- that function is
+        // also reached directly, where there is no dialog to be partial about.
+        let summary = export_stream_to_wav(exportable[0], path)?;
+        return Ok(format!(
+            "{summary}{}",
+            omitted_clause(streams.len(), 1, &skipped_codecs)
+        ));
     }
 
     // Stereo: decode both streams
-    let (mut left_pcm, left_rate, _) = decode_stream_pcm(exportable[0])?;
-    let (mut right_pcm, right_rate, _) = decode_stream_pcm(exportable[1])?;
+    let (mut left_pcm, left_rate, _, left_failures) = decode_stream_pcm(exportable[0])?;
+    let (mut right_pcm, right_rate, _, right_failures) = decode_stream_pcm(exportable[1])?;
 
     // Use the higher sample rate as the output rate; resample the lower one
     let output_rate = left_rate.max(right_rate);
@@ -132,7 +147,7 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
     write_wav(path, &interleaved, output_rate, 2)?;
 
     Ok(format!(
-        "Exported {:.1}s stereo audio ({} + {} frames, {}Hz) to {}{}",
+        "Exported {:.1}s stereo audio ({} + {} frames, {}Hz) to {}{}{}{}",
         duration_secs,
         exportable[0].payload_buffer.len(),
         exportable[1].payload_buffer.len(),
@@ -141,7 +156,58 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
         // Summed across both channels: either ring wrapping makes the file
         // partial, and an operator reading one number wants the total.
         wrap_clause(exportable[0].payload_frames_dropped + exportable[1].payload_frames_dropped),
+        omitted_clause(streams.len(), 2, &skipped_codecs),
+        decode_failure_clause(left_failures + right_failures),
     ))
+}
+
+/// A clause naming frames the decoder could not turn into audio.
+///
+/// Opus frames that fail decoding are skipped, which shortens the file while
+/// the summary keeps reporting `payload_buffer.len()` as the frame count. The
+/// only record was a `debug!` line, off by default -- so on the runs where it
+/// mattered there was no record at all.
+fn decode_failure_clause(failures: u64) -> String {
+    if failures == 0 {
+        return String::new();
+    }
+    format!(
+        " — PARTIAL: {failures} frame(s) failed to decode and are missing from the \
+         audio; the frame count above is what was captured, not what was written."
+    )
+}
+
+/// A clause naming the streams this export left behind, or nothing when it
+/// carried them all.
+///
+/// A dialog export writes at most two channels and filters out whatever it
+/// cannot decode, and said neither. An operator who exports a three-legged
+/// call gets a two-channel file whose summary is byte-identical to a complete
+/// one -- the omission is invisible precisely when it matters, because a
+/// conference or a transfer is exactly the call somebody exports to find out
+/// what happened on it.
+///
+/// `skipped_codecs` names what was dropped for being undecodable, because
+/// "one stream omitted" and "one stream of G.729 omitted" send an operator to
+/// different places.
+fn omitted_clause(total: usize, written: usize, skipped_codecs: &[&str]) -> String {
+    let dropped = total.saturating_sub(written);
+    if dropped == 0 {
+        return String::new();
+    }
+    let mut codecs: Vec<&str> = skipped_codecs.to_vec();
+    codecs.sort_unstable();
+    codecs.dedup();
+    let detail = if codecs.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", codecs.join(", "))
+    };
+    format!(
+        " — PARTIAL: {dropped} of {total} stream(s) on this call are NOT in this \
+         file{detail}. A WAV carries two channels, and streams sipnab cannot decode \
+         are left out."
+    )
 }
 
 /// Explain a failed export in terms of what sipnab actually observed.
@@ -257,7 +323,7 @@ fn is_opus_codec(codec: &str) -> bool {
 /// Decode all captured payloads in a stream to PCM i16 samples.
 ///
 /// Returns `(samples, sample_rate, codec_label)`.
-fn decode_stream_pcm(stream: &RtpStream) -> Result<(Vec<i16>, u32, &'static str)> {
+fn decode_stream_pcm(stream: &RtpStream) -> Result<(Vec<i16>, u32, &'static str, u64)> {
     let codec_name = stream.codec.as_deref();
 
     match codec_name {
@@ -266,29 +332,36 @@ fn decode_stream_pcm(stream: &RtpStream) -> Result<(Vec<i16>, u32, &'static str)
             for (_ts, payload) in &stream.payload_buffer {
                 pcm.extend_from_slice(&decode_frame(G711Codec::Ulaw, payload));
             }
-            Ok((pcm, stream.clock_rate, "mu-law"))
+            Ok((pcm, stream.clock_rate, "mu-law", 0))
         }
         Some("PCMA") => {
             let mut pcm: Vec<i16> = Vec::new();
             for (_ts, payload) in &stream.payload_buffer {
                 pcm.extend_from_slice(&decode_frame(G711Codec::Alaw, payload));
             }
-            Ok((pcm, stream.clock_rate, "A-law"))
+            Ok((pcm, stream.clock_rate, "A-law", 0))
         }
         Some(name) if is_opus_codec(name) => {
             // Opus decodes at 48 kHz mono by default. SDP declares
             // opus/48000/2 but RTP frames are typically mono.
             let mut decoder = OpusStreamDecoder::new(48000, 1)?;
             let mut pcm: Vec<i16> = Vec::new();
+            // Counted, not just logged. A skipped frame shortens the audio
+            // while the summary went on reporting `payload_buffer.len()` as
+            // the frame count, so the file was quietly missing whatever failed
+            // and the number said otherwise. `debug!` is off by default, which
+            // made the only record of it invisible on the runs that mattered.
+            let mut decode_failures: u64 = 0;
             for (_ts, payload) in &stream.payload_buffer {
                 match decoder.decode_frame(payload) {
                     Ok(samples) => pcm.extend_from_slice(&samples),
                     Err(e) => {
+                        decode_failures = decode_failures.saturating_add(1);
                         tracing::debug!("Opus decode error (skipping frame): {e}");
                     }
                 }
             }
-            Ok((pcm, 48000, "Opus"))
+            Ok((pcm, 48000, "Opus", decode_failures))
         }
         Some(other) => {
             bail!("Unsupported codec for WAV export: {other}. Supported: PCMU, PCMA, Opus.")
@@ -373,6 +446,139 @@ pub(crate) fn resample_linear<T: LinearResampleSample>(
 /// Unit tests for mono and stereo WAV export from RTP streams.
 #[cfg(test)]
 mod tests {
+    /// A frame the decoder rejects must be counted, not only logged.
+    ///
+    /// The skip was recorded with `debug!`, which is off by default, while the
+    /// summary went on reporting `payload_buffer.len()` as the frame count --
+    /// so the file was short by whatever failed and the number said otherwise.
+    /// Exercised through a real export, because removing the counter's
+    /// increment still compiles and `decode_failure_clause`'s own test still
+    /// passes: that test is handed a number rather than measuring one.
+    #[test]
+    fn opus_frames_the_decoder_rejects_are_counted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("opus.wav");
+
+        // Two frames of bytes that are not valid Opus. If the decoder ever
+        // learns to accept them the assertion below fails loudly rather than
+        // passing vacuously, which is the outcome to prefer.
+        let stream = make_stream(Some("opus"), vec![(0, vec![0xFF; 8]), (960, vec![0xFE; 8])]);
+
+        match export_stream_to_wav(&stream, &path) {
+            Ok(summary) => assert!(
+                summary.contains("failed to decode"),
+                "frames were skipped and the summary did not say so:\n{summary}"
+            ),
+            // A decoder that refuses the whole stream is also honest -- it did
+            // not claim to have written audio it could not decode.
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    !msg.is_empty(),
+                    "a refused export must explain itself, not fail silently"
+                );
+            }
+        }
+    }
+
+    /// The stereo path must actually CALL the omission clause.
+    ///
+    /// The clause has its own unit test, and that test passes while nothing
+    /// wires the clause into an export -- replacing the call with an empty
+    /// string still compiles and still passes it. This one exports three
+    /// streams for real and reads the summary.
+    #[test]
+    fn a_three_stream_call_reports_the_stream_it_could_not_carry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("three.wav");
+
+        let a = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        let b = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        let c = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+
+        let summary = export_dialog_to_wav(&[&a, &b, &c], &path).expect("export");
+        assert!(
+            summary.contains("1 of 3"),
+            "a WAV carries two channels; the third stream is missing and the \
+             summary must say which:\n{summary}"
+        );
+    }
+
+    /// A stream dropped for its codec is named in the summary, not filtered
+    /// out in silence.
+    #[test]
+    fn an_undecodable_stream_is_named_in_the_summary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mixed.wav");
+
+        let good = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        let bad = make_stream(Some("G729"), vec![(0, vec![0x00; 10])]);
+
+        let summary = export_dialog_to_wav(&[&good, &bad], &path).expect("export");
+        assert!(
+            summary.contains("G729"),
+            "the undecodable stream was filtered out silently, so the file \
+             looks complete:\n{summary}"
+        );
+    }
+
+    /// A file that carries fewer streams than the call must say so.
+    ///
+    /// A WAV holds two channels and the exporter drops what it cannot decode,
+    /// and the summary mentioned neither -- so a three-legged call produced a
+    /// two-channel file whose summary was byte-identical to a complete one.
+    /// The omission is invisible exactly when it matters: a conference or a
+    /// transfer is the call somebody exports to find out what happened.
+    #[test]
+    fn an_export_that_leaves_streams_out_says_so() {
+        assert_eq!(
+            omitted_clause(2, 2, &[]),
+            "",
+            "a file carrying every stream adds no clause"
+        );
+
+        // Third leg dropped for want of a channel, nothing undecodable.
+        let channels = omitted_clause(3, 2, &[]);
+        assert!(
+            channels.contains("1 of 3"),
+            "the operator needs the ratio, not just the word partial:\n{channels}"
+        );
+        assert!(
+            channels.contains("PARTIAL"),
+            "a partial file must announce itself:\n{channels}"
+        );
+
+        // Dropped for being undecodable: naming the codec sends the reader
+        // somewhere different than a bare count does.
+        let codec = omitted_clause(3, 2, &["G729"]);
+        assert!(
+            codec.contains("G729"),
+            "a stream dropped for its codec must name the codec:\n{codec}"
+        );
+    }
+
+    /// Frames that failed to decode are missing from the audio, and the frame
+    /// count in the summary counts what was CAPTURED.
+    #[test]
+    fn frames_that_failed_to_decode_are_named() {
+        assert_eq!(
+            decode_failure_clause(0),
+            "",
+            "a clean decode adds no clause"
+        );
+
+        let failed = decode_failure_clause(12);
+        assert!(
+            failed.contains("12"),
+            "how many frames are missing is the question:\n{failed}"
+        );
+        assert!(
+            failed.contains("not what was written"),
+            "the summary's frame count describes what was captured, and the \
+             clause has to say so or the two numbers silently disagree:\n{failed}"
+        );
+    }
+
     /// "The call was silent" and "this run did not keep it" must never read as
     /// the same sentence.
     ///
