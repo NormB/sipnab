@@ -193,6 +193,24 @@ impl SdpProvenance {
         }
     }
 
+    /// What sipnab learned by ASKING the relay, rather than by capturing it.
+    ///
+    /// Same claim as [`Self::relay_asserted`] -- a relay describing its own
+    /// allocation -- and a different provenance, because this endpoint did not
+    /// arrive over a capture source at all. There is no honest
+    /// [`crate::capture::parse::InputOrigin`] for it: `Wire`, `Hep` and
+    /// `Uprobe` all assert that addressing was OBSERVED somewhere, and this
+    /// was not. So the origin is absent, and a binding made from it withholds
+    /// the cross-source claim rather than inventing one.
+    #[must_use]
+    pub fn relay_queried(observed_at: DateTime<Utc>) -> Self {
+        Self {
+            origin: None,
+            observed_at: Some(observed_at),
+            asserted_by: EndpointAssertion::MediaRelay,
+        }
+    }
+
     /// What the rtpengine control plane knows: the relay's own allocation.
     ///
     /// Same two transport facts as [`Self::observed`], and a different claim.

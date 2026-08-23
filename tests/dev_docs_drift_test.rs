@@ -561,7 +561,15 @@ fn linked_code_targets_exist() {
     // page the change touched. Three link texts, two new targets -- the
     // `.githooks/pre-commit` link replaced a bare mention that was already
     // linked earlier on the page.
-    const EXPECTED_CODE_LINKS: usize = 367;
+    // 367 -> 369: RE4 gave `src/rtpengine/` two more modules, and the module
+    // layout table on `docs/internals/rtpengine-control-plane.md` names them:
+    // `control.rs` (the two read-only requests and the client) and
+    // `reconcile.rs` (the triggers, the port index and the bounds). Attributed
+    // by measurement before the number moved: that page went 11 -> 13, and it
+    // is the only page this change added a link to -- the other docs touched
+    // had `#L` anchors re-pointed by `scripts/fix-line-anchors.py --apply`,
+    // which moves citations without adding any.
+    const EXPECTED_CODE_LINKS: usize = 369;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

@@ -19,8 +19,9 @@
 //!   about at most once for the life of the run, so a stream that stays
 //!   unexplained -- which is the normal case for traffic the relay is not
 //!   handling at all -- does not re-ask on every packet.
-//! - **A ceiling that does not depend on the traffic.** [`Reconciler::budget`]
-//!   bounds transactions for the whole run. A capture full of orphans cannot
+//! - **A ceiling that does not depend on the traffic.** [`DEFAULT_BUDGET`],
+//!   or whatever [`Reconciler::with_budget`] was given, bounds transactions
+//!   for the whole run. A capture full of orphans cannot
 //!   turn into a flood of control traffic, and when the ceiling is reached
 //!   sipnab SAYS so rather than quietly attributing nothing.
 //! - **Read-only, in the type system.** [`ReadOnlyRelay`] has two methods.
@@ -38,9 +39,13 @@
 //! snapshot did not contain -- typically a call the relay set up after sipnab
 //! started. That, and only that, is the second trigger.
 
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 
-use super::control::{CallView, ControlReply, Enumeration};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+use super::control::{CallView, ControlReply};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 use crate::security::transmit_guard::TransmitPermit;
 
 /// Everything the reconciler is permitted to ask a relay.
@@ -50,6 +55,7 @@ use crate::security::transmit_guard::TransmitPermit;
 /// relay. None of them is reachable from here, and adding one would mean
 /// adding a method to this trait -- a visible act in a diff rather than an
 /// oversight in a call site.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub trait ReadOnlyRelay {
     /// Ask which calls are up.
     ///
@@ -74,6 +80,13 @@ pub trait ReadOnlyRelay {
 /// This is the answer an unexplained stream was missing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attribution {
+    /// The relay's own address for this port.
+    ///
+    /// Carried because the port alone does not identify a socket: rtpengine
+    /// allocates from one port range across every `--interface`, so the same
+    /// port number genuinely appears on two addresses at once. Keying on the
+    /// port alone would attribute one interface's media to the other's call.
+    pub local_address: IpAddr,
     /// The call this port belongs to.
     pub call_id: String,
     /// The side of the call holding it.
@@ -152,7 +165,7 @@ impl Unattributed {
 /// How many Call-IDs to ask `list` for.
 ///
 /// rtpengine's own default, and it warns that raising it may exceed a UDP
-/// datagram. [`Enumeration::truncated`] is what keeps a capped answer from
+/// datagram. [`super::control::Enumeration::truncated`] is what keeps a capped answer from
 /// reading as a complete one.
 pub const DEFAULT_LIST_LIMIT: u32 = 32;
 
@@ -165,18 +178,30 @@ pub const DEFAULT_LIST_LIMIT: u32 = 32;
 pub const DEFAULT_BUDGET: u32 = 2 * (DEFAULT_LIST_LIMIT + 1);
 
 /// Asks a relay at the two moments RE4 allows, and never otherwise.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub struct Reconciler<R: ReadOnlyRelay> {
     /// The relay, reachable only through the two read-only questions.
     relay: R,
     /// Startup fires once. There is no second startup.
     startup_done: bool,
-    /// Relay-side port to what the relay said about it.
-    index: HashMap<u16, Attribution>,
+    /// Relay-side socket to what the relay said about it.
+    ///
+    /// `(IpAddr, u16)` and not `u16`, matching the key
+    /// [`crate::rtp::stream_store::StreamStore`] uses for SDP endpoints. The
+    /// two indexes are joined on this key, so they have to agree on what a
+    /// socket is.
+    index: HashMap<(IpAddr, u16), Attribution>,
     /// Calls already queried, so a refresh asks only about new ones.
     known_calls: HashSet<String>,
-    /// Ports already asked about, so an unexplained stream is asked about
+    /// Sockets already asked about, so an unexplained stream is asked about
     /// once rather than once per packet.
-    asked_ports: HashSet<u16>,
+    asked_ports: HashSet<(IpAddr, u16)>,
+    /// Relay streams whose address the relay reported in a form that is not
+    /// an IP address, and which therefore could not be keyed.
+    ///
+    /// Counted rather than dropped: a port sipnab cannot key is a port it
+    /// will never attribute, and that is a gap the summary has to name.
+    unkeyable_streams: usize,
     /// Whether the last enumeration was capped.
     enumeration_partial: bool,
     /// Why the last enumeration could not be read, when it could not be.
@@ -201,6 +226,7 @@ pub struct Reconciler<R: ReadOnlyRelay> {
     list_limit: u32,
 }
 
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 impl<R: ReadOnlyRelay> Reconciler<R> {
     /// Point a reconciler at a relay.
     #[must_use]
@@ -211,6 +237,7 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
             index: HashMap::new(),
             known_calls: HashSet::new(),
             asked_ports: HashSet::new(),
+            unkeyable_streams: 0,
             enumeration_partial: false,
             last_ask_failure: None,
             unread_calls: HashSet::new(),
@@ -255,6 +282,44 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
         self.enumeration_partial
     }
 
+    /// Every socket the relay accounted for, as `(address, port, call-id)`.
+    ///
+    /// The startup snapshot's whole product. Registering these as media
+    /// endpoints is what lets a stream that appears LATER be attributed
+    /// without asking the relay again -- which is why the packet path never
+    /// has to make a network call.
+    pub fn links(&self) -> impl Iterator<Item = (IpAddr, u16, &str)> {
+        self.index
+            .iter()
+            .map(|((addr, port), a)| (*addr, *port, a.call_id.as_str()))
+    }
+
+    /// The snapshot as owned links, to carry into the capture path.
+    ///
+    /// Taken once and carried as data because each live mode builds its OWN
+    /// stream store, in a different file: the reconciler is not shared across
+    /// them, and a snapshot that reached one and not the other would attribute
+    /// a call in the TUI and leave it an orphan headless.
+    ///
+    /// # Arguments
+    ///
+    /// * `taken_at` — when the relay answered, which becomes the start of the
+    ///   endpoint's expiry clock in the stream store.
+    #[must_use]
+    pub fn snapshot(&self, taken_at: chrono::DateTime<chrono::Utc>) -> RelaySnapshot {
+        RelaySnapshot {
+            links: self
+                .links()
+                .map(|(address, port, call_id)| RelayLink {
+                    address,
+                    port,
+                    call_id: call_id.to_owned(),
+                })
+                .collect(),
+            taken_at: Some(taken_at),
+        }
+    }
+
     /// Spend one transaction, or refuse.
     fn spend(&mut self) -> bool {
         if self.spent >= self.budget {
@@ -279,7 +344,7 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
             return None;
         }
         self.startup_done = true;
-        Some(self.snapshot(permit))
+        Some(self.refresh(permit))
     }
 
     /// SECOND TRIGGER: a stream nothing explains.
@@ -291,24 +356,26 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
     pub fn on_unexplained_stream(
         &mut self,
         permit: &TransmitPermit,
+        local_address: IpAddr,
         local_port: u16,
     ) -> Result<Attribution, Unattributed> {
-        if let Some(found) = self.index.get(&local_port) {
+        let socket = (local_address, local_port);
+        if let Some(found) = self.index.get(&socket) {
             return Ok(found.clone());
         }
-        if !self.asked_ports.insert(local_port) {
+        if !self.asked_ports.insert(socket) {
             // Already asked about this port and the refresh did not find it.
             // Asking again would produce the same answer and one more packet.
-            return Err(self.why_not(local_port));
+            return Err(self.why_not(socket));
         }
         // The snapshot did not contain it, so the snapshot is stale: a call
         // the relay set up after sipnab started. Refresh, asking only about
         // calls not already known.
-        let _ = self.snapshot(permit);
+        let _ = self.refresh(permit);
         self.index
-            .get(&local_port)
+            .get(&socket)
             .cloned()
-            .ok_or_else(|| self.why_not(local_port))
+            .ok_or_else(|| self.why_not(socket))
     }
 
     /// Which of the several reasons "nothing" means, for this port.
@@ -322,7 +389,7 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
     /// first: it is the wider one -- calls that were never even listed --
     /// and the operator's fix for it (raise the limit, or ask over TCP) also
     /// shrinks the other.
-    fn why_not(&self, _local_port: u16) -> Unattributed {
+    fn why_not(&self, _socket: (IpAddr, u16)) -> Unattributed {
         if let Some(reason) = &self.last_ask_failure {
             Unattributed::AskFailed {
                 reason: reason.clone(),
@@ -341,7 +408,7 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
     }
 
     /// Enumerate, then query every call not already indexed.
-    fn snapshot(&mut self, permit: &TransmitPermit) -> String {
+    fn refresh(&mut self, permit: &TransmitPermit) -> String {
         if !self.spend() {
             return format!(
                 "rtpengine at {}: not asked -- {}",
@@ -418,6 +485,14 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
                  those streams are unattached"
             ));
         }
+        if self.unkeyable_streams > 0 {
+            line.push_str(&format!(
+                ". {} relay stream(s) reported an address that is not an IP \
+                 address and could not be keyed, so their ports stay \
+                 unattributed",
+                self.unkeyable_streams
+            ));
+        }
         if self.spent >= self.budget {
             line.push_str(
                 ". The control-transaction ceiling for this run is now spent, \
@@ -431,9 +506,17 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
     fn absorb(&mut self, view: &CallView) {
         for tag in &view.tags {
             for stream in &tag.streams {
+                let Ok(addr) = stream.local_address.parse::<IpAddr>() else {
+                    // The relay named a socket sipnab cannot key. Counted, so
+                    // the summary can say the snapshot is short by this much,
+                    // rather than the port quietly never being attributed.
+                    self.unkeyable_streams += 1;
+                    continue;
+                };
                 self.index.insert(
-                    stream.local_port,
+                    (addr, stream.local_port),
                     Attribution {
+                        local_address: addr,
                         call_id: view.call_id.clone(),
                         tag: tag.tag.clone(),
                         peer_tags: tag.in_dialogue_with.clone(),
@@ -446,18 +529,42 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
     }
 }
 
-/// A `list` answer with nothing in it, for callers that need one.
-#[must_use]
-pub fn empty_enumeration() -> Enumeration {
-    Enumeration {
-        call_ids: Vec::new(),
-        truncated: false,
-    }
+/// One relay-side socket the control plane attributed to a call.
+///
+/// The startup snapshot, flattened into the shape the capture path registers.
+/// A struct rather than a tuple because it travels through config into four
+/// separate stream stores, and `(addr, port, call_id)` read at the far end is
+/// three unlabelled fields whose order is a guess.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayLink {
+    /// The relay's own address for this socket.
+    pub address: IpAddr,
+    /// The relay's own port.
+    pub port: u16,
+    /// The call the relay says holds it.
+    pub call_id: String,
+}
+
+/// A relay's startup snapshot, and when it was taken.
+///
+/// The time is carried rather than re-derived where the snapshot is applied.
+/// [`crate::rtp::stream_store`] expires an endpoint 300 s after it was learned
+/// before letting it name a NEW stream, and that clock has to start when the
+/// relay ANSWERED -- not when whichever store happened to be built. Two live
+/// modes build their stores in two different files, and `Utc::now()` in each
+/// of them is two different answers to "when did the relay say this".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RelaySnapshot {
+    /// Every socket the relay accounted for.
+    pub links: Vec<RelayLink>,
+    /// When the relay answered. `None` when it was never asked.
+    pub taken_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// The live client is the only production implementation.
 ///
-/// The impl lives here rather than beside [`ControlClient`] so that the
+/// The impl lives here rather than beside [`super::control::ControlClient`]
+/// so that the
 /// direction of the dependency matches the layering: reconciliation knows
 /// about the wire, and the wire knows nothing about reconciliation.
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
@@ -476,11 +583,20 @@ impl ReadOnlyRelay for super::control::ControlClient {
 }
 
 #[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 mod tests {
     use super::*;
     use crate::capture::CaptureSource;
-    use crate::rtpengine::control::{RelayStream, RelayTag};
+    use crate::rtpengine::control::{Enumeration, RelayStream, RelayTag};
     use std::cell::RefCell;
+
+    /// The address the scripted relay reports for every stream.
+    const RELAY_IP: &str = "203.0.113.7";
+
+    /// That same address, parsed, for building lookup keys.
+    fn relay_ip() -> std::net::IpAddr {
+        RELAY_IP.parse().expect("a literal v4 address parses")
+    }
 
     /// A permit, which only a live source can grant.
     fn permit() -> TransmitPermit {
@@ -502,6 +618,8 @@ mod tests {
         list_answer: Answer,
         /// Ports to hand back per Call-ID, or `None` to fail the query.
         calls: HashMap<String, Option<Vec<u16>>>,
+        /// The interface address a call's ports live on, when not the default.
+        addresses: HashMap<String, String>,
         /// Fail every query until this many have been attempted.
         fail_first: u32,
         lists: RefCell<u32>,
@@ -513,6 +631,7 @@ mod tests {
             Self {
                 list_answer,
                 calls: HashMap::new(),
+                addresses: HashMap::new(),
                 fail_first: 0,
                 lists: RefCell::new(0),
                 queries: RefCell::new(Vec::new()),
@@ -521,6 +640,12 @@ mod tests {
 
         fn holding(mut self, call_id: &str, ports: Option<Vec<u16>>) -> Self {
             self.calls.insert(call_id.to_owned(), ports);
+            self
+        }
+
+        fn holding_on(mut self, call_id: &str, addr: &str, ports: Vec<u16>) -> Self {
+            self.calls.insert(call_id.to_owned(), Some(ports));
+            self.addresses.insert(call_id.to_owned(), addr.to_owned());
             self
         }
 
@@ -551,25 +676,32 @@ mod tests {
                 anyhow::bail!("relay busy");
             }
             match self.calls.get(call_id) {
-                Some(Some(ports)) => Ok(ControlReply::Call(CallView {
-                    call_id: call_id.to_owned(),
-                    tags: vec![RelayTag {
-                        tag: "from-tag".to_owned(),
-                        in_dialogue_with: vec!["to-tag".to_owned()],
-                        codec: Some("PCMU".to_owned()),
-                        streams: ports
-                            .iter()
-                            .map(|p| RelayStream {
-                                local_address: "203.0.113.7".to_owned(),
-                                local_port: *p,
-                                endpoint: None,
-                                advertised_endpoint: None,
-                                is_rtcp: p % 2 == 1,
-                                ssrcs: Vec::new(),
-                            })
-                            .collect(),
-                    }],
-                })),
+                Some(Some(ports)) => {
+                    let addr = self
+                        .addresses
+                        .get(call_id)
+                        .map_or(RELAY_IP, String::as_str)
+                        .to_owned();
+                    Ok(ControlReply::Call(CallView {
+                        call_id: call_id.to_owned(),
+                        tags: vec![RelayTag {
+                            tag: "from-tag".to_owned(),
+                            in_dialogue_with: vec!["to-tag".to_owned()],
+                            codec: Some("PCMU".to_owned()),
+                            streams: ports
+                                .iter()
+                                .map(|p| RelayStream {
+                                    local_address: addr.clone(),
+                                    local_port: *p,
+                                    endpoint: None,
+                                    advertised_endpoint: None,
+                                    is_rtcp: p % 2 == 1,
+                                    ssrcs: Vec::new(),
+                                })
+                                .collect(),
+                        }],
+                    }))
+                }
                 _ => anyhow::bail!("no such call"),
             }
         }
@@ -589,7 +721,7 @@ mod tests {
         r.at_startup(&p);
 
         let why = r
-            .on_unexplained_stream(&p, 30000)
+            .on_unexplained_stream(&p, relay_ip(), 30000)
             .expect_err("a relay that is down attributes nothing");
 
         assert!(
@@ -612,7 +744,7 @@ mod tests {
         r.at_startup(&p);
 
         let why = r
-            .on_unexplained_stream(&p, 30000)
+            .on_unexplained_stream(&p, relay_ip(), 30000)
             .expect_err("an unreadable call attributes nothing");
 
         assert!(
@@ -635,7 +767,7 @@ mod tests {
         r.at_startup(&p);
 
         let why = r
-            .on_unexplained_stream(&p, 40000)
+            .on_unexplained_stream(&p, relay_ip(), 40000)
             .expect_err("40000 is not a port the relay named");
 
         assert_eq!(
@@ -643,6 +775,43 @@ mod tests {
             Unattributed::RelayDoesNotHoldIt,
             "the relay was reached, enumerated completely and every call was \
              read -- that is the one case where `not mine` is a fact"
+        );
+    }
+
+    /// One port number on two interfaces is two sockets. rtpengine allocates
+    /// from a single port range across every `--interface`, so this is not a
+    /// contrived case -- and keying the index on the port alone attributes one
+    /// interface's media to the other interface's call.
+    #[test]
+    fn the_same_port_on_two_interfaces_is_two_different_calls() {
+        let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a", "call-b"], false))
+            .holding_on("call-a", "203.0.113.7", vec![30000])
+            .holding_on("call-b", "198.51.100.9", vec![30000]);
+        let mut r = Reconciler::new(relay);
+        let p = permit();
+        r.at_startup(&p);
+
+        let first = "203.0.113.7".parse().expect("a literal v4 address parses");
+        let second = "198.51.100.9".parse().expect("a literal v4 address parses");
+
+        assert_eq!(
+            r.on_unexplained_stream(&p, first, 30000)
+                .expect("the relay holds this socket")
+                .call_id,
+            "call-a"
+        );
+        assert_eq!(
+            r.on_unexplained_stream(&p, second, 30000)
+                .expect("the relay holds this socket too")
+                .call_id,
+            "call-b",
+            "port 30000 on the second interface belongs to the other call; \
+             keying on the port alone would hand back the first one"
+        );
+        assert_eq!(
+            r.attributed_ports(),
+            2,
+            "two sockets, not one overwriting the other"
         );
     }
 
@@ -683,7 +852,7 @@ mod tests {
 
         for _ in 0..1000 {
             assert!(
-                r.on_unexplained_stream(&p, 30000).is_ok(),
+                r.on_unexplained_stream(&p, relay_ip(), 30000).is_ok(),
                 "the snapshot explains this port"
             );
         }
@@ -709,7 +878,7 @@ mod tests {
         let after_startup = r.transactions();
 
         for _ in 0..500 {
-            assert!(r.on_unexplained_stream(&p, 40000).is_err());
+            assert!(r.on_unexplained_stream(&p, relay_ip(), 40000).is_err());
         }
 
         assert_eq!(
@@ -731,7 +900,7 @@ mod tests {
 
         let mut last = None;
         for port in 40000..40200_u16 {
-            last = Some(r.on_unexplained_stream(&p, port).unwrap_err());
+            last = Some(r.on_unexplained_stream(&p, relay_ip(), port).unwrap_err());
         }
 
         assert!(
@@ -760,7 +929,7 @@ mod tests {
 
         assert!(r.enumeration_was_partial(), "the relay said it had more");
         assert_eq!(
-            r.on_unexplained_stream(&p, 40000).unwrap_err(),
+            r.on_unexplained_stream(&p, relay_ip(), 40000).unwrap_err(),
             Unattributed::EnumerationWasPartial,
             "a port absent from a PARTIAL list may belong to a call the list \
              never named"
@@ -786,7 +955,7 @@ mod tests {
         );
 
         assert!(
-            r.on_unexplained_stream(&p, 30000).is_ok(),
+            r.on_unexplained_stream(&p, relay_ip(), 30000).is_ok(),
             "the refresh retries the call that failed, and this time it \
              answers -- a port the relay genuinely holds must not stay \
              unattributed because of one transient failure"
@@ -802,7 +971,7 @@ mod tests {
         r.at_startup(&p);
 
         let why = r
-            .on_unexplained_stream(&p, 30000)
+            .on_unexplained_stream(&p, relay_ip(), 30000)
             .expect_err("a refusal attributes nothing");
 
         assert!(

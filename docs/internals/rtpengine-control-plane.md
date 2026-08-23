@@ -93,6 +93,8 @@ with that cost stated.
 |---|---|
 | [`src/rtpengine/bencode.rs`](../../src/rtpengine/bencode.rs) | Bencode decoder. Borrowed values, depth-limited, hostile-input facing |
 | [`src/rtpengine/ng.rs`](../../src/rtpengine/ng.rs) | Cookie/body split, command classification, field extraction |
+| [`src/rtpengine/control.rs`](../../src/rtpengine/control.rs) | The two read-only requests, their replies, and the client that carries them |
+| [`src/rtpengine/reconcile.rs`](../../src/rtpengine/reconcile.rs) | The two moments sipnab asks, the port index, and the bounds that keep asking from becoming polling |
 | [`src/rtpengine/mod.rs`](../../src/rtpengine/mod.rs) | `sdp_links_from_ng`, the bridge into the existing SDP linking |
 
 The decoder is hostile-input facing on both delivery paths, so every length is

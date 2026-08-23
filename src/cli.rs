@@ -1167,10 +1167,12 @@ pub struct RtpArgs {
     /// `start recording`: each of them changes a production relay, and none is
     /// representable here.
     ///
-    /// **Not a poller.** sipnab asks at startup and when a stream appears that
-    /// nothing explains. There is no interval flag because there is no loop —
-    /// a service that talks to a production relay is something an operator
-    /// opts into, not something a capture tool becomes by default.
+    /// **Not a poller.** sipnab asks ONCE, at startup, before the capture
+    /// opens. There is no interval flag because there is no loop — a service
+    /// that talks to a production relay is something an operator opts into,
+    /// not something a capture tool becomes by default. A call that the relay
+    /// sets up after that startup question is named by its own signaling,
+    /// which sipnab is now running in time to see.
     ///
     /// Requires a live source. On `-I file` it refuses, for the same reason
     /// `--kill-scanner` does: the addresses in a capture are historical, may

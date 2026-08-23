@@ -527,6 +527,18 @@ pub struct ControlClient {
     base: u64,
 }
 
+/// How long to wait for a relay's answer before giving up.
+///
+/// A CHOICE, not a measurement. rtpengine's control port is normally on the
+/// same host or the same LAN segment as sipnab, where a reply takes
+/// milliseconds; this is sized for an unreachable or wedged relay to be
+/// declared so quickly rather than for a slow one to be waited out. It bounds
+/// the startup snapshot, which happens before the capture opens, so an
+/// operator whose relay is down waits this long per transaction and not
+/// longer.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub const DEFAULT_CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
+
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 impl ControlClient {
     /// Point a client at a relay's control port.

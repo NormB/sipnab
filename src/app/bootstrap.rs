@@ -980,6 +980,13 @@ pub struct Launched {
     /// so its eager first parse and its later polling agree on one offset.
     #[cfg(feature = "tls")]
     pub keylog_source: Option<crate::capture::keylog_source::KeylogSource>,
+    /// The relay's startup snapshot (RE4), empty unless this run asked for one.
+    ///
+    /// Carried rather than re-derived because the two live modes build their
+    /// own stream stores in two different files, and a snapshot that reached
+    /// one of them and not the other would attribute a call in the TUI and
+    /// leave it an orphan headless.
+    pub relay_snapshot: crate::rtpengine::reconcile::RelaySnapshot,
 }
 
 /// Open a streaming keylog source, if this run has one, while still privileged.
@@ -1025,6 +1032,65 @@ fn open_privileged_keylog_source(cli: &Cli) -> Option<crate::capture::keylog_sou
             None
         }
     }
+}
+
+/// Ask the relay which calls are up, when this run asked us to (RE4).
+///
+/// RE4's FIRST trigger, and the only place it fires. It happens here, in the
+/// privileged window before the capture opens, for two reasons: the answer
+/// should describe the calls the capture is about to see rather than the ones
+/// that were up some seconds earlier, and taking it before any packet arrives
+/// means the packet path never makes a network call -- the snapshot is
+/// registered as media endpoints, and a stream that turns up later is
+/// attributed from memory.
+///
+/// Returns the sockets the relay accounted for. Empty covers every way of
+/// having nothing to say -- the flag was not given, the run is offline, the
+/// address does not parse, the relay did not answer -- and an empty snapshot
+/// is applied exactly like a full one, so no caller has to branch on it.
+///
+/// Never fails the run. A capture is still worth reading when the relay is
+/// down; refusing to start over an enrichment would be the wrong trade, and
+/// the summary line says what was and was not learned.
+fn relay_startup_snapshot(
+    cli: &Cli,
+    source: Option<&CaptureSource>,
+) -> crate::rtpengine::reconcile::RelaySnapshot {
+    use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
+    use crate::rtpengine::reconcile::{Reconciler, RelaySnapshot};
+    use crate::security::transmit_guard::TransmitPermit;
+
+    let Some(addr) = cli.rtp_args.rtpengine_control.as_deref() else {
+        return RelaySnapshot::default();
+    };
+    // A permit is the structural gate, not a courtesy check: without one there
+    // is no way to call `list` or `query` at all. `plan` has already told the
+    // operator why an offline run will not ask, so this stays quiet rather
+    // than saying it a second time.
+    let Some(permit) = source.and_then(TransmitPermit::for_source) else {
+        return RelaySnapshot::default();
+    };
+    let socket = match addr.parse::<std::net::SocketAddr>() {
+        Ok(socket) => socket,
+        Err(e) => {
+            tracing::error!(
+                "--rtpengine-control {addr} is not an address and port ({e}). \
+                 It names the relay's ng control port, for example \
+                 127.0.0.1:22222. Nothing was asked, so streams this relay \
+                 handles stay unattributed."
+            );
+            return RelaySnapshot::default();
+        }
+    };
+
+    let mut reconciler = Reconciler::new(ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT));
+    // The instant the relay answered, which is what the endpoint expiry clock
+    // in the stream store measures from -- not the instant a store was built.
+    let taken_at = chrono::Utc::now();
+    if let Some(summary) = reconciler.at_startup(&permit) {
+        tracing::info!("{summary}");
+    }
+    reconciler.snapshot(taken_at)
 }
 
 /// Perform the side-effectful launch sequence exactly as main() did:
@@ -1114,6 +1180,12 @@ pub fn launch(
     // it is moved into the capture thread. See `security::transmit_guard`.
     let may_transmit =
         crate::security::transmit_guard::TransmitPermit::for_source(&source).is_some();
+
+    // RE4's startup snapshot, taken from the RESOLVED source for the same
+    // reason `may_transmit` is: `-d any` and device auto-detection mean the
+    // source the caller planned is not always the one that opened, and asking
+    // the relay is exactly as gated as any other transmit.
+    let relay_snapshot = relay_startup_snapshot(cli, Some(&source));
 
     // 14. Create the packet channel: a capped, auto-shrinking queue. Occupancy
     //     grows under load up to the cap and the (unbounded) storage frees its
@@ -1449,6 +1521,7 @@ pub fn launch(
         raw_kill_sock,
         #[cfg(feature = "tls")]
         keylog_source,
+        relay_snapshot,
     }
 }
 
@@ -3016,6 +3089,60 @@ mod tests {
     use super::*;
 
     /// Baseline non-interactive CLI; mutate the pub fields per test.
+    /// RE4 must not transmit on a run reading a file, and the gate is the
+    /// PERMIT rather than a flag check: `plan` warns, and this is the arm that
+    /// makes the warning true.
+    #[test]
+    fn a_file_run_never_asks_the_relay() {
+        let mut cli = base_cli();
+        cli.rtp_args.rtpengine_control = Some("127.0.0.1:22222".to_owned());
+        let file = CaptureSource::File {
+            paths: vec![std::path::PathBuf::from("/tmp/evidence.pcap")],
+        };
+
+        let snapshot = super::relay_startup_snapshot(&cli, Some(&file));
+
+        assert_eq!(
+            snapshot.taken_at, None,
+            "a capture file must not produce a relay transaction, however the \
+             flag was set"
+        );
+        assert!(snapshot.links.is_empty());
+    }
+
+    /// No flag, no snapshot -- and `taken_at` stays `None` rather than
+    /// recording a moment nothing happened at.
+    #[test]
+    fn no_flag_means_the_relay_was_never_asked() {
+        let cli = base_cli();
+        let live = CaptureSource::Live {
+            device: "eth0".to_owned(),
+        };
+
+        let snapshot = super::relay_startup_snapshot(&cli, Some(&live));
+
+        assert_eq!(snapshot.taken_at, None);
+        assert!(snapshot.links.is_empty());
+    }
+
+    /// An address that is not an address asks nothing, and says so, rather
+    /// than being read as a relay that holds no calls.
+    #[test]
+    fn an_unparseable_control_address_asks_nothing() {
+        let mut cli = base_cli();
+        cli.rtp_args.rtpengine_control = Some("not-an-address".to_owned());
+        let live = CaptureSource::Live {
+            device: "eth0".to_owned(),
+        };
+
+        let snapshot = super::relay_startup_snapshot(&cli, Some(&live));
+
+        assert_eq!(
+            snapshot.taken_at, None,
+            "nothing was asked, so nothing may claim a relay answered"
+        );
+    }
+
     fn base_cli() -> Cli {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.mode_args.no_tui = true;

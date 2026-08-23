@@ -173,8 +173,7 @@ fn main() {
                 cli,
                 loaded.config,
                 plan.capture_config,
-                launched.handle,
-                launched.rx,
+                launched,
                 plan.policy,
                 #[cfg(feature = "metrics")]
                 plan.metrics_bind,
@@ -193,6 +192,7 @@ fn main() {
                     output_opts: plan.output_opts,
                     event_exec: plan.event_exec,
                     input_files: plan.input_files,
+                    relay_snapshot: launched.relay_snapshot,
                     #[cfg(feature = "tls")]
                     keylog_source: launched.keylog_source,
                 },

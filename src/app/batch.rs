@@ -290,6 +290,14 @@ pub struct BatchProcessing {
     /// makes not the first file read, and which for `-I /pcaps` is a directory
     /// (#48).
     pub input_files: Vec<PathBuf>,
+    /// What the relay said it was holding when sipnab started (RE4); empty
+    /// unless `--rtpengine-control` was given on a live run.
+    ///
+    /// Carried from `Launched` for the same reason `keylog_source` is: it was
+    /// obtained before the capture opened, and it cannot be obtained again
+    /// here -- asking a second time would be the periodic behavior RE4 exists
+    /// not to have.
+    pub relay_snapshot: crate::rtpengine::reconcile::RelaySnapshot,
     /// Streaming keylog source opened in the privileged window — a FIFO named
     /// by `--keylog`, or the descriptor given to `--keylog-fd`.
     ///
@@ -1839,6 +1847,40 @@ fn join_capped(items: &[&str], max: usize) -> String {
     )
 }
 
+/// Build this mode's stream store, with everything a live run owes it.
+///
+/// Extracted from `run` so the wiring inside it can be TESTED. `run` takes a
+/// live capture handle and never returns until the capture ends, so anything
+/// left inline here is pinned only by the fact that it compiles -- and "the
+/// snapshot reaches the store" is exactly the kind of claim that compiles
+/// perfectly while being false, because the store would simply be empty.
+fn build_live_stream_store(
+    cli: &Cli,
+    config: &Config,
+    relay_snapshot: &crate::rtpengine::reconcile::RelaySnapshot,
+) -> StreamStore {
+    let mut ss = StreamStore::new(cli.max_streams_limit(config));
+    if let Some(max_frames) = config.limits.max_audio_frames {
+        ss.set_max_audio_frames(max_frames as usize);
+    }
+    // RE4: what the relay said it was holding when sipnab started, so a call
+    // already in progress is named by its first packet rather than arriving as
+    // an orphan.
+    crate::pipeline::apply_relay_snapshot(&mut ss, relay_snapshot);
+    if apply_audio_retention(&mut ss, cli) {
+        // Retention changes this run's memory profile, so state the bound
+        // rather than letting an operator discover it under load.
+        let frames = config.limits.max_audio_frames.unwrap_or(1500);
+        let streams = cli.max_streams_limit(config);
+        tracing::info!(
+            "RTP payload retention is on so the MCP export_audio tool can decode it: \
+             up to {frames} frame(s) per stream across at most {streams} stream(s). \
+             Lower [limits] max_audio_frames or --max-streams to bound it further."
+        );
+    }
+    ss
+}
+
 /// Print the ICMP evidence summary for a finished run.
 ///
 /// Called from all three batch summary sites rather than written inline,
@@ -2206,24 +2248,9 @@ impl BatchRunner {
             .with_leg_correlation_window_ms(cli.leg_correlation_window_ms(config)),
         ));
         let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
-        let stream_store: Arc<RwLock<StreamStore>> = {
-            let mut ss = StreamStore::new(cli.max_streams_limit(config));
-            if let Some(max_frames) = config.limits.max_audio_frames {
-                ss.set_max_audio_frames(max_frames as usize);
-            }
-            if apply_audio_retention(&mut ss, &cli) {
-                // Retention changes this run's memory profile, so state the
-                // bound rather than letting an operator discover it under load.
-                let frames = config.limits.max_audio_frames.unwrap_or(1500);
-                let streams = cli.max_streams_limit(config);
-                tracing::info!(
-                    "RTP payload retention is on so the MCP export_audio tool can decode it: \
-                     up to {frames} frame(s) per stream across at most {streams} stream(s). \
-                     Lower [limits] max_audio_frames or --max-streams to bound it further."
-                );
-            }
-            Arc::new(RwLock::new(ss))
-        };
+        let stream_store: Arc<RwLock<StreamStore>> = Arc::new(RwLock::new(
+            build_live_stream_store(&cli, config, &batch.relay_snapshot),
+        ));
         let rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
         // 17a. Initialize security detectors
@@ -5416,6 +5443,56 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.mode_args.no_tui = true;
         cli
+    }
+
+    /// The relay's startup snapshot must reach the store THIS mode builds.
+    ///
+    /// The headless and TUI modes build their stream stores in two different
+    /// files. Wiring one and not the other would name a mid-call in the TUI
+    /// and leave the identical call an orphan under `-N`, which is the harder
+    /// bug to see: nothing errors, the run just attributes less.
+    #[test]
+    fn the_relay_snapshot_reaches_the_store_this_mode_builds() {
+        use crate::rtp::stream_store::EndpointAssertion;
+        use crate::rtpengine::reconcile::{RelayLink, RelaySnapshot};
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let relay = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let snapshot = RelaySnapshot {
+            links: vec![RelayLink {
+                address: relay,
+                port: 30000,
+                call_id: "already-in-progress".to_owned(),
+            }],
+            taken_at: Some(chrono::Utc::now()),
+        };
+
+        let ss = build_live_stream_store(&base_cli(), &Config::default(), &snapshot);
+
+        let provenance = ss
+            .sdp_endpoint_provenance(relay, 30000)
+            .expect("the snapshot must be registered on this mode's store");
+        assert_eq!(
+            provenance.asserted_by,
+            EndpointAssertion::MediaRelay,
+            "the relay asserted this allocation; no party's SDP did"
+        );
+    }
+
+    /// A run that never asked registers nothing, rather than registering an
+    /// endpoint stamped with a moment nothing happened at.
+    #[test]
+    fn a_run_that_never_asked_registers_no_relay_endpoint() {
+        use crate::rtpengine::reconcile::RelaySnapshot;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let ss =
+            build_live_stream_store(&base_cli(), &Config::default(), &RelaySnapshot::default());
+
+        assert_eq!(
+            ss.sdp_endpoint_provenance(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            None
+        );
     }
 
     /// The companion-server wait loop exits only once a stdio MCP client has
