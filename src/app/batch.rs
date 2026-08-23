@@ -642,6 +642,8 @@ fn parallel_config(
         quiet_bad_parse: cli.capture_args.quiet_bad_parse,
         xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
         leg_correlation_window_ms: cli.leg_correlation_window_ms(config),
+        retain_audio: audio_retention_wanted(cli),
+        max_audio_frames: config.limits.max_audio_frames.unwrap_or(1500) as usize,
         reassembly: !cli.capture_args.no_reassembly,
         parse_limit: cli.capture_args.limitlen,
     }

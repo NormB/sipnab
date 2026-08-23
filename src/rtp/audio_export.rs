@@ -41,14 +41,33 @@ pub fn export_stream_to_wav(stream: &RtpStream, path: &Path) -> Result<String> {
     write_wav(path, &pcm_samples, sample_rate, 1)?;
 
     Ok(format!(
-        "Exported {:.1}s of {} audio ({} frames, {}/{}Hz) to {}",
+        "Exported {:.1}s of {} audio ({} frames, {}/{}Hz) to {}{}",
         duration_secs,
         codec_label,
         stream.payload_buffer.len(),
         stream.codec.as_deref().unwrap_or("?"),
         sample_rate,
         path.display(),
+        wrap_clause(stream.payload_frames_dropped),
     ))
+}
+
+/// A clause naming the ring wrap, or nothing when the buffer held everything.
+///
+/// Appended to every export summary. Without it the duration reads as a fact
+/// about the CALL: a ten-minute call whose ring keeps the last 1500 frames
+/// exports as "30.0s", byte-identical to a genuinely thirty-second call. The
+/// number was never wrong about the FILE; it was silent about what the file
+/// left out.
+fn wrap_clause(dropped: u64) -> String {
+    if dropped == 0 {
+        return String::new();
+    }
+    format!(
+        " — PARTIAL: the payload ring wrapped and dropped {dropped} earlier frame(s), \
+         so this file holds the END of the stream, not all of it. Raise \
+         [limits] max_audio_frames to keep more."
+    )
 }
 
 /// Export multiple streams (dialog) to a WAV file.
@@ -113,12 +132,15 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
     write_wav(path, &interleaved, output_rate, 2)?;
 
     Ok(format!(
-        "Exported {:.1}s stereo audio ({} + {} frames, {}Hz) to {}",
+        "Exported {:.1}s stereo audio ({} + {} frames, {}Hz) to {}{}",
         duration_secs,
         exportable[0].payload_buffer.len(),
         exportable[1].payload_buffer.len(),
         output_rate,
         path.display(),
+        // Summed across both channels: either ring wrapping makes the file
+        // partial, and an operator reading one number wants the total.
+        wrap_clause(exportable[0].payload_frames_dropped + exportable[1].payload_frames_dropped),
     ))
 }
 
@@ -141,7 +163,7 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
 /// So the message reports the measurement — packet count and codecs — and
 /// names retention as the reason nothing is decodable, without claiming the
 /// call was silent.
-fn nothing_to_decode(streams: &[&RtpStream]) -> String {
+pub(crate) fn nothing_to_decode(streams: &[&RtpStream]) -> String {
     let decodable: Vec<&&RtpStream> = streams
         .iter()
         .filter(|s| is_exportable_codec(s.codec.as_deref()))
@@ -168,12 +190,25 @@ fn nothing_to_decode(streams: &[&RtpStream]) -> String {
         .collect();
     codecs.sort_unstable();
     codecs.dedup();
+    // What is REPORTED is the measurement. What is OFFERED is the likeliest
+    // cause, named as a candidate rather than asserted.
+    //
+    // This used to state "Audio payload retention was off for this run" as
+    // fact. It is inferred from an empty buffer and nothing else, and at least
+    // three other things empty that buffer with retention ON: a `--snaplen`
+    // that truncated the payload away, an RTP packet that genuinely carried
+    // none, and -- until it was fixed -- a codec the buffering gate spelled
+    // differently from the export gate. Telling an operator who DID pass
+    // --retain-audio that they had not is a confident answer about the wrong
+    // subject, which is the failure this whole message exists to avoid.
     format!(
         "No audio payload retained: sipnab measured {packets} RTP packet(s) of {} on {} \
          decodable {}, but kept none of their payload, so there is nothing to decode. \
-         Audio payload retention was off for this run — that is a capture setting, not a \
-         finding that the call was silent. Start the server with --retain-audio to hold \
-         payload for export.",
+         This is a statement about what this run kept, not a finding that the call was \
+         silent. Most often audio payload retention was off — start the server with \
+         --retain-audio to hold payload for export. With retention already on, the \
+         other causes are a --snaplen that truncated the payload away before sipnab \
+         saw it, or packets that carried no payload at all.",
         codecs.join("/"),
         decodable.len(),
         if decodable.len() == 1 {
@@ -192,6 +227,25 @@ fn nothing_to_decode(streams: &[&RtpStream]) -> String {
 /// filtered out of export. G.711 (`PCMU`/`PCMA`) is matched exactly, matching
 /// what `decode_stream_pcm` accepts.
 fn is_exportable_codec(codec: Option<&str>) -> bool {
+    is_capturable_audio_codec(codec)
+}
+
+/// The one answer to "can sipnab turn this codec into audio".
+///
+/// Both sides of the pipeline ask it: [`crate::rtp::stream_store::StreamStore`]
+/// at buffer time, deciding whether to keep a stream's payload at all, and the
+/// exporter at decode time. They used to answer it separately, and disagreed:
+/// the buffering side matched `"opus" | "OPUS" | "Opus"` exactly while this
+/// side compared case-insensitively, as SDP requires. A stream labeled `OpUs`
+/// -- legal, and what several stacks emit -- was therefore never buffered,
+/// then classified as decodable, and the export blamed retention for an empty
+/// buffer that the codec check had emptied.
+///
+/// One function rather than two that agree today, because the wrong answer
+/// here is not a failed export: it is a CORRECT-LOOKING message about the
+/// wrong subject.
+#[must_use]
+pub(crate) fn is_capturable_audio_codec(codec: Option<&str>) -> bool {
     matches!(codec, Some("PCMU") | Some("PCMA")) || codec.is_some_and(is_opus_codec)
 }
 
@@ -319,6 +373,84 @@ pub(crate) fn resample_linear<T: LinearResampleSample>(
 /// Unit tests for mono and stereo WAV export from RTP streams.
 #[cfg(test)]
 mod tests {
+    /// "The call was silent" and "this run did not keep it" must never read as
+    /// the same sentence.
+    ///
+    /// This is the honesty requirement RE7 names, asserted rather than
+    /// described. The two facts have different owners -- one is a fault in the
+    /// traffic, the other a limit of this run -- and an operator who cannot
+    /// tell them apart investigates the wrong thing.
+    ///
+    /// It has already gone wrong twice. `nothing_to_decode` was written to
+    /// replace "No audio payload captured", and `playback.rs` kept saying it
+    /// for months because only one of the two functions that decode
+    /// `payload_buffer` was migrated. This test spans both.
+    #[test]
+    fn a_run_that_kept_nothing_never_reads_as_a_silent_call() {
+        // Retention empty, codec decodable: a statement about the RUN.
+        let kept_nothing = make_stream(Some("PCMU"), vec![]);
+        let run_msg = nothing_to_decode(&[&kept_nothing]);
+
+        // Nothing sipnab can decode: a statement about the TRAFFIC's codecs.
+        let undecodable = make_stream(Some("G729"), vec![]);
+        let codec_msg = nothing_to_decode(&[&undecodable]);
+
+        assert_ne!(
+            run_msg, codec_msg,
+            "two different reasons produced one identical sentence"
+        );
+
+        // The run-limited message must DISCLAIM the reading it would otherwise
+        // invite, and scope itself to the run.
+        //
+        // Asserted as presence of the disclaimer rather than absence of the
+        // phrase: the first version of this test banned the substring "the
+        // call was silent", which appears in "not a finding that the call was
+        // silent" -- correct prose that the check rejected, because a
+        // substring cannot tell a claim from its negation.
+        assert!(
+            run_msg.contains("not a finding that the call was silent"),
+            "the retention message must disclaim the reading it invites:\n{run_msg}"
+        );
+        assert!(
+            run_msg.contains("this run kept"),
+            "the retention message must say it describes the run:\n{run_msg}"
+        );
+        // And must not assert a cause it cannot observe. It infers an empty
+        // buffer, and --snaplen truncation empties it with retention ON.
+        assert!(
+            !run_msg.contains("retention was off for this run"),
+            "the message asserts a cause it only inferred:\n{run_msg}"
+        );
+
+        // The codec message must name the codecs, which is the whole answer.
+        assert!(
+            codec_msg.contains("G729"),
+            "the undecodable-codec message must name what it found:\n{codec_msg}"
+        );
+    }
+
+    /// A wrapped ring must say so, or the duration reads as the call's length.
+    #[test]
+    fn a_wrapped_ring_is_named_in_the_summary() {
+        assert_eq!(wrap_clause(0), "", "an intact buffer adds no clause");
+
+        let wrapped = wrap_clause(4200);
+        assert!(
+            wrapped.contains("4200"),
+            "the operator's next question is how much was lost:\n{wrapped}"
+        );
+        assert!(
+            wrapped.contains("PARTIAL"),
+            "a partial file must announce itself:\n{wrapped}"
+        );
+        assert!(
+            wrapped.contains("END of the stream"),
+            "which END was kept decides whether the file answers the question \
+             being asked of it:\n{wrapped}"
+        );
+    }
+
     use super::*;
     use crate::rtp::parser::RtpHeader;
     use crate::rtp::stream::{RtpStream, StreamKey};
