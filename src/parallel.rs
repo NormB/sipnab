@@ -164,6 +164,20 @@ pub struct ParallelConfig {
     /// own store, and without it the parallel path would silently apply the
     /// shipped window the single-core path was told to replace.
     pub leg_correlation_window_ms: u64,
+    /// Keep RTP payload so `export_audio` can decode it later.
+    ///
+    /// The workers used to hard-disable this with the comment "batch mode
+    /// never reads audio buffers". That was true when it was written and
+    /// stopped being true when `--retain-audio` shipped: `--cores N` takes
+    /// this path, so an operator who asked for retention got a run that
+    /// silently kept nothing, and the export then told them retention was off.
+    /// It was -- but not because they had left it off.
+    pub retain_audio: bool,
+    /// Per-stream payload frame cap, applied per worker.
+    ///
+    /// The bound is PER WORKER, so the run's ceiling is this times `cores`
+    /// times `max_streams`. Stated rather than discovered under load.
+    pub max_audio_frames: usize,
     /// Reassemble IP fragments / TCP segments (`--no-reassembly` sets false).
     pub reassembly: bool,
     /// Cap on parsed bytes per packet (`-S`/`--limitlen`).
@@ -450,7 +464,13 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
                 .with_xcid_headers(cfg.xcid_headers.clone())
                 .with_leg_correlation_window_ms(cfg.leg_correlation_window_ms);
                 let mut ss = StreamStore::new(cfg.max_streams);
-                ss.set_audio_capture(false); // batch mode never reads audio buffers
+                // Honored rather than hard-disabled. `merge` inserts whole
+                // streams, so a worker's payload buffers survive into the
+                // merged store and `export_audio` can reach them.
+                ss.set_audio_capture(cfg.retain_audio);
+                if cfg.retain_audio {
+                    ss.set_max_audio_frames(cfg.max_audio_frames);
+                }
                 let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
                 let (mut sip, mut rtp, mut total) = (0u64, 0u64, 0u64);
                 for mut packet in wrx.iter() {
@@ -1873,7 +1893,10 @@ pub fn run_offline_parallel_file(
                 .with_xcid_headers(cfg.xcid_headers.clone())
                 .with_leg_correlation_window_ms(cfg.leg_correlation_window_ms);
                 let mut ss = StreamStore::new(cfg.max_streams);
-                ss.set_audio_capture(false);
+                ss.set_audio_capture(cfg.retain_audio);
+                if cfg.retain_audio {
+                    ss.set_max_audio_frames(cfg.max_audio_frames);
+                }
                 let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
                 let (mut sip, mut rtp, mut total) = (0u64, 0u64, 0u64);
                 for mut batch in wrx.iter() {
@@ -2514,7 +2537,69 @@ mod tests {
             leg_correlation_window_ms: crate::sip::dialog_store::DEFAULT_LEG_CORRELATION_WINDOW_MS,
             reassembly: true,
             parse_limit: None,
+            retain_audio: false,
+            max_audio_frames: 1500,
         }
+    }
+
+    /// `--cores N` must honor `--retain-audio`, or the operator who asked
+    /// for payload gets a run that kept none and an export that blames them.
+    ///
+    /// The workers hard-disabled retention with the comment "batch mode never
+    /// reads audio buffers". That was true when written; `--retain-audio`
+    /// shipped later, `--cores N` takes this path, and nothing refused the
+    /// combination -- so the flag was accepted and silently did nothing. The
+    /// export then reported "retention was off for this run", which was true
+    /// and pointed at the wrong cause.
+    ///
+    /// Driven through `run_offline_parallel_file` against a real capture,
+    /// because the first version of this test rebuilt the worker's two lines
+    /// inline and asserted on those. It passed with the bug reinstated: it was
+    /// checking that `set_audio_capture(true)` makes `audio_capture()` true,
+    /// which is a tautology and says nothing about what the worker does.
+    #[cfg(feature = "native")]
+    #[test]
+    fn cores_honor_the_audio_retention_setting() {
+        use crate::capture::CaptureConfig;
+        let paths = [std::path::PathBuf::from(
+            "tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap",
+        )];
+        let cc = CaptureConfig::default();
+
+        let mut on = pcfg(4);
+        on.retain_audio = true;
+        let kept = run_offline_parallel_file(&paths, &cc, on).unwrap();
+
+        let off = run_offline_parallel_file(&paths, &cc, pcfg(4)).unwrap();
+
+        // The fixture has to carry decodable audio, or both runs are empty and
+        // the comparison below is vacuous.
+        assert!(
+            kept.stream_store.len() > 0,
+            "fixture produced no RTP streams"
+        );
+
+        let retained: usize = kept
+            .stream_store
+            .iter()
+            .map(|s| s.payload_buffer.len())
+            .sum();
+        let discarded: usize = off
+            .stream_store
+            .iter()
+            .map(|s| s.payload_buffer.len())
+            .sum();
+
+        assert!(
+            retained > 0,
+            "--cores with retain_audio kept no payload at all, so export_audio \
+             would report retention was off for a run that asked for it"
+        );
+        assert_eq!(
+            discarded, 0,
+            "retention is opt-in and must stay off by default; keeping payload \
+             unasked costs memory per worker"
+        );
     }
 
     /// Batching the reader→worker hand-off must not change what gets

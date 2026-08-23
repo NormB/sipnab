@@ -1679,13 +1679,13 @@ impl StreamStore {
 
 /// Check if a codec supports audio payload capture for playback/export.
 ///
-/// G.711 (PCMU/PCMA) and Opus are supported. Opus codec names are
-/// case-insensitive per SDP convention (`opus`, `OPUS`, `Opus`).
+/// Delegates rather than deciding. This used to list Opus's spellings itself
+/// -- `"opus" | "OPUS" | "Opus"` -- while the exporter compared
+/// case-insensitively, so a legal `OpUs` label was never buffered here and was
+/// still called decodable there. The export then reported that retention was
+/// off, which was a true-sounding statement about the wrong thing.
 fn is_audio_capturable(codec: Option<&str>) -> bool {
-    matches!(
-        codec,
-        Some("PCMU") | Some("PCMA") | Some("opus") | Some("OPUS") | Some("Opus")
-    )
+    crate::rtp::audio_export::is_capturable_audio_codec(codec)
 }
 
 /// Unit tests for the stream store: creation/update, SDP linking in both
@@ -1693,6 +1693,45 @@ fn is_audio_capturable(codec: Option<&str>) -> bool {
 /// merge, and the SNB-0015 performance probes.
 #[cfg(test)]
 mod tests {
+    /// The buffering gate and the export gate must answer identically.
+    ///
+    /// They diverged for real: this side matched Opus's three canonical
+    /// spellings exactly, the export side compared case-insensitively as SDP
+    /// requires, and a stream labeled `OpUs` fell in the gap -- never
+    /// buffered, still called decodable, and the export blamed retention.
+    ///
+    /// The existing test beside the exporter asserted "the two predicates must
+    /// agree" while checking two predicates in that same file, so it could not
+    /// see the pair that actually disagreed. This one spans the boundary.
+    #[test]
+    fn the_buffering_gate_agrees_with_the_export_gate() {
+        for codec in [
+            Some("PCMU"),
+            Some("PCMA"),
+            Some("opus"),
+            Some("OPUS"),
+            Some("Opus"),
+            // The spelling that fell in the gap. Legal SDP, and what several
+            // stacks emit.
+            Some("OpUs"),
+            Some("oPuS"),
+            // Must be refused by BOTH, or the buffer fills with what nothing
+            // can decode.
+            Some("G729"),
+            Some("H264"),
+            Some(""),
+            None,
+        ] {
+            assert_eq!(
+                super::is_audio_capturable(codec),
+                crate::rtp::audio_export::is_capturable_audio_codec(codec),
+                "buffering and export disagree about {codec:?}; a codec kept by \
+                 one and refused by the other produces an empty buffer that the \
+                 export explains with the wrong reason"
+            );
+        }
+    }
+
     /// RE3: an endpoint rtpengine asserted about ITSELF is not the same claim
     /// as one observed in signaling, and the difference must survive into
     /// provenance rather than being flattened at the point of use.

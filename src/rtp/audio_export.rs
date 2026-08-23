@@ -192,6 +192,25 @@ fn nothing_to_decode(streams: &[&RtpStream]) -> String {
 /// filtered out of export. G.711 (`PCMU`/`PCMA`) is matched exactly, matching
 /// what `decode_stream_pcm` accepts.
 fn is_exportable_codec(codec: Option<&str>) -> bool {
+    is_capturable_audio_codec(codec)
+}
+
+/// The one answer to "can sipnab turn this codec into audio".
+///
+/// Both sides of the pipeline ask it: [`crate::rtp::stream_store::StreamStore`]
+/// at buffer time, deciding whether to keep a stream's payload at all, and the
+/// exporter at decode time. They used to answer it separately, and disagreed:
+/// the buffering side matched `"opus" | "OPUS" | "Opus"` exactly while this
+/// side compared case-insensitively, as SDP requires. A stream labeled `OpUs`
+/// -- legal, and what several stacks emit -- was therefore never buffered,
+/// then classified as decodable, and the export blamed retention for an empty
+/// buffer that the codec check had emptied.
+///
+/// One function rather than two that agree today, because the wrong answer
+/// here is not a failed export: it is a CORRECT-LOOKING message about the
+/// wrong subject.
+#[must_use]
+pub(crate) fn is_capturable_audio_codec(codec: Option<&str>) -> bool {
     matches!(codec, Some("PCMU") | Some("PCMA")) || codec.is_some_and(is_opus_codec)
 }
 
