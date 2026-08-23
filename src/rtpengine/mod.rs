@@ -41,6 +41,7 @@
 //! same way whatever mode it is in, and nothing here needs to know which.
 
 pub mod bencode;
+pub mod control;
 pub mod ng;
 
 use std::sync::atomic::{AtomicU64, Ordering};
