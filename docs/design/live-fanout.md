@@ -73,13 +73,13 @@ wrong at once, and one of them is a test that pins the *complement*:
   pcap reconstruction (`-I`) … Advanced features (live capture, per-message
   output ordering, security detectors, SRTP decrypt) use the single-threaded
   path regardless."*
-- `cores_ignored_warning` ([`bootstrap.rs:2659`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2659)),
+- `cores_ignored_warning` ([`bootstrap.rs:2685`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2685)),
   whose live-capture branch says *"this run captures live rather than reading a
   saved file … parallel reconstruction is offline-only — it shards a capture
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it`
-  ([`bootstrap.rs:3380`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3380)), which asserts the warning
+  ([`bootstrap.rs:3406`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3406)), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N

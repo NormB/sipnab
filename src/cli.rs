@@ -1146,6 +1146,39 @@ pub struct DialogArgs {
 /// 2 MiB libtest thread stack.
 #[derive(clap::Args, Debug, Clone)]
 pub struct RtpArgs {
+    /// Ask an rtpengine relay about calls that were already up.
+    ///
+    /// `ADDR` is the relay's ng control port, for example
+    /// `127.0.0.1:22222`. OFF unless given, and never inferred from captured
+    /// traffic: the address sipnab could guess is one it learned from packets,
+    /// and sending to an address derived from a capture is how an analysis
+    /// tool starts talking to a stranger — a host that was a relay when the
+    /// capture was taken and is somebody's laptop now.
+    ///
+    /// A passive decoder sees the `offer` that created a stream, or it sees
+    /// nothing: a call already in progress when sipnab started has no control
+    /// exchange left to read, and its media arrives as an orphan. Incident
+    /// response usually begins mid-call, which is exactly when that gap is
+    /// worst. This closes it by ASKING.
+    ///
+    /// **Read-only, and structurally so.** Only `list` and `query` can be
+    /// sent, because those are the only two commands the type reaching this
+    /// path can express. sipnab never sends `offer`, `answer`, `delete` or
+    /// `start recording`: each of them changes a production relay, and none is
+    /// representable here.
+    ///
+    /// **Not a poller.** sipnab asks at startup and when a stream appears that
+    /// nothing explains. There is no interval flag because there is no loop —
+    /// a service that talks to a production relay is something an operator
+    /// opts into, not something a capture tool becomes by default.
+    ///
+    /// Requires a live source. On `-I file` it refuses, for the same reason
+    /// `--kill-scanner` does: the addresses in a capture are historical, may
+    /// have been reassigned, and belong to third parties who are not part of
+    /// the analysis.
+    #[arg(help_heading = "RTP", long = "rtpengine-control", value_name = "ADDR")]
+    pub rtpengine_control: Option<String>,
+
     /// Maximum number of RTP streams to track simultaneously.
     #[arg(help_heading = "RTP", long, value_name = "N")]
     pub max_streams: Option<u64>,

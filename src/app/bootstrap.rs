@@ -600,6 +600,32 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         );
     }
 
+    // `--rtpengine-control` is the third way sipnab can put a packet on the
+    // network, and it is refused offline for the same reason the kill path is.
+    // The relay address is one the operator typed, but the run still has to be
+    // live: a capture file's calls ended at some point in the past, so asking a
+    // relay about them now describes a DIFFERENT set of calls that happen to be
+    // up today — an answer that looks authoritative and is about somebody
+    // else's traffic.
+    //
+    // Refused here rather than at the send, so the operator reads it before the
+    // capture thread opens anything, and so a run that will never ask does not
+    // look like one that asked and got nothing.
+    if let Some(ref addr) = cli.rtp_args.rtpengine_control
+        && let Some(ref s) = source
+        && crate::security::transmit_guard::TransmitPermit::for_source(s).is_none()
+    {
+        tracing::warn!(
+            "--rtpengine-control {addr} asks a live relay which calls are up \
+             right now, but this run is reading a capture FILE — offline \
+             analysis never transmits. The calls in a file ended in the past; \
+             the relay's answer would describe whatever is up TODAY, which is \
+             other people's traffic. Passive decoding of any relay control \
+             plane already in the capture still runs; capture live with \
+             -d <device> to ask."
+        );
+    }
+
     // `--hep-send` is the other way a packet leaves, and it is not the same
     // question. Its destination is one the operator typed, so it is not
     // refused on a file the way the kill path is — replaying an archive into a
