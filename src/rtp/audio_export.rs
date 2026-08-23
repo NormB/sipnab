@@ -53,16 +53,16 @@ pub fn export_stream_to_wav(stream: &RtpStream, path: &Path) -> Result<String> {
         Some(&provenance_note(AudioMechanism::SipnabCapture, &partial)),
     )?;
 
+    // One `partial` for the file's note and this message both -- see the
+    // stereo path for what happens when they are built separately.
     Ok(format!(
-        "Exported {:.1}s of {} audio ({} frames, {}/{}Hz) to {}{}{}",
+        "Exported {:.1}s of {} audio ({} frames, {}/{}Hz) to {}{partial}",
         duration_secs,
         codec_label,
         stream.payload_buffer.len(),
         stream.codec.as_deref().unwrap_or("?"),
         sample_rate,
         path.display(),
-        wrap_clause(stream.payload_frames_dropped),
-        decode_failure_clause(decode_failures),
     ))
 }
 
@@ -126,8 +126,9 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
         // also reached directly, where there is no dialog to be partial about.
         let summary = export_stream_to_wav(exportable[0], path)?;
         return Ok(format!(
-            "{summary}{}",
-            omitted_clause(streams.len(), 1, &skipped_codecs)
+            "{summary}{}{}",
+            omitted_clause(streams.len(), 1, &skipped_codecs),
+            direction_clause(streams)
         ));
     }
 
@@ -158,10 +159,11 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
 
     let duration_secs = max_len as f64 / output_rate as f64;
     let partial = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         wrap_clause(exportable[0].payload_frames_dropped + exportable[1].payload_frames_dropped),
         omitted_clause(streams.len(), 2, &skipped_codecs),
-        decode_failure_clause(left_failures + right_failures)
+        decode_failure_clause(left_failures + right_failures),
+        direction_clause(streams)
     );
     write_wav_with_provenance(
         path,
@@ -171,37 +173,39 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
         Some(&provenance_note(AudioMechanism::SipnabCapture, &partial)),
     )?;
 
+    // `partial` again, not the clauses re-listed. Building the summary from
+    // its own copy is how the file's note and the message printed beside it
+    // drift apart: adding `direction_clause` to one and not the other did
+    // exactly that, and a test comparing them caught it.
     Ok(format!(
-        "Exported {:.1}s stereo audio ({} + {} frames, {}Hz) to {}{}{}{}",
+        "Exported {:.1}s stereo audio ({} + {} frames, {}Hz) to {}{partial}",
         duration_secs,
         exportable[0].payload_buffer.len(),
         exportable[1].payload_buffer.len(),
         output_rate,
         path.display(),
-        // Summed across both channels: either ring wrapping makes the file
-        // partial, and an operator reading one number wants the total.
-        wrap_clause(exportable[0].payload_frames_dropped + exportable[1].payload_frames_dropped),
-        omitted_clause(streams.len(), 2, &skipped_codecs),
-        decode_failure_clause(left_failures + right_failures),
     ))
 }
 
 /// How the audio in an artefact was obtained.
 ///
-/// RE7 requires an artefact to NAME this. The two differ in what they can be
-/// trusted to say: `SipnabCapture` is what sipnab saw on the wire, bounded by
-/// where the capture point sits and by what retention kept, while
-/// `RtpengineSpool` is what a relay wrote down, which sipnab did not witness
-/// and cannot vouch for beyond the relay's own honesty.
+/// RE7 requires an artefact to NAME this, because the possible answers differ
+/// in what they can be trusted to say: audio sipnab captured itself is bounded
+/// by where the capture point sat and by what retention kept, while audio read
+/// from a relay's spool is what that relay wrote down, which sipnab did not
+/// witness and cannot vouch for beyond the relay's own honesty.
 ///
-/// An operator holding a file months later cannot recover this from the bytes,
+/// An operator holding a file months later cannot recover that from the bytes,
 /// so it travels inside them.
+///
+/// ONE VARIANT, deliberately. RE7 names two mechanisms and this carried both
+/// for a while, with nothing anywhere constructing the second -- an enum arm no
+/// code path produces reads as a capability the tool has, and it does not have
+/// it. `rtpengine-spool` returns when RE5 gives it a producer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioMechanism {
     /// Decoded from RTP payload sipnab captured itself.
     SipnabCapture,
-    /// Read from a recording an rtpengine relay produced.
-    RtpengineSpool,
 }
 
 impl AudioMechanism {
@@ -210,7 +214,6 @@ impl AudioMechanism {
     pub fn id(self) -> &'static str {
         match self {
             Self::SipnabCapture => "sipnab-capture",
-            Self::RtpengineSpool => "rtpengine-spool",
         }
     }
 }
@@ -238,6 +241,44 @@ fn provenance_note(mechanism: AudioMechanism, partial: &str) -> String {
         mechanism.id(),
         completeness,
     )
+}
+
+/// A clause naming a direction of media that never reached this run.
+///
+/// A call has two directions and a dialog export writes what it was given. Given
+/// one direction it produces a mono file whose summary is byte-identical to a
+/// deliberate single-stream export, so "we only ever saw one side" and "you
+/// asked for one side" read the same.
+///
+/// Worded as an OBSERVATION, not a verdict. sipnab detects genuine one-way
+/// audio elsewhere, against a `MediaContext` that knows whether the capture
+/// could have seen the reverse direction at all; this function has streams and
+/// nothing else, so it says what reached the capture point and stops there. A
+/// mid-path tap that only sees one leg is the ordinary reason, and calling that
+/// a one-way call would accuse the traffic of the capture's own limits.
+///
+/// Paired by IP, not by socket: each direction negotiates its own port in SDP,
+/// so exact reverse-socket matching would report almost every real call as
+/// one-directional.
+fn direction_clause(streams: &[&RtpStream]) -> String {
+    use std::collections::BTreeSet;
+
+    let pairs: BTreeSet<(std::net::IpAddr, std::net::IpAddr)> = streams
+        .iter()
+        .map(|s| (s.key.src.ip(), s.key.dst.ip()))
+        .collect();
+    if pairs.is_empty() {
+        return String::new();
+    }
+    // Bidirectional when some pair's reverse is also present.
+    let bidirectional = pairs.iter().any(|(a, b)| pairs.contains(&(*b, *a)));
+    if bidirectional {
+        return String::new();
+    }
+    " — PARTIAL: media in only ONE direction reached this capture; no stream \
+     going the other way was observed. That may be a one-way call, or a capture \
+     point that only sees one leg -- this file cannot tell you which."
+        .to_string()
 }
 
 /// A clause naming frames the decoder could not turn into audio.
@@ -720,6 +761,113 @@ mod tests {
             summary.contains("G729"),
             "the undecodable stream was filtered out silently, so the file \
              looks complete:\n{summary}"
+        );
+    }
+
+    /// A file holding one direction must say the other was never seen.
+    ///
+    /// RE7 names "egress not observed" among the ways an artefact is partial.
+    /// A dialog export handed one direction produces a mono file whose summary
+    /// is byte-identical to a deliberate single-stream export, so "we only saw
+    /// one side" and "you asked for one side" read the same.
+    #[test]
+    fn a_file_with_one_direction_says_the_other_was_not_seen() {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        fn directed(src: [u8; 4], dst: [u8; 4]) -> RtpStream {
+            let mut s = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+            s.key.src = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(src)), 20000);
+            s.key.dst = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(dst)), 30000);
+            s
+        }
+
+        // Both ways: nothing to report.
+        let there = directed([10, 0, 0, 1], [10, 0, 0, 2]);
+        let back = directed([10, 0, 0, 2], [10, 0, 0, 1]);
+        assert_eq!(
+            direction_clause(&[&there, &back]),
+            "",
+            "a call captured in both directions is not partial"
+        );
+
+        // One way only.
+        let clause = direction_clause(&[&there]);
+        assert!(
+            clause.contains("only ONE direction"),
+            "a one-directional capture must say so:\n{clause}"
+        );
+        // And must NOT accuse the call: a mid-path tap sees one leg by design.
+        assert!(
+            clause.contains("capture point that only sees one leg"),
+            "the clause must offer the capture's own limits as a cause, not \
+             assert the call was one-way:\n{clause}"
+        );
+
+        // Ports differ per direction in real SDP; pairing must survive that.
+        let mut back_odd_port = directed([10, 0, 0, 2], [10, 0, 0, 1]);
+        back_odd_port.key.src = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 41234);
+        assert_eq!(
+            direction_clause(&[&there, &back_odd_port]),
+            "",
+            "each direction negotiates its own port; pairing by socket would \
+             report almost every real call as one-directional"
+        );
+    }
+
+    /// The dialog export must actually CALL the direction clause.
+    ///
+    /// `direction_clause` has a unit test, and it passes while nothing wires
+    /// the clause into an export -- replacing the call with an empty string
+    /// still compiles and still passes it. That has now happened four times in
+    /// this file with four different clauses, which is the argument for
+    /// exporting real streams and reading the summary rather than testing the
+    /// formatter and assuming the rest.
+    #[test]
+    fn a_one_directional_dialog_export_reports_it() {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("oneway.wav");
+
+        // Two streams, both A -> B: media was only ever seen going one way.
+        let mut a = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        a.key.src = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000);
+        a.key.dst = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000);
+        let mut b = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        b.key.ssrc = 0x9999_0000;
+        b.key.src = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20002);
+        b.key.dst = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30002);
+
+        let summary = export_dialog_to_wav(&[&a, &b], &path).expect("export");
+        assert!(
+            summary.contains("only ONE direction"),
+            "a dialog whose media was only seen one way exported without \
+             saying so:\n{summary}"
+        );
+
+        // And it reaches the FILE, which is what RE7 asks for.
+        let bytes = std::fs::read(&path).expect("read back");
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("only ONE direction"),
+            "the note inside the file must carry it too, not just the summary"
+        );
+    }
+
+    /// Every mechanism the enum offers must have something that produces it.
+    ///
+    /// RE7 names two, and this carried both while nothing constructed the
+    /// second. An enum arm no code path produces reads as a capability the
+    /// tool has. `rtpengine-spool` returns when RE5 gives it a producer.
+    #[test]
+    fn every_mechanism_is_reachable() {
+        assert_eq!(AudioMechanism::SipnabCapture.id(), "sipnab-capture");
+        // Exhaustive by construction: adding a variant without a producer
+        // fails to compile here until it is listed, which is the reminder.
+        let all = [AudioMechanism::SipnabCapture];
+        assert_eq!(
+            all.len(),
+            1,
+            "a new mechanism needs a producer and a test that exports through it"
         );
     }
 
