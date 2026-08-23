@@ -1272,7 +1272,7 @@ Both found while single-sourcing the prose-gate path lists. Grouped because
 they are the same failure in two places: something states a rule, and nothing
 holds anything to it.
 
-- [ ] **GATE1 — the prose gates run only at pre-push, so a commit can be made
+- [x] **GATE1 — the prose gates run only at pre-push, so a commit can be made
   and not pushed.** `vale` and `codespell` are in
   [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) and not in
   [`.githooks/pre-commit`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-commit), which runs fmt, clippy and the suite. Work that
@@ -1296,6 +1296,29 @@ holds anything to it.
   were added to remove. The shape is a shared script both hooks source —
   [`scripts/preflight.sh`](https://github.com/NormB/sipnab/blob/main/scripts/preflight.sh) already brackets its two gates with
   `BEGIN`/`END` markers, which is most of the extraction.
+
+  **Done 2026-08-23, and the extraction is what shipped rather than a paste.**
+  [`scripts/prose-gates.sh`](https://github.com/NormB/sipnab/blob/main/scripts/prose-gates.sh) owns all four decisions and both path
+  lists; `pre-commit`, `pre-push` and `preflight.sh` source it and keep only
+  their rendering. It returns 0 clean, 1 findings, 2 did-not-run, and 2 never
+  renders as a pass. Gate 0b in `pre-commit` now prints `Vale... OK` and
+  `Codespell... OK` beside `Formatting`, about a second each against gate 2's
+  minutes.
+
+  Two guesses in the paragraph above turned out wrong, and both cost a cycle to
+  learn. The `BEGIN`/`END` markers are not "most of the extraction" — they are a
+  CONSTRAINT: `preflight_strict_test` runs the text between them verbatim and
+  standalone, so anything a block needs must sit inside the markers, and a
+  source line above them is simply absent. And the fixture provisioning added
+  for that suite wrote [`scripts/prose-gates.sh`](https://github.com/NormB/sipnab/blob/main/scripts/prose-gates.sh) into the checkout, because one
+  case runs from `repo()/tests` and `cwd != repo()` read a real subdirectory as
+  a temp tree.
+
+  Mutation-tested after each widening. Two mutants survived the first pass --
+  a runner that hardcoded a list while a comment still named the shared script,
+  and a broken version-pin derivation whose path still appeared in prose --
+  because `contains` proves a string is present, never that it is used. Both
+  now require the string on a line that greps or sources.
 
 - [ ] **GATE2 — branch protection on `main` is bypassed on every push, so
   neither rule it declares is enforced.** Every push to `main` reports:

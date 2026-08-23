@@ -348,8 +348,16 @@ step "docs + site gates"
 # the day preflight was written: adding a twelfth workflow moves a spelled-out
 # count in a heading ("The eleven workflows") AND requires a row in the table
 # under it. Both are decidable in seconds and both bounced a commit.
+#
+# doc_link_hygiene_test joined them on 2026-08-23 for the same reason and after
+# the same evidence: it bounced two commits that day, both on a tracked path
+# written as a bare code span where the page wants a link. The whole binary
+# runs in under a second, it names the file and line, and it names the fixer
+# -- scripts/link-repo-paths.py --apply -- which produces exactly what it
+# demands. Learning that from the hook costs a full suite run instead.
 if cargo test --features full --test docs_drift_test --test link_integrity_test \
     --test site_journey_test --test dev_docs_drift_test \
+    --test doc_link_hygiene_test \
     >/tmp/.sipnab-preflight-gates.$$ 2>&1; then
     ok
 else
