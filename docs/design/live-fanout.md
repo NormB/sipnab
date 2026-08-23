@@ -258,7 +258,7 @@ Three things happen at that EOF, and none of them has a live equivalent:
    fragments in capture-timestamp order and re-runs the state machine. Live,
    there is no moment at which a dialog is finished arriving.
 2. **`StreamStore::reassociate_all` links streams to dialogs globally**
-   ([`stream_store.rs:1629`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1629)), because SDP and RTP
+   ([`stream_store.rs:1720`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1720)), because SDP and RTP
    routinely land on different workers when the carrier advertises a separate
    media IP.
 3. **`final_sweep` runs exactly ONCE, after the merge, at the capture's final

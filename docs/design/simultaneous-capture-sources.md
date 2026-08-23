@@ -150,13 +150,13 @@ by SDP media endpoint, and the key is a bare `(IpAddr, u16)`.
 through `effective_address` ([`src/sip/sdp.rs:289`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L289)) — media-level `c=` when
 present, session-level otherwise — and yields `(ip, port, call_id, media)`
 tuples. [`src/pipeline.rs:2165`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2165) feeds each one to `link_to_dialog_with_sdp`
-([`src/rtp/stream_store.rs:1069`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1069)), which lands in `link_endpoint_with_ptime`
-([`src/rtp/stream_store.rs:1151`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1151)). That function does two things:
+([`src/rtp/stream_store.rs:1105`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1105)), which lands in `link_endpoint_with_ptime`
+([`src/rtp/stream_store.rs:1210`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1210)). That function does two things:
 
-1. `remember_sdp_endpoint` ([`src/rtp/stream_store.rs:1282`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1282)) records
+1. `remember_sdp_endpoint` ([`src/rtp/stream_store.rs:1318`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1318)) records
    `(addr, port) -> SdpEndpoint { call_id, rtpmap, ptime }`, so a stream created
    *later* resolves at creation through `resolve_from_sdp`
-   ([`src/rtp/stream_store.rs:1343`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1343)), called from [`src/rtp/stream_store.rs:507`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L507).
+   ([`src/rtp/stream_store.rs:1379`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1379)), called from [`src/rtp/stream_store.rs:507`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L507).
 2. It sweeps the endpoint index for streams that already exist and fills an
    unset `associated_dialog`.
 
@@ -186,7 +186,7 @@ Call-ID deserves the explicit zero. It is the obvious answer and it is not an
 answer: an RTP packet has no Call-ID field, so the identifier that makes the
 signaling side tractable does not exist on the media side. This is the same
 observation `attribute_media_quote` opens with
-([`src/rtp/stream_store.rs:1440`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1440)): *"An ICMP error about media carries no
+([`src/rtp/stream_store.rs:1508`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1508)): *"An ICMP error about media carries no
 Call-ID — a media datagram has none to carry."*
 
 Timing deserves a firmer no. "The stream started 40 ms after the 200 OK, so it
@@ -283,9 +283,9 @@ handles SDP-then-RTP and the endpoint sweep in `link_endpoint_with_ptime` handle
 RTP-then-SDP, which is exactly the SNB-0007 ordering fix — so the association is
 order-independent. What is *not* order-independent is the clock rate: a stream
 created before its `a=rtpmap` accumulates jitter against a placeholder, and
-`link_endpoint_with_ptime` ([`src/rtp/stream_store.rs:1151`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1151))
+`link_endpoint_with_ptime` ([`src/rtp/stream_store.rs:1210`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1210))
 restarts the estimator and records where, so `measured_jitter_ms`
-([`src/rtp/stream_store.rs:996`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L996)) withholds the figure until it
+([`src/rtp/stream_store.rs:1032`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1032)) withholds the figure until it
 reconverges. That machinery exists and covers this. Worth a test, not a design change.
 
 **F6 — Duplicate observation.** If the NIC also sees the signaling that HEP is
@@ -773,7 +773,7 @@ the one the design expected to have to write. Run 3 is F1 reproduced on demand.
    capture-local one. Under scope `"t"` either rule works; under `"m"` the single
    advertised endpoint is the stream's *remote* peer, so a local-only rule binds
    zero streams where a both-ends rule binds one. sipnab already does the right
-   thing — `resolve_from_sdp` ([`src/rtp/stream_store.rs:1343`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1343)) tries `key.src`
+   thing — `resolve_from_sdp` ([`src/rtp/stream_store.rs:1379`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1379)) tries `key.src`
    and `key.dst` — so this is a property to keep rather than one to add.
 3. The ACK is never mirrored: it is end-to-end and outside the INVITE server
    transaction. No SDP rode on it here, but a delayed-offer call puts the ANSWER
