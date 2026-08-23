@@ -4016,11 +4016,18 @@ fn the_wasm_check_targets_wasm_in_both_the_hook_and_ci() {
 #[test]
 fn the_prose_gate_path_lists_have_one_source() {
     /// The runners that must READ a list rather than restate it.
-    const RUNNERS: [&str; 3] = [
+    ///
+    /// `.githooks/pre-commit` joined them when the prose gates moved to where
+    /// they are cheap to fix; it reaches the lists through the shared script,
+    /// as the other two hooks now do.
+    const RUNNERS: [&str; 4] = [
+        ".githooks/pre-commit",
         ".githooks/pre-push",
         "scripts/preflight.sh",
         ".github/workflows/quality.yml",
     ];
+    /// The one place the three hooks resolve their tools and read the lists.
+    const SHARED_SCRIPT: &str = "scripts/prose-gates.sh";
     /// (list file, the tool's own name, fewest entries a non-gutted list has).
     ///
     /// The tool name scopes the search below. A runner also invokes lychee and
@@ -4063,6 +4070,20 @@ fn the_prose_gate_path_lists_have_one_source() {
             paths.len()
         );
 
+        // The shared script is where "one source" actually lives now, so it
+        // has to read the file rather than merely be sourced. Without this the
+        // gate would pass on three hooks sourcing a script that reads nothing.
+        let shared = std::fs::read_to_string(repo.join(SHARED_SCRIPT))
+            .unwrap_or_else(|e| panic!("cannot read {SHARED_SCRIPT}: {e}"));
+        assert!(
+            shared
+                .lines()
+                .any(|l| l.contains(list_file) && !l.trim_start().starts_with('#')),
+            "{SHARED_SCRIPT} does not read {list_file}. It is what the hooks \
+             source instead of reading the list themselves, so if it stops \
+             reading the file nothing does."
+        );
+
         // A path that is not there is a path the tool silently skips.
         for p in &paths {
             assert!(
@@ -4078,10 +4099,23 @@ fn the_prose_gate_path_lists_have_one_source() {
             // On a line that RUNS, not merely one that mentions it. A comment
             // naming the file satisfied this while the code beside it carried a
             // hardcoded list -- found by mutation, not by reading.
+            //
+            // Reading it directly OR sourcing the script that does. The three
+            // hooks stopped reading these files themselves when the tool
+            // resolution moved into scripts/prose-gates.sh, and this assertion
+            // failed all three -- correctly, against a definition of "reader"
+            // that predated the shared script. What must stay true is that ONE
+            // place reads the list; where that place sits is an implementation
+            // detail this gate should not pin.
+            let reads_directly = text
+                .lines()
+                .any(|l| l.contains(list_file) && !l.trim_start().starts_with('#'));
+            let sources_shared = text
+                .lines()
+                .any(|l| l.contains(SHARED_SCRIPT) && !l.trim_start().starts_with('#'));
             assert!(
-                text.lines()
-                    .any(|l| l.contains(list_file) && !l.trim_start().starts_with('#')),
-                "{runner} does not read {list_file} anywhere outside a comment. \
+                reads_directly || sources_shared,
+                "{runner} neither reads {list_file} nor sources {SHARED_SCRIPT}. \
                  The list has one source; a runner that only NAMES it and keeps \
                  its own copy is a second one."
             );
@@ -4173,14 +4207,38 @@ fn the_vale_version_pin_has_one_source() {
         "{CI} VALE_VERSION is {pin:?}, which is not a version"
     );
 
-    for runner in [".githooks/pre-push", "scripts/preflight.sh"] {
+    // The pin is derived in scripts/prose-gates.sh, which the hooks source.
+    // It must genuinely read the workflow, or nothing does.
+    const SHARED_SCRIPT: &str = "scripts/prose-gates.sh";
+    let shared = std::fs::read_to_string(repo.join(SHARED_SCRIPT))
+        .unwrap_or_else(|e| panic!("cannot read {SHARED_SCRIPT}: {e}"));
+    // On a line that reads it. Mutation broke the derivation and this still
+    // passed, because the path also appears in the comment explaining it --
+    // `contains` proves the string is present, never that it is used.
+    assert!(
+        shared
+            .lines()
+            .any(|l| { l.contains(CI) && !l.trim_start().starts_with('#') && l.contains("grep") }),
+        "{SHARED_SCRIPT} does not GREP {CI} for the vale version, and it is \
+         where every hook now gets it. Naming the file in a comment is not \
+         reading it."
+    );
+
+    for runner in [
+        ".githooks/pre-commit",
+        ".githooks/pre-push",
+        "scripts/preflight.sh",
+    ] {
         let text = std::fs::read_to_string(repo.join(runner))
             .unwrap_or_else(|e| panic!("cannot read {runner}: {e}"));
 
+        // Derived here, or derived by the script this sources. Either way the
+        // literal must not appear: that is what "one source" means.
         assert!(
-            text.contains(CI),
-            "{runner} does not read {CI} for the vale version. The pin has one \
-             source; a runner carrying its own is a second one."
+            text.contains(CI) || text.contains(SHARED_SCRIPT),
+            "{runner} neither reads {CI} for the vale version nor sources \
+             {SHARED_SCRIPT}. The pin has one source; a runner carrying its own \
+             is a second one."
         );
 
         for (n, line) in text.lines().enumerate() {
@@ -4251,4 +4309,102 @@ fn no_ratchet_repeats_its_own_expected_value() {
         "the checker reported {scanned} assertions scanned, which is too few to \
          be the real tree -- it passed by reading almost nothing:\n{stdout}"
     );
+}
+
+/// The prose gates resolve their tools in ONE place, and all three hooks use it.
+///
+/// `vale` and `codespell` are each resolved the same way in more than one
+/// runner: an env-var escape hatch (`VALE_BIN`, `CODESPELL_BIN`), a PATH
+/// lookup, a version pin read from the workflow, and a skip-with-a-stated-
+/// reason path that keeps a missing tool from reading as a pass. That is four
+/// decisions, and every copy of them is a chance for one runner to be laxer
+/// than another -- which is exactly what the path lists did before
+/// `.config/vale-paths.txt` and `.config/codespell-paths.txt`.
+///
+/// It also blocked the fix for the gates' real problem. They ran only at
+/// pre-push, so work that satisfied pre-commit met them at the push with the
+/// commit already made, costing a full gate cycle each time. Adding them to
+/// pre-commit by pasting the logic a third time would have bought that at the
+/// price of the duplication above; `scripts/prose-gates.sh` is what makes the
+/// third caller free.
+#[test]
+fn the_prose_gate_logic_has_one_source() {
+    const SHARED: &str = "scripts/prose-gates.sh";
+    /// Every runner that must SOURCE the shared script rather than reimplement it.
+    const RUNNERS: [&str; 3] = [
+        ".githooks/pre-commit",
+        ".githooks/pre-push",
+        "scripts/preflight.sh",
+    ];
+    /// Decisions that belong to the shared script alone.
+    ///
+    /// Resolution SYNTAX, not the env-var names. Every runner still tells a
+    /// reader "point VALE_BIN at one" when the gate cannot run, and that advice
+    /// is rendering, not resolution -- matching on the bare name rejected the
+    /// printf that gives it.
+    const TOOL_RESOLUTION: [&str; 4] = [
+        "${VALE_BIN:-}",
+        "${CODESPELL_BIN:-}",
+        "command -v vale",
+        "VALE_VERSION:",
+    ];
+
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let shared = std::fs::read_to_string(repo.join(SHARED)).unwrap_or_else(|e| {
+        panic!("{SHARED} is missing ({e}); it is where the prose gates resolve their tools")
+    });
+
+    // Anti-vacuity: an empty stub would satisfy every assertion below.
+    for needle in TOOL_RESOLUTION {
+        assert!(
+            shared.contains(needle),
+            "{SHARED} does not mention {needle} -- the resolution it is supposed \
+             to own has been moved back out, or this list is stale"
+        );
+    }
+
+    for runner in RUNNERS {
+        let text = std::fs::read_to_string(repo.join(runner))
+            .unwrap_or_else(|e| panic!("cannot read {runner}: {e}"));
+
+        // SOURCED, not mentioned. Mutation replaced the `.` line with a
+        // hardcoded list and this passed, because the comment above it still
+        // named the script.
+        //
+        // Two conditions rather than one literal `. path` line: scripts/
+        // preflight.sh assigns the path to a variable first, so it can fall
+        // back to a relative path when `git rev-parse` finds no repository,
+        // and then sources the VARIABLE. Pinning the spelling of the source
+        // line failed that file while it was entirely correct -- the same trap
+        // the wasm gate hit, and the reason it pins `--target` and the triple
+        // instead of a command string.
+        let names_it = text
+            .lines()
+            .any(|l| !l.trim_start().starts_with('#') && l.contains(SHARED));
+        let sources_something = text
+            .lines()
+            .any(|l| l.trim_start().starts_with(". ") && !l.trim_start().starts_with('#'));
+        assert!(
+            names_it && sources_something,
+            "{runner} does not source {SHARED} in code (names it: {names_it}, \
+             has a source line: {sources_something}). Naming it in a comment is \
+             not using it. The prose gates run in all three hooks and resolve \
+             their tools in one place."
+        );
+
+        for needle in TOOL_RESOLUTION {
+            for (n, line) in text.lines().enumerate() {
+                if line.trim_start().starts_with('#') || line.contains(SHARED) {
+                    continue;
+                }
+                assert!(
+                    !line.contains(needle),
+                    "{runner}:{} resolves the tool itself ({needle}). That \
+                     decision belongs to {SHARED}:\n  {}",
+                    n + 1,
+                    line.trim()
+                );
+            }
+        }
+    }
 }

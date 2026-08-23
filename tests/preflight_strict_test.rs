@@ -220,7 +220,28 @@ impl<'a> Case<'a> {
     /// suite itself runs under CI, where inheriting `CI=true` would make every
     /// "a contributor is not blocked" test strict and pass for the wrong
     /// reason.
+    ///
+    /// A case running in a temp tree gets `scripts/prose-gates.sh` copied in,
+    /// the same way it is already given `.github/workflows/quality.yml` and a
+    /// stub `vale`. The prose gates resolve their tools through that script, so
+    /// a tree without it is not a smaller tree, it is a broken one -- and the
+    /// block would then report "cannot open" rather than the reason under test.
     fn run(self) -> Run {
+        // OUTSIDE the repository, not merely "not the repo root". A case may
+        // run from a real subdirectory (`repo()/tests`, to prove the gates work
+        // from one), and `!= repo()` treated that as a temp tree and wrote
+        // scripts/prose-gates.sh into the checkout -- a test polluting the tree
+        // it is testing. Inside the repo the block's own `git rev-parse` finds
+        // the real script and nothing needs providing.
+        if !self.cwd.starts_with(repo()) {
+            let dst = self.cwd.join("scripts");
+            std::fs::create_dir_all(&dst).expect("mkdir scripts");
+            std::fs::copy(
+                repo().join("scripts/prose-gates.sh"),
+                dst.join("prose-gates.sh"),
+            )
+            .expect("provision scripts/prose-gates.sh");
+        }
         let mut script = String::from("GREEN=''; RED=''; YELLOW=''; NC=''\nFIX=0\n");
         script.push_str(&self.pre);
         for b in self.blocks {

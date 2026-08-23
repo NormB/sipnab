@@ -723,86 +723,58 @@ esac
 # tool is absent is worse than no gate, because green then means nothing.
 prose_fail=0
 
-# The version is part of the check, not a detail. Vale.Spelling consults an
-# internal dictionary that changes between releases, and the Google package
-# resolves differently across binaries, so a run on the wrong version is not
-# evidence about CI in EITHER direction. Measured 2026-08-18 on identical
-# committed bytes: vale 3.16.0 (what CI pins) reported 0 errors, Homebrew's
-# 3.17.1 reported 475. That is not a stricter check finding more; it is a
-# different check answering a different question, and it made this gate
-# unpassable here while CI was green.
+# Why the version pin is part of the check, and what a mismatched binary
+# measured, is recorded in scripts/prose-gates.sh beside the comparison
+# itself rather than here beside the printf that reports it.
+# Both prose gates resolve their tools and read their path lists in one place,
+# scripts/prose-gates.sh, which .githooks/pre-commit and scripts/preflight.sh
+# also source. Four decisions used to be written out here AND there -- the
+# env-var escape hatch, the PATH lookup, the version pin, and the
+# skip-with-a-reason path -- and every copy was a chance for one runner to be
+# laxer than another, which is what the path lists did before they were
+# single-sourced. Rendering stays here, because each caller has different room.
 #
-# `.vale.ini` says the same thing at its top. Take it literally: match the
-# version in quality.yml before believing a local run.
-#
-# VALE_BIN points at a pinned binary, exactly as CODESPELL_BIN does below.
-# Derived, never restated. scripts/preflight.sh already read the pin out of
-# quality.yml and this hook carried its own literal beside it, so a bump in CI
-# would leave the hook comparing a correct binary against a stale number and
-# reporting NOT CHECKED -- a gate switching itself off quietly. Empty when the
-# workflow cannot be read, which the comparison below treats as "unknown"
-# rather than as a match.
-VALE_PIN=$(grep -oE "VALE_VERSION: '[0-9.]+'" .github/workflows/quality.yml 2>/dev/null | grep -oE '[0-9.]+' | head -1)
-if [ -n "${VALE_BIN:-}" ] && [ -x "${VALE_BIN}" ]; then
-	VALE="$VALE_BIN"
-elif command -v vale >/dev/null 2>&1; then
-	VALE=vale
-else
-	VALE=''
-fi
-if [ -n "$VALE" ]; then
-	VALE_HAVE=$("$VALE" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-fi
+# Return 2 is NOT a pass and is not rendered as one: a gate that cannot run has
+# to say so.
+. "$(git rev-parse --show-toplevel)/scripts/prose-gates.sh"
 
 printf '  vale (prose style) ... '
-if [ -z "$VALE" ]; then
-	printf '%bNOT CHECKED -- vale is not installed%b\n' "$YELLOW" "$NC"
-	printf '    CI runs it and it blocks. Install v%s from https://vale.sh, or point\n' "$VALE_PIN"
-	printf '    VALE_BIN at one, to check here.\n'
-elif [ "$VALE_HAVE" != "$VALE_PIN" ]; then
-	printf '%bNOT CHECKED -- vale %s, CI pins %s%b\n' "$YELLOW" "${VALE_HAVE:-unknown}" "$VALE_PIN" "$NC"
-	printf '    A different binary reports a different count on the same bytes, so\n'
-	printf '    this run would be evidence about nothing. Point VALE_BIN at a\n'
-	printf '    v%s binary to check here; CI still enforces it.\n' "$VALE_PIN"
-# Paths from the shared list -- see .config/vale-paths.txt.
-# shellcheck disable=SC2086
-elif "$VALE" $(sed 's/#.*//' .config/vale-paths.txt | tr '\n' ' ') >/tmp/.sipnab-vale.$$ 2>&1; then
+prose_vale_run
+case $? in
+0)
 	printf '%bOK%b\n' "$GREEN" "$NC"
-	rm -f /tmp/.sipnab-vale.$$
-else
+	;;
+1)
 	printf '%bFAIL%b\n' "$RED" "$NC"
-	tail -40 /tmp/.sipnab-vale.$$
-	rm -f /tmp/.sipnab-vale.$$
+	tail -40 "$PROSE_OUTPUT"
 	prose_fail=1
-fi
+	;;
+*)
+	printf '%bNOT CHECKED -- %s%b\n' "$YELLOW" "$PROSE_REASON" "$NC"
+	printf '    CI runs it and it blocks. Install v%s from https://vale.sh, or\n' "$PROSE_PIN"
+	printf '    point VALE_BIN at one, to check here.\n'
+	;;
+esac
+rm -f "$PROSE_OUTPUT"
 
-# The paths codespell runs over live in ONE file, read by this hook, by
-# scripts/preflight.sh and by .github/workflows/quality.yml. They used to be
-# three copies kept identical by a comment saying so, and they were not: this
-# copy omitted `bench`, so a misspelling in the operator harness passed here
-# and failed in CI. `the_codespell_path_list_has_one_source` now fails when a
-# runner restates the list instead of reading it.
-CODESPELL_PATHS=$(sed 's/#.*//' .config/codespell-paths.txt | tr '\n' ' ')
 printf '  codespell (spelling) ... '
-CS=""
-if command -v codespell >/dev/null 2>&1; then
-	CS=codespell
-elif [ -n "${CODESPELL_BIN:-}" ] && [ -x "${CODESPELL_BIN}" ]; then
-	CS="$CODESPELL_BIN"
-fi
-if [ -z "$CS" ]; then
-	printf '%bNOT CHECKED -- codespell is not installed%b\n' "$YELLOW" "$NC"
+prose_codespell_run
+case $? in
+0)
+	printf '%bOK%b\n' "$GREEN" "$NC"
+	;;
+1)
+	printf '%bFAIL%b\n' "$RED" "$NC"
+	tail -30 "$PROSE_OUTPUT"
+	prose_fail=1
+	;;
+*)
+	printf '%bNOT CHECKED -- %s%b\n' "$YELLOW" "$PROSE_REASON" "$NC"
 	printf '    CI runs it and it blocks. `pipx install codespell`, or point\n'
 	printf '    CODESPELL_BIN at one in a venv, to check here.\n'
-elif $CS $CODESPELL_PATHS --skip ./.git >/tmp/.sipnab-cs.$$ 2>&1; then
-	printf '%bOK%b\n' "$GREEN" "$NC"
-	rm -f /tmp/.sipnab-cs.$$
-else
-	printf '%bFAIL%b\n' "$RED" "$NC"
-	tail -30 /tmp/.sipnab-cs.$$
-	rm -f /tmp/.sipnab-cs.$$
-	prose_fail=1
-fi
+	;;
+esac
+rm -f "$PROSE_OUTPUT"
 
 if [ "$prose_fail" -ne 0 ]; then
 	printf '\n'

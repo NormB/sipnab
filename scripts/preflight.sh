@@ -137,110 +137,90 @@ fi
 # Compare the versions and refuse to report a pass from the wrong one.
 # ---------------------------------------------------------------------------
 # >>> BEGIN vale-gate
+# Sourced INSIDE the marker, not once at the top of the file.
+# tests/preflight_strict_test.rs runs the text between these markers verbatim
+# and standalone, so anything this block needs has to be inside it -- a source
+# line further up is simply absent when the block is extracted. Sourcing twice
+# in a full run costs nothing: it redefines the same shell functions.
+#
+# Located without requiring git: this script cds to ROOT before any gate runs
+# and the extracted blocks run with cwd at the tree root, so the relative path
+# is right in both. `git rev-parse` is tried first only so a run started from a
+# subdirectory still finds it. A bare `$(git ...)` here resolved to
+# /scripts/prose-gates.sh in a temp tree that was not a repository.
+PROSE_LIB="scripts/prose-gates.sh"
+_root=$(git rev-parse --show-toplevel 2>/dev/null) &&
+	[ -r "$_root/$PROSE_LIB" ] && PROSE_LIB="$_root/$PROSE_LIB"
+# shellcheck source=scripts/prose-gates.sh
+. "$PROSE_LIB"
 step "vale (CI-pinned version)"
-VALE_OUT="/tmp/.sipnab-preflight-vale.$$"
-WANT_VALE=$(grep -oE "VALE_VERSION: '[0-9.]+'" .github/workflows/quality.yml 2>/dev/null | grep -oE "[0-9.]+" | head -1)
-# VALE_BIN, exactly as .githooks/pre-push and CODESPELL_BIN below accept, and
-# for a reason this script's own strictness rules turn into a hard block.
-#
-# The version comparison two branches down is right and stays. What was missing
-# was any way to SATISFY it. `command -v vale` was the only lookup, so on a
-# machine whose package manager ships a version other than the pin there was no
-# second binary to reach for: `degraded` under PREFLIGHT_STRICT=1 (which is the
-# DEFAULT whenever stdout is not a tty -- a log file, a CI job, an agent) means
-# FAILED=1, and the run could not be made to pass by installing anything.
-#
-# Measured 2026-08-19 on macOS/aarch64: Homebrew ships vale 3.17.1, quality.yml
-# pins 3.16.0, and on identical committed bytes those two report 0 and 475
-# errors. Homebrew has no 3.16.0 formula, so "install the pinned version" was
-# advice with no macOS answer behind it -- a side-by-side pinned binary is the
-# answer, and now there is a variable that points at one.
-#
-# Deliberately checked BEFORE `command -v vale`: the point is to override a
-# PATH binary of the wrong version, so a PATH-first lookup would defeat it.
-# (CODESPELL_BIN below is PATH-first, which is a separate wart -- codespell has
-# no version pin, so any install is as good as another there.)
-VALE=""
-if [ -n "${VALE_BIN:-}" ] && [ -x "${VALE_BIN}" ]; then
-    VALE="$VALE_BIN"
-elif command -v vale >/dev/null 2>&1; then
-    VALE=vale
-fi
-if [ -z "$VALE" ]; then
-    degraded
-    note "vale is not installed. CI runs it and it BLOCKS."
-    note "Install ${WANT_VALE:-the pinned version}: https://vale.sh"
-    note "or point VALE_BIN at a v${WANT_VALE:-pinned} binary, as the hook accepts."
-elif [ -z "$WANT_VALE" ]; then
-    # An empty WANT_VALE used to skip the version comparison and run Vale
-    # anyway, reporting OK from an unknown binary -- the same defect one level
-    # up from a missing tool: nothing to compare against read as agreement.
-    degraded
-    note "no VALE_VERSION in .github/workflows/quality.yml, so the version"
-    note "comparison had nothing to compare. Whatever this binary reports is"
-    note "not evidence about CI. Restore the pin in the workflow."
-elif ! "$VALE" --version 2>/dev/null | grep -qF "$WANT_VALE"; then
-    degraded
-    note "local $("$VALE" --version 2>/dev/null | head -1) but CI pins $WANT_VALE."
-    note "Different dictionaries: a green run here is NOT evidence about CI."
-    note "Fetch the pinned build for this arch and point VALE_BIN at it."
-else
-    # CI's exact path list, because it is literally the same file CI reads --
-    # see .config/vale-paths.txt. Adding anything to it, CHANGELOG.md
-    # especially, invents errors CI will never report; it now takes editing
-    # that one file, and all three runners move together.
-    # shellcheck disable=SC2086
-    if "$VALE" $(sed 's/#.*//' .config/vale-paths.txt | tr '\n' ' ') >"$VALE_OUT" 2>&1; then
-        ok
-    else
-        bad
-        # E100 is "style does not exist", not a prose error: `.vale/styles/`
-        # holds gitignored packages, so a fresh clone lints against nothing
-        # until `vale sync` fetches them. Say so, because the raw message reads
-        # like the documentation is broken.
-        if grep -q 'E100' "$VALE_OUT" 2>/dev/null; then
-            note "Vale could not LOAD a style, so it linted nothing. The style"
-            note "packages under .vale/styles/ are gitignored and a fresh"
-            note "clone has none. Run: vale sync"
-        fi
-        tail -25 "$VALE_OUT"
+# Resolution, the version pin and the path list all live in
+# scripts/prose-gates.sh, sourced at the top. This block owns only how the
+# result is rendered, which is the one part that differs between the three
+# runners. `degraded` and not `ok` for return 2: under PREFLIGHT_STRICT=1 --
+# the DEFAULT whenever stdout is not a tty, so a log file, a CI job or an agent
+# -- that sets FAILED=1, because a gate that could not run must not read green.
+prose_vale_run
+case $? in
+0)
+    ok
+    ;;
+1)
+    bad
+    # E100 is "style does not exist", not a prose error: `.vale/styles/` holds
+    # gitignored packages, so a fresh clone lints against nothing until
+    # `vale sync` fetches them. Say so, because the raw message reads like the
+    # documentation is broken.
+    if grep -q 'E100' "$PROSE_OUTPUT" 2>/dev/null; then
+        note "Vale could not LOAD a style, so it linted nothing. The style"
+        note "packages under .vale/styles/ are gitignored and a fresh"
+        note "clone has none. Run: vale sync"
     fi
-    rm -f "$VALE_OUT"
-fi
+    tail -25 "$PROSE_OUTPUT"
+    ;;
+*)
+    # PROSE_REASON distinguishes the three ways a run does not happen -- no
+    # binary, no pin in the workflow, or a binary whose version is not the
+    # pinned one. Collapsing them into one message lost the distinction AND
+    # the install pointer, and preflight_strict_test asserts on both.
+    degraded
+    note "$PROSE_REASON."
+    note "CI runs vale and it blocks. Install v${PROSE_PIN:-pinned} from"
+    note "https://vale.sh, or point VALE_BIN at one, to check here."
+    note "A green run on another version is NOT evidence about CI."
+    ;;
+esac
+rm -f "$PROSE_OUTPUT"
 # <<< END vale-gate
 
 # ---------------------------------------------------------------------------
 # 2. codespell, over the shared list in .config/codespell-paths.txt.
 # ---------------------------------------------------------------------------
 # >>> BEGIN codespell-gate
+# Sourced inside the marker, and located, for the reasons the vale gate gives.
+PROSE_LIB="scripts/prose-gates.sh"
+_root=$(git rev-parse --show-toplevel 2>/dev/null) &&
+	[ -r "$_root/$PROSE_LIB" ] && PROSE_LIB="$_root/$PROSE_LIB"
+# shellcheck source=scripts/prose-gates.sh
+. "$PROSE_LIB"
 step "codespell"
-CS_OUT="/tmp/.sipnab-preflight-cs.$$"
-# CODESPELL_BIN is the same escape hatch .githooks/pre-push offers, and it is
-# here for the same reason: a venv install is a real install, and refusing one
-# in strict mode would fail a tree the hook is happy with.
-CS=""
-if command -v codespell >/dev/null 2>&1; then
-    CS=codespell
-elif [ -n "${CODESPELL_BIN:-}" ] && [ -x "${CODESPELL_BIN}" ]; then
-    CS="$CODESPELL_BIN"
-fi
-if [ -z "$CS" ]; then
+# Paths and resolution from scripts/prose-gates.sh, as above.
+prose_codespell_run
+case $? in
+0)
+    ok
+    ;;
+1)
+    bad
+    head -15 "$PROSE_OUTPUT"
+    ;;
+*)
     degraded
-    note "not installed; CI runs it and it blocks. pipx install codespell"
+    note "$PROSE_REASON; CI runs it and it blocks. pipx install codespell"
     note "(or point CODESPELL_BIN at one in a venv, as the hook accepts)"
-else
-    # Same one file the hook and CI read -- see .config/codespell-paths.txt.
-    # Unquoted on purpose: the list is a word list, not one path.
-    # shellcheck disable=SC2086
-    if $CS $(sed 's/#.*//' .config/codespell-paths.txt | tr '\n' ' ') \
-        >"$CS_OUT" 2>&1; then
-        ok
-    else
-        bad
-        head -15 "$CS_OUT"
-    fi
-    rm -f "$CS_OUT"
-fi
+    ;;
+esac
+rm -f "$PROSE_OUTPUT"
 # <<< END codespell-gate
 
 # ---------------------------------------------------------------------------

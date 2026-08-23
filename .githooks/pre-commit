@@ -78,6 +78,62 @@ if [ "$FMT_RC" -ne 0 ]; then
 fi
 echo -e "${GREEN}OK${NC}"
 
+# ── 0b. The prose gates, where they are cheap to fix ───────────────
+# vale and codespell ran only in pre-push, so work that satisfied THIS hook met
+# them at the push with the commit already made -- and each rejection costs a
+# full gate cycle to redo. It cost two of them on 2026-08-22 alone, one of which
+# blocked a release push over a single passive-voice clause.
+#
+# The same argument formatting already won, one gate up: checked where it is
+# cheap to fix, re-checked in pre-push where it matters that it is true. Both
+# tools are about a second; this hook's test step is minutes.
+#
+# pre-push keeps its copies. That is not duplication of the RULE -- resolution,
+# the version pin and both path lists live in scripts/prose-gates.sh, sourced by
+# all three runners -- only of the decision to run it, which is the point: this
+# one is an early warning and that one is the guarantee.
+#
+# Return 2 is NOT a pass. A commit is not blocked by a missing tool, because CI
+# still enforces it and blocking here would make the hook unusable on a machine
+# without both; it is reported instead, so nobody reads silence as green.
+. "$(git rev-parse --show-toplevel)/scripts/prose-gates.sh"
+prose_commit_fail=0
+
+echo -n "  Vale... "
+prose_vale_run
+case $? in
+0) echo -e "${GREEN}OK${NC}" ;;
+1)
+    echo -e "${RED}FAIL${NC}"
+    emit_capped 20 "$PROSE_OUTPUT" <"$PROSE_OUTPUT"
+    echo "  Fix the wording. Reproduce: vale \$(sed 's/#.*//' .config/vale-paths.txt | tr '\n' ' ')"
+    prose_commit_fail=1
+    ;;
+*) echo -e "${YELLOW}NOT CHECKED -- ${PROSE_REASON}${NC}" ;;
+esac
+rm -f "$PROSE_OUTPUT"
+
+echo -n "  Codespell... "
+prose_codespell_run
+case $? in
+0) echo -e "${GREEN}OK${NC}" ;;
+1)
+    echo -e "${RED}FAIL${NC}"
+    emit_capped 20 "$PROSE_OUTPUT" <"$PROSE_OUTPUT"
+    prose_commit_fail=1
+    ;;
+*) echo -e "${YELLOW}NOT CHECKED -- ${PROSE_REASON}${NC}" ;;
+esac
+rm -f "$PROSE_OUTPUT"
+
+if [ "$prose_commit_fail" -ne 0 ]; then
+    echo
+    echo -e "${RED}Commit blocked: a prose gate CI enforces is failing.${NC}"
+    echo "These are the cheapest gates in the set and the two that most recently"
+    echo "turned main red. Caught here so the push does not cost you a cycle."
+    exit 1
+fi
+
 # ── 1. Clippy must pass ────────────────────────────────────────────
 # `--color never` so the greps below key on the diagnostic and not on whatever
 # CARGO_TERM_COLOR wrapped it in.
