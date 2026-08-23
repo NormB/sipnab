@@ -281,7 +281,7 @@ of them touch something other than the stores: `export_capture`
 ([`server.rs:6057`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6057)) writes a pcap, `export_audio`
 ([`server.rs:6132`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6132)) writes a WAV, `list_captures`
 ([`server.rs:6005`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6005)) reads a directory, and
-`shutdown_server` ([`server.rs:6570`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6570)) ends the process.
+`shutdown_server` ([`server.rs:6602`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6602)) ends the process.
 
 **None of them mutates a store.** `shutdown_server` reads `dialog_store` and
 `stream_store` for its report, optionally writes a file, and then calls
@@ -809,7 +809,7 @@ decision was taken, not as it stands now:
 The opt-in machinery and the path confinement are already solved and should be
 reused rather than redesigned: the `shutdown_server` flag, off-by-default field,
 builder and first-statement refusal
-([`server.rs:6570`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6570)), and `--mcp-file-root` with
+([`server.rs:6602`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6602)), and `--mcp-file-root` with
 `resolve_in_root` ([`server.rs:487`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L487)).
 
 **What shipped**, against those three:
