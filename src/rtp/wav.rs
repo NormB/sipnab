@@ -25,11 +25,72 @@ use anyhow::{Context, Result};
 /// * `sample_rate` — Samples per second per channel (e.g., 8000)
 /// * `channels` — Number of audio channels (1 = mono, 2 = stereo)
 pub fn write_wav(path: &Path, samples: &[i16], sample_rate: u32, channels: u16) -> Result<()> {
+    write_wav_with_provenance(path, samples, sample_rate, channels, None)
+}
+
+/// Build the `LIST`/`INFO` chunk carrying a comment, or nothing for `None`.
+///
+/// `ICMT` is RIFF's comment field. The chunk is optional and unknown chunks
+/// are skipped by every reader, so a player that has never heard of it plays
+/// the audio unchanged -- the same property that lets the pcapng writer put a
+/// section comment on an exported capture.
+///
+/// Sized and padded per RIFF: every chunk body is padded to an even length,
+/// and the pad byte is NOT counted in the size field. Getting that wrong
+/// shifts every following chunk by one byte, which is how a file with a
+/// comment plays as noise.
+fn info_chunk(comment: Option<&str>) -> Vec<u8> {
+    let Some(comment) = comment else {
+        return Vec::new();
+    };
+    // NUL-terminated per the INFO convention.
+    let mut text: Vec<u8> = comment.as_bytes().to_vec();
+    text.push(0);
+    let icmt_size = text.len() as u32;
+    let icmt_pad = usize::from(!text.len().is_multiple_of(2));
+
+    let mut out = Vec::new();
+    // LIST body = "INFO" + "ICMT" + size + text (+ pad)
+    let list_size = 4 + 4 + 4 + text.len() + icmt_pad;
+    out.extend_from_slice(b"LIST");
+    out.extend_from_slice(&(list_size as u32).to_le_bytes());
+    out.extend_from_slice(b"INFO");
+    out.extend_from_slice(b"ICMT");
+    out.extend_from_slice(&icmt_size.to_le_bytes());
+    out.extend_from_slice(&text);
+    if icmt_pad == 1 {
+        out.push(0);
+    }
+    out
+}
+
+/// [`write_wav`], with a comment recorded inside the file.
+///
+/// An exported WAV used to be bytes and nothing else: no Call-ID, no source
+/// capture, and no way to tell a file holding a whole call from one holding
+/// the last thirty seconds of it. Everything sipnab knew about the export
+/// lived in a string returned to whoever ran it, and was gone the moment that
+/// scrolled away -- while the file went on being forwarded, attached to
+/// tickets and played months later.
+///
+/// The pcapng writer already solved this with a section comment, for the same
+/// reason and in the same words: it "reaches the engineer holding the file".
+/// This is that, for audio.
+pub fn write_wav_with_provenance(
+    path: &Path,
+    samples: &[i16],
+    sample_rate: u32,
+    channels: u16,
+    comment: Option<&str>,
+) -> Result<()> {
     let bits_per_sample: u16 = 16;
     let byte_rate = sample_rate * u32::from(channels) * u32::from(bits_per_sample) / 8;
     let block_align = channels * bits_per_sample / 8;
     let data_size = (samples.len() * 2) as u32;
-    let file_size = 36 + data_size; // RIFF chunk size = file size - 8
+    let info = info_chunk(comment);
+    // RIFF chunk size = everything after this field. 36 is the classic
+    // header's remainder; the INFO chunk adds its own full length.
+    let file_size = 36 + data_size + info.len() as u32;
 
     let mut file = std::fs::File::create(path)
         .with_context(|| format!("Failed to create WAV file: {}", path.display()))?;
@@ -56,6 +117,23 @@ pub fn write_wav(path: &Path, samples: &[i16], sample_rate: u32, channels: u16) 
     // Write samples as little-endian i16
     for &sample in samples {
         file.write_all(&sample.to_le_bytes())?;
+    }
+
+    // INFO goes AFTER `data`, and the ordering is the whole decision.
+    //
+    // Before `data` it is found by anything scanning for metadata, and it
+    // moves `data` off the byte offset that a classic 44-byte WAV puts it at.
+    // Every reader that seeks to a fixed offset instead of walking chunks then
+    // reads the comment as its sample count -- which is not hypothetical:
+    // sipnab's own `wav_header` test helper does exactly that, and reported
+    // 328 bytes of audio for a file holding a second of it.
+    //
+    // After `data`, the first 44 bytes are byte-identical to what sipnab wrote
+    // before this existed, so every one of those readers is unaffected, and
+    // compliant readers walk to the end and find the note. An artefact's first
+    // duty is to play; the note is worth nothing in a file nobody can open.
+    if !info.is_empty() {
+        file.write_all(&info)?;
     }
 
     file.flush()?;
@@ -149,5 +227,59 @@ mod tests {
 
         let data = std::fs::read(&path).unwrap();
         assert_eq!(data.len(), 44); // header only
+    }
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::info_chunk;
+
+    /// RIFF pads every chunk body to an even length, and the pad byte is NOT
+    /// counted in the size field. Miscount it and every following chunk shifts
+    /// by one byte, which is how a file carrying a note plays as noise.
+    ///
+    /// Both parities, because removing the pad entirely survived a mutation
+    /// run: the end-to-end export test happened to produce an even-length
+    /// comment, so the odd case -- the only one where the pad exists -- was
+    /// never executed.
+    #[test]
+    fn the_info_chunk_pads_to_an_even_length_without_counting_the_pad() {
+        for comment in ["odd", "even"] {
+            let chunk = info_chunk(Some(comment));
+            assert!(!chunk.is_empty(), "a comment must produce a chunk");
+            assert_eq!(&chunk[0..4], b"LIST");
+            assert_eq!(&chunk[8..12], b"INFO");
+            assert_eq!(&chunk[12..16], b"ICMT");
+
+            // The declared ICMT size counts the text and its NUL, never the pad.
+            let icmt_size = u32::from_le_bytes(chunk[16..20].try_into().expect("size")) as usize;
+            assert_eq!(
+                icmt_size,
+                comment.len() + 1,
+                "ICMT size must be the text plus its NUL terminator"
+            );
+
+            // The whole chunk must be even, or the next chunk starts misaligned.
+            assert!(
+                chunk.len().is_multiple_of(2),
+                "chunk for {comment:?} is {} bytes, which leaves every following \
+                 chunk offset by one",
+                chunk.len()
+            );
+
+            // And LIST's own size field must describe what follows it exactly.
+            let list_size = u32::from_le_bytes(chunk[4..8].try_into().expect("size")) as usize;
+            assert_eq!(
+                list_size + 8,
+                chunk.len(),
+                "LIST size disagrees with the bytes actually emitted"
+            );
+        }
+    }
+
+    /// No comment means no chunk at all, not an empty one.
+    #[test]
+    fn no_comment_writes_no_chunk() {
+        assert!(info_chunk(None).is_empty());
     }
 }

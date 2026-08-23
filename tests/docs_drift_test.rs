@@ -2538,7 +2538,11 @@ fn no_documentation_table_repeats_a_row() {
     // mutation results); both have generated mirrors, so ten. The eleventh is
     // the use-case table in docs/design/backlog.md, which has no mirror.
     // Attributed per file before the number moved.
-    const EXPECTED_TABLES: usize = 615;
+    // Raised 615 -> 617 by the partial-export table in docs/examples.md
+    // recipe 13, which maps each thing an exported WAV's note can say to what
+    // happened and what to do about it. One table, doubled by the generated
+    // cookbook mirror. Attributed per file before the number moved.
+    const EXPECTED_TABLES: usize = 617;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

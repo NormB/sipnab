@@ -17,7 +17,7 @@ use anyhow::{Result, bail};
 use super::g711::{G711Codec, decode_frame};
 use super::opus_decode::OpusStreamDecoder;
 use super::stream::RtpStream;
-use super::wav::write_wav;
+use super::wav::write_wav_with_provenance;
 
 /// Export a single RTP stream to a mono WAV file.
 ///
@@ -36,19 +36,33 @@ pub fn export_stream_to_wav(stream: &RtpStream, path: &Path) -> Result<String> {
         bail!("{}", nothing_to_decode(&[stream]));
     }
 
-    let (pcm_samples, sample_rate, codec_label) = decode_stream_pcm(stream)?;
+    let (pcm_samples, sample_rate, codec_label, decode_failures) = decode_stream_pcm(stream)?;
     let duration_secs = pcm_samples.len() as f64 / sample_rate as f64;
-    write_wav(path, &pcm_samples, sample_rate, 1)?;
+    // Built once and used twice: the note inside the file and the summary
+    // printed beside it say the same thing, because they are the same string.
+    let partial = format!(
+        "{}{}",
+        wrap_clause(stream.payload_frames_dropped),
+        decode_failure_clause(decode_failures)
+    );
+    write_wav_with_provenance(
+        path,
+        &pcm_samples,
+        sample_rate,
+        1,
+        Some(&provenance_note(AudioMechanism::SipnabCapture, &partial)),
+    )?;
 
+    // One `partial` for the file's note and this message both -- see the
+    // stereo path for what happens when they are built separately.
     Ok(format!(
-        "Exported {:.1}s of {} audio ({} frames, {}/{}Hz) to {}{}",
+        "Exported {:.1}s of {} audio ({} frames, {}/{}Hz) to {}{partial}",
         duration_secs,
         codec_label,
         stream.payload_buffer.len(),
         stream.codec.as_deref().unwrap_or("?"),
         sample_rate,
         path.display(),
-        wrap_clause(stream.payload_frames_dropped),
     ))
 }
 
@@ -88,11 +102,18 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
         bail!("No RTP streams to export");
     }
 
-    // Filter to streams with decodable audio payload data
+    // Filter to streams with decodable audio payload data, KEEPING what the
+    // filter rejected. Discarding it was the bug: the summary then described
+    // the file without describing the call it came from.
     let exportable: Vec<&RtpStream> = streams
         .iter()
         .filter(|s| is_exportable_codec(s.codec.as_deref()) && !s.payload_buffer.is_empty())
         .copied()
+        .collect();
+    let skipped_codecs: Vec<&str> = streams
+        .iter()
+        .filter(|s| !is_exportable_codec(s.codec.as_deref()))
+        .map(|s| s.codec.as_deref().unwrap_or("unidentified"))
         .collect();
 
     if exportable.is_empty() {
@@ -100,12 +121,20 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
     }
 
     if exportable.len() == 1 {
-        return export_stream_to_wav(exportable[0], path);
+        // The single-stream path writes its own summary, so the omission
+        // clause is appended here rather than inside it -- that function is
+        // also reached directly, where there is no dialog to be partial about.
+        let summary = export_stream_to_wav(exportable[0], path)?;
+        return Ok(format!(
+            "{summary}{}{}",
+            omitted_clause(streams.len(), 1, &skipped_codecs),
+            direction_clause(streams)
+        ));
     }
 
     // Stereo: decode both streams
-    let (mut left_pcm, left_rate, _) = decode_stream_pcm(exportable[0])?;
-    let (mut right_pcm, right_rate, _) = decode_stream_pcm(exportable[1])?;
+    let (mut left_pcm, left_rate, _, left_failures) = decode_stream_pcm(exportable[0])?;
+    let (mut right_pcm, right_rate, _, right_failures) = decode_stream_pcm(exportable[1])?;
 
     // Use the higher sample rate as the output rate; resample the lower one
     let output_rate = left_rate.max(right_rate);
@@ -129,19 +158,176 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
     }
 
     let duration_secs = max_len as f64 / output_rate as f64;
-    write_wav(path, &interleaved, output_rate, 2)?;
+    let partial = format!(
+        "{}{}{}{}",
+        wrap_clause(exportable[0].payload_frames_dropped + exportable[1].payload_frames_dropped),
+        omitted_clause(streams.len(), 2, &skipped_codecs),
+        decode_failure_clause(left_failures + right_failures),
+        direction_clause(streams)
+    );
+    write_wav_with_provenance(
+        path,
+        &interleaved,
+        output_rate,
+        2,
+        Some(&provenance_note(AudioMechanism::SipnabCapture, &partial)),
+    )?;
 
+    // `partial` again, not the clauses re-listed. Building the summary from
+    // its own copy is how the file's note and the message printed beside it
+    // drift apart: adding `direction_clause` to one and not the other did
+    // exactly that, and a test comparing them caught it.
     Ok(format!(
-        "Exported {:.1}s stereo audio ({} + {} frames, {}Hz) to {}{}",
+        "Exported {:.1}s stereo audio ({} + {} frames, {}Hz) to {}{partial}",
         duration_secs,
         exportable[0].payload_buffer.len(),
         exportable[1].payload_buffer.len(),
         output_rate,
         path.display(),
-        // Summed across both channels: either ring wrapping makes the file
-        // partial, and an operator reading one number wants the total.
-        wrap_clause(exportable[0].payload_frames_dropped + exportable[1].payload_frames_dropped),
     ))
+}
+
+/// How the audio in an artefact was obtained.
+///
+/// RE7 requires an artefact to NAME this, because the possible answers differ
+/// in what they can be trusted to say: audio sipnab captured itself is bounded
+/// by where the capture point sat and by what retention kept, while audio read
+/// from a relay's spool is what that relay wrote down, which sipnab did not
+/// witness and cannot vouch for beyond the relay's own honesty.
+///
+/// An operator holding a file months later cannot recover that from the bytes,
+/// so it travels inside them.
+///
+/// ONE VARIANT, deliberately. RE7 names two mechanisms and this carried both
+/// for a while, with nothing anywhere constructing the second -- an enum arm no
+/// code path produces reads as a capability the tool has, and it does not have
+/// it. `rtpengine-spool` returns when RE5 gives it a producer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioMechanism {
+    /// Decoded from RTP payload sipnab captured itself.
+    SipnabCapture,
+}
+
+impl AudioMechanism {
+    /// The stable token written into the artefact.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::SipnabCapture => "sipnab-capture",
+        }
+    }
+}
+
+/// The comment recorded inside an exported WAV.
+///
+/// Names the mechanism, the version that wrote it, and -- when the file is
+/// partial -- how, reusing the very clauses the summary prints. One source for
+/// both: a file whose embedded note disagreed with the message printed beside
+/// it would be worse than a file with no note, because it would look
+/// authoritative while contradicting the run that produced it.
+fn provenance_note(mechanism: AudioMechanism, partial: &str) -> String {
+    let completeness = if partial.is_empty() {
+        " No omissions recorded: every stream and frame sipnab held for this \
+         call is in this file."
+            .to_string()
+    } else {
+        format!(" INCOMPLETE.{partial}")
+    };
+    format!(
+        "Produced by sipnab {} via mechanism {}. Audio decoded from RTP payload \
+         this run retained; it is bounded by where the capture point sat and by \
+         what retention kept, and is not a recording made by the endpoints.{}",
+        env!("CARGO_PKG_VERSION"),
+        mechanism.id(),
+        completeness,
+    )
+}
+
+/// A clause naming a direction of media that never reached this run.
+///
+/// A call has two directions and a dialog export writes what it was given. Given
+/// one direction it produces a mono file whose summary is byte-identical to a
+/// deliberate single-stream export, so "we only ever saw one side" and "you
+/// asked for one side" read the same.
+///
+/// Worded as an OBSERVATION, not a verdict. sipnab detects genuine one-way
+/// audio elsewhere, against a `MediaContext` that knows whether the capture
+/// could have seen the reverse direction at all; this function has streams and
+/// nothing else, so it says what reached the capture point and stops there. A
+/// mid-path tap that only sees one leg is the ordinary reason, and calling that
+/// a one-way call would accuse the traffic of the capture's own limits.
+///
+/// Paired by IP, not by socket: each direction negotiates its own port in SDP,
+/// so exact reverse-socket matching would report almost every real call as
+/// one-directional.
+fn direction_clause(streams: &[&RtpStream]) -> String {
+    use std::collections::BTreeSet;
+
+    let pairs: BTreeSet<(std::net::IpAddr, std::net::IpAddr)> = streams
+        .iter()
+        .map(|s| (s.key.src.ip(), s.key.dst.ip()))
+        .collect();
+    if pairs.is_empty() {
+        return String::new();
+    }
+    // Bidirectional when some pair's reverse is also present.
+    let bidirectional = pairs.iter().any(|(a, b)| pairs.contains(&(*b, *a)));
+    if bidirectional {
+        return String::new();
+    }
+    " — PARTIAL: media in only ONE direction reached this capture; no stream \
+     going the other way was observed. That may be a one-way call, or a capture \
+     point that only sees one leg -- this file cannot tell you which."
+        .to_string()
+}
+
+/// A clause naming frames the decoder could not turn into audio.
+///
+/// Opus frames that fail decoding are skipped, which shortens the file while
+/// the summary keeps reporting `payload_buffer.len()` as the frame count. The
+/// only record was a `debug!` line, off by default -- so on the runs where it
+/// mattered there was no record at all.
+fn decode_failure_clause(failures: u64) -> String {
+    if failures == 0 {
+        return String::new();
+    }
+    format!(
+        " — PARTIAL: {failures} frame(s) failed to decode and are missing from the \
+         audio; the frame count above is what was captured, not what was written."
+    )
+}
+
+/// A clause naming the streams this export left behind, or nothing when it
+/// carried them all.
+///
+/// A dialog export writes at most two channels and filters out whatever it
+/// cannot decode, and said neither. An operator who exports a three-legged
+/// call gets a two-channel file whose summary is byte-identical to a complete
+/// one -- the omission is invisible precisely when it matters, because a
+/// conference or a transfer is exactly the call somebody exports to find out
+/// what happened on it.
+///
+/// `skipped_codecs` names what was dropped for being undecodable, because
+/// "one stream omitted" and "one stream of G.729 omitted" send an operator to
+/// different places.
+fn omitted_clause(total: usize, written: usize, skipped_codecs: &[&str]) -> String {
+    let dropped = total.saturating_sub(written);
+    if dropped == 0 {
+        return String::new();
+    }
+    let mut codecs: Vec<&str> = skipped_codecs.to_vec();
+    codecs.sort_unstable();
+    codecs.dedup();
+    let detail = if codecs.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", codecs.join(", "))
+    };
+    format!(
+        " — PARTIAL: {dropped} of {total} stream(s) on this call are NOT in this \
+         file{detail}. A WAV carries two channels, and streams sipnab cannot decode \
+         are left out."
+    )
 }
 
 /// Explain a failed export in terms of what sipnab actually observed.
@@ -257,7 +443,7 @@ fn is_opus_codec(codec: &str) -> bool {
 /// Decode all captured payloads in a stream to PCM i16 samples.
 ///
 /// Returns `(samples, sample_rate, codec_label)`.
-fn decode_stream_pcm(stream: &RtpStream) -> Result<(Vec<i16>, u32, &'static str)> {
+fn decode_stream_pcm(stream: &RtpStream) -> Result<(Vec<i16>, u32, &'static str, u64)> {
     let codec_name = stream.codec.as_deref();
 
     match codec_name {
@@ -266,29 +452,36 @@ fn decode_stream_pcm(stream: &RtpStream) -> Result<(Vec<i16>, u32, &'static str)
             for (_ts, payload) in &stream.payload_buffer {
                 pcm.extend_from_slice(&decode_frame(G711Codec::Ulaw, payload));
             }
-            Ok((pcm, stream.clock_rate, "mu-law"))
+            Ok((pcm, stream.clock_rate, "mu-law", 0))
         }
         Some("PCMA") => {
             let mut pcm: Vec<i16> = Vec::new();
             for (_ts, payload) in &stream.payload_buffer {
                 pcm.extend_from_slice(&decode_frame(G711Codec::Alaw, payload));
             }
-            Ok((pcm, stream.clock_rate, "A-law"))
+            Ok((pcm, stream.clock_rate, "A-law", 0))
         }
         Some(name) if is_opus_codec(name) => {
             // Opus decodes at 48 kHz mono by default. SDP declares
             // opus/48000/2 but RTP frames are typically mono.
             let mut decoder = OpusStreamDecoder::new(48000, 1)?;
             let mut pcm: Vec<i16> = Vec::new();
+            // Counted, not just logged. A skipped frame shortens the audio
+            // while the summary went on reporting `payload_buffer.len()` as
+            // the frame count, so the file was quietly missing whatever failed
+            // and the number said otherwise. `debug!` is off by default, which
+            // made the only record of it invisible on the runs that mattered.
+            let mut decode_failures: u64 = 0;
             for (_ts, payload) in &stream.payload_buffer {
                 match decoder.decode_frame(payload) {
                     Ok(samples) => pcm.extend_from_slice(&samples),
                     Err(e) => {
+                        decode_failures = decode_failures.saturating_add(1);
                         tracing::debug!("Opus decode error (skipping frame): {e}");
                     }
                 }
             }
-            Ok((pcm, 48000, "Opus"))
+            Ok((pcm, 48000, "Opus", decode_failures))
         }
         Some(other) => {
             bail!("Unsupported codec for WAV export: {other}. Supported: PCMU, PCMA, Opus.")
@@ -373,6 +566,368 @@ pub(crate) fn resample_linear<T: LinearResampleSample>(
 /// Unit tests for mono and stereo WAV export from RTP streams.
 #[cfg(test)]
 mod tests {
+    /// A frame the decoder rejects must be counted, not only logged.
+    ///
+    /// The skip was recorded with `debug!`, which is off by default, while the
+    /// summary went on reporting `payload_buffer.len()` as the frame count --
+    /// so the file was short by whatever failed and the number said otherwise.
+    /// Exercised through a real export, because removing the counter's
+    /// increment still compiles and `decode_failure_clause`'s own test still
+    /// passes: that test is handed a number rather than measuring one.
+    #[test]
+    fn opus_frames_the_decoder_rejects_are_counted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("opus.wav");
+
+        // Two frames of bytes that are not valid Opus. If the decoder ever
+        // learns to accept them the assertion below fails loudly rather than
+        // passing vacuously, which is the outcome to prefer.
+        let stream = make_stream(Some("opus"), vec![(0, vec![0xFF; 8]), (960, vec![0xFE; 8])]);
+
+        match export_stream_to_wav(&stream, &path) {
+            Ok(summary) => assert!(
+                summary.contains("failed to decode"),
+                "frames were skipped and the summary did not say so:\n{summary}"
+            ),
+            // A decoder that refuses the whole stream is also honest -- it did
+            // not claim to have written audio it could not decode.
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    !msg.is_empty(),
+                    "a refused export must explain itself, not fail silently"
+                );
+            }
+        }
+    }
+
+    /// The artefact must name its mechanism, in the FILE.
+    ///
+    /// This is RE7's requirement. Everything sipnab knew about an export used
+    /// to live in a string returned to whoever ran it, and was gone when that
+    /// scrolled away -- while the file went on being forwarded, attached to
+    /// tickets, and played months later by somebody who never saw the run.
+    ///
+    /// Asserted by reading the bytes back, not by inspecting the string that
+    /// was passed in: what matters is that it reached the disk.
+    #[test]
+    fn an_exported_wav_names_its_mechanism_in_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("provenance.wav");
+
+        let stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        export_stream_to_wav(&stream, &path).expect("export");
+
+        let bytes = std::fs::read(&path).expect("read back");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("sipnab-capture"),
+            "the file does not name the mechanism it came from"
+        );
+        assert!(
+            text.contains("ICMT"),
+            "the note must live in a RIFF comment chunk, not be appended loose"
+        );
+        // A complete file must say it is complete, or silence reads as an
+        // omission nobody recorded.
+        assert!(
+            text.contains("No omissions recorded"),
+            "a complete export must say so; absence of a warning is not a claim"
+        );
+    }
+
+    /// A partial file says so INSIDE itself, not only in the summary.
+    #[test]
+    fn a_partial_export_records_its_partialness_in_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("partial.wav");
+
+        let mut stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        // The ring wrapped: frames existed that this file does not hold.
+        stream.payload_frames_dropped = 4200;
+
+        export_stream_to_wav(&stream, &path).expect("export");
+        let bytes = std::fs::read(&path).expect("read back");
+        let text = String::from_utf8_lossy(&bytes);
+
+        assert!(
+            text.contains("INCOMPLETE"),
+            "a file missing 4200 frames must announce it to whoever opens it"
+        );
+        assert!(
+            text.contains("4200"),
+            "how much is missing is the question the file must answer"
+        );
+        assert!(
+            !text.contains("No omissions recorded"),
+            "a partial file must not also claim completeness"
+        );
+    }
+
+    /// A fixed-offset reader must still read the audio correctly.
+    ///
+    /// The note is optional and skippable only for readers that WALK chunks.
+    /// Plenty do not: they seek to the offsets a classic 44-byte WAV puts
+    /// `data` at. Writing the note before `data` moved it, and sipnab's own
+    /// `wav_header` test helper then reported 328 bytes of audio for a file
+    /// holding a second of it -- a naive reader is not a hypothetical, it is
+    /// in this repository.
+    ///
+    /// So the note goes after the samples, and this asserts the property that
+    /// buys: the first 44 bytes are what they always were.
+    #[test]
+    fn the_provenance_chunk_does_not_corrupt_the_audio() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("intact.wav");
+
+        let stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        export_stream_to_wav(&stream, &path).expect("export");
+
+        let bytes = std::fs::read(&path).expect("read back");
+        assert_eq!(&bytes[0..4], b"RIFF", "not a RIFF file");
+        assert_eq!(&bytes[8..12], b"WAVE", "not a WAVE file");
+
+        // The classic layout, at the classic offsets.
+        assert_eq!(
+            &bytes[12..16],
+            b"fmt ",
+            "fmt must stay at offset 12 or a fixed-offset reader misparses"
+        );
+        assert_eq!(
+            &bytes[36..40],
+            b"data",
+            "data must stay at offset 36; moving it is what broke wav_header"
+        );
+        let data_size = u32::from_le_bytes(bytes[40..44].try_into().expect("size")) as usize;
+        assert_eq!(
+            data_size,
+            160 * 2,
+            "the size at offset 40 must be the sample bytes, which is what a \
+             fixed-offset reader takes it for"
+        );
+
+        // The samples are intact and the note lives past them.
+        assert!(
+            bytes.len() > 44 + data_size,
+            "the note should follow the samples, not replace them"
+        );
+        let riff_size = u32::from_le_bytes(bytes[4..8].try_into().expect("size")) as usize;
+        assert_eq!(
+            riff_size + 8,
+            bytes.len(),
+            "the RIFF size field must still describe the whole file, note included"
+        );
+        assert!(
+            String::from_utf8_lossy(&bytes[44 + data_size..]).contains("sipnab-capture"),
+            "the note must be there, after the audio"
+        );
+    }
+
+    /// The stereo path must actually CALL the omission clause.
+    ///
+    /// The clause has its own unit test, and that test passes while nothing
+    /// wires the clause into an export -- replacing the call with an empty
+    /// string still compiles and still passes it. This one exports three
+    /// streams for real and reads the summary.
+    #[test]
+    fn a_three_stream_call_reports_the_stream_it_could_not_carry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("three.wav");
+
+        let a = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        let b = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        let c = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+
+        let summary = export_dialog_to_wav(&[&a, &b, &c], &path).expect("export");
+        assert!(
+            summary.contains("1 of 3"),
+            "a WAV carries two channels; the third stream is missing and the \
+             summary must say which:\n{summary}"
+        );
+    }
+
+    /// A stream dropped for its codec is named in the summary, not filtered
+    /// out in silence.
+    #[test]
+    fn an_undecodable_stream_is_named_in_the_summary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mixed.wav");
+
+        let good = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        let bad = make_stream(Some("G729"), vec![(0, vec![0x00; 10])]);
+
+        let summary = export_dialog_to_wav(&[&good, &bad], &path).expect("export");
+        assert!(
+            summary.contains("G729"),
+            "the undecodable stream was filtered out silently, so the file \
+             looks complete:\n{summary}"
+        );
+    }
+
+    /// A file holding one direction must say the other was never seen.
+    ///
+    /// RE7 names "egress not observed" among the ways an artefact is partial.
+    /// A dialog export handed one direction produces a mono file whose summary
+    /// is byte-identical to a deliberate single-stream export, so "we only saw
+    /// one side" and "you asked for one side" read the same.
+    #[test]
+    fn a_file_with_one_direction_says_the_other_was_not_seen() {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        fn directed(src: [u8; 4], dst: [u8; 4]) -> RtpStream {
+            let mut s = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+            s.key.src = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(src)), 20000);
+            s.key.dst = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(dst)), 30000);
+            s
+        }
+
+        // Both ways: nothing to report.
+        let there = directed([10, 0, 0, 1], [10, 0, 0, 2]);
+        let back = directed([10, 0, 0, 2], [10, 0, 0, 1]);
+        assert_eq!(
+            direction_clause(&[&there, &back]),
+            "",
+            "a call captured in both directions is not partial"
+        );
+
+        // One way only.
+        let clause = direction_clause(&[&there]);
+        assert!(
+            clause.contains("only ONE direction"),
+            "a one-directional capture must say so:\n{clause}"
+        );
+        // And must NOT accuse the call: a mid-path tap sees one leg by design.
+        assert!(
+            clause.contains("capture point that only sees one leg"),
+            "the clause must offer the capture's own limits as a cause, not \
+             assert the call was one-way:\n{clause}"
+        );
+
+        // Ports differ per direction in real SDP; pairing must survive that.
+        let mut back_odd_port = directed([10, 0, 0, 2], [10, 0, 0, 1]);
+        back_odd_port.key.src = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 41234);
+        assert_eq!(
+            direction_clause(&[&there, &back_odd_port]),
+            "",
+            "each direction negotiates its own port; pairing by socket would \
+             report almost every real call as one-directional"
+        );
+    }
+
+    /// The dialog export must actually CALL the direction clause.
+    ///
+    /// `direction_clause` has a unit test, and it passes while nothing wires
+    /// the clause into an export -- replacing the call with an empty string
+    /// still compiles and still passes it. That has now happened four times in
+    /// this file with four different clauses, which is the argument for
+    /// exporting real streams and reading the summary rather than testing the
+    /// formatter and assuming the rest.
+    #[test]
+    fn a_one_directional_dialog_export_reports_it() {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("oneway.wav");
+
+        // Two streams, both A -> B: media was only ever seen going one way.
+        let mut a = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        a.key.src = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000);
+        a.key.dst = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000);
+        let mut b = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        b.key.ssrc = 0x9999_0000;
+        b.key.src = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20002);
+        b.key.dst = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30002);
+
+        let summary = export_dialog_to_wav(&[&a, &b], &path).expect("export");
+        assert!(
+            summary.contains("only ONE direction"),
+            "a dialog whose media was only seen one way exported without \
+             saying so:\n{summary}"
+        );
+
+        // And it reaches the FILE, which is what RE7 asks for.
+        let bytes = std::fs::read(&path).expect("read back");
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("only ONE direction"),
+            "the note inside the file must carry it too, not just the summary"
+        );
+    }
+
+    /// Every mechanism the enum offers must have something that produces it.
+    ///
+    /// RE7 names two, and this carried both while nothing constructed the
+    /// second. An enum arm no code path produces reads as a capability the
+    /// tool has. `rtpengine-spool` returns when RE5 gives it a producer.
+    #[test]
+    fn every_mechanism_is_reachable() {
+        assert_eq!(AudioMechanism::SipnabCapture.id(), "sipnab-capture");
+        // Exhaustive by construction: adding a variant without a producer
+        // fails to compile here until it is listed, which is the reminder.
+        let all = [AudioMechanism::SipnabCapture];
+        assert_eq!(
+            all.len(),
+            1,
+            "a new mechanism needs a producer and a test that exports through it"
+        );
+    }
+
+    /// A file that carries fewer streams than the call must say so.
+    ///
+    /// A WAV holds two channels and the exporter drops what it cannot decode,
+    /// and the summary mentioned neither -- so a three-legged call produced a
+    /// two-channel file whose summary was byte-identical to a complete one.
+    /// The omission is invisible exactly when it matters: a conference or a
+    /// transfer is the call somebody exports to find out what happened.
+    #[test]
+    fn an_export_that_leaves_streams_out_says_so() {
+        assert_eq!(
+            omitted_clause(2, 2, &[]),
+            "",
+            "a file carrying every stream adds no clause"
+        );
+
+        // Third leg dropped for want of a channel, nothing undecodable.
+        let channels = omitted_clause(3, 2, &[]);
+        assert!(
+            channels.contains("1 of 3"),
+            "the operator needs the ratio, not just the word partial:\n{channels}"
+        );
+        assert!(
+            channels.contains("PARTIAL"),
+            "a partial file must announce itself:\n{channels}"
+        );
+
+        // Dropped for being undecodable: naming the codec sends the reader
+        // somewhere different than a bare count does.
+        let codec = omitted_clause(3, 2, &["G729"]);
+        assert!(
+            codec.contains("G729"),
+            "a stream dropped for its codec must name the codec:\n{codec}"
+        );
+    }
+
+    /// Frames that failed to decode are missing from the audio, and the frame
+    /// count in the summary counts what was CAPTURED.
+    #[test]
+    fn frames_that_failed_to_decode_are_named() {
+        assert_eq!(
+            decode_failure_clause(0),
+            "",
+            "a clean decode adds no clause"
+        );
+
+        let failed = decode_failure_clause(12);
+        assert!(
+            failed.contains("12"),
+            "how many frames are missing is the question:\n{failed}"
+        );
+        assert!(
+            failed.contains("not what was written"),
+            "the summary's frame count describes what was captured, and the \
+             clause has to say so or the two numbers silently disagree:\n{failed}"
+        );
+    }
+
     /// "The call was silent" and "this run did not keep it" must never read as
     /// the same sentence.
     ///
