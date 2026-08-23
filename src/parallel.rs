@@ -2575,7 +2575,7 @@ mod tests {
         // The fixture has to carry decodable audio, or both runs are empty and
         // the comparison below is vacuous.
         assert!(
-            kept.stream_store.len() > 0,
+            !kept.stream_store.is_empty(),
             "fixture produced no RTP streams"
         );
 

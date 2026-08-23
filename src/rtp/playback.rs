@@ -153,7 +153,15 @@ impl AudioPlayer {
     /// 8 kHz and resampled to 48 kHz; Opus decodes natively at 48 kHz.
     pub fn play_stream(&self, stream: &RtpStream) -> Result<String> {
         if stream.payload_buffer.is_empty() {
-            bail!("No audio payload captured");
+            // The same explanation the exporter gives, from the same function.
+            //
+            // This line used to read "No audio payload captured" -- verbatim
+            // the wording `nothing_to_decode` was written to replace, and which
+            // its doc comment names as the defect: a reader takes it as a
+            // statement about the CALL. Only one of the two functions that
+            // decode `payload_buffer` was migrated, so pressing `P` in the TUI
+            // still produced the sentence the exporter had stopped saying.
+            bail!(crate::rtp::audio_export::nothing_to_decode(&[stream]));
         }
 
         let output_rate = 48000u32;

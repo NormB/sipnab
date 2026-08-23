@@ -643,6 +643,11 @@ impl StreamStore {
                     let audio = parsed.payload[payload_start..].to_vec();
                     if stream.payload_buffer.len() >= self.max_audio_frames {
                         stream.payload_buffer.pop_front();
+                        // Counted, so the export can say the ring wrapped
+                        // rather than reporting the buffer's duration as the
+                        // call's.
+                        stream.payload_frames_dropped =
+                            stream.payload_frames_dropped.saturating_add(1);
                     }
                     stream.payload_buffer.push_back((rtp.timestamp, audio));
                 }
@@ -3113,6 +3118,39 @@ a=rtpmap:96 H264/90000\r\n";
             "audio payloads must not be buffered when capture is disabled"
         );
         assert_eq!(stream.packet_count, 2, "stats still update normally");
+    }
+
+    /// A ring that wraps must COUNT what it dropped.
+    ///
+    /// The eviction was silent, so a ten-minute call exported as "30.0s of
+    /// mu-law audio" -- textually identical to a genuinely thirty-second call,
+    /// and read as a fact about the call rather than about the buffer.
+    ///
+    /// Asserted on the counter rather than on the export string, because the
+    /// string's own test can pass while nothing feeds it: removing this
+    /// increment still compiles, and `wrap_clause`'s test still passes,
+    /// because it is handed a number rather than measuring one.
+    #[test]
+    fn a_wrapping_payload_ring_counts_what_it_dropped() {
+        let mut store = StreamStore::new(100);
+        store.set_max_audio_frames(3);
+        let parsed = make_parsed(20000, 30000, 160);
+
+        for seq in 1..=10u16 {
+            store.process_rtp(&parsed, &make_rtp_header(0xA0D3, seq), ts(i64::from(seq)));
+        }
+
+        let stream = store.iter().next().expect("stream exists");
+        assert_eq!(
+            stream.payload_buffer.len(),
+            3,
+            "the ring must hold its cap and no more"
+        );
+        assert_eq!(
+            stream.payload_frames_dropped, 7,
+            "ten frames into a ring of three drops seven; a silent drop is what \
+             made the exported duration read as the call's length"
+        );
     }
 
     /// Default (TUI / library use): G.711 payloads ARE buffered so
