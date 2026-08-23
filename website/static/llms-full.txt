@@ -1295,6 +1295,7 @@ and names the reason, because these are different problems:
 | `N of M stream(s) on this call are NOT in this file` | A WAV carries two channels; a three-legged call does not fit | Export the legs separately |
 | `(G729)` beside that | A stream's codec is not one sipnab decodes | Nothing — the audio is not recoverable from this capture |
 | `N frame(s) failed to decode` | The decoder rejected individual Opus frames | Check for truncation (`--snaplen`) |
+| `media in only ONE direction reached this capture` | sipnab saw no stream going the other way. Either the call really was one-way, or the capture point only sees one leg | Check where the tap sits before treating it as a fault |
 
 sipnab writes the note after the audio, so the first 44 bytes stay a standard
 WAV header and every player reads the file normally.

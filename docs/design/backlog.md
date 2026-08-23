@@ -3189,6 +3189,32 @@ are exactly the cases a signaling-only view gets wrong.
   test that fails if "the call was silent" and "this run did not keep it"
   collapse into one string.
 
+  **Four of the five landed 2026-08-23; the fifth is blocked on RE5.** An
+  exported WAV now carries a RIFF `LIST`/`INFO` comment naming its mechanism
+  and, when partial, how. Ring wrapped, codec undecodable, retention off and
+  egress not observed are all named. The honesty test holds a run-limited
+  message apart from a claim about the traffic.
+
+  **Spool entry missing cannot be written yet.** It is a statement about
+  reading an rtpengine spool, and nothing reads one. RE7 sits at its ceiling
+  until RE5 lands.
+
+  `AudioMechanism` therefore carries ONE variant. It briefly carried both this
+  entry names, with nothing constructing `RtpengineSpool` -- an enum arm no
+  code path produces reads as a capability the tool has. It returns when RE5
+  gives it a producer.
+
+  Two things worth carrying forward. The note is written AFTER the samples:
+  before `data` it moves the audio off the offset a classic 44-byte WAV puts it
+  at, and every reader that seeks rather than walking chunks reads the comment
+  as its sample count -- sipnab's own test helper did exactly that. And the
+  file's note and the summary printed beside it are ONE string, because they
+  were briefly two and immediately disagreed.
+
+  Verified against parsers that are not sipnab: `ffprobe` surfaces the note as
+  a `TAG:comment`, `sox` and Python's `wave` decode the audio unchanged, and
+  the `ICMT` chunk sits past the PCM.
+
 ## BA — bad actors: identify, evidence, recommend (added 2026-08-22)
 
 Raised by traffic that arrived while proving RE-T, not by speculation. The
