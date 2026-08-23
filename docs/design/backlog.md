@@ -3180,7 +3180,7 @@ capture, and today sipnab tells them nothing about it. Everything below is
 defensive -- identify, evidence, recommend. sipnab recommends; the operator
 applies.
 
-- [ ] **BA1 — say who is attacking, from the capture already taken.** The
+- [x] **BA1 — say who is attacking, from the capture already taken.** The
   signals are all present and none are currently read as a set: a source
   placing calls with no prior REGISTER, dialed numbers matching international
   premium ranges, sequential or dictionary extension probing, a `User-Agent`
@@ -3191,6 +3191,41 @@ applies.
   verdict, and must never name a source on one weak signal. Precedent for the
   honesty rule already exists in this codebase; the mistake to avoid is a
   confident accusation about somebody's address.
+
+  **Done 2026-08-23, and NOT the way this entry assumed.** A first pass wrote a
+  new `src/sip/hostile.rs` scoring four signals. Three already existed in
+  [`src/security/scanner_detect.rs`](https://github.com/NormB/sipnab/blob/main/src/security/scanner_detect.rs) in a more developed form, and the fourth --
+  "placed calls and never registered" -- was there too under a better name:
+  `established`, meaning "ever completed a registration OR a call", sticky
+  across windows, and deliberately refusing to count a `2xx` to an OPTIONS,
+  because answering a keepalive is something done for anyone who asks.
+
+  That module also discriminates better than the new one did. It rests on
+  OUTCOME -- a keepalive is answered, a sweep draws `404`, `403` or nothing --
+  rather than on a signal count, and its comments record what was measured when
+  it did not: 2719 detections across 14 peers on an eleven-second carrier trunk,
+  every one a real PBX or desk phone, all of which `--kill-scanner` behind a
+  fail2ban jail would have banned.
+
+  So the 575 lines were retired rather than wired. Shipping them would have put
+  a second, weaker scanner detector beside the existing one, which is the defect
+  this repository spent the week removing from its own gates.
+
+  What was genuinely missing is the SHAPE of the answer, and that is what
+  landed. Every detector answers per message, which is right for
+  `--kill-scanner` acting on one packet and wrong for the question asked after a
+  capture. [`src/security/sources.rs`](https://github.com/NormB/sipnab/blob/main/src/security/sources.rs) groups the findings the detectors already
+  produced, holds no signal logic of its own, and the end-of-capture summary
+  prints one line per source.
+
+  The one idea from the first pass that survived intact is counter-evidence
+  beside the accusation. `established` already SOFTENED the verdict inside the
+  detector via `established_factor` and was shown to nobody; the summary prints
+  it now, because a source that also completed a call is one a block
+  disconnects, and learning that after the block is too late.
+
+  Still open, and now BA1b rather than left implied: premium-range callees, and
+  OPTIONS/REGISTER sweeps counted apart from INVITE attempts.
 
 - [ ] **BA2 — turn that into a rule the operator can apply.** Emit a concrete
   fail2ban filter/jail or nftables/iptables rule for what BA1 identified,
