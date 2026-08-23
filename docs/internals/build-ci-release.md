@@ -239,14 +239,16 @@ logs yourself. Nothing else makes you.
 
 Activate once per clone: `git config core.hooksPath .githooks`.
 
-[`pre-commit`](../../.githooks/pre-commit) runs nine numbered gates, starting
+[`pre-commit`](../../.githooks/pre-commit) runs eleven numbered gates, starting
 at 0, in order:
-<!-- The nine pre-commit gates as one list. Several items carry their own commas
-and parentheses ("clippy (`--features full`, `-D warnings`)"), so semicolons are
-the separator; periods would make nine sentences out of one enumeration. -->
+<!-- The eleven pre-commit gates as one list. Several items carry their own
+commas and parentheses ("clippy (`--features full`, `-D warnings`)"), so
+semicolons are the separator; periods would make eleven sentences out of one
+enumeration. -->
 <!-- vale Google.Semicolons = NO -->
 
-`cargo fmt --all -- --check`; clippy (`--features full`, `-D warnings`); the
+`cargo fmt --all -- --check`; vale and codespell over the paths CI gives them;
+clippy (`--features full`, `-D warnings`); the
 full test suite; no `unwrap()`/`expect()` in production code; WASM exports in
 sync with the site's JS; the homepage test count matching the run it just did —
 plus the site and man-page version strings matching `Cargo.toml`; no TODO
@@ -264,7 +266,32 @@ copy is the one guaranteeing nothing unformatted reaches the remote. What it
 cannot do is catch the slip early, and a formatting-only failure discovered at
 push time costs a whole commit-and-push cycle to undo.
 
-Two of the nine cannot fail the commit. Gate 6 prints
+Gate 0b is here for that same reason and arrived the same way. The prose gates
+ran only in `pre-push`, so work that satisfied every gate here met them at the
+push with the commit already made, and each rejection cost a full cycle to
+redo — twice on 2026-08-22, once blocking a release push over a single passive
+clause. Both tools take about a second against gate 2's minutes. `pre-push`
+keeps its copies, so the guarantee stands where it did and this gate is the
+early warning.
+
+Neither hook restates how those gates work. Tool resolution, the version pin
+and both path lists live in [`scripts/prose-gates.sh`](../../scripts/prose-gates.sh), sourced by
+`pre-commit`, `pre-push` and [`scripts/preflight.sh`](../../scripts/preflight.sh). Each caller keeps only
+its own rendering, because the three have different room to print in. The
+script returns 0 for a clean run, 1 for findings, and 2 when the tool did not
+run at all. Return 2 never renders as a pass. A missing tool does not block the
+commit — CI still enforces it, and blocking would make the hook unusable
+without both installed — but the run says so rather than staying quiet.
+
+Both hooks skip the prose gates entirely when the branch does not carry that
+script, and report the skip. `core.hooksPath` holds an absolute path into one
+worktree's `.githooks/`, so every worktree and every branch runs the same hook
+FILE while the script it sources is branch CONTENT. A branch cut before
+the script existed, or a `git bisect` across the commit that added it, got
+`No such file or directory` and could not commit at all — found the first time
+the hook met a branch two commits behind.
+
+Two of the eleven cannot fail the commit. Gate 6 prints
 `WARN: N TODO/FIXME comments` and falls through — a count, not a veto. Gate 8
 prints `REVIEW` and a list and returns zero, a reminder to check the developer
 pages still read true, not a claim that they don't. The gate that *does* fail
