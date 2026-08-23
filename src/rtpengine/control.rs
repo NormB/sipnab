@@ -40,6 +40,30 @@ use std::fmt;
 
 use super::bencode::{Value, encode_dict};
 
+// The transport half only. Commands and reply parsing are pure and stay
+// available everywhere, because a build that cannot TRANSMIT can still want to
+// decode a relay's answer out of a capture -- and `transmit_guard` exists only
+// under `native`, since that is where the sockets are.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+use std::net::SocketAddr;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+use std::time::Duration;
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+use crate::security::transmit_guard::TransmitPermit;
+
+/// Largest control reply this client will read.
+///
+/// Transport-only, like the client that uses it.
+///
+/// A datagram beyond this is truncated by the kernel, and truncated bencode
+/// fails to parse rather than decoding as a short list. That is the right
+/// failure: a silently short enumeration is exactly what RE4 warns about.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+const MAX_REPLY_BYTES: usize = 64 * 1024;
+
 /// A command that only reads. There is deliberately no way to say anything
 /// else.
 ///
@@ -242,6 +266,142 @@ pub fn parse_list_reply(body: &[u8], requested: u32) -> anyhow::Result<ControlRe
     }))
 }
 
+/// A client for one relay's control socket.
+///
+/// # Why the address is a constructor argument
+///
+/// It is never inferred from capture traffic. The address sipnab could guess
+/// is one it learned from packets, and sending to an address derived from a
+/// capture is how an analysis tool starts talking to a stranger -- a host that
+/// was a relay when the capture was taken, and is somebody's laptop now.
+///
+/// # Why there is no `run` method
+///
+/// RE4 requires this to be triggered at startup and when an unexplained stream
+/// appears, and NEVER to poll. There is no loop here and no timer: a caller who
+/// wants periodic behavior has to write the loop themselves, which is a
+/// visible act rather than a default. A poller is a service, and a service that
+/// talks to a production relay is something an operator opts into.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub struct ControlClient {
+    /// Where to send. Explicit, never derived from observed traffic.
+    addr: SocketAddr,
+    /// How long to wait for a reply before giving up.
+    timeout: Duration,
+    /// Monotonic half of the cookie.
+    counter: AtomicU64,
+    /// Per-client half, so two runs do not mint the same cookies.
+    ///
+    /// rtpengine deduplicates on the cookie and replays cached replies. A
+    /// counter alone restarts at the same value every run, so a restarted
+    /// sipnab would ask questions the relay believes it has already answered
+    /// -- and receive the previous run's answers.
+    base: u64,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+impl ControlClient {
+    /// Point a client at a relay's control port.
+    #[must_use]
+    pub fn new(addr: SocketAddr, timeout: Duration) -> Self {
+        let base = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        Self {
+            addr,
+            timeout,
+            counter: AtomicU64::new(0),
+            base,
+        }
+    }
+
+    /// The relay this client talks to.
+    #[must_use]
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// Mint a cookie seed that has not been used by this client.
+    fn next_seed(&self) -> u64 {
+        self.base
+            .wrapping_add(self.counter.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Ask the relay for its active Call-IDs.
+    ///
+    /// Requires a [`TransmitPermit`], which can only be obtained from a live
+    /// capture source -- so this is uncallable on a run reading a file. That
+    /// is the point: the addresses in a capture belonged to somebody at some
+    /// point in the past, and an analyst opening a customer's pcap must not
+    /// emit packets at them.
+    ///
+    /// # Errors
+    ///
+    /// When the socket cannot be opened, the send or receive fails or times
+    /// out, or the reply does not parse. A relay that REFUSES is not an error:
+    /// see [`ControlReply::Refused`].
+    pub fn list(&self, _permit: &TransmitPermit, limit: u32) -> anyhow::Result<ControlReply> {
+        let request = ControlRequest::new(ReadOnlyCommand::List { limit }, self.next_seed());
+        let body = self.round_trip(&request)?;
+        parse_list_reply(&body, limit)
+    }
+
+    /// Send one request and read one reply.
+    ///
+    /// UDP, because that is rtpengine's control transport. The reply buffer is
+    /// bounded: a datagram larger than this is truncated by the kernel, and a
+    /// truncated bencode message fails to parse rather than being read as a
+    /// short list -- which is the right failure, because a silently short list
+    /// is the thing RE4 is most careful about.
+    fn round_trip(&self, request: &ControlRequest) -> anyhow::Result<Vec<u8>> {
+        use anyhow::Context;
+
+        // Bind to the unspecified address matching the target's family, so a
+        // v6 relay is reachable without a second code path.
+        // Constructed rather than parsed: there is no failure mode to handle,
+        // and `expect` on a literal is a panic path the lint rightly refuses.
+        let bind = SocketAddr::new(
+            if self.addr.is_ipv6() {
+                std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
+            } else {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+            },
+            0,
+        );
+        let sock = std::net::UdpSocket::bind(bind).context("binding a control socket")?;
+        sock.set_read_timeout(Some(self.timeout))
+            .context("setting the control read timeout")?;
+        // Connected UDP, so the kernel drops replies from anyone else. An
+        // unconnected socket accepts a datagram from any source, and a reply
+        // is trusted to describe a production relay's calls.
+        sock.connect(self.addr)
+            .with_context(|| format!("connecting to the relay at {}", self.addr))?;
+
+        sock.send(&request.to_wire())
+            .with_context(|| format!("sending {} to {}", request.command, self.addr))?;
+
+        let mut buf = vec![0u8; MAX_REPLY_BYTES];
+        let n = sock
+            .recv(&mut buf)
+            .with_context(|| format!("no reply from {} within {:?}", self.addr, self.timeout))?;
+        buf.truncate(n);
+
+        // The reply is framed exactly as the request: cookie, space, bencode.
+        // A reply whose cookie is not ours answers a different question.
+        let space = buf
+            .iter()
+            .position(|b| *b == b' ')
+            .context("reply carries no cookie framing")?;
+        if &buf[..space] != request.cookie().as_bytes() {
+            anyhow::bail!(
+                "reply cookie does not match the request; it answers a \
+                 different transaction"
+            );
+        }
+        Ok(buf[space + 1..].to_vec())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,6 +518,43 @@ mod tests {
         }
     }
 
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    /// A permit, for tests that must call a permit-gated function.
+    ///
+    /// Obtained the only way there is: from a live capture source. A test that
+    /// could conjure one would prove nothing about the gate.
+    fn live_permit() -> TransmitPermit {
+        use crate::capture::CaptureSource;
+        TransmitPermit::for_source(&CaptureSource::Live {
+            device: "test0".to_string(),
+        })
+        .expect("a live source must grant a permit")
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    /// Stand in for a relay: answer one datagram with `reply`, echoing the
+    /// cookie the client sent so the framing check passes.
+    ///
+    /// A real socket rather than a mocked one, because the thing most likely
+    /// to be wrong is the framing and the connect/timeout handling, and a mock
+    /// would assert my own assumptions back at me.
+    fn fake_relay(reply_body: &'static str) -> (SocketAddr, std::thread::JoinHandle<()>) {
+        let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
+        let addr = sock.local_addr().expect("addr");
+        let handle = std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            if let Ok((n, peer)) = sock.recv_from(&mut buf) {
+                let req = &buf[..n];
+                let space = req.iter().position(|b| *b == b' ').unwrap_or(0);
+                let mut out = req[..space].to_vec();
+                out.push(b' ');
+                out.extend_from_slice(reply_body.as_bytes());
+                let _ = sock.send_to(&out, peer);
+            }
+        });
+        (addr, handle)
+    }
+
     /// Build a bencode byte string for a fixture.
     ///
     /// Hand-written length prefixes are a reliable source of wrong tests: the
@@ -368,6 +565,97 @@ mod tests {
     /// exists to find.
     fn bstr(s: &str) -> String {
         format!("{}:{}", s.len(), s)
+    }
+
+    /// A real round trip: request framed, reply parsed, calls returned.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    #[test]
+    fn a_round_trip_against_a_relay_returns_its_calls() {
+        let (addr, relay) = fake_relay("d6:result2:ok5:callsl4:aaaa4:bbbbee");
+        let client = ControlClient::new(addr, Duration::from_secs(2));
+
+        let reply = client
+            .list(&live_permit(), 32)
+            .expect("the relay answered; parsing must succeed");
+        match reply {
+            ControlReply::Calls(e) => {
+                assert_eq!(e.call_ids, vec!["aaaa".to_string(), "bbbb".to_string()]);
+                assert!(!e.truncated, "two of thirty-two is complete");
+            }
+            other => panic!("expected calls, got {other:?}"),
+        }
+        relay.join().expect("relay thread");
+    }
+
+    /// A reply answering a DIFFERENT transaction is refused.
+    ///
+    /// rtpengine replays cached replies keyed on the cookie, and a stray
+    /// datagram on a connected socket is possible from the same peer. A reply
+    /// whose cookie is not ours describes some other question, and accepting
+    /// it would attribute one call's streams to another.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    #[test]
+    fn a_reply_with_the_wrong_cookie_is_refused() {
+        let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
+        let addr = sock.local_addr().expect("addr");
+        let relay = std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            if let Ok((_, peer)) = sock.recv_from(&mut buf) {
+                // Deliberately the wrong cookie.
+                let _ = sock.send_to(b"sipnab-somebodyelse d6:result2:oke", peer);
+            }
+        });
+
+        let client = ControlClient::new(addr, Duration::from_secs(2));
+        let err = client
+            .list(&live_permit(), 32)
+            .expect_err("a mismatched cookie must not be accepted");
+        assert!(
+            err.to_string().contains("different transaction"),
+            "the error must name the cause: {err}"
+        );
+        relay.join().expect("relay thread");
+    }
+
+    /// A relay that never answers times out rather than hanging.
+    ///
+    /// An analysis tool that blocks forever on a silent relay is worse than
+    /// one that reports the silence: the operator is left with neither an
+    /// answer nor a prompt.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    #[test]
+    fn a_silent_relay_times_out() {
+        // Bound but never read from: the port exists, nothing replies.
+        let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
+        let addr = sock.local_addr().expect("addr");
+
+        let client = ControlClient::new(addr, Duration::from_millis(250));
+        let start = std::time::Instant::now();
+        let err = client
+            .list(&live_permit(), 32)
+            .expect_err("a silent relay must not succeed");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the read timeout did not apply; this would hang a run"
+        );
+        assert!(
+            err.to_string().contains("no reply"),
+            "the error must say the relay was silent: {err}"
+        );
+        drop(sock);
+    }
+
+    /// Two calls from one client never reuse a cookie.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    #[test]
+    fn a_client_mints_a_fresh_cookie_per_call() {
+        let client = ControlClient::new(
+            "127.0.0.1:1".parse().expect("addr"),
+            Duration::from_millis(1),
+        );
+        let a = client.next_seed();
+        let b = client.next_seed();
+        assert_ne!(a, b, "a client reused a cookie seed across transactions");
     }
 
     /// A full answer is reported as possibly truncated, because that is the
