@@ -721,6 +721,8 @@ wolfssl
 workstream
 Workstream
 workstreams
+worktree
+worktrees
 wrapping_sub
 write_all
 write_crash_report

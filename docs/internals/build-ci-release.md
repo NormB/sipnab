@@ -283,6 +283,14 @@ run at all. Return 2 never renders as a pass. A missing tool does not block the
 commit — CI still enforces it, and blocking would make the hook unusable
 without both installed — but the run says so rather than staying quiet.
 
+Both hooks skip the prose gates entirely when the branch does not carry that
+script, and report the skip. `core.hooksPath` holds an absolute path into one
+worktree's `.githooks/`, so every worktree and every branch runs the same hook
+FILE while the script it sources is branch CONTENT. A branch cut before
+the script existed, or a `git bisect` across the commit that added it, got
+`No such file or directory` and could not commit at all — found the first time
+the hook met a branch two commits behind.
+
 Two of the eleven cannot fail the commit. Gate 6 prints
 `WARN: N TODO/FIXME comments` and falls through — a count, not a veto. Gate 8
 prints `REVIEW` and a list and returns zero, a reminder to check the developer

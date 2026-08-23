@@ -736,7 +736,16 @@ prose_fail=0
 #
 # Return 2 is NOT a pass and is not rendered as one: a gate that cannot run has
 # to say so.
-. "$(git rev-parse --show-toplevel)/scripts/prose-gates.sh"
+# Guarded for the reason .githooks/pre-commit records at length: hooksPath is
+# absolute, so every branch runs this file while the script it sources is
+# branch content, and a branch that predates the script could not push at all.
+PROSE_LIB="$(git rev-parse --show-toplevel 2>/dev/null)/scripts/prose-gates.sh"
+if [ ! -r "$PROSE_LIB" ]; then
+	printf '  vale + codespell ... %bNOT CHECKED -- scripts/prose-gates.sh is not on this branch%b\n' "$YELLOW" "$NC"
+	printf '    CI still runs both and they block there.\n'
+else
+# shellcheck source=scripts/prose-gates.sh
+. "$PROSE_LIB"
 
 printf '  vale (prose style) ... '
 prose_vale_run
@@ -775,6 +784,8 @@ case $? in
 	;;
 esac
 rm -f "$PROSE_OUTPUT"
+
+fi
 
 if [ "$prose_fail" -ne 0 ]; then
 	printf '\n'

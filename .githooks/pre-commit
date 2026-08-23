@@ -96,8 +96,25 @@ echo -e "${GREEN}OK${NC}"
 # Return 2 is NOT a pass. A commit is not blocked by a missing tool, because CI
 # still enforces it and blocking here would make the hook unusable on a machine
 # without both; it is reported instead, so nobody reads silence as green.
-. "$(git rev-parse --show-toplevel)/scripts/prose-gates.sh"
+#
+# SOURCED ONLY IF THE BRANCH HAS IT, and that guard is not defensive padding.
+# `core.hooksPath` is an absolute path to one worktree's .githooks/, so every
+# worktree and every branch runs THIS file -- while the script it sources is
+# branch content. A branch that predates the script, a `git bisect` across the
+# commit that added it, or a contributor branch cut earlier, all got a hard
+# `No such file or directory` and could not commit at all. Found the first time
+# this hook met a branch two commits behind.
+#
+# Skipping is the same answer the script gives for a missing tool: the gate did
+# not run, and it says so, rather than blocking work it cannot check. pre-push
+# and CI still enforce the rule wherever the script exists.
+PROSE_LIB="$(git rev-parse --show-toplevel 2>/dev/null)/scripts/prose-gates.sh"
 prose_commit_fail=0
+if [ ! -r "$PROSE_LIB" ]; then
+    echo -e "  Vale/Codespell... ${YELLOW}NOT CHECKED -- scripts/prose-gates.sh is not on this branch${NC}"
+else
+# shellcheck source=scripts/prose-gates.sh
+. "$PROSE_LIB"
 
 echo -n "  Vale... "
 prose_vale_run
@@ -125,6 +142,8 @@ case $? in
 *) echo -e "${YELLOW}NOT CHECKED -- ${PROSE_REASON}${NC}" ;;
 esac
 rm -f "$PROSE_OUTPUT"
+
+fi
 
 if [ "$prose_commit_fail" -ne 0 ]; then
     echo
