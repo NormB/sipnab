@@ -1270,9 +1270,33 @@ A timestamped `.wav` lands at the path you choose. The Save dialog also exposes 
 
 If you've built with the `audio` feature (in default), `P` in the RTP stream view plays the highlighted stream through your local audio device.
 
+### Check whether the file holds the whole call
+
+Every exported WAV carries a comment recording its origin — the sipnab
+version, the mechanism (`sipnab-capture`), and whether anything is missing.
+Read it with any tool that shows RIFF metadata:
+
+```bash
+ffprobe -v error -show_entries format_tags -of default=noprint_wrappers=1 call.wav
+```
+
+A complete file says `No omissions recorded`. A partial one says `INCOMPLETE`
+and names the reason, because these are different problems:
+
+| The note says | What happened | What to do |
+|---|---|---|
+| `the payload ring wrapped and dropped N earlier frame(s)` | The call was longer than the buffer. The file holds the END of it. | Raise `[limits] max_audio_frames` |
+| `N of M stream(s) on this call are NOT in this file` | A WAV carries two channels; a three-legged call does not fit | Export the legs separately |
+| `(G729)` beside that | A stream's codec is not one sipnab decodes | Nothing — the audio is not recoverable from this capture |
+| `N frame(s) failed to decode` | The decoder rejected individual Opus frames | Check for truncation (`--snaplen`) |
+
+sipnab writes the note after the audio, so the first 44 bytes stay a standard
+WAV header and every player reads the file normally.
+
 **Pitfalls:**
 
-- Supported codecs for WAV decode and playback: G.711 µ-law (PT 0), G.711 A-law (PT 8), Opus (dynamic PT). Other codecs (G.729, AMR, etc.) aren't decoded today.
+- Supported codecs for WAV decode and playback: G.711 µ-law (PT 0), G.711 A-law (PT 8), Opus (dynamic PT). sipnab matches codec names case-insensitively, as SDP allows. Other codecs (G.729, AMR, etc.) aren't decoded today.
+- **An export refusing with "No audio payload retained" is telling you about the run, not the call.** It means this run kept no payload to decode — most often because retention was off. It is not a finding that the call was silent.
 - A failed audio device (headless servers, Tegra without ALSA) no longer crashes the TUI — it disables playback gracefully and surfaces a message suggesting F2 → WAV as an offline alternative.
 - A CLI batch audio-export flag does **not** exist today. The library functions (`rtp::audio_export::export_stream_to_wav`, `export_dialog_to_wav`) are available if you want to build it; until then, scripted batch export means driving the TUI under `expect`/`tmux` or writing a small Rust binary that links the library.
 
