@@ -719,6 +719,22 @@ impl ScannerDetector {
         }
     }
 
+    /// Whether this source ever completed a registration or a call.
+    ///
+    /// The detector already ACTS on this -- `established_factor` softens the
+    /// verdict for a source with a relationship -- and until now nothing could
+    /// SHOW it. An operator deciding whether to block an address needs it
+    /// beside the reason to block, because a source that also placed a real
+    /// call is one a block would disconnect.
+    ///
+    /// `false` for a source this detector has never seen, which is the same
+    /// answer it gives for one it has seen and that never established
+    /// anything: neither has a relationship to protect.
+    #[must_use]
+    pub fn established(&self, src: &IpAddr) -> bool {
+        self.behavioral.get(src).is_some_and(|s| s.established)
+    }
+
     /// Remove behavioral tracking entries whose last activity is older than
     /// `max_age` **in capture time**.
     ///

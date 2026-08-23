@@ -397,6 +397,19 @@ pub struct RtpStream {
     /// Ring buffer of raw RTP payloads for audio export (G.711 and Opus).
     /// Each entry: (RTP timestamp, raw payload bytes).
     pub payload_buffer: std::collections::VecDeque<(u32, Vec<u8>)>,
+    /// Payload frames the ring dropped to stay inside its cap.
+    ///
+    /// The eviction was silent, and silence made the export lie by omission: a
+    /// ten-minute call whose ring holds the last 1500 frames exports as
+    /// "30.0s of mu-law audio", which is textually identical to a genuinely
+    /// thirty-second call and is read as a fact about the CALL. The duration
+    /// is a fact about the BUFFER.
+    ///
+    /// Counted rather than flagged, because "how much was lost" is the
+    /// question an operator asks next, and a bool cannot answer it.
+    /// [`LossMap::truncated`](crate::rtp::loss_map::LossMap) marks the same
+    /// class of loss for the packet-loss map; this is its equivalent for audio.
+    pub payload_frames_dropped: u64,
     /// Packetization interval the SDP declared with `a=ptime`, in
     /// milliseconds, when an offer or answer for this endpoint carried one.
     ///
@@ -747,6 +760,7 @@ impl RtpStream {
             cn_frames: 0,
             silence_periods: Vec::new(),
             payload_buffer: std::collections::VecDeque::new(),
+            payload_frames_dropped: 0,
             sdp_ptime_ms: None,
             // Same reason as `first_frame`: an RTP header carries no IP
             // header. `StreamStore::process_rtp` holds the `ParsedPacket` and

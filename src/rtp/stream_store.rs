@@ -643,6 +643,11 @@ impl StreamStore {
                     let audio = parsed.payload[payload_start..].to_vec();
                     if stream.payload_buffer.len() >= self.max_audio_frames {
                         stream.payload_buffer.pop_front();
+                        // Counted, so the export can say the ring wrapped
+                        // rather than reporting the buffer's duration as the
+                        // call's.
+                        stream.payload_frames_dropped =
+                            stream.payload_frames_dropped.saturating_add(1);
                     }
                     stream.payload_buffer.push_back((rtp.timestamp, audio));
                 }
@@ -1679,13 +1684,13 @@ impl StreamStore {
 
 /// Check if a codec supports audio payload capture for playback/export.
 ///
-/// G.711 (PCMU/PCMA) and Opus are supported. Opus codec names are
-/// case-insensitive per SDP convention (`opus`, `OPUS`, `Opus`).
+/// Delegates rather than deciding. This used to list Opus's spellings itself
+/// -- `"opus" | "OPUS" | "Opus"` -- while the exporter compared
+/// case-insensitively, so a legal `OpUs` label was never buffered here and was
+/// still called decodable there. The export then reported that retention was
+/// off, which was a true-sounding statement about the wrong thing.
 fn is_audio_capturable(codec: Option<&str>) -> bool {
-    matches!(
-        codec,
-        Some("PCMU") | Some("PCMA") | Some("opus") | Some("OPUS") | Some("Opus")
-    )
+    crate::rtp::audio_export::is_capturable_audio_codec(codec)
 }
 
 /// Unit tests for the stream store: creation/update, SDP linking in both
@@ -1693,6 +1698,45 @@ fn is_audio_capturable(codec: Option<&str>) -> bool {
 /// merge, and the SNB-0015 performance probes.
 #[cfg(test)]
 mod tests {
+    /// The buffering gate and the export gate must answer identically.
+    ///
+    /// They diverged for real: this side matched Opus's three canonical
+    /// spellings exactly, the export side compared case-insensitively as SDP
+    /// requires, and a stream labeled `OpUs` fell in the gap -- never
+    /// buffered, still called decodable, and the export blamed retention.
+    ///
+    /// The existing test beside the exporter asserted "the two predicates must
+    /// agree" while checking two predicates in that same file, so it could not
+    /// see the pair that actually disagreed. This one spans the boundary.
+    #[test]
+    fn the_buffering_gate_agrees_with_the_export_gate() {
+        for codec in [
+            Some("PCMU"),
+            Some("PCMA"),
+            Some("opus"),
+            Some("OPUS"),
+            Some("Opus"),
+            // The spelling that fell in the gap. Legal SDP, and what several
+            // stacks emit.
+            Some("OpUs"),
+            Some("oPuS"),
+            // Must be refused by BOTH, or the buffer fills with what nothing
+            // can decode.
+            Some("G729"),
+            Some("H264"),
+            Some(""),
+            None,
+        ] {
+            assert_eq!(
+                super::is_audio_capturable(codec),
+                crate::rtp::audio_export::is_capturable_audio_codec(codec),
+                "buffering and export disagree about {codec:?}; a codec kept by \
+                 one and refused by the other produces an empty buffer that the \
+                 export explains with the wrong reason"
+            );
+        }
+    }
+
     /// RE3: an endpoint rtpengine asserted about ITSELF is not the same claim
     /// as one observed in signaling, and the difference must survive into
     /// provenance rather than being flattened at the point of use.
@@ -3074,6 +3118,39 @@ a=rtpmap:96 H264/90000\r\n";
             "audio payloads must not be buffered when capture is disabled"
         );
         assert_eq!(stream.packet_count, 2, "stats still update normally");
+    }
+
+    /// A ring that wraps must COUNT what it dropped.
+    ///
+    /// The eviction was silent, so a ten-minute call exported as "30.0s of
+    /// mu-law audio" -- textually identical to a genuinely thirty-second call,
+    /// and read as a fact about the call rather than about the buffer.
+    ///
+    /// Asserted on the counter rather than on the export string, because the
+    /// string's own test can pass while nothing feeds it: removing this
+    /// increment still compiles, and `wrap_clause`'s test still passes,
+    /// because it is handed a number rather than measuring one.
+    #[test]
+    fn a_wrapping_payload_ring_counts_what_it_dropped() {
+        let mut store = StreamStore::new(100);
+        store.set_max_audio_frames(3);
+        let parsed = make_parsed(20000, 30000, 160);
+
+        for seq in 1..=10u16 {
+            store.process_rtp(&parsed, &make_rtp_header(0xA0D3, seq), ts(i64::from(seq)));
+        }
+
+        let stream = store.iter().next().expect("stream exists");
+        assert_eq!(
+            stream.payload_buffer.len(),
+            3,
+            "the ring must hold its cap and no more"
+        );
+        assert_eq!(
+            stream.payload_frames_dropped, 7,
+            "ten frames into a ring of three drops seven; a silent drop is what \
+             made the exported duration read as the call's length"
+        );
     }
 
     /// Default (TUI / library use): G.711 payloads ARE buffered so

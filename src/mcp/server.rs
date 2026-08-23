@@ -6120,8 +6120,13 @@ impl SipnabMcp {
     #[tool(
         name = "export_audio",
         description = "Exports a call's RTP audio to a WAV file in the \
-                       configured file root. Fails when the call has no \
-                       decodable audio.",
+                       configured file root. The WAV records how it was made \
+                       in a RIFF comment, and says so when it is PARTIAL — a \
+                       wrapped payload ring, streams past the two a WAV can \
+                       carry, undecodable codecs, or frames that failed to \
+                       decode. A refusal describes what THIS RUN kept, not \
+                       whether the call carried audio: most often payload \
+                       retention was off (--retain-audio).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
