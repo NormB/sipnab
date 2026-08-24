@@ -497,6 +497,113 @@ impl TlsDecryptReport {
     }
 }
 
+/// The TLS decryption tallies, published where a SERVER can read them.
+///
+/// [`TlsDecryptReport`] is built from a [`decrypt::TlsDecryptor`] that the
+/// batch run owns locally, which is why it reached the CLI's end-of-run summary
+/// and nothing else. A live capture serving REST or MCP has that decryptor deep
+/// inside the packet loop and no handle to it, so the one number that separates
+/// "this network was quiet" from "sipnab is holding ciphertext it cannot open"
+/// was unavailable to both servers for the entire run.
+///
+/// Published as process-global atomics rather than by threading a handle, which
+/// is the pattern [`undecodable_frames`] and [`snapped_frames`] already
+/// establish: a monotonic count anything can read with one relaxed load and no
+/// lock. The decryptor bumps these alongside its own fields.
+///
+/// **Monotonic and process-wide.** A test that installs several decryptors sums
+/// them; assert on a DELTA rather than a figure, the same way the media-creating
+/// tally is tested.
+mod tls_tally {
+    use std::sync::atomic::AtomicU64;
+
+    /// Keylog entries loaded, whatever became of them.
+    pub(super) static KEYLOG_ENTRIES: AtomicU64 = AtomicU64::new(0);
+    /// Sessions built from that key material.
+    pub(super) static SESSIONS_WITH_KEYS: AtomicU64 = AtomicU64::new(0);
+    /// ApplicationData records offered to a decryptor.
+    pub(super) static APP_DATA_RECORDS: AtomicU64 = AtomicU64::new(0);
+    /// ApplicationData records actually opened.
+    pub(super) static DECRYPTED_RECORDS: AtomicU64 = AtomicU64::new(0);
+    /// Records held for a missing key and opened once one arrived.
+    pub(super) static LATE_RECOVERED: AtomicU64 = AtomicU64::new(0);
+    /// Records dropped from the hold before any key arrived.
+    pub(super) static LATE_EVICTED: AtomicU64 = AtomicU64::new(0);
+    /// Whether a decryptor was ever installed in this process.
+    ///
+    /// The distinction that keeps every zero above honest. "No keys were
+    /// supplied" and "keys were supplied and opened nothing" are opposite
+    /// findings with opposite remedies, and both render as
+    /// `decrypted_records: 0`.
+    pub(super) static DECRYPTOR_INSTALLED: AtomicU64 = AtomicU64::new(0);
+}
+
+/// Record that a decryptor exists in this process.
+///
+/// Called when one is INSTALLED rather than when one is constructed: a
+/// decryptor built to probe an embedded DSB block and then dropped because it
+/// found no secrets never decrypted anything, and reporting it as installed
+/// would turn "no keys were supplied" into "keys were supplied and failed".
+pub fn note_tls_decryptor_installed(keylog_entries: usize, sessions_with_keys: usize) {
+    tls_tally::DECRYPTOR_INSTALLED.store(1, Ordering::Relaxed);
+    tls_tally::KEYLOG_ENTRIES.store(keylog_entries as u64, Ordering::Relaxed);
+    tls_tally::SESSIONS_WITH_KEYS.store(sessions_with_keys as u64, Ordering::Relaxed);
+}
+
+/// Record that one ApplicationData record was offered to a decryptor.
+///
+/// Published as it happens rather than summed at the end, and that is the whole
+/// point of the change: the end-of-run report reaches the CLI's summary, while
+/// a live capture serving REST or MCP never gets there. A server asked "is
+/// decryption working?" mid-run needs the answer now.
+pub fn note_tls_record_offered() {
+    tls_tally::APP_DATA_RECORDS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record that one ApplicationData record was opened.
+pub fn note_tls_record_decrypted() {
+    tls_tally::DECRYPTED_RECORDS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record that one held record was opened once its key arrived.
+pub fn note_tls_record_late_recovered() {
+    tls_tally::LATE_RECOVERED.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record that one held record was dropped before any key arrived.
+///
+/// Kept apart from [`note_tls_record_late_recovered`] because without it "we
+/// never had the keys" and "we had them and had already discarded the
+/// ciphertext" are the same silence.
+pub fn note_tls_record_late_evicted() {
+    tls_tally::LATE_EVICTED.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The published TLS decryption state, readable from anywhere.
+///
+/// `None` when no decryptor was ever installed, which is a different answer
+/// from a report of zeroes and must not be flattened into one: nothing was
+/// supplied to decrypt WITH, so nothing failed.
+#[must_use]
+pub fn published_tls_decrypt() -> Option<TlsDecryptReport> {
+    if tls_tally::DECRYPTOR_INSTALLED.load(Ordering::Relaxed) == 0 {
+        return None;
+    }
+    Some(TlsDecryptReport {
+        keylog_entries: tls_tally::KEYLOG_ENTRIES.load(Ordering::Relaxed) as usize,
+        sessions_with_keys: tls_tally::SESSIONS_WITH_KEYS.load(Ordering::Relaxed) as usize,
+        app_data_records: tls_tally::APP_DATA_RECORDS.load(Ordering::Relaxed),
+        decrypted_records: tls_tally::DECRYPTED_RECORDS.load(Ordering::Relaxed),
+        late_recovered: tls_tally::LATE_RECOVERED.load(Ordering::Relaxed),
+        late_evicted: tls_tally::LATE_EVICTED.load(Ordering::Relaxed),
+        // Never published: `late_still_held` is a point-in-time queue depth
+        // rather than a monotonic count, and there is no note_* for it because
+        // a running total of a queue describes no moment that ever existed.
+        // Zero is the honest value for a reader outside the run.
+        late_still_held: 0,
+    })
+}
+
 /// What this run could not decode at all.
 ///
 /// The counts sipnab prints describe what it understood. This describes what
