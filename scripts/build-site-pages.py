@@ -332,10 +332,14 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "vcon.md",
         "Export one observed call as a vCon",
         "vCon Export",
-        # 29: the next free weight. `docs_page_weights_are_unique_and_
-        # descriptions_present` requires uniqueness; sidebar order comes from
-        # the nav_group path lists, not from this number.
-        29,
+        # 37, the next free weight -- checked against the SITE pages
+        # (`website/content/docs/*.md`), which is where the uniqueness gate
+        # reads from. 29 was picked first by counting the `docs/` sources, and
+        # `tls-capture.md` already held it on the site side.
+        # `docs_page_weights_are_unique_and_descriptions_present` requires
+        # uniqueness; sidebar order comes from the nav_group path lists, not
+        # from this number.
+        37,
         "Export one observed dialog as a vCon container: what the format is, "
         "how to produce one, and what an observer's record does and does not "
         "let a consumer conclude.",
