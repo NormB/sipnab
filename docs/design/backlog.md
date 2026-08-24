@@ -1546,12 +1546,12 @@ output path.
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1319`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1319)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1299`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1299)), which attaches `frame_ref`
     (`#[tool(` at [`src/mcp/server.rs:4528`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4528), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1319`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1319)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1299`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1299)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -1697,7 +1697,7 @@ output path.
     `SUPPRESSION_FILENAME` ([`src/sip/lint/mod.rs:70`](https://github.com/NormB/sipnab/blob/main/src/sip/lint/mod.rs#L70)),
     `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
     exist, and the MCP lint tools consume them through `resolve_suppressions`
-    ([`src/mcp/server.rs:619`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L619)), which takes an explicit filename or walks up from
+    ([`src/mcp/server.rs:590`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L590)), which takes an explicit filename or walks up from
     the capture's directory to a project root. **What is still missing is the
     suppression half of the CLI, and the evidence this line cited for that is
     now false too. Corrected 2026-08-06:** it read *"`grep -n lint src/cli.rs`
@@ -4048,7 +4048,34 @@ carried a doc comment calling itself "the name this assertion is written under
 on every output surface". The caveat gate is the strictest because a missing
 caveat counter does not make a response incomplete -- it makes it read as clean.
 
-### SP1 — capture identity and context on REST — BLOCKED on a decision
+### SP1 — capture identity and context on REST — DONE
+
+Both blockers below were real and both were resolved rather than worked
+around.
+
+`CaptureState` and `CaptureContext` moved to
+[`src/capture/session.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/session.rs),
+outside both server modules, with the two MCP-only fields `#[cfg]`-gated the
+way [`MediaDecrypt`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs)
+gates its `tls`-only ones. [`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) builds ONE instance before
+either server arm and hands the same handle to both, so a rotation one door
+performs is a rotation the other sees. A copy would have been simpler and
+wrong: the identity rotates when `open_capture` swaps the file underneath, and
+two copies disagree from that moment on.
+
+`get_stats` now holds capture, dialogs and streams across the read, in the
+order `CaptureState` documents. It released the dialog guard before taking the
+stream guard, which was survivable while nothing tied the counts together and
+stopped being survivable the moment one etag claimed they belong to each other.
+
+The test that proves it was itself wrong first. Asserting only that the
+identity CHANGES after a rotation passed against a handler minting a fresh
+identity per request -- the exact private-copy design this change exists to
+avoid. Mutation testing caught it. The assertion that discriminates is the
+opposite one: two reads with nothing between them must return the SAME
+instance.
+
+### SP1 (original entry, kept for the reasoning) — BLOCKED on a decision
 
 `GET /v1/stats` still lacks `capture_identity`, `source_exhausted`,
 `writing_to` and `unsaved`, all of which MCP `capture_status` has. Unlike every

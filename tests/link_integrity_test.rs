@@ -610,7 +610,12 @@ fn wiki_intra_docs_links_resolve() {
     // `media-relay` assertion IS rather than re-explaining relay attribution
     // twice. Two pages, one link each; the site mirrors are generated and this
     // gate reads docs/.
-    const EXPECTED_WIKI_LINKS: usize = 480;
+    // 480 -> 481: one link to design/positioning.md from the multi-relay
+    // section of docs/rtpengine.md, which says sipnab aggregates nothing across
+    // nodes and links the page that DECIDED that rather than re-arguing it.
+    // One page, one link; the site mirror is generated and this gate reads
+    // docs/.
+    const EXPECTED_WIKI_LINKS: usize = 481;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

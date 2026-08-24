@@ -2615,7 +2615,13 @@ fn no_documentation_table_repeats_a_row() {
     // holds, in the new SP section of `docs/design/backlog.md`. Attributed by
     // measurement before the number moved: that file gained exactly one table
     // separator, and design docs have no generated mirror.
-    const EXPECTED_TABLES: usize = 641;
+    // 641 -> 643: one hand-written table and its generated mirror, listing the
+    // capture-context keys `/v1/stats` gained beside `capture_identity` --
+    // source, name, uptime, exhausted, writing-to and unsaved. Attributed by
+    // measurement before the number moved: `docs/rest-api.md` and
+    // `website/content/docs/api.md` gained exactly one table separator each and
+    // no other page gained any.
+    const EXPECTED_TABLES: usize = 643;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
