@@ -69,11 +69,10 @@ linked **`-gnu`** build (requires glibc >= 2.36 — Debian 12+, Ubuntu 23.04+ �
 and libpcap installed via your package manager) and the static **musl** build
 (no glibc or libpcap requirement, and no TUI audio playback — everything else
 identical). The 2.36 figure is the floor the release workflow actually
-enforces on every gnu binary, and the installer now uses that same cutover —
-it serves musl only to hosts below **glibc 2.36**, or with no glibc at all. It
-previously cut over at 2.39 for eleven releases, so hosts between 2.36 and
-2.39 (Debian 12 among them) received the static build and lost TUI audio even
-though the gnu build ran there fine.
+enforces on every gnu binary, and the installer uses that same cutover — it
+serves musl only to hosts below **glibc 2.36**, or with no glibc at all. One
+number in both places is what stops a host the gnu build runs on from taking
+the static build and losing TUI audio for nothing.
 
 ## Download a release binary yourself
 
@@ -110,7 +109,7 @@ covers every file, and the tarballs additionally ship an individual
 | `v<version>.tar.gz`, `v<version>.zip` | — | anywhere Rust 1.97+ builds | tagged source tree |
 
 The two macOS floors differ because they are the pinned compiler's own defaults,
-one per target. `release.yml` now pins `MACOSX_DEPLOYMENT_TARGET` to exactly
+one per target. `release.yml` pins `MACOSX_DEPLOYMENT_TARGET` to exactly
 those two values, so a toolchain bump cannot move a published floor without
 someone deciding to, and `published_macos_floors_match_the_toolchain` holds
 [`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml) to what the workflow pins — refusing a floor below the
@@ -462,7 +461,7 @@ For everything:
 cargo build --release --features full
 ```
 
-`libasound.so.2` is now an **optional** runtime dependency. The `audio` feature
+`libasound.so.2` is an **optional** runtime dependency. The `audio` feature
 builds a separate plugin, `libsipnab_audio.so`, installed to `/usr/lib/sipnab/`
 by the `.deb` (or placed next to the binary in dev builds). The `sipnab` binary
 `dlopen`s this plugin only when you actually play a stream, so an audio-enabled
@@ -490,7 +489,7 @@ codegen-units = 1
 strip = true
 ```
 
-Target binary size (musl, stripped): <= 12 MB. Enforced against the real artifact by the "Enforce published binary size" step in release.yml.
+Target binary size (musl, stripped): <= 13 MB. Enforced against the real artifact by the "Enforce published binary size" step in release.yml.
 
 ## Cross-compilation
 
@@ -598,7 +597,7 @@ sipnab -D
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```text
-sipnab 0.5.123 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf
+sipnab 0.5.124 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf
 ```
 
 This is the fastest way to confirm a build carries the feature set

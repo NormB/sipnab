@@ -321,7 +321,7 @@ fn resolve_counting(
     // Chronological, with the path as a tie-break so a set of files sharing a
     // first-packet timestamp still resolves to one deterministic order rather
     // than whatever the directory happened to yield.
-    resolved.sort_by(|a, b| {
+    crate::sort::sort_by_dyn(&mut resolved, &mut |a, b| {
         match (a.first_packet, b.first_packet) {
             (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
             (Some(_), None) => std::cmp::Ordering::Less,

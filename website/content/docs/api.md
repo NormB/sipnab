@@ -119,11 +119,11 @@ and that `id` is not revoked. A malformed token loses, every time (fail-closed).
 MCP endpoint turns away a token minted from `--api-signing-key`, and vice versa —
 **even when both carry the same signing key**. The
 version prefix is part of the signed input, so an `s2` token cannot be rewritten
-as `s1` to shed its binding. The pre-`aud` `s1` format is **no longer
-accepted** — it carried no audience, so honoring it would have left this
-binding best-effort. An `s1` token now returns `401`. Re-mint with
-`--mint-token`. Note that **static** `--api-key` secrets carry no audience —
-the binding applies to signed tokens only.
+as `s1` to shed its binding. sipnab **rejects** the pre-`aud` `s1` format — it
+carries no audience, so honoring it would leave this binding best-effort. An
+`s1` token returns `401`. Re-mint with `--mint-token`. Note that **static**
+`--api-key` secrets carry no audience — the binding applies to signed tokens
+only.
 
 | Setting | Purpose |
 |---|---|
@@ -749,7 +749,7 @@ List all tracked RTP streams with quality metrics.
 
 | Parameter  | Type  | Default | Description |
 |------------|-------|---------|-------------|
-| `orphaned` | bool  | --      | `true` keeps only streams no dialog claims, `false` only those one does. From 0.5.98 the test is the stream's dialog association; before it, a 30-second sweep decided, so `orphaned=true` missed short unclaimed streams |
+| `orphaned` | bool  | --      | `true` keeps only streams no dialog claims, `false` only those one does. The test is the stream's dialog association, applied from the stream's first packet, so `orphaned=true` catches short unclaimed streams as well as long ones |
 | `mos_below`| float | --      | Filter streams with MOS below this threshold |
 | `limit`    | int   | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`   | int   | 0       | Pagination offset |

@@ -123,6 +123,8 @@ impl Harness {
             &mut self.heuristic,
             opts,
             &mut decrypt,
+            // Offline test: no relay to ask.
+            None,
         );
     }
 }

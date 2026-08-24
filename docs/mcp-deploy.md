@@ -117,7 +117,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.123 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf
+   # sipnab 0.5.124 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -1081,8 +1081,8 @@ Start from the whole capture — you may not know which Call-ID to ask about:
 
 `total_matched` against `returned` is the field to read first. They differ
 whenever the capture holds more problems than one page, and `truncated` says so
-outright — a bare list of 50 rows used to be indistinguishable from a capture
-that had exactly 50 problems.
+outright — without it, a bare list of 50 rows is indistinguishable from a
+capture that holds exactly 50 problems.
 
 Then ask the registration-specific tool, which knows the shape of a healthy
 REGISTER exchange:
@@ -1196,7 +1196,7 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
-  "version": "0.5.123",
+  "version": "0.5.124",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -1646,7 +1646,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.73"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.124"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand

@@ -193,6 +193,24 @@ impl SdpProvenance {
         }
     }
 
+    /// What sipnab learned by ASKING the relay, rather than by capturing it.
+    ///
+    /// Same claim as [`Self::relay_asserted`] -- a relay describing its own
+    /// allocation -- and a different provenance, because this endpoint did not
+    /// arrive over a capture source at all. There is no honest
+    /// [`crate::capture::parse::InputOrigin`] for it: `Wire`, `Hep` and
+    /// `Uprobe` all assert that addressing was OBSERVED somewhere, and this
+    /// was not. So the origin is absent, and a binding made from it withholds
+    /// the cross-source claim rather than inventing one.
+    #[must_use]
+    pub fn relay_queried(observed_at: DateTime<Utc>) -> Self {
+        Self {
+            origin: None,
+            observed_at: Some(observed_at),
+            asserted_by: EndpointAssertion::MediaRelay,
+        }
+    }
+
     /// What the rtpengine control plane knows: the relay's own allocation.
     ///
     /// Same two transport facts as [`Self::observed`], and a different claim.
@@ -211,6 +229,16 @@ impl SdpProvenance {
         }
     }
 }
+
+/// Sockets the orphan buffer holds before it stops accepting more.
+///
+/// A CHOICE sized to bound memory, not a measurement: two entries per stream,
+/// so this is 2048 unexplained streams waiting to be offered to the
+/// reconciler. The consumer drains continuously, so reaching it means the
+/// reconciler is not keeping up or is not running at all -- and
+/// [`StreamStore::orphan_sockets_dropped`] is what keeps that from reading as
+/// "there were no more".
+const MAX_PENDING_ORPHAN_SOCKETS: usize = 4096;
 
 /// How long an SDP media endpoint may sit before it stops being allowed to
 /// name a NEW stream's dialog (F3).
@@ -495,6 +523,13 @@ pub struct StreamStore {
     /// `max_streams` with oldest-out eviction so a flood of unique calls can't
     /// grow it without limit (mirrors the stream cap, SNB-0004 robustness).
     sdp_endpoints: IndexMap<(IpAddr, u16), SdpEndpoint, ahash::RandomState>,
+    /// Whether to record the sockets of streams nothing explains.
+    record_new_orphans: bool,
+    /// Those sockets, until something drains them.
+    new_orphan_sockets: Vec<(IpAddr, u16)>,
+    /// Orphan streams never offered to the reconciler because the buffer was
+    /// full. See [`StreamStore::orphan_sockets_dropped`].
+    orphan_sockets_dropped: u64,
     /// `(addr, port)` → keys of streams whose src OR dst is that endpoint.
     /// Without it, linking an SDP media endpoint to its stream(s) linear-scanned
     /// the whole store on every SDP-bearing SIP message — O(streams) per message,
@@ -536,6 +571,9 @@ impl StreamStore {
             max_audio_frames: 1500,
             audio_capture: true,
             sdp_endpoints: IndexMap::default(),
+            record_new_orphans: false,
+            new_orphan_sockets: Vec::new(),
+            orphan_sockets_dropped: 0,
             endpoint_index: std::collections::HashMap::default(),
             provenance: std::collections::HashMap::default(),
             link_scan_iters: 0,
@@ -697,6 +735,22 @@ impl StreamStore {
             // Resolve codec/clock/dialog from any SDP already seen for this
             // endpoint, before any packet feeds the jitter estimate (SNB-0007).
             self.resolve_from_sdp(&mut stream);
+            // RE4's second trigger fires HERE, at creation, and only when
+            // nothing explained the stream. Recording it at creation is what
+            // makes "on an unexplained stream" an event rather than a periodic
+            // rescan of the store.
+            if self.record_new_orphans && stream.associated_dialog.is_none() {
+                if self.new_orphan_sockets.len() + 2 <= MAX_PENDING_ORPHAN_SOCKETS {
+                    self.new_orphan_sockets.push((key.src.ip(), key.src.port()));
+                    self.new_orphan_sockets.push((key.dst.ip(), key.dst.port()));
+                } else {
+                    // Counted, not silently dropped: a stream that was never
+                    // offered to the reconciler is a stream it was never given
+                    // the chance to name, and that is a different fact from
+                    // the relay not holding it.
+                    self.orphan_sockets_dropped += 1;
+                }
+            }
             // Capture G.711 payload for audio export (first packet)
             if self.audio_capture && is_audio_capturable(stream.codec.as_deref()) {
                 let payload_start = rtp.payload_offset;
@@ -1365,6 +1419,38 @@ impl StreamStore {
         }
     }
 
+    /// Report the sockets of streams nothing explains, for RE4's second
+    /// trigger.
+    ///
+    /// OFF by default and cheap when off: a run with no relay to ask must not
+    /// pay a push per orphan stream, and an undrained buffer must not grow
+    /// without a ceiling on a capture full of media the relay never touched.
+    pub fn record_new_orphans(&mut self, on: bool) {
+        self.record_new_orphans = on;
+        if !on {
+            self.new_orphan_sockets.clear();
+        }
+    }
+
+    /// Orphan streams the buffer had no room to offer the reconciler.
+    ///
+    /// Non-zero means this run asked about FEWER unexplained streams than it
+    /// saw, which the consumer has to say rather than reporting the rest as
+    /// streams the relay disowned.
+    #[must_use]
+    pub fn orphan_sockets_dropped(&self) -> u64 {
+        self.orphan_sockets_dropped
+    }
+
+    /// Take the sockets recorded since the last call.
+    ///
+    /// Both ends of the stream are reported: sipnab cannot tell which side is
+    /// the relay's from the packet alone, and the reconciler answers a socket
+    /// it does not hold for free from its own index.
+    pub fn drain_new_orphan_sockets(&mut self) -> Vec<(IpAddr, u16)> {
+        std::mem::take(&mut self.new_orphan_sockets)
+    }
+
     /// Look up a stream by its key.
     pub fn get(&self, key: &StreamKey) -> Option<&RtpStream> {
         self.streams.get(key)
@@ -1775,6 +1861,116 @@ mod tests {
     /// Build a UDP ParsedPacket from 10.0.0.1:`src_port` to
     /// 10.0.0.2:`dst_port` with a zeroed 12-byte-header + `payload_len`
     /// payload.
+    /// RE4's second trigger needs to know a stream turned up that nothing
+    /// explains -- at the moment it is CREATED, not by rescanning the store.
+    #[test]
+    fn a_stream_nothing_explains_reports_both_its_sockets() {
+        let mut store = StreamStore::new(100);
+        store.record_new_orphans(true);
+
+        store.process_rtp(
+            &make_parsed(20000, 30000, 160),
+            &make_rtp_header(0xCAFE, 1),
+            ts(0),
+        );
+
+        let mut got = store.drain_new_orphan_sockets();
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            vec![
+                (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+                (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            ],
+            "both ends are reported: which one is the relay's is not knowable \
+             from the packet"
+        );
+        assert!(
+            store.drain_new_orphan_sockets().is_empty(),
+            "a drained socket must not be reported twice -- the reconciler \
+             would spend a transaction re-asking about it"
+        );
+    }
+
+    /// A stream the signaling already explains is not an orphan, and asking a
+    /// relay about it would spend a transaction to learn what sipnab knows.
+    #[test]
+    fn a_stream_the_signaling_explains_reports_nothing() {
+        let mut store = StreamStore::new(100);
+        store.record_new_orphans(true);
+        store.link_endpoint(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000, "call-a", &[]);
+
+        store.process_rtp(
+            &make_parsed(20000, 30000, 160),
+            &make_rtp_header(0xCAFE, 1),
+            ts(0),
+        );
+
+        assert!(
+            store.drain_new_orphan_sockets().is_empty(),
+            "the SDP endpoint named this stream's dialog at creation"
+        );
+    }
+
+    /// The buffer has a ceiling, and reaching it is COUNTED. A capture full
+    /// of media the relay never touched must not grow this without bound, and
+    /// the streams it could not hold must not read as streams that did not
+    /// exist.
+    #[test]
+    fn a_full_orphan_buffer_counts_what_it_could_not_hold() {
+        let mut store = StreamStore::new(10_000);
+        store.record_new_orphans(true);
+
+        let fits = MAX_PENDING_ORPHAN_SOCKETS / 2;
+        for i in 0..fits {
+            let port = 20_000 + u16::try_from(i).expect("fits in u16");
+            store.process_rtp(
+                &make_parsed(port, 30000, 160),
+                &make_rtp_header(0xC000_0000 + u32::try_from(i).expect("fits"), 1),
+                ts(0),
+            );
+        }
+        assert_eq!(
+            store.orphan_sockets_dropped(),
+            0,
+            "everything up to the ceiling is offered"
+        );
+
+        let port = 20_000 + u16::try_from(fits).expect("fits in u16");
+        store.process_rtp(
+            &make_parsed(port, 30000, 160),
+            &make_rtp_header(0xD000_0000, 1),
+            ts(0),
+        );
+        assert_eq!(
+            store.orphan_sockets_dropped(),
+            1,
+            "the stream past the ceiling is counted, not silently discarded"
+        );
+        assert_eq!(
+            store.drain_new_orphan_sockets().len(),
+            MAX_PENDING_ORPHAN_SOCKETS,
+            "and the buffer stops at its ceiling"
+        );
+    }
+
+    /// Off by default: a run with no relay to ask pays nothing.
+    #[test]
+    fn orphan_sockets_are_not_recorded_unless_asked_for() {
+        let mut store = StreamStore::new(100);
+
+        store.process_rtp(
+            &make_parsed(20000, 30000, 160),
+            &make_rtp_header(0xCAFE, 1),
+            ts(0),
+        );
+
+        assert!(
+            store.drain_new_orphan_sockets().is_empty(),
+            "recording must cost nothing on a run that will never ask a relay"
+        );
+    }
+
     fn make_parsed(src_port: u16, dst_port: u16, payload_len: usize) -> ParsedPacket {
         ParsedPacket {
             frame: None,

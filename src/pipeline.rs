@@ -1686,6 +1686,45 @@ pub fn apply_relay_control_links(
     }
 }
 
+/// Register a relay's startup snapshot as media endpoints on one store.
+///
+/// The counterpart to [`apply_relay_control_links`] for the half of RE4 that
+/// ASKS rather than watches, and factored out for the same reason: each worker
+/// builds its own [`rtp::stream_store::StreamStore`], and a snapshot that
+/// reached some of them and not the others is the drift one definition makes
+/// unavailable.
+///
+/// Registering rather than linking is what keeps the packet path free of
+/// network calls. `link_endpoint_from` remembers the endpoint, so a stream
+/// that appears AFTER the snapshot -- which is every stream, since the
+/// snapshot is taken before the capture opens -- is attributed at creation
+/// from memory.
+///
+/// The rtpmap is empty and the ptime absent because the relay reported neither.
+/// A `query` reply names a codec but no payload type, and an rtpmap entry needs
+/// both; synthesizing one would put a number sipnab was never told into a field
+/// an operator reads as measured.
+pub fn apply_relay_snapshot(
+    ss: &mut rtp::stream_store::StreamStore,
+    snapshot: &crate::rtpengine::reconcile::RelaySnapshot,
+) {
+    let Some(taken_at) = snapshot.taken_at else {
+        // Never asked. Not an empty relay -- see `Unattributed`.
+        return;
+    };
+    let provenance = rtp::stream_store::SdpProvenance::relay_queried(taken_at);
+    for link in &snapshot.links {
+        ss.link_endpoint_from(
+            link.address,
+            link.port,
+            &link.call_id,
+            &[],
+            None,
+            provenance,
+        );
+    }
+}
+
 /// Check if a UDP payload looks like RTCP.
 ///
 /// Two conventions are recognized:
@@ -2241,6 +2280,7 @@ pub fn process_packet(
     rtp_heuristic: &mut rtp::heuristic::RtpHeuristic,
     opts: &PipelineOptions,
     decrypt: &mut MediaDecrypt<'_>,
+    relay_orphans: Option<&crate::rtpengine::reconcile::OrphanSink>,
 ) {
     match classify_packet(pp, rtp_heuristic, opts, decrypt) {
         PacketAction::None => {}
@@ -2293,16 +2333,37 @@ pub fn process_packet(
             hdr,
             decrypted_payload,
             via_heuristic: _,
-        } => match decrypted_payload {
-            Some(payload) => {
-                let mut d = pp.clone();
-                d.payload = payload;
-                stream_store.write().process_rtp(&d, &hdr, d.timestamp);
+        } => {
+            let mut ss = stream_store.write();
+            match decrypted_payload {
+                Some(payload) => {
+                    let mut d = pp.clone();
+                    d.payload = payload;
+                    ss.process_rtp(&d, &hdr, d.timestamp);
+                }
+                None => {
+                    ss.process_rtp(pp, &hdr, pp.timestamp);
+                }
             }
-            None => {
-                stream_store.write().process_rtp(pp, &hdr, pp.timestamp);
+            // RE4's second trigger. Drained under the write lock this branch
+            // already holds -- a second acquisition per packet would be a
+            // contention cost paid on every RTP packet to serve a feature
+            // almost no run enables.
+            let orphans = if relay_orphans.is_some() {
+                ss.drain_new_orphan_sockets()
+            } else {
+                Vec::new()
+            };
+            // Released BEFORE offering. The reconciler takes this same lock to
+            // apply what it learns, and the capture path must not be the one
+            // holding it while handing work to the thread that wants it.
+            drop(ss);
+            if let Some(sink) = relay_orphans {
+                for (address, port) in orphans {
+                    sink.offer(address, port);
+                }
             }
-        },
+        }
     }
 }
 
@@ -2663,6 +2724,97 @@ mod quiet_bad_parse_tests {
 /// traffic into a fabricated media diagnosis.
 #[cfg(test)]
 mod relay_control_tests {
+    /// The ordering RE4 actually runs in: the snapshot is taken BEFORE the
+    /// capture opens, so every stream is created after it. A snapshot that
+    /// only linked streams already in the store would attribute nothing at
+    /// all, and the whole point of RE4 -- naming a call that was already up
+    /// when sipnab started -- would silently do nothing.
+    #[test]
+    fn a_snapshot_attributes_a_stream_created_afterwards() {
+        use crate::capture::parse::{InputOrigin, ParsedPacket, TransportProto};
+        use crate::rtp::parser::RtpHeader;
+        use crate::rtp::stream_store::{EndpointAssertion, StreamStore};
+        use crate::rtpengine::reconcile::{RelayLink, RelaySnapshot};
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let relay = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let mut store = StreamStore::new(1000);
+        let ts = chrono::Utc::now();
+
+        // The relay was asked first, and answered. No stream exists yet.
+        super::apply_relay_snapshot(
+            &mut store,
+            &RelaySnapshot {
+                links: vec![RelayLink {
+                    address: relay,
+                    port: 30000,
+                    call_id: "already-in-progress".to_owned(),
+                }],
+                taken_at: Some(ts),
+            },
+        );
+        assert_eq!(
+            store.streams_for("already-in-progress").count(),
+            0,
+            "nothing has been captured yet"
+        );
+
+        // Then media for that call turns up.
+        let parsed = ParsedPacket {
+            frame: None,
+            timestamp: ts,
+            src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: relay,
+            src_port: 20000,
+            dst_port: 30000,
+            transport: TransportProto::Udp,
+            payload: vec![0u8; 12 + 160].into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            dscp: None,
+            input_origin: InputOrigin::Wire,
+        };
+        let rtp = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 160,
+            ssrc: 0xDEAD_BEEF,
+            payload_offset: 12,
+        };
+        store.process_rtp(&parsed, &rtp, ts);
+
+        let attributed: Vec<_> = store.streams_for("already-in-progress").collect();
+        assert_eq!(
+            attributed.len(),
+            1,
+            "the stream must be named by the snapshot taken before it existed"
+        );
+        assert_eq!(
+            attributed[0].dialog_assertion,
+            Some(EndpointAssertion::MediaRelay),
+            "the relay asserted this, not a party's SDP"
+        );
+        assert_eq!(
+            attributed[0].dialog_origin, None,
+            "sipnab ASKED for this endpoint rather than capturing it, so there \
+             is no capture source to record -- and a binding with no source \
+             withholds the cross-source claim instead of inventing one"
+        );
+        assert!(
+            !attributed[0].dialog_bound_across_sources(),
+            "an absent origin must not read as a disagreement between sources"
+        );
+    }
+
     /// RE3, at the point it actually matters: the endpoint WRITTEN to the
     /// store must record that a media relay asserted it.
     ///

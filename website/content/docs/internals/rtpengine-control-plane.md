@@ -98,7 +98,10 @@ with that cost stated.
 |---|---|
 | [`src/rtpengine/bencode.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/bencode.rs) | Bencode decoder. Borrowed values, depth-limited, hostile-input facing |
 | [`src/rtpengine/ng.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/ng.rs) | Cookie/body split, command classification, field extraction |
+| [`src/rtpengine/control.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/control.rs) | `list` and `query`, their reply parsers, and the UDP client that carries them |
+| [`src/rtpengine/reconcile.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/reconcile.rs) | The two moments sipnab asks, the port index, the bounds that keep asking from becoming polling, and the hand-off the capture path offers to |
 | [`src/rtpengine/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/mod.rs) | `sdp_links_from_ng`, the bridge into the existing SDP linking |
+| [`src/app/relay_reconciler.rs`](https://github.com/NormB/sipnab/blob/main/src/app/relay_reconciler.rs) | The thread that drains the hand-off and does the asking |
 
 The decoder is hostile-input facing on both delivery paths, so every length is
 bounds-checked before use, `bencode::MAX_DEPTH` bounds the recursion, and
@@ -267,6 +270,154 @@ transmit path, which passes the transmit tap.
 
 Note the module is still `xt_RTPENGINE` at 12.5.1, not `nft_rtpengine`.
 
+## Asking the relay directly
+
+Everything above decodes a message somebody else sent. A control message that
+already happened never returns to the wire, so a call already running when the
+capture starts stays unnamed until a re-offer — and incident response usually
+begins mid-call. `--rtpengine-control` names the relay's own `ng` port, and
+sipnab asks it.
+
+Two questions reach the relay: `list`, which names the active calls, and
+`query`, which says which relay-side PORT belongs to which call. The port is
+the one thing sipnab can already see in a capture, and the relay is the only
+thing that knows what it allocated the port for.
+
+Nothing else reaches it, and the last section on this page says why `delete`
+is unreachable rather than merely unused. A `TransmitPermit` gates both
+questions and only a live capture source yields one, so an analyst opening a
+customer's pcap cannot make sipnab send packets at the addresses inside it.
+
+### Two triggers, and neither of them a clock
+
+**Startup, before the capture opens.**
+[`bootstrap::relay_startup_snapshot`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs) runs inside
+`launch`'s privileged window, against the RESOLVED capture source, and spends
+one `list` plus one `query` per call. The answers become a port index, and
+[`pipeline::apply_relay_snapshot`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs) registers every
+socket in it as a media ENDPOINT through `link_endpoint_from`.
+
+Registering rather than linking is what the rest of this depends on. A stream
+that turns up later resolves its endpoint from memory at creation, exactly as
+it would from an SDP body already on file, so the packet path never makes a
+network call. Against rtpengine 12.5.1:
+
+```text
+rtpengine at 127.0.0.1:22222: 2 call(s) enumerated, complete; queried 2 of them, 8 relay port(s) now attributable
+```
+
+**A stream nothing explains.**
+[`rtp::stream_store`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs) records an orphan socket
+at stream CREATION, under the write lock the RTP path already holds. That is
+what makes the second trigger an event rather than a periodic sweep: nothing
+rescans the store looking for orphans, and a run whose relay accounts for
+every stream it sees asks nothing after startup.
+
+Both ends of the stream go into the hand-off, because which end belongs to the
+relay is exactly what the packet cannot say. A socket the relay does not hold
+costs one lookup in the index the startup snapshot already built.
+
+```text
+rtpengine at 127.0.0.1:22222: 2 unexplained stream(s) offered, 0 attributed, 4 control transaction(s) spent of a ceiling of 66
+```
+
+### Why the asking runs on a thread
+
+One question is a UDP round trip, and `DEFAULT_CONTROL_TIMEOUT` gives it two
+seconds. Asking from the packet path would stall capture for as long as the
+relay stayed quiet, trading dropped packets for an attribution, which is the
+wrong way round for a tool whose job is watching the traffic. So the
+capture path only OFFERS a socket: `OrphanSink` has no blocking send at all,
+so the only way to hand a socket over cannot wait, however long the relay
+takes.
+
+[`app::relay_reconciler`](https://github.com/NormB/sipnab/blob/main/src/app/relay_reconciler.rs) does the asking,
+and it holds no timer. Its loop blocks on the hand-off queue and wakes only
+when the capture path finds a stream nothing explains. When every `OrphanSink`
+drops, the queue closes, the loop ends, and the thread prints what it did.
+There is no flag to poll and no timeout to pick.
+
+**The join order follows from that.** The run joins the reconciler only AFTER
+the capture-processing thread, because that thread owns the sink whose drop
+closes the queue. Join the reconciler first and it waits on a queue nothing
+has closed, forever.
+
+### Three bounds, and none of them the traffic
+
+Three things bound the asking, and not one of them depends on how much traffic
+the capture carries:
+
+- **Once per socket.** `asked_ports` latches, so a stream that stays
+  unexplained — the normal case for media the relay never touched — costs one
+  lookup for the run rather than one per packet.
+- **A ceiling on transactions.** `DEFAULT_BUDGET` is `2 * (DEFAULT_LIST_LIMIT
+  + 1)`, 66 at the defaults, which covers a full startup snapshot and a
+  comparable refresh after it. A capture full of orphans cannot turn into a
+  flood of control traffic.
+- **A bounded hand-off.** `ORPHAN_QUEUE_DEPTH` caps the queue and
+  `MAX_PENDING_ORPHAN_SOCKETS` caps the buffer feeding it, and neither one
+  ever makes the capture path wait.
+
+When one of them bites, sipnab counts it and says so — `OrphanSink::dropped`
+and `StreamStore::orphan_sockets_dropped` for the hand-off, and the
+offered-versus-attributed and spent-of-ceiling figures in the closing line
+above for the other two. A stream sipnab never asked about is not a stream the
+relay disowned, and a bound that bites quietly is how those two turn into the
+same sentence.
+
+`ReadyReconciler` carries the reconciler from launch into the capture loop
+rather than rebuilding it there, because rebuilding discards all three at
+once: a second reconciler starts with a full ceiling, an empty `asked_ports`,
+and no memory of which calls it had already read.
+
+### Why the index keys on address and port
+
+`Reconciler`'s index keys on `(IpAddr, u16)`, matching the key `StreamStore`
+uses for SDP endpoints. The two indexes join on that key, so they have to
+agree on what a socket is.
+
+Keying on the port alone was wrong, and not subtly: rtpengine allocates from
+ONE port range across every `--interface`, so the same port number genuinely
+sits on two addresses at once. A port-keyed index hands one interface's media
+to the other's call, and reports it with the same confidence as a correct
+answer.
+
+### The provenance of an answer nobody captured
+
+`SdpProvenance::relay_queried` sets `origin: None`, and the absence is the
+point. `Wire`, `Hep` and `Uprobe` each assert that sipnab OBSERVED the
+addressing somewhere. This addressing sipnab ASKED FOR instead, and no
+`InputOrigin` says that honestly. A binding made from such an endpoint
+therefore withholds the cross-source claim rather than inventing one — the
+same rule `EndpointAssertion` follows earlier on this page, applied to the
+other axis.
+
+The rtpmap stays empty for a related reason: a `query` reply names a codec but
+no payload type, and an rtpmap entry needs both. Synthesizing the missing half
+would put a number sipnab never heard into a field an operator reads as
+measured.
+
+### Naming what "nothing" means
+
+`Unattributed` exists to prevent one collapse. "The relay does not hold this
+port" and "sipnab could not ask" are different facts, and a type with a single
+way of saying no reports the second as the first — a run that never reached
+the relay then reads exactly like a run the relay answered.
+
+So it keeps five reasons apart:
+
+- the relay refused the question, or nothing answered at all
+- the relay named calls sipnab could not read
+- the relay's enumeration came back capped
+- the run had already spent its transaction ceiling
+- sipnab asked, and the relay does not hold the port
+
+Only the last of those says anything about the relay. `why_not` tests them
+most-conclusive-first, so the last arm becomes reachable only after a complete
+answer. Where two gaps hold at once it names the truncated enumeration first,
+because that is the wider gap and the operator's fix for it — raise the limit,
+or enumerate over TCP — shrinks the other one too.
+
 ## What is deliberately not here
 
 - **`subscribe` / `publish` / `start recording` and friends.** They carry a
@@ -274,14 +425,22 @@ Note the module is still `xt_RTPENGINE` at 12.5.1, not `nft_rtpengine`.
   complexity: a recording subscription creates a stream that belongs to the
   call without being one of its two legs, and attributed as an ordinary leg a
   two-party call shows three streams — after which the media analysis that
-  judges one-way audio and asymmetry answers a question nobody asked. They are
-  counted (`rtpengine::media_creating_commands_seen`) so a run can say what it
-  did not attribute.
+  judges one-way audio and asymmetry answers a question nobody asked. sipnab
+  counts them (`rtpengine::media_creating_commands_seen`) and
+  [`output::dialog_report`](https://github.com/NormB/sipnab/blob/main/src/output/dialog_report.rs) prints that
+  count beside the relay-named calls, on a line beginning `Media-creating
+  relay commands seen:`, so a run says what it did not attribute. The counter
+  landed first and no surface read it, which is the same silence it exists to
+  break. A run that saw none prints nothing rather than a zero.
 - **HEP carrying SIP or RTP off the wire.** The claim covers `ng` only.
   Claiming those here would change what every existing capture containing HEP
   reports, which is a much larger decision than this required.
-- **Mid-call reconciliation.** A control message that already happened is not
-  on the wire for sipnab to read, so a call already running when the capture starts stays
-  unnamed until a re-offer. Closing it means asking rtpengine directly, which
-  makes sipnab send packets to a production relay — tracked as RE4 with the
-  bounds that keeps it from becoming a service.
+- **Sending anything that changes the relay.** `offer`, `answer`, `delete`
+  and `start recording` are the other half of the `ng` protocol, and every one
+  of them changes a production box: it moves media, tears a call down, or
+  fills a disk. None of them is reachable: `ReadOnlyCommand` has two
+  variants and `ReadOnlyRelay` has two methods, so no value in this codebase
+  means `delete`. A reviewer asking "does sipnab ever tell a relay to do
+  something" reads one enum instead of auditing every call site, and an edit
+  that wants to send one has to add a variant — which shows up in a diff
+  rather than passing as an oversight.

@@ -128,7 +128,9 @@ fn ladder(healthy: &[f64], boundaries: &[f64]) -> Vec<f64> {
         .copied()
         .filter(|v| v.is_finite() && *v > 0.0)
         .collect();
-    all.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    crate::sort::sort_by_dyn(&mut all, &mut |a, b| {
+        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+    });
     all.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
     all
 }

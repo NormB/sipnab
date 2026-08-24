@@ -61,33 +61,6 @@ ordinary update.
 | [`start_tls_capture`](#start_tls_capture) | `flavors`, `libraries` | installs kernel uprobes and reads SIP plaintext with no key; needs `--mcp-allow-tls-capture` |
 | [`stop_tls_capture`](#stop_tls_capture) | -- | stops that capture and removes its kernel probes |
 
-### What changed in 0.5.98
-
-Four answers changed shape or meaning. A client written against 0.5.97 keeps
-working for every other tool, and these four need a look:
-
-- **`search_messages` returns a page object.** The rows moved from the top
-  level into `hits`, beside `returned`, `total_matched`, `truncated`,
-  `next_cursor` and `capture_identity`. A client doing `parsed[0]` now reads
-  `parsed.hits[0]`.
-- **`security_findings` returns a page object too**, with `findings`,
-  `returned`, `total_matched`, `truncated`, `armed_kinds`, `detection_armed`
-  and — when no detector runs — `note`. It also **refuses** a `kinds` value
-  outside `scanner` / `fraud` / `digest` / `reg_flood` rather than answering
-  with an empty list, so a call passing `reg-flood` now gets an error where it
-  used to get `[]`.
-- **`rtp_stats` reports `orphaned` as `associated_dialog.is_none()`**, computed
-  per response. Streams that used to report `false` for their first 30 seconds
-  of capture clock now report `true` from the first packet. `capture_status`'s
-  `orphaned_stream_count`, the REST `/v1/streams?orphaned=` filter and the
-  `--report` orphan section all moved with it, so the surfaces agree.
-- **`search_by_time` carries `next_cursor`** (and `capture_identity`), so a
-  you can page a truncated window instead of re-cutting it.
-
-This change removes nothing and retypes nothing. It adds fields, turns two
-payloads from array into object, and makes one boolean answer the question its
-name asks.
-
 ### Rules every tool follows
 
 Five rules hold across the whole surface. Each tool section below states only
@@ -115,9 +88,8 @@ error. `next_cursor: null` marks the final page.
 **Every list-style tool answers with a page object, never a bare array.** The
 rows sit under a named key — `dialogs`, `hits`, `streams`, `findings` — beside
 `returned` and `total_matched`, so counting the rows is never necessary and
-never right. `search_messages` and `security_findings` returned bare arrays
-until 0.5.98 and now carry the page fields as well — see [what changed in
-0.5.98](#what-changed-in-0-5-98). `tail_dialogs` is the one page object with no
+never right. `search_messages` and `security_findings` carry the
+page fields too. `tail_dialogs` is the one page object with no
 total, because a tail cannot have one. [Response
 bounding](#response-bounding) tabulates it.
 
@@ -873,12 +845,11 @@ omits.
 response, so the two fields can never disagree: every stream above reports `orphaned: true`, which
 is the truth about a capture holding four streams and no dialogs at all.
 
-Before 0.5.98 the same four reported `orphaned: false`. A sweep set the flag
-only after 30 seconds of *capture* clock, and this capture runs for three — so an agent filtering for orphans to find a NAT or one-way-audio fault
-found nothing, on a capture that is nothing but orphans. A short unclaimed
-stream is exactly what those faults look like from the media side, and it never
-reached the flag. If you have a client that works around this by reading
-`associated_dialog` instead, that still works and still means the same thing.
+sipnab computes `orphaned` per response as `associated_dialog.is_none()`, so a
+stream reports it from its FIRST packet. That matters because a short unclaimed
+stream is exactly what a NAT or one-way-audio fault looks like from the media
+side: an agent filtering for orphans to find one must not have to wait for a
+sweep to notice. Reading `associated_dialog` directly means the same thing.
 
 `total_matched: 2` and `ungrounded_excluded: 2` account for all four streams.
 The two G722 streams score 4.22 from the placeholder arm, which would have put
@@ -1001,13 +972,12 @@ a bare array, plus the provenance note as a second content block:
 and `message_index` straight to [`get_message`](#get_message) for the parsed
 form.
 
-> **Before 0.5.98 you could count nothing from this answer.** It was a bare
-> array with no total, no truncation flag and no cursor, so a capped result
-> looked exactly like a complete one: on the sample capture below,
-> `{ "query": "REGISTER" }` returned 50 rows and `limit: 1000` returned 1000,
-> and neither said that 1334 messages matched. That page also claimed the
-> figure was "close to 9000", which nothing could check. Now `total_matched`
-> answers it and `next_cursor` reaches the rest.
+> **Count from the fields, never from the rows.** A capped result and a
+> complete one hold the same shape, so the row count cannot tell them apart:
+> on the sample capture below, `{ "query": "REGISTER" }` returns 50 rows and
+> `limit: 1000` returns 1000, while 1334 messages match. `total_matched` is
+> the number that answers "how many are there", `truncated` says whether you
+> are seeing all of them, and `next_cursor` reaches the rest.
 
 The example runs against [`tests/pcap-samples/sipp-branch-scenario.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sipp-branch-scenario.pcapng):
 
@@ -1137,9 +1107,9 @@ reg-flood, etc.). Backed by the AlertEngine's bounded ring buffer
 > **Read `armed_kinds` before you read `findings`.** An empty findings list
 > means "nothing tripped" only on a server that armed something; on any other
 > it means nothing was watching, and the two are opposite operational states.
-> Before 0.5.98 this tool answered `[]` for both — and for a third case, a
-> `kinds` value outside the vocabulary, which now fails instead. Cross-checking
-> [`server_capabilities`](#server_capabilities) is no longer necessary for this
+> A `kinds` value outside the vocabulary fails rather than answering with an
+> empty list, which would be a third way to read `[]`. Cross-checking
+> [`server_capabilities`](#server_capabilities) is not necessary for this
 > question: the answer is in the response.
 
 The page fields carry the meanings they do everywhere else on this surface —
@@ -1925,11 +1895,11 @@ same window without a filter answers `total_matched: 247`:
 }
 ```
 
-**`truncated: true` is no longer a dead end.** Pass `next_cursor` back to
+**`truncated: true` is not a dead end.** Pass `next_cursor` back to
 continue through the window. `total_matched` keeps counting the whole window
-rather than the remainder, so it does not shrink as you page. Before 0.5.98 this
-tool carried no cursor and the only way past a truncated window was to narrow
-it, which put every row past the 1000-row ceiling out of reach. The cursor is
+rather than the remainder, so it does not shrink as you page — without a
+cursor the only way past a truncated window would be to narrow it, putting
+every row past the 1000-row ceiling out of reach. The cursor is
 the same compound form [`list_dialogs`](#list_dialogs) issues, and it is opaque:
 pass it back exactly as it arrived.
 
@@ -1962,9 +1932,10 @@ a boundary described that way ought to be.
 > [`list_captures`](#list_captures) to see which names a directory already
 > uses.
 >
-> Before 0.5.97 the guard covered only the capture the run was reading. Every
-> other capture staged there for [`open_capture`](#open_capture), and every
-> earlier export, fell to a name collision on a call that reported success.
+> The guard covers every capture in the root, not only the one the run is
+> reading. Narrowed to the current capture it would miss the others staged
+> there for [`open_capture`](#open_capture), and every earlier export, which
+> then fall to a name collision on a call that reports success.
 
 ### `list_captures`
 
@@ -2357,7 +2328,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.123",
+  "version": "0.5.124",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep

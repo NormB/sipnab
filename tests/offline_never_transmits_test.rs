@@ -209,6 +209,43 @@ fn kill_spoof_raw_on_a_capture_file_transmits_nothing() {
     assert_silent(&sock, "--kill-scanner --kill-spoof raw -I file");
 }
 
+/// `--rtpengine-control` on a FILE is refused, and says why.
+///
+/// RE4's whole value is asking a relay about calls already in progress, and
+/// that is exactly what makes it wrong offline: the calls in a capture ended
+/// in the past, so the relay's answer describes whatever is up TODAY. That is
+/// somebody else's traffic, arriving with the authority of a direct answer.
+///
+/// The refusal has to be VISIBLE for the same reason the kill path's is: an
+/// operator who asked and got silence will believe they were told everything
+/// the relay knew.
+#[test]
+fn offline_rtpengine_control_is_refused_and_says_why() {
+    let (_sock, port) = bound_listener();
+    let dir = tmp_dir("rtpengine-offline");
+    let pcap = scanner_capture(&dir, port);
+
+    let (_stdout, stderr, code) = run_offline(&pcap, &["--rtpengine-control", "127.0.0.1:22222"]);
+
+    assert_eq!(
+        code,
+        Some(0),
+        "asking for relay control on a file must not fail the analysis; the \
+         capture is still worth reading.\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("offline analysis never transmits"),
+        "the run must say why it did not ask the relay:\n{stderr}"
+    );
+    // The reason is what makes it actionable: not merely "refused", but that
+    // a live relay would answer about a different set of calls.
+    assert!(
+        stderr.contains("up TODAY") || stderr.contains("other people's traffic"),
+        "the refusal must explain that a live answer would describe different \
+         calls, not just that it was refused:\n{stderr}"
+    );
+}
+
 /// The refusal must be visible: an operator who asked for a kill and got
 /// analysis instead has to be told, or they will believe the defense is armed.
 ///

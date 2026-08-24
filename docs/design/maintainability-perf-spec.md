@@ -216,7 +216,7 @@ bodies:
 
 | Copy | Location | Size | Consumer |
 |---|---|---|---|
-| Canonical | [`src/pipeline.rs:2237`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2165) `process_packet` | 142 ln | TUI live |
+| Canonical | [`src/pipeline.rs:2276`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2276) `process_packet` | 142 ln | TUI live |
 | Batch | [`src/app/batch.rs:2870`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2870) `process_parsed_packet` | 402 ln | batch mode |
 | TUI file-open | `src/tui/events.rs:1536` `load_pcap_file` | 194 ln | F3 open |
 | Sharded | [`src/parallel.rs`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs) + worker loops | ~200 ln | `--jobs N` |
@@ -504,7 +504,7 @@ existing 261 headless TUI state tests + 49 snapshots green.
 
 ### Problem
 
-- `App` ([`src/tui/mod.rs:75`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L75)): 74 fields — 6 independent scroll offsets,
+- `App` ([`src/tui/mod.rs:75`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L75)): 67 fields — 6 independent scroll offsets,
   full save-dialog state (6 fields), file-open state (7 fields), name-popup
   state, render caches. No compiler help against stale cross-popup state.
 - `src/tui/events.rs`: 3,709 lines, 372 `KeyCode::` arms in 21 `handle_*`

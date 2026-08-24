@@ -205,7 +205,7 @@ Tiers:
   silently negates most of CT2's benefit on exactly the busy servers CT2
   targets, and because it makes `-B` advice misleading until fixed.
   **Done:** immediate mode is now a decision, not a constant.
-  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2167`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2167)) is
+  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2320`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2320)) is
   `matches!(mode, RunMode::Tui)` and is the only place that answers the
   question; `bootstrap.rs:537` assigns its result to
   `CaptureConfig::immediate_mode`, and [`src/capture/live.rs:219-220`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L219-L220) passes that
@@ -542,7 +542,7 @@ Tiers:
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:2659`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2659)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:2791`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2791)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -584,7 +584,7 @@ Tiers:
   per-message output during the locked section, drain them after the guards
   drop, then add the missing lock-ordering rule to `invariants.md`. Ship with a
   before/after throughput number and a `dropped` delta from CT1. **Done:**
-  `DeferredEffects` ([`src/app/batch.rs:364`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L364), impl at `:464`) carries a packet's
+  `DeferredEffects` ([`src/app/batch.rs:382`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L382), impl at `:464`) carries a packet's
   output, alert findings and hook commands out of the guarded section. It is
   built at `:2032`, passed by `&mut` into the per-packet body (`:2695`) and
   destructured and replayed at `:2723`, after both guards have dropped — so the
@@ -821,7 +821,7 @@ Tiers:
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2819`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2819),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3008`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3008),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -1655,7 +1655,7 @@ output path.
 - [ ] **PA3 — MCP resources and prompts.** Two of MCP's three primitives are
   unimplemented; the capability builder enables tools only. Cheapest large win
   on this list, because the content is already written for the docs site.
-  - **Resources:** the Filter DSL grammar (31 fields, 7 operators, aliases), the
+  - **Resources:** the Filter DSL grammar (33 fields, 7 operators, aliases), the
     SIP response-code registry, header-field and parameter references, the
     MOS/codec grounding table, and `list_captures` output. Today an agent
     guesses at DSL syntax and eats `-32602` until it converges; serving the
@@ -3159,6 +3159,37 @@ are exactly the cases a signaling-only view gets wrong.
   replays cached replies, which during RE1 development returned ports
   belonging to a call that had already been deleted.
 
+  **The startup half landed 2026-08-23; the refresh half did not.** sipnab
+  asks once, before the capture opens, and registers what the relay says as
+  media endpoints -- so a call already in progress is named by its first
+  packet instead of arriving as an orphan. Verified end to end against a live
+  rtpengine 12.5.1, not only in tests: `2 call(s) enumerated, complete;
+  queried 2 of them, 8 relay port(s) now attributable`. Both live modes build
+  their own stream store, in different files, so both are pinned by a test
+  that fails if the snapshot stops reaching that mode's store.
+
+  **The second trigger landed the same day.** The store reports the sockets of
+  a stream nothing explains at the moment it is CREATED -- an event, not a
+  periodic rescan -- and a thread that owns the reconciler does the asking, so
+  the capture path never waits on a relay that has gone quiet. Both ends of the
+  stream are offered, because which one is the relay's is exactly what is not
+  knowable from the packet. Verified end to end against a live rtpengine
+  12.5.1: `2 unexplained stream(s) offered, 0 attributed, 4 control
+  transaction(s) spent of a ceiling of 66` -- two offers for the one orphan
+  stream, and nothing attributed because the relay genuinely did not hold that
+  port.
+
+  Three things bound it, none of which grow with the traffic: each socket is
+  asked about at most once per run, the transaction ceiling caps the total,
+  and the hand-off queue is bounded so a slow relay cannot grow it. Each of
+  them, when it bites, is counted and said -- a stream never offered is not a
+  stream the relay disowned.
+
+  **Enumeration is UDP only.** This entry asks for TCP where available, and a
+  capped `list` is instead reported as PARTIAL in the operator's own words, so
+  32-of-400 cannot read as complete. Which is the honesty half; the reach half
+  is still open.
+
 - [ ] **RE5 — attribute recorded streams from the spool, not the commands.**
   Where relay-side recording is on, read rtpengine's own recording metadata
   rather than decoding `subscribe`/`publish`/`create`. Those commands carry a
@@ -3169,9 +3200,24 @@ are exactly the cases a signaling-only view gets wrong.
   whose grammar carries `CALL-ID`, `TAG` and a `STREAM n details` line. That
   turns a protocol problem into an input problem, in a format sipnab reads
   natively. A spool READER is method-agnostic: files land there whichever
-  `recording-method` is set. Today sipnab already counts these commands
-  (`rtpengine::media_creating_commands_seen`); what is missing is surfacing
-  the count and reading the spool.
+  `recording-method` is set.
+
+  **The counting half landed 2026-08-23.** `media_creating_commands_seen` had
+  tallied these commands since the `ng` decoder shipped, and no surface read
+  the tally -- so two pages claimed sipnab "counts them and says so" while
+  every run stayed silent. The dialog report now prints the count beside the
+  relay-named calls. Reading the spool is what remains, and it is what turns a
+  count into an attribution.
+
+  **Worth proving before RE5 goes further:** whether an rtpengine `query`
+  reply reports a recording subscriber as its own tag. RE4's parser walks
+  every tag in the reply and absorbs its streams, so if a subscriber arrives
+  as a tag, `--rtpengine-control` would attribute a recording stream as a call
+  leg -- the exact misattribution the passive path refuses, arriving through
+  the active one. The 12.5.1 reply captured in
+  [`tests/fixtures/rtpengine/query-reply-12.5.1.bin`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/rtpengine/query-reply-12.5.1.bin) nests `subscriptions` and
+  `subscribers` INSIDE a tag rather than beside it, which suggests it is fine,
+  but that capture had no recording running and nothing has tested it.
 
 - [ ] **RE7 — record from sipnab's own capture, and never command the relay.**
   `-O` writes captured packets verbatim before parse with real wire
@@ -3426,7 +3472,7 @@ reachable from attacker-controlled capture text. The items below are only the
 ones that fit an analysis tool.
 
 - [x] **MCPX1 — the final response code is not queryable, so every failure
-  looks the same.** The filter DSL has 30 fields and `state` collapses 403,
+  looks the same.** The filter DSL has 33 fields and `state` collapses 403,
   404, 408, 486, 503 and 603 into `Failed`. `triage_call` returns
   `final_status_code` for ONE call and `explain_response_code` explains one
   integer, but no listing tool carries it, so it cannot be filtered, sorted or
