@@ -876,6 +876,31 @@ The MCP `rtp_stats` tool carries the same three keys, and the TUI's stream
 detail view draws the same distinction: an ungrounded score renders muted and
 annotated rather than in a quality band color.
 
+#### Who named the dialog
+
+`dialog_assertion` says who asserted the SDP media endpoint that tied this
+stream to its Call-ID:
+
+| Value | Who said it | What the address is |
+|-------|-------------|---------------------|
+| `signaled` | a negotiating party, in its own SDP | that party's endpoint |
+| `media-relay` | an rtpengine relay, about a port it allocated | the leg's **midpoint** |
+
+A relay's answer is authoritative about the port — rtpengine cannot be wrong
+about which socket it opened — and at the same time it is not an endpoint. An
+operator tracing one-way audio to `10.0.0.40:38664` needs to know whether that
+address is the far end or the box in the middle, and the two lead to opposite
+next steps.
+
+sipnab emits the key whenever it knows the answer, `signaled` included. **Absent means
+nobody recorded who asserted it**, never "a party did" — that is a claim, and
+keeping the two apart is why the field exists.
+
+It answers a different question from `dialog_origin`, which names the capture
+**source** that delivered the assertion rather than its author. See
+[rtpengine relay attribution](rtpengine.md) for how a relay comes to name a
+call whose signaling sipnab never saw.
+
 ---
 
 ### GET /v1/streams/:id

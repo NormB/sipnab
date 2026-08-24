@@ -768,6 +768,28 @@ either direction: its nine modes genuinely span about 4.49 down to 3.51. Do not
 report a MOS to a human without checking this field. See
 [MOS and codecs](@/docs/mos-and-codecs.md) for the full picture.
 
+#### Who named the dialog — `dialog_assertion`
+
+Each stream also says who asserted the SDP media endpoint that tied it to its
+Call-ID:
+
+| `dialog_assertion` | Who said it | What the address is |
+|---|---|---|
+| `signaled` | a negotiating party, in its own SDP | that party's endpoint |
+| `media-relay` | an rtpengine relay, about a port it allocated | the leg's **midpoint** |
+
+A relay cannot be wrong about which socket it opened, so the address is
+authoritative — and it is still not an endpoint. An agent reasoning about where
+media went must not report a `media-relay` address as the far party's, because
+it names the box in the middle and the two lead to opposite conclusions.
+
+sipnab emits the key whenever it knows the answer, `signaled` included. **Absent
+means nobody recorded who asserted it**, never "a party did". Do not default it.
+
+Distinct from `dialog_origin`, which names the capture **source** that delivered
+the assertion rather than its author. See
+[rtpengine relay attribution](@/docs/rtpengine.md).
+
 #### Capture-wide sweep — omit `call_id`
 
 "Every stream with a MOS below 3.5" is one call rather than a listing plus one

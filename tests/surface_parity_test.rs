@@ -235,6 +235,103 @@ const QUALITY_METRICS: &[Metric] = &[
     },
 ];
 
+/// Provenance sipnab RECORDS on a stream, which must reach somebody.
+///
+/// A different question from [`QUALITY_METRICS`], and a weaker bar on purpose.
+/// Those are numbers that decide whether a call was acceptable, and one surface
+/// having them alone is drift. These are facts about WHERE an answer came from,
+/// and the failure mode is not asymmetry -- it is a field the program takes the
+/// trouble to record and then shows to nobody at all.
+///
+/// That is not hypothetical. `dialog_assertion` says whether the SDP endpoint
+/// that named a stream's dialog was a negotiating party describing its own
+/// address or a media relay describing a port it allocated -- the entire point
+/// of asking an rtpengine relay what it is carrying. It was written on every
+/// binding, and `EndpointAssertion::as_str` carried a doc comment calling itself
+/// "the name this assertion is written under on every output surface" while no
+/// output surface wrote it and nothing outside tests ever called it.
+///
+/// Each entry must ALSO be verified to still exist on the stream, so this list
+/// cannot outlive the field it names and start asserting about nothing.
+const RECORDED_PROVENANCE: &[Metric] = &[
+    // Which capture source the MEDIA arrived over.
+    Metric::named("input_origin"),
+    // Which source delivered the SDP that named the dialog, when it differs.
+    Metric::named("dialog_origin"),
+    // WHO asserted that SDP endpoint: a party, or a relay describing its own
+    // socket. `asserted_by` is the field on the provenance record it is copied
+    // from, and `media-relay` is the wire spelling, neither of which
+    // whole-identifier matching sees in the other.
+    Metric {
+        name: "dialog_assertion",
+        aliases: &["asserted_by", "media-relay"],
+    },
+];
+
+/// Every provenance field the program records reaches at least one surface, and
+/// anything one API carries the other carries too.
+///
+/// The first half is the one that failed: a field can be computed, stored and
+/// unit-tested without a single reader ever being able to see it, and nothing
+/// else in this suite notices. The second half holds the ones that DO get out
+/// to the same standard the quality metrics are held to.
+#[test]
+fn provenance_the_program_records_reaches_a_reader() {
+    let stream = code("src/rtp/stream.rs");
+    let mcp = mcp_surface();
+    let api = rest_surface();
+    let tui = code("src/tui");
+
+    let mut unrecorded = Vec::new();
+    let mut invisible = Vec::new();
+    let mut asymmetric = Vec::new();
+
+    for m in RECORDED_PROVENANCE {
+        // The list must describe this program, not a past one.
+        if !uses(&stream, m.name) {
+            unrecorded.push(m.name);
+            continue;
+        }
+        let in_mcp = m.carried_by(&mcp);
+        let in_api = m.carried_by(&api);
+        if !in_mcp && !in_api && !m.carried_by(&tui) {
+            invisible.push(m.name);
+            continue;
+        }
+        if in_mcp != in_api {
+            asymmetric.push(format!(
+                "`{}` is on {} but not the other",
+                m.name,
+                if in_mcp { "MCP" } else { "the REST API" }
+            ));
+        }
+    }
+
+    assert!(
+        unrecorded.is_empty(),
+        "these fields are named here but no longer exist on RtpStream: {}\n\
+         Remove the entry, or restore the field -- a list naming a deleted \
+         field asserts nothing while looking like it asserts something.",
+        unrecorded.join(", ")
+    );
+
+    assert!(
+        invisible.is_empty(),
+        "sipnab records these and shows them to nobody: {}\n\n\
+         Not one of REST, MCP or the TUI emits them. Work went into deciding \
+         each of these and the answer reaches no reader, which is the same as \
+         not having decided it -- except that it costs memory and reads as a \
+         feature to anyone who greps for it.",
+        invisible.join(", ")
+    );
+
+    assert!(
+        asymmetric.is_empty(),
+        "provenance on one API door and not the other:\n  {}",
+        asymmetric.join("\n  ")
+    );
+}
+
 /// A quality metric and every identifier that carries it.
 ///
 /// Most metrics are spelled the same everywhere, so `aliases` is usually just

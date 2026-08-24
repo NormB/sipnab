@@ -215,6 +215,36 @@ never appears in the capture — the whole reason for asking — lands under
 **Calls named by a media relay**, the same heading the mirrored control
 plane fills.
 
+#### Telling a relay's answer from a party's
+
+Every stream says who named its dialog, on every door:
+
+| Value | Who said it | What the address is |
+|-------|-------------|---------------------|
+| `signaled` | a negotiating party, in its own SDP | that party's endpoint |
+| `media-relay` | rtpengine, about a port it allocated | the leg's **midpoint** |
+
+`GET /v1/streams` and `GET /v1/streams/{id}` carry it as `dialog_assertion`,
+the MCP `rtp_stats` tool carries the same key with the same two spellings, and
+the TUI's stream detail prints `(via media-relay)` beside the Call-ID.
+
+The distinction changes what the address means, which is why it is not folded
+away. A relay's answer is **authoritative about the port** — rtpengine cannot
+be wrong about which socket it opened — and at the same time it is **not an
+endpoint**: it names the box the media passed through, not where either party
+sits. An operator tracing a one-way-audio fault to `10.0.0.40:38664` needs to
+know whether that is the far end or the box in the middle, and those lead to
+opposite next steps.
+
+An absent key means nobody recorded who asserted the binding. It does not mean
+`signaled` — that is a claim, and keeping the two apart is the entire reason
+the field exists.
+
+`dialog_assertion` is a different question from `dialog_origin`, which says
+which **capture source** delivered the assertion. A relay can name a stream over a
+HEP mirror or answer sipnab directly, and a party's SDP can arrive off the NIC.
+The two keys answer one half of that each.
+
 The second summary arrives when the capture ends:
 
 ```text

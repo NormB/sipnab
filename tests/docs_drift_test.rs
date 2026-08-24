@@ -2590,7 +2590,16 @@ fn no_documentation_table_repeats_a_row() {
     // `defined only`) that the page never defined. Attributed by measurement
     // before the number moved: that file gained exactly one table separator and
     // no other page gained any, and design docs have no generated mirror.
-    const EXPECTED_TABLES: usize = 628;
+    // 628 -> 634: three hand-written tables and their three generated mirrors,
+    // all the same two-row table saying who asserted a stream's dialog --
+    // `signaled` (a party's own SDP) against `media-relay` (an rtpengine relay
+    // naming a port it allocated). One each in `docs/rtpengine.md`,
+    // `docs/rest-api.md` and `docs/mcp-tools.md`, because the three readers
+    // arrive at the fact from three different doors and none of them reads the
+    // other two pages. Attributed by measurement before the number moved: those
+    // six files gained exactly one table separator each and no other page
+    // gained any.
+    const EXPECTED_TABLES: usize = 634;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
