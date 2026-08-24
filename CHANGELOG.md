@@ -51,6 +51,24 @@ entry that carries them.
   binding made from one withholds the cross-source claim instead of inventing
   one.
 
+### Changed
+
+- **The published binary-size claim is 13 MB, and it is measured.** The claim
+  said "Under 12 MB" and the x86_64 musl release binary had grown past it, which
+  failed the release build's own size gate. Rather than relax the claim, the
+  duplication that caused the growth was removed: `slice::sort_by` is generic
+  over the COMPARATOR, so each of seventeen call sites emitted its own complete
+  copy of the stable sort. Routing them through one `&mut dyn FnMut` collapses
+  that to one copy per element type and returned 75,648 bytes of `.text`. No
+  feature or capability was dropped.
+
+  The ceiling that replaced it was then derived from the artifact rather than
+  chosen: the binary this release publishes is 12,527,432 bytes (11.94 MB),
+  rounded up to the next megabyte. One value in `website/config.toml` feeds the
+  home page tile, the feature table, `docs/install.md` and `docs/build.md`, and
+  a test fails if any of them disagrees with the number the release gate
+  enforces.
+
 ### Fixed
 
 - **`--kill-ua` detected nothing on its own, and said nothing about it.** The
