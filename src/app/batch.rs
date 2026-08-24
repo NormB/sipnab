@@ -2531,6 +2531,14 @@ impl BatchRunner {
                             }
                         }
                     }
+                    // Published so a server can tell "no keys were supplied"
+                    // from "keys were supplied and opened nothing". Both render
+                    // as `decrypted_records: 0`, and they are opposite findings
+                    // with opposite remedies.
+                    crate::capture::note_tls_decryptor_installed(
+                        d.keylog_entry_count(),
+                        d.report().sessions_with_keys,
+                    );
                     Some(d)
                 }
                 Err(e) => {
@@ -2575,6 +2583,15 @@ impl BatchRunner {
                 if added > 0 {
                     tracing::info!(
                         "TLS decryption active: {added} secret(s) from embedded DSB in {shown}"
+                    );
+                    // Same publication as the keylog path above. Reached only
+                    // when the embedded DSB block actually yielded secrets --
+                    // a probe decryptor that found none is dropped without
+                    // being announced, because it decrypted nothing and
+                    // announcing it would read as a failed attempt.
+                    crate::capture::note_tls_decryptor_installed(
+                        d.keylog_entry_count(),
+                        d.report().sessions_with_keys,
                     );
                     tls_decryptor = Some(d);
                 }

@@ -263,12 +263,20 @@ const CAPTURE_CAVEAT_COUNTERS: &[Caveat] = &[
             aliases: &["media_creating_commands_seen", "MEDIA_CREATING_SEEN"],
         },
     },
-    // NEXT: `TlsDecryptReport` -- records offered to the decryptor against
-    // records actually opened. Not listed yet, and deliberately not listed
-    // before it can pass: the report is built from a decryptor `batch.rs` owns
-    // locally, so neither server can reach it without either process-global
-    // counters or a shared handle. Adding the entry is the first half of that
-    // change, not a note to be carried here indefinitely.
+    // TLS records offered to the decryptor against records actually opened.
+    //
+    // The sharpest member of this list, because silence here is not merely
+    // uninformative -- it is indistinguishable from success. A capture where
+    // every ApplicationData record stayed shut looks, in a dialog listing,
+    // exactly like a quiet network. The number that separates those two is
+    // this one, and until it was published only the CLI could see it.
+    Caveat {
+        kept_in: "src/capture/mod.rs",
+        metric: Metric {
+            name: "decrypted_records",
+            aliases: &["app_data_records", "TlsDecryptReport", "read_nothing"],
+        },
+    },
 ];
 
 /// A counter, and the file that keeps it.

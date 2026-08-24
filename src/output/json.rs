@@ -944,7 +944,11 @@ fn build_stream_json(stream: &RtpStream) -> StreamJson {
 /// never given what it needed for. They are load-bearing in a way an ordinary
 /// metric is not, because **their absence is not neutral**: a response that
 /// omits them does not read as incomplete, it reads as clean.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+// Deliberately NOT `Serialize`. `to_json` below is the wire shape, and a derive
+// beside it would be a second one -- with different key names, since the field
+// names here are Rust's -- that nothing stops a caller reaching for. One type,
+// one spelling on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CaptureCaveats {
     /// Media-creating relay commands seen and deliberately not attributed.
     ///
@@ -961,6 +965,15 @@ pub struct CaptureCaveats {
     /// not attribute" -- and until this projection existed, only the CLI's
     /// `--report` said it.
     pub media_creating_commands: u64,
+    /// TLS decryption state for this run, or `None` when no decryptor was ever
+    /// installed.
+    ///
+    /// `None` and a report of zeroes are opposite findings and must not be
+    /// flattened together. Nothing supplied to decrypt WITH is not a decryption
+    /// failure; keys supplied that opened nothing is the sharpest failure this
+    /// tool can report, because the capture then holds ciphertext it can say
+    /// nothing about while a dialog listing looks exactly like a quiet network.
+    pub tls: Option<crate::capture::TlsDecryptReport>,
 }
 
 impl CaptureCaveats {
@@ -973,6 +986,7 @@ impl CaptureCaveats {
     pub fn current() -> Self {
         Self {
             media_creating_commands: crate::rtpengine::media_creating_commands_seen(),
+            tls: crate::capture::published_tls_decrypt(),
         }
     }
 
@@ -985,9 +999,129 @@ impl CaptureCaveats {
     /// does not report it".
     #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut v = serde_json::json!({
             "media_creating_commands": self.media_creating_commands,
-        })
+        });
+        // The one block here that is legitimately absent, and the doc on the
+        // field says why: no decryptor at all is not a decryption result. Every
+        // other key in this object is present at zero.
+        if let Some(tls) = self.tls
+            && let Some(obj) = v.as_object_mut()
+        {
+            obj.insert(
+                "tls".into(),
+                serde_json::json!({
+                    "keylog_entries": tls.keylog_entries,
+                    "sessions_with_keys": tls.sessions_with_keys,
+                    "app_data_records": tls.app_data_records,
+                    "decrypted_records": tls.decrypted_records,
+                    "undecrypted_records": tls.undecrypted_records(),
+                    "late_recovered": tls.late_recovered,
+                    "late_evicted": tls.late_evicted,
+                    // The finding, decided by ONE predicate rather than by each
+                    // reader re-deriving it from the two counts above and
+                    // getting the edge case wrong. A handshake carries records
+                    // sipnab never loads keys for, so `app_data_records >
+                    // decrypted_records` alone is not a failure.
+                    "read_nothing": tls.read_nothing(),
+                }),
+            );
+        }
+        v
+    }
+}
+
+#[cfg(test)]
+mod caveat_tests {
+    use super::CaptureCaveats;
+
+    /// No decryptor at all is ABSENT, not a report of zeroes.
+    ///
+    /// The two are opposite findings with opposite remedies and they render
+    /// identically if flattened: "nothing was supplied to decrypt with" is not
+    /// a decryption failure, while "keys were supplied and opened nothing" is
+    /// the sharpest failure this tool can report -- the capture is holding
+    /// ciphertext it can say nothing about, and a dialog listing built from it
+    /// looks exactly like a quiet network.
+    ///
+    /// This asserts the ABSENT arm only. The present arm needs a real decryptor
+    /// and lives beside one, in `capture::decrypt`.
+    #[test]
+    fn no_decryptor_omits_the_block_rather_than_reporting_zeroes() {
+        let caveats = CaptureCaveats {
+            media_creating_commands: 0,
+            tls: None,
+        };
+        let v = caveats.to_json();
+
+        assert!(
+            v.get("tls").is_none(),
+            "a run with no decryptor must not publish a decryption result: {v}"
+        );
+        // Everything else stays present at zero. A key that appears only once
+        // something has happened is a key no client learns exists.
+        assert_eq!(
+            v["media_creating_commands"], 0,
+            "the counters that are always knowable stay present: {v}"
+        );
+    }
+
+    /// With a decryptor, every count is published AND the verdict is computed
+    /// once rather than left to each reader.
+    ///
+    /// `read_nothing` is the field that earns its place. A TLS handshake
+    /// carries records sipnab never loads keys for, so `app_data_records >
+    /// decrypted_records` is NOT by itself a failure -- a reader deriving the
+    /// verdict from the two counts gets that edge case wrong, and gets it wrong
+    /// in the direction of reporting a working capture as broken.
+    #[test]
+    fn a_decryptor_that_opened_nothing_says_so_in_one_field() {
+        let opened_nothing = CaptureCaveats {
+            media_creating_commands: 0,
+            tls: Some(crate::capture::TlsDecryptReport {
+                keylog_entries: 4,
+                sessions_with_keys: 1,
+                app_data_records: 900,
+                decrypted_records: 0,
+                late_recovered: 0,
+                late_evicted: 0,
+                late_still_held: 0,
+            }),
+        };
+        let v = opened_nothing.to_json();
+        assert_eq!(v["tls"]["app_data_records"], 900);
+        assert_eq!(v["tls"]["decrypted_records"], 0);
+        assert_eq!(v["tls"]["undecrypted_records"], 900);
+        assert_eq!(
+            v["tls"]["read_nothing"], true,
+            "900 records offered and none opened is the unambiguous failure: {v}"
+        );
+
+        // The edge case a hand-derived verdict gets wrong: a handshake leaves
+        // some records permanently shut on a capture that is working fine.
+        let mostly_working = CaptureCaveats {
+            media_creating_commands: 0,
+            tls: Some(crate::capture::TlsDecryptReport {
+                keylog_entries: 4,
+                sessions_with_keys: 1,
+                app_data_records: 900,
+                decrypted_records: 895,
+                late_recovered: 0,
+                late_evicted: 0,
+                late_still_held: 0,
+            }),
+        };
+        let v = mostly_working.to_json();
+        assert_eq!(
+            v["tls"]["undecrypted_records"], 5,
+            "the gap is reported rather than hidden: {v}"
+        );
+        assert_eq!(
+            v["tls"]["read_nothing"], false,
+            "a capture that opened 895 of 900 records is not a failed \
+             decryption, and reporting it as one would send an operator after \
+             keys that are already working: {v}"
+        );
     }
 }
 

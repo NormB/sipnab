@@ -2355,6 +2355,7 @@ sipnab **chose not to do**, which is a different thing and is not a defect.
 | Key | What it counts |
 |-----|----------------|
 | `media_creating_commands` | rtpengine `subscribe`, `publish` and `start recording` commands seen and deliberately not attributed |
+| `tls` | TLS decryption state — **absent** unless a decryptor ran |
 
 Those commands create media belonging to a call without being one of its two
 legs. Decoding one as an ordinary leg would make a two-party call report three
@@ -2365,6 +2366,26 @@ answers a question nobody asked — so sipnab counts them instead.
 fork has media on the wire that no `rtp_stats` row explains, and this number is
 how you know that is a decision rather than a gap. Zero is a real
 answer and the key is always present.
+
+##### `caveats.tls` — is decryption working?
+
+Absent when nobody supplied keys, which is not a decryption failure. When a
+decryptor ran, the block carries `keylog_entries`, `sessions_with_keys`,
+`app_data_records`, `decrypted_records`, `undecrypted_records`,
+`late_recovered`, `late_evicted` and `read_nothing`.
+
+**Act on `read_nothing`, never on the arithmetic.** A TLS handshake carries
+records sipnab never loads keys for, so `app_data_records > decrypted_records`
+is not by itself a failure — an agent deriving a verdict from the two counts
+reports a working capture as broken and sends an operator after keys that
+already work. `read_nothing` is `true` only when application data arrived and
+none of it opened.
+
+That case is why the block exists. A capture holding ciphertext nobody can open
+produces a dialog listing identical to one from a quiet network. If you are
+about to answer "there was no SIP on this capture", check this field first:
+`server_capabilities.can_decrypt` says whether the BUILD can decrypt, and this
+says whether this RUN did.
 
 `GET /v1/stats` carries the same block under the same name.
 
