@@ -1615,6 +1615,19 @@ pub struct CaptureStatusResponse {
     pub active_call_count: usize,
     /// Drops, invalid timestamps and undecodable frames on the capture path.
     pub capture_quality: CaptureQualityJson,
+    /// What the capture DECLINED, beside what it lost.
+    ///
+    /// `capture_quality` above counts packets that went missing.
+    /// This counts work sipnab chose not to do and owes an answer for --
+    /// today, media-creating relay commands seen and deliberately not
+    /// attributed. An agent reasoning about a call's stream count has to know
+    /// whether any went past, because sipnab declining to decode them is why
+    /// the count is what it is.
+    ///
+    /// The same projection `GET /v1/stats` embeds
+    /// ([`CaptureCaveats`](crate::output::json::CaptureCaveats)), so an agent
+    /// and an HTTP client cannot be told different things.
+    pub caveats: serde_json::Value,
     /// True once a file source has been read to the end.
     pub source_exhausted: bool,
     /// Where packets are being written, if anywhere.
@@ -4568,6 +4581,10 @@ impl SipnabMcp {
                 active_dialog_count: ds.active_dialog_count(),
                 active_call_count: ds.active_call_count(),
                 capture_quality,
+                // Read from the process-global tally, with no lock held: it has
+                // no relationship to either store's revision, so folding it
+                // inside the guards would buy nothing and cost contention.
+                caveats: crate::output::json::CaptureCaveats::current().to_json(),
                 source_exhausted: exhausted,
                 writing_to: writing_to.clone(),
                 // Only a live capture can hold packets that exist nowhere else.
@@ -7550,6 +7567,52 @@ mod tests {
 
     /// `capture_status` reports SIP the portrange skipped (#95).
     ///
+    /// `capture_status` carries what the capture DECLINED, under the same key
+    /// and the same name `GET /v1/stats` uses.
+    ///
+    /// The number counts media-creating relay commands -- `subscribe`,
+    /// `publish`, `start recording` -- that sipnab saw and deliberately did not
+    /// attribute. Declining is the right call: decoded as an ordinary leg, a
+    /// two-party call reports three streams and the media analysis then answers
+    /// a question nobody asked. But an agent reasoning about a stream count
+    /// needs to know some went past, because sipnab's decision is why the count
+    /// is what it is -- and until this key existed the response was
+    /// byte-identical whether one had gone past or a thousand.
+    ///
+    /// Asserted at ZERO as well as present, for the reason the unanalysed-SIP
+    /// test below gives about key presence: a field that appears only once
+    /// something has happened is a field no client learns exists.
+    #[tokio::test]
+    async fn capture_status_carries_what_the_capture_declined() {
+        let result = empty_server()
+            .capture_status()
+            .await
+            .expect("capture_status");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+
+        let seen = v["caveats"]["media_creating_commands"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("declined work must be a number on every response: {v}"));
+
+        // The tally is process-global and shared with every other test in this
+        // binary, so this is a DELTA. An exact figure would be true only until
+        // the next test ran.
+        crate::rtpengine::note_media_creating_command();
+        let after_result = empty_server()
+            .capture_status()
+            .await
+            .expect("capture_status");
+        let after: serde_json::Value = serde_json::from_str(&text_of(&after_result)).unwrap();
+        assert!(
+            after["caveats"]["media_creating_commands"]
+                .as_u64()
+                .expect("still a number")
+                > seen,
+            "a media-creating command went past and the count did not move; the \
+             key is wired to nothing: {after}"
+        );
+    }
+
     /// `dialog_count` alone reads as "how much was there". On the corpus it was
     /// 2,311 against 3,712 real — 37.7% lost — because a third of the SIP never
     /// touches 5060/5061. That reached the operator as stderr warnings and

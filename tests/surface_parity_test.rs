@@ -235,6 +235,99 @@ const QUALITY_METRICS: &[Metric] = &[
     },
 ];
 
+/// Counters that say what the capture COULD NOT do, which must reach every door.
+///
+/// The strictest list in this file, and the bar is "both APIs" rather than
+/// "somebody". A quality metric missing from one surface makes that surface
+/// less useful. One of these missing makes it **wrong**: every one of them
+/// counts something sipnab did not attribute, did not decode, or was never
+/// given the keys for, and a response that omits it does not read as
+/// incomplete. It reads as clean.
+///
+/// That is the failure this project has already named once, in its own words --
+/// "a forensics tool that cannot say what it did not attribute", written in the
+/// comment above the media-creating tally, whose value the CLI report printed
+/// and neither API did.
+///
+/// Each entry must ALSO be shown to exist in the code that keeps it, so the
+/// list cannot outlive the counter it names.
+const CAPTURE_CAVEAT_COUNTERS: &[Caveat] = &[
+    // `subscribe`, `publish` and `start recording` make media that belongs to a
+    // call without being one of its two legs. sipnab counts them rather than
+    // attributing them -- decoding one as an ordinary leg would make a
+    // two-party call report three streams -- so the count IS the disclosure.
+    Caveat {
+        kept_in: "src/rtpengine/mod.rs",
+        metric: Metric {
+            name: "media_creating",
+            aliases: &["media_creating_commands_seen", "MEDIA_CREATING_SEEN"],
+        },
+    },
+    // NEXT: `TlsDecryptReport` -- records offered to the decryptor against
+    // records actually opened. Not listed yet, and deliberately not listed
+    // before it can pass: the report is built from a decryptor `batch.rs` owns
+    // locally, so neither server can reach it without either process-global
+    // counters or a shared handle. Adding the entry is the first half of that
+    // change, not a note to be carried here indefinitely.
+];
+
+/// A counter, and the file that keeps it.
+struct Caveat {
+    kept_in: &'static str,
+    metric: Metric,
+}
+
+/// Every "what this capture could not do" counter is on BOTH APIs.
+///
+/// Not "at least one surface", which is the bar the provenance gate below
+/// uses. These change what a whole response MEANS, and a client that never
+/// learns the number was available cannot know to ask for it.
+#[test]
+fn caveat_counters_reach_both_api_doors() {
+    let mcp = mcp_surface();
+    let api = rest_surface();
+
+    let mut unkept = Vec::new();
+    let mut missing = Vec::new();
+
+    for c in CAPTURE_CAVEAT_COUNTERS {
+        // The list must describe this program, not a past one.
+        if !c.metric.carried_by(&code(c.kept_in)) {
+            unkept.push(format!("`{}` (not in {})", c.metric.name, c.kept_in));
+            continue;
+        }
+        let in_mcp = c.metric.carried_by(&mcp);
+        let in_api = c.metric.carried_by(&api);
+        if !in_mcp || !in_api {
+            missing.push(format!(
+                "`{}` -- MCP: {}, REST: {}",
+                c.metric.name,
+                if in_mcp { "yes" } else { "NO" },
+                if in_api { "yes" } else { "NO" }
+            ));
+        }
+    }
+
+    assert!(
+        unkept.is_empty(),
+        "these counters are named here but the code no longer keeps them: {}\n\
+         Remove the entry or restore the counter -- a list naming something \
+         deleted asserts nothing while looking like it asserts something.",
+        unkept.join(", ")
+    );
+
+    assert!(
+        missing.is_empty(),
+        "counters saying what the capture could not do, missing from an API \
+         door:\n  {}\n\n\
+         Every one of these counts something sipnab did not attribute, did not \
+         decode, or was never given the keys for. A response that omits one \
+         does not read as incomplete -- it reads as clean, which is the exact \
+         answer this project exists not to give.",
+        missing.join("\n  ")
+    );
+}
+
 /// Provenance sipnab RECORDS on a stream, which must reach somebody.
 ///
 /// A different question from [`QUALITY_METRICS`], and a weaker bar on purpose.

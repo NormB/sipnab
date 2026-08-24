@@ -1021,6 +1021,11 @@ async fn get_stats(
     // atomics with no relationship to either store's revision, so holding a
     // lock across the read would buy nothing and cost contention.
     let quality = output::prometheus::CaptureQuality::current();
+    // What the capture DECLINED, beside what it lost. `capture_quality` below
+    // counts packets that went missing; this counts work sipnab chose not to
+    // do and owes the reader a number for. Same projection MCP's
+    // `capture_status` embeds, so the two doors cannot disagree about it.
+    let caveats = output::json::CaptureCaveats::current();
 
     Ok(Json(json!({
         // 2: `dialogs.in_call` added. `dialogs.active` is unchanged — it
@@ -1046,6 +1051,9 @@ async fn get_stats(
             "total": total_streams,
             "orphaned": orphaned_count,
         },
+        // Always present, always complete, and zero is a real answer. A key
+        // that shows up only on a bad run is a key no client learns exists.
+        "caveats": caveats.to_json(),
         "timing": {
             "pdd_p50_ms": pdd_p50,
             "pdd_p95_ms": pdd_p95,
@@ -1427,6 +1435,61 @@ mod tests {
 
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// The declined-work count is on `/v1/stats`, present at zero, and moves
+    /// when a media-creating command goes past.
+    ///
+    /// Zero is the assertion that matters most here. A key that appears only
+    /// once something has gone wrong is a key no client learns exists, and a
+    /// dashboard cannot ask about a field it has never seen. The second half
+    /// then proves the key is wired to the tally rather than to the literal 0
+    /// that would satisfy the first half on its own.
+    #[tokio::test]
+    async fn stats_reports_declined_work_at_zero_and_when_it_happens() {
+        let before = crate::rtpengine::media_creating_commands_seen();
+
+        let app = build_router(make_state());
+        let parsed: Value = serde_json::from_str(
+            &body_to_string(
+                app.clone()
+                    .oneshot(test_request("/v1/stats"))
+                    .await
+                    .expect("oneshot")
+                    .into_body(),
+            )
+            .await,
+        )
+        .expect("valid JSON");
+        assert_eq!(
+            parsed["caveats"]["media_creating_commands"], before,
+            "the count must be present and complete on an ordinary response: {}",
+            parsed["caveats"]
+        );
+
+        // The tally is process-global and shared with every other test in this
+        // binary, so this asserts a DELTA rather than an absolute -- an exact
+        // figure here would be true only until the next test ran.
+        crate::rtpengine::note_media_creating_command();
+
+        let parsed: Value = serde_json::from_str(
+            &body_to_string(
+                app.oneshot(test_request("/v1/stats"))
+                    .await
+                    .expect("oneshot")
+                    .into_body(),
+            )
+            .await,
+        )
+        .expect("valid JSON");
+        let after = parsed["caveats"]["media_creating_commands"]
+            .as_u64()
+            .expect("the count is a number");
+        assert!(
+            after > before,
+            "a media-creating command went past and the count did not move \
+             ({before} -> {after}); the key is wired to nothing"
+        );
     }
 
     /// `GET /v1/stats` returns 200 with dialogs/streams/timing objects and
