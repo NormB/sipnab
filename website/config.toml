@@ -34,7 +34,7 @@ theme = "ayu-dark"
 # download links came from here. They did once — `download.html` was moved to
 # `published_version` and the claim was never revisited, which is also how the
 # same sentence ended up in site_journey_test.rs and pages.yml.
-version = "0.5.123"
+version = "0.5.124"
 # The last version that actually EXISTS as a published GitHub release, which is
 # what every download link must point at.
 #

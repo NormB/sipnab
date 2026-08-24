@@ -10,6 +10,8 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.124] - 2026-08-24
+
 ### Added
 
 - **sipnab can ask an rtpengine relay which calls it is carrying
