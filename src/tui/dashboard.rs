@@ -133,7 +133,7 @@ impl DashboardSnapshot {
             })
             .collect();
 
-        rows.sort_by(|a, b| {
+        crate::sort::sort_by_dyn(&mut rows, &mut |a, b| {
             a.mos
                 .total_cmp(&b.mos)
                 .then(b.loss_pct.total_cmp(&a.loss_pct))

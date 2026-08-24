@@ -3020,7 +3020,7 @@ impl SipnabMcp {
             r.size = size;
             out.push(r);
         }
-        out.sort_by(|a, b| a.name.cmp(&b.name));
+        crate::sort::sort_by_dyn(&mut out, &mut |a, b| a.name.cmp(&b.name));
         Ok(out)
     }
 
@@ -3214,7 +3214,7 @@ impl SipnabMcp {
             .collect();
         let total_matched = matched.len();
 
-        matched.sort_by(|a, b| {
+        crate::sort::sort_by_dyn(&mut matched, &mut |a, b| {
             a.created_at
                 .cmp(&b.created_at)
                 .then_with(|| a.call_id.cmp(&b.call_id))
@@ -3336,7 +3336,7 @@ impl SipnabMcp {
             }
             let total_matched = matched.len();
 
-            matched.sort_by(|a, b| {
+            crate::sort::sort_by_dyn(&mut matched, &mut |a, b| {
                 a.first_seen
                     .cmp(&b.first_seen)
                     .then_with(|| stream_identity(a).cmp(&stream_identity(b)))
@@ -3565,7 +3565,9 @@ impl SipnabMcp {
         // Largest first, ties broken by value so the same store always gives
         // the same answer -- a cursor-free aggregate that reordered between
         // calls would look like the capture changed.
-        ordered.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        crate::sort::sort_by_dyn(&mut ordered, &mut |a, b| {
+            b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0))
+        });
         let other_count: usize = ordered.iter().skip(top_n).map(|(_, c)| *c).sum();
         let buckets: Vec<AggregateBucket> = ordered
             .into_iter()
@@ -4257,7 +4259,7 @@ impl SipnabMcp {
             // on, extended by the message index. Store order is insertion
             // order, so cutting first would let `next_cursor` skip hits that
             // were never returned.
-            matched.sort_by(|a, b| {
+            crate::sort::sort_by_dyn(&mut matched, &mut |a, b| {
                 a.0.created_at
                     .cmp(&b.0.created_at)
                     .then_with(|| a.2.cmp(&b.2))
@@ -4373,7 +4375,7 @@ impl SipnabMcp {
                         .is_none_or(|c| c.precedes(d.updated_at, &d.call_id))
                 })
                 .collect();
-            changed.sort_by(|a, b| {
+            crate::sort::sort_by_dyn(&mut changed, &mut |a, b| {
                 a.updated_at
                     .cmp(&b.updated_at)
                     .then_with(|| a.call_id.cmp(&b.call_id))
@@ -5195,7 +5197,7 @@ impl SipnabMcp {
             // millisecond. Sorting on the cursor's full key is what lets a tie
             // group split across a page boundary without dropping or repeating
             // a row.
-            matched.sort_by(|a, b| {
+            crate::sort::sort_by_dyn(&mut matched, &mut |a, b| {
                 a.created_at
                     .cmp(&b.created_at)
                     .then_with(|| a.call_id.cmp(&b.call_id))
@@ -6055,7 +6057,9 @@ impl SipnabMcp {
                 "first_packet": first_packet,
             }));
         }
-        files.sort_by(|a, b| a["filename"].as_str().cmp(&b["filename"].as_str()));
+        crate::sort::sort_by_dyn(&mut files, &mut |a, b| {
+            a["filename"].as_str().cmp(&b["filename"].as_str())
+        });
         Ok(CallToolResult::success(vec![ContentBlock::json(
             serde_json::json!({ "schema_version": 1, "captures": files }),
         )?]))

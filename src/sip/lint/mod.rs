@@ -574,7 +574,7 @@ impl<'a> FindingSink<'a> {
 
     /// The collected findings, ordered by message index then rule identifier.
     pub(crate) fn finish(mut self) -> Vec<Finding> {
-        self.findings.sort_by(|a, b| {
+        crate::sort::sort_by_dyn(&mut self.findings, &mut |a, b| {
             a.message_index
                 .cmp(&b.message_index)
                 .then(a.rule_id.cmp(b.rule_id))

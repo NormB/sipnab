@@ -591,7 +591,9 @@ pub(in crate::tui) fn statistics_text(ds: &DialogStore, ss: &StreamStore) -> Str
 
     // Sort methods by count descending, then alphabetically
     let mut methods: Vec<(&&str, &usize)> = method_counts.iter().collect();
-    methods.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    crate::sort::sort_by_dyn(&mut methods, &mut |a, b| {
+        b.1.cmp(a.1).then_with(|| a.0.cmp(b.0))
+    });
 
     let mut text = format!(
         "sipnab Statistics\n\n\
@@ -607,7 +609,9 @@ pub(in crate::tui) fn statistics_text(ds: &DialogStore, ss: &StreamStore) -> Str
     if !state_counts.is_empty() {
         text.push_str("\nDialog States:\n");
         let mut states: Vec<(&&str, &usize)> = state_counts.iter().collect();
-        states.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        crate::sort::sort_by_dyn(&mut states, &mut |a, b| {
+            b.1.cmp(a.1).then_with(|| a.0.cmp(b.0))
+        });
         for (state, count) in states {
             text.push_str(&format!("  {:<16} {count}\n", state));
         }

@@ -99,6 +99,7 @@ pub mod security;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod signals;
 pub mod sip;
+pub mod sort;
 pub mod text;
 
 #[doc(hidden)]
