@@ -287,7 +287,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
           <tr><td><a href="{{ get_url(path='@/docs/metrics.md') }}">Prometheus metrics</a></td><td>Counters and gauges about sipnab itself: what it captured, what it lost, what it could not read.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. 32 tools cover dialogs, RTP, diagnostics, and security findings. 27 are read-only; the five that write — file export, capture swap, findings, shutdown — each stay off until you enable them server-side.</td></tr>
           <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Memory-safe by construction. 5622 automated tests. Under 12 MB static binary.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Memory-safe by construction. 5622 automated tests. Under 13 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -354,7 +354,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
          `Automated tests` is the shortest label of the four and so the easiest
          to miss entirely. #}
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/releases/latest">
-        <span class="arch-stat" data-count="12" data-suffix=" MB">12 MB</span>
+        <span class="arch-stat" data-count="13" data-suffix=" MB">13 MB</span>
         <span class="arch-label">Stripped binary ceiling, enforced at release (musl, static)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ get_url(path='@/docs/mcp-tools.md') }}">

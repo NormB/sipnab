@@ -291,10 +291,13 @@ fn every_published_linux_gnu_binary_carries_the_bpf_uprobe_backend() {
 /// No musl or macOS artefact pays for `bpf`.
 ///
 /// Not a preference. Measured on the published 0.5.117 x86_64 musl binary:
-/// 12,252,424 bytes against the 12 MB (12,582,912-byte) ceiling `release.yml`
-/// enforces from `website/config.toml`, i.e. 330,488 bytes of headroom, while
-/// `bpf` costs +589,952. Enabling it there turns every release red at the
-/// size gate. macOS is excluded for a different reason: `aya` is declared
+/// 12,252,424 bytes, with `bpf` costing +589,952. Under the 12 MB
+/// (12,582,912-byte) ceiling that left 330,488 bytes of headroom and enabling
+/// `bpf` there turned every release red at the size gate. The ceiling
+/// `release.yml` reads from `website/config.toml` is 13 MB now, so size is no
+/// longer the reason: musl stays without it because changing what a static
+/// artifact carries is a decision nobody has made, not because the bytes
+/// refuse to fit. macOS is excluded for a different reason: `aya` is declared
 /// under `[target.'cfg(target_os = "linux")'.dependencies]`, so the feature
 /// would compile to nothing but still be advertised by `--version`.
 #[test]

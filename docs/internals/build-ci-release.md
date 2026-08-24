@@ -19,8 +19,11 @@ publishing a binary that advertises the feature and refuses at runtime.
 
 The musl and macOS artifacts do NOT carry it, for two different reasons.
 `bpf` costs +589,952 bytes, and the published 0.5.117 x86_64 musl binary is
-12,252,424 bytes against the 12 MB ceiling `release.yml` enforces — 330,488
-bytes of headroom, so it does not fit. On macOS `Cargo.toml` declares `aya`
+12,252,424 bytes. Under the 12 MB ceiling that left 330,488 bytes of headroom
+and it did not fit. The ceiling `release.yml` enforces is 13 MB now, so it
+would fit. musl still excludes it, because what a static artifact carries is
+a decision about the artifact rather than about bytes, and raising a ceiling
+does not make that decision. On macOS `Cargo.toml` declares `aya`
 under `[target.'cfg(target_os = "linux")'.dependencies]`, so the feature would
 compile to nothing while `--version` claimed it. On those binaries
 `--uprobe-backend bpf` still refuses, and `sipnab --version` is how you tell

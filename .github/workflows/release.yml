@@ -281,11 +281,18 @@ jobs:
           # `audio` and the `noaudio` .deb/.rpm are the headless-server
           # packages most likely to be pointed at a TLS-terminating proxy.
           #
-          # NOT musl, and the reason is measured rather than assumed: `bpf`
-          # costs +589,952 bytes, and the published 0.5.117 x86_64 musl binary
-          # is 12,252,424 bytes against the 12 MB ceiling the size gate below
-          # enforces — 330,488 bytes of headroom. It does not fit, and a static
-          # tarball that fails its own size gate is not a release.
+          # NOT musl. The reason WAS size, measured rather than assumed:
+          # `bpf` costs +589,952 bytes, and the published 0.5.117 x86_64 musl
+          # binary is 12,252,424 bytes. Against the 12 MB ceiling that left
+          # 330,488 bytes of headroom and `bpf` did not fit.
+          #
+          # The ceiling is 13 MB now, so that argument no longer holds: the
+          # same binary has 1,379,064 bytes of headroom and `bpf` would fit
+          # inside it. musl still excludes it, and this comment no longer
+          # claims size is why — whether a static musl build SHOULD carry the
+          # kernel programs is a decision about the artifact, not about bytes,
+          # and nobody has made it. Left excluded deliberately rather than
+          # changed as a side effect of moving a number.
           #
           # NOT macOS: `aya` is declared under
           # `[target.'cfg(target_os = "linux")'.dependencies]`, so the feature
