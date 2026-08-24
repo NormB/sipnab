@@ -8625,6 +8625,7 @@ words:
 | `GET /v1/streams?mos_below=` | **never selects an ungrounded stream**, and reports `ungrounded_excluded` |
 | MCP `search_streams` with `min_mos`/`max_mos` | the same refusal, and the same count |
 | TUI stream detail | the score renders muted rather than in a quality band, annotated `no published Ie` |
+| The in-browser analyzer on sipnab.com | the score renders dimmed and italic, outside the good/fair/poor scale entirely, and the summary counts what it could not score |
 
 The filters are the part that matters most. A placeholder is a *high-looking*
 number that means nothing, so a MOS bound applied without the grounding test
