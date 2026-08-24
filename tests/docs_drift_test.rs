@@ -2611,7 +2611,11 @@ fn no_documentation_table_repeats_a_row() {
     // with the ports carrying it. Attributed by measurement before the number
     // moved: those two files gained exactly one table separator each and no
     // other page gained any.
-    const EXPECTED_TABLES: usize = 640;
+    // 640 -> 641: one table, the four surface-parity gates and the bar each
+    // holds, in the new SP section of `docs/design/backlog.md`. Attributed by
+    // measurement before the number moved: that file gained exactly one table
+    // separator, and design docs have no generated mirror.
+    const EXPECTED_TABLES: usize = 641;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

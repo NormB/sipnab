@@ -116,6 +116,45 @@ fn stats_returns_structured_json() {
     assert!(body["timing"].is_object(), "stats has a timing block");
 }
 
+/// `/v1/report` answers for the whole capture, through a real server.
+///
+/// The per-call route answers for one Call-ID. This is the only REST route that
+/// can speak for the capture: orphaned media, STUN and ICMP evidence, and what
+/// the retention caps shed belong to no single dialog, so every other route is
+/// blind to them. MCP has answered this as `get_capture_report` and the CLI as
+/// `--report`; a REST client had to reimplement the analysis it came here for.
+///
+/// Driven through `ApiServer::spawn` rather than an in-process router, like
+/// every other route in this file — a handler can be correct and still not be
+/// wired into the binary that ships.
+#[test]
+fn capture_report_answers_for_the_whole_capture() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get("/v1/report");
+    assert_eq!(resp.status, 200, "/v1/report status");
+
+    let body = resp.json();
+    assert!(
+        body.is_object(),
+        "the report must be an object a client reads fields out of, not a \
+         stringified blob it parses a second time: {body}"
+    );
+    // What it looked at, and whether it saw all of it. `complete` is the
+    // honesty flag: a findings list from a capture that lost packets is a
+    // FLOOR, and a reader who does not know that reads it as a total.
+    for key in ["dialogs_examined", "streams_examined", "complete"] {
+        assert!(
+            body.get(key).is_some(),
+            "`{key}` missing — the report must say what it examined and whether \
+             it saw all of it: {body}"
+        );
+    }
+    assert_eq!(
+        body["dialogs_examined"], 1,
+        "the report must describe the capture it was built from: {body}"
+    );
+}
+
 /// `/v1/stats` carries the capture-quality block on every response, with the
 /// three losses under three names and one flag rolling them up.
 ///

@@ -235,6 +235,72 @@ const QUALITY_METRICS: &[Metric] = &[
     },
 ];
 
+/// Whole-capture and per-call ANSWERS, and the route each door serves them on.
+///
+/// The lists above are about fields. This one is about whether a question can
+/// be asked at all. A missing field makes a response less useful; a missing
+/// route makes the question unanswerable at that door, and the client's only
+/// recourse is to reimplement the analysis it came to sipnab for.
+///
+/// Each row names an MCP tool and the REST path that answers the same
+/// question. Both halves are checked against the SOURCE, so a row cannot
+/// outlive either side.
+const CAPTURE_ANSWERS: &[Answer] = &[
+    // One Call-ID: timing, parties, RTP quality, diagnosis hints.
+    Answer {
+        mcp_tool: "get_dialog_report",
+        rest_route: "/v1/dialogs/{call_id}/report",
+    },
+    // The whole capture: findings across every dialog and stream, orphaned
+    // media, STUN and ICMP evidence, and what the retention caps shed. The CLI
+    // has had this as `--report` since before either server existed.
+    Answer {
+        mcp_tool: "get_capture_report",
+        rest_route: "/v1/report",
+    },
+];
+
+/// An answer sipnab can give, and where each door serves it.
+struct Answer {
+    mcp_tool: &'static str,
+    rest_route: &'static str,
+}
+
+/// Every answer one door can give, the other can give too.
+#[test]
+fn both_doors_answer_the_same_questions() {
+    let mcp = code("src/mcp/server.rs");
+    let api = code("src/output/api.rs");
+
+    let mut missing = Vec::new();
+    for a in CAPTURE_ANSWERS {
+        // The tool declaration, as `#[tool(name = "...")]` writes it.
+        let declared = mcp.contains(&format!("name = \"{}\"", a.mcp_tool));
+        // The route registration, as axum's `.route("...")` writes it.
+        let routed = api.contains(&format!("\"{}\"", a.rest_route));
+        match (declared, routed) {
+            (true, true) | (false, false) => {}
+            (true, false) => missing.push(format!(
+                "MCP answers `{}` and REST has no `{}`",
+                a.mcp_tool, a.rest_route
+            )),
+            (false, true) => missing.push(format!(
+                "REST answers `{}` and MCP has no `{}`",
+                a.rest_route, a.mcp_tool
+            )),
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "a question one door can answer and the other cannot:\n  {}\n\n\
+         A missing FIELD makes a response less useful. A missing ROUTE makes \
+         the question unanswerable at that door, and the client's only recourse \
+         is to reimplement the analysis it came to sipnab for.",
+        missing.join("\n  ")
+    );
+}
+
 /// Counters that say what the capture COULD NOT do, which must reach every door.
 ///
 /// The strictest list in this file, and the bar is "both APIs" rather than

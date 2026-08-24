@@ -347,6 +347,20 @@ empty body, because silence is indistinguishable from the tool not having run:
 "Capture analysis: 2 finding(s) across 1 dialog(s), 2 stream(s), 535000 frame(s) read."
 ```
 
+**`json` is the default and returns an OBJECT**, serialized from the analysis
+itself — `findings`, `dialogs_examined`, `streams_examined`, `frames_read` and
+`complete`. Read `complete` before the findings: it is `false` when the capture
+lost packets, hit a retention cap, or held frames no decoder could read, and a
+findings list from such a capture is a **floor, not a total**.
+
+> Before 0.5.125 this default returned the TEXT rendering. `format` chooses
+> between markdown headings and plain text inside the renderer and never had a
+> JSON arm, so the tool asked for JSON, got prose, and fell back to a text
+> block. An agent that called it with no argument received prose and nothing to
+> say the structure it asked for was never there.
+
+`GET /v1/report` answers the same question over REST.
+
 ### `get_dialog_report`
 
 Per-call diagnostic report for one Call-ID. Backed by

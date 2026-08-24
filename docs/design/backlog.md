@@ -4028,6 +4028,54 @@ free, because the free was mimalloc's.
 several times slower — but see [`tests/support/timeout.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/timeout.rs) for the corrected
 reason it was introduced.
 
+## SP — surface parity (added 2026-08-24)
+
+Nine increments closed the gap between what MCP, REST, the CLI, the TUI and the
+in-browser analyzer can say about one capture. Each was written against a gate
+that failed first, and four gates now hold the line, deliberately at different
+bars:
+
+| Gate | Bar |
+|---|---|
+| `every_quality_metric_is_on_both_mcp_and_the_rest_api` | symmetric, or on neither |
+| `provenance_the_program_records_reaches_a_reader` | recorded implies readable somewhere |
+| `caveat_counters_reach_both_api_doors` | both APIs, no exceptions |
+| `both_doors_answer_the_same_questions` | a question one door answers, the other answers |
+
+The middle two earn their place: the provenance gate found `dialog_assertion`
+written on every binding and read by nothing, while `EndpointAssertion::as_str`
+carried a doc comment calling itself "the name this assertion is written under
+on every output surface". The caveat gate is the strictest because a missing
+caveat counter does not make a response incomplete -- it makes it read as clean.
+
+### SP1 — capture identity and context on REST — BLOCKED on a decision
+
+`GET /v1/stats` still lacks `capture_identity`, `source_exhausted`,
+`writing_to` and `unsaved`, all of which MCP `capture_status` has. Unlike every
+other item in this program, this one cannot be done as an increment, for two
+independent reasons.
+
+**Where the type lives.** `CaptureState` is defined in
+[`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs)
+and gated on the `mcp` feature. REST is gated on `api`. Sharing it means moving
+the type somewhere feature-independent so both servers hold one, or REST gets
+the identity only in builds that also compiled MCP -- which is a worse answer
+than not having it, because the field would then appear and disappear with an
+unrelated feature flag.
+
+**What the identity would assert.** An etag over
+`(instance, dialog_generation, stream_generation)` claims those three describe
+one moment. `get_stats` currently drops the dialog-store lock BEFORE taking the
+stream-store lock, so its dialog counts and stream counts already describe two
+different instants. Publishing an etag over that would assert a consistency the
+code does not provide, which is the exact class of claim this project spends
+its effort removing. Holding both locks is the fix, and it is a change to a
+hot-ish read path that deserves its own argument rather than riding along.
+
+The honest state is therefore: known, understood, and not started. A reader
+comparing MCP and REST should expect this one difference and should not read it
+as an oversight.
+
 ## Standing decisions
 
 | Decision | Status | Notes |

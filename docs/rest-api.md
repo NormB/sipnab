@@ -955,6 +955,37 @@ console.log(`Codec: ${stream.codec}, Packets: ${stream.packets}`);
 
 ---
 
+### GET /v1/report
+
+The whole-capture analysis: findings across every dialog and stream, orphaned
+media, STUN and ICMP evidence, and what the retention caps shed.
+
+`GET /v1/dialogs/{call_id}/report` answers for one call. This answers for the
+capture, and it is the only REST route that can — orphaned media and shed
+retention belong to no single dialog, so every other route is blind to them.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:8080/v1/report | jq .
+```
+
+**Read `complete` before the findings.** It is `false` when the capture lost
+packets, hit a retention cap, or held frames no decoder could read — and a findings list built from such a capture is a **floor, not a
+total**. A reader who takes the list at face value concludes the capture is
+clean when it is merely partial.
+
+`dialogs_examined` and `streams_examined` are the denominators behind the
+findings. `frames_read` comes from the same process-global counter the
+Prometheus scrape reports, so every other figure in the run shares that
+denominator.
+
+The MCP `get_capture_report` tool answers the same question. So does
+`sipnab --report`, which predates both servers.
+
+---
+
 ### GET /v1/stats
 
 Aggregate statistics across all dialogs and streams, including PDD percentiles.
