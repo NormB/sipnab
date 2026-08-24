@@ -1025,6 +1025,9 @@ console.log(`PDD p50: ${timing.pdd_p50_ms}ms, p95: ${timing.pdd_p95_ms}ms`);
     "total": 46,
     "orphaned": 3
   },
+  "caveats": {
+    "media_creating_commands": 0
+  },
   "timing": {
     "pdd_p50_ms": 120,
     "pdd_p95_ms": 850,
@@ -1039,6 +1042,27 @@ console.log(`PDD p50: ${timing.pdd_p50_ms}ms, p95: ${timing.pdd_p95_ms}ms`);
   }
 }
 ```
+
+`caveats` is the other half of that question, and it reads the opposite way.
+`capture_quality` counts what the capture **lost**. `caveats` counts what
+sipnab **declined**.
+
+| Key | What it counts |
+|-----|----------------|
+| `media_creating_commands` | rtpengine `subscribe`, `publish` and `start recording` commands seen and deliberately not attributed |
+
+Declining is the right call. Those commands create media belonging to a call
+without being one of its two legs, and decoding one as an ordinary leg makes a
+two-party call report three streams — after which the analysis that judges
+one-way audio and asymmetry answers a question nobody asked.
+
+Which makes the count the disclosure. A run that saw `start recording` and said
+nothing would be a tool that cannot say what it did not attribute. **The key is
+always present and zero is a real answer** — a field that appears only once
+something has happened is a field no client learns exists.
+
+The MCP `capture_status` tool carries the same block under the same name, so
+this endpoint and an agent never disagree about it.
 
 `capture_quality` says how much of the wire the rest of the response draws
 from. Read it before the counts, not after: with `degraded` true, every number

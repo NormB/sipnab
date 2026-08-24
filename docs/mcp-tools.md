@@ -2269,6 +2269,9 @@ No parameters. Returns:
     "undecodable_frames": 0,
     "degraded": false
   },
+  "caveats": {
+    "media_creating_commands": 0  // relay commands seen and NOT attributed
+  },
   "source_exhausted": false,     // true once a file is read to the end
   "writing_to": null,            // path packets are being saved to, if any
   "unsaved": true,               // stopping now would lose packets
@@ -2338,6 +2341,27 @@ remedies, so a non-zero figure names its own flag:
 
 Both are zero on a live capture, where BPF filtered before the pipeline saw
 anything and there is nothing to under-report.
+
+#### What the capture DECLINED — `caveats`
+
+`capture_quality` above counts what the capture **lost**. `caveats` counts what
+sipnab **chose not to do**, which is a different thing and is not a defect.
+
+| Key | What it counts |
+|-----|----------------|
+| `media_creating_commands` | rtpengine `subscribe`, `publish` and `start recording` commands seen and deliberately not attributed |
+
+Those commands create media belonging to a call without being one of its two
+legs. Decoding one as an ordinary leg would make a two-party call report three
+streams, after which the analysis that judges one-way audio and asymmetry
+answers a question nobody asked — so sipnab counts them instead.
+
+**Read this before reasoning about a stream count.** A call with a recording
+fork has media on the wire that no `rtp_stats` row explains, and this number is
+how you know that is a decision rather than a gap. Zero is a real
+answer and the key is always present.
+
+`GET /v1/stats` carries the same block under the same name.
 
 ### `server_capabilities`
 

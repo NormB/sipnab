@@ -933,6 +933,64 @@ fn build_stream_json(stream: &RtpStream) -> StreamJson {
     }
 }
 
+/// What this capture could NOT do, in one shape for every door.
+///
+/// Lives here rather than beside either server for the reason
+/// `tests/surface_parity_test.rs` records about this exact file: both surfaces
+/// delegate to it, so both surface scans include it, and a projection put
+/// anywhere else would be invisible to the gate that keeps the two in step.
+///
+/// The contents are counts of things sipnab declined, could not read, or was
+/// never given what it needed for. They are load-bearing in a way an ordinary
+/// metric is not, because **their absence is not neutral**: a response that
+/// omits them does not read as incomplete, it reads as clean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CaptureCaveats {
+    /// Media-creating relay commands seen and deliberately not attributed.
+    ///
+    /// `subscribe`, `publish` and `start recording` create media that belongs
+    /// to a call without being one of its two legs. sipnab counts them rather
+    /// than decoding them, and that is a decision rather than a gap: counted as
+    /// an ordinary leg, a two-party call reports three streams, and the media
+    /// analysis that judges one-way audio and asymmetry then answers a question
+    /// nobody asked.
+    ///
+    /// Which makes the COUNT the disclosure. A run that saw `start recording`
+    /// and said nothing is the failure `src/rtpengine/mod.rs` names in its own
+    /// comment above the tally -- "a forensics tool that cannot say what it did
+    /// not attribute" -- and until this projection existed, only the CLI's
+    /// `--report` said it.
+    pub media_creating_commands: u64,
+}
+
+impl CaptureCaveats {
+    /// Read the process-global tallies.
+    ///
+    /// Cheap and lock-free, the same shape as
+    /// [`CaptureQuality::current`](crate::output::prometheus::CaptureQuality::current),
+    /// so a server can call it while holding nothing.
+    #[must_use]
+    pub fn current() -> Self {
+        Self {
+            media_creating_commands: crate::rtpengine::media_creating_commands_seen(),
+        }
+    }
+
+    /// The block both servers embed, always present and always complete.
+    ///
+    /// Emitted at ZERO rather than omitted, unlike the optional keys on a
+    /// stream. A key that appears only when something went wrong is a key no
+    /// client learns exists, and this is the one class of number where a
+    /// consumer has to be able to tell "nothing to report" from "this build
+    /// does not report it".
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "media_creating_commands": self.media_creating_commands,
+        })
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 /// Tests for the NDJSON message projection (CSeq/SDP/malformed handling),

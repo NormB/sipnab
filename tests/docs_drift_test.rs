@@ -2599,7 +2599,13 @@ fn no_documentation_table_repeats_a_row() {
     // other two pages. Attributed by measurement before the number moved: those
     // six files gained exactly one table separator each and no other page
     // gained any.
-    const EXPECTED_TABLES: usize = 634;
+    // 634 -> 638: two hand-written tables and their two generated mirrors, one
+    // each in `docs/rest-api.md` and `docs/mcp-tools.md`, listing what the new
+    // `caveats` block counts -- work sipnab DECLINED, as against the
+    // `capture_quality` block beside it, which counts what the capture LOST.
+    // Attributed by measurement before the number moved: those four files
+    // gained exactly one table separator each and no other page gained any.
+    const EXPECTED_TABLES: usize = 638;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
