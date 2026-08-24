@@ -2540,7 +2540,11 @@ fn sequence_marker_admits_a_declared_procedure() {
 #[test]
 fn no_documentation_table_repeats_a_row() {
     /// Tracked markdown files this walk expects to see.
-    const EXPECTED_MARKDOWN_FILES: usize = 163;
+    // 163 -> 164: `docs/design/testing-matrix.md`, the generated surface
+    // coverage matrix. One file, and the only one this change adds --
+    // `docs/design/` is repo-only, so it adds nothing to the website or to
+    // llms-full.txt, which a 274-row table would otherwise bloat.
+    const EXPECTED_MARKDOWN_FILES: usize = 164;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -2557,7 +2561,12 @@ fn no_documentation_table_repeats_a_row() {
     // recipe 13, which maps each thing an exported WAV's note can say to what
     // happened and what to do about it. One table, doubled by the generated
     // cookbook mirror. Attributed per file before the number moved.
-    const EXPECTED_TABLES: usize = 617;
+    // 617 -> 622: the five tables in the generated
+    // `docs/design/testing-matrix.md` -- what each evidence tier claims,
+    // the totals, and one table per surface (CLI flags, HTTP routes, MCP
+    // tools). Attributed by measurement before the number moved: that file
+    // holds exactly five and no other page gained one.
+    const EXPECTED_TABLES: usize = 622;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

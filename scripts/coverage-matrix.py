@@ -1,0 +1,365 @@
+#!/usr/bin/env python3
+"""Generate the surface-coverage matrix: every CLI flag, API route and MCP tool.
+
+Generated, not written. The surface is 270-odd rows; a hand-maintained table
+of that size is wrong within a week, and this repository has already paid for
+hand-maintained numbers that drifted.
+
+What the evidence tiers mean, and what this script can honestly establish:
+
+  e2e        the token appears in a test that runs the real binary
+  parsed     the token appears inside a `parse_from_args`/`parse_from` list,
+             so a test drives it through clap
+  referenced the token appears somewhere in the test corpus and nothing
+             stronger was found -- which is NOT proof it is exercised
+  none       no occurrence anywhere in the corpus
+
+`referenced` is deliberately not called "tested". This repository's own
+`flag_coverage_test` says of itself that it catches only "a flag nothing
+anywhere mentions", and a tick derived from a mention is the kind of claim
+that reads as coverage while proving nothing.
+
+Nothing above `parsed` is inferred. A tier that needs judgement is left to a
+human and marked as such rather than guessed here.
+"""
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "docs" / "design" / "testing-matrix.md"
+BIN = ROOT / "target" / "debug" / "sipnab"
+
+
+def strip_comments(src):
+    """Rust source with comments removed.
+
+    A flag named only in a `//` or `///` comment is not evidence of anything,
+    and counting it is not a hypothetical mistake: `flag_coverage_test` carries
+    its own `strip_rust_comments` because a single comment once "covered" three
+    flags at once. The first version of this generator reproduced that exact
+    bug, and an audit of its output found it -- three flags it reported as
+    referenced were named only in doc comments.
+
+    Tracks string literals so a `//` inside one does not start a comment.
+    """
+    out, i, n = [], 0, len(src)
+    while i < n:
+        c = src[i]
+        if c == '"':
+            out.append(c)
+            i += 1
+            while i < n:
+                out.append(src[i])
+                if src[i] == "\\":
+                    i += 2
+                    if i <= n:
+                        out.append(src[i - 1] if i - 1 < n else "")
+                    continue
+                if src[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if src.startswith("//", i):
+            while i < n and src[i] != "\n":
+                i += 1
+            continue
+        if src.startswith("/*", i):
+            depth = 1
+            i += 2
+            while i < n and depth:
+                if src.startswith("/*", i):
+                    depth += 1
+                    i += 2
+                elif src.startswith("*/", i):
+                    depth -= 1
+                    i += 2
+                else:
+                    i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def corpus():
+    """Every file a test could live in, with its text."""
+    files = {}
+    for d in ("tests", "src"):
+        for p in (ROOT / d).rglob("*.rs"):
+            try:
+                files[p] = strip_comments(p.read_text(errors="replace"))
+            except OSError:
+                continue
+    return files
+
+
+def runs_the_binary(text):
+    return "Command::new" in text or "cargo_bin" in text or "assert_cmd" in text
+
+
+def arg_literals(text):
+    """Text of every bracketed literal and `.arg("...")`, where CLI arguments
+    are actually written.
+
+    Membership in one of these is the difference between "a test that runs the
+    binary happens to name this flag somewhere in the file" and "a test passed
+    this flag to the binary". The first is worth almost nothing, and a
+    file-level check quietly reports it as the second.
+    """
+    out = re.findall(r"\[[^\[\]]{0,400}\]", text, re.S)
+    out += re.findall(r'\.arg\(\s*"[^"]+"\s*\)', text)
+    return out
+
+
+def parse_call_spans(text):
+    """Argument text of every clap construction in this file."""
+    spans = []
+    for m in re.finditer(r"parse_from(?:_args)?\s*\(", text):
+        i = m.end()
+        depth, start = 1, i
+        while i < len(text) and depth:
+            if text[i] in "([":
+                depth += 1
+            elif text[i] in ")]":
+                depth -= 1
+            i += 1
+        spans.append(text[start:i])
+    return spans
+
+
+def drives_server(text):
+    """Does this file actually exercise a running surface?
+
+    An HTTP route or an MCP tool is not a command-line argument, so the
+    CLI-shaped checks above cannot see them and every row collapsed to
+    `referenced` -- a column that says the same thing about all 45 of them
+    tells a reader nothing.
+    """
+    return any(
+        m in text
+        for m in ("serve(", "reqwest", "TcpStream", "tools/call", "call_tool")
+    )
+
+
+def classify_surface(name, files):
+    """Evidence for a route or a tool: exercised by a test, or only defined."""
+    exercised, defined = [], []
+    quoted = f'"{name}"'
+    for path, text in files.items():
+        if quoted not in text:
+            continue
+        rel = str(path.relative_to(ROOT))
+        if rel.startswith("tests/") and drives_server(text):
+            exercised.append(rel)
+        else:
+            defined.append(rel)
+    if exercised:
+        return "exercised", sorted(set(exercised))
+    if defined:
+        return "defined only", sorted(set(defined))
+    return "none", []
+
+
+def classify(token, files, short=""):
+    """Strongest evidence for `token`, and where it came from.
+
+    `short` matters more than it looks. Tests write `-d`, `-N` and `-I`, not
+    `--device`, `--no-tui` and `--input`. Keyed on the long form alone, the
+    most heavily exercised flags in the project reported as merely mentioned --
+    a matrix that understates coverage is as untrustworthy as one that
+    overstates it, and this one understated the three flags nearly every test
+    uses.
+
+    Exact quoted tokens for the argument-list checks: a bare `-d` matches
+    inside any word, so substring matching would credit almost everything.
+    """
+    quoted = [f'"{token}"'] + ([f'"{short}"'] if short else [])
+    hits, e2e, parsed = [], [], []
+    for path, text in files.items():
+        if token not in text and not (short and any(q in text for q in quoted)):
+            continue
+        rel = str(path.relative_to(ROOT))
+        hits.append(rel)
+        if runs_the_binary(text) and any(
+            q in lit for lit in arg_literals(text) for q in quoted
+        ):
+            e2e.append(rel)
+        if any(q in span for span in parse_call_spans(text) for q in quoted):
+            parsed.append(rel)
+    if e2e:
+        return "e2e", sorted(set(e2e))
+    if parsed:
+        return "parsed", sorted(set(parsed))
+    if hits:
+        return "referenced", sorted(set(hits))
+    return "none", []
+
+
+def cli_flags():
+    """(heading, short, long, takes_value) from the binary's own help."""
+    if not BIN.exists():
+        sys.exit(f"build the binary first: {BIN} is missing")
+    help_text = subprocess.run(
+        [str(BIN), "--help"], capture_output=True, text=True, check=False
+    ).stdout
+    heading, out = "Options", []
+    for line in help_text.splitlines():
+        # Headings carry punctuation -- "MCP (Model Context Protocol):",
+        # "TLS / Decryption:". A tighter character class silently dropped those
+        # headings, and every flag beneath one inherited the heading ABOVE it,
+        # so the Group column lied for a whole section without failing anything.
+        h = re.match(r"^([A-Za-z][^:]*):$", line)
+        if h:
+            heading = h.group(1)
+            continue
+        m = re.match(r"^\s{2,6}(?:(-[A-Za-z]), )?(--[a-z0-9-]+)(\s+<([A-Z_]+)>)?", line)
+        if m:
+            out.append((heading, m.group(1) or "", m.group(2), m.group(4) or ""))
+    # `--help` lists only what clap advertises. A `hide = true` flag is still
+    # surface a user can pass -- `--panic-selftest` deliberately crashes the
+    # process -- and a coverage matrix that omits it describes the advertised
+    # program rather than the real one. Read those out of the source.
+    cli_rs = (ROOT / "src" / "cli.rs").read_text()
+    for attr in re.findall(r"#\[arg\((.*?)\)\]", cli_rs, re.S):
+        if "hide = true" not in attr:
+            continue
+        long = re.search(r'long\s*=\s*"([a-z0-9-]+)"', attr)
+        if not long:
+            continue
+        head = re.search(r'help_heading\s*=\s*"([^"]+)"', attr)
+        out.append(((head.group(1) if head else "Options") + " (hidden)", "",
+                    f"--{long.group(1)}", ""))
+
+    seen, uniq = set(), []
+    for row in out:
+        if row[2] not in seen:
+            seen.add(row[2])
+            uniq.append(row)
+    return uniq
+
+
+def api_routes():
+    text = (ROOT / "src" / "output" / "api.rs").read_text()
+    return sorted(set(re.findall(r'\.route\(\s*"([^"]+)"', text)))
+
+
+def mcp_tools():
+    text = (ROOT / "src" / "mcp" / "server.rs").read_text()
+    return sorted(set(re.findall(r'#\[tool\(\s*name\s*=\s*"([^"]+)"', text)))
+
+
+def cite(paths, limit=2):
+    if not paths:
+        return "--"
+    shown = ", ".join(f"`{p}`" for p in paths[:limit])
+    return shown + (f" +{len(paths) - limit}" if len(paths) > limit else "")
+
+
+def table(rows, headers):
+    out = ["| " + " | ".join(headers) + " |", "|" + "---|" * len(headers)]
+    out += ["| " + " | ".join(r) + " |" for r in rows]
+    return "\n".join(out)
+
+
+def main():
+    files = corpus()
+    flags, routes, tools = cli_flags(), api_routes(), mcp_tools()
+
+    tally = {}
+    flag_rows = []
+    for heading, short, long, val in flags:
+        tier, where = classify(long, files, short)
+        tally[tier] = tally.get(tier, 0) + 1
+        flag_rows.append(
+            [f"`{long}`", f"`{short}`" if short else "", f"`{val}`" if val else "",
+             heading, tier, cite(where)]
+        )
+
+    route_rows = []
+    for r in routes:
+        tier, where = classify_surface(r, files)
+        route_rows.append([f"`{r}`", tier, cite(where)])
+
+    tool_rows = []
+    for t in tools:
+        tier, where = classify_surface(t, files)
+        tool_rows.append([f"`{t}`", tier, cite(where)])
+
+    untested = [r[0] for r in flag_rows if r[4] == "none"]
+    if untested:
+        coverage_note = "**Flags with no occurrence at all:** " + ", ".join(untested)
+    else:
+        coverage_note = (
+            "**No row can ever say `none`, and that is the point.** "
+            "`flag_coverage_test` already requires every flag's `--name` token "
+            "to appear somewhere in the test corpus, and it defines "
+            "\"referenced\" as exactly that. A coverage metric built on "
+            "mentions therefore reports 100% for this project no matter what "
+            "is actually exercised -- which is what a yes/no \"tested\" "
+            "column would have shown. The rows at `referenced` are the ones "
+            "that gate passes and this document does not."
+        )
+    body = f"""# Surface coverage matrix
+
+**Generated by `scripts/coverage-matrix.py`. Do not edit by hand.**
+
+Every command-line flag, HTTP route and MCP tool sipnab exposes, with what the
+test corpus can be shown to do with it. Regenerate with:
+
+```sh
+cargo build --features full && python3 scripts/coverage-matrix.py
+```
+
+## What a tier claims, and what it does not
+
+| Tier | Established by | What it proves |
+|---|---|---|
+| `e2e` | the flag appears in an ARGUMENT LIST in a test that executes the real binary | a test drove the binary with it |
+| `parsed` | the token appears inside a `parse_from_args` list | clap accepts it; behavior is unproven |
+| `referenced` | the token appears in the corpus, nothing stronger | **nothing.** A mention is not an exercise |
+| `none` | no occurrence anywhere | untested surface |
+
+`referenced` is deliberately not spelled "tested". This repository's own
+`flag_coverage_test` says it catches only "a flag nothing anywhere mentions",
+and a tick derived from a mention reads as coverage while proving nothing.
+
+The tiers above `parsed` need a human to distinguish "a test names this" from
+"a test would fail if this broke". This generator does not guess at that, and
+no row here should be read as a mutation-checked guarantee unless a person
+put it there.
+
+## Totals
+
+| Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
+|---|---|---|---|---|---|
+| CLI flags | {len(flag_rows)} | {tally.get('e2e', 0)} | {tally.get('parsed', 0)} | {tally.get('referenced', 0)} | {tally.get('none', 0)} |
+| HTTP routes | {len(route_rows)} | {sum(1 for r in route_rows if r[1] == 'exercised')} | -- | {sum(1 for r in route_rows if r[1] == 'defined only')} | {sum(1 for r in route_rows if r[1] == 'none')} |
+| MCP tools | {len(tool_rows)} | {sum(1 for r in tool_rows if r[1] == 'exercised')} | -- | {sum(1 for r in tool_rows if r[1] == 'defined only')} | {sum(1 for r in tool_rows if r[1] == 'none')} |
+
+{coverage_note}
+
+## CLI flags
+
+{table(flag_rows, ["Flag", "Short", "Value", "Group", "Evidence", "Where"])}
+
+## HTTP routes
+
+{table(route_rows, ["Route", "Evidence", "Where"])}
+
+## MCP tools
+
+{table(tool_rows, ["Tool", "Evidence", "Where"])}
+"""
+    OUT.write_text(body)
+    print(f"wrote {OUT.relative_to(ROOT)}")
+    print(f"  CLI flags   {len(flag_rows):>4}  {tally}")
+    print(f"  HTTP routes {len(route_rows):>4}")
+    print(f"  MCP tools   {len(tool_rows):>4}")
+
+
+if __name__ == "__main__":
+    main()
