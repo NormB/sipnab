@@ -526,6 +526,45 @@ fn every_quality_metric_is_on_both_mcp_and_the_rest_api() {
     );
 }
 
+/// The browser demo says what its MOS is worth, like every other door.
+///
+/// `src/wasm.rs` is the surface sipnab.com runs in a visitor's tab. It is
+/// scanned separately from the two API doors because it is not one: it takes no
+/// filter, serves no client, and is held to reachability the way the TUI is.
+///
+/// But it serves the SAME number, and it serves it to the widest audience this
+/// project has. Every other door learned to say whether a MOS rests on a real
+/// impairment value or on the placeholder that means "unknown"; the page a
+/// stranger lands on kept painting the placeholder in a quality band and
+/// calling it Good.
+///
+/// A separate test from the API parity gate above, and deliberately so: WASM
+/// gaining or losing a metric is not evidence about MCP and REST, and folding
+/// it into that comparison would make one gate answer two questions.
+#[test]
+fn the_browser_surface_says_what_its_mos_is_worth() {
+    let wasm = code("src/wasm.rs");
+
+    // The scan has to be able to see the thing it is looking for.
+    assert!(
+        uses(&wasm, "mos"),
+        "src/wasm.rs no longer mentions `mos`, so this gate is checking nothing"
+    );
+
+    let grounding = Metric {
+        name: "mos_grounding",
+        aliases: &["mos_grounded", "mos_is_grounded"],
+    };
+    assert!(
+        grounding.carried_by(&wasm),
+        "the WASM surface serves `mos` and never says what it rests on.\n\n\
+         sipnab returns the same score for a grounded G.711 stream and for a \
+         codec nobody publishes an impairment value for, where the number means \
+         UNKNOWN. Every other door carries `mos_grounded`/`mos_grounding`. \
+         This one is the page a stranger lands on."
+    );
+}
+
 /// The TUI is held to REACHABILITY, not to the same shape.
 ///
 /// A terminal has finite columns and deliberately shows a subset — the address

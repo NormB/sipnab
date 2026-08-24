@@ -1462,6 +1462,15 @@
 .mos-good { color: var(--good); }
 .mos-fair { color: var(--warn); }
 .mos-poor { color: var(--bad); }
+/* A MOS with no published impairment value behind it. Deliberately OUTSIDE the
+   three-band scale rather than a fourth colour on it: the number is not a bad
+   score, it is not a score at all, and giving it a band would put "unknown"
+   somewhere on a good-to-poor axis it does not belong on. Dimmed and italic,
+   so a row reads as "not measured" at a glance. */
+.mos-ungrounded {
+  color: var(--text-dim);
+  font-style: italic;
+}
 
 /* Stream sort headers reuse same pattern as dialog sort */
 .stream-sortable {

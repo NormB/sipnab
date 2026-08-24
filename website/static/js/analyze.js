@@ -88,6 +88,11 @@ class MockSipnabSession {
         loss_pct: 0.27,
         lost_packets: 5,
         mos: 4.38,
+        // PCMU above, which G.113 publishes an impairment value for. Stated
+        // rather than left to the absent-key fallback, so this fixture has the
+        // same shape the WASM surface actually emits.
+        mos_grounded: true,
+        mos_grounding: "published",
         duration_secs: 8.53,
         associated_dialog: "12013223@10.0.2.20",
         orphaned: false,
@@ -106,6 +111,11 @@ class MockSipnabSession {
         loss_pct: 0.54,
         lost_packets: 10,
         mos: 4.31,
+        // PCMU above, which G.113 publishes an impairment value for. Stated
+        // rather than left to the absent-key fallback, so this fixture has the
+        // same shape the WASM surface actually emits.
+        mos_grounded: true,
+        mos_grounding: "published",
         duration_secs: 8.53,
         associated_dialog: "12013223@10.0.2.20",
         orphaned: false,
@@ -837,10 +847,21 @@ function updateHealth() {
   }
   var failed = allDialogs.filter(function(d) { return (d.state || "") === "Failed"; }).length;
   pill(failed === 0 ? "✓ no failed calls" : "✕ " + failed + " failed", failed === 0 ? "health-good" : "health-bad");
-  var mosVals = allStreams.map(function(s) { return s.mos; }).filter(function(m) { return m != null; });
+  // Only GROUNDED scores can be the worst of anything. A placeholder is a
+  // number that means "unknown", and a summary pill reading "worst MOS 4.2"
+  // drawn from one describes nothing that was measured.
+  var grounded = allStreams.filter(function(s) { return s.mos_grounded !== false; });
+  var mosVals = grounded.map(function(s) { return s.mos; }).filter(function(m) { return m != null; });
+  var ungrounded = allStreams.length - grounded.length;
   if (mosVals.length) {
     var worst = Math.min.apply(null, mosVals);
     pill("worst MOS " + worst.toFixed(1), worst >= 3.5 ? "health-good" : (worst >= 3.0 ? "health-warn" : "health-bad"));
+  }
+  // Said out loud rather than left as a silently smaller sample. "worst MOS
+  // 4.4" over two streams reads very differently once you know sixty more
+  // could not be scored at all.
+  if (ungrounded > 0) {
+    pill(ungrounded + " unscoreable", "health-warn");
   }
 }
 
@@ -1809,7 +1830,20 @@ function setupTabs() {
 // RTP Stream list rendering
 // ---------------------------------------------------------------------------
 
-function getMosClass(mos) {
+// A quality band for a MOS, or none at all when the number is a placeholder.
+//
+// sipnab returns the same score for a grounded G.711 stream and for a codec
+// ITU-T G.113 publishes no impairment value for, where the number means
+// "unknown" rather than "about 4.2". Painting the second one green and
+// labelling it Good is the lie in its most convincing form, and this page is
+// the one a stranger lands on.
+//
+// `mos_grounded` arrives on every stream from the WASM surface. An older
+// payload without the key is treated as grounded, which is what it meant before
+// the key existed -- the alternative would grey out every row of a saved
+// capture opened in a newer build.
+function getMosClass(mos, grounded) {
+  if (grounded === false) return "mos-ungrounded";
   if (mos >= 4.0) return "mos-good";
   if (mos >= 3.0) return "mos-fair";
   return "mos-poor";
@@ -1873,7 +1907,7 @@ function renderStreamList() {
     appendCell(tr, String(s.packets), "");
     appendCell(tr, s.jitter_ms.toFixed(2) + "ms", "");
     appendCell(tr, s.loss_pct.toFixed(2) + "%", s.loss_pct > 5 ? "mos-poor" : s.loss_pct > 1 ? "mos-fair" : "");
-    appendCell(tr, s.mos.toFixed(2), getMosClass(s.mos));
+    appendCell(tr, s.mos.toFixed(2), getMosClass(s.mos, s.mos_grounded));
     appendCell(tr, s.duration_secs.toFixed(1) + "s", "");
 
     tr.addEventListener("click", (function(stream) {
@@ -1961,7 +1995,14 @@ function showStreamDetail(ssrc, src, dst) {
     { label: "Packets", value: detail.packets.toLocaleString() },
     { label: "Lost", value: detail.lost_packets.toLocaleString() + " (" + detail.loss_pct.toFixed(2) + "%)" },
     { label: "Jitter", value: detail.jitter_ms.toFixed(2) + " ms" },
-    { label: "MOS", value: detail.mos.toFixed(2), cls: getMosClass(detail.mos) },
+    {
+      label: "MOS",
+      // The detail view has room for the reason, so it says it rather than
+      // leaving a greyed number unexplained.
+      value: detail.mos.toFixed(2) +
+        (detail.mos_grounded === false ? " (no published Ie)" : ""),
+      cls: getMosClass(detail.mos, detail.mos_grounded)
+    },
     { label: "Duration", value: detail.duration_secs.toFixed(1) + "s" },
     { label: "Payload", value: formatBytes(detail.octet_count) },
     { label: "Dialog", value: detail.associated_dialog || "(orphaned)" }
@@ -2011,7 +2052,10 @@ function showStreamDetail(ssrc, src, dst) {
       appendCell(row, qi.jitter_ms.toFixed(2), "");
       appendCell(row, qi.loss_pct.toFixed(2), "");
       appendCell(row, String(qi.packets), "");
-      appendCell(row, qi.mos.toFixed(2), getMosClass(qi.mos));
+      // Per-interval scores inherit the stream's grounding: the codec does not
+      // change between intervals, so a placeholder is a placeholder in all of
+      // them.
+      appendCell(row, qi.mos.toFixed(2), getMosClass(qi.mos, detail.mos_grounded));
       tbody.appendChild(row);
     }
     tbl.appendChild(tbody);

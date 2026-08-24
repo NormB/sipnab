@@ -395,6 +395,14 @@ impl SipnabSession {
                     "loss_pct": (loss_pct * 100.0).round() / 100.0,
                     "lost_packets": s.lost_packets,
                     "mos": (mos * 100.0).round() / 100.0,
+                    // What that number is worth, in the vocabulary the enum
+                    // owns. sipnab returns the same score for a grounded G.711
+                    // stream and for a codec nobody publishes an impairment
+                    // value for, where the number means "unknown" -- and this
+                    // is the surface a stranger lands on.
+                    "mos_grounded": crate::rtp::quality::mos_is_grounded(s.codec.as_deref()),
+                    "mos_grounding": crate::rtp::quality::mos_grounding(s.codec.as_deref())
+                        .as_str(),
                     "round_trip_ms": rtt.map(|(ms, _)| (ms * 100.0).round() / 100.0),
                     "round_trip_source": rtt.map(|(_, src)| match src {
                         crate::rtp::rtcp::RttSource::XrVoipMetrics => "xr_voip_metrics",
@@ -496,6 +504,13 @@ impl SipnabSession {
             "loss_pct": (loss_pct * 100.0).round() / 100.0,
             "lost_packets": s.lost_packets,
             "mos": (mos * 100.0).round() / 100.0,
+            // Same three keys as the list above and as every other door. The
+            // note is carried too: this view has room for a sentence, and the
+            // sentence is what stops a reader treating a placeholder as a
+            // measurement.
+            "mos_grounded": crate::rtp::quality::mos_is_grounded(s.codec.as_deref()),
+            "mos_grounding": crate::rtp::quality::mos_grounding(s.codec.as_deref()).as_str(),
+            "mos_note": crate::rtp::quality::mos_grounding(s.codec.as_deref()).note(),
             "duration_secs": (duration_secs * 100.0).round() / 100.0,
             "associated_dialog": s.associated_dialog,
             "orphaned": s.orphaned(),
