@@ -2573,7 +2573,11 @@ fn no_documentation_table_repeats_a_row() {
     // the totals, and one table per surface (CLI flags, HTTP routes, MCP
     // tools). Attributed by measurement before the number moved: that file
     // holds exactly five and no other page gained one.
-    const EXPECTED_TABLES: usize = 622;
+    // 622 -> 623: one table, the audited-verdict summary in the generated
+    // `docs/design/testing-matrix.md`. It reports what a person found in the
+    // 80 flags the generator could only call "referenced" -- 62 of them do
+    // have a real behavior test, which a token search cannot see.
+    const EXPECTED_TABLES: usize = 623;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

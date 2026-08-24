@@ -199,6 +199,29 @@ def classify(token, files, short=""):
     return "none", []
 
 
+def audited():
+    """Human verdicts from `scripts/coverage-audit.tsv`, keyed by flag.
+
+    Kept in a data file rather than derived, because it is not derivable: the
+    difference between "a test names this flag" and "a test would fail if this
+    flag stopped working" is a judgement about what the test asserts. The
+    generator's own tiers understate for exactly that reason -- evidence that
+    arrives through a config-file equivalent, a golden file or a library-level
+    test is invisible to a token search.
+    """
+    path = ROOT / "scripts" / "coverage-audit.tsv"
+    out = {}
+    if not path.exists():
+        return out
+    for line in path.read_text().splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 3:
+            out[parts[0]] = (parts[1], parts[2])
+    return out
+
+
 def cli_flags():
     """(heading, short, long, takes_value) from the binary's own help."""
     if not BIN.exists():
@@ -269,14 +292,19 @@ def main():
     files = corpus()
     flags, routes, tools = cli_flags(), api_routes(), mcp_tools()
 
-    tally = {}
+    audit = audited()
+    tally, verdicts = {}, {}
     flag_rows = []
     for heading, short, long, val in flags:
         tier, where = classify(long, files, short)
         tally[tier] = tally.get(tier, 0) + 1
+        verdict, evidence = audit.get(long, ("", ""))
+        if verdict:
+            verdicts[verdict] = verdicts.get(verdict, 0) + 1
         flag_rows.append(
             [f"`{long}`", f"`{short}`" if short else "", f"`{val}`" if val else "",
-             heading, tier, cite(where)]
+             heading, tier, cite(where), f"**{verdict}**" if verdict else "",
+             evidence]
         )
 
     route_rows = []
@@ -290,6 +318,10 @@ def main():
         tool_rows.append([f"`{t}`", tier, cite(where)])
 
     untested = [r[0] for r in flag_rows if r[4] == "none"]
+    beh = verdicts.get("behavior", 0)
+    po = verdicts.get("parse-only", 0)
+    mo = verdicts.get("mention-only", 0)
+    ref_n = tally.get("referenced", 0)
     if untested:
         coverage_note = "**Flags with no occurrence at all:** " + ", ".join(untested)
     else:
@@ -342,9 +374,33 @@ put it there.
 
 {coverage_note}
 
+## What a person found that the detector could not
+
+The generator understates. Of the {ref_n} flags it could only call
+`referenced`, a read of the tests found {beh} with a real behavior test --
+evidence that arrives through a config-file equivalent sharing the flag's
+resolver, through a golden file, or through a library-level test, none of
+which a token search can see.
+
+| Audited verdict | Flags | What it means |
+|---|---|---|
+| `behavior` | {beh} | a test asserts an observable effect; it fails if the flag stops working |
+| `parse-only` | {po} | a test drives it through clap and asserts nothing downstream |
+| `mention-only` | {mo} | the token appears; nothing exercises it |
+
+The `parse-only` and `mention-only` rows are the finding. Several guard things
+that fail silently when inert: a credential, two command-execution hooks, three
+connection and row ceilings, an intrusion detector, and two safety switches
+whose whole purpose is to weaken the process on request. A flag that guards
+nothing and says nothing is indistinguishable from a quiet network.
+
+Read the `Audited` column per row for which is which. Rows with no audited
+verdict were not read by a person -- the `Detected` column is all that stands
+behind them.
+
 ## CLI flags
 
-{table(flag_rows, ["Flag", "Short", "Value", "Group", "Evidence", "Where"])}
+{table(flag_rows, ["Flag", "Short", "Value", "Group", "Detected", "Where", "Audited", "What a person found"])}
 
 ## HTTP routes
 
