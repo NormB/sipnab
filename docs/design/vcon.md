@@ -392,6 +392,62 @@ that never arrives at all —
 [`tests/vcon_ingest_contract_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/vcon_ingest_contract_test.rs)
 holds sipnab to it.
 
+## 4b. Media: a `recording` Dialog Object is not a recording
+
+sipnab exports audio today. `export_dialog_to_wav` decodes retained RTP into a
+WAV and stamps it with a provenance note that ends:
+
+> …bounded by where the capture point sat and by what retention kept, **and is
+> not a recording made by the endpoints**.
+
+That sentence decides where the media goes, and the decision is easy to get
+backwards because two vocabularies collide on one word.
+
+| Term | Means | Who emits it |
+|---|---|---|
+| `dialog.type: "recording"` | a Dialog Object carrying media — a FORMAT term | any producer with audio |
+| a consumer's `recordings` table | containers from an in-path recorder — a PROVENANCE term | a recorder, in the media path |
+
+**sipnab emits the first and must never be routed to the second.** A relay or an
+SBC that terminates media can say "I received this audio from the party". sipnab
+reconstructed it from a mirror port, and the reconstruction is bounded by where
+the tap sat, which codecs it could decode, and what the retention caps kept.
+
+The consumer probed in §4a enforces role by routing — the subject selects the
+chain, which selects the table, and a consumer holds `SELECT` on one view. So
+publishing sipnab's audio anywhere but the observer subject would put an
+observation where readers expect a recorder's output, and defeat the single
+guarantee that backend offers. **The media travels inside an observer container
+or not at all.**
+
+### What that permits, and what it costs
+
+Permitted, because §2.5 already allows it: a `recording` Dialog Object carrying
+the WAV **inline as base64url**, with a `content_hash` of `sha512-` plus the
+Base64url SHA-512 of the body. No `url`, because sipnab hosts nothing.
+
+Two costs travel with it.
+
+**The size ceiling stops being theoretical.** §4a.1 measured a store that
+answers `204` and drops the payload above roughly 10 MB. Base64 inflates by
+four thirds, so a 5 MB encoded budget is about 3.7 MB of audio — around four
+minutes of one-channel G.711 at 8 kHz. A thirty-minute call does not fit, and
+nothing downstream reports the loss. **sipnab refuses above the cap rather than
+emitting a container it has been told is accepted and knows is not.**
+
+**The completeness note has to travel with the audio.** It already exists as a
+string on the exported WAV, and §4's duplication rule already says where a
+caveat goes. What media adds is the case §3 calls the dangerous one: a container
+with an empty `dialog[]` reads as *a conversation with no media*, which is a
+claim about the call rather than about the capture.
+
+`recording-set` is the one in-spec answer, and only for one of the cases.
+§4.3.3 lets a `recording-set` Dialog Object carry the CALL's `start` and
+`duration` while the `recording` object beneath it carries the FILE's. That is
+how "the ring wrapped and the file is shorter than the call" gets said in the
+format's own vocabulary. Nothing obliges a consumer to compare the two, which is
+§3 again — so the note is duplicated as well, not instead.
+
 ## 5. Declined outright
 
 Recorded as declined with reasons rather than filed as future work, so that
