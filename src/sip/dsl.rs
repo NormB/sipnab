@@ -156,9 +156,16 @@ enum Field {
     /// and this answers WHY: 403, 404, 408, 486, 503 and 603 are all
     /// `'Failed'`, and they have different owners.
     ResponseCode,
-    /// `pdd` — post-dial delay in seconds (0 when unknown).
+    /// `pdd` — post-dial delay in seconds.
+    ///
+    /// An unknown value matches NO comparison, including `!=`. It is not 0:
+    /// substituting 0 for "never measured" is what made `rtp.mos < 3.0` select
+    /// every dialog carrying no RTP at all. See [`compare_opt_num`].
     Pdd,
-    /// `setup_time` — call setup time in seconds (0 when unknown).
+    /// `setup_time` — call setup time in seconds.
+    ///
+    /// Unknown behaves as it does for [`Field::Pdd`]: it matches nothing
+    /// rather than reading as 0.
     SetupTime,
     /// `retransmits` — total retransmission count across transactions.
     Retransmits,
@@ -1823,6 +1830,34 @@ mod tests {
             assert!(
                 !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
                 "`{expr}` must not match a dialog with no RTP"
+            );
+        }
+    }
+
+    /// An unmeasured `pdd` / `setup_time` matches nothing, and is not 0.
+    ///
+    /// The enum's own rustdoc said "(0 when unknown)" for both while
+    /// `compare_opt_num` implemented the opposite -- the doc repeated the very
+    /// substitution that made `rtp.mos < 3.0` select 2292 of 2311 dialogs on a
+    /// real trunk capture. Nothing failed when the two disagreed, because
+    /// nothing asked these two fields the question.
+    #[test]
+    fn an_unknown_pdd_or_setup_time_matches_no_comparison() {
+        let dialog = make_dialog("1001", "2002", "REGISTER");
+        for expr in [
+            "pdd < 1",
+            "pdd > 1",
+            "pdd != 1",
+            "setup_time < 1",
+            "setup_time > 1",
+            "setup_time != 1",
+        ] {
+            let filter = FilterExpr::parse(expr).expect("should parse");
+            assert!(
+                !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
+                "`{expr}` must not match a dialog whose timing was never \
+                 measured -- reading the unknown as 0 puts it below every \
+                 threshold an operator would type"
             );
         }
     }

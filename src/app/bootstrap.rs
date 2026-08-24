@@ -928,6 +928,16 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         });
     }
 
+    // The same rule one flag further in: a scanner PATTERN whose detector
+    // nothing builds. Refused here rather than in `Cli::validate` because the
+    // config file can arm the detector and `validate` does not read it.
+    if let Some(msg) = scanner_pattern_unread_refusal(cli, config) {
+        return Err(PlanError {
+            exit_code: 2,
+            message: msg,
+        });
+    }
+
     // Immediate mode picks the kernel ring format, so it can only be answered
     // once the consumer is known — which is here, and not in
     // `build_capture_config`, which runs before the mode is decided.
@@ -2849,6 +2859,53 @@ fn metrics_ignored_on_cores_warning(cli: &Cli) -> Option<String> {
     ))
 }
 
+/// Refuse a scanner pattern no detector will read.
+///
+/// `--kill-ua` adds a User-Agent pattern to the scanner detector, and
+/// `batch::run` builds that detector only when scanner detection is armed.
+/// Given on its own the pattern is read by nothing, the run reports no
+/// scanners, and that is indistinguishable from a network with none on it --
+/// the same silence `security_detection_unarmed_refusal` refuses along the
+/// mode axis, one flag further in.
+///
+/// **Why this is a refusal and not an implicit arming.** Turning the detector
+/// on would be the obvious fix and it is the wrong one twice over. Arming
+/// scanner detection also arms `kill_worker_active`, which TRANSMITS SIP
+/// responses on a live run -- so a flag whose help says "detect" would start
+/// sending packets at third parties. And the detector it would build is the
+/// same one whose behavioral arm this file already refuses to auto-arm from
+/// `--fail2ban`, because that was measured producing 7008 detections naming
+/// 180 peers on a real carrier trunk.
+///
+/// **Why not clap's `requires`.** `[security] kill_scanner = true` arms the
+/// same detector, and clap sees only the command line. `requires` would refuse
+/// a run that works.
+///
+/// # Arguments
+///
+/// * `cli` — parsed flags.
+/// * `config` — the loaded configuration, which can arm the detector too.
+///
+/// # Returns
+///
+/// The operator-facing message, or `None` when the pattern reaches a detector.
+fn scanner_pattern_unread_refusal(cli: &Cli, config: &Config) -> Option<String> {
+    let pattern = cli.security_args.kill_ua.as_deref()?;
+    let armed = cli.security_args.kill_scanner || config.security.kill_scanner.unwrap_or(false);
+    if armed {
+        return None;
+    }
+    Some(format!(
+        "--kill-ua {pattern} names a User-Agent for the scanner detector, and \
+         nothing in this run builds that detector — so the pattern is read by \
+         nobody and the run would report no scanners whether or not one is \
+         there. Add --kill-scanner (or set [security] kill_scanner = true) to \
+         arm the detection this pattern feeds. On a live capture \
+         --kill-scanner also arms the response path, which is why sipnab will \
+         not turn it on for you."
+    ))
+}
+
 /// Detection flags on a run whose mode builds no detector.
 ///
 /// The scanner, fraud, digest-leak and REGISTER-flood detectors are
@@ -3641,6 +3698,65 @@ mod tests {
         assert!(
             metrics_ignored_on_cores_warning(&live).is_none(),
             "a live run falls back to one core and starts the metrics server"
+        );
+    }
+
+    // ── a scanner pattern nothing reads ────────────────────────────────
+
+    /// The defect: `--kill-ua` alone detects NOTHING and says nothing.
+    ///
+    /// `batch::run` builds the scanner detector inside `if kill_scanner_active`
+    /// and only then reads `--kill-ua` into it, so the pattern is consumed by
+    /// a detector that was never constructed. The flag's own help promised
+    /// "Detect specific User-Agent strings associated with scanners" with no
+    /// condition attached, and clap declares no `requires`.
+    ///
+    /// Measured on the shipped binary before the fix:
+    /// `--kill-ua sipnab-test` over a capture containing
+    /// `User-Agent: sipnab-test/1.0` produced zero alerts, and adding
+    /// `--kill-scanner` produced `detection=ua_pattern` on the same capture.
+    /// The symptom is silence, which is exactly what a clean network looks
+    /// like -- the failure mode this file already refuses one axis of.
+    #[test]
+    fn a_scanner_pattern_no_detector_will_read_is_refused() {
+        let mut cli = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
+        cli.security_args.kill_ua = Some("friendly-scanner".to_owned());
+
+        let msg = scanner_pattern_unread_refusal(&cli, &Config::default())
+            .expect("a pattern no detector reads must be reported, not ignored");
+
+        assert!(
+            msg.contains("--kill-ua") && msg.contains("--kill-scanner"),
+            "the message must name what the operator typed AND the remedy, \
+             since the remedy is a different flag:\n{msg}"
+        );
+    }
+
+    /// Armed from the command line: nothing to report.
+    #[test]
+    fn a_scanner_pattern_is_fine_once_the_detector_is_armed() {
+        let mut cli = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "--kill-scanner"]);
+        cli.security_args.kill_ua = Some("friendly-scanner".to_owned());
+
+        assert!(
+            scanner_pattern_unread_refusal(&cli, &Config::default()).is_none(),
+            "the detector is armed, so the pattern reaches it"
+        );
+    }
+
+    /// Armed from the CONFIG FILE. This is why the fix is not clap's
+    /// `requires`: clap sees command-line arguments and cannot see
+    /// `[security] kill_scanner = true`, so it would refuse a run that works.
+    #[test]
+    fn a_scanner_pattern_is_fine_when_the_config_file_arms_the_detector() {
+        let mut cli = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
+        cli.security_args.kill_ua = Some("friendly-scanner".to_owned());
+        let mut config = Config::default();
+        config.security.kill_scanner = Some(true);
+
+        assert!(
+            scanner_pattern_unread_refusal(&cli, &config).is_none(),
+            "`[security] kill_scanner = true` arms the same detector"
         );
     }
 

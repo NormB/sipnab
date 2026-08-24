@@ -140,7 +140,7 @@ put it there.
 | `--max-lost-sequences` |  | `N` | RTP | referenced | `src/cli.rs` |
 | `--quality-threshold` |  | `MOS` | RTP | referenced | `tests/cli_options_test.rs` |
 | `--kill-scanner` |  |  | Security | e2e | `tests/cli_test.rs`, `tests/offline_never_transmits_test.rs` |
-| `--kill-ua` |  | `PATTERN` | Security | referenced | `src/app/batch.rs`, `src/security/scanner_detect.rs` +1 |
+| `--kill-ua` |  | `PATTERN` | Security | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` +2 |
 | `--kill-response` |  | `CODE` | Security | e2e | `tests/config_wiring_test.rs` |
 | `--kill-target` | `-K` |  | Security | e2e | `tests/offline_never_transmits_test.rs` |
 | `--kill-spoof` |  | `MODE` | Security | e2e | `tests/offline_never_transmits_test.rs` |

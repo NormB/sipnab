@@ -1227,7 +1227,17 @@ pub struct SecurityArgs {
     #[arg(help_heading = "Security", long)]
     pub kill_scanner: bool,
 
-    /// Detect specific User-Agent strings associated with scanners.
+    /// Add a User-Agent pattern to the scanner detector.
+    ///
+    /// A PATTERN, not a switch: it tells the scanner detector one more thing
+    /// to recognize. `--kill-scanner` (or `[security] kill_scanner = true`)
+    /// is what BUILDS that detector, and sipnab refuses a run that gives this
+    /// pattern without it rather than reading nothing and reporting no
+    /// scanners -- which is what a clean network looks like too.
+    ///
+    /// sipnab does not arm the detector for you. On a live capture
+    /// `--kill-scanner` also arms the response path, and a flag that says
+    /// "detect" must not start sending packets at third parties.
     #[arg(help_heading = "Security", long, value_name = "PATTERN")]
     pub kill_ua: Option<String>,
 

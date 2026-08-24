@@ -51,6 +51,29 @@ entry that carries them.
 
 ### Fixed
 
+- **`--kill-ua` detected nothing on its own, and said nothing about it.** The
+  flag promised "Detect specific User-Agent strings associated with scanners"
+  with no condition attached, and `batch::run` reads the pattern INSIDE
+  `if kill_scanner_active` -- so given alone it fed a detector nobody built.
+  Measured on the shipped binary: `--kill-ua sipnab-test` over a capture
+  carrying `User-Agent: sipnab-test/1.0` produced zero alerts, and adding
+  `--kill-scanner` produced `detection=ua_pattern` on the same capture. The
+  symptom was silence, which is what a network with no scanners on it looks
+  like.
+
+  sipnab now refuses the combination and names the remedy. It does NOT arm the
+  detector for the operator: arming scanner detection also arms the path that
+  TRANSMITS SIP responses on a live run, so a flag whose help says "detect"
+  would have started sending packets at third parties. The refusal lives in
+  `bootstrap`, not in clap's `requires`, because `[security] kill_scanner =
+  true` arms the same detector and clap sees only the command line -- a
+  `requires` would refuse a run that works. A test pins that case.
+
+  The test that should have caught this ran `--kill-ua` alone and asserted all
+  seven messages survived, which passes whether or not the flag does anything.
+  It is now two tests: one that the refusal names `--kill-scanner`, one that
+  the pattern reaches the detector and matches.
+
 - **sipnab counted the relay commands it could not attribute and never said
   so.** `note_media_creating_command` has tallied `subscribe`, `publish` and
   `start recording` since the `ng` decoder landed, and the counter's own doc

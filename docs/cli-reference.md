@@ -767,7 +767,7 @@ report a healthy network in the middle of an outage.
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--kill-scanner` | -- | off | Detect SIP scanning (known UA signatures + behavioral rate/enumeration), alert on it, and send the kill response back to the scanner (sipgrep `-J`/`-j`) |
-| `--kill-ua` | `<PATTERN>` | -- | Add a custom scanner User-Agent pattern (regex) to `--kill-scanner` detection |
+| `--kill-ua` | `<PATTERN>` | -- | Add a custom scanner User-Agent pattern (regex) to `--kill-scanner` detection. **Refused without it**: `--kill-scanner` (or `[security] kill_scanner = true`) builds the detector that reads this pattern, so given alone it would feed nothing and the run would report no scanners — which is what a clean capture looks like. sipnab does not arm the detector for you, because on a live capture `--kill-scanner` also arms the response path |
 | `--kill-response` | `<CODE>` | `200` | SIP response code for the kill response (100-699) |
 | `-K`, `--kill-target` | `<ADDR[:PORT-RANGE]>` | -- | Targeted kill (sipgrep `-K`): send the kill response to any SIP request whose source matches ADDR and an optional port range (`192.0.2.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection. Repeatable; spawns the kill worker on its own (no `--kill-scanner` needed) |
 | `--kill-spoof` | `<MODE>` | `auto` | Source-address strategy for the kill response (Linux only; other platforms always `ephemeral`). `auto` forges the victim's ip:port via a raw socket when `CAP_NET_RAW` is available (so the reply appears to come from the targeted SIP port), falling back to an ephemeral source otherwise; `raw` requires the spoof and errors when it cannot open the raw socket; `ephemeral` never spoofs |

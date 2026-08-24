@@ -806,12 +806,35 @@ fn kill_scanner_flag() {
     assert_eq!(json_line_count(&stdout), 7);
 }
 
-/// `--kill-ua` with a non-matching UA leaves all 7 messages.
+/// `--kill-ua` alone is REFUSED, and the message names the flag that reads it.
+///
+/// This test replaced one that ran `--kill-ua friendly-scanner` by itself and
+/// asserted all 7 messages survived. That passed whether or not the flag did
+/// anything -- and the flag did nothing: the pattern is read inside
+/// `if kill_scanner_active`, so alone it fed a detector nobody built and the
+/// run reported no scanners, which is what a clean capture looks like.
 #[test]
-fn kill_ua_flag() {
-    let (stdout, _, code) = run_json(&["--kill-ua", "friendly-scanner"]);
+fn kill_ua_alone_is_refused_and_names_what_reads_it() {
+    let (_stdout, stderr, code) = run_json(&["--kill-ua", "sipnab-test"]);
+    assert_eq!(code, 2, "a pattern no detector reads must not run silently");
+    assert!(
+        stderr.contains("--kill-scanner"),
+        "the remedy is a DIFFERENT flag, so the message has to name it:\n{stderr}"
+    );
+}
+
+/// With the detector armed, the pattern reaches it and the scanner is named.
+///
+/// The fixture's `User-Agent: sipnab-test/1.0` matches, so an inert
+/// `--kill-ua` fails this test rather than passing it quietly.
+#[test]
+fn kill_ua_pattern_reaches_the_detector_that_reads_it() {
+    let (_stdout, stderr, code) = run_json(&["--kill-scanner", "--kill-ua", "sipnab-test"]);
     assert_eq!(code, 0);
-    assert_eq!(json_line_count(&stdout), 7);
+    assert!(
+        stderr.contains("detection=ua_pattern"),
+        "the pattern must reach the detector and name the match:\n{stderr}"
+    );
 }
 
 /// `--kill-scanner --kill-response 403` leaves all 7 messages.
