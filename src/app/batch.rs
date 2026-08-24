@@ -290,6 +290,14 @@ pub struct BatchProcessing {
     /// makes not the first file read, and which for `-I /pcaps` is a directory
     /// (#48).
     pub input_files: Vec<PathBuf>,
+    /// What the relay said it was holding when sipnab started (RE4); empty
+    /// unless `--rtpengine-control` was given on a live run.
+    ///
+    /// Carried from `Launched` for the same reason `keylog_source` is: it was
+    /// obtained before the capture opened, and it cannot be obtained again
+    /// here -- asking a second time would be the periodic behavior RE4 exists
+    /// not to have.
+    pub relay: crate::app::bootstrap::RelayControl,
     /// Streaming keylog source opened in the privileged window — a FIFO named
     /// by `--keylog`, or the descriptor given to `--keylog-fd`.
     ///
@@ -1839,6 +1847,40 @@ fn join_capped(items: &[&str], max: usize) -> String {
     )
 }
 
+/// Build this mode's stream store, with everything a live run owes it.
+///
+/// Extracted from `run` so the wiring inside it can be TESTED. `run` takes a
+/// live capture handle and never returns until the capture ends, so anything
+/// left inline here is pinned only by the fact that it compiles -- and "the
+/// snapshot reaches the store" is exactly the kind of claim that compiles
+/// perfectly while being false, because the store would simply be empty.
+fn build_live_stream_store(
+    cli: &Cli,
+    config: &Config,
+    relay_snapshot: &crate::rtpengine::reconcile::RelaySnapshot,
+) -> StreamStore {
+    let mut ss = StreamStore::new(cli.max_streams_limit(config));
+    if let Some(max_frames) = config.limits.max_audio_frames {
+        ss.set_max_audio_frames(max_frames as usize);
+    }
+    // RE4: what the relay said it was holding when sipnab started, so a call
+    // already in progress is named by its first packet rather than arriving as
+    // an orphan.
+    crate::pipeline::apply_relay_snapshot(&mut ss, relay_snapshot);
+    if apply_audio_retention(&mut ss, cli) {
+        // Retention changes this run's memory profile, so state the bound
+        // rather than letting an operator discover it under load.
+        let frames = config.limits.max_audio_frames.unwrap_or(1500);
+        let streams = cli.max_streams_limit(config);
+        tracing::info!(
+            "RTP payload retention is on so the MCP export_audio tool can decode it: \
+             up to {frames} frame(s) per stream across at most {streams} stream(s). \
+             Lower [limits] max_audio_frames or --max-streams to bound it further."
+        );
+    }
+    ss
+}
+
 /// Print the ICMP evidence summary for a finished run.
 ///
 /// Called from all three batch summary sites rather than written inline,
@@ -2049,6 +2091,15 @@ pub struct BatchRunner {
     dialog_store: Arc<RwLock<DialogStore>>,
     /// RTP stream store; shared with the companion servers via the lock.
     stream_store: Arc<RwLock<StreamStore>>,
+    /// Where a stream nothing explains is offered to the reconciler (RE4).
+    ///
+    /// `None` unless `--rtpengine-control` gave this run a relay to ask, in
+    /// which case the store is also recording those sockets. The two are set
+    /// up together or not at all: recording with nothing to drain the buffer
+    /// would fill it for no one.
+    relay_orphans: Option<crate::rtpengine::reconcile::OrphanSink>,
+    /// The reconciler thread, joined after the loop so its summary prints.
+    relay_thread: Option<std::thread::JoinHandle<()>>,
     /// Heuristic RTP detector for streams with no SDP linkage.
     rtp_heuristic: rtp::heuristic::RtpHeuristic,
     /// Skip all RTP processing (`--no-rtp` or config equivalent).
@@ -2117,7 +2168,7 @@ impl BatchRunner {
     fn new(
         cli: Cli,
         config: &Config,
-        batch: BatchProcessing,
+        mut batch: BatchProcessing,
         policy: CapturePolicy,
         raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
         transmit_permit: Option<crate::security::transmit_guard::TransmitPermit>,
@@ -2206,24 +2257,38 @@ impl BatchRunner {
             .with_leg_correlation_window_ms(cli.leg_correlation_window_ms(config)),
         ));
         let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
-        let stream_store: Arc<RwLock<StreamStore>> = {
-            let mut ss = StreamStore::new(cli.max_streams_limit(config));
-            if let Some(max_frames) = config.limits.max_audio_frames {
-                ss.set_max_audio_frames(max_frames as usize);
+        let stream_store: Arc<RwLock<StreamStore>> = Arc::new(RwLock::new(
+            build_live_stream_store(&cli, config, &batch.relay.snapshot),
+        ));
+
+        // RE4's second trigger, set up exactly as the TUI mode sets it up: the
+        // store records the sockets of streams nothing explains only when
+        // there is a reconciler to offer them to, and the reconciler asks on
+        // its own thread so this loop never waits on a relay.
+        let (relay_orphans, relay_thread) = match batch.relay.ready.take() {
+            Some(ready) => {
+                let (sink, orphan_rx) = crate::rtpengine::reconcile::orphan_channel();
+                stream_store.write().record_new_orphans(true);
+                match crate::app::relay_reconciler::spawn(
+                    ready.reconciler,
+                    ready.permit,
+                    orphan_rx,
+                    Arc::clone(&stream_store),
+                ) {
+                    Ok(join) => (Some(sink), Some(join)),
+                    Err(e) => {
+                        tracing::warn!(
+                            "could not start the rtpengine reconciler ({e}); streams the \
+                             signaling does not explain will stay unattributed"
+                        );
+                        stream_store.write().record_new_orphans(false);
+                        (None, None)
+                    }
+                }
             }
-            if apply_audio_retention(&mut ss, &cli) {
-                // Retention changes this run's memory profile, so state the
-                // bound rather than letting an operator discover it under load.
-                let frames = config.limits.max_audio_frames.unwrap_or(1500);
-                let streams = cli.max_streams_limit(config);
-                tracing::info!(
-                    "RTP payload retention is on so the MCP export_audio tool can decode it: \
-                     up to {frames} frame(s) per stream across at most {streams} stream(s). \
-                     Lower [limits] max_audio_frames or --max-streams to bound it further."
-                );
-            }
-            Arc::new(RwLock::new(ss))
+            None => (None, None),
         };
+
         let rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
         // 17a. Initialize security detectors
@@ -2647,6 +2712,8 @@ impl BatchRunner {
             dtls_extractor,
             servers,
             policy,
+            relay_orphans,
+            relay_thread,
         })
     }
 
@@ -2711,7 +2778,11 @@ impl BatchRunner {
             mut dtls_extractor,
             servers,
             policy,
+            relay_orphans,
+            relay_thread,
         } = self;
+        // Reused across packets so the hand-off costs no allocation per packet.
+        let mut new_orphans: Vec<(std::net::IpAddr, u16)> = Vec::new();
 
         // Set when writing the -O output fails. The open path a few hundred
         // lines below exits 1; the write and final-flush paths only logged,
@@ -3050,6 +3121,23 @@ impl BatchRunner {
                             &mut counters,
                             &mut effects,
                         );
+                        // RE4's second trigger, drained under the guard this
+                        // scope already holds. Offering happens BELOW, with
+                        // the guards gone: the reconciler takes this same lock
+                        // to apply what it learns, and nothing that waits on
+                        // another thread belongs in here.
+                        if relay_orphans.is_some() {
+                            new_orphans = ss_guard.drain_new_orphan_sockets();
+                        }
+                    }
+
+                    // Hand off anything the packet just created that nothing
+                    // explains. `offer` never blocks -- a full queue drops and
+                    // counts rather than stalling the capture on a relay.
+                    if let Some(ref sink) = relay_orphans {
+                        for (address, port) in new_orphans.drain(..) {
+                            sink.offer(address, port);
+                        }
                     }
 
                     // Both store guards have dropped. Replay what the packet
@@ -3199,6 +3287,19 @@ impl BatchRunner {
         // 19. Shut down scanner-kill worker (D16)
         if let Some(ref mut kill_handle) = engines.kill_handle {
             kill_handle.shutdown();
+        }
+
+        // 19a. Stop the rtpengine reconciler (RE4). Dropping the sink closes
+        //      the hand-off queue, which is what ends its loop -- there is no
+        //      flag to set and no timeout to wait out. Joining lets its
+        //      summary line print, and it happens HERE rather than at the end
+        //      of the function because the reporting below can exit the
+        //      process outright.
+        drop(relay_orphans);
+        if let Some(join) = relay_thread
+            && join.join().is_err()
+        {
+            tracing::warn!("the rtpengine reconciler thread panicked");
         }
 
         // 20. Wait for the capture thread to finish
@@ -5416,6 +5517,56 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.mode_args.no_tui = true;
         cli
+    }
+
+    /// The relay's startup snapshot must reach the store THIS mode builds.
+    ///
+    /// The headless and TUI modes build their stream stores in two different
+    /// files. Wiring one and not the other would name a mid-call in the TUI
+    /// and leave the identical call an orphan under `-N`, which is the harder
+    /// bug to see: nothing errors, the run just attributes less.
+    #[test]
+    fn the_relay_snapshot_reaches_the_store_this_mode_builds() {
+        use crate::rtp::stream_store::EndpointAssertion;
+        use crate::rtpengine::reconcile::{RelayLink, RelaySnapshot};
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let relay = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let snapshot = RelaySnapshot {
+            links: vec![RelayLink {
+                address: relay,
+                port: 30000,
+                call_id: "already-in-progress".to_owned(),
+            }],
+            taken_at: Some(chrono::Utc::now()),
+        };
+
+        let ss = build_live_stream_store(&base_cli(), &Config::default(), &snapshot);
+
+        let provenance = ss
+            .sdp_endpoint_provenance(relay, 30000)
+            .expect("the snapshot must be registered on this mode's store");
+        assert_eq!(
+            provenance.asserted_by,
+            EndpointAssertion::MediaRelay,
+            "the relay asserted this allocation; no party's SDP did"
+        );
+    }
+
+    /// A run that never asked registers nothing, rather than registering an
+    /// endpoint stamped with a moment nothing happened at.
+    #[test]
+    fn a_run_that_never_asked_registers_no_relay_endpoint() {
+        use crate::rtpengine::reconcile::RelaySnapshot;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let ss =
+            build_live_stream_store(&base_cli(), &Config::default(), &RelaySnapshot::default());
+
+        assert_eq!(
+            ss.sdp_endpoint_provenance(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            None
+        );
     }
 
     /// The companion-server wait loop exits only once a stdio MCP client has

@@ -76,7 +76,7 @@ together and one of them evaporates.
 
 ### 2.2 What `launch` does with the answer
 
-`launch` ([`src/app/bootstrap.rs:1024`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1024)) takes the same singular `Option`. Four
+`launch` ([`src/app/bootstrap.rs:1127`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1127)) takes the same singular `Option`. Four
 decisions downstream read the source as a scalar:
 
 - **Auto-detection.** [`src/app/bootstrap.rs:880`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L880) substitutes a default interface
@@ -150,13 +150,13 @@ by SDP media endpoint, and the key is a bare `(IpAddr, u16)`.
 through `effective_address` ([`src/sip/sdp.rs:289`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L289)) — media-level `c=` when
 present, session-level otherwise — and yields `(ip, port, call_id, media)`
 tuples. [`src/pipeline.rs:2165`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2165) feeds each one to `link_to_dialog_with_sdp`
-([`src/rtp/stream_store.rs:1046`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L967)), which lands in `link_endpoint_with_ptime`
-([`src/rtp/stream_store.rs:1151`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1061)). That function does two things:
+([`src/rtp/stream_store.rs:1105`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1105)), which lands in `link_endpoint_with_ptime`
+([`src/rtp/stream_store.rs:1210`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1210)). That function does two things:
 
-1. `remember_sdp_endpoint` ([`src/rtp/stream_store.rs:1259`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1168)) records
+1. `remember_sdp_endpoint` ([`src/rtp/stream_store.rs:1318`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1318)) records
    `(addr, port) -> SdpEndpoint { call_id, rtpmap, ptime }`, so a stream created
    *later* resolves at creation through `resolve_from_sdp`
-   ([`src/rtp/stream_store.rs:1320`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1229)), called from [`src/rtp/stream_store.rs:507`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L507).
+   ([`src/rtp/stream_store.rs:1379`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1379)), called from [`src/rtp/stream_store.rs:507`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L507).
 2. It sweeps the endpoint index for streams that already exist and fills an
    unset `associated_dialog`.
 
@@ -186,7 +186,7 @@ Call-ID deserves the explicit zero. It is the obvious answer and it is not an
 answer: an RTP packet has no Call-ID field, so the identifier that makes the
 signaling side tractable does not exist on the media side. This is the same
 observation `attribute_media_quote` opens with
-([`src/rtp/stream_store.rs:1417`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1325)): *"An ICMP error about media carries no
+([`src/rtp/stream_store.rs:1508`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1508)): *"An ICMP error about media carries no
 Call-ID — a media datagram has none to carry."*
 
 Timing deserves a firmer no. "The stream started 40 ms after the 200 OK, so it
@@ -210,7 +210,7 @@ OpenSIPS engages rtpengine or any media relay, the SDP that OpenSIPS *received*
 describes the endpoints as the far side offered them, while media on the NIC
 flows to the relay's rewritten address. If HEP carried only the received message,
 the map entry and the observed socket would never meet and every stream would
-come out orphaned (`RtpStream::orphaned`, [`src/rtp/stream.rs:478`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L442)).
+come out orphaned (`RtpStream::orphaned`, [`src/rtp/stream.rs:478`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L478)).
 
 §8 said to answer that before writing code. It was answered — see
 [§8.1](#81-the-measurement-f1) for the run — and the answer is that OpenSIPS's
@@ -283,9 +283,9 @@ handles SDP-then-RTP and the endpoint sweep in `link_endpoint_with_ptime` handle
 RTP-then-SDP, which is exactly the SNB-0007 ordering fix — so the association is
 order-independent. What is *not* order-independent is the clock rate: a stream
 created before its `a=rtpmap` accumulates jitter against a placeholder, and
-`link_endpoint_with_ptime` ([`src/rtp/stream_store.rs:1151`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1061))
+`link_endpoint_with_ptime` ([`src/rtp/stream_store.rs:1210`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1210))
 restarts the estimator and records where, so `measured_jitter_ms`
-([`src/rtp/stream_store.rs:973`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L894)) withholds the figure until it
+([`src/rtp/stream_store.rs:1032`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1032)) withholds the figure until it
 reconverges. That machinery exists and covers this. Worth a test, not a design change.
 
 **F6 — Duplicate observation.** If the NIC also sees the signaling that HEP is
@@ -429,7 +429,7 @@ means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
 ([`src/app/bootstrap.rs:687`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L687)), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:2659`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2659)) already names both reasons a
+`cores_ignored_warning` ([`src/app/bootstrap.rs:2791`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2791)) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
@@ -493,7 +493,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
 message ([`src/app/bootstrap.rs:629-655`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L629-L655)), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:2659`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2659)), `-I` beating `-d` warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:2791`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2791)), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:315`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L315)). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a
@@ -773,7 +773,7 @@ the one the design expected to have to write. Run 3 is F1 reproduced on demand.
    capture-local one. Under scope `"t"` either rule works; under `"m"` the single
    advertised endpoint is the stream's *remote* peer, so a local-only rule binds
    zero streams where a both-ends rule binds one. sipnab already does the right
-   thing — `resolve_from_sdp` ([`src/rtp/stream_store.rs:1320`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1229)) tries `key.src`
+   thing — `resolve_from_sdp` ([`src/rtp/stream_store.rs:1379`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1379)) tries `key.src`
    and `key.dst` — so this is a property to keep rather than one to add.
 3. The ACK is never mirrored: it is end-to-end and outside the INVITE server
    transaction. No SDP rode on it here, but a delayed-offer call puts the ANSWER

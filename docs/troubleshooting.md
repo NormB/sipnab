@@ -744,6 +744,6 @@ cooked v1 and cooked v2 alike.
 
 ## Still stuck?
 
-Build custom queries with the [Filter DSL](filter-dsl.md) -- 30 fields, regex support, boolean logic. See the [CLI Reference](cli-reference.md) for every flag and more recipes.
+Build custom queries with the [Filter DSL](filter-dsl.md) -- 33 fields, regex support, boolean logic. See the [CLI Reference](cli-reference.md) for every flag and more recipes.
 
 If the capture itself is the problem -- drops on a busy link, a full kernel ring buffer, or loss that appears on every call at once -- see [Tuning capture on a busy server](tuning-capture.md).

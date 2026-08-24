@@ -667,7 +667,7 @@ impl CaptureAnalysis {
 /// produce lists that can be compared line by line, and a count that moved is
 /// visible instead of being hidden by a reshuffle.
 pub fn rank(findings: &mut [Finding]) {
-    findings.sort_by(|a, b| {
+    crate::sort::sort_by_dyn(findings, &mut |a, b| {
         a.severity
             .cmp(&b.severity)
             .then(b.occurrences.cmp(&a.occurrences))

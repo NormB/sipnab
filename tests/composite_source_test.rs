@@ -367,6 +367,8 @@ impl Mixed {
                 &mut self.heuristic,
                 &self.opts,
                 &mut MediaDecrypt::default(),
+                // Offline test: no relay to ask.
+                None,
             );
         }
     }

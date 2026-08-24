@@ -394,7 +394,7 @@ clock, not that the clock is accurate to within the window you are matching in.
 
 #### Compare the two answers to the same question
 
-Both transcripts below are real output from sipnab 0.5.95, from the script in
+Both transcripts below are real output from sipnab 0.5.97, from the script in
 [Drive it from a script](mcp-deploy.md#drive-it-from-a-script), against sipnab servers reading
 [`tests/pcap-samples/`](https://github.com/NormB/sipnab/tree/main/tests/pcap-samples). Same command shape, opposite evidence.
 
@@ -450,8 +450,9 @@ options. sipnab watches a wire and cannot add one, because the SBC forwards its
 own message to the far side regardless of what sipnab saw.
 
 Attribution needs one more step than you might expect. **Not every response
-carries `capture_identity`** — the whole-store answers do, the per-dialog ones do
-not. Measured against 0.5.98:
+carries `capture_identity`.** Read the table rather than a rule of thumb:
+"whole-store answers carry it, per-dialog ones do not" is close but wrong,
+because `media_diagnostics` is per-dialog and carries it:
 
 | Carries `capture_identity.node` | Does not |
 |---|---|
@@ -518,7 +519,7 @@ broken one — so the finding states what arrived on the wire and declines to
 assert which. A computed cross-node id would be the opposite move: asserting an
 identity the wire never established.
 
-> **For IMS and carrier readers: sipnab now reads `P-Charging-Vector`, in two
+> **For IMS and carrier readers: sipnab reads `P-Charging-Vector` in two
 > strategies, and the difference between them decides whether it helps you.**
 > [RFC 7315 §4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) says the ICID identifies *a dialog*, and a B2BUA is two
 > dialogs — so a conformant B2BUA emits a **different** `icid-value` on each

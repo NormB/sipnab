@@ -91,6 +91,64 @@ impl<'a> Value<'a> {
     }
 }
 
+/// Serialize a value back to bencode.
+///
+/// The inverse of [`decode`], and new here because everything before RE4 only
+/// ever READ this protocol. Sending one requires composing a request, and a
+/// request rtpengine rejects is indistinguishable from a relay that is not
+/// listening -- both look like silence -- so the encoder is worth its own
+/// tests rather than being trusted because it is short.
+///
+/// Dictionary keys are written in the order given. bencode requires them
+/// SORTED, and rtpengine accepts arrival order in practice, but a canonical
+/// encoding is what makes two encodings of one request byte-identical -- which
+/// is what lets a caller compare, cache or log them meaningfully. Callers pass
+/// keys already sorted; [`encode_dict`] sorts for them.
+pub fn encode(value: &Value<'_>, out: &mut Vec<u8>) {
+    match value {
+        Value::Int(n) => {
+            out.push(b'i');
+            out.extend_from_slice(n.to_string().as_bytes());
+            out.push(b'e');
+        }
+        Value::Bytes(b) => {
+            out.extend_from_slice(b.len().to_string().as_bytes());
+            out.push(b':');
+            out.extend_from_slice(b);
+        }
+        Value::List(items) => {
+            out.push(b'l');
+            for v in items {
+                encode(v, out);
+            }
+            out.push(b'e');
+        }
+        Value::Dict(entries) => {
+            out.push(b'd');
+            for (k, v) in entries {
+                encode(&Value::Bytes(k), out);
+                encode(v, out);
+            }
+            out.push(b'e');
+        }
+    }
+}
+
+/// [`encode`] a dictionary with its keys sorted, which bencode requires.
+///
+/// Separate from `encode` because sorting borrows differently and because a
+/// caller building a request should not have to remember the rule. The decode
+/// side deliberately keeps ARRIVAL order (see the module note); this is the
+/// send side, where canonical order is the useful property.
+#[must_use]
+pub fn encode_dict(entries: Vec<(&[u8], Value<'_>)>) -> Vec<u8> {
+    let mut sorted = entries;
+    sorted.sort_by_key(|(k, _)| *k);
+    let mut out = Vec::new();
+    encode(&Value::Dict(sorted), &mut out);
+    out
+}
+
 /// Decode one complete bencode value, which must consume the whole input.
 ///
 /// # Errors
@@ -233,6 +291,68 @@ fn decode_dict(input: &[u8], depth: usize) -> Result<(Value<'_>, &[u8])> {
 
 #[cfg(test)]
 mod tests {
+    /// Round-tripping is the encoder's whole contract: whatever `decode`
+    /// understands, `encode` must reproduce byte-for-byte.
+    #[test]
+    fn encode_round_trips_every_value_kind() {
+        for original in [
+            b"i0e".as_slice(),
+            b"i-42e",
+            b"i9223372036854775807e",
+            b"0:",
+            b"4:spam",
+            b"le",
+            b"li1ei2ee",
+            b"de",
+            b"d3:cmd4:liste",
+            // Nested, which is the shape a real `query` reply takes. The
+            // length prefix is bytes: "calls" is 5, and writing 4 leaves a
+            // stray 's' that the decoder rightly refuses.
+            b"d5:callsl4:abcd4:efghee",
+        ] {
+            let decoded = decode(original).expect("fixture must decode");
+            let mut out = Vec::new();
+            encode(&decoded, &mut out);
+            assert_eq!(
+                out,
+                original,
+                "re-encoding {:?} did not reproduce it",
+                String::from_utf8_lossy(original)
+            );
+        }
+    }
+
+    /// Keys go out sorted. bencode requires it, and a canonical encoding is
+    /// what makes two encodings of one request comparable.
+    #[test]
+    fn encode_dict_sorts_its_keys() {
+        let out = encode_dict(vec![
+            (b"zebra".as_slice(), Value::Int(1)),
+            (b"alpha".as_slice(), Value::Int(2)),
+            (b"middle".as_slice(), Value::Int(3)),
+        ]);
+        let text = String::from_utf8_lossy(&out);
+        let a = text.find("alpha").expect("alpha");
+        let m = text.find("middle").expect("middle");
+        let z = text.find("zebra").expect("zebra");
+        assert!(a < m && m < z, "keys are not sorted: {text}");
+
+        // And the result must still decode to what went in.
+        let back = decode(&out).expect("re-decode");
+        assert_eq!(back.get(b"alpha"), Some(&Value::Int(2)));
+        assert_eq!(back.get(b"zebra"), Some(&Value::Int(1)));
+    }
+
+    /// A byte string is bytes, not text: the length prefix counts bytes and
+    /// the payload is copied verbatim.
+    #[test]
+    fn encode_treats_strings_as_bytes() {
+        let mut out = Vec::new();
+        // Two-byte UTF-8 and a NUL: four bytes, not four characters.
+        encode(&Value::Bytes(&[0xC3, 0xA9, 0x00, b'x']), &mut out);
+        assert_eq!(out, b"4:\xc3\xa9\x00x".to_vec());
+    }
+
     use super::*;
 
     #[test]

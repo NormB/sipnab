@@ -32,7 +32,7 @@ Operator precedence (highest to lowest): `NOT`, `AND`, `OR`. Use parentheses to 
 
 ## Fields
 
-All 30 addressable fields, organized by type.
+All 33 addressable fields, organized by type.
 
 ### String fields
 
@@ -84,11 +84,11 @@ All 30 addressable fields, organized by type.
 > including `!=`: it is not "different from 3.0", it is unknown. This is the
 > rule SQL uses for `NULL`, for the same reason.
 >
-> Until 0.5.94 these read as `0`, and because `0` sits below every threshold
-> anyone would type, `rtp.mos < 3.0` selected every call carrying no media at
-> all — 2292 of 2311 dialogs on one real trunk capture, against 2 genuine ones
-> with `AND rtp.packets > 0`. If you have a saved filter that leans on that,
-> the `AND rtp.packets > 0` guard is now redundant rather than wrong.
+> Reading them as `0` instead would put them below every threshold anyone
+> would type, so `rtp.mos < 3.0` would select every call carrying no media at
+> all: 2292 of 2311 dialogs on one real trunk capture, rather than the 2
+> genuine ones. A saved filter carrying an `AND rtp.packets > 0` guard is
+> redundant rather than wrong.
 >
 > To select the calls that carry no media, ask for that directly: `rtp.packets
 > == 0` is a real count of zero, and `no_media` is the diagnosis itself.
@@ -210,14 +210,14 @@ because then it was the outcome.
 > where your tap sits: if media does not traverse it, the question is
 > unanswerable and sipnab declines to answer it.
 >
-> **`rtp.orphaned` was withdrawn.** It asked whether a stream *belonging to this
-> dialog* belongs to no dialog: a stream counts as an orphan exactly when no
-> dialog claims it, so the two halves excluded each other and the field matched nothing
-> on any capture while `NOT rtp.orphaned` matched everything. It is now
-> a parse error rather than a silent falsehood. Orphaned media is real and still
-> reachable: read the "Orphaned Streams" section of `--report`, or the REST
-> API's `/v1/streams?orphaned=true`, both of which model streams rather than
-> dialogs.
+> **`rtp.orphaned` is a parse error, not a field.** It would ask whether a
+> stream *belonging to this dialog* belongs to no dialog: a stream counts as an
+> orphan exactly when no dialog claims it, so the two halves exclude each other
+> and the field matches nothing on any capture while `NOT rtp.orphaned` matches
+> everything. Rejecting it at the parser beats a silent falsehood. Orphaned
+> media is real and still reachable: read the "Orphaned Streams" section of
+> `--report`, or the REST API's `/v1/streams?orphaned=true`, both of which model
+> streams rather than dialogs.
 
 ## Operators
 
@@ -451,7 +451,7 @@ sipnab -N -I capture.pcap --report
 
 Orphaned streams have no matching SIP dialog or SDP, so no dialog filter can
 select them and the DSL offers no field for them. The boolean-field note above
-covers the withdrawn `rtp.orphaned`. The `--report`
+covers why `rtp.orphaned` is a parse error. The `--report`
 output carries an "Orphaned Streams" section, and the [REST
 API](rest-api.md#get-v1streams) answers the same question at
 `/v1/streams?orphaned=true` when you run sipnab with `--api`. Orphans usually

@@ -561,7 +561,34 @@ fn linked_code_targets_exist() {
     // page the change touched. Three link texts, two new targets -- the
     // `.githooks/pre-commit` link replaced a bare mention that was already
     // linked earlier on the page.
-    const EXPECTED_CODE_LINKS: usize = 367;
+    // 367 -> 369: RE4 gave `src/rtpengine/` two more modules, and the module
+    // layout table on `docs/internals/rtpengine-control-plane.md` names them:
+    // `control.rs` (the two read-only requests and the client) and
+    // `reconcile.rs` (the triggers, the port index and the bounds). Attributed
+    // by measurement before the number moved: that page went 11 -> 13, and it
+    // is the only page this change added a link to -- the other docs touched
+    // had `#L` anchors re-pointed by `scripts/fix-line-anchors.py --apply`,
+    // which moves citations without adding any.
+    // 369 -> 378: RE4's active half reached the developer docs. Attributed by
+    // measurement before the number moved, and only two pages moved:
+    // `docs/internals/rtpengine-control-plane.md` 13 -> 19, which gained a
+    // section on asking the relay plus a module-table row for
+    // `src/app/relay_reconciler.rs`; and `docs/internals/threading.md`
+    // 36 -> 39, which had claimed to list every long-lived thread while the
+    // reconciler thread had no row, and claimed scanner-kill was the only
+    // thread allowed to send.
+    // 378 -> 377, DOWN by one, which this gate treats as suspicious and is
+    // right to. Attributed by measurement: `docs/internals/build-ci-release.md`
+    // went 37 -> 36 and is the only page that moved. The lost link is
+    // `src/wasm.rs`, which that page cited while listing "a refusal to commit a
+    // staged src/wasm.rs without a rebuilt bundle beside it" among the
+    // pre-commit gates. That gate does not exist: hook section 7 is a
+    // removal-rationale comment and runs nothing. The page named the right
+    // COUNT of gates and the wrong eleven -- it also carried the removed 5c
+    // man-page check and omitted 3b, the live privilege-drop gate. Dropping a
+    // link to a file the prose no longer has a reason to mention is the
+    // deletion working, not the extractor narrowing.
+    const EXPECTED_CODE_LINKS: usize = 377;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -609,7 +636,11 @@ fn rust_files_under(path: &Path) -> Vec<PathBuf> {
 #[test]
 fn linked_symbols_resolve_to_a_definition() {
     /// Symbol claims the developer docs are expected to cite.
-    const EXPECTED_SYMBOL_CLAIMS: usize = 66;
+    // 66 -> 68: both from `docs/internals/threading.md`, which now cites
+    // `relay_reconciler::spawn()` and `orphan_channel()` -- the spawn site and
+    // the bounded hand-off it reads from. Both resolve to a definition, which
+    // is what the assertion below this one checks.
+    const EXPECTED_SYMBOL_CLAIMS: usize = 68;
     // A definition boundary, not a substring. `source.contains("fn run_offline_paral")`
     // was satisfied by `fn run_offline_parallel`, so a doc could name a function
     // that has never existed and resolve against a real one whose name merely

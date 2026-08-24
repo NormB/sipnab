@@ -858,8 +858,8 @@ reader, not lock contention.
 
 Detail, including the fault- and memory-isolation arguments taken at their
 strongest: [`process-isolation-and-hot-path-cost.md`](process-isolation-and-hot-path-cost.md)
-§§2–4. **One exception survives** — scanner-kill, the only component that
-transmits and the only one with no shared state, tracked as **`PI2`** in
+§§2–4. **One exception survives** — scanner-kill, which transmits and has no
+shared state, tracked as **`PI2`** in
 [`backlog.md`](backlog.md) at P5 and conditional on `--kill-scanner` ceasing
 to be niche. That is the whole of the surviving case; it is not a license to
 fork anything else. Related history: `implementation-plan-v6.md` D16 specified

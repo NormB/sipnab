@@ -17,6 +17,9 @@ use crate::cli::{self, Cli};
 use crate::config::{Config, LoadedConfig};
 use crate::output::{ColorMode, EventExecEngine, OutputOptions};
 use crate::privilege;
+use crate::rtpengine::control::ControlClient;
+use crate::rtpengine::reconcile::Reconciler;
+use crate::security::transmit_guard::TransmitPermit;
 use crate::sip::{dsl::FilterExpr, matcher::SipMatcher};
 
 use super::batch::{CapturePolicy, audio_retention_wanted};
@@ -600,6 +603,32 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         );
     }
 
+    // `--rtpengine-control` is the third way sipnab can put a packet on the
+    // network, and it is refused offline for the same reason the kill path is.
+    // The relay address is one the operator typed, but the run still has to be
+    // live: a capture file's calls ended at some point in the past, so asking a
+    // relay about them now describes a DIFFERENT set of calls that happen to be
+    // up today — an answer that looks authoritative and is about somebody
+    // else's traffic.
+    //
+    // Refused here rather than at the send, so the operator reads it before the
+    // capture thread opens anything, and so a run that will never ask does not
+    // look like one that asked and got nothing.
+    if let Some(ref addr) = cli.rtp_args.rtpengine_control
+        && let Some(ref s) = source
+        && crate::security::transmit_guard::TransmitPermit::for_source(s).is_none()
+    {
+        tracing::warn!(
+            "--rtpengine-control {addr} asks a live relay which calls are up \
+             right now, but this run is reading a capture FILE — offline \
+             analysis never transmits. The calls in a file ended in the past; \
+             the relay's answer would describe whatever is up TODAY, which is \
+             other people's traffic. Passive decoding of any relay control \
+             plane already in the capture still runs; capture live with \
+             -d <device> to ask."
+        );
+    }
+
     // `--hep-send` is the other way a packet leaves, and it is not the same
     // question. Its destination is one the operator typed, so it is not
     // refused on a file the way the kill path is — replaying an archive into a
@@ -899,6 +928,16 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         });
     }
 
+    // The same rule one flag further in: a scanner PATTERN whose detector
+    // nothing builds. Refused here rather than in `Cli::validate` because the
+    // config file can arm the detector and `validate` does not read it.
+    if let Some(msg) = scanner_pattern_unread_refusal(cli, config) {
+        return Err(PlanError {
+            exit_code: 2,
+            message: msg,
+        });
+    }
+
     // Immediate mode picks the kernel ring format, so it can only be answered
     // once the consumer is known — which is here, and not in
     // `build_capture_config`, which runs before the mode is decided.
@@ -954,6 +993,15 @@ pub struct Launched {
     /// so its eager first parse and its later polling agree on one offset.
     #[cfg(feature = "tls")]
     pub keylog_source: Option<crate::capture::keylog_source::KeylogSource>,
+    /// Everything `--rtpengine-control` produced (RE4): what the relay said at
+    /// startup, and the reconciler to keep asking with.
+    ///
+    /// Carried rather than re-derived because the two live modes build their
+    /// own stream stores in two different files, and a snapshot that reached
+    /// one of them and not the other would attribute a call in the TUI and
+    /// leave it an orphan headless. The reconciler cannot be rebuilt at all
+    /// without losing the bounds it accumulated -- see [`ReadyReconciler`].
+    pub relay: RelayControl,
 }
 
 /// Open a streaming keylog source, if this run has one, while still privileged.
@@ -998,6 +1046,93 @@ fn open_privileged_keylog_source(cli: &Cli) -> Option<crate::capture::keylog_sou
             tracing::error!("Cannot open keylog FIFO {}: {e}", path.display());
             None
         }
+    }
+}
+
+/// A live reconciler, past its startup snapshot, ready to serve RE4's second
+/// trigger.
+///
+/// Carried rather than rebuilt because rebuilding would lose everything that
+/// bounds it: which sockets have already been asked about, which calls have
+/// already been read, and how much of the transaction ceiling is left. A
+/// second reconciler would start with a full budget and re-ask every question
+/// the first one had already answered.
+pub struct ReadyReconciler {
+    /// The reconciler, holding the run's port index and its remaining budget.
+    pub reconciler: Reconciler<ControlClient>,
+    /// The run's permission to transmit, without which neither question is
+    /// callable.
+    pub permit: TransmitPermit,
+}
+
+/// Everything `--rtpengine-control` produced during launch.
+#[derive(Default)]
+pub struct RelayControl {
+    /// What the relay said at startup, stamped with when it said it.
+    pub snapshot: crate::rtpengine::reconcile::RelaySnapshot,
+    /// The reconciler to keep asking with, absent when nothing was asked.
+    pub ready: Option<ReadyReconciler>,
+}
+
+/// Ask the relay which calls are up, when this run asked us to (RE4).
+///
+/// RE4's FIRST trigger, and the only place it fires. It happens here, in the
+/// privileged window before the capture opens, for two reasons: the answer
+/// should describe the calls the capture is about to see rather than the ones
+/// that were up some seconds earlier, and taking it before any packet arrives
+/// means the packet path never makes a network call -- the snapshot is
+/// registered as media endpoints, and a stream that turns up later is
+/// attributed from memory.
+///
+/// Returns the sockets the relay accounted for. Empty covers every way of
+/// having nothing to say -- the flag was not given, the run is offline, the
+/// address does not parse, the relay did not answer -- and an empty snapshot
+/// is applied exactly like a full one, so no caller has to branch on it.
+///
+/// Never fails the run. A capture is still worth reading when the relay is
+/// down; refusing to start over an enrichment would be the wrong trade, and
+/// the summary line says what was and was not learned.
+fn relay_startup_snapshot(cli: &Cli, source: Option<&CaptureSource>) -> RelayControl {
+    use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
+    use crate::rtpengine::reconcile::Reconciler;
+    use crate::security::transmit_guard::TransmitPermit;
+
+    let Some(addr) = cli.rtp_args.rtpengine_control.as_deref() else {
+        return RelayControl::default();
+    };
+    // A permit is the structural gate, not a courtesy check: without one there
+    // is no way to call `list` or `query` at all. `plan` has already told the
+    // operator why an offline run will not ask, so this stays quiet rather
+    // than saying it a second time.
+    let Some(permit) = source.and_then(TransmitPermit::for_source) else {
+        return RelayControl::default();
+    };
+    let socket = match addr.parse::<std::net::SocketAddr>() {
+        Ok(socket) => socket,
+        Err(e) => {
+            tracing::error!(
+                "--rtpengine-control {addr} is not an address and port ({e}). \
+                 It names the relay's ng control port, for example \
+                 127.0.0.1:22222. Nothing was asked, so streams this relay \
+                 handles stay unattributed."
+            );
+            return RelayControl::default();
+        }
+    };
+
+    let mut reconciler = Reconciler::new(ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT));
+    // The instant the relay answered, which is what the endpoint expiry clock
+    // in the stream store measures from -- not the instant a store was built.
+    let taken_at = chrono::Utc::now();
+    if let Some(summary) = reconciler.at_startup(&permit) {
+        tracing::info!("{summary}");
+    }
+    // TAKE rather than copy: what startup learned is applied here, once. The
+    // reconciler then hands over only what a later refresh teaches it, so a
+    // socket is never registered twice under two different times.
+    RelayControl {
+        snapshot: reconciler.take_new_links(taken_at),
+        ready: Some(ReadyReconciler { reconciler, permit }),
     }
 }
 
@@ -1088,6 +1223,12 @@ pub fn launch(
     // it is moved into the capture thread. See `security::transmit_guard`.
     let may_transmit =
         crate::security::transmit_guard::TransmitPermit::for_source(&source).is_some();
+
+    // RE4's startup snapshot, taken from the RESOLVED source for the same
+    // reason `may_transmit` is: `-d any` and device auto-detection mean the
+    // source the caller planned is not always the one that opened, and asking
+    // the relay is exactly as gated as any other transmit.
+    let relay = relay_startup_snapshot(cli, Some(&source));
 
     // 14. Create the packet channel: a capped, auto-shrinking queue. Occupancy
     //     grows under load up to the cap and the (unbounded) storage frees its
@@ -1423,6 +1564,7 @@ pub fn launch(
         raw_kill_sock,
         #[cfg(feature = "tls")]
         keylog_source,
+        relay,
     }
 }
 
@@ -2717,6 +2859,53 @@ fn metrics_ignored_on_cores_warning(cli: &Cli) -> Option<String> {
     ))
 }
 
+/// Refuse a scanner pattern no detector will read.
+///
+/// `--kill-ua` adds a User-Agent pattern to the scanner detector, and
+/// `batch::run` builds that detector only when scanner detection is armed.
+/// Given on its own the pattern is read by nothing, the run reports no
+/// scanners, and that is indistinguishable from a network with none on it --
+/// the same silence `security_detection_unarmed_refusal` refuses along the
+/// mode axis, one flag further in.
+///
+/// **Why this is a refusal and not an implicit arming.** Turning the detector
+/// on would be the obvious fix and it is the wrong one twice over. Arming
+/// scanner detection also arms `kill_worker_active`, which TRANSMITS SIP
+/// responses on a live run -- so a flag whose help says "detect" would start
+/// sending packets at third parties. And the detector it would build is the
+/// same one whose behavioral arm this file already refuses to auto-arm from
+/// `--fail2ban`, because that was measured producing 7008 detections naming
+/// 180 peers on a real carrier trunk.
+///
+/// **Why not clap's `requires`.** `[security] kill_scanner = true` arms the
+/// same detector, and clap sees only the command line. `requires` would refuse
+/// a run that works.
+///
+/// # Arguments
+///
+/// * `cli` — parsed flags.
+/// * `config` — the loaded configuration, which can arm the detector too.
+///
+/// # Returns
+///
+/// The operator-facing message, or `None` when the pattern reaches a detector.
+fn scanner_pattern_unread_refusal(cli: &Cli, config: &Config) -> Option<String> {
+    let pattern = cli.security_args.kill_ua.as_deref()?;
+    let armed = cli.security_args.kill_scanner || config.security.kill_scanner.unwrap_or(false);
+    if armed {
+        return None;
+    }
+    Some(format!(
+        "--kill-ua {pattern} names a User-Agent for the scanner detector, and \
+         nothing in this run builds that detector — so the pattern is read by \
+         nobody and the run would report no scanners whether or not one is \
+         there. Add --kill-scanner (or set [security] kill_scanner = true) to \
+         arm the detection this pattern feeds. On a live capture \
+         --kill-scanner also arms the response path, which is why sipnab will \
+         not turn it on for you."
+    ))
+}
+
 /// Detection flags on a run whose mode builds no detector.
 ///
 /// The scanner, fraud, digest-leak and REGISTER-flood detectors are
@@ -2990,6 +3179,60 @@ mod tests {
     use super::*;
 
     /// Baseline non-interactive CLI; mutate the pub fields per test.
+    /// RE4 must not transmit on a run reading a file, and the gate is the
+    /// PERMIT rather than a flag check: `plan` warns, and this is the arm that
+    /// makes the warning true.
+    #[test]
+    fn a_file_run_never_asks_the_relay() {
+        let mut cli = base_cli();
+        cli.rtp_args.rtpengine_control = Some("127.0.0.1:22222".to_owned());
+        let file = CaptureSource::File {
+            paths: vec![std::path::PathBuf::from("/tmp/evidence.pcap")],
+        };
+
+        let control = super::relay_startup_snapshot(&cli, Some(&file));
+
+        assert_eq!(
+            control.snapshot.taken_at, None,
+            "a capture file must not produce a relay transaction, however the \
+             flag was set"
+        );
+        assert!(control.snapshot.links.is_empty());
+    }
+
+    /// No flag, no snapshot -- and `taken_at` stays `None` rather than
+    /// recording a moment nothing happened at.
+    #[test]
+    fn no_flag_means_the_relay_was_never_asked() {
+        let cli = base_cli();
+        let live = CaptureSource::Live {
+            device: "eth0".to_owned(),
+        };
+
+        let control = super::relay_startup_snapshot(&cli, Some(&live));
+
+        assert_eq!(control.snapshot.taken_at, None);
+        assert!(control.snapshot.links.is_empty());
+    }
+
+    /// An address that is not an address asks nothing, and says so, rather
+    /// than being read as a relay that holds no calls.
+    #[test]
+    fn an_unparseable_control_address_asks_nothing() {
+        let mut cli = base_cli();
+        cli.rtp_args.rtpengine_control = Some("not-an-address".to_owned());
+        let live = CaptureSource::Live {
+            device: "eth0".to_owned(),
+        };
+
+        let control = super::relay_startup_snapshot(&cli, Some(&live));
+
+        assert_eq!(
+            control.snapshot.taken_at, None,
+            "nothing was asked, so nothing may claim a relay answered"
+        );
+    }
+
     fn base_cli() -> Cli {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.mode_args.no_tui = true;
@@ -3455,6 +3698,65 @@ mod tests {
         assert!(
             metrics_ignored_on_cores_warning(&live).is_none(),
             "a live run falls back to one core and starts the metrics server"
+        );
+    }
+
+    // ── a scanner pattern nothing reads ────────────────────────────────
+
+    /// The defect: `--kill-ua` alone detects NOTHING and says nothing.
+    ///
+    /// `batch::run` builds the scanner detector inside `if kill_scanner_active`
+    /// and only then reads `--kill-ua` into it, so the pattern is consumed by
+    /// a detector that was never constructed. The flag's own help promised
+    /// "Detect specific User-Agent strings associated with scanners" with no
+    /// condition attached, and clap declares no `requires`.
+    ///
+    /// Measured on the shipped binary before the fix:
+    /// `--kill-ua sipnab-test` over a capture containing
+    /// `User-Agent: sipnab-test/1.0` produced zero alerts, and adding
+    /// `--kill-scanner` produced `detection=ua_pattern` on the same capture.
+    /// The symptom is silence, which is exactly what a clean network looks
+    /// like -- the failure mode this file already refuses one axis of.
+    #[test]
+    fn a_scanner_pattern_no_detector_will_read_is_refused() {
+        let mut cli = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
+        cli.security_args.kill_ua = Some("friendly-scanner".to_owned());
+
+        let msg = scanner_pattern_unread_refusal(&cli, &Config::default())
+            .expect("a pattern no detector reads must be reported, not ignored");
+
+        assert!(
+            msg.contains("--kill-ua") && msg.contains("--kill-scanner"),
+            "the message must name what the operator typed AND the remedy, \
+             since the remedy is a different flag:\n{msg}"
+        );
+    }
+
+    /// Armed from the command line: nothing to report.
+    #[test]
+    fn a_scanner_pattern_is_fine_once_the_detector_is_armed() {
+        let mut cli = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "--kill-scanner"]);
+        cli.security_args.kill_ua = Some("friendly-scanner".to_owned());
+
+        assert!(
+            scanner_pattern_unread_refusal(&cli, &Config::default()).is_none(),
+            "the detector is armed, so the pattern reaches it"
+        );
+    }
+
+    /// Armed from the CONFIG FILE. This is why the fix is not clap's
+    /// `requires`: clap sees command-line arguments and cannot see
+    /// `[security] kill_scanner = true`, so it would refuse a run that works.
+    #[test]
+    fn a_scanner_pattern_is_fine_when_the_config_file_arms_the_detector() {
+        let mut cli = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
+        cli.security_args.kill_ua = Some("friendly-scanner".to_owned());
+        let mut config = Config::default();
+        config.security.kill_scanner = Some(true);
+
+        assert!(
+            scanner_pattern_unread_refusal(&cli, &config).is_none(),
+            "`[security] kill_scanner = true` arms the same detector"
         );
     }
 

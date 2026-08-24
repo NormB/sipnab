@@ -160,6 +160,7 @@ fn names_path_from(
 fn build_stores(
     cli: &Cli,
     config: &Config,
+    relay_snapshot: &crate::rtpengine::reconcile::RelaySnapshot,
 ) -> (Arc<RwLock<DialogStore>>, Arc<RwLock<StreamStore>>) {
     let dialog_store = Arc::new(RwLock::new(
         {
@@ -176,6 +177,10 @@ fn build_stores(
         if let Some(max_frames) = config.limits.max_audio_frames {
             ss.set_max_audio_frames(max_frames as usize);
         }
+        // RE4: what the relay said it was holding when sipnab started, so a
+        // call already in progress is named by its first packet rather than
+        // arriving as an orphan.
+        crate::pipeline::apply_relay_snapshot(&mut ss, relay_snapshot);
         Arc::new(RwLock::new(ss))
     };
     (dialog_store, stream_store)
@@ -216,17 +221,60 @@ pub fn run_tui_mode(
     cli: Cli,
     config: Config,
     capture_config: CaptureConfig,
-    handle: capture::CaptureHandle,
-    rx: capture::channel::PacketRx,
+    mut launched: crate::app::bootstrap::Launched,
     policy: CapturePolicy,
     #[cfg(feature = "metrics")] _metrics_bind_addr: Option<std::net::SocketAddr>,
 ) {
+    // Taken as the bundle rather than unpacked at the call site, for the same
+    // reason `BatchProcessing` is one argument: everything in it was obtained
+    // in the privileged window before the capture opened and cannot be
+    // obtained again here, so they travel together or a later one gets left
+    // behind.
+    //
+    // Moved field by field rather than destructured, so the fields this mode
+    // does not read -- the raw scanner-kill socket among them -- stay owned by
+    // `launched` and are dropped when it goes out of scope at the end of the
+    // run. A `..` pattern would close that socket here instead, which is a
+    // lifetime change nobody asked for.
+    let handle = launched.handle;
+    let rx = launched.rx;
     let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
 
     // Read before the capture config moves into the processing thread below.
     let bpf_filter = bpf_status_text(&capture_config);
 
-    let (dialog_store, stream_store) = build_stores(&cli, &config);
+    let (dialog_store, stream_store) = build_stores(&cli, &config, &launched.relay.snapshot);
+
+    // RE4's second trigger. The store starts recording the sockets of streams
+    // nothing explains only when there is a reconciler to offer them to, and
+    // the reconciler runs on its own thread so the capture path never waits
+    // on a relay. Both ends of the arrangement are set up here, or neither.
+    let (relay_orphans, relay_thread) = match launched.relay.ready.take() {
+        Some(ready) => {
+            let (sink, orphan_rx) = crate::rtpengine::reconcile::orphan_channel();
+            stream_store.write().record_new_orphans(true);
+            match crate::app::relay_reconciler::spawn(
+                ready.reconciler,
+                ready.permit,
+                orphan_rx,
+                Arc::clone(&stream_store),
+            ) {
+                Ok(join) => (Some(sink), Some(join)),
+                Err(e) => {
+                    // A capture is still worth taking when the enrichment
+                    // cannot start. Stop recording, so the store does not
+                    // accumulate sockets nothing will ever drain.
+                    tracing::warn!(
+                        "could not start the rtpengine reconciler ({e}); streams the \
+                         signaling does not explain will stay unattributed"
+                    );
+                    stream_store.write().record_new_orphans(false);
+                    (None, None)
+                }
+            }
+        }
+        None => (None, None),
+    };
 
     // Shared pause flag between TUI and processing thread
     let paused_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -401,6 +449,7 @@ pub fn run_tui_mode(
                                 quiet_bad_parse: cli_clone.capture_args.quiet_bad_parse,
                             },
                             &mut media_decrypt,
+                            relay_orphans.as_ref(),
                         );
                     }
                 }
@@ -523,6 +572,16 @@ pub fn run_tui_mode(
 
     if let Err(e) = processing_thread.join() {
         tracing::error!("Processing thread panicked: {:?}", e);
+    }
+
+    // ONLY after the processing thread is joined. It owned the only sink, so
+    // its exit is what drops the sink, closes the hand-off queue and ends the
+    // reconciler's loop. Joining the reconciler first would wait on a queue
+    // that nothing had closed yet, and the run would never exit.
+    if let Some(join) = relay_thread
+        && join.join().is_err()
+    {
+        tracing::warn!("the rtpengine reconciler thread panicked");
     }
 
     drop(handle);
@@ -754,7 +813,7 @@ mod tests {
             Some(DialogTracking::Branch),
             "precondition: the flag parsed"
         );
-        let (dialogs, _streams) = build_stores(&cli, &Config::default());
+        let (dialogs, _streams) = build_stores(&cli, &Config::default(), &Default::default());
         {
             let mut ds = dialogs.write();
             ds.process_message(invite("shared-call-id@example.com", "z9hG4bK-one"));
@@ -781,7 +840,7 @@ mod tests {
             cli.dialog_args.dialog_track, None,
             "precondition: the flag is unset"
         );
-        let (dialogs, _streams) = build_stores(&cli, &Config::default());
+        let (dialogs, _streams) = build_stores(&cli, &Config::default(), &Default::default());
         {
             let mut ds = dialogs.write();
             ds.process_message(invite("shared-call-id@example.com", "z9hG4bK-one"));
@@ -801,12 +860,52 @@ mod tests {
     /// nothing read any of them. The effect asserted is the retention itself —
     /// the ring buffer stops at the configured depth — because a store built
     /// with the key dropped is indistinguishable from one built with it
+    /// The relay's startup snapshot must reach the store this mode builds.
+    ///
+    /// Two live modes build their own stream stores in two different files.
+    /// Wiring one and not the other would attribute a call in the TUI and
+    /// leave the same call an orphan headless, which is the drift a shared
+    /// `apply_relay_snapshot` exists to make unavailable -- but only if both
+    /// sites actually call it.
+    #[test]
+    fn the_relay_snapshot_reaches_the_store_this_mode_builds() {
+        use crate::rtp::stream_store::EndpointAssertion;
+        use crate::rtpengine::reconcile::{RelayLink, RelaySnapshot};
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let relay = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let snapshot = RelaySnapshot {
+            links: vec![RelayLink {
+                address: relay,
+                port: 30000,
+                call_id: "already-in-progress".to_owned(),
+            }],
+            taken_at: Some(chrono::Utc::now()),
+        };
+
+        let (_dialogs, streams) = build_stores(&cli_from(&[]), &Config::default(), &snapshot);
+
+        let provenance = streams
+            .read()
+            .sdp_endpoint_provenance(relay, 30000)
+            .expect("the snapshot must be registered on this mode's store");
+        assert_eq!(
+            provenance.asserted_by,
+            EndpointAssertion::MediaRelay,
+            "the relay asserted this allocation; no party's SDP did"
+        );
+        assert_eq!(
+            provenance.origin, None,
+            "sipnab asked for it rather than capturing it"
+        );
+    }
+
     /// applied until RTP actually arrives.
     #[test]
     fn the_configured_audio_frame_cap_reaches_the_stream_store() {
         let mut config = Config::default();
         config.limits.max_audio_frames = Some(2);
-        let (_dialogs, streams) = build_stores(&cli_from(&[]), &config);
+        let (_dialogs, streams) = build_stores(&cli_from(&[]), &config, &Default::default());
         {
             let mut ss = streams.write();
             let packet = pcmu_packet();
@@ -829,7 +928,8 @@ mod tests {
     /// measuring the config value, not the arrival count.
     #[test]
     fn without_a_configured_cap_every_arriving_frame_is_retained() {
-        let (_dialogs, streams) = build_stores(&cli_from(&[]), &Config::default());
+        let (_dialogs, streams) =
+            build_stores(&cli_from(&[]), &Config::default(), &Default::default());
         {
             let mut ss = streams.write();
             let packet = pcmu_packet();
@@ -846,7 +946,7 @@ mod tests {
     #[test]
     fn the_dialog_limit_bounds_the_store_the_tui_writes_through() {
         let cli = cli_from(&["--limit", "2"]);
-        let (dialogs, _streams) = build_stores(&cli, &Config::default());
+        let (dialogs, _streams) = build_stores(&cli, &Config::default(), &Default::default());
         {
             let mut ds = dialogs.write();
             for n in 0..5 {
