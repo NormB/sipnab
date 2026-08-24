@@ -322,6 +322,24 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "counters, tell the two apart, and decide between the `any` device "
         "and a named interface.",
     ),
+    # Registered with the page itself, for the reason the two entries above
+    # record. `docs/vcon.md` is the operator page for the vCon exporter and it
+    # links `docs/internals/vcon.md`, `docs/library.md` and the three surface
+    # reference pages; unregistered here it would exist only on the wiki, and
+    # every generated page pointing at it would rewrite to a GitHub blob URL.
+    (
+        "docs/vcon.md",
+        "vcon.md",
+        "Export one observed call as a vCon",
+        "vCon Export",
+        # 29: the next free weight. `docs_page_weights_are_unique_and_
+        # descriptions_present` requires uniqueness; sidebar order comes from
+        # the nav_group path lists, not from this number.
+        29,
+        "Export one observed dialog as a vCon container: what the format is, "
+        "how to produce one, and what an observer's record does and does not "
+        "let a consumer conclude.",
+    ),
     (
         "docs/encapsulations.md",
         "encapsulations.md",

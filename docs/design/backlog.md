@@ -4040,7 +4040,7 @@ name the commit that closed them.
 | Item | State | What it is |
 |---|---|---|
 | `VCON0` | **DONE** | Phase 0 decision — observer vCons only. [`docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md) |
-| `VCON1` | **DONE** | Phase 1 library — `src/output/vcon.rs`, one dialog, signaling only, behind the non-default `vcon` feature |
+| `VCON1` | **DONE** | Phase 1 library — [`src/output/vcon.rs`](https://github.com/NormB/sipnab/blob/main/src/output/vcon.rs), one dialog, signaling only, behind the non-default `vcon` feature |
 | `VCON2` | TODO | **CLI surface.** A flag that exports one dialog, and refuses honestly when the build lacks the feature or the Call-ID is unknown |
 | `VCON3` | TODO | **MCP tool.** `export_vcon`, returning the container as structured JSON rather than a stringified blob |
 | `VCON4` | TODO | **REST endpoint.** `GET /v1/dialogs/{call_id}/vcon`, 404 on an unknown Call-ID, and absent entirely without the feature |
@@ -4065,7 +4065,7 @@ all four hold:
 - **A worked example, not a synopsis.** Real commands against a real capture,
   with the output a reader can compare against.
 - **Every door, or a stated reason.** CLI, REST, MCP and the TUI. A surface
-  left out silently is the drift `tests/surface_parity_test.rs` exists to
+  left out silently is the drift [`tests/surface_parity_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/surface_parity_test.rs) exists to
   catch.
 
 ### VCON8 in more detail, because it is the one that misleads

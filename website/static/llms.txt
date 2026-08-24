@@ -32,6 +32,7 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [MCP Protocol](https://sipnab.com/docs/mcp-protocol/): The MCP wire contract: security model, what the write verbs may do, untrusted capture text, the stdio invariant, and error semantics.
 - [SIP Conformance Rules](https://sipnab.com/docs/sip-lint-rules/): Every rule the SIP conformance linter runs, the RFC section behind it, the severity and basis it reports under, and how to suppress it in CI.
 - [Tuning Capture](https://sipnab.com/docs/tuning-capture/): Size the kernel capture ring, read the kernel and interface drop counters, tell the two apart, and decide between the `any` device and a named interface.
+- [vCon Export](https://sipnab.com/docs/vcon/): Export one observed dialog as a vCon container: what the format is, how to produce one, and what an observer's record does and does not let a consumer conclude.
 - [Encapsulations](https://sipnab.com/docs/encapsulations/): Which link types, EtherTypes and tunnels sipnab can read a SIP dialog out of, which it cannot, and what it reports when a frame does not decode.
 
 ## Internals
@@ -48,3 +49,4 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [Profiling](https://sipnab.com/docs/internals/profiling/): Where sipnab's time actually goes, and how to find out on this hardware without guessing.
 - [The rtpengine Control Plane](https://sipnab.com/docs/internals/rtpengine-control-plane/): Naming media captured on a standalone relay: the ng wire format, why the Call-ID arrives over HEP, and how a paired capture proves it.
 - [Uprobe TLS Capture](https://sipnab.com/docs/internals/uprobe-capture/): Reading SIP plaintext out of a process's TLS library with kernel uprobes, and why each step refuses rather than guesses.
+- [The vCon Exporter](https://sipnab.com/docs/internals/vcon/): Where each vCon section comes from, the completeness caveat carried in two surfaces from one value, and the deterministic uuid.

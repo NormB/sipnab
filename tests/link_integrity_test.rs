@@ -610,7 +610,15 @@ fn wiki_intra_docs_links_resolve() {
     // `media-relay` assertion IS rather than re-explaining relay attribution
     // twice. Two pages, one link each; the site mirrors are generated and this
     // gate reads docs/.
-    const EXPECTED_WIKI_LINKS: usize = 480;
+    // 480 -> 498: the vCon pair. Attributed per file before the number moved.
+    // `docs/vcon.md` +10 -- three at the Phase 0 decision (the framing, the
+    // refusal table and the See also), one each at the CLI, MCP and REST
+    // reference pages so the operator finds the surface they drive, two at
+    // `library.md` for the store-filling half of the walkthrough, and one each
+    // at `internals/vcon.md` and `output-formats.md`. `docs/internals/vcon.md`
+    // +6, all of them the operator page and the decision, twice each, plus
+    // `invariants.md` and `testing.md`. The two indexes gain one apiece.
+    const EXPECTED_WIKI_LINKS: usize = 498;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1067,7 +1075,7 @@ fn slugify_matches_known_rendered_anchors() {
 #[test]
 fn every_docs_page_is_linked_from_the_index() {
     /// Pages the docs walk is expected to reach.
-    const EXPECTED_DOCS_PAGES: usize = 47;
+    const EXPECTED_DOCS_PAGES: usize = 49;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from
@@ -1145,6 +1153,9 @@ fn every_docs_page_is_linked_from_the_index() {
     // by the rtpengine pair: `rtpengine.md` for the operator and
     // `internals/rtpengine-control-plane.md` for the maintainer, both
     // registered in their indexes. Attributed per file before the number moved.
+    // Raised 47 -> 49 by the vCon pair, the same shape: `vcon.md` for the
+    // operator and `internals/vcon.md` for the maintainer, each linked from
+    // its own index. Attributed per file before the number moved.
     assert_eq!(
         checked, EXPECTED_DOCS_PAGES,
         "docs-page walk saw {checked} pages, expected {EXPECTED_DOCS_PAGES}. \

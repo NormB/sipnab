@@ -139,6 +139,14 @@ PAGES: list[tuple[str, str, int, str, str]] = [
         "Reading SIP plaintext out of a process's TLS library with kernel "
         "uprobes, and why each step refuses rather than guesses.",
     ),
+    (
+        "vcon.md",
+        "vcon.md",
+        13,
+        "The vCon Exporter",
+        "Where each vCon section comes from, the completeness caveat carried "
+        "in two surfaces from one value, and the deterministic uuid.",
+    ),
 ]
 
 # The developer index becomes the Zola section landing page.
@@ -208,6 +216,11 @@ DOCS_TO_SITE = {
     # the site.
     "tuning-capture.md": "tuning-capture.md",
     "encapsulations.md": "encapsulations.md",
+    # Same reason again: registering docs/vcon.md in build-site-pages.py PAGES
+    # only makes the site page exist. This map is what makes a generated page
+    # LINK to it rather than send the reader out to a GitHub blob URL, and both
+    # the internals vCon page and docs/README.md point at it.
+    "vcon.md": "vcon.md",
 }
 
 LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")

@@ -732,6 +732,19 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/mcp-estate.md",
         ],
     ),
+    // `--features`, `--release` and `--test` are cargo's, on the vCon page.
+    // The export sits behind a NON-DEFAULT feature, so a reader holding a
+    // stock build has nothing to run until they rebuild, and the walkthrough's
+    // first step is the committed integration test proving the build carries
+    // it. Both commands have to be runnable as written. Scoped to that page
+    // and its generated mirror: written anywhere else these read as sipnab
+    // flags and must still fail this guard.
+    (
+        "features",
+        &["docs/vcon.md", "website/content/docs/vcon.md"],
+    ),
+    ("release", &["docs/vcon.md", "website/content/docs/vcon.md"]),
+    ("test", &["docs/vcon.md", "website/content/docs/vcon.md"]),
 ];
 
 /// True when `flag` is a known foreign-tool flag excused in `doc` specifically.
@@ -2555,7 +2568,12 @@ fn no_documentation_table_repeats_a_row() {
     // vCon containers. One file. A design doc has no website mirror, so it
     // costs this counter one and not two, and the pointer it gained in
     // `docs/design/backlog.md` is a row in a table that already existed.
-    const EXPECTED_MARKDOWN_FILES: usize = 165;
+    // 165 -> 169: the vCon documentation pair and their two website mirrors --
+    // `docs/vcon.md` for the operator and `docs/internals/vcon.md` for whoever
+    // changes the exporter. Four files, and four rather than two because both
+    // pages publish to the site, unlike a design doc. Attributed per file
+    // before the number moved.
+    const EXPECTED_MARKDOWN_FILES: usize = 169;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -2630,7 +2648,16 @@ fn no_documentation_table_repeats_a_row() {
     // `docs/design/backlog.md` -- the ten items and their state. Attributed by
     // measurement before the number moved: that file gained exactly one table
     // separator and design docs have no generated mirror.
-    const EXPECTED_TABLES: usize = 645;
+    // 645 -> 655: five tables in the vCon documentation pair, doubled by their
+    // website mirrors. `docs/vcon.md` holds three -- the two surfaces the
+    // completeness caveat travels in, what each container field licenses a
+    // consumer to say against what it does not, and the six refusals with the
+    // reason for each. `docs/internals/vcon.md` holds two -- which sipnab type
+    // feeds each vCon section and which function builds it, and the three
+    // UUIDv8 fields against their sources. Attributed by measurement before
+    // the number moved: those four files hold exactly three, three, two and
+    // two table separators, and no other page gained any.
+    const EXPECTED_TABLES: usize = 655;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
