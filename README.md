@@ -56,8 +56,8 @@ target system:
 | `libpcap.so.1`     | `libpcap0.8`            | `libpcap`               | Mandatory — any build that includes the `native` feature (the binary always links it) |
 | `libasound.so.2`   | `libasound2`            | `alsa-lib`              | **Optional** — only for live audio playback in the TUI (loaded lazily via the audio plugin) |
 
-`tls`, `hep`, `api`, `mcp`, `mcp-http`, and `wasm` are pure-Rust and need no
-additional system libraries.
+`tls`, `hep`, `api`, `mcp`, `mcp-http`, `vcon`, and `wasm` are pure-Rust and
+need no additional system libraries.
 
 The `audio` feature **no longer links libasound into the `sipnab` binary**.
 Device output lives in a separate plugin, `libsipnab_audio.so`
@@ -175,7 +175,8 @@ sipnab honors every sngrep keybinding. Press `F1` for the full shortcut referenc
 | `wasm`     | WebAssembly target for in-browser pcap analysis                      | no      |
 | `plugins`  | WASM plugin host (`--plugin`): sandboxed third-party dialog detections  | no      |
 | `bpf`      | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run | no      |
-| `full`     | `native` + `tui` + `tls` + `hep` + `api` + `audio` + `mcp` + `mcp-http` + `metrics` + `plugins` | no      |
+| `vcon`     | vCon export: one observed dialog as an unsigned, signaling-only conversation container. sipnab writes it as an OBSERVER — no signature, no media, and no party name | no      |
+| `full`     | `native` + `tui` + `tls` + `hep` + `api` + `audio` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` | no      |
 
 Build with specific features. Adding TLS decryption and HEP to the default set:
 

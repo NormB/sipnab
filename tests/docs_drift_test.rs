@@ -1898,8 +1898,8 @@ fn readme_feature_table_covers_every_cargo_feature() {
     }
 
     assert_eq!(
-        seen, 13,
-        "feature extraction found {seen} features, expected 13. Bump when a \
+        seen, 14,
+        "feature extraction found {seen} features, expected 14. Bump when a \
          feature is added; a drop means the parser stopped reading Cargo.toml's \
          table and the comparison below narrowed."
     );
