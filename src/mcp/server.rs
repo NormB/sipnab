@@ -187,59 +187,14 @@ pub struct SipnabMcp {
 /// would hand a looping caller a fresh allowance on every loop.
 type PeerKey = Option<std::net::IpAddr>;
 
-/// Which capture this server holds, behind one lock so a swap is atomic.
+/// The shared capture state, re-exported so MCP's own call sites keep reading
+/// as they did.
 ///
-/// Everything a swap changes lives here together on purpose. The identity and
-/// the description have to move as one: an answer stamped with the old
-/// instance and the new filename, or the reverse, is worse than either alone
-/// because it looks self-consistent.
-///
-/// **Lock order: this lock, then the dialog store, then the stream store.**
-/// `open_capture` clears both stores while holding this one, so a reader that
-/// takes a store guard and then reaches for this lock deadlocks against it.
-/// Every handler that stamps an answer with the identity holds all three
-/// across the read for the same reason: releasing this lock first lets a swap
-/// land between the id and the rows, and the answer then names a capture it
-/// did not come from.
-#[derive(Debug, Default)]
-pub struct CaptureState {
-    /// Identity of the capture currently loaded — see [`crate::provenance`].
-    /// Rotated in the same critical section that clears the stores.
-    pub identity: crate::provenance::CaptureIdentity,
-    /// What this server is attached to, and when that capture began.
-    ///
-    /// An agent had no way to ask whether it was reading a live interface or
-    /// replaying a file — so it could not tell whether "stop the capture"
-    /// would lose anything, nor whether a quiet capture meant a quiet network
-    /// or a finished file. Every downstream misjudgement traced back to that.
-    pub context: Option<CaptureContext>,
-    /// The background load filling this capture, while one is running.
-    pub load: Option<Arc<super::load::CaptureLoad>>,
-    /// The uprobe TLS capture feeding this server, while one is running.
-    ///
-    /// Held here rather than in a field of its own so that every check which
-    /// already takes the capture lock — "is a live source running", "would
-    /// stopping lose packets" — sees it without a second lock and a second
-    /// chance to disagree with itself.
-    pub tls: Option<Arc<super::tls_capture::TlsCapture>>,
-}
-
-/// Where this server's packets come from, for `capture_status`.
-#[derive(Debug, Clone)]
-pub struct CaptureContext {
-    /// `true` for a live interface, `false` for a file replay.
-    pub live: bool,
-    /// Interface name when live, file path when replaying.
-    pub name: String,
-    /// When capture began, for uptime.
-    pub started: std::time::Instant,
-    /// Path packets are being written to, when one was configured.
-    ///
-    /// `None` on a live capture means the packets exist only in memory: stop
-    /// the process and they are gone. That is the fact `shutdown_server` has
-    /// to consult before it agrees to stop anything.
-    pub writing_to: Option<String>,
-}
+/// The type moved to [`crate::capture::session`] when `GET /v1/stats` needed
+/// the same identity this server stamps its answers with. Defining it here
+/// left it behind the `mcp` feature gate, and a REST-only build could not name
+/// the capture its counts came from at all.
+pub use crate::capture::session::{CaptureContext, CaptureState};
 
 impl SipnabMcp {
     /// Build a new MCP server bound to the given (already-shared) stores.
@@ -416,6 +371,22 @@ impl SipnabMcp {
     /// stores `true` once the packet source drains (pcap EOF).
     pub fn with_source_exhausted(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
         self.source_exhausted = Some(flag);
+        self
+    }
+
+    /// Share this server's capture state with another door.
+    ///
+    /// The REST API needs the SAME object, not a copy: the identity rotates
+    /// when `open_capture` swaps the file underneath, and two copies would
+    /// disagree from that moment on. A client comparing an MCP answer with a
+    /// `GET /v1/stats` answer would then be told the capture changed when it
+    /// had not, or that it had not when it did.
+    ///
+    /// Handed in rather than handed out, so the object exists before either
+    /// server does and neither owns it.
+    #[must_use]
+    pub fn with_capture_state(mut self, state: Arc<RwLock<CaptureState>>) -> Self {
+        self.capture = state;
         self
     }
 

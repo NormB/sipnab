@@ -86,6 +86,86 @@ the collector it feeds. That is why sipnab reads the traffic off the wire by
 default: a diagnostic tool has no business in a production data path, and if
 sipnab stops, nothing else notices.
 
+## Several rtpengine instances behind one proxy
+
+A proxy that load-balances across a pool of relays puts each call on exactly
+one of them. Run **one sipnab per host**: the proxy's sees the SIP, each
+relay's sees the media its own host relays.
+
+```text
+                        sipnab@proxy
+                        (SIP; no media)
+                              |
+        +---------------------+---------------------+
+        |                     |                     |
+  sipnab@relay-a        sipnab@relay-b        sipnab@relay-c
+  (media it relays)     (media it relays)     (media it relays)
+```
+
+Each relay host runs sipnab against its **own local** relay:
+
+```bash
+# On relay-a, relay-b, relay-c — identical, and each asks only its own relay.
+sipnab -d eth0 --rtpengine-control 127.0.0.1:22222 --api 127.0.0.1:8080
+```
+
+`--rtpengine-control` takes one address, and in this topology that is correct
+rather than a limitation: a relay can only answer for calls it is carrying, so
+a sipnab asking a relay on another host would get `RelayDoesNotHoldIt` for
+everything.
+
+### Finding a call without asking every relay
+
+The naive procedure is a broadcast: ask all ten relays, discard nine misses.
+You do not have to. **The proxy's own SDP names the relay**, because the `c=`
+address the proxy negotiated IS the rtpengine it steered the call to.
+
+**Step 1 — ask the proxy which relay has it.**
+
+```bash
+curl -fsS "http://proxy:8080/v1/dialogs/$CALL_ID" $H \
+  | jq -r '.sdp_timeline[0] | "\(.media_addr):\(.media_port)"'
+# 10.0.0.40:38664
+```
+
+**Step 2 — ask that one relay, and no others.**
+
+```bash
+curl -fsS "http://10.0.0.40:8080/v1/dialogs/$CALL_ID" $H | jq '.streams'
+```
+
+A relay that never carried the call answers **404**, not an empty success.
+That distinction is load-bearing: "I do not have this call" and "this call had
+no media" are different findings, and a relay that answered `200` with an
+empty list would report the second when it meant the first.
+
+### Knowing whose answer you are holding
+
+Every node stamps its answers with its own `capture_identity`, which carries
+the host name:
+
+```bash
+curl -fsS "http://10.0.0.40:8080/v1/stats" $H | jq '.capture_identity'
+# { "node": "relay-a", "instance": "1f4a…", "dialog_generation": 412, … }
+```
+
+Collecting replies from several hosts, that field is what keeps them
+attributable to the host that gave them. Without it, two JSON documents from
+two relays are indistinguishable once they are side by side in a terminal.
+
+### What a multi-node deployment does not do
+
+sipnab does **not** aggregate across nodes. There is no cluster mode, no
+central index, and no node that answers for another. Each instance answers for
+what it captured, and the correlation above is something you (or an agent
+holding several endpoints) perform. That is a deliberate limit, not a missing
+feature: an aggregator is infrastructure, and
+[positioning](design/positioning.md) rules it out.
+
+[`tests/multi_node_relay_fanout_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/multi_node_relay_fanout_test.rs) pins the three properties this
+procedure rests on — the proxy holds signaling and no media, exactly one relay
+claims a call, and the proxy's SDP names which one.
+
 ## Set it up
 
 ### If rtpengine already reports to Homer

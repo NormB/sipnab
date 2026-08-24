@@ -52,6 +52,9 @@ pub mod pcap_reader;
 #[cfg(feature = "native")]
 pub mod pcapng_meta;
 pub mod reassembly;
+/// Which capture a server holds, shared by REST and MCP so both name the same
+/// one. See the module docs for why it is not defined inside either server.
+pub mod session;
 /// Deciding what a kernel uprobe delivered may be used for.
 #[cfg(target_os = "linux")]
 pub mod uprobe;

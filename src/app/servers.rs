@@ -266,14 +266,63 @@ pub fn start_servers(
     #[cfg(any(feature = "api", feature = "mcp"))]
     #[allow(unused_mut)]
     let mut mcp_stdio_done: Option<Arc<std::sync::atomic::AtomicBool>> = None;
-    #[cfg(any(feature = "api", feature = "mcp"))]
-    #[allow(unused_mut)]
-    let mut source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>> = None;
     // Every parameter below is consumed only inside the `api`/`mcp` cfg arms.
     // With neither feature compiled those arms vanish and the arguments would
     // read as dead; bind them to `_` so the build stays warning-free without a
     // blanket `#[allow(unused_variables)]` on the whole function.
     let _unused_without_server_features = (dialog_store, stream_store, alerts, &selection, cli);
+
+    // The capture both doors describe, created HERE so neither server owns it.
+    //
+    // It used to be built inside the `mcp` arm below, which is why
+    // `GET /v1/stats` could not say which capture its counts came from: the
+    // object existed only when MCP was running, and even then only MCP held
+    // it. Sharing a copy would have been worse than the gap -- the identity
+    // rotates when `open_capture` swaps the file underneath, and two copies
+    // disagree from that moment on.
+    //
+    // Derived from the same flags the capture path uses, not restated: `-I`
+    // beats `-d`, exactly as bootstrap resolves it.
+    #[cfg(any(feature = "api", feature = "mcp"))]
+    let capture_state = {
+        let (live, name) = match (cli.primary_input(), cli.capture_args.device.as_deref()) {
+            (Some(path), _) => (false, path.to_string()),
+            (None, Some(dev)) => (true, dev.to_string()),
+            // No -d and no -I: the capture layer picks a default. On Linux
+            // that is the "any" pseudo-device -- ALL interfaces at once,
+            // loopback included -- and on macOS/BSD a single device from the
+            // routing table. Name it as the capture layer will resolve it, so
+            // a reader is not told "auto" and left to guess whether that means
+            // one interface or every one.
+            (None, None) => (
+                true,
+                if cfg!(target_os = "linux") {
+                    "any (all interfaces)".to_string()
+                } else {
+                    "default (one interface, chosen by libpcap)".to_string()
+                },
+            ),
+        };
+        let state = crate::capture::session::CaptureState::describing(
+            crate::capture::session::CaptureContext {
+                live,
+                name,
+                started: std::time::Instant::now(),
+                writing_to: cli.capture_args.output.clone(),
+            },
+        );
+        Arc::new(parking_lot::RwLock::new(state))
+    };
+    // One flag, flipped by the capture owner and read by both doors. A copy
+    // would let one of them report a finished file as still running.
+    #[cfg(any(feature = "api", feature = "mcp"))]
+    let exhausted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Handed back to the capture owner, which is what flips it. Bound from
+    // `exhausted` rather than declared as `None` and reassigned in one arm:
+    // the flag is created unconditionally now that both doors read it, so
+    // there is no state in which it is absent.
+    #[cfg(any(feature = "api", feature = "mcp"))]
+    let source_exhausted = Some(Arc::clone(&exhausted));
 
     #[cfg(feature = "api")]
     if selection.api
@@ -293,6 +342,10 @@ pub fn start_servers(
                 selection.api_rate_limit_per_peer,
             ))),
             max_rows: selection.api_row_cap,
+            // The same object the MCP arm below is handed, so both doors name
+            // one capture and see one rotation.
+            capture: Some(Arc::clone(&capture_state)),
+            source_exhausted: Some(Arc::clone(&exhausted)),
         };
         let config = ApiServerConfig {
             max_conn: cli.listener_args.api_max_conn,
@@ -312,37 +365,6 @@ pub fn start_servers(
 
     #[cfg(feature = "mcp")]
     if selection.mcp && cli.mcp_args.mcp {
-        let exhausted = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        source_exhausted = Some(Arc::clone(&exhausted));
-        // Describe the capture source so `capture_status` reports fact rather
-        // than "unknown". Derived from the same flags the capture path uses,
-        // not restated — `-I` beats `-d`, exactly as bootstrap resolves it.
-        let capture_ctx = {
-            let (live, name) = match (cli.primary_input(), cli.capture_args.device.as_deref()) {
-                (Some(path), _) => (false, path.to_string()),
-                (None, Some(dev)) => (true, dev.to_string()),
-                // No -d and no -I: the capture layer picks a default. On
-                // Linux that is the "any" pseudo-device — ALL interfaces at
-                // once, loopback included — and on macOS/BSD a single device
-                // from the routing table. Name it as the capture layer will
-                // resolve it, so an agent is not told "auto" and left to guess
-                // whether that means one interface or every one.
-                (None, None) => (
-                    true,
-                    if cfg!(target_os = "linux") {
-                        "any (all interfaces)".to_string()
-                    } else {
-                        "default (one interface, chosen by libpcap)".to_string()
-                    },
-                ),
-            };
-            crate::mcp::CaptureContext {
-                live,
-                name,
-                started: std::time::Instant::now(),
-                writing_to: cli.capture_args.output.clone(),
-            }
-        };
         // What this run is reading, so the file tools cannot write over it.
         // Built from the `-I` specs rather than the resolved set: resolution
         // opens every candidate through libpcap and has already run once in
@@ -356,7 +378,10 @@ pub fn start_servers(
         let new_server = || {
             let s = crate::mcp::SipnabMcp::new(Arc::clone(dialog_store), Arc::clone(stream_store))
                 .with_source_exhausted(Arc::clone(&exhausted))
-                .with_capture_context(capture_ctx.clone())
+                // The SAME object REST holds, context already set. Handed in
+                // rather than built here, so a rotation one door performs is a
+                // rotation the other sees.
+                .with_capture_state(Arc::clone(&capture_state))
                 .with_protected_inputs(protected_inputs.clone())
                 .with_max_concurrent(cli.mcp_args.mcp_max_concurrent as usize)
                 .with_rate_limit_per_peer(

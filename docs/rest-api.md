@@ -1059,6 +1059,18 @@ console.log(`PDD p50: ${timing.pdd_p50_ms}ms, p95: ${timing.pdd_p95_ms}ms`);
   "caveats": {
     "media_creating_commands": 0
   },
+  "capture_identity": {
+    "node": "capture01",
+    "instance": "1f4a17c8e2b91d40-1",
+    "dialog_generation": 412,
+    "stream_generation": 96
+  },
+  "source": "live",
+  "capture_name": "eth0",
+  "uptime_sec": 3600,
+  "source_exhausted": false,
+  "writing_to": null,
+  "unsaved": true,
   "unanalysed_sip_messages": 0,
   "unanalysed_busiest_ports": [],
   "unanalysed_websocket_messages": 0,
@@ -1137,6 +1149,42 @@ the end-of-run summary the command line prints.
 
 The MCP `capture_status` tool carries the same block under the same name, so
 this endpoint and an agent never disagree about it.
+
+### Which capture these counts came from
+
+`capture_identity` pairs the capture's instance with both store generations.
+Compare it across calls:
+
+- **higher generation, same instance** — the capture grew
+- **different instance** — something swapped the file, and every count you
+  were holding describes a different capture
+
+It is the **same identity** the MCP `capture_status` tool stamps its answers
+with, read from the same object. An agent and an HTTP client polling one
+process can therefore tell they are describing one capture — and both see a
+swap the moment it happens.
+
+sipnab reads the instance and both generations under one set of locks, so the
+identity names a single moment rather than three.
+
+`null` when nobody told this server what capture it holds.
+
+| Key | Meaning |
+|-----|---------|
+| `source` | `live`, `file`, or `unknown` |
+| `capture_name` | interface name when live, file path when replaying |
+| `uptime_sec` | seconds since capture began |
+| `source_exhausted` | `true` once sipnab reaches the end of a file source |
+| `writing_to` | path sipnab saves packets to, if any |
+| `unsaved` | `true` only for a **live** capture with no output file — packets held in memory and nowhere else |
+
+**`unknown` is a real answer, not a default.** It is what you consult before
+deciding whether stopping a capture is destructive, and a wrong `"live"` would
+be worse than an admission of ignorance.
+
+`unsaved` is the field that matters for that decision. A file replay is already
+on disk, so it is never unsaved. A live capture with an output file is safe to
+stop.
 
 ### SIP the port gate never analyzed
 
