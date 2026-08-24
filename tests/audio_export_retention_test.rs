@@ -85,7 +85,7 @@ fn replay(retain_audio: bool) -> (Arc<RwLock<DialogStore>>, Arc<RwLock<StreamSto
             continue;
         };
         let mut decrypt = MediaDecrypt::default();
-        pipeline::process_packet(&parsed, &ds, &ss, &mut heuristic, &opts, &mut decrypt);
+        pipeline::process_packet(&parsed, &ds, &ss, &mut heuristic, &opts, &mut decrypt, None);
     }
 
     let call_id = ds

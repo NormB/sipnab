@@ -258,6 +258,9 @@ fn read_into_stores(
             &mut rtp_heuristic,
             &opts,
             &mut decrypt,
+            // RE4 asks a live relay. This path reads a FILE, whose calls
+            // ended in the past, so there is nothing here to ask about.
+            None,
         );
     }
     Ok(packets)

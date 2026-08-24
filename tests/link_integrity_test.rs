@@ -597,7 +597,15 @@ fn wiki_intra_docs_links_resolve() {
     // sibling docs from its "See also" and two from the body, and
     // docs/internals/rtpengine-control-plane.md links the operator page.
     // Attributed per file before the number moved.
-    const EXPECTED_WIKI_LINKS: usize = 479;
+    // 479 -> 478, DOWN by one, which this gate treats as suspicious and is
+    // right to. Attributed by measurement before the number moved: exactly one
+    // file lost a link, `docs/mcp-tools.md` at 120 -> 119, and it is the
+    // same-page anchor `[what changed in 0.5.98](#what-changed-in-0-5-98)`
+    // that pointed into a release-history section removed from that reference.
+    // The changelog lives in CHANGELOG.md; a tool reference describes what the
+    // tools do now. No other page moved, and the extractor still matches --
+    // the drop is a deletion, not a narrowing.
+    const EXPECTED_WIKI_LINKS: usize = 478;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

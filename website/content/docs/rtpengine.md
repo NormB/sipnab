@@ -13,7 +13,9 @@ belongs to. This page fixes that.
 has media and nothing to name it with. rtpengine knows the name — its `ng`
 control protocol carries the Call-ID and the ports it allocated — and it can
 already mirror that control plane to a Homer collector. sipnab reads that
-mirror and ties the media to the call.
+mirror and ties the media to the call. A call that was already up when the
+capture opened left no control message for the mirror to carry, so
+`--rtpengine-control` asks the relay for that one directly.
 
 ## The problem, on a real capture
 
@@ -77,6 +79,11 @@ Read down the first column and stop at the first row you can satisfy.
 | rtpengine reports nowhere yet | Turn on `--homer-enable-ng`, point it anywhere sipnab can see | Yes, once | The destination can be a collector, or a host that discards the traffic |
 | You need it delivered rather than sniffed | `--hep-listen` on sipnab, point rtpengine at it | Yes | Costs you the collector — see the warning below |
 
+Every row here covers control messages that cross the wire while sipnab
+runs. None of them reaches a call the relay set up before the capture
+opened. For that, add `--rtpengine-control`, which asks the relay and runs
+alongside whichever row you picked.
+
 **rtpengine takes exactly one Homer destination.** `--homer` is a single
 value, not a repeatable option, so "send to the real collector and to sipnab"
 does not exist. Anything that points rtpengine at sipnab takes it away from
@@ -92,7 +99,7 @@ Nothing to configure. Capture on the relay host and sipnab decodes the
 control plane it sees:
 
 ```sh
-sudo sipnab -i eth0
+sudo sipnab -d eth0
 ```
 
 Confirm rtpengine is mirroring the control plane and not only RTCP stats:
@@ -129,7 +136,7 @@ each relay a distinct one.
 Place one call through the relay, then check that sipnab saw control traffic:
 
 ```sh
-sudo sipnab -i eth0 --report
+sudo sipnab -N -d eth0 --report
 ```
 
 A working setup names the call under **Calls named by a media relay**. If it
@@ -160,6 +167,132 @@ In the deployment this targets, that something is your real Homer collector,
 which is already there. If you are testing without one, run any UDP sink at
 the address. The harness ships one for exactly this reason — see
 `harness/hep-sink`.
+
+## Name a call that was already up when you started
+
+Everything above reads the control plane off the wire, so it names the calls
+whose `offer` crossed that wire while sipnab was running. Incident response
+rarely starts that way. You attach to a relay because something is wrong
+now, and the calls you care about went up minutes or hours ago — their
+`offer` happened in the past, no capture can recover it, and their media
+lands in the orphan list.
+
+`--rtpengine-control` closes that gap by asking the relay. Give it the
+address rtpengine's ng control socket listens on — its `listen-ng` value.
+Same host first:
+
+```sh
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --report
+```
+
+A relay on its own host answers the same question over the network:
+
+```sh
+sudo sipnab -N -d eth0 --rtpengine-control 10.0.0.40:22222 --report
+```
+
+`-N` earns its place in both. sipnab writes these summaries as log lines on
+stderr, and the TUI silences logs to keep the alternate screen intact.
+
+sipnab asks at two moments and no others: once at startup, before the
+capture opens, and again when a stream turns up that nothing else explains.
+There is no interval flag because there is no timer. A tool that talks to a
+production relay on a schedule is a service, and this is a diagnostic.
+
+### What you see when it works
+
+The startup question happens before the first packet, so its answer comes
+first. Against rtpengine 12.5.1:
+
+```text
+rtpengine at 127.0.0.1:22222: 2 call(s) enumerated, complete; queried 2 of them, 8 relay port(s) now attributable
+```
+
+Read it in three parts. **Enumerated, complete** means the relay listed
+everything it held rather than capping the answer. **Queried 2 of them** is
+one `query` per call, which is the only command that says which relay-side
+port belongs to which call. **8 relay ports now attributable** is the index
+sipnab keeps for the rest of the run: media on any of those eight sockets
+takes its Call-ID from memory and costs the relay nothing further.
+
+Streams the relay accounts for stop orphaning. A call whose own signaling
+never appears in the capture — the whole reason for asking — lands under
+**Calls named by a media relay**, the same heading the mirrored control
+plane fills.
+
+The second summary arrives when the capture ends:
+
+```text
+rtpengine at 127.0.0.1:22222: 2 unexplained stream(s) offered, 0 attributed, 4 control transaction(s) spent of a ceiling of 66
+```
+
+The capture path handed two streams to the asking thread, neither of them
+gained a Call-ID, and the run spent four control transactions of the 66 it
+may spend. A count of zero with no reason line beside it is the honest
+answer rather than a failure: the relay answered and holds neither port, so
+that media belongs to something else on the host.
+
+### What it refuses
+
+Reading a file, sipnab refuses to ask, and says why:
+
+```sh
+sipnab -N -I capture.pcap --rtpengine-control 127.0.0.1:22222
+```
+
+```text
+--rtpengine-control 127.0.0.1:22222 asks a live relay which calls are up
+right now, but this run is reading a capture FILE — offline analysis never
+transmits. The calls in a file ended in the past; the relay's answer would
+describe whatever is up TODAY, which is other people's traffic. Passive
+decoding of any relay control plane already in the capture still runs;
+capture live with -d <device> to ask.
+```
+
+The analysis still runs and still exits 0. What the run loses is the ask,
+and it says so before the capture opens rather than looking like a run that
+asked and learned nothing.
+
+The two questions sipnab can put to a relay are `list` and `query`, and
+that is a property of the type reaching the relay rather than a convention.
+ng also carries `offer`, `answer`, `delete` and `start recording`, each of
+which changes a production relay. None of them has a representation on this
+path, so no call site reaches one by accident.
+
+Three bounds hold the asking down, and none of them grows with how much
+traffic the capture carries:
+
+- sipnab asks about each relay-side socket at most once for the whole run,
+  so a stream that stays unexplained does not re-ask on every packet.
+- A per-run ceiling caps control transactions at 66 — one `list` plus a
+  `query` per call at rtpengine's own list limit of 32, twice over. Enough
+  for a full startup snapshot and one comparable refresh, and no more.
+- The queue handing sockets from the capture path to the asking thread is
+  bounded, so a slow relay cannot grow it.
+
+When a bound bites, sipnab counts it and says so. The asking runs on its
+own thread, so the packet path offers a socket and moves on rather than
+waiting out a round trip to a relay that may be down.
+
+### Read a run that attributed nothing
+
+"Nothing came back" has five meanings, and sipnab keeps them apart rather
+than collapsing them into one shrug:
+
+- **The relay did not answer, or refused the question.** sipnab knows
+  nothing about the port.
+- **The relay named calls sipnab could not read.** The port may belong to
+  one of those.
+- **The relay capped its own enumeration.** The list came back partial, so
+  the port may belong to a call the relay never named.
+- **The run spent its transaction ceiling.** sipnab never asked about the
+  port at all.
+- **The relay does not hold the port.** This one, and only this one, says
+  something about the relay: the stream is not its media.
+
+The first four are gaps in what sipnab learned. Reporting any of them as
+the fifth would turn a run that never reached the relay into a run that
+asked and heard the stream belongs to nobody.
 
 ## What rtpengine's forwarding mode changes
 
@@ -194,17 +327,24 @@ Stated here rather than discovered later.
 - **It does not attribute recording or forking streams.** Those commands
   create media that belongs to the call without being one of its two legs, and
   counting one as an ordinary leg would turn a two-party call into a
-  three-stream one. sipnab counts them and says so instead.
-- **It does not name a call that started before the capture did.** A control
-  message that already happened never reaches the wire, so sipnab cannot read
-  it. Asking rtpengine directly closes that gap, and RE4 tracks that work.
+  three-stream one. sipnab counts them and says so instead: `--report`
+  prints **Media-creating relay commands seen** with the count, beside the
+  relay-named calls, and their media joins the orphaned streams where the
+  capture holds it.
+- **It does not name a call that started before the capture did, from the
+  wire alone.** A control message that already happened never reaches the
+  wire, so no capture can recover it. Give `--rtpengine-control` and sipnab
+  asks the relay instead, which closes the gap on a live run. Without the
+  flag, or on an `-I <file>` run where sipnab refuses to ask, their media
+  stays in the orphan list.
 
 ## Where this is going: the next phase
 
 **None of this section describes what sipnab does today.** What this page
 documents above is one hop naming its own media, proven against a recorded
-capture. This section states what that foundation exists FOR, so the next
-phase aims at a goal rather than at whatever comes next.
+capture and against a live relay. This section states what that foundation
+exists FOR, so the next phase aims at a goal rather than at whatever comes
+next.
 
 The goal is a call that crosses an SBC, a proxy, an rtpengine and a PBX,
 assembled end to end, so that an operator can ask a question in their own

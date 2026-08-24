@@ -98,8 +98,12 @@ These drifted because each individual change was small enough not to think "shou
 # phantom feature flags that haven't existed since 0.3.x
 grep -rnE "tls-wolfssl|tls-openssl|\bgrpc\b" docs/ website/content/ README.md CLAUDE.md
 
-# stale field counts (current is 30; let the count drift past 25 = audit time)
-grep -rnE "(2[0-9]|30) (fields|addressable)" docs/ website/content/ website/templates/
+# stale field counts. `FIELD_NAMES` in src/sip/dsl.rs is the count; read it
+# there rather than from this comment, which said 30 while the constant held
+# 33. The pattern matches ANY two-digit count for the same reason: the previous
+# one enumerated `(2[0-9]|30)`, so it could not match 31 through 33 and went
+# blind on exactly the drift it was written to find.
+grep -rnE "[0-9]{2} (fields|addressable)" docs/ website/content/ website/templates/
 
 # claimed Prometheus metrics vs what `src/output/prometheus.rs` emits
 diff <(grep -oE "sipnab_[a-z_]+" website/content/docs/api.md | sort -u) \

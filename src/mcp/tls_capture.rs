@@ -211,6 +211,10 @@ fn run(
                 &mut rtp_heuristic,
                 &opts,
                 &mut decrypt,
+                // RE4 joins a relay's ports to a call. These bytes were
+                // lifted from a process with no addressing at all, so there
+                // is no socket to ask about.
+                None,
             );
             messages += 1;
             capture.messages.store(messages, Ordering::Relaxed);

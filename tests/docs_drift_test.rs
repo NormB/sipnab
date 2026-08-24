@@ -91,6 +91,21 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/rtpengine-control-plane.md",
         ],
     ),
+    // `--interface` is RTPENGINE's too, and the control-plane page has to name
+    // it exactly: rtpengine allocates from ONE port range across every
+    // `--interface`, which is the whole reason sipnab keys a relay-side socket
+    // on address AND port. Keyed on the port alone, one interface's media gets
+    // attributed to the other interface's call. Writing it without the dashes
+    // would satisfy this guard and lose the fact that it is a real flag a
+    // reader can go and look up. Scoped to that page and its generated mirror,
+    // so the same spelling anywhere else still fails.
+    (
+        "interface",
+        &[
+            "docs/internals/rtpengine-control-plane.md",
+            "website/content/docs/internals/rtpengine-control-plane.md",
+        ],
+    ),
     // `--now` is systemd's, on `systemctl enable --now`. The cookbook's
     // "Run sipnab as a service" recipe gives a unit file and then the two
     // commands that install it, and `enable` without `--now` leaves the
@@ -1292,15 +1307,22 @@ fn docs_current_version_markers_match_cargo() {
         // JSON field rather than a `--version` line. It went in ungated and is
         // listed here rather than left to rot the way the bare
         // `sipnab 0.5.20 features:` sample did for 23 releases.
+        //
+        // `\s*` after the colon, and that is the third time this gate has been
+        // caught by the same shape. A sample written as compact JSON --
+        // `"version":"0.5.73"`, no space -- sat on THIS page, already in this
+        // list, and drifted 50 releases because the pattern demanded a space
+        // the line did not have. A gate that reads one spelling of the thing
+        // it watches reports green on every other spelling.
         (
             "docs/mcp-deploy.md",
             include_str!("../docs/mcp-deploy.md"),
-            r#""version": "(\d+\.\d+\.\d+)""#,
+            r#""version":\s*"(\d+\.\d+\.\d+)""#,
         ),
         (
             "website/content/docs/mcp-deploy.md",
             include_str!("../website/content/docs/mcp-deploy.md"),
-            r#""version": "(\d+\.\d+\.\d+)""#,
+            r#""version":\s*"(\d+\.\d+\.\d+)""#,
         ),
         // The same server_capabilities sample appears in the MCP reference.
         // Gating only the walkthrough left this one drifting: it still named
@@ -1309,12 +1331,12 @@ fn docs_current_version_markers_match_cargo() {
         (
             "docs/mcp-tools.md",
             include_str!("../docs/mcp-tools.md"),
-            r#""version": "(\d+\.\d+\.\d+)""#,
+            r#""version":\s*"(\d+\.\d+\.\d+)""#,
         ),
         (
             "website/content/docs/mcp-tools.md",
             include_str!("../website/content/docs/mcp-tools.md"),
-            r#""version": "(\d+\.\d+\.\d+)""#,
+            r#""version":\s*"(\d+\.\d+\.\d+)""#,
         ),
     ];
     for (path, text, pattern) in sources {
@@ -2525,7 +2547,11 @@ fn sequence_marker_admits_a_declared_procedure() {
 #[test]
 fn no_documentation_table_repeats_a_row() {
     /// Tracked markdown files this walk expects to see.
-    const EXPECTED_MARKDOWN_FILES: usize = 163;
+    // 163 -> 164: `docs/design/testing-matrix.md`, the generated surface
+    // coverage matrix. One file, and the only one this change adds --
+    // `docs/design/` is repo-only, so it adds nothing to the website or to
+    // llms-full.txt, which a 274-row table would otherwise bloat.
+    const EXPECTED_MARKDOWN_FILES: usize = 164;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -2542,7 +2568,16 @@ fn no_documentation_table_repeats_a_row() {
     // recipe 13, which maps each thing an exported WAV's note can say to what
     // happened and what to do about it. One table, doubled by the generated
     // cookbook mirror. Attributed per file before the number moved.
-    const EXPECTED_TABLES: usize = 617;
+    // 617 -> 622: the five tables in the generated
+    // `docs/design/testing-matrix.md` -- what each evidence tier claims,
+    // the totals, and one table per surface (CLI flags, HTTP routes, MCP
+    // tools). Attributed by measurement before the number moved: that file
+    // holds exactly five and no other page gained one.
+    // 622 -> 623: one table, the audited-verdict summary in the generated
+    // `docs/design/testing-matrix.md`. It reports what a person found in the
+    // 80 flags the generator could only call "referenced" -- 62 of them do
+    // have a real behavior test, which a token search cannot see.
+    const EXPECTED_TABLES: usize = 623;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

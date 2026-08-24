@@ -16,8 +16,7 @@ local release build of the fix. Every artifact figure below is a published
 binary whose checksum verifies. The 0.5.122 column is a local release build,
 marked as one, because at the time of measuring the fix had not shipped.
 
-**0.5.118 through 0.5.121 ran 27% slower than this page said, and 0.5.122 fixes
-it.** The cause was `is_merged`, the probe deciding whether a capture is a
+**0.5.118 through 0.5.121 ran 27% slower than 0.5.117, and 0.5.122 repairs it.** The cause was `is_merged`, the probe deciding whether a capture is a
 merged pcapng: it read the ENTIRE file into memory and then rejected it on the
 first four bytes, so every offline run over an ordinary pcap loaded the whole
 capture, threw it away, and only then started work. Three call sites run it
@@ -93,18 +92,14 @@ The percentage is the repair, not a gain: 0.5.122 returns to where 0.5.117 was.
 Resident memory returns with it, 143 MiB back to 99 MiB at four cores, because
 the capture is no longer loaded twice — once to reject it, once to read it.
 
-**0.5.108 raised the multi-core ceiling by removing a read, and the sizing
-advice this page gave for four releases is now wrong.** The `--cores` path is
+**0.5.108 raised the multi-core ceiling by removing a read.** The `--cores` path is
 one serial thread reading, copying and host-pair-peeking every packet while N
 workers wait, and reading through libpcap charged that thread a `read` into
 libpcap's buffer *and* a copy out of it. 0.5.108 maps the capture file
 instead, so it parses records in place out of page cache and copies only the
 frame.
 
-That moves where the curve stops. It used to flatten past two cores and sag
-past four, so the honest advice was that `--cores 4` was the most this
-workload could use. On 0.5.108 eight cores is marginally the best figure on
-the table rather than a regression, and **`--cores 4` is the point where most
+That moves where the curve stops. Reading through libpcap flattens the curve past two cores and sags it past four, which is the shape that makes `--cores 4` a ceiling. With the capture mapped, eight cores is marginally the best figure on the table rather than a regression, and **`--cores 4` is the point where most
 of the gain has arrived, not a ceiling that penalises you for passing it.**
 
 One and two cores do not move, which follows from the design: `--cores 1` and a

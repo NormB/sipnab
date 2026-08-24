@@ -10,8 +10,7 @@ demo. This page is what to change when they are still not enough, in the order
 worth changing them.
 
 **Start here, always:** find out whether you are actually dropping packets. Every
-other decision on this page depends on that number, and until v0.5.77 sipnab
-could not tell you it.
+other decision on this page depends on that number, and sipnab reports it.
 
 ---
 
@@ -305,8 +304,8 @@ empty ring returns `TimeoutExpired`, and the wait is sipnab's own bounded
 
 **So the snaplen arithmetic above binds the TUI, not a headless capture.** On a
 headless run `--snaplen` and the offload settings still matter for capture
-fidelity and for copy cost, but they are no longer what decides how many packets
-the ring holds.
+fidelity and for copy cost, but they are not what decides how many packets the
+ring holds.
 
 **Unverified on hardware.** Whether the kernel selects V3, and what that is worth, rest on
 reasoned from libpcap's source and not measured. `strace -e trace=setsockopt`
@@ -482,17 +481,19 @@ irrelevant. Look outside sipnab:
 sipnab -N -I /var/captures/ --cores 4 --report
 ```
 
-Measured on the reference corpus ([benchmarks](@/docs/benchmarks.md)), throughput peaks
-at **four** cores and then declines: 1.28M pkts/s at 1, 2.17M at 2, 2.31M at 4,
-2.16M at 8. The limit is still the single sequential pcap reader, not the core
-count — that is why 8 cores is slower than 4 rather than faster — so
-**`--cores 4` is the sweet spot and higher values buy nothing.**
+Measured on the reference corpus ([benchmarks](@/docs/benchmarks.md)): 1.13M pkts/s at
+one core, 2.17M at two, 3.23M at four and 3.24M at eight. The curve flattens
+after four rather than declining, so **four cores buys nearly all of it and
+eight buys almost nothing more** — the gap between them is inside the noise of
+a single sweep.
 
-The peak used to be two cores, and moved in 0.5.89. Through 0.5.88 the reader
-computed the frame-provenance digest on that same sequential stage, so the extra
-work capped every core count at once. Moving it onto the workers is what lets
-more workers help. If you are tuning against older advice, this is the number
-that changed.
+Read the flattening as the shape it is. Four cores is where the returns stop,
+not a ceiling the eighth core falls off. Asking for eight costs the extra
+workers' memory for a throughput figure that does not move.
+
+The workers compute the frame-provenance digest rather than the sequential
+reader, so that cost scales with the core count instead of capping every count
+at once.
 
 `--cores` is silently ignored on live capture — it requires `-I`.
 

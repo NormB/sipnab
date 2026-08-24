@@ -7,8 +7,8 @@ can safely ignore.
 
 `Cargo.toml`'s `[features]` table has thirteen entries: the twelve named
 features below, plus `default` — which is `native, tui, audio, metrics`.
-`full` is everything except `wasm` and `bpf`, and that is still true — but it
-is no longer the whole story of what ships.
+`full` is everything except `wasm` and `bpf`, which is not the whole story of
+what ships.
 
 `bpf` sits outside `full` because building it needs a nightly toolchain and
 `bpf-linker` for the kernel object, and this project cannot demand either of a
@@ -124,7 +124,7 @@ which joins nothing. That had it backwards: `bootstrap::launch` spawns the
 capture thread *before* the readiness hand-shake, the chroot, and the privilege
 drop, so every failure from there on abandoned a thread still holding an open
 capture source — and `sipnab -I /nonexistent.pcap`, a mistyped filename, was
-enough to do it. Those paths now go through `capture::stop_and_join`, which sets
+enough to do it. Those paths go through `capture::stop_and_join`, which sets
 the shutdown flag, drops the receiver, and joins. The suites report zero leaks,
 and the fatal classification is what keeps it that way.
 
@@ -166,7 +166,7 @@ last manual sync, so a green local run says nothing about CI. Google v0.7.0
 landed 2026-07-30 13:43 UTC and rewrote one rule's regex. A gate measured and
 enabled against the older package reported 0 alerts locally and 35 in CI, and
 main went red.
-`vale_style_package_is_pinned_to_a_release` holds the pin now. To upgrade: change
+`vale_style_package_is_pinned_to_a_release` holds the pin. To upgrade: change
 the version, `vale sync`, then re-run Vale and read the diff in alert counts
 before committing.
 
@@ -185,7 +185,7 @@ before committing.
   `native,hep,api,mcp,mcp-http`, `bpf`, and `wasm` (lib-only). The documented
   headless server recipe (`native,hep,api,mcp,mcp-http`) gets a full `cargo
   test`, not just a compile check. `bpf` is here because every published
-  `*-linux-gnu` binary now carries it: this leg compiles its userspace half and
+  `*-linux-gnu` binary carries it: this leg compiles its userspace half and
   its test files, while `build.rs` takes its degrading default (no nightly, no
   `bpf-linker` on this runner) — the release job is where the kernel half is
   actually built, under `SIPNAB_BPF_REQUIRED=1`. `--tests` is what makes any of
@@ -249,11 +249,11 @@ enumeration. -->
 
 `cargo fmt --all -- --check`; vale and codespell over the paths CI gives them;
 clippy (`--features full`, `-D warnings`); the
-full test suite; no `unwrap()`/`expect()` in production code; WASM exports in
+full test suite; no `unwrap()`/`expect()` in production code; the privilege-drop
+path still dropping privileges; WASM exports in
 sync with the site's JS; the homepage test count matching the run it just did —
-plus the site and man-page version strings matching `Cargo.toml`; no TODO
-stubs; a refusal to commit a staged [`src/wasm.rs`](../../src/wasm.rs) without a rebuilt bundle
-beside it; and an
+plus the site version matching `Cargo.toml`; no TODO
+stubs; and an
 <!-- vale Google.Semicolons = YES -->
 
 advisory notice when a commit touches a file `docs/internals/` cites without
@@ -317,12 +317,12 @@ rather than nothing. A passing run still prints one line per gate.
 
 Both gates capture their tool's output rather than let it stream, because gate
 5 reads the test run back for the homepage count and a streamed clippy would
-bury the per-gate summary. That capture used to swallow the answer: a failure
-printed `FAIL` and a "run it yourself" line, so whoever hit it paid for a
-second full suite run to learn the name of the test, and could not tell until
-that run finished whether the break was theirs or already on `HEAD`. Settling
-that one question cost an extraction of a pristine `HEAD` into a scratch
-directory.
+bury the per-gate summary. Capturing without reporting swallows the answer,
+which is what the naming above prevents: a failure that prints only `FAIL` and
+a "run it yourself" line costs whoever hit it a second full suite run to learn
+the name of the test, and until that run finishes they cannot tell whether the
+break is theirs or already on `HEAD`. Settling that one question once cost an
+extraction of a pristine `HEAD` into a scratch directory.
 
 That means **every commit runs clippy and the whole test suite** and takes
 minutes. It is not optional theatre: the homepage-count gate alone means adding
@@ -356,7 +356,7 @@ Those gates let their tool write straight to the terminal instead of capturing
 it, so a failure arrives with the rustfmt diff, the clippy lint or the rustdoc
 warning already on screen. Nothing to withhold, and nothing to fix there.
 
-The reduced-combination gate is the newest and the least obvious. Every other
+The reduced-combination gate is the least obvious of them. Every other
 check in that hook builds with `--all-features`, which cannot see `#[cfg]`-gating
 rot at all: an item that needs a feature-gated module compiles perfectly until
 someone builds without that feature. It has bitten twice — the `features` job
@@ -395,14 +395,13 @@ touches only the copy, so an interrupt leaves the working tree alone. The rustdo
 pass is newer than those figures and is not included in them. Its
 `target/nonlinux-shim` directory holds 1.3 GB after that first run and then
 grows with the number of **distinct source states** it has checked, because
-cargo keeps the artifacts of every version it has already built. This page
-used to say "1.7 GB after a dozen", which measured a handful of trees. Across
-a day of commits it reached **78 GB** on 2026-08-08 and exhausted the disk
-mid-release. Delete the directory as routine maintenance,
-not only when space is tight — it is disposable and the next run rebuilds it
-in 50 seconds. The script's header records the four alternatives it replaced and the
-evidence against each — the FreeBSD cross-check cannot escape mimalloc's C
-build, and the wasm check never compiles `capture/` at all.
+cargo keeps the artifacts of every version it has already built. Across a day
+of commits it reached **78 GB** on 2026-08-08 and exhausted the disk
+mid-release. Delete the directory as routine maintenance, not only when space
+is tight — it is disposable and the next run rebuilds it in 50 seconds. The
+script's header records the four alternatives it replaced and the evidence
+against each — the FreeBSD cross-check cannot escape mimalloc's C build, and
+the wasm check never compiles `capture/` at all.
 
 Two things keep it honest. It counts `target_os` predicates before and after
 the rewrite and refuses when the numbers disagree, because a pattern that
@@ -629,14 +628,11 @@ static musl tarballs already cover the no-audio tarball case), `x86_64` and
 `aarch64` `linux-musl`, and both macOS architectures.
 
 Eight builds, six tarballs — the number of builds is not the number of artifacts.
-This page previously described a release as publishing "eight artifacts", and
-called the `noaudio` variants `.deb`-only. Neither had drifted: the `noaudio`
-variants landed on 2026-07-07 and gained `.rpm` on 2026-07-09, while the
-`.deb`-only sentence dates from 2026-07-25 and the "eight artifacts" count from
-2026-07-29. Both were wrong the day they landed, written by reading the matrix
-and counting its rows. That is the failure mode a re-stated number has when
-nothing produces it, so `release_artifact_counts_match_the_build_matrix` now
-derives every count here from the matrix itself.
+Counting matrix rows answers the first and says nothing about the second, which
+is how a hand-restated count comes to be wrong on the day someone types it
+rather than drifting there later.
+`release_artifact_counts_match_the_build_matrix` derives every count on this
+page from the matrix itself.
 
 The gnu targets build inside a `rust:1-bookworm` container so
 their glibc floor is 2.36. The aarch64 gnu target cross-compiles inside that
@@ -649,17 +645,18 @@ and attested with `actions/attest-build-provenance`, so a downloader can run
 `gh attestation verify <file> --repo NormB/sipnab`.
 
 The macOS builds carry the same kind of floor, arrived at the other way round.
-Nothing set `MACOSX_DEPLOYMENT_TARGET` for a long time, so each darwin tarball
-floored wherever the pinned rustc defaulted to — 11.0 for `aarch64-apple-darwin`
-and 10.12 for `x86_64-apple-darwin`, a real constraint that no file in the
-repository named. `/download` filled the gap with "macOS 12+" for both, which was
-wrong for each and concealed that they differ. `release.yml` now pins the target
-per build, at those same two values so no binary changed, and
+`release.yml` pins `MACOSX_DEPLOYMENT_TARGET` per build — 11.0 for
+`aarch64-apple-darwin`, 10.12 for `x86_64-apple-darwin` — and
 `published_macos_floors_match_the_toolchain` holds [`website/config.toml`](../../website/config.toml) to what
-the workflow pins. That gate also refuses a floor pinned *below* the compiler's
-own default: the config and the workflow would agree, and the published number
-would still be an OS the binary cannot run on. To move real support, change the
-two `floor=` lines and let the gate walk the published numbers to match.
+the workflow pins. Both values are what the pinned rustc defaults to, so the
+pins describe the binaries rather than change them. Leave the variable unset
+and each tarball still floors wherever rustc lands: a real constraint no file
+in the repository names, which is how `/download` came to say "macOS 12+" for
+both — wrong for each, and concealing that they differ. That gate also refuses
+a floor pinned *below* the compiler's own default: the config and the workflow
+would agree, and the published number would still be an OS the binary cannot
+run on. To move real support, change the two `floor=` lines and let the gate
+walk the published numbers to match.
 
 Two CycloneDX SBOMs ship with each release, and both the checksum file and the
 attestation cover them: `sipnab-<version>.cdx.json` for the binary
@@ -677,12 +674,12 @@ by exactly one component, `libloading` — and the gnu artifacts add `bpf`, whic
 brings in four crates `full` alone never reaches (`aya`, `aya-obj`, `object`,
 `assert_matches`). `THIRD-PARTY-NOTICES.md` comes from that same set, named
 once as `RELEASE_FEATURES` in
-[`scripts/build-third-party-notices.py`](../../scripts/build-third-party-notices.py). That constant said `full`
-while the gnu binaries shipped `full,bpf`, and because
+[`scripts/build-third-party-notices.py`](../../scripts/build-third-party-notices.py). Let that constant say
+`full` while the gnu binaries ship `full,bpf` and
 `third_party_notices_are_current`
-compares the committed file against that same generator, both sides of the gate
-agreed while both were wrong.
-`the_notices_and_sbom_cover_every_released_feature_set` now runs the release
+cannot see it: it compares the committed file against that same generator, so
+both sides of the gate agree while both are wrong.
+`the_notices_and_sbom_cover_every_released_feature_set` runs the release
 workflow's own feature-computing step for every matrix entry and fails if
 either the SBOM flag or `RELEASE_FEATURES` stops covering the union, so one
 document over-covers rather than under-covers every binary published, which is
@@ -724,10 +721,11 @@ fails — so bumping a version is one edit plus the ones the gates point you at.
 That enforcement lives in **one** place: `docs_current_version_markers_match_cargo`
 and `man_page_version_and_license_match_cargo` in
 [`tests/docs_drift_test.rs`](../../tests/docs_drift_test.rs), which the hook
-runs via `cargo test` and CI runs again. The hook used to carry its own shell
-re-implementation with a separate file list. The two diverged and it rejected a
-correct release commit over a deliberately historical version reference. If you
-need to change which docs carry a marker, change the Rust list.
+runs via `cargo test` and CI runs again. One place, not two: a shell
+re-implementation in the hook, carrying its own file list, diverged from the
+Rust one and rejected a correct release commit over a deliberately historical
+version reference. If you need to change which docs carry a marker, change the
+Rust list.
 
 Note which files are deliberately *excluded*: pages that record the release
 something was **measured** on — the benchmarks pages — must not track the crate

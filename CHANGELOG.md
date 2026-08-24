@@ -10,6 +10,92 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **sipnab can ask an rtpengine relay which calls it is carrying
+  (`--rtpengine-control <ADDR>`).** A passive decoder sees the `offer` that
+  created a stream, or it sees nothing: a call already in progress when sipnab
+  started has no control exchange left to read, and its media arrives as an
+  orphan. Incident response usually begins mid-call, which is exactly when that
+  gap is worst. sipnab now closes it by asking, at two moments and no others --
+  once at startup, before the capture opens, and again when a stream turns up
+  that nothing explains. Confirmed against rtpengine 12.5.1.
+
+  **Read-only in the type system, not by convention.** Only `list` and `query`
+  are representable in the type that reaches the relay, so `offer`, `answer`,
+  `delete` and `start recording` cannot be sent from this path at all. Adding
+  one would mean adding a method, which a diff shows.
+
+  **Not a poller.** There is no timer and no interval flag. Three bounds hold
+  it, none of which grow with how much traffic the capture carries: sipnab asks
+  about each relay-side socket at most once for the run, a per-run ceiling caps
+  the total transactions, and the queue handing sockets to the reconciler is
+  bounded. When any of them bites, sipnab counts it and says so -- a stream it
+  never asked about is not a stream the relay disowned, and the answer names
+  which of the two it has.
+
+  **Refused on `-I <file>`.** The calls in a capture ended in the past, so a
+  live relay's answer would describe whatever is up today: other people's
+  traffic, arriving with the authority of a direct answer and correlated
+  against a capture it has nothing to do with.
+
+  **The asking runs on its own thread.** The ask is a UDP round trip with a
+  two-second ceiling, and making it from the packet path would stall capture
+  for as long as the relay stayed quiet -- dropped packets traded for an
+  attribution.
+
+  Endpoints the relay names carry their own provenance. sipnab asked for them
+  rather than capturing them, so there is no capture source to record and a
+  binding made from one withholds the cross-source claim instead of inventing
+  one.
+
+### Fixed
+
+- **`--kill-ua` detected nothing on its own, and said nothing about it.** The
+  flag promised "Detect specific User-Agent strings associated with scanners"
+  with no condition attached, and `batch::run` reads the pattern INSIDE
+  `if kill_scanner_active` -- so given alone it fed a detector nobody built.
+  Measured on the shipped binary: `--kill-ua sipnab-test` over a capture
+  carrying `User-Agent: sipnab-test/1.0` produced zero alerts, and adding
+  `--kill-scanner` produced `detection=ua_pattern` on the same capture. The
+  symptom was silence, which is what a network with no scanners on it looks
+  like.
+
+  sipnab now refuses the combination and names the remedy. It does NOT arm the
+  detector for the operator: arming scanner detection also arms the path that
+  TRANSMITS SIP responses on a live run, so a flag whose help says "detect"
+  would have started sending packets at third parties. The refusal lives in
+  `bootstrap`, not in clap's `requires`, because `[security] kill_scanner =
+  true` arms the same detector and clap sees only the command line -- a
+  `requires` would refuse a run that works. A test pins that case.
+
+  The test that should have caught this ran `--kill-ua` alone and asserted all
+  seven messages survived, which passes whether or not the flag does anything.
+  It is now two tests: one that the refusal names `--kill-scanner`, one that
+  the pattern reaches the detector and matches.
+
+- **sipnab counted the relay commands it could not attribute and never said
+  so.** `note_media_creating_command` has tallied `subscribe`, `publish` and
+  `start recording` since the `ng` decoder landed, and the counter's own doc
+  comment calls a run that sees one and stays silent "the failure this project
+  already named once -- a forensics tool that cannot say what it did not
+  attribute". No surface ever read the tally, so that is what every run did,
+  while two documentation pages said sipnab "counts them and says so instead".
+  The dialog report now carries the count, beside the calls a media relay
+  named, because both answer the same question: what did the relay do that
+  this report does not show as an ordinary call leg. A test renders a real
+  report and fails if the line stops appearing -- the formatting helper alone
+  would have stayed green through exactly the deletion that caused this.
+
+- **The home page's engineering-notes count said three where the template caps
+  at three.** 0.5.123 recorded that "the home page carries the three most recent
+  engineering notes"; the template takes `slice(end=3)`, which is a CAP, and the
+  section holds two -- so the page carries two, correctly, and the sentence
+  describing it did not. Both the entry's wording and the template comment now
+  state the cap, which stays true whether the section holds two notes or ten.
+  The generated list never went stale, which is what that change was for; the
+  prose counting it did.
+
 ## [0.5.123] - 2026-08-22
 
 ### Added
