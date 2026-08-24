@@ -380,8 +380,12 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
   </div>
 </section>
 
-<!-- Engineering notes: the three most recent, pulled from the section so this
-     cannot go stale the way a hand-written list would. -->
+<!-- Engineering notes: the most recent, capped at three. Pulled from the
+     section so the LIST cannot go stale the way a hand-written one would.
+     The cap is three; how many appear is however many notes exist, which is
+     why nothing here states a count -- this comment said "the three most
+     recent" while the section held two, and a number in prose has to be kept
+     true by hand, which is the thing the generated list exists to avoid. -->
 {% set notes = get_section(path="notes/_index.md") %}
 {% if notes.pages | length > 0 %}
 <section class="notes-callout" id="notes">
