@@ -1050,6 +1050,7 @@ sipnab **declined**.
 | Key | What it counts |
 |-----|----------------|
 | `media_creating_commands` | rtpengine `subscribe`, `publish` and `start recording` commands seen and deliberately not attributed |
+| `tls` | TLS decryption state — **absent** unless a decryptor ran |
 
 Declining is the right call. Those commands create media belonging to a call
 without being one of its two legs, and decoding one as an ordinary leg makes a
@@ -1060,6 +1061,44 @@ Which makes the count the disclosure. A run that saw `start recording` and said
 nothing would be a tool that cannot say what it did not attribute. **The key is
 always present and zero is a real answer** — a field that appears only once
 something has happened is a field no client learns exists.
+
+#### `caveats.tls` — is decryption working?
+
+Absent when nobody supplied keys. That is not a decryption failure, and
+flattening it into a report of zeroes would make it look like one.
+
+When a decryptor ran:
+
+```json
+"tls": {
+  "keylog_entries": 4,
+  "sessions_with_keys": 1,
+  "app_data_records": 900,
+  "decrypted_records": 895,
+  "undecrypted_records": 5,
+  "late_recovered": 0,
+  "late_evicted": 0,
+  "read_nothing": false
+}
+```
+
+**Read `read_nothing`, not the arithmetic.** A TLS handshake carries records
+sipnab never loads keys for, so `app_data_records > decrypted_records` is not by
+itself a failure — deriving a verdict from the two counts sends an operator
+after keys that already work. `read_nothing` is `true` only for the unambiguous
+case: application data arrived and none of it opened.
+
+That case is the reason this block exists. A capture holding ciphertext nobody
+can open produces a dialog listing identical to one from a quiet network, and
+without this number there is nothing on the page to tell them apart.
+
+`late_recovered` and `late_evicted` stay separate because "we never had the
+keys" and "we had them and had already discarded the ciphertext" are different
+problems. A larger hold fixes the second. Supplying keys fixes the first.
+
+The counts are cumulative for the process, and sipnab publishes them as
+decryption happens — so a client can read them mid-run rather than waiting for
+the end-of-run summary the command line prints.
 
 The MCP `capture_status` tool carries the same block under the same name, so
 this endpoint and an agent never disagree about it.

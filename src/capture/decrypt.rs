@@ -1277,6 +1277,10 @@ impl TlsDecryptor {
             return None;
         }
         self.app_data_records += 1;
+        // Published as it happens rather than summed at the end of the run:
+        // the end-of-run report reaches the CLI's summary, and a live capture
+        // serving REST or MCP never gets there.
+        crate::capture::note_tls_record_offered();
 
         // Lazily populate sessions from keylog entries
         self.ensure_sessions_populated();
@@ -1312,6 +1316,7 @@ impl TlsDecryptor {
                 },
             ) {
                 *decrypted_count += 1;
+                crate::capture::note_tls_record_decrypted();
                 tracing::info!(
                     "TLS session decrypted [session={}, cipher={}]",
                     hex_id(&key.client_random),
@@ -1359,6 +1364,7 @@ impl TlsDecryptor {
         // certainty for a maybe.
         if cost > REWIND_BUDGET_BYTES {
             self.rewind_evicted += 1;
+            crate::capture::note_tls_record_late_evicted();
             return;
         }
         if !self.rewind_pending.contains_key(&(src, dst))
@@ -1369,6 +1375,7 @@ impl TlsDecryptor {
                 for r in &dropped {
                     self.rewind_bytes -= r.record.payload.len();
                     self.rewind_evicted += 1;
+                    crate::capture::note_tls_record_late_evicted();
                 }
             }
         }
@@ -1378,6 +1385,7 @@ impl TlsDecryptor {
         {
             self.rewind_bytes -= old.record.payload.len();
             self.rewind_evicted += 1;
+            crate::capture::note_tls_record_late_evicted();
         }
         queue.push_back(PendingRecord {
             record: record.clone(),
@@ -1397,6 +1405,7 @@ impl TlsDecryptor {
                 Some(old) => {
                     self.rewind_bytes -= old.record.payload.len();
                     self.rewind_evicted += 1;
+                    crate::capture::note_tls_record_late_evicted();
                     if self
                         .rewind_pending
                         .get(&key)
@@ -1450,6 +1459,7 @@ impl TlsDecryptor {
                 // than re-sweep it on every key load for the rest of the run.
                 if cutoff.is_some_and(|c| item.timestamp < c) {
                     self.rewind_evicted += 1;
+                    crate::capture::note_tls_record_late_evicted();
                     continue;
                 }
                 // Trial budget spent: keep the rest untried and pick them up
@@ -1493,6 +1503,7 @@ impl TlsDecryptor {
                         },
                     ) {
                         *decrypted_count += 1;
+                        crate::capture::note_tls_record_decrypted();
                         opened = Some(plaintext);
                         break;
                     }
@@ -1500,6 +1511,7 @@ impl TlsDecryptor {
                 match opened {
                     Some(plaintext) => {
                         self.rewind_recovered += 1;
+                        crate::capture::note_tls_record_late_recovered();
                         recovered.push(RecoveredRecord {
                             plaintext,
                             timestamp: item.timestamp,
@@ -2737,6 +2749,90 @@ mod tests {
         let decrypted = result.unwrap();
         assert!(decrypted.starts_with(b"INVITE sip:"));
         assert_eq!(d.decrypted_count, 1);
+    }
+
+    /// A decrypt publishes to the process-wide tally, not only to the
+    /// decryptor's own fields.
+    ///
+    /// The decryptor's counters reach the CLI's end-of-run summary. A LIVE
+    /// capture serving REST or MCP never reaches the end of the run, so for the
+    /// whole time an operator or an agent might ask "is decryption working?"
+    /// the answer existed only inside a struct neither server holds a handle
+    /// to. The published tally is what closes that, and this is the test that a
+    /// decrypt actually reaches it.
+    ///
+    /// Asserted as a DELTA. The tally is process-wide and every other test in
+    /// this module that decrypts anything moves it, so an absolute figure would
+    /// be true only until the next test ran.
+    #[test]
+    fn a_decrypt_reaches_the_published_tally() {
+        let offered_before =
+            crate::capture::published_tls_decrypt().map_or(0, |r| r.app_data_records);
+        let opened_before =
+            crate::capture::published_tls_decrypt().map_or(0, |r| r.decrypted_records);
+
+        let mut plaintext = b"INVITE sip:test@example.com SIP/2.0\r\n\r\n".to_vec();
+        plaintext.push(23);
+
+        let mut d = TlsDecryptor {
+            keylog_entries: make_keylog_entries(),
+            sessions: HashMap::new(),
+            crypto: Box::new(MockCrypto {
+                decrypt_result: Some(plaintext),
+            }),
+            decrypted_count: 0,
+            app_data_records: 0,
+            lockon_budget: LOCKON_TRIAL_BUDGET,
+            lockon_window: SEQ_LOCKON_WINDOW,
+            keylog_path: None,
+            keylog_source: None,
+            observed_handshakes: Vec::new(),
+            pending_client_randoms: IndexMap::new(),
+            keylog_processed_count: 0,
+            rewind_pending: IndexMap::new(),
+            rewind_bytes: 0,
+            keylog_generation: 0,
+            last_rewind_generation: 0,
+            newest_seen: None,
+            keys_may_still_arrive: false,
+            rewind_evicted: 0,
+            rewind_recovered: 0,
+            rsa: None,
+        };
+        let record = TlsRecord {
+            content_type: TlsContentType::ApplicationData,
+            version: TlsVersion::Tls12,
+            length: 64,
+            payload: vec![0xEE; 64],
+        };
+        // A decryptor has to be announced before anything it does is readable:
+        // absent that, `published_tls_decrypt` returns None, which means "no
+        // keys were supplied" and is a different finding from any count.
+        crate::capture::note_tls_decryptor_installed(d.keylog_entry_count(), 0);
+        assert!(
+            d.try_decrypt(
+                &record,
+                "10.0.0.1".parse().unwrap(),
+                "10.0.0.2".parse().unwrap(),
+            )
+            .is_some(),
+            "the fixture must decrypt, or this test proves nothing"
+        );
+
+        let published = crate::capture::published_tls_decrypt()
+            .expect("an installed decryptor must publish a report");
+        assert!(
+            published.app_data_records > offered_before,
+            "the record offered did not reach the published tally \
+             ({offered_before} -> {})",
+            published.app_data_records
+        );
+        assert!(
+            published.decrypted_records > opened_before,
+            "the record opened did not reach the published tally \
+             ({opened_before} -> {})",
+            published.decrypted_records
+        );
     }
 
     /// A non-ApplicationData (Handshake) record is never decrypted.
