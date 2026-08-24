@@ -914,8 +914,17 @@ pub struct OutputArgs {
     /// call, record it, or obtain anyone's permission to keep it. So nothing
     /// here carries a signature, no party carries a `name` — a `From` header is
     /// what the sender chose to write, not an identity anyone established — and
-    /// the export carries SIGNALING ONLY, with no media and no URL pointing at
-    /// media held elsewhere, because sipnab hosts nothing to point at.
+    /// no URL ever points at media held elsewhere, because sipnab hosts nothing
+    /// to point at.
+    ///
+    /// Audio this run RETAINED travels INSIDE the container, as a `recording`
+    /// Dialog Object holding the WAV inline with a `sha512` `content_hash`. It
+    /// is not a recording: sipnab reconstructed it from a mirror port, and the
+    /// note the exported file carries travels with it saying so. Above a
+    /// measured budget the media is REFUSED out loud rather than dropped —
+    /// `capture_completeness.media` says which of carried, refused-over-budget,
+    /// none-decodable or not-considered applies, so an absent `recording` never
+    /// has to be read as a call with no audio.
     ///
     /// It also carries what THIS capture missed: frames no decoder could read,
     /// SIP a port gate discarded, messages a retention cap evicted. vCon has no

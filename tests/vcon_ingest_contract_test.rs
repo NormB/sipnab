@@ -94,9 +94,6 @@ fn capture_of(capture: &str) -> (DialogStore, String) {
     (store, call_id)
 }
 
-/// A dialog off a real capture exports a container with every part Phase 1
-/// promises, reachable entirely through the public API.
-
 /// The largest encoded container the probed store accepted into EVERY backend.
 ///
 /// 10 MiB, from the file spool's own refusal: `16777749 > 10485760`. Named

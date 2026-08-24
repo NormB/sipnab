@@ -83,6 +83,35 @@ pub fn write_wav_with_provenance(
     channels: u16,
     comment: Option<&str>,
 ) -> Result<()> {
+    let bytes = wav_bytes(samples, sample_rate, channels, comment);
+
+    let mut file = std::fs::File::create(path)
+        .with_context(|| format!("Failed to create WAV file: {}", path.display()))?;
+    file.write_all(&bytes)?;
+    file.flush()?;
+    Ok(())
+}
+
+/// [`write_wav_with_provenance`], rendered to memory instead of to a path.
+///
+/// The one place the RIFF layout is written. A vCon carries its media INLINE —
+/// `docs/design/vcon.md` §2.5 refuses a by-reference `url` because sipnab hosts
+/// nothing — so the exporter needs the same bytes without a file to put them
+/// in. Building them with a second writer would be two encoders of one format,
+/// and the failure that invites is not a crash: it is a container whose
+/// `content_hash` verifies against audio that differs from the `.wav` an
+/// operator exported beside it, which reads as tampering rather than as drift.
+///
+/// The chunk order is load-bearing and is argued at the call site below: the
+/// note follows `data` so a fixed-offset reader still finds the samples where a
+/// classic 44-byte WAV puts them.
+#[must_use]
+pub fn wav_bytes(
+    samples: &[i16],
+    sample_rate: u32,
+    channels: u16,
+    comment: Option<&str>,
+) -> Vec<u8> {
     let bits_per_sample: u16 = 16;
     let byte_rate = sample_rate * u32::from(channels) * u32::from(bits_per_sample) / 8;
     let block_align = channels * bits_per_sample / 8;
@@ -92,31 +121,30 @@ pub fn write_wav_with_provenance(
     // header's remainder; the INFO chunk adds its own full length.
     let file_size = 36 + data_size + info.len() as u32;
 
-    let mut file = std::fs::File::create(path)
-        .with_context(|| format!("Failed to create WAV file: {}", path.display()))?;
+    let mut out: Vec<u8> = Vec::with_capacity(44 + samples.len() * 2 + info.len());
 
     // RIFF header
-    file.write_all(b"RIFF")?;
-    file.write_all(&file_size.to_le_bytes())?;
-    file.write_all(b"WAVE")?;
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&file_size.to_le_bytes());
+    out.extend_from_slice(b"WAVE");
 
     // fmt sub-chunk
-    file.write_all(b"fmt ")?;
-    file.write_all(&16u32.to_le_bytes())?; // sub-chunk size (PCM = 16)
-    file.write_all(&1u16.to_le_bytes())?; // audio format (1 = PCM)
-    file.write_all(&channels.to_le_bytes())?;
-    file.write_all(&sample_rate.to_le_bytes())?;
-    file.write_all(&byte_rate.to_le_bytes())?;
-    file.write_all(&block_align.to_le_bytes())?;
-    file.write_all(&bits_per_sample.to_le_bytes())?;
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&16u32.to_le_bytes()); // sub-chunk size (PCM = 16)
+    out.extend_from_slice(&1u16.to_le_bytes()); // audio format (1 = PCM)
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&byte_rate.to_le_bytes());
+    out.extend_from_slice(&block_align.to_le_bytes());
+    out.extend_from_slice(&bits_per_sample.to_le_bytes());
 
     // data sub-chunk
-    file.write_all(b"data")?;
-    file.write_all(&data_size.to_le_bytes())?;
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_size.to_le_bytes());
 
-    // Write samples as little-endian i16
+    // Samples as little-endian i16
     for &sample in samples {
-        file.write_all(&sample.to_le_bytes())?;
+        out.extend_from_slice(&sample.to_le_bytes());
     }
 
     // INFO goes AFTER `data`, and the ordering is the whole decision.
@@ -132,12 +160,8 @@ pub fn write_wav_with_provenance(
     // before this existed, so every one of those readers is unaffected, and
     // compliant readers walk to the end and find the note. An artefact's first
     // duty is to play; the note is worth nothing in a file nobody can open.
-    if !info.is_empty() {
-        file.write_all(&info)?;
-    }
-
-    file.flush()?;
-    Ok(())
+    out.extend_from_slice(&info);
+    out
 }
 
 /// Unit tests for the RIFF/WAVE PCM writer.

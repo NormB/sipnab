@@ -2641,7 +2641,14 @@ fn no_documentation_table_repeats_a_row() {
     // against what the draft says. Attributed by measurement before the number
     // moved: those three files gained exactly one table separator each, no
     // other page gained any, and design docs have no generated mirror.
-    const EXPECTED_TABLES: usize = 648;
+    // 648 -> 650: one table and its generated mirror, in `docs/mcp-tools.md`
+    // -- the four values `capture_completeness.media` can take, now that a
+    // container may carry audio. The table exists because an absent
+    // `recording` object has four quite different causes and an agent must not
+    // have to infer which one from a missing key. Attributed by measurement
+    // before the number moved: those two files gained exactly one table
+    // separator each (47 -> 48), and no other page gained any.
+    const EXPECTED_TABLES: usize = 650;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

@@ -3774,13 +3774,30 @@ impl SipnabMcp {
         let facts =
             crate::analysis::CaptureFacts::observed(&ds, &ss, crate::capture::captured_packets());
         let analysis = crate::analysis::analyze_with(&ds, &ss, None, &facts);
-        let container = crate::output::vcon::export_dialog(
+
+        // Media is attempted always. When the run retained no payload the
+        // decode fails, and its message — which reports what was MEASURED and
+        // never claims the call was silent — travels in the container instead
+        // of an absence the agent would have to interpret.
+        let dialog_streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(call_id).collect();
+        let decoded = crate::rtp::audio_export::decode_dialog_audio(&dialog_streams);
+        let reason = decoded
+            .as_ref()
+            .err()
+            .map_or_else(String::new, |e| e.to_string());
+        let audio = match decoded.as_ref() {
+            Ok(audio) => crate::output::vcon::ObservedAudio::Decoded(audio),
+            Err(_) => crate::output::vcon::ObservedAudio::NothingToDecode(&reason),
+        };
+
+        let container = crate::output::vcon::export_dialog_with_audio(
             dialog,
             &crate::output::vcon::ExportContext {
                 capture_id: crate::output::vcon::dialog_capture_id(dialog),
                 facts: &facts,
                 analysis: Some(&analysis),
             },
+            audio,
         );
         let value = serde_json::to_value(&container).map_err(|e| {
             rmcp::ErrorData::internal_error(format!("vCon serialization failed: {e}"), None)
@@ -3821,14 +3838,19 @@ impl SipnabMcp {
         description = "Exports one dialog as a vCon container \
                        (draft-ietf-vcon-vcon-core, syntax 0.4.0) and returns it \
                        as structured JSON. This is an OBSERVER vCon: sipnab \
-                       watched packets go past a tap, so nothing is signed, no \
-                       party carries a name, and the container holds SIGNALING \
-                       ONLY -- no media and no reference to media held \
-                       elsewhere. What the capture MISSED travels with it, in \
-                       the analysis object and in a sipnab-capture-completeness \
-                       attachment. Returns an error when the Call-ID is not in \
-                       the active store, or when this binary was built without \
-                       the 'vcon' feature.",
+                       watched packets go past a tap, so nothing is signed and \
+                       no party carries a name. Audio the run RETAINED travels \
+                       inline as a recording Dialog Object, base64url with a \
+                       sha512 content_hash and never a url -- it was \
+                       reconstructed from a mirror port and is NOT a recording \
+                       made by the endpoints. Over a measured size budget it is \
+                       refused out loud rather than dropped. What the capture \
+                       MISSED travels with it, in the analysis object and in a \
+                       sipnab-capture-completeness attachment, whose media \
+                       field says which of carried, refused-over-budget, \
+                       none-decodable or not-considered applies. Returns an \
+                       error when the Call-ID is not in the active store, or \
+                       when this binary was built without the 'vcon' feature.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn export_vcon(

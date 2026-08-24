@@ -4786,13 +4786,31 @@ fn export_vcon(
 
     let facts = crate::analysis::CaptureFacts::observed(dialog_store, stream_store, frames_read);
     let analysis = crate::analysis::analyze_with(dialog_store, stream_store, None, &facts);
-    let container = crate::output::vcon::export_dialog(
+
+    // Media is attempted ALWAYS, never gated on a second flag. `--retain-audio`
+    // is already the operator's opt-in: without it there is no payload to
+    // decode, and the container then carries the exporter's own explanation of
+    // what was measured instead of an absence a reader has to interpret.
+    let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
+        stream_store.streams_for(call_id).collect();
+    let decoded = crate::rtp::audio_export::decode_dialog_audio(&dialog_streams);
+    let reason = decoded
+        .as_ref()
+        .err()
+        .map_or_else(String::new, |e| e.to_string());
+    let audio = match decoded.as_ref() {
+        Ok(audio) => crate::output::vcon::ObservedAudio::Decoded(audio),
+        Err(_) => crate::output::vcon::ObservedAudio::NothingToDecode(&reason),
+    };
+
+    let container = crate::output::vcon::export_dialog_with_audio(
         dialog,
         &crate::output::vcon::ExportContext {
             capture_id: crate::output::vcon::dialog_capture_id(dialog),
             facts: &facts,
             analysis: Some(&analysis),
         },
+        audio,
     );
 
     let mut json = match container.to_json() {

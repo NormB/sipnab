@@ -58,7 +58,7 @@ ordinary update.
 | [`list_captures`](#list-captures) | -- | Capture files in `--mcp-file-root`, with sizes |
 | [`export_capture`](#export-capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
 | [`export_audio`](#export-audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
-| [`export_vcon`](#export-vcon) | `call_id` | One dialog as a vCon conversation container, structured JSON. Unsigned, signaling only, and it carries what the capture missed |
+| [`export_vcon`](#export-vcon) | `call_id` | One dialog as a vCon conversation container, structured JSON. Unsigned, retained audio inline, and it carries what the capture missed |
 | [`shutdown_server`](#shutdown-server) | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
 | [`open_capture`](#open-capture) | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
 | [`save_findings`](#save-findings) | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
@@ -2137,8 +2137,33 @@ four things are absent by design, and their absence is the message:
 - **No consent and no lawful-basis attachment.** An empty consent field reads
   as "nobody recorded consent", a statement about the CALL. The truth is a
   statement about the producer: sipnab was never in a position to record one.
-- **Signaling only.** No media, and no `url` pointing at media held elsewhere,
-  because sipnab hosts nothing a URL could reach.
+- **No `url`, ever.** Media travels INLINE or not at all, because sipnab hosts
+  nothing a URL could reach and a dead link inside a record is
+  indistinguishable from evidence somebody removed.
+
+**What happens to the audio.** `dialog.type: "recording"` is a FORMAT term for
+a Dialog Object carrying media. A consumer's `recordings` table is a PROVENANCE
+term for containers from an in-path recorder. sipnab emits the first and is
+never the second: it reconstructed the audio from a mirror port, and every WAV
+it writes says "not a recording made by the endpoints".
+
+So audio the run RETAINED travels inline -- base64url, `mediatype:
+"audio/x-wav"`, and a `content_hash` of `sha512-` plus the base64url SHA-512 of
+the DECODED bytes, which `sha512sum` on the exported `.wav` reproduces. The
+`duration` on that object is the FILE's, never the call's. When a payload ring
+dropped frames, a `recording-set` wraps it carrying the CALL's media window, so
+the two clocks stand side by side -- that is the only way the format can say
+"this file is a fragment of that call".
+
+`capture_completeness.media` says which of four things happened, so nobody has
+to read a missing `recording` object as an answer:
+
+| `media` | What it means |
+|---|---|
+| `carried` | The audio is inline in a `recording` Dialog Object |
+| `refused-over-budget` | sipnab decoded audio and REFUSED to inline it. One probed store answers 204 and drops a payload over 10485760 bytes without telling the producer, so the emitter enforces a 5 MiB budget itself. The audio exists and was not truncated |
+| `none-decodable` | The run decoded no audio. `media_note` reports the measurement -- never that the call was silent |
+| `not-considered` | Nobody asked this export for media. A fact about the export, not about the call |
 
 **What the capture MISSED travels with the container, in two places.** vCon has
 no field meaning "this record is incomplete" — `dialog.type: "incomplete"` says
@@ -2201,7 +2226,9 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
         "messages_evicted": 0,
         "dialogs_refused": 0,
         "dialogs_rotated": 0,
-        "blind_spots": []
+        "blind_spots": [],
+        "media": "none-decodable",
+        "media_note": "No audio payload retained: sipnab measured 425 RTP packet(s) of PCMU on 1 decodable stream, but kept none of their payload, so there is nothing to decode. This is a statement about what this run kept, not a finding that the call was silent. ..."
       }
     }
   ],
@@ -2210,7 +2237,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.124 (passive observer; signaling only)",
+      "product": "sipnab 0.5.124 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",

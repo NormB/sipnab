@@ -12,11 +12,12 @@
 
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Utc};
 
 use super::g711::{G711Codec, decode_frame};
 use super::opus_decode::OpusStreamDecoder;
-use super::stream::RtpStream;
+use super::stream::{RtpStream, StreamKey};
 use super::wav::write_wav_with_provenance;
 
 /// Export a single RTP stream to a mono WAV file.
@@ -98,6 +99,104 @@ fn wrap_clause(dropped: u64) -> String {
 ///
 /// Returns an error if no exportable streams are found.
 pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<String> {
+    let audio = decode_dialog_audio(streams)?;
+    std::fs::write(path, &audio.wav)
+        .with_context(|| format!("Failed to create WAV file: {}", path.display()))?;
+
+    // `audio.partial` again, not the clauses re-listed. Building the summary
+    // from its own copy is how the file's note and the message printed beside
+    // it drift apart: adding `direction_clause` to one and not the other did
+    // exactly that, and a test comparing them caught it.
+    Ok(format!(
+        "{} to {}{}",
+        audio.summary_head,
+        path.display(),
+        audio.partial
+    ))
+}
+
+/// One dialog's audio, decoded into a WAV that has not been written anywhere.
+///
+/// The file on disk and the media inlined in a vCon are the SAME bytes, from
+/// one decode, carrying one provenance note. Two producers of "sipnab's audio
+/// for this call" is the drift this type exists to make impossible: the
+/// container's `content_hash` has to verify against the `.wav` an operator
+/// exported beside it, and a second encoder makes the two disagree in a way
+/// that reads as tampering rather than as a bug.
+#[derive(Debug, Clone)]
+pub struct DialogAudio {
+    /// The complete WAV, note and all, ready to write or to inline.
+    pub wav: Vec<u8>,
+    /// Samples per second per channel in [`Self::wav`].
+    pub sample_rate: u32,
+    /// 1 for a mono export, 2 for a stereo one.
+    pub channels: u16,
+    /// How long the FILE is, in seconds.
+    ///
+    /// A fact about the file, never about the call. A ten-minute call whose
+    /// ring kept the last 1500 frames lands here as 30 seconds, and
+    /// [`Self::partial`] is what stops that reading as a thirty-second call.
+    pub duration_secs: f64,
+    /// The clauses naming every way this file falls short of the call, or
+    /// empty when it falls short in none of them.
+    ///
+    /// The ONE string. It is appended to the export summary, embedded in
+    /// [`Self::note`] inside the WAV, and carried into a vCon's completeness
+    /// caveat — three surfaces, one value, so they cannot contradict.
+    pub partial: String,
+    /// The provenance note embedded in [`Self::wav`], verbatim.
+    ///
+    /// Exposed rather than left inside the bytes so a consumer that cannot
+    /// parse a RIFF chunk still reads it. Same string, not a second one.
+    pub note: String,
+    /// `true` when a payload ring dropped frames this file therefore lacks.
+    ///
+    /// The signal that the file is shorter than the call it came from, which
+    /// is the one gap vCon can state in its own vocabulary
+    /// (`docs/design/vcon.md` §4b).
+    pub ring_wrapped: bool,
+    /// The streams on the file's channels, in channel order.
+    ///
+    /// Channel 0 first. Carried so a caller can attribute a channel to
+    /// whoever's media is on it WITHOUT guessing — the key holds the sending
+    /// socket, which is the only evidence sipnab has for that question.
+    pub sources: Vec<StreamKey>,
+    /// Capture-clock time of the first frame this file actually holds.
+    ///
+    /// Not the stream's first packet: when the ring wrapped, the earlier
+    /// frames are gone and the file begins later than the call did. Measured
+    /// from the retained frames' own RTP timestamps rather than assumed.
+    pub first_retained: DateTime<Utc>,
+    /// Capture-clock time of the first media packet on ANY of the dialog's
+    /// streams — the start of the window sipnab saw media in.
+    pub media_start: DateTime<Utc>,
+    /// Capture-clock time of the last media packet on any of them.
+    pub media_end: DateTime<Utc>,
+    /// The export summary with no path in it: `"Exported 1.0s of mu-law audio
+    /// (1 frames, PCMU/8000Hz)"`.
+    ///
+    /// Path-free because the vCon path writes no file and has no path to name,
+    /// while [`export_dialog_to_wav`] appends one. Splitting it here keeps both
+    /// summaries derived from the same measurements.
+    pub summary_head: String,
+}
+
+/// Decode one dialog's retained RTP payload into a WAV held in memory.
+///
+/// The shared core of every audio export. [`export_dialog_to_wav`] writes what
+/// this returns; the vCon exporter inlines it. Selection matches what the file
+/// path always did: streams with a decodable codec and retained payload, first
+/// as the left channel and second as the right, at most two because a WAV
+/// carries two — and whatever that leaves out is named in
+/// [`DialogAudio::partial`] rather than dropped in silence.
+///
+/// # Errors
+///
+/// Returns an error when there are no streams at all, or when none of them
+/// carries decodable retained payload. The message comes from
+/// `nothing_to_decode`, which reports what sipnab MEASURED and never claims
+/// the call was silent — the distinction a caller must be able to pass on.
+pub fn decode_dialog_audio(streams: &[&RtpStream]) -> Result<DialogAudio> {
     if streams.is_empty() {
         bail!("No RTP streams to export");
     }
@@ -120,71 +219,167 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
         bail!("{}", nothing_to_decode(streams));
     }
 
-    if exportable.len() == 1 {
-        // The single-stream path writes its own summary, so the omission
-        // clause is appended here rather than inside it -- that function is
-        // also reached directly, where there is no dialog to be partial about.
-        let summary = export_stream_to_wav(exportable[0], path)?;
-        return Ok(format!(
-            "{summary}{}{}",
-            omitted_clause(streams.len(), 1, &skipped_codecs),
-            direction_clause(streams)
-        ));
+    // A WAV carries two channels. `omitted_clause` below names the rest.
+    let carried: Vec<&RtpStream> = exportable.iter().take(2).copied().collect();
+    let mut decoded: Vec<(Vec<i16>, u32, &'static str, u64)> = Vec::with_capacity(carried.len());
+    for stream in &carried {
+        decoded.push(decode_stream_pcm(stream)?);
     }
 
-    // Stereo: decode both streams
-    let (mut left_pcm, left_rate, _, left_failures) = decode_stream_pcm(exportable[0])?;
-    let (mut right_pcm, right_rate, _, right_failures) = decode_stream_pcm(exportable[1])?;
+    // The higher rate wins and the lower channel is resampled up, so a G.711
+    // leg and an Opus leg land on one timebase instead of one playing fast.
+    let output_rate = decoded
+        .iter()
+        .map(|d| d.1)
+        .max()
+        .unwrap_or(DEFAULT_WAV_RATE);
+    let (samples, channels, frames_per_channel) = interleave_channels(&mut decoded, output_rate);
 
-    // Use the higher sample rate as the output rate; resample the lower one
-    let output_rate = left_rate.max(right_rate);
-    if left_rate < output_rate {
-        left_pcm = resample_linear(&left_pcm, left_rate, output_rate);
-    }
-    if right_rate < output_rate {
-        right_pcm = resample_linear(&right_pcm, right_rate, output_rate);
+    let dropped: u64 = carried
+        .iter()
+        .map(|s| s.payload_frames_dropped)
+        .fold(0u64, u64::saturating_add);
+    let failures: u64 = decoded.iter().map(|d| d.3).fold(0u64, u64::saturating_add);
+
+    let partial = format!(
+        "{}{}{}{}",
+        wrap_clause(dropped),
+        omitted_clause(streams.len(), carried.len(), &skipped_codecs),
+        decode_failure_clause(failures),
+        direction_clause(streams)
+    );
+    let note = provenance_note(AudioMechanism::SipnabCapture, &partial);
+
+    let duration_secs = if output_rate == 0 {
+        0.0
+    } else {
+        frames_per_channel as f64 / f64::from(output_rate)
+    };
+
+    // The mono summary names the codec because a one-channel file is the one
+    // an operator plays without knowing what it holds; the stereo one names
+    // both frame counts because they are what a short channel shows up in.
+    let summary_head = if channels == 1 {
+        format!(
+            "Exported {:.1}s of {} audio ({} frames, {}/{}Hz)",
+            duration_secs,
+            decoded[0].2,
+            carried[0].payload_buffer.len(),
+            carried[0].codec.as_deref().unwrap_or("?"),
+            decoded[0].1,
+        )
+    } else {
+        format!(
+            "Exported {duration_secs:.1}s stereo audio ({} + {} frames, {output_rate}Hz)",
+            carried[0].payload_buffer.len(),
+            carried[1].payload_buffer.len(),
+        )
+    };
+
+    Ok(DialogAudio {
+        wav: crate::rtp::wav::wav_bytes(&samples, output_rate, channels, Some(&note)),
+        sample_rate: output_rate,
+        channels,
+        duration_secs,
+        partial,
+        note,
+        ring_wrapped: dropped > 0,
+        sources: carried.iter().map(|s| s.key.clone()).collect(),
+        first_retained: carried
+            .iter()
+            .map(|s| retained_window_start(s))
+            .min()
+            .unwrap_or_else(Utc::now),
+        media_start: streams
+            .iter()
+            .map(|s| s.first_seen)
+            .min()
+            .unwrap_or_else(Utc::now),
+        media_end: streams
+            .iter()
+            .map(|s| s.last_seen)
+            .max()
+            .unwrap_or_else(Utc::now),
+        summary_head,
+    })
+}
+
+/// The sample rate a WAV falls back to when no decoded channel reported one.
+///
+/// Unreachable while [`decode_dialog_audio`] refuses an empty channel list,
+/// and named anyway: the alternative at that call site is `unwrap`, and a
+/// panic in an export path takes the whole run down over a header field. 8 kHz
+/// is G.711's clock, which is what every telephony WAV sipnab writes carries.
+const DEFAULT_WAV_RATE: u32 = 8000;
+
+/// Resample the decoded channels onto one rate and interleave them.
+///
+/// Returns the samples, the channel count, and the frames PER CHANNEL — which
+/// is what a duration divides by, and which is not `samples.len()` once there
+/// are two channels. Getting that wrong halves or doubles every duration in
+/// the container.
+fn interleave_channels(
+    decoded: &mut [(Vec<i16>, u32, &'static str, u64)],
+    output_rate: u32,
+) -> (Vec<i16>, u16, usize) {
+    if decoded.len() < 2 {
+        let samples = decoded.first().map(|d| d.0.clone()).unwrap_or_default();
+        let frames = samples.len();
+        return (samples, 1, frames);
     }
 
-    // Pad the shorter channel with silence so both are the same length
-    let max_len = left_pcm.len().max(right_pcm.len());
-    left_pcm.resize(max_len, 0);
-    right_pcm.resize(max_len, 0);
+    for channel in decoded.iter_mut() {
+        if channel.1 < output_rate {
+            channel.0 = resample_linear(&channel.0, channel.1, output_rate);
+        }
+    }
+
+    // Pad the shorter channel with silence so both are the same length.
+    let max_len = decoded.iter().map(|d| d.0.len()).max().unwrap_or(0);
+    for channel in decoded.iter_mut() {
+        channel.0.resize(max_len, 0);
+    }
 
     // Interleave: L0, R0, L1, R1, ...
     let mut interleaved: Vec<i16> = Vec::with_capacity(max_len * 2);
     for i in 0..max_len {
-        interleaved.push(left_pcm[i]);
-        interleaved.push(right_pcm[i]);
+        interleaved.push(decoded[0].0[i]);
+        interleaved.push(decoded[1].0[i]);
     }
+    (interleaved, 2, max_len)
+}
 
-    let duration_secs = max_len as f64 / output_rate as f64;
-    let partial = format!(
-        "{}{}{}{}",
-        wrap_clause(exportable[0].payload_frames_dropped + exportable[1].payload_frames_dropped),
-        omitted_clause(streams.len(), 2, &skipped_codecs),
-        decode_failure_clause(left_failures + right_failures),
-        direction_clause(streams)
-    );
-    write_wav_with_provenance(
-        path,
-        &interleaved,
-        output_rate,
-        2,
-        Some(&provenance_note(AudioMechanism::SipnabCapture, &partial)),
-    )?;
-
-    // `partial` again, not the clauses re-listed. Building the summary from
-    // its own copy is how the file's note and the message printed beside it
-    // drift apart: adding `direction_clause` to one and not the other did
-    // exactly that, and a test comparing them caught it.
-    Ok(format!(
-        "Exported {:.1}s stereo audio ({} + {} frames, {}Hz) to {}{partial}",
-        duration_secs,
-        exportable[0].payload_buffer.len(),
-        exportable[1].payload_buffer.len(),
-        output_rate,
-        path.display(),
-    ))
+/// When the first frame this file actually holds arrived.
+///
+/// Measured from the retained frames themselves: the span between the oldest
+/// and newest RTP timestamps still in the ring, subtracted from the stream's
+/// last packet. The alternative — reporting
+/// [`first_seen`](RtpStream::first_seen) — dates a file to a packet the ring
+/// evicted, which is a `start` that is simply wrong whenever retention
+/// mattered, and wrong in the direction that makes the file look longer than
+/// it is.
+///
+/// Falls back to `first_seen` when the ring is empty or the stream reported no
+/// clock rate, because with neither there is nothing to measure and an
+/// invented offset would be worse than the stream's own first packet.
+///
+/// `wrapping_sub` is deliberate: RTP timestamps are 32-bit and wrap, and a
+/// saturating subtraction across the wrap would collapse the span to zero,
+/// which reads as "the file starts where the stream ends".
+fn retained_window_start(stream: &RtpStream) -> DateTime<Utc> {
+    let (Some((oldest, _)), Some((newest, _))) =
+        (stream.payload_buffer.front(), stream.payload_buffer.back())
+    else {
+        return stream.first_seen;
+    };
+    if stream.clock_rate == 0 {
+        return stream.first_seen;
+    }
+    let ticks = newest.wrapping_sub(*oldest);
+    let millis = (f64::from(ticks) / f64::from(stream.clock_rate) * 1000.0).round() as i64;
+    chrono::TimeDelta::try_milliseconds(millis)
+        .and_then(|span| stream.last_seen.checked_sub_signed(span))
+        .unwrap_or(stream.first_seen)
 }
 
 /// How the audio in an artefact was obtained.

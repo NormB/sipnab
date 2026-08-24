@@ -247,13 +247,15 @@ plugins = ["native", "dep:wasmi"]
 # CONFIG_DEBUG_INFO_BTF. A contributor without either must still be able to
 # build sipnab, and CI's pinned jobs must be unaffected.
 bpf = ["native", "dep:aya", "sipnab-bpf-types/pod"]
-# vCon export: one observed dialog as an unsigned, signaling-only vCon
-# container (draft-ietf-vcon-vcon-core). NON-DEFAULT, because a capture tool
-# that nobody asked for a conversation container from should not carry one --
-# and IN `full`, so the pre-commit hook's `cargo test --features full` covers
-# it. Needs `native` for the JSON projection and the capture analysis the
-# container reuses, and sha2 for the UUIDv8 derivation.
-vcon = ["native", "dep:sha2"]
+# vCon export: one observed dialog as an unsigned OBSERVER vCon container
+# (draft-ietf-vcon-vcon-core). NON-DEFAULT, because a capture tool that nobody
+# asked for a conversation container from should not carry one -- and IN
+# `full`, so the pre-commit hook's `cargo test --features full` covers it.
+# Needs `native` for the JSON projection and the capture analysis the container
+# reuses, sha2 for the UUIDv8 derivation and the media content_hash, and base64
+# because media travels INLINE as base64url: the draft requires HTTPS for a
+# by-reference url and sipnab hosts nothing.
+vcon = ["native", "dep:sha2", "dep:base64"]
 full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metrics", "plugins", "vcon"]
 
 # Userspace half of the eBPF backend. Stable Rust; only the KERNEL half needs

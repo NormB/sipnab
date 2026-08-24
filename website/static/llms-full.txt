@@ -6918,7 +6918,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--plugin` | `<PATH>` | -- | Load a WASM plugin that contributes its own dialog detections; repeatable. Findings appear under `plugin_findings`. Requires the `plugins` Cargo feature (**not** in the default set). A plugin runs with no imports — no filesystem, network or clock — but still sees each message's headers, so loading one is a trust decision. See [wasm-plugin-api.md](design/wasm-plugin-api.md) |
 | `--report` | -- | off | Generate summary report after capture completes. Requires `-N` |
 | `--call-report` | `<CALL-ID>` | -- | Generate a detailed report for a specific Call-ID. Implies non-interactive |
-| `--export-vcon` | `<CALL-ID>` | -- | Export one dialog as a vCon container ([`draft-ietf-vcon-vcon-core`](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/), syntax `0.4.0`), the interchange format a conversation travels in when it leaves the system that captured it. What sipnab writes is an **observer** vCon and says so in its own parties: sipnab watched packets go past a tap, so it signs nothing, no party carries a `name` — a `From` header is what the sender chose to write, not an identity anyone established — and the container holds **signaling only**, with no media and no URL pointing at media held elsewhere, because sipnab hosts nothing. What the capture MISSED travels with it: undecodable frames, SIP a port gate discarded, messages a retention cap evicted, and the blind spots the capture analysis ranked. vCon has no field meaning "this record is incomplete" (`dialog.type: "incomplete"` says the CALL did not complete, which accuses the traffic rather than the tap), so that caveat rides in the analysis object AND in a `sipnab-capture-completeness` attachment, both built from one value so the two cannot disagree. Goes to stdout unless `--vcon-out` names a file, and OWNS stdout when it goes there, silencing the per-message stream, because one stray line makes the container unparseable. Implies non-interactive. Needs the `vcon` Cargo feature (in `full`, **not** in the default set); a build without it refuses the flag by name |
+| `--export-vcon` | `<CALL-ID>` | -- | Export one dialog as a vCon container ([`draft-ietf-vcon-vcon-core`](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/), syntax `0.4.0`), the interchange format a conversation travels in when it leaves the system that captured it. What sipnab writes is an **observer** vCon and says so in its own parties: sipnab watched packets go past a tap, so it signs nothing, no party carries a `name` — a `From` header is what the sender chose to write, not an identity anyone established — and no URL ever points at media held elsewhere, because sipnab hosts nothing. Audio this run RETAINED travels INSIDE the container as a `recording` Dialog Object -- the WAV inline as base64url with a `sha512` `content_hash` -- carrying the same "not a recording made by the endpoints" note the exported file carries; a `recording-set` wraps it when the payload ring dropped frames, so the call's clock and the file's stand side by side. Above a measured 5 MiB budget sipnab REFUSES the media out loud instead of dropping it, because one probed store answers 204 and discards the payload without telling the producer. What the capture MISSED travels with it: undecodable frames, SIP a port gate discarded, messages a retention cap evicted, and the blind spots the capture analysis ranked. vCon has no field meaning "this record is incomplete" (`dialog.type: "incomplete"` says the CALL did not complete, which accuses the traffic rather than the tap), so that caveat rides in the analysis object AND in a `sipnab-capture-completeness` attachment, both built from one value so the two cannot disagree. Goes to stdout unless `--vcon-out` names a file, and OWNS stdout when it goes there, silencing the per-message stream, because one stray line makes the container unparseable. Implies non-interactive. Needs the `vcon` Cargo feature (in `full`, **not** in the default set); a build without it refuses the flag by name |
 | `--vcon-out` | `<PATH>` | stdout | Write the `--export-vcon` container to this path instead of stdout. Requires `--export-vcon`. Refuses a path that names a capture this run reads, before opening any writer — a container written over the capture it describes destroys the evidence it summarizes. A write that fails exits non-zero rather than reporting a file that is not there. Leaves the per-message stream alone, since the container no longer shares stdout with it. Pair with `--no-cli-print` for a silent run |
 | `--markdown` | -- | off | Format report output as Markdown |
 | `--stun` | -- | off | Report the STUN and TURN activity in the capture, and what it achieved: one row per transaction (Binding, Allocate, Refresh, ChannelBind, …) naming the method, how many requests it took, whether anything answered, and the reflexive or relayed address the server reported back. The row that matters is the unanswered one — a client whose Binding Request draws no reply never learns its public address, advertises the private one in its SDP, and the media never arrives. A TURN allocations section appears when a relay is in the capture, with the lifetime that decides when each one lapses. Columns for the relayed address, the ICE role and a FAILED `FINGERPRINT` appear only when the capture holds one. On a capture holding ICE connectivity checks an ICE section names the candidate pair the agents nominated -- the ICE analogue of the mapped address, and the only thing that says which path the media took -- and any pair where both agents claimed the same role or answered `487 Role Conflict`. Where a relay carried media, the allocations section says which channel carried which SSRC, so a reader can trace a relayed stream in the stream list back to the allocation that carried it. Silent when the capture holds no STUN and no TURN. Requires `-N` |
@@ -12965,7 +12965,7 @@ ordinary update.
 | [`list_captures`](#list_captures) | -- | Capture files in `--mcp-file-root`, with sizes |
 | [`export_capture`](#export_capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
 | [`export_audio`](#export_audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
-| [`export_vcon`](#export_vcon) | `call_id` | One dialog as a vCon conversation container, structured JSON. Unsigned, signaling only, and it carries what the capture missed |
+| [`export_vcon`](#export_vcon) | `call_id` | One dialog as a vCon conversation container, structured JSON. Unsigned, retained audio inline, and it carries what the capture missed |
 | [`shutdown_server`](#shutdown_server) | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
 | [`open_capture`](#open_capture) | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
 | [`save_findings`](#save_findings) | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
@@ -15044,8 +15044,33 @@ four things are absent by design, and their absence is the message:
 - **No consent and no lawful-basis attachment.** An empty consent field reads
   as "nobody recorded consent", a statement about the CALL. The truth is a
   statement about the producer: sipnab was never in a position to record one.
-- **Signaling only.** No media, and no `url` pointing at media held elsewhere,
-  because sipnab hosts nothing a URL could reach.
+- **No `url`, ever.** Media travels INLINE or not at all, because sipnab hosts
+  nothing a URL could reach and a dead link inside a record is
+  indistinguishable from evidence somebody removed.
+
+**What happens to the audio.** `dialog.type: "recording"` is a FORMAT term for
+a Dialog Object carrying media. A consumer's `recordings` table is a PROVENANCE
+term for containers from an in-path recorder. sipnab emits the first and is
+never the second: it reconstructed the audio from a mirror port, and every WAV
+it writes says "not a recording made by the endpoints".
+
+So audio the run RETAINED travels inline -- base64url, `mediatype:
+"audio/x-wav"`, and a `content_hash` of `sha512-` plus the base64url SHA-512 of
+the DECODED bytes, which `sha512sum` on the exported `.wav` reproduces. The
+`duration` on that object is the FILE's, never the call's. When a payload ring
+dropped frames, a `recording-set` wraps it carrying the CALL's media window, so
+the two clocks stand side by side -- that is the only way the format can say
+"this file is a fragment of that call".
+
+`capture_completeness.media` says which of four things happened, so nobody has
+to read a missing `recording` object as an answer:
+
+| `media` | What it means |
+|---|---|
+| `carried` | The audio is inline in a `recording` Dialog Object |
+| `refused-over-budget` | sipnab decoded audio and REFUSED to inline it. One probed store answers 204 and drops a payload over 10485760 bytes without telling the producer, so the emitter enforces a 5 MiB budget itself. The audio exists and was not truncated |
+| `none-decodable` | The run decoded no audio. `media_note` reports the measurement -- never that the call was silent |
+| `not-considered` | Nobody asked this export for media. A fact about the export, not about the call |
 
 **What the capture MISSED travels with the container, in two places.** vCon has
 no field meaning "this record is incomplete" — `dialog.type: "incomplete"` says
@@ -15108,7 +15133,9 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
         "messages_evicted": 0,
         "dialogs_refused": 0,
         "dialogs_rotated": 0,
-        "blind_spots": []
+        "blind_spots": [],
+        "media": "none-decodable",
+        "media_note": "No audio payload retained: sipnab measured 425 RTP packet(s) of PCMU on 1 decodable stream, but kept none of their payload, so there is nothing to decode. This is a statement about what this run kept, not a finding that the call was silent. ..."
       }
     }
   ],
@@ -15117,7 +15144,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.124 (passive observer; signaling only)",
+      "product": "sipnab 0.5.124 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -18909,7 +18936,7 @@ included.
 | `mcp-http` | `mcp` + `api` | Streamable-HTTP MCP transport; depends on `api` so both share one axum stack rather than duplicating it. |
 | `plugins` | `native` | The `wasmi` WASM plugin host. **Non-default on purpose** — someone who does not want an interpreter inside their capture tool does not get one. See [`../design/wasm-plugin-api.md`](../design/wasm-plugin-api.md), which measures the cost at +1.56 MB and 15 crates. |
 | `wasm` | — | The browser analyzer bindings. Lib-only: its test and bin targets are meaningless on the host. |
-| `vcon` | `native` | vCon export: one observed dialog as an unsigned, signaling-only conversation container. **Non-default on purpose** — the stock build gains no conversation-container writer at all. It sits INSIDE `full`, so the pre-commit hook's `cargo test --features full` covers it. sipnab writes the container as an observer: nothing signed, no media, and no party name. |
+| `vcon` | `native` | vCon export: one observed dialog as an unsigned OBSERVER conversation container. **Non-default on purpose** — the stock build gains no conversation-container writer at all. It sits INSIDE `full`, so the pre-commit hook's `cargo test --features full` covers it. sipnab writes the container as an observer: nothing signed, no party name, and no `url` — retained audio travels INLINE as base64url or not at all, under a measured size budget the emitter refuses out loud. |
 | `bpf` | `native` | The eBPF uprobe backend — the only one that can report the peer address a TLS session went out to, because it pairs each write with its `tcp_sendmsg`. **Outside `full`**: the kernel half needs nightly and `bpf-linker`. Shipped on the four `*-linux-gnu` release artifacts, not on musl or macOS. |
 | `full` | everything but `wasm` and `bpf` | What the pre-commit hook and most local testing use. The released gnu binaries add `bpf` on top. |
 

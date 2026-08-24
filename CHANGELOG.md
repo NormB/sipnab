@@ -12,6 +12,35 @@ entry that carries them.
 
 ### Added
 
+- **A vCon can now carry the audio, as an OBSERVER's `recording` and never as a
+  recording.** `dialog.type: "recording"` is a FORMAT term for a Dialog Object
+  holding media; a consumer's `recordings` table is a PROVENANCE term for
+  containers from an in-path recorder. sipnab emits the first and is never the
+  second, and every WAV it writes already says so: *not a recording made by the
+  endpoints*. Audio a run RETAINED now travels inside the container -- inline
+  base64url, `audio/x-wav`, and a `content_hash` of `sha512-` plus the base64url
+  SHA-512 of the DECODED bytes, so `sha512sum` on the `.wav` exported beside it
+  reproduces the value. Never a `url`: the draft requires HTTPS for a
+  by-reference body and sipnab hosts nothing. The `duration` on that object is
+  the FILE's; when a payload ring wrapped, a `recording-set` wraps it carrying
+  the CALL's media window, which is the format's only way to say the file is a
+  fragment of the call. `parties` names a channel's party only where the
+  stream's sending socket matches an endpoint that party advertised in its own
+  SDP, and is absent otherwise -- a party index is load-bearing, and a plausible
+  guess corrupts every cross-reference in the container silently.
+
+  **Above a MEASURED budget the media is refused out loud.** One probed vCon
+  store answers HTTP 204, writes to Postgres, and drops the payload above
+  10485760 bytes with nothing reported to the producer, so the acknowledgement
+  cannot be trusted to carry the failure back. sipnab enforces a 5 MiB encoded
+  budget itself and states the refusal in the container, because an absent
+  `recording` object would read as *a conversation with no media* -- a claim
+  about the CALL rather than about this run. `capture_completeness.media` says
+  which of `carried`, `refused-over-budget`, `none-decodable` or
+  `not-considered` applies, so nobody has to interpret an absence, and the WAV's
+  own provenance note travels beside it as `media_note` -- the same string the
+  file carries, not a second one written to agree with it.
+
 - **`--export-vcon <CALL-ID>` and the `export_vcon` MCP tool — two doors on the
   vCon exporter.** The exporter landed correct and unreachable: a `pub fn`
   returning a conversation container that nothing anyone could run ever called.

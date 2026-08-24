@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! vCon export — one observed dialog as an unsigned, signaling-only vCon
-//! container ([`draft-ietf-vcon-vcon-core-03`], syntax version `0.4.0`).
+//! vCon export — one observed dialog as an unsigned observer vCon container
+//! ([`draft-ietf-vcon-vcon-core-03`], syntax version `0.4.0`).
 //!
 //! # What sipnab is in a vCon, and what it is not
 //!
@@ -20,9 +20,28 @@
 //!   the rule cannot be broken by a later edit. `From`/`To` display names are
 //!   an unverified assertion by whoever sent the request, which is why every
 //!   party emits `validation: "none"` instead.
-//! * **No media and no `url` by-reference.** sipnab hosts nothing, so a URL in
-//!   this container would point at something that does not exist. Phase 1
-//!   carries signaling only.
+//! * **No `url` by-reference, ever.** §2.4.1 of the draft requires HTTPS, and
+//!   sipnab hosts nothing: a URL here would be a promise that a file is
+//!   somewhere and stays there, made by a tool that is run rather than
+//!   operated. Media travels inline or it does not travel.
+//!
+//! # Media: a `recording` Dialog Object is not a recording
+//!
+//! Two vocabularies collide on one word, and getting them backwards is the one
+//! mistake this module must not make. `dialog.type: "recording"` is a FORMAT
+//! term for a Dialog Object that carries media; a consumer's `recordings`
+//! table is a PROVENANCE term for containers from an in-path recorder.
+//! **sipnab emits the first and is never the second** — its own audio export
+//! stamps every file with "not a recording made by the endpoints", and that
+//! sentence is what the media carries into the container.
+//!
+//! So audio, when a caller supplies it, arrives as an [`ObservedAudio`] and
+//! becomes a `recording` Dialog Object: inline base64url, a `content_hash`
+//! over the WAV, `parties` naming only channels sipnab could attribute, and a
+//! `duration` that is the FILE's rather than the call's. Above
+//! [`MAX_INLINE_MEDIA_BYTES`] it is refused **out loud** — see that constant
+//! for the measurement behind the number and [`CaptureCompleteness::media`]
+//! for where the refusal surfaces.
 //!
 //! # The problem this module exists to solve
 //!
@@ -56,12 +75,15 @@
 //!
 //! [`draft-ietf-vcon-vcon-core-03`]: https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 
 use crate::analysis::{CaptureAnalysis, CaptureFacts, Severity};
 use crate::provenance::node_name;
+use crate::rtp::audio_export::DialogAudio;
 use crate::sip::dialog::SipDialog;
 
 /// The vCon syntax version this module writes, per the core draft.
@@ -112,14 +134,63 @@ pub const ANALYSIS_VENDOR: &str = "sipnab";
 /// be inferred from the vendor name, and the inference a reader makes about an
 /// analysis attached to a conversation is that it came from something that was
 /// party to it.
+///
+/// It used to end "signaling only", which stopped being true the day a
+/// container could carry a `recording` Dialog Object. The replacement states
+/// the fact that does not change with the payload: whatever is in here was
+/// watched from a tap, so it is not a recording system's output no matter how
+/// much of it there is.
 pub const ANALYSIS_PRODUCT: &str = concat!(
     "sipnab ",
     env!("CARGO_PKG_VERSION"),
-    " (passive observer; signaling only)"
+    " (passive observer; not a recording system)"
 );
 
 /// `role` of the party representing sipnab itself.
 pub const OBSERVER_ROLE: &str = "observer";
+
+/// The largest inline media body sipnab will put in a container, in bytes of
+/// base64url.
+///
+/// **MEASURED, not chosen.** `docs/design/vcon.md` §4a.1 records a probe of a
+/// running vCon store on 2026-08-24. A container carrying roughly 12 MB of
+/// inline base64 came back **HTTP 204**, landed in Postgres, and was refused by
+/// the file spool with `16777749 > 10485760` — and neither transport reported
+/// the partial write, so the producer was told "accepted" while a backend
+/// dropped the payload. The same probe watched roughly 1 MB and roughly 5 MB
+/// land in EVERY backend.
+///
+/// The budget is set at the 5 MiB that was observed to LAND rather than at the
+/// 10485760-byte boundary that was observed to FAIL, for two reasons. The rest
+/// of the container — parties, the whole message trace, the completeness
+/// caveat — has to fit behind the ceiling too, and a budget set at the failure
+/// boundary leaves it nothing. And a store that silently drops is a store whose
+/// exact boundary is not worth standing on.
+///
+/// Base64url inflates by four thirds, so this is roughly 3.9 MB of WAV: about
+/// four minutes of one-channel G.711 at 8 kHz. A longer call is refused, and
+/// the refusal is visible in the container — see [`MediaOutcome`]. Silently
+/// dropping the audio would be the §3 failure the whole module is built
+/// against: absence reading as "this call had no media".
+pub const MAX_INLINE_MEDIA_BYTES: usize = 5 * 1024 * 1024;
+
+/// `mediatype` of the media sipnab inlines. RIFF/WAVE, 16-bit linear PCM.
+pub const RECORDING_MEDIATYPE: &str = "audio/x-wav";
+
+/// `dialog.type` of the object carrying the media itself — the FILE's clock.
+pub const RECORDING_TYPE: &str = "recording";
+
+/// `dialog.type` of the wrapper carrying the CALL's clock.
+///
+/// §4.3.3 of the core draft is the one place the format can say "the file is
+/// shorter than the call": the set carries the call's `start` and `duration`
+/// while the [`RECORDING_TYPE`] object beneath it carries the file's. Emitted
+/// ONLY when a payload ring actually wrapped — a wrapper on every container
+/// would train readers to skip the one that means something.
+pub const RECORDING_SET_TYPE: &str = "recording-set";
+
+/// Hash algorithm prefix of [`Dialog::content_hash`], per §2.2 of the draft.
+pub const CONTENT_HASH_PREFIX: &str = "sha512-";
 
 /// Header names that must never leave this process inside a vCon.
 ///
@@ -197,21 +268,105 @@ pub struct Party {
 /// looks complete — would describe media that does not exist.
 #[derive(Debug, Clone, Serialize)]
 pub struct Dialog {
-    /// `"incomplete"` ONLY when a final failure response was observed.
+    /// `"incomplete"` ONLY when a final failure response was observed;
+    /// [`RECORDING_TYPE`] or [`RECORDING_SET_TYPE`] on the media objects.
     ///
-    /// Never set because sipnab failed to capture the answer. `incomplete` is
-    /// a statement about the CALL; "we did not see the rest" is a statement
-    /// about the CAPTURE, and the second one travels in
+    /// `"incomplete"` is never set because sipnab failed to capture the
+    /// answer. It is a statement about the CALL; "we did not see the rest" is
+    /// a statement about the CAPTURE, and the second one travels in
     /// [`CaptureCompleteness`] where it cannot be mistaken for the first.
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub kind: Option<&'static str>,
     /// Why the call did not complete, mapped from the observed final status.
-    /// Present exactly when [`Self::kind`] is.
+    ///
+    /// Present exactly when [`Self::kind`] is `"incomplete"`, and on no other
+    /// object: a `recording` has no disposition, because nothing about it says
+    /// anything about how the call ended.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disposition: Option<&'static str>,
     /// The `Call-ID` this dialog was tracked under — the one identifier that
     /// ties the container back to a capture an operator still holds.
     pub sip_call_id: String,
+    /// RFC 3339 start of what this object describes.
+    ///
+    /// On a `recording` this is the first frame the FILE holds, which is later
+    /// than the call's start whenever a payload ring wrapped. On a
+    /// `recording-set` it is the first media packet sipnab saw at all. The two
+    /// differing is the format's own way of saying the file is a fragment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
+    /// Length in seconds of what this object describes.
+    ///
+    /// The FILE's on a `recording` — decoded samples divided by the sample
+    /// rate, never
+    /// [`TimingSummary::duration_ms`](crate::output::model::TimingSummary),
+    /// which is the CALL's and would state that the endpoints talked for
+    /// exactly as long as this run happened to retain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
+    /// Indices into [`Vcon::parties`] whose media the channels carry, channel
+    /// order.
+    ///
+    /// Emitted only when EVERY channel could be attributed from evidence: the
+    /// stream's sending socket matching a media endpoint that party advertised
+    /// in its own SDP. Absent otherwise, because a party index is load-bearing
+    /// — `analysis.dialog`, `attachment.party` and `originator` all index this
+    /// array — and a plausible guess corrupts every cross-reference silently.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parties: Option<Vec<usize>>,
+    /// Indices into [`Vcon::dialog`] of the objects this set groups.
+    ///
+    /// Present only on a [`RECORDING_SET_TYPE`] object.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dialogs: Option<Vec<usize>>,
+    /// IANA media type of [`Self::body`] — [`RECORDING_MEDIATYPE`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mediatype: Option<&'static str>,
+    /// Always `"base64url"` when [`Self::body`] is present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<&'static str>,
+    /// The media itself, base64url, unpadded.
+    ///
+    /// Inline is the ONLY form. There is no `url` field on this struct, so
+    /// §2.5's "never host artefacts" is a property of the type rather than a
+    /// rule a later edit can forget — the same device that keeps `name` off
+    /// [`Party`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// [`CONTENT_HASH_PREFIX`] followed by the base64url SHA-512 of the
+    /// DECODED body.
+    ///
+    /// Over the WAV bytes, not over their base64url text, so the value means
+    /// the same thing whether the media travels inline or an operator exported
+    /// it to a file: `sha512sum` on that `.wav` reproduces it. Hashing the
+    /// encoded text would produce a digest nothing outside this container
+    /// could ever recompute.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+}
+
+impl Dialog {
+    /// A Dialog Object with every optional field absent.
+    ///
+    /// Constructor rather than `Default`, because `sip_call_id` is mandatory
+    /// and a defaulted empty one would emit a container tied to no capture.
+    /// Every media field is set explicitly by whoever needs it, so adding a
+    /// field cannot silently populate itself on the signaling object.
+    fn bare(sip_call_id: String) -> Self {
+        Self {
+            kind: None,
+            disposition: None,
+            sip_call_id,
+            start: None,
+            duration: None,
+            parties: None,
+            dialogs: None,
+            mediatype: None,
+            encoding: None,
+            body: None,
+            content_hash: None,
+        }
+    }
 }
 
 /// An inline attachment: sipnab's own JSON, carried in the container.
@@ -321,6 +476,92 @@ pub struct CaptureCompleteness {
     /// clean one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blind_spots: Option<Vec<BlindSpot>>,
+    /// What became of this dialog's audio, as a token a consumer can branch
+    /// on.
+    ///
+    /// The load-bearing field for §3's dangerous case. An empty `dialog[]`
+    /// reads as *a conversation with no media*, which is a claim about the
+    /// CALL; this says which of four quite different things actually happened,
+    /// so no reader has to infer one from an absence.
+    pub media: MediaOutcome,
+    /// The audio's own provenance note, verbatim from the exported WAV.
+    ///
+    /// Not a second sentence about the media: the SAME `String` that is
+    /// embedded in the file's RIFF comment, lifted out so a consumer that
+    /// cannot parse a WAV still reads it. `None` when there is no audio to
+    /// describe. When the media was refused for size, this is the note the
+    /// refused file WOULD have carried, which is how a reader learns what they
+    /// are missing rather than only that they are missing something.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_note: Option<String>,
+}
+
+/// What became of one dialog's audio on its way into a container.
+///
+/// Four answers, kept apart, because collapsing any two of them recreates the
+/// failure `nothing_to_decode` exists to refuse: a limit of THIS RUN reported
+/// as a finding about the TRAFFIC. "Nobody asked for media", "the run kept
+/// none", "it was too big to carry" and "here it is" are four facts with four
+/// different next steps, and an absent `dialog` entry is the same shape for
+/// the first three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MediaOutcome {
+    /// No media was offered to the exporter at all.
+    ///
+    /// A signaling-only export. It says nothing about whether the call had
+    /// audio, and the token exists so that silence does not have to.
+    NotConsidered,
+    /// Media was offered and nothing decodable came back.
+    ///
+    /// The reason is in [`CaptureCompleteness::media_note`], in
+    /// `nothing_to_decode`'s own words — retention off, a codec sipnab cannot
+    /// decode, a `--snaplen` that truncated the payload away. Never "the call
+    /// was silent", which is a claim about the traffic that an empty ring
+    /// buffer does not support.
+    NoneDecodable,
+    /// Media was decoded and REFUSED for size.
+    ///
+    /// See [`MAX_INLINE_MEDIA_BYTES`]. The audio exists and is not in this
+    /// container; it was not truncated, because half a call presented as a
+    /// whole one is worse than none.
+    RefusedOverBudget,
+    /// Media was decoded and is inline in a `recording` Dialog Object.
+    Carried,
+}
+
+impl MediaOutcome {
+    /// The token this outcome serializes as.
+    ///
+    /// Spelled once here so a test, a doc page and the wire cannot disagree
+    /// about it. `serde`'s kebab-case rename produces exactly these strings.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotConsidered => "not-considered",
+            Self::NoneDecodable => "none-decodable",
+            Self::RefusedOverBudget => "refused-over-budget",
+            Self::Carried => "carried",
+        }
+    }
+}
+
+/// What a caller was able to decode for one dialog's media.
+///
+/// A three-way answer rather than an `Option`, because the two "no media"
+/// cases are not the same fact and the container must not render them the same
+/// way. `Option::None` would force "nobody looked" and "this run kept nothing"
+/// into one shape, which is the collapse
+/// `nothing_to_decode` was written to prevent.
+#[derive(Debug, Clone, Copy)]
+pub enum ObservedAudio<'a> {
+    /// Nobody asked for media. Yields [`MediaOutcome::NotConsidered`].
+    NotConsidered,
+    /// Media was looked for and none could be decoded. Carries the exporter's
+    /// own explanation, which reports what was MEASURED.
+    NothingToDecode(&'a str),
+    /// Audio sipnab decoded for this dialog.
+    Decoded(&'a DialogAudio),
 }
 
 /// A signaling-only vCon for one observed dialog.
@@ -464,14 +705,74 @@ pub fn export_dialog_at(
     context: &ExportContext<'_>,
     exported_at: DateTime<Utc>,
 ) -> Vcon {
+    export_dialog_with_audio_at(dialog, context, ObservedAudio::NotConsidered, exported_at)
+}
+
+/// [`export_dialog`], carrying this dialog's audio inside the container.
+///
+/// See [`export_dialog_with_audio_at`] for what the media becomes and for what
+/// is refused.
+#[must_use]
+pub fn export_dialog_with_audio(
+    dialog: &SipDialog,
+    context: &ExportContext<'_>,
+    audio: ObservedAudio<'_>,
+) -> Vcon {
+    export_dialog_with_audio_at(dialog, context, audio, Utc::now())
+}
+
+/// The one builder: signaling, the completeness caveat, and — when there is
+/// any — the media.
+///
+/// The pure form: every input the output depends on arrives as an argument, so
+/// a test can compare two containers byte for byte and know that a difference
+/// came from the capture rather than from the clock.
+///
+/// # What the media becomes
+///
+/// [`ObservedAudio::Decoded`] under [`MAX_INLINE_MEDIA_BYTES`] becomes a
+/// `recording` Dialog Object: inline base64url, a `content_hash` over the WAV,
+/// a `duration` that is the FILE's, and `parties` only where every channel
+/// could be attributed. When the payload ring wrapped, a
+/// [`RECORDING_SET_TYPE`] wrapper is added carrying the CALL's clock — the
+/// format's one way to say the file is shorter than the call it came from.
+///
+/// Over the budget, **no `recording` object is emitted and the refusal is
+/// stated**: [`CaptureCompleteness::media`] carries
+/// [`MediaOutcome::RefusedOverBudget`] and the caveat names the two sizes. A
+/// container that quietly dropped the audio would read as a conversation with
+/// no media, which is a claim about the call rather than about this run.
+///
+/// # Arguments
+///
+/// * `dialog` — the observed dialog. Its `From`/`To` become the parties and
+///   its messages become the trace.
+/// * `context` — the capture the dialog came from, and what that capture
+///   missed.
+/// * `audio` — what the caller could decode for this dialog, including the two
+///   distinct ways of having nothing.
+/// * `exported_at` — stamped into [`Vcon::created_at`]. This is the moment the
+///   container was written, NOT the moment the call started.
+#[must_use]
+pub fn export_dialog_with_audio_at(
+    dialog: &SipDialog,
+    context: &ExportContext<'_>,
+    audio: ObservedAudio<'_>,
+    exported_at: DateTime<Utc>,
+) -> Vcon {
     let mut parties = observed_parties(dialog);
     parties.push(observer_party());
     // Last entry, computed before the borrow ends so both attachments and any
     // future analysis reference one number.
     let observer = parties.len().saturating_sub(1);
 
-    let completeness = completeness_of(context);
-    let dialog_object = dialog_object(dialog);
+    // The signaling object is always index 0, which is what `Analysis::dialog`
+    // points at. Media objects are appended after it, never before, so adding
+    // audio cannot move the object the analysis describes.
+    let mut dialog_objects = vec![dialog_object(dialog)];
+    let media = media_objects(dialog, audio, &mut dialog_objects);
+
+    let completeness = completeness_of(context, &media);
 
     let attachments = vec![
         message_trace_attachment(dialog, observer),
@@ -484,9 +785,223 @@ pub fn export_dialog_at(
         created_at: exported_at.to_rfc3339(),
         extensions: vec![SIP_SIGNALING_EXTENSION],
         parties,
-        dialog: vec![dialog_object],
+        dialog: dialog_objects,
         attachments,
         analysis: vec![report(dialog, &completeness)],
+    }
+}
+
+/// What the media decided, kept together so the caveat and the container
+/// cannot disagree about it.
+#[derive(Debug, Clone)]
+struct MediaVerdict {
+    /// Which of the four things happened.
+    outcome: MediaOutcome,
+    /// The audio's own note, or the exporter's explanation for having none.
+    note: Option<String>,
+    /// The size clause, when the media was refused for being too large.
+    refusal: Option<String>,
+}
+
+/// Append the media Dialog Objects, and report what happened.
+///
+/// Appends rather than inserts, and returns the verdict rather than writing it
+/// anywhere: the caveat is built ONCE, from this, and embedded in both
+/// surfaces. A second sentence about the media written beside this one is the
+/// drift `provenance_note` already learned to refuse.
+fn media_objects(
+    dialog: &SipDialog,
+    audio: ObservedAudio<'_>,
+    objects: &mut Vec<Dialog>,
+) -> MediaVerdict {
+    let decoded = match audio {
+        ObservedAudio::NotConsidered => {
+            return MediaVerdict {
+                outcome: MediaOutcome::NotConsidered,
+                note: None,
+                refusal: None,
+            };
+        }
+        ObservedAudio::NothingToDecode(reason) => {
+            return MediaVerdict {
+                outcome: MediaOutcome::NoneDecodable,
+                note: Some(reason.to_string()),
+                refusal: None,
+            };
+        }
+        ObservedAudio::Decoded(decoded) => decoded,
+    };
+
+    let body = URL_SAFE_NO_PAD.encode(&decoded.wav);
+    if body.len() > MAX_INLINE_MEDIA_BYTES {
+        return MediaVerdict {
+            outcome: MediaOutcome::RefusedOverBudget,
+            note: Some(decoded.note.clone()),
+            refusal: Some(format!(
+                " — INCOMPLETE: sipnab decoded {:.1} second(s) of audio for this dialog and \
+                 REFUSED to carry it: base64url of the {} byte WAV is {} bytes, over the {} byte \
+                 budget this emitter enforces because one probed vCon store answers 204 and drops \
+                 the payload without telling the producer. The audio was NOT truncated and is not \
+                 in this container; export it beside this file with --export-audio.",
+                decoded.duration_secs,
+                decoded.wav.len(),
+                body.len(),
+                MAX_INLINE_MEDIA_BYTES,
+            )),
+        };
+    }
+
+    // The set wraps the recording, so it is listed first: a reader walking
+    // `dialog[]` top to bottom meets the call's clock before the file's, which
+    // is the order the two numbers make sense in. Its member index is computed
+    // from the vector rather than written as a literal, so inserting anything
+    // ahead of it cannot leave the reference pointing at the wrong object.
+    if decoded.ring_wrapped {
+        let member = objects.len() + 1;
+        objects.push(recording_set_object(dialog, decoded, member));
+    }
+    objects.push(recording_object(dialog, decoded, &body));
+
+    MediaVerdict {
+        outcome: MediaOutcome::Carried,
+        note: Some(decoded.note.clone()),
+        refusal: None,
+    }
+}
+
+/// The `recording` Dialog Object — the FILE's clock, and the file.
+fn recording_object(dialog: &SipDialog, audio: &DialogAudio, body: &str) -> Dialog {
+    Dialog {
+        kind: Some(RECORDING_TYPE),
+        start: Some(audio.first_retained.to_rfc3339()),
+        duration: Some(audio.duration_secs),
+        parties: channel_parties(dialog, audio),
+        mediatype: Some(RECORDING_MEDIATYPE),
+        encoding: Some("base64url"),
+        content_hash: Some(content_hash(&audio.wav)),
+        body: Some(body.to_string()),
+        ..Dialog::bare(dialog.call_id.clone())
+    }
+}
+
+/// The `recording-set` wrapper — the CALL's clock, for the ring-wrapped case
+/// only.
+///
+/// §4.3.3 of the core draft is the only place vCon can say "this file is a
+/// fragment of that call": the set's `start` and `duration` describe the media
+/// window sipnab observed, while the `recording` it points at describes the
+/// part that survived retention. Nothing obliges a consumer to compare them,
+/// which is why the caveat is duplicated as well and not instead.
+///
+/// The window is measured from MEDIA — first packet to last across the
+/// dialog's streams — rather than from the SIP ladder. A signaling span would
+/// state something about the call's setup and teardown in a field a reader
+/// will compare against an audio duration.
+fn recording_set_object(dialog: &SipDialog, audio: &DialogAudio, member: usize) -> Dialog {
+    let span = audio
+        .media_end
+        .signed_duration_since(audio.media_start)
+        .num_milliseconds()
+        .max(0);
+    Dialog {
+        kind: Some(RECORDING_SET_TYPE),
+        start: Some(audio.media_start.to_rfc3339()),
+        // Milliseconds to seconds, keeping the fraction: a call rounded to a
+        // whole second could equal the file's duration and hide exactly the
+        // difference this object exists to show.
+        duration: Some(span as f64 / 1000.0),
+        dialogs: Some(vec![member]),
+        ..Dialog::bare(dialog.call_id.clone())
+    }
+}
+
+/// `sha512-` followed by the base64url SHA-512 of the media bytes, per §2.2.
+///
+/// Over the WAV, never over its base64url text. An operator who exported the
+/// same call with `--export-audio` can run `sha512sum` on the file and get a
+/// value that maps to this one; a digest of the encoded text is a number
+/// nothing outside this container could reproduce.
+fn content_hash(media: &[u8]) -> String {
+    let digest = Sha512::digest(media);
+    format!("{CONTENT_HASH_PREFIX}{}", URL_SAFE_NO_PAD.encode(digest))
+}
+
+/// Which observed party's media is on each channel, or `None` when any channel
+/// cannot be attributed from evidence.
+///
+/// The evidence is a party's OWN advertised media endpoint matching the
+/// sending socket of the stream on that channel. Symmetric RTP (RFC 4961) is
+/// what makes that a match rather than a coincidence: an endpoint sends from
+/// the port it told the far end to send to.
+///
+/// All or nothing, deliberately. §4.3.4 has a null placeholder and it means
+/// "no party on this channel", not "sipnab could not tell" — using it for the
+/// second would state, about a channel full of audio, that nobody was on it.
+/// And a partly-attributed list invites a reader to fill in the rest.
+///
+/// Absent is the common answer once a relay is in the media path, which is
+/// correct: the relay's socket is not either party's, and sipnab reconstructed
+/// the audio from a tap rather than receiving it from anyone.
+fn channel_parties(dialog: &SipDialog, audio: &DialogAudio) -> Option<Vec<usize>> {
+    let advertised = advertised_media_endpoints(dialog);
+    if advertised.is_empty() {
+        return None;
+    }
+    audio
+        .sources
+        .iter()
+        .map(|key| {
+            advertised
+                .iter()
+                .find(|(socket, _)| *socket == key.src)
+                .map(|(_, party)| *party)
+        })
+        .collect()
+}
+
+/// Every media endpoint an observed party advertised for itself, with that
+/// party's index.
+///
+/// The sender is read off the dialog tag rather than off the packet's source
+/// address: a proxy rewrites the second and cannot rewrite the first without
+/// breaking the dialog. A request's `From` tag names whoever sent it; a
+/// response's `To` tag names whoever answered.
+fn advertised_media_endpoints(dialog: &SipDialog) -> Vec<(std::net::SocketAddr, usize)> {
+    dialog
+        .messages
+        .iter()
+        .filter_map(|msg| Some((sdp_audio_endpoint(msg)?, sender_party(dialog, msg)?)))
+        .collect()
+}
+
+/// The socket the first audio media description of a message's SDP names, when
+/// it carries one that parses into an address.
+fn sdp_audio_endpoint(msg: &crate::sip::SipMessage) -> Option<std::net::SocketAddr> {
+    let session = crate::sip::sdp::parse_sdp(&msg.body).ok()?;
+    let media = session.media.iter().find(|m| m.media_type == "audio")?;
+    let addr = crate::sip::sdp::effective_address(media, &session)?;
+    Some(std::net::SocketAddr::new(addr.parse().ok()?, media.port))
+}
+
+/// Index into the observed parties of whoever sent this message, or `None`
+/// when its tags match neither.
+///
+/// `None` rather than a fallback to index 0: a message whose tags do not match
+/// the dialog's is a forked leg, a re-INVITE from a third party, or a parse
+/// sipnab got wrong, and attributing it to the caller would put the caller's
+/// index on somebody else's audio.
+fn sender_party(dialog: &SipDialog, msg: &crate::sip::SipMessage) -> Option<usize> {
+    let tag = if msg.is_request {
+        msg.from_tag()
+    } else {
+        msg.to_tag()
+    }?;
+    if dialog.from_tag.as_deref() == Some(tag) {
+        Some(0)
+    } else if dialog.to_tag.as_deref() == Some(tag) {
+        Some(1)
+    } else {
+        None
     }
 }
 
@@ -570,7 +1085,7 @@ fn dialog_object(dialog: &SipDialog) -> Dialog {
     Dialog {
         kind: disposition.map(|_| "incomplete"),
         disposition,
-        sip_call_id: dialog.call_id.clone(),
+        ..Dialog::bare(dialog.call_id.clone())
     }
 }
 
@@ -719,8 +1234,9 @@ fn to_value_or_note<T: Serialize>(value: &T) -> serde_json::Value {
     })
 }
 
-/// Read the completeness of a capture off its facts and its analysis.
-fn completeness_of(context: &ExportContext<'_>) -> CaptureCompleteness {
+/// Read the completeness of a capture off its facts, its analysis, and what
+/// happened to its media.
+fn completeness_of(context: &ExportContext<'_>, media: &MediaVerdict) -> CaptureCompleteness {
     let facts = context.facts;
     let blind_spots = context.analysis.map(|analysis| {
         analysis
@@ -738,7 +1254,9 @@ fn completeness_of(context: &ExportContext<'_>) -> CaptureCompleteness {
     });
 
     CaptureCompleteness {
-        note: completeness_note(facts, blind_spots.as_deref()),
+        note: completeness_note(facts, blind_spots.as_deref(), media),
+        media: media.outcome,
+        media_note: media.note.clone(),
         node: node_name().to_string(),
         sipnab_version: env!("CARGO_PKG_VERSION"),
         frames_read: facts.frames_read,
@@ -762,8 +1280,15 @@ fn completeness_of(context: &ExportContext<'_>) -> CaptureCompleteness {
 /// its own clause rather than the clean one — "nobody checked" and "checked
 /// and found nothing" are different facts, and only the second earns a clean
 /// bill.
-fn completeness_note(facts: &CaptureFacts, blind: Option<&[BlindSpot]>) -> String {
+fn completeness_note(
+    facts: &CaptureFacts,
+    blind: Option<&[BlindSpot]>,
+    media: &MediaVerdict,
+) -> String {
     let mut partial = String::new();
+    if let Some(refusal) = media.refusal.as_deref() {
+        partial.push_str(refusal);
+    }
 
     if facts.undecodable.frames > 0 {
         let reasons = facts.undecodable.reason_list();
@@ -839,13 +1364,50 @@ fn completeness_note(facts: &CaptureFacts, blind: Option<&[BlindSpot]>) -> Strin
     format!(
         "Produced by sipnab {} on node {}. sipnab OBSERVED this dialog and took no part in it: \
          the parties below are what the From and To headers said, not identities anyone \
-         established, and nothing here is signed. This container carries SIGNALING ONLY — no \
-         media, and no reference to media held elsewhere. sipnab read {} frame(s) for this \
+         established, and nothing here is signed.{} sipnab read {} frame(s) for this \
          capture.{verdict}{blind_clause}",
         env!("CARGO_PKG_VERSION"),
         node_name(),
+        media_clause(media.outcome),
         facts.frames_read,
     )
+}
+
+/// The sentence describing what this container carries in place of media.
+///
+/// Four sentences rather than one, because the four outcomes are four
+/// different facts and the reader's next step differs for each. The dangerous
+/// one is [`MediaOutcome::NotConsidered`]: a container with no `recording`
+/// object reads as a conversation that had no media, which is a claim about
+/// the CALL. It has to be said out loud that this run never looked.
+///
+/// No `url` is ever mentioned as a place the media might be, because §2.5
+/// refuses to host anything and a container that names an elsewhere is
+/// asserting where a file lives on infrastructure sipnab does not control.
+fn media_clause(outcome: MediaOutcome) -> &'static str {
+    match outcome {
+        MediaOutcome::NotConsidered => {
+            " This container carries SIGNALING ONLY — no media, and no reference to media held \
+             elsewhere. That is a fact about this EXPORT, not about the call: nothing here says \
+             whether the conversation carried audio."
+        }
+        MediaOutcome::NoneDecodable => {
+            " No media is in this container because this run decoded none for the dialog; the \
+             capture_completeness media_note says what was measured. That is a statement about \
+             what this run kept, not a finding that the call was silent."
+        }
+        MediaOutcome::RefusedOverBudget => {
+            " No media is in this container because sipnab REFUSED to inline it: it decoded \
+             audio and the encoded body was over the budget below. The audio exists and was not \
+             truncated."
+        }
+        MediaOutcome::Carried => {
+            " Media IS in this container, as a recording Dialog Object holding a WAV inline. It \
+             was reconstructed from RTP this run retained at a capture point — it is NOT a \
+             recording made by the endpoints, and the media_note traveling with it says how it \
+             is bounded."
+        }
+    }
 }
 
 /// A UUIDv8 for one dialog out of one capture, per §4.1.2 of the core draft.
