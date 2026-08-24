@@ -39,10 +39,26 @@ layers:
   inputs per entry point under `catch_unwind`, covering the same parser
   set **plus** the full link-layer decap chain (`parse_packet` across
   several link types) and the pcap file reader. A caught panic fails the
-  test with the offending input hex-dumped for a repro seed.
+  test with the offending input hex-dumped for a repro seed. Calling
+  every fuzz entry point also compile-checks their signatures, so a
+  target that drifts out of step with its parser breaks the test build
+  rather than dropping out of the fuzz suite unnoticed:
+  [`fuzz/fuzz_targets/sip_parser.rs`](https://github.com/NormB/sipnab/blob/main/fuzz/fuzz_targets/sip_parser.rs) had passed a `&str` transport
+  argument where `parse_sip` takes `TransportProto`, and the whole suite
+  stopped compiling with nothing in `cargo test` to say so.
 
-The smoke layer is the regression floor. It found the keylog panic in §5
-that nobody had ever run the committed fuzz target against.
+The smoke layer is the regression floor. It found a UTF-8 char-boundary
+panic in the TLS keylog hex decoder
+([`src/capture/tls.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/tls.rs)) that nobody had ever run the
+committed fuzz target against: the decoder checked **byte**-length
+parity, then sliced `&hex[i..i+2]` as a `str`, so a multi-byte UTF-8
+char (e.g. `€`, 3 bytes) split by the 2-char window panicked with "byte
+index is not a char boundary" — a remote DoS via a crafted
+`SSLKEYLOGFILE` line. The decoder works on raw bytes with explicit
+nibble validation instead, and any non-ASCII or non-hex byte gives a
+clean parse error naming its offset. The regression test
+`decode_hex_multibyte_utf8_does_not_panic` and the corpus seeds in
+[`fuzz/corpus/keylog_line/`](https://github.com/NormB/sipnab/tree/main/fuzz/corpus/keylog_line) pin it there.
 
 - **Property tests**: [`tests/property_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/property_test.rs) (proptest) asserts the
   *semantic* invariants the fuzzers cannot — a SIP message built from
@@ -92,13 +108,13 @@ Audited, found sound (true-positive findings: none):
 - **Live loop** (`capture/live.rs`): device-open and BPF-compile
   failures return clean errors via the ready channel; receiver-dropped
   breaks cleanly. A transient `recv()` error is currently fatal to the
-  capture thread — acceptable, but untested (see §6 gaps). The thread
+  capture thread — acceptable, but untested (see §5 gaps). The thread
   ends by returning the error rather than panicking; the run that joins
   it then logs at error level and exits non-zero, because a capture that
   stopped early leaves every report above it resting on a partial read.
-  Until 0.5.83 that join downgraded the error to a warning and the
-  process exited 0, which made an incomplete run indistinguishable from
-  a whole one to anything reading `$?`.
+  The exit status is the only place that distinction survives: downgrade
+  that join to a warning and exit 0, and an incomplete run reads exactly
+  like a whole one to anything checking `$?`.
 - **event_exec**: packet-derived fields travel as `$SIPNAB_*` env
   vars, never shell-interpolated (no command injection); spawn queue
   capped at 100; children reaped. Tested.
@@ -112,24 +128,7 @@ Audited, found sound (true-positive findings: none):
   `playback.rs` / `alerting.rs` / `cli_print.rs`): libc syscalls with no
   attacker-controlled pointer/length; RAII/Drop-guarded fd ops.
 
-## 5. Fixed this pass
-
-- **`decode_hex` UTF-8 char-boundary panic** ([`src/capture/tls.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/tls.rs)):
-  the TLS keylog hex decoder checked **byte**-length parity, then sliced
-  `&hex[i..i+2]` as a `str`. A multi-byte UTF-8 char (e.g. `€`, 3 bytes)
-  split by the 2-char window panicked with "byte index is not a char
-  boundary" — a remote DoS via a crafted `SSLKEYLOGFILE` line. Fixed by
-  decoding on raw bytes with explicit nibble validation; any non-ASCII /
-  non-hex byte is now a clean parse error. Regression:
-  `decode_hex_multibyte_utf8_does_not_panic` + corpus seeds in
-  [`fuzz/corpus/keylog_line/`](https://github.com/NormB/sipnab/tree/main/fuzz/corpus/keylog_line). Found by the smoke-fuzz harness.
-- **Stale fuzz target** ([`fuzz/fuzz_targets/sip_parser.rs`](https://github.com/NormB/sipnab/blob/main/fuzz/fuzz_targets/sip_parser.rs)): passed a
-  `&str` transport arg where the current `parse_sip` takes
-  `TransportProto`, so the fuzz suite no longer compiled. Updated; the
-  smoke harness now also compile-checks every fuzz entry-point signature
-  so the suite cannot silently bit-rot again.
-
-## 6. Known gaps (deliberate / lower priority)
+## 5. Known gaps (deliberate / lower priority)
 
 - Live-capture **transient recv error** is fatal to the capture thread
   (clean exit, logged) — a retry-N-times policy could be more resilient;

@@ -577,7 +577,18 @@ fn linked_code_targets_exist() {
     // 36 -> 39, which had claimed to list every long-lived thread while the
     // reconciler thread had no row, and claimed scanner-kill was the only
     // thread allowed to send.
-    const EXPECTED_CODE_LINKS: usize = 378;
+    // 378 -> 377, DOWN by one, which this gate treats as suspicious and is
+    // right to. Attributed by measurement: `docs/internals/build-ci-release.md`
+    // went 37 -> 36 and is the only page that moved. The lost link is
+    // `src/wasm.rs`, which that page cited while listing "a refusal to commit a
+    // staged src/wasm.rs without a rebuilt bundle beside it" among the
+    // pre-commit gates. That gate does not exist: hook section 7 is a
+    // removal-rationale comment and runs nothing. The page named the right
+    // COUNT of gates and the wrong eleven -- it also carried the removed 5c
+    // man-page check and omitted 3b, the live privilege-drop gate. Dropping a
+    // link to a file the prose no longer has a reason to mention is the
+    // deletion working, not the extractor narrowing.
+    const EXPECTED_CODE_LINKS: usize = 377;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

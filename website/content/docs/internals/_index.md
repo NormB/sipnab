@@ -74,9 +74,9 @@ reading the wrong one as current is the main trap here.
 | [`../architecture.md`](https://github.com/NormB/sipnab/blob/main/docs/architecture.md) | The codemap: module layout, data flow, and the design decisions that still hold. Maintained; a phantom flag in it fails `docs_drift_test`. |
 | [`../design/maintainability-perf-spec.md`](https://github.com/NormB/sipnab/blob/main/docs/design/maintainability-perf-spec.md) | The rationale behind the current shape of the code — why one pipeline replaced four, why `main.rs` broke up into [`src/app/`](https://github.com/NormB/sipnab/blob/main/src/app). Sections 0–9 are the 2026-07-03 review of v0.4.18 and read as history; §10 (WS8) is the only live section — read it before any performance work. |
 | [`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) | The open backlog, priority-ranked P0–P5. The working list — start here for "what needs doing". |
-| [`../design/lessons.md`](https://github.com/NormB/sipnab/blob/main/docs/design/lessons.md) | Four defects that reached a release, each with the rule derived from it: TUI state no renderer read, feature flags gating nothing, config parsed and never used, and the 2026-05-05 audit that found four blocking and ~17 major doc drifts accumulated since 0.3.1. Its cheap-regression greps still hold. **Corrected 2026-08-05:** this column used to say they "have themselves rotted — the field-count one calls 30 current, and `dsl.rs` now has 31", which had it backwards. `FIELD_NAMES` in [`../../src/sip/dsl.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs) has 30 entries and `parse_field` has 30 arms, so `lessons.md`'s "current is 30" is right; the pages claiming 31 had drifted, and this pass corrected them. |
+| [`../design/lessons.md`](https://github.com/NormB/sipnab/blob/main/docs/design/lessons.md) | Four defects that reached a release, each with the rule derived from it: TUI state no renderer read, feature flags gating nothing, config parsed and never used, and the 2026-05-05 audit that found four blocking and ~17 major doc drifts accumulated since 0.3.1. Its cheap-regression greps still hold, though one of them carries a field count that has drifted: it calls 30 current, while `FIELD_NAMES` in [`../../src/sip/dsl.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs) lists 33 and `parse_field` accepts every one of them. Count the constant, not the comment. |
 | [`../research/codex-analysis.md`](https://github.com/NormB/sipnab/blob/main/docs/research/codex-analysis.md) | Adversarial security review of `698585e` (2026-07-22). Findings SN-01/02/03, all fixed; the analysis of *why* each was reachable is still the best description of the HEP trust boundary. |
-| [`../research/capture-performance.md`](https://github.com/NormB/sipnab/blob/main/docs/research/capture-performance.md) | The packet-capture throughput roadmap: four phases ordered cheapest-first, each after the first carrying an explicit trigger condition so the complexity is only paid once the previous phase proves insufficient. Research, not committed work — one item carries a done mark, the auto-grow capture channel. Its baseline section names symbols rather than line numbers, and says why: the ranges it used to cite had all rotted by the time the work below it landed. |
+| [`../research/capture-performance.md`](https://github.com/NormB/sipnab/blob/main/docs/research/capture-performance.md) | The packet-capture throughput roadmap: four phases ordered cheapest-first, each after the first carrying an explicit trigger condition so the complexity is only paid once the previous phase proves insufficient. Research, not committed work — one item carries a done mark, the auto-grow capture channel. Its baseline section names symbols rather than line numbers, and says why: the ranges it cited had all rotted by the time the work below it landed. |
 
 **Archaeological** — kept for the determination record, superseded in places:
 
@@ -146,11 +146,12 @@ followed symlinks.
 the numbered gates in [`.githooks/pre-commit`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-commit)
 (clippy, the full test suite, no `unwrap()`/`expect()` in production, WASM
 exports in sync, the homepage *test count*, sub-gate 5b for the site version —
-a different claim from the crate version — no TODO stubs, WASM rebuild, and an
+a different claim from the crate version — no TODO stubs, and an
 advisory notice when a commit touches code these pages cite. The TODO scan and
 that notice are the two advisory gates, printing `WARN`/`REVIEW` and letting the
-commit through). Sub-gate 5c no longer exists: it re-implemented a Rust test in shell,
-the copies diverged, and the surviving Rust version runs here *and* in CI. Also
+commit through). Version markers are not in that list: one Rust test asserts
+them and runs here *and* in CI, because two implementations of one rule
+diverge — as the shell copy the hook once carried did. Also
 eight in [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push), each marked
 `# -- Hard gate` in the hook: `fmt`,
 `clippy --workspace --all-features --all-targets`, `cargo doc` with `-D warnings`,
@@ -212,16 +213,15 @@ process, so the floor is not optional.
   output is stale. The same arrangement covers the operator
   pages: [`build-site-pages.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-site-pages.py) renders
   each entry in its `PAGES` registry from `docs/` into [`website/content/docs/`](https://github.com/NormB/sipnab/blob/main/website/content/docs),
-  gated by `site_pages_mirror_is_current`. The first thirteen registered pages
-  got there the same way — hand-maintained on both sides until they diverged.
-  (`PAGES` has grown to 21 since; read the registry, not this sentence.) The
-  cookbook shared 2 of its 36 commands with the site copy; the REST API page was
-  430 lines against the site's 893, each side holding sections the other lacked;
-  the MCP page was 672 lines against the site's 440, and its tool table listed 7
-  of the 11 registered tools where the site's listed all 11. The ten that
-  followed were the same story: the site's Filter DSL page carried fourteen
-  operational recipes `docs/` did not have, so every wiki reader got that page
-  without them.
+  gated by `site_pages_mirror_is_current`. Every page in that registry got
+  there the same way — hand-maintained on both sides until they diverged. Read
+  the registry for what it holds today, not this sentence. The cookbook shared
+  2 of its 36 commands with the site copy; the REST API page was 430 lines
+  against the site's 893, each side holding sections the other lacked; the MCP
+  page was 672 lines against the site's 440, and its tool table listed 7 of the
+  11 registered tools where the site's listed all 11. The rest were the same
+  story: the site's Filter DSL page carried fourteen operational recipes
+  `docs/` did not have, so every wiki reader got that page without them.
 
   `benchmarks.md` is the deliberate exception — both copies exist, neither is
   generated, and a gate covers only the measured tables

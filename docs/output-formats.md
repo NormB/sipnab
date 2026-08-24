@@ -214,9 +214,9 @@ sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \
 
 A `signaling_diagnosis` object sits beside `diagnosis` when something is wrong
 with the signaling rather than the media, and **drops out entirely** when
-the detections found nothing — so a healthy dialog serializes exactly as before
-the field existed. Nine detections run over every dialog, each naming the
-messages it drew on as indices into the dialog's own message list:
+the detections found nothing — so a consumer that does not read the field sees
+a healthy dialog unchanged. Nine detections run over every dialog, each
+naming the messages it drew on as indices into the dialog's own message list:
 
 | Field | Meaning |
 |---|---|
@@ -304,8 +304,8 @@ every time is one nobody reads.
 
 `diagnosis.media_relay` is context rather than a finding, and is likewise
 **omitted** on any capture with no TURN relay in it. It answers "where did this
-call's audio actually go", which for a relayed call previously had no answer
-anywhere: `client`, `server`, `relayed_address` (the address the far end really
+call's audio actually go", which for a relayed call nothing else in the capture
+answers: `client`, `server`, `relayed_address` (the address the far end really
 sends to), `channel`, `peer`, and `lapsed`. `lapsed: true` is the capture-level
 `turn_allocation_lapsed` finding narrowed to **this** call's media, and is the
 only shape that also adds a hint — a relay doing its job needs no sentence in a
@@ -329,8 +329,8 @@ the hint stops offering "a one-way path or an unreachable peer" as a guess, and 
 measurement to remove a sentence.
 
 With no ICMP in the capture, `icmp_cause` is absent and the retransmission hint
-reads exactly as it always did -- the inference is the honest answer when
-nothing better is available.
+offers the inference on its own -- the honest answer when nothing better is
+available.
 
 The same document is what you get from:
 

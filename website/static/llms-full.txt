@@ -265,7 +265,7 @@ The first command should print a diagnosis object like:
 
 ## 5. Filter for the five things you look for most
 
-The filter DSL has 30 fields and 7 operators. These five cover most operational triage:
+The filter DSL has 33 fields and 7 operators. These five cover most operational triage:
 
 Slow setup — every dialog that took more than 3 seconds from INVITE to 200 OK:
 
@@ -1940,7 +1940,7 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 | `sipnab_messages_total{method}` | counter | SIP messages by method (`INVITE`, `REGISTER`, …). |
 | `sipnab_responses_total{code}` | counter | SIP responses in the tracked dialogs, grouped by class: `1xx`, `2xx`, `3xx`, `4xx`, `5xx`, `6xx`. Every class appears on every scrape, at `0` where the capture saw none, so a rule watching for the first `5xx` reads zero instead of no-data. |
 | `sipnab_rtp_streams_active` | gauge | The two servers count different things under this one name. The `--api` server counts streams a dialog claims, however long ago the last packet arrived; the standalone `--metrics` server counts streams whose last packet arrived within the previous 30 seconds, whatever their dialog association. A call whose media died five minutes ago is still counted by `--api` and is not counted by `--metrics` — an alert threshold tuned on one scrape target does not carry over to the other. |
-| `sipnab_rtp_streams_total{status}` | counter | RTP streams by status: `orphaned` when no dialog claims the stream, `established` when one does. From 0.5.98 the stream's dialog association decides this on every scrape. Before that, a sweep flagged a stream only once it had gone 30 seconds unclaimed, so a short unclaimed stream counted as `established`. `--api` only. The standalone `--metrics` server never populates the map, and an empty family drops out rather than reporting zero, so on `--metrics` the series does not exist at all — a panel built on it stays permanently blank. |
+| `sipnab_rtp_streams_total{status}` | counter | RTP streams by status: `orphaned` when no dialog claims the stream, `established` when one does. The stream's dialog association decides the label on every scrape, with no age threshold in front of it, so a stream unclaimed for two seconds counts as `orphaned` exactly as one unclaimed for an hour does. `--api` only. The standalone `--metrics` server never populates the map, and an empty family drops out rather than reporting zero, so on `--metrics` the series does not exist at all — a panel built on it stays permanently blank. |
 | `sipnab_kill_responses_sent_total{mode}` | counter | Scanner-kill responses sent, by source mode: `raw` (source-spoofed via a raw socket) or `ephemeral` (sipnab's own port). Alert on unexpected `ephemeral` to catch a silent spoof fallback. |
 | `sipnab_capture_packets_total` | counter | Packets the capture handed to the processing pipeline since the process started. Counted before parsing, so a frame sipnab cannot parse still counts — it arrived. **This series says nothing about whether sipnab understood any of it**; a capture on a link type with no decoder climbs this counter exactly like a clean one. Pair it with `sipnab_capture_undecoded_fraction` before reading any zero elsewhere in the scrape as a finding. One process-wide total covering every input (`-I` files, live devices, HEP) and every worker of the parallel pipeline, identical on both servers. A line that stops climbing means packets stopped arriving. |
 | `sipnab_reassembly_timeouts_total` | counter | IP fragments whose datagram never completed, plus TCP streams that went idle, dropped once older than the 30-second reassembly TTL. Capacity evictions stay out of this number: those say the entry cap is too small, not that a peer stopped sending. |
@@ -1951,7 +1951,7 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 | `sipnab_capture_snapped_frames_total` | counter | Frames the capture's own `--snaplen` cut short (`caplen < origlen`). Neither loss nor a decode failure: the frames arrived, most of them decoded, and what is missing is payload — which is exactly what a signaling-only capture sets out to discard. It matters because the `--snaplen` warnings fire once per run and cannot say how MUCH of a capture came in truncated: a run that decoded every packet and snapped 94% of them is not a clean capture, and no other series says so. Raise `--snaplen` if you need RTP payload, audio export, or a faithful `-O` re-emit. |
 | `sipnab_nat_unanswered_requests` | gauge | STUN and TURN transactions that went out and never came back — the signal behind a one-way-audio complaint. **The only capture-quality series about the network rather than about the capture:** these frames arrived perfectly, and the reply to them did not. A gauge and not a counter because a late answer removes one, which a monotonic counter could never record. An endpoint that cannot learn its reflexive address advertises its private address in SDP, and the far end then sends media to an address the internet cannot route, while signaling looks healthy. Silence rather than a refusal points at something in the path discarding the packets — on school, campus and corporate networks most often a security appliance (web filter, secure web gateway, firewall or IPS) dropping UDP it does not recognize. A refusal counts as answered: the server was reachable and said no, which is a different fault. |
 | `sipnab_nat_lapsed_turn_allocations` | gauge | TURN allocations still carrying traffic past the lifetime the server last granted them, with no Refresh seen in between. The second capture-quality series about the NETWORK rather than about the capture, and the only condition sipnab reports that has **no other symptom anywhere**: a relay tears an allocation down the moment its lifetime lapses, the relayed media stops with it mid-call, and no SIP message says why — the signaling shows a healthy call that went quiet. A gauge and not a counter because a Refresh seen later moves the expiry and unsays it, which a monotonic counter could never record. The wording is "no Refresh SEEN" rather than "none sent", because a capture that started late or lost a packet cannot tell those apart. A deliberate release (a Refresh with `LIFETIME` 0) is never counted — the client asked for the teardown. |
-| `sipnab_nat_lapsed_turn_allocation_streams` | gauge | Media streams observed crossing a TURN allocation that had already lapsed. The scale beside `sipnab_nat_lapsed_turn_allocations`, and the reason that series is worth paging on: an allocation that lapsed with nothing on it cost nobody a call, while one carrying four streams cut off four conversations mid-sentence — and until relayed media became attributable to the allocation that carried it, the two rendered identically. Counted by distinct SSRC seen inside the ChannelData frames on the allocation's channels, so RTCP does not inflate it. A gauge for the same reason the series above is: a Refresh seen later moves the expiry and takes the streams back out of this number. |
+| `sipnab_nat_lapsed_turn_allocation_streams` | gauge | Media streams observed crossing a TURN allocation that had already lapsed. The scale beside `sipnab_nat_lapsed_turn_allocations`, and the reason that series is worth paging on: an allocation that lapsed with nothing on it cost nobody a call, while one carrying four streams cut off four conversations mid-sentence — and without relayed media attributable to the allocation that carried it, the two render identically. Counted by distinct SSRC seen inside the ChannelData frames on the allocation's channels, so RTCP does not inflate it. A gauge for the same reason the series above is: a Refresh seen later moves the expiry and takes the streams back out of this number. |
 | `sipnab_nat_ice_role_conflicts` | gauge | Candidate pairs where both ICE agents claimed the same role, or where one answered `487 Role Conflict` ([RFC 8445](https://www.rfc-editor.org/rfc/rfc8445) §7.3.1.1). The third capture-quality series about the NETWORK rather than about the capture. ICE resolves this itself — the losing agent switches role and repeats every check it had already sent — so a single conflict is not always fatal, which is exactly why it belongs on a dashboard rather than only in an alert: a fleet where it happens constantly is misconfigured whether or not any individual call survived it. Where no pair between the two was ever nominated, the conflict is a candidate cause of media that never started. The usual source is two endpoints configured with the same role, or a B2BUA relaying one side's role attribute to the other. A gauge because a later nomination on the same pair unsays the severity of it. |
 | `sipnab_capture_undecoded_fraction` | gauge | Share of captured frames sipnab could not decode, `0`–`1`, emitted on **every** scrape including clean ones. This is the series that separates "this capture holds no SIP" from "sipnab could not read this capture" — both of which otherwise show `sipnab_messages_total` at zero and look identical. At `1` nothing in the rest of the scrape describes traffic sipnab read. A non-zero but small value is normal: ARP and other non-IP background is undecodable by definition on any Ethernet link, which is exactly why this is a proportion and not a flag. |
 | `sipnab_capture_quality_degraded` | gauge | `1` when any of the three *loss* counters above exceeds zero, `0` otherwise. Undecodable frames are deliberately **not** folded in: ARP makes them non-zero on nearly every capture, so a flag including them would always be `1` and carry no information — use `sipnab_capture_undecoded_fraction` with a threshold instead. The one series to put on a dashboard or an alert rule to know whether the rest of the scrape describes the whole capture. `0` means nothing **surfaced** as wrong, not that the capture provably saw every packet: loss upstream of the capture point — an oversubscribed SPAN port, a tap mirroring one direction, a filter that excluded the traffic — is invisible to all three counters. |
@@ -1966,7 +1966,7 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 
 Two shapes of counter share that table, and an alert rule has to know which one it reads. `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`, `sipnab_kill_responses_sent_total`, `sipnab_capture_backpressure_blocks_total`, `sipnab_capture_undecodable_frames_total` and the three capture-quality counters (`sipnab_capture_kernel_dropped_packets_total`, `sipnab_capture_interface_dropped_packets_total`, `sipnab_capture_invalid_timestamps_total`) count events since the process started and only ever climb, so `rate()` and `increase()` over them mean what they say. The rest — dialogs, messages, responses, streams, diagnosis findings — describe what sipnab tracks right now, and they fall as dialogs and streams age out of their stores. Alert on the current value or on a ratio there, never on `increase()`.
 
-`sipnab_security_alerts_total{type}` reads differently from the rest, and the difference matters to an alert rule. `AlertEngine::fire` records each alert under its rule name, so the family carries only the types that have actually fired and stays absent from the scrape entirely until the first one does. An absent series therefore means "no alert of that type has fired since this process started", not "the metric is unavailable" — the reading it carried up to 0.5.74, when nothing fed the family at all. `firing_an_alert_moves_the_metric` in [`tests/metrics_alert_wiring_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_alert_wiring_test.rs) holds the recording call to that behavior.
+`sipnab_security_alerts_total{type}` reads differently from the rest, and the difference matters to an alert rule. `AlertEngine::fire` records each alert under its rule name, so the family carries only the types that have actually fired and stays absent from the scrape entirely until the first one does. An absent series therefore means "no alert of that type has fired since this process started", not "the metric is unavailable". `firing_an_alert_moves_the_metric` in [`tests/metrics_alert_wiring_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_alert_wiring_test.rs) holds the recording call to that behavior.
 
 
 ### Prometheus scrape config
@@ -2103,11 +2103,11 @@ and that `id` is not revoked. A malformed token loses, every time (fail-closed).
 MCP endpoint turns away a token minted from `--api-signing-key`, and vice versa —
 **even when both carry the same signing key**. The
 version prefix is part of the signed input, so an `s2` token cannot be rewritten
-as `s1` to shed its binding. The pre-`aud` `s1` format is **no longer
-accepted** — it carried no audience, so honoring it would have left this
-binding best-effort. An `s1` token now returns `401`. Re-mint with
-`--mint-token`. Note that **static** `--api-key` secrets carry no audience —
-the binding applies to signed tokens only.
+as `s1` to shed its binding. sipnab **rejects** the pre-`aud` `s1` format — it
+carries no audience, so honoring it would leave this binding best-effort. An
+`s1` token returns `401`. Re-mint with `--mint-token`. Note that **static**
+`--api-key` secrets carry no audience — the binding applies to signed tokens
+only.
 
 | Setting | Purpose |
 |---|---|
@@ -2733,7 +2733,7 @@ List all tracked RTP streams with quality metrics.
 
 | Parameter  | Type  | Default | Description |
 |------------|-------|---------|-------------|
-| `orphaned` | bool  | --      | `true` keeps only streams no dialog claims, `false` only those one does. From 0.5.98 the test is the stream's dialog association; before it, a 30-second sweep decided, so `orphaned=true` missed short unclaimed streams |
+| `orphaned` | bool  | --      | `true` keeps only streams no dialog claims, `false` only those one does. The test is the stream's dialog association, applied from the stream's first packet, so `orphaned=true` catches short unclaimed streams as well as long ones |
 | `mos_below`| float | --      | Filter streams with MOS below this threshold |
 | `limit`    | int   | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`   | int   | 0       | Pagination offset |
@@ -3277,11 +3277,10 @@ linked **`-gnu`** build (requires glibc >= 2.36 — Debian 12+, Ubuntu 23.04+ �
 and libpcap installed via your package manager) and the static **musl** build
 (no glibc or libpcap requirement, and no TUI audio playback — everything else
 identical). The 2.36 figure is the floor the release workflow actually
-enforces on every gnu binary, and the installer now uses that same cutover —
-it serves musl only to hosts below **glibc 2.36**, or with no glibc at all. It
-previously cut over at 2.39 for eleven releases, so hosts between 2.36 and
-2.39 (Debian 12 among them) received the static build and lost TUI audio even
-though the gnu build ran there fine.
+enforces on every gnu binary, and the installer uses that same cutover — it
+serves musl only to hosts below **glibc 2.36**, or with no glibc at all. One
+number in both places is what stops a host the gnu build runs on from taking
+the static build and losing TUI audio for nothing.
 
 ## Download a release binary yourself
 
@@ -3318,7 +3317,7 @@ covers every file, and the tarballs additionally ship an individual
 | `v<version>.tar.gz`, `v<version>.zip` | — | anywhere Rust 1.97+ builds | tagged source tree |
 
 The two macOS floors differ because they are the pinned compiler's own defaults,
-one per target. `release.yml` now pins `MACOSX_DEPLOYMENT_TARGET` to exactly
+one per target. `release.yml` pins `MACOSX_DEPLOYMENT_TARGET` to exactly
 those two values, so a toolchain bump cannot move a published floor without
 someone deciding to, and `published_macos_floors_match_the_toolchain` holds
 [`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml) to what the workflow pins — refusing a floor below the
@@ -3670,7 +3669,7 @@ For everything:
 cargo build --release --features full
 ```
 
-`libasound.so.2` is now an **optional** runtime dependency. The `audio` feature
+`libasound.so.2` is an **optional** runtime dependency. The `audio` feature
 builds a separate plugin, `libsipnab_audio.so`, installed to `/usr/lib/sipnab/`
 by the `.deb` (or placed next to the binary in dev builds). The `sipnab` binary
 `dlopen`s this plugin only when you actually play a stream, so an audio-enabled
@@ -5093,7 +5092,7 @@ cooked v1 and cooked v2 alike.
 
 ## Still stuck?
 
-Build custom queries with the [Filter DSL](filter-dsl.md) -- 30 fields, regex support, boolean logic. See the [CLI Reference](cli-reference.md) for every flag and more recipes.
+Build custom queries with the [Filter DSL](filter-dsl.md) -- 33 fields, regex support, boolean logic. See the [CLI Reference](cli-reference.md) for every flag and more recipes.
 
 If the capture itself is the problem -- drops on a busy link, a full kernel ring buffer, or loss that appears on every call at once -- see [Tuning capture on a busy server](tuning-capture.md).
 
@@ -6888,7 +6887,7 @@ report a healthy network in the middle of an outage.
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--kill-scanner` | -- | off | Detect SIP scanning (known UA signatures + behavioral rate/enumeration), alert on it, and send the kill response back to the scanner (sipgrep `-J`/`-j`) |
-| `--kill-ua` | `<PATTERN>` | -- | Add a custom scanner User-Agent pattern (regex) to `--kill-scanner` detection |
+| `--kill-ua` | `<PATTERN>` | -- | Add a custom scanner User-Agent pattern (regex) to `--kill-scanner` detection. **Refused without it**: `--kill-scanner` (or `[security] kill_scanner = true`) builds the detector that reads this pattern, so given alone it would feed nothing and the run would report no scanners — which is what a clean capture looks like. sipnab does not arm the detector for you, because on a live capture `--kill-scanner` also arms the response path |
 | `--kill-response` | `<CODE>` | `200` | SIP response code for the kill response (100-699) |
 | `-K`, `--kill-target` | `<ADDR[:PORT-RANGE]>` | -- | Targeted kill (sipgrep `-K`): send the kill response to any SIP request whose source matches ADDR and an optional port range (`192.0.2.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection. Repeatable; spawns the kill worker on its own (no `--kill-scanner` needed) |
 | `--kill-spoof` | `<MODE>` | `auto` | Source-address strategy for the kill response (Linux only; other platforms always `ephemeral`). `auto` forges the victim's ip:port via a raw socket when `CAP_NET_RAW` is available (so the reply appears to come from the targeted SIP port), falling back to an ephemeral source otherwise; `raw` requires the spoof and errors when it cannot open the raw socket; `ephemeral` never spoofs |
@@ -7317,7 +7316,7 @@ Operator precedence (highest to lowest): `NOT`, `AND`, `OR`. Use parentheses to 
 
 ## Fields
 
-All 30 addressable fields, organized by type.
+All 33 addressable fields, organized by type.
 
 ### String fields
 
@@ -7369,11 +7368,11 @@ All 30 addressable fields, organized by type.
 > including `!=`: it is not "different from 3.0", it is unknown. This is the
 > rule SQL uses for `NULL`, for the same reason.
 >
-> Until 0.5.94 these read as `0`, and because `0` sits below every threshold
-> anyone would type, `rtp.mos < 3.0` selected every call carrying no media at
-> all — 2292 of 2311 dialogs on one real trunk capture, against 2 genuine ones
-> with `AND rtp.packets > 0`. If you have a saved filter that leans on that,
-> the `AND rtp.packets > 0` guard is now redundant rather than wrong.
+> Reading them as `0` instead would put them below every threshold anyone
+> would type, so `rtp.mos < 3.0` would select every call carrying no media at
+> all: 2292 of 2311 dialogs on one real trunk capture, rather than the 2
+> genuine ones. A saved filter carrying an `AND rtp.packets > 0` guard is
+> redundant rather than wrong.
 >
 > To select the calls that carry no media, ask for that directly: `rtp.packets
 > == 0` is a real count of zero, and `no_media` is the diagnosis itself.
@@ -7495,14 +7494,14 @@ because then it was the outcome.
 > where your tap sits: if media does not traverse it, the question is
 > unanswerable and sipnab declines to answer it.
 >
-> **`rtp.orphaned` was withdrawn.** It asked whether a stream *belonging to this
-> dialog* belongs to no dialog: a stream counts as an orphan exactly when no
-> dialog claims it, so the two halves excluded each other and the field matched nothing
-> on any capture while `NOT rtp.orphaned` matched everything. It is now
-> a parse error rather than a silent falsehood. Orphaned media is real and still
-> reachable: read the "Orphaned Streams" section of `--report`, or the REST
-> API's `/v1/streams?orphaned=true`, both of which model streams rather than
-> dialogs.
+> **`rtp.orphaned` is a parse error, not a field.** It would ask whether a
+> stream *belonging to this dialog* belongs to no dialog: a stream counts as an
+> orphan exactly when no dialog claims it, so the two halves exclude each other
+> and the field matches nothing on any capture while `NOT rtp.orphaned` matches
+> everything. Rejecting it at the parser beats a silent falsehood. Orphaned
+> media is real and still reachable: read the "Orphaned Streams" section of
+> `--report`, or the REST API's `/v1/streams?orphaned=true`, both of which model
+> streams rather than dialogs.
 
 ## Operators
 
@@ -7736,7 +7735,7 @@ sipnab -N -I capture.pcap --report
 
 Orphaned streams have no matching SIP dialog or SDP, so no dialog filter can
 select them and the DSL offers no field for them. The boolean-field note above
-covers the withdrawn `rtp.orphaned`. The `--report`
+covers why `rtp.orphaned` is a parse error. The `--report`
 output carries an "Orphaned Streams" section, and the [REST
 API](rest-api.md#get-v1streams) answers the same question at
 `/v1/streams?orphaned=true` when you run sipnab with `--api`. Orphans usually
@@ -9099,9 +9098,9 @@ sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \
 
 A `signaling_diagnosis` object sits beside `diagnosis` when something is wrong
 with the signaling rather than the media, and **drops out entirely** when
-the detections found nothing — so a healthy dialog serializes exactly as before
-the field existed. Nine detections run over every dialog, each naming the
-messages it drew on as indices into the dialog's own message list:
+the detections found nothing — so a consumer that does not read the field sees
+a healthy dialog unchanged. Nine detections run over every dialog, each
+naming the messages it drew on as indices into the dialog's own message list:
 
 | Field | Meaning |
 |---|---|
@@ -9189,8 +9188,8 @@ every time is one nobody reads.
 
 `diagnosis.media_relay` is context rather than a finding, and is likewise
 **omitted** on any capture with no TURN relay in it. It answers "where did this
-call's audio actually go", which for a relayed call previously had no answer
-anywhere: `client`, `server`, `relayed_address` (the address the far end really
+call's audio actually go", which for a relayed call nothing else in the capture
+answers: `client`, `server`, `relayed_address` (the address the far end really
 sends to), `channel`, `peer`, and `lapsed`. `lapsed: true` is the capture-level
 `turn_allocation_lapsed` finding narrowed to **this** call's media, and is the
 only shape that also adds a hint — a relay doing its job needs no sentence in a
@@ -9214,8 +9213,8 @@ the hint stops offering "a one-way path or an unreachable peer" as a guess, and 
 measurement to remove a sentence.
 
 With no ICMP in the capture, `icmp_cause` is absent and the retransmission hint
-reads exactly as it always did -- the inference is the honest answer when
-nothing better is available.
+offers the inference on its own -- the honest answer when nothing better is
+available.
 
 The same document is what you get from:
 
@@ -11337,8 +11336,8 @@ Start from the whole capture — you may not know which Call-ID to ask about:
 
 `total_matched` against `returned` is the field to read first. They differ
 whenever the capture holds more problems than one page, and `truncated` says so
-outright — a bare list of 50 rows used to be indistinguishable from a capture
-that had exactly 50 problems.
+outright — without it, a bare list of 50 rows is indistinguishable from a
+capture that holds exactly 50 problems.
 
 Then ask the registration-specific tool, which knows the shape of a healthy
 REGISTER exchange:
@@ -11902,7 +11901,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.73"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.123"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -12494,7 +12493,7 @@ clock, not that the clock is accurate to within the window you are matching in.
 
 #### Compare the two answers to the same question
 
-Both transcripts below are real output from sipnab 0.5.95, from the script in
+Both transcripts below are real output from sipnab 0.5.97, from the script in
 [Drive it from a script](mcp-deploy.md#drive-it-from-a-script), against sipnab servers reading
 [`tests/pcap-samples/`](https://github.com/NormB/sipnab/tree/main/tests/pcap-samples). Same command shape, opposite evidence.
 
@@ -12550,8 +12549,9 @@ options. sipnab watches a wire and cannot add one, because the SBC forwards its
 own message to the far side regardless of what sipnab saw.
 
 Attribution needs one more step than you might expect. **Not every response
-carries `capture_identity`** — the whole-store answers do, the per-dialog ones do
-not. Measured against 0.5.98:
+carries `capture_identity`.** Read the table rather than a rule of thumb:
+"whole-store answers carry it, per-dialog ones do not" is close but wrong,
+because `media_diagnostics` is per-dialog and carries it:
 
 | Carries `capture_identity.node` | Does not |
 |---|---|
@@ -12618,7 +12618,7 @@ broken one — so the finding states what arrived on the wire and declines to
 assert which. A computed cross-node id would be the opposite move: asserting an
 identity the wire never established.
 
-> **For IMS and carrier readers: sipnab now reads `P-Charging-Vector`, in two
+> **For IMS and carrier readers: sipnab reads `P-Charging-Vector` in two
 > strategies, and the difference between them decides whether it helps you.**
 > [RFC 7315 §4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) says the ICID identifies *a dialog*, and a B2BUA is two
 > dialogs — so a conformant B2BUA emits a **different** `icid-value` on each
@@ -12725,33 +12725,6 @@ ordinary update.
 | [`start_tls_capture`](#start_tls_capture) | `flavors`, `libraries` | installs kernel uprobes and reads SIP plaintext with no key; needs `--mcp-allow-tls-capture` |
 | [`stop_tls_capture`](#stop_tls_capture) | -- | stops that capture and removes its kernel probes |
 
-### What changed in 0.5.98
-
-Four answers changed shape or meaning. A client written against 0.5.97 keeps
-working for every other tool, and these four need a look:
-
-- **`search_messages` returns a page object.** The rows moved from the top
-  level into `hits`, beside `returned`, `total_matched`, `truncated`,
-  `next_cursor` and `capture_identity`. A client doing `parsed[0]` now reads
-  `parsed.hits[0]`.
-- **`security_findings` returns a page object too**, with `findings`,
-  `returned`, `total_matched`, `truncated`, `armed_kinds`, `detection_armed`
-  and — when no detector runs — `note`. It also **refuses** a `kinds` value
-  outside `scanner` / `fraud` / `digest` / `reg_flood` rather than answering
-  with an empty list, so a call passing `reg-flood` now gets an error where it
-  used to get `[]`.
-- **`rtp_stats` reports `orphaned` as `associated_dialog.is_none()`**, computed
-  per response. Streams that used to report `false` for their first 30 seconds
-  of capture clock now report `true` from the first packet. `capture_status`'s
-  `orphaned_stream_count`, the REST `/v1/streams?orphaned=` filter and the
-  `--report` orphan section all moved with it, so the surfaces agree.
-- **`search_by_time` carries `next_cursor`** (and `capture_identity`), so a
-  you can page a truncated window instead of re-cutting it.
-
-This change removes nothing and retypes nothing. It adds fields, turns two
-payloads from array into object, and makes one boolean answer the question its
-name asks.
-
 ### Rules every tool follows
 
 Five rules hold across the whole surface. Each tool section below states only
@@ -12779,9 +12752,8 @@ error. `next_cursor: null` marks the final page.
 **Every list-style tool answers with a page object, never a bare array.** The
 rows sit under a named key — `dialogs`, `hits`, `streams`, `findings` — beside
 `returned` and `total_matched`, so counting the rows is never necessary and
-never right. `search_messages` and `security_findings` returned bare arrays
-until 0.5.98 and now carry the page fields as well — see [what changed in
-0.5.98](#what-changed-in-0-5-98). `tail_dialogs` is the one page object with no
+never right. `search_messages` and `security_findings` carry the
+page fields too. `tail_dialogs` is the one page object with no
 total, because a tail cannot have one. [Response
 bounding](#response-bounding) tabulates it.
 
@@ -13537,12 +13509,11 @@ omits.
 response, so the two fields can never disagree: every stream above reports `orphaned: true`, which
 is the truth about a capture holding four streams and no dialogs at all.
 
-Before 0.5.98 the same four reported `orphaned: false`. A sweep set the flag
-only after 30 seconds of *capture* clock, and this capture runs for three — so an agent filtering for orphans to find a NAT or one-way-audio fault
-found nothing, on a capture that is nothing but orphans. A short unclaimed
-stream is exactly what those faults look like from the media side, and it never
-reached the flag. If you have a client that works around this by reading
-`associated_dialog` instead, that still works and still means the same thing.
+sipnab computes `orphaned` per response as `associated_dialog.is_none()`, so a
+stream reports it from its FIRST packet. That matters because a short unclaimed
+stream is exactly what a NAT or one-way-audio fault looks like from the media
+side: an agent filtering for orphans to find one must not have to wait for a
+sweep to notice. Reading `associated_dialog` directly means the same thing.
 
 `total_matched: 2` and `ungrounded_excluded: 2` account for all four streams.
 The two G722 streams score 4.22 from the placeholder arm, which would have put
@@ -13665,13 +13636,12 @@ a bare array, plus the provenance note as a second content block:
 and `message_index` straight to [`get_message`](#get_message) for the parsed
 form.
 
-> **Before 0.5.98 you could count nothing from this answer.** It was a bare
-> array with no total, no truncation flag and no cursor, so a capped result
-> looked exactly like a complete one: on the sample capture below,
-> `{ "query": "REGISTER" }` returned 50 rows and `limit: 1000` returned 1000,
-> and neither said that 1334 messages matched. That page also claimed the
-> figure was "close to 9000", which nothing could check. Now `total_matched`
-> answers it and `next_cursor` reaches the rest.
+> **Count from the fields, never from the rows.** A capped result and a
+> complete one hold the same shape, so the row count cannot tell them apart:
+> on the sample capture below, `{ "query": "REGISTER" }` returns 50 rows and
+> `limit: 1000` returns 1000, while 1334 messages match. `total_matched` is
+> the number that answers "how many are there", `truncated` says whether you
+> are seeing all of them, and `next_cursor` reaches the rest.
 
 The example runs against [`tests/pcap-samples/sipp-branch-scenario.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sipp-branch-scenario.pcapng):
 
@@ -13801,9 +13771,9 @@ reg-flood, etc.). Backed by the AlertEngine's bounded ring buffer
 > **Read `armed_kinds` before you read `findings`.** An empty findings list
 > means "nothing tripped" only on a server that armed something; on any other
 > it means nothing was watching, and the two are opposite operational states.
-> Before 0.5.98 this tool answered `[]` for both — and for a third case, a
-> `kinds` value outside the vocabulary, which now fails instead. Cross-checking
-> [`server_capabilities`](#server_capabilities) is no longer necessary for this
+> A `kinds` value outside the vocabulary fails rather than answering with an
+> empty list, which would be a third way to read `[]`. Cross-checking
+> [`server_capabilities`](#server_capabilities) is not necessary for this
 > question: the answer is in the response.
 
 The page fields carry the meanings they do everywhere else on this surface —
@@ -14589,11 +14559,11 @@ same window without a filter answers `total_matched: 247`:
 }
 ```
 
-**`truncated: true` is no longer a dead end.** Pass `next_cursor` back to
+**`truncated: true` is not a dead end.** Pass `next_cursor` back to
 continue through the window. `total_matched` keeps counting the whole window
-rather than the remainder, so it does not shrink as you page. Before 0.5.98 this
-tool carried no cursor and the only way past a truncated window was to narrow
-it, which put every row past the 1000-row ceiling out of reach. The cursor is
+rather than the remainder, so it does not shrink as you page — without a
+cursor the only way past a truncated window would be to narrow it, putting
+every row past the 1000-row ceiling out of reach. The cursor is
 the same compound form [`list_dialogs`](#list_dialogs) issues, and it is opaque:
 pass it back exactly as it arrived.
 
@@ -14626,9 +14596,10 @@ a boundary described that way ought to be.
 > [`list_captures`](#list_captures) to see which names a directory already
 > uses.
 >
-> Before 0.5.97 the guard covered only the capture the run was reading. Every
-> other capture staged there for [`open_capture`](#open_capture), and every
-> earlier export, fell to a name collision on a call that reported success.
+> The guard covers every capture in the root, not only the one the run is
+> reading. Narrowed to the current capture it would miss the others staged
+> there for [`open_capture`](#open_capture), and every earlier export, which
+> then fall to a name collision on a call that reports success.
 
 ### `list_captures`
 
@@ -16008,8 +15979,7 @@ demo. This page is what to change when they are still not enough, in the order
 worth changing them.
 
 **Start here, always:** find out whether you are actually dropping packets. Every
-other decision on this page depends on that number, and until v0.5.77 sipnab
-could not tell you it.
+other decision on this page depends on that number, and sipnab reports it.
 
 ---
 
@@ -16303,8 +16273,8 @@ empty ring returns `TimeoutExpired`, and the wait is sipnab's own bounded
 
 **So the snaplen arithmetic above binds the TUI, not a headless capture.** On a
 headless run `--snaplen` and the offload settings still matter for capture
-fidelity and for copy cost, but they are no longer what decides how many packets
-the ring holds.
+fidelity and for copy cost, but they are not what decides how many packets the
+ring holds.
 
 **Unverified on hardware.** Whether the kernel selects V3, and what that is worth, rest on
 reasoned from libpcap's source and not measured. `strace -e trace=setsockopt`
@@ -16480,17 +16450,19 @@ irrelevant. Look outside sipnab:
 sipnab -N -I /var/captures/ --cores 4 --report
 ```
 
-Measured on the reference corpus ([benchmarks](benchmarks.md)), throughput peaks
-at **four** cores and then declines: 1.28M pkts/s at 1, 2.17M at 2, 2.31M at 4,
-2.16M at 8. The limit is still the single sequential pcap reader, not the core
-count — that is why 8 cores is slower than 4 rather than faster — so
-**`--cores 4` is the sweet spot and higher values buy nothing.**
+Measured on the reference corpus ([benchmarks](benchmarks.md)): 1.13M pkts/s at
+one core, 2.17M at two, 3.23M at four and 3.24M at eight. The curve flattens
+after four rather than declining, so **four cores buys nearly all of it and
+eight buys almost nothing more** — the gap between them is inside the noise of
+a single sweep.
 
-The peak used to be two cores, and moved in 0.5.89. Through 0.5.88 the reader
-computed the frame-provenance digest on that same sequential stage, so the extra
-work capped every core count at once. Moving it onto the workers is what lets
-more workers help. If you are tuning against older advice, this is the number
-that changed.
+Read the flattening as the shape it is. Four cores is where the returns stop,
+not a ceiling the eighth core falls off. Asking for eight costs the extra
+workers' memory for a throughput figure that does not move.
+
+The workers compute the frame-provenance digest rather than the sequential
+reader, so that cost scales with the core count instead of capping every count
+at once.
 
 `--cores` is silently ignored on live capture — it requires `-I`.
 
@@ -18422,8 +18394,8 @@ can safely ignore.
 
 `Cargo.toml`'s `[features]` table has thirteen entries: the twelve named
 features below, plus `default` — which is `native, tui, audio, metrics`.
-`full` is everything except `wasm` and `bpf`, and that is still true — but it
-is no longer the whole story of what ships.
+`full` is everything except `wasm` and `bpf`, which is not the whole story of
+what ships.
 
 `bpf` sits outside `full` because building it needs a nightly toolchain and
 `bpf-linker` for the kernel object, and this project cannot demand either of a
@@ -18539,7 +18511,7 @@ which joins nothing. That had it backwards: `bootstrap::launch` spawns the
 capture thread *before* the readiness hand-shake, the chroot, and the privilege
 drop, so every failure from there on abandoned a thread still holding an open
 capture source — and `sipnab -I /nonexistent.pcap`, a mistyped filename, was
-enough to do it. Those paths now go through `capture::stop_and_join`, which sets
+enough to do it. Those paths go through `capture::stop_and_join`, which sets
 the shutdown flag, drops the receiver, and joins. The suites report zero leaks,
 and the fatal classification is what keeps it that way.
 
@@ -18581,7 +18553,7 @@ last manual sync, so a green local run says nothing about CI. Google v0.7.0
 landed 2026-07-30 13:43 UTC and rewrote one rule's regex. A gate measured and
 enabled against the older package reported 0 alerts locally and 35 in CI, and
 main went red.
-`vale_style_package_is_pinned_to_a_release` holds the pin now. To upgrade: change
+`vale_style_package_is_pinned_to_a_release` holds the pin. To upgrade: change
 the version, `vale sync`, then re-run Vale and read the diff in alert counts
 before committing.
 
@@ -18600,7 +18572,7 @@ before committing.
   `native,hep,api,mcp,mcp-http`, `bpf`, and `wasm` (lib-only). The documented
   headless server recipe (`native,hep,api,mcp,mcp-http`) gets a full `cargo
   test`, not just a compile check. `bpf` is here because every published
-  `*-linux-gnu` binary now carries it: this leg compiles its userspace half and
+  `*-linux-gnu` binary carries it: this leg compiles its userspace half and
   its test files, while `build.rs` takes its degrading default (no nightly, no
   `bpf-linker` on this runner) — the release job is where the kernel half is
   actually built, under `SIPNAB_BPF_REQUIRED=1`. `--tests` is what makes any of
@@ -18664,11 +18636,11 @@ enumeration. -->
 
 `cargo fmt --all -- --check`; vale and codespell over the paths CI gives them;
 clippy (`--features full`, `-D warnings`); the
-full test suite; no `unwrap()`/`expect()` in production code; WASM exports in
+full test suite; no `unwrap()`/`expect()` in production code; the privilege-drop
+path still dropping privileges; WASM exports in
 sync with the site's JS; the homepage test count matching the run it just did —
-plus the site and man-page version strings matching `Cargo.toml`; no TODO
-stubs; a refusal to commit a staged [`src/wasm.rs`](../../src/wasm.rs) without a rebuilt bundle
-beside it; and an
+plus the site version matching `Cargo.toml`; no TODO
+stubs; and an
 <!-- vale Google.Semicolons = YES -->
 
 advisory notice when a commit touches a file `docs/internals/` cites without
@@ -18732,12 +18704,12 @@ rather than nothing. A passing run still prints one line per gate.
 
 Both gates capture their tool's output rather than let it stream, because gate
 5 reads the test run back for the homepage count and a streamed clippy would
-bury the per-gate summary. That capture used to swallow the answer: a failure
-printed `FAIL` and a "run it yourself" line, so whoever hit it paid for a
-second full suite run to learn the name of the test, and could not tell until
-that run finished whether the break was theirs or already on `HEAD`. Settling
-that one question cost an extraction of a pristine `HEAD` into a scratch
-directory.
+bury the per-gate summary. Capturing without reporting swallows the answer,
+which is what the naming above prevents: a failure that prints only `FAIL` and
+a "run it yourself" line costs whoever hit it a second full suite run to learn
+the name of the test, and until that run finishes they cannot tell whether the
+break is theirs or already on `HEAD`. Settling that one question once cost an
+extraction of a pristine `HEAD` into a scratch directory.
 
 That means **every commit runs clippy and the whole test suite** and takes
 minutes. It is not optional theatre: the homepage-count gate alone means adding
@@ -18771,7 +18743,7 @@ Those gates let their tool write straight to the terminal instead of capturing
 it, so a failure arrives with the rustfmt diff, the clippy lint or the rustdoc
 warning already on screen. Nothing to withhold, and nothing to fix there.
 
-The reduced-combination gate is the newest and the least obvious. Every other
+The reduced-combination gate is the least obvious of them. Every other
 check in that hook builds with `--all-features`, which cannot see `#[cfg]`-gating
 rot at all: an item that needs a feature-gated module compiles perfectly until
 someone builds without that feature. It has bitten twice — the `features` job
@@ -18810,14 +18782,13 @@ touches only the copy, so an interrupt leaves the working tree alone. The rustdo
 pass is newer than those figures and is not included in them. Its
 `target/nonlinux-shim` directory holds 1.3 GB after that first run and then
 grows with the number of **distinct source states** it has checked, because
-cargo keeps the artifacts of every version it has already built. This page
-used to say "1.7 GB after a dozen", which measured a handful of trees. Across
-a day of commits it reached **78 GB** on 2026-08-08 and exhausted the disk
-mid-release. Delete the directory as routine maintenance,
-not only when space is tight — it is disposable and the next run rebuilds it
-in 50 seconds. The script's header records the four alternatives it replaced and the
-evidence against each — the FreeBSD cross-check cannot escape mimalloc's C
-build, and the wasm check never compiles `capture/` at all.
+cargo keeps the artifacts of every version it has already built. Across a day
+of commits it reached **78 GB** on 2026-08-08 and exhausted the disk
+mid-release. Delete the directory as routine maintenance, not only when space
+is tight — it is disposable and the next run rebuilds it in 50 seconds. The
+script's header records the four alternatives it replaced and the evidence
+against each — the FreeBSD cross-check cannot escape mimalloc's C build, and
+the wasm check never compiles `capture/` at all.
 
 Two things keep it honest. It counts `target_os` predicates before and after
 the rewrite and refuses when the numbers disagree, because a pattern that
@@ -19044,14 +19015,11 @@ static musl tarballs already cover the no-audio tarball case), `x86_64` and
 `aarch64` `linux-musl`, and both macOS architectures.
 
 Eight builds, six tarballs — the number of builds is not the number of artifacts.
-This page previously described a release as publishing "eight artifacts", and
-called the `noaudio` variants `.deb`-only. Neither had drifted: the `noaudio`
-variants landed on 2026-07-07 and gained `.rpm` on 2026-07-09, while the
-`.deb`-only sentence dates from 2026-07-25 and the "eight artifacts" count from
-2026-07-29. Both were wrong the day they landed, written by reading the matrix
-and counting its rows. That is the failure mode a re-stated number has when
-nothing produces it, so `release_artifact_counts_match_the_build_matrix` now
-derives every count here from the matrix itself.
+Counting matrix rows answers the first and says nothing about the second, which
+is how a hand-restated count comes to be wrong on the day someone types it
+rather than drifting there later.
+`release_artifact_counts_match_the_build_matrix` derives every count on this
+page from the matrix itself.
 
 The gnu targets build inside a `rust:1-bookworm` container so
 their glibc floor is 2.36. The aarch64 gnu target cross-compiles inside that
@@ -19064,17 +19032,18 @@ and attested with `actions/attest-build-provenance`, so a downloader can run
 `gh attestation verify <file> --repo NormB/sipnab`.
 
 The macOS builds carry the same kind of floor, arrived at the other way round.
-Nothing set `MACOSX_DEPLOYMENT_TARGET` for a long time, so each darwin tarball
-floored wherever the pinned rustc defaulted to — 11.0 for `aarch64-apple-darwin`
-and 10.12 for `x86_64-apple-darwin`, a real constraint that no file in the
-repository named. `/download` filled the gap with "macOS 12+" for both, which was
-wrong for each and concealed that they differ. `release.yml` now pins the target
-per build, at those same two values so no binary changed, and
+`release.yml` pins `MACOSX_DEPLOYMENT_TARGET` per build — 11.0 for
+`aarch64-apple-darwin`, 10.12 for `x86_64-apple-darwin` — and
 `published_macos_floors_match_the_toolchain` holds [`website/config.toml`](../../website/config.toml) to what
-the workflow pins. That gate also refuses a floor pinned *below* the compiler's
-own default: the config and the workflow would agree, and the published number
-would still be an OS the binary cannot run on. To move real support, change the
-two `floor=` lines and let the gate walk the published numbers to match.
+the workflow pins. Both values are what the pinned rustc defaults to, so the
+pins describe the binaries rather than change them. Leave the variable unset
+and each tarball still floors wherever rustc lands: a real constraint no file
+in the repository names, which is how `/download` came to say "macOS 12+" for
+both — wrong for each, and concealing that they differ. That gate also refuses
+a floor pinned *below* the compiler's own default: the config and the workflow
+would agree, and the published number would still be an OS the binary cannot
+run on. To move real support, change the two `floor=` lines and let the gate
+walk the published numbers to match.
 
 Two CycloneDX SBOMs ship with each release, and both the checksum file and the
 attestation cover them: `sipnab-<version>.cdx.json` for the binary
@@ -19092,12 +19061,12 @@ by exactly one component, `libloading` — and the gnu artifacts add `bpf`, whic
 brings in four crates `full` alone never reaches (`aya`, `aya-obj`, `object`,
 `assert_matches`). `THIRD-PARTY-NOTICES.md` comes from that same set, named
 once as `RELEASE_FEATURES` in
-[`scripts/build-third-party-notices.py`](../../scripts/build-third-party-notices.py). That constant said `full`
-while the gnu binaries shipped `full,bpf`, and because
+[`scripts/build-third-party-notices.py`](../../scripts/build-third-party-notices.py). Let that constant say
+`full` while the gnu binaries ship `full,bpf` and
 `third_party_notices_are_current`
-compares the committed file against that same generator, both sides of the gate
-agreed while both were wrong.
-`the_notices_and_sbom_cover_every_released_feature_set` now runs the release
+cannot see it: it compares the committed file against that same generator, so
+both sides of the gate agree while both are wrong.
+`the_notices_and_sbom_cover_every_released_feature_set` runs the release
 workflow's own feature-computing step for every matrix entry and fails if
 either the SBOM flag or `RELEASE_FEATURES` stops covering the union, so one
 document over-covers rather than under-covers every binary published, which is
@@ -19139,10 +19108,11 @@ fails — so bumping a version is one edit plus the ones the gates point you at.
 That enforcement lives in **one** place: `docs_current_version_markers_match_cargo`
 and `man_page_version_and_license_match_cargo` in
 [`tests/docs_drift_test.rs`](../../tests/docs_drift_test.rs), which the hook
-runs via `cargo test` and CI runs again. The hook used to carry its own shell
-re-implementation with a separate file list. The two diverged and it rejected a
-correct release commit over a deliberately historical version reference. If you
-need to change which docs carry a marker, change the Rust list.
+runs via `cargo test` and CI runs again. One place, not two: a shell
+re-implementation in the hook, carrying its own file list, diverged from the
+Rust one and rejected a correct release commit over a deliberately historical
+version reference. If you need to change which docs carry a marker, change the
+Rust list.
 
 Note which files are deliberately *excluded*: pages that record the release
 something was **measured** on — the benchmarks pages — must not track the crate
@@ -19775,7 +19745,8 @@ An `Arc` clone costs a few nanoseconds, which is nothing until it happens
 | `dhat` / `heaptrack` / `bytehound` | Heap allocation sites, peak usage, leaks | When the allocator is hot — which, given the finding above, is the likely next question |
 | `coz` (`coz-rs`) | Causal profiling: predicts the end-to-end speedup from optimizing a given function | When a pipeline has several hot spots and you need to know which one actually gates throughput |
 
-The reference host carries neither valgrind nor coz as of 2026-08-09.
+The reference host carries `coz` and its `libcoz.so` runtime. It does not
+carry valgrind (checked 2026-08-23).
 
 **`coz` deserves a note.** A conventional profiler tells you where time goes.
 In a producer/consumer pipeline that misleads, because speeding up a stage

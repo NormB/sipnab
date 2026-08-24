@@ -504,7 +504,7 @@ existing 261 headless TUI state tests + 49 snapshots green.
 
 ### Problem
 
-- `App` ([`src/tui/mod.rs:75`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L75)): 74 fields — 6 independent scroll offsets,
+- `App` ([`src/tui/mod.rs:75`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L75)): 67 fields — 6 independent scroll offsets,
   full save-dialog state (6 fields), file-open state (7 fields), name-popup
   state, render caches. No compiler help against stale cross-popup state.
 - `src/tui/events.rs`: 3,709 lines, 372 `KeyCode::` arms in 21 `handle_*`

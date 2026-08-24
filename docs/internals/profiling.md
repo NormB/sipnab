@@ -139,7 +139,8 @@ An `Arc` clone costs a few nanoseconds, which is nothing until it happens
 | `dhat` / `heaptrack` / `bytehound` | Heap allocation sites, peak usage, leaks | When the allocator is hot — which, given the finding above, is the likely next question |
 | `coz` (`coz-rs`) | Causal profiling: predicts the end-to-end speedup from optimizing a given function | When a pipeline has several hot spots and you need to know which one actually gates throughput |
 
-The reference host carries neither valgrind nor coz as of 2026-08-09.
+The reference host carries `coz` and its `libcoz.so` runtime. It does not
+carry valgrind (checked 2026-08-23).
 
 **`coz` deserves a note.** A conventional profiler tells you where time goes.
 In a producer/consumer pipeline that misleads, because speeding up a stage

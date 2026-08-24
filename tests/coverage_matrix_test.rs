@@ -50,8 +50,8 @@ fn matrix_flags(text: &str) -> BTreeSet<String> {
 #[test]
 fn the_matrix_lists_every_flag_the_program_has() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/design/testing-matrix.md");
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
 
     let have = clap_long_flags();
     let listed = matrix_flags(&text);

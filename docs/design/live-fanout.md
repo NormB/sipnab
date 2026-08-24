@@ -79,7 +79,7 @@ wrong at once, and one of them is a test that pins the *complement*:
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it`
-  ([`bootstrap.rs:3566`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3566)), which asserts the warning
+  ([`bootstrap.rs:3623`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3623)), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N
@@ -562,6 +562,6 @@ not mistake them for settled.
   catch it and fall back — the open question is whether the most common
   invocation silently gets no benefit.
 - **Is `immediate_mode` right for N sockets?** `immediate_mode_for`
-  ([`bootstrap.rs:2277`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2277)) returns true only for the
+  ([`bootstrap.rs:2320`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2320)) returns true only for the
   TUI. Whether the batched setting interacts with rollover or with N drainers is
   unexamined.

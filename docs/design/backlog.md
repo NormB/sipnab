@@ -205,7 +205,7 @@ Tiers:
   silently negates most of CT2's benefit on exactly the busy servers CT2
   targets, and because it makes `-B` advice misleading until fixed.
   **Done:** immediate mode is now a decision, not a constant.
-  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2277`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2277)) is
+  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2320`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2320)) is
   `matches!(mode, RunMode::Tui)` and is the only place that answers the
   question; `bootstrap.rs:537` assigns its result to
   `CaptureConfig::immediate_mode`, and [`src/capture/live.rs:219-220`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L219-L220) passes that
@@ -821,7 +821,7 @@ Tiers:
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:2951`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2951),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3008`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3008),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -1655,7 +1655,7 @@ output path.
 - [ ] **PA3 — MCP resources and prompts.** Two of MCP's three primitives are
   unimplemented; the capability builder enables tools only. Cheapest large win
   on this list, because the content is already written for the docs site.
-  - **Resources:** the Filter DSL grammar (31 fields, 7 operators, aliases), the
+  - **Resources:** the Filter DSL grammar (33 fields, 7 operators, aliases), the
     SIP response-code registry, header-field and parameter references, the
     MOS/codec grounding table, and `list_captures` output. Today an agent
     guesses at DSL syntax and eats `-32602` until it converges; serving the
@@ -3472,7 +3472,7 @@ reachable from attacker-controlled capture text. The items below are only the
 ones that fit an analysis tool.
 
 - [x] **MCPX1 — the final response code is not queryable, so every failure
-  looks the same.** The filter DSL has 30 fields and `state` collapses 403,
+  looks the same.** The filter DSL has 33 fields and `state` collapses 403,
   404, 408, 486, 503 and 603 into `Failed`. `triage_call` returns
   `final_status_code` for ONE call and `explain_response_code` explains one
   integer, but no listing tool carries it, so it cannot be filtered, sorted or

@@ -15,8 +15,8 @@ re-run every table below. 0.5.47 dates the recipe, not this run.
 > measurement. No number here stands in for a release it did not measure, and
 > none carries forward from a run nobody repeated.
 >
-> **0.5.118 through 0.5.121 ran 27% slower than this page said, and 0.5.122
-> fixes it.** The cause was [`is_merged`](https://github.com/NormB/sipnab/blob/main/src/capture/merged.rs),
+> **0.5.118 through 0.5.121 ran 27% slower than 0.5.117, and 0.5.122
+> repairs it.** The cause was [`is_merged`](https://github.com/NormB/sipnab/blob/main/src/capture/merged.rs),
 > the probe that decides whether a capture is a merged pcapng. It read the
 > ENTIRE file into memory and then rejected it on the first four bytes, so
 > every offline run over an ordinary pcap loaded the whole capture, threw it
@@ -36,7 +36,7 @@ re-run every table below. 0.5.47 dates the recipe, not this run.
 > 2.28M. A drop to 2.40M is 105% of that, so the gate passed while the tool
 > lost a quarter of its throughput — the failure its own baseline file warns
 > about in writing: a stale baseline "silently widens the band it
-> advertises". The baseline now records this
+> advertises". The baseline records this
 > measurement, so the same regression trips it.
 
 The generator reproduces the documented corpus composition exactly:
@@ -114,18 +114,18 @@ The percentage is the repair, not a gain: 0.5.122 returns to where 0.5.117 was.
 Resident memory returns with it, 143 MiB back to 99 MiB at four cores, because
 the capture is no longer loaded twice — once to reject it, once to read it.
 
-**0.5.108 raised the multi-core ceiling by removing a read, and the sizing
-advice this page gave for four releases is now wrong.** The `--cores` path is
-one serial thread reading, copying and host-pair-peeking every packet while N
-workers wait, and reading through libpcap charged that thread a `read` into
-libpcap's buffer *and* a copy out of it. 0.5.108 maps the capture file instead,
-so it parses records in place out of page cache and copies only the frame.
+**0.5.108 raised the multi-core ceiling by removing a read.** The `--cores`
+path is one serial thread reading, copying and host-pair-peeking every packet
+while N workers wait, and reading through libpcap charged that thread a `read`
+into libpcap's buffer *and* a copy out of it. 0.5.108 maps the capture file
+instead, so it parses records in place out of page cache and copies only the
+frame.
 
-That moves where the curve stops. It used to flatten past two cores and sag
-past four, so the honest advice was that `--cores 4` was the most this workload
-could use. On 0.5.108 eight cores is marginally the best figure on the table
-rather than a regression, and **`--cores 4` is the point where most of the gain
-has arrived, not a ceiling that penalises you for passing it.**
+That moves where the curve stops. Reading through libpcap flattens the curve
+past two cores and sags it past four, which is the shape that makes `--cores 4`
+a ceiling. With the capture mapped, eight cores is marginally the best figure on
+the table rather than a regression, and **`--cores 4` is the point where most of
+the gain has arrived, not a ceiling that penalises you for passing it.**
 
 One and two cores do not move, which follows from the design rather than
 disappointing it: `--cores 1` and a run with no `--cores` use the
@@ -228,7 +228,7 @@ bounded, and then overtaken by the batching change rather than chased line by
 line.
 
 **CI measures throughput nightly, rather than per push.** The
-`Throughput` workflow now runs [`bench/regression-gate.sh`](https://github.com/NormB/sipnab/blob/main/bench/regression-gate.sh) at 03:29 UTC daily
+`Throughput` workflow runs [`bench/regression-gate.sh`](https://github.com/NormB/sipnab/blob/main/bench/regression-gate.sh) at 03:29 UTC daily
 against the figure committed in [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json), and fails below a stated
 floor.
 
@@ -282,8 +282,8 @@ property: it is predictable, so capacity planning is arithmetic rather than
 guesswork.
 
 The mapped reader shows up here too — every row posts a higher figure than the
-0.5.104 table this page carried before, 2.14M to 3.09M at 20k calls — while
-peak memory moved by under 3%. The mapping does not stay resident: the read
+same sweep measured on 0.5.104, 2.14M to 3.09M at 20k calls — while peak
+memory moved by under 3%. The mapping does not stay resident: the read
 hands pages back to the kernel as it passes them, so a capture larger than RAM
 costs the same working set as a small one.
 

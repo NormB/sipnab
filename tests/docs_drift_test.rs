@@ -1307,15 +1307,22 @@ fn docs_current_version_markers_match_cargo() {
         // JSON field rather than a `--version` line. It went in ungated and is
         // listed here rather than left to rot the way the bare
         // `sipnab 0.5.20 features:` sample did for 23 releases.
+        //
+        // `\s*` after the colon, and that is the third time this gate has been
+        // caught by the same shape. A sample written as compact JSON --
+        // `"version":"0.5.73"`, no space -- sat on THIS page, already in this
+        // list, and drifted 50 releases because the pattern demanded a space
+        // the line did not have. A gate that reads one spelling of the thing
+        // it watches reports green on every other spelling.
         (
             "docs/mcp-deploy.md",
             include_str!("../docs/mcp-deploy.md"),
-            r#""version": "(\d+\.\d+\.\d+)""#,
+            r#""version":\s*"(\d+\.\d+\.\d+)""#,
         ),
         (
             "website/content/docs/mcp-deploy.md",
             include_str!("../website/content/docs/mcp-deploy.md"),
-            r#""version": "(\d+\.\d+\.\d+)""#,
+            r#""version":\s*"(\d+\.\d+\.\d+)""#,
         ),
         // The same server_capabilities sample appears in the MCP reference.
         // Gating only the walkthrough left this one drifting: it still named
@@ -1324,12 +1331,12 @@ fn docs_current_version_markers_match_cargo() {
         (
             "docs/mcp-tools.md",
             include_str!("../docs/mcp-tools.md"),
-            r#""version": "(\d+\.\d+\.\d+)""#,
+            r#""version":\s*"(\d+\.\d+\.\d+)""#,
         ),
         (
             "website/content/docs/mcp-tools.md",
             include_str!("../website/content/docs/mcp-tools.md"),
-            r#""version": "(\d+\.\d+\.\d+)""#,
+            r#""version":\s*"(\d+\.\d+\.\d+)""#,
         ),
     ];
     for (path, text, pattern) in sources {
