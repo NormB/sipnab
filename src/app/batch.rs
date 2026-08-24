@@ -4514,10 +4514,11 @@ fn write_stdout(text: &str) -> bool {
     }
 }
 
-/// Generate post-capture reports (`--report`, `--call-report`) from the
-/// final store contents. Returns `false` when a requested report could not
-/// be produced (unknown `--call-report` Call-ID) so the caller can exit
-/// non-zero — scripts must be able to trust the exit code.
+/// Generate post-capture reports (`--report`, `--call-report`,
+/// `--export-vcon`) from the final store contents. Returns `false` when a
+/// requested report could not be produced — an unknown Call-ID at either
+/// flag, or a vCon that could not reach `--vcon-out` — so the caller can exit
+/// non-zero. Scripts must be able to trust the exit code.
 ///
 /// # Arguments
 ///
@@ -4737,7 +4738,110 @@ pub fn generate_reports(
             return false;
         }
     }
+
+    // --export-vcon <call-id>: one observed dialog as a vCon container.
+    if !export_vcon(cli, dialog_store, stream_store, frames_read) {
+        return false;
+    }
     true
+}
+
+/// Write the `--export-vcon` container, or say why it did not.
+///
+/// Returns `true` when the flag was absent, so the caller reads one answer —
+/// "the requested output was produced" — rather than having to know whether
+/// this run asked for a container at all.
+///
+/// The capture analysis is run here rather than reused from `--analyze`,
+/// because `--export-vcon` does not require `--analyze` and a container that
+/// skipped the analysis reports its blind spots as `null`: "nobody looked",
+/// which is a weaker claim than the one this run can make. It is deliberately
+/// unfiltered for the reason [`crate::analysis::analyze`] gives — an
+/// undecodable frame belongs to no dialog, so narrowing it would drop the
+/// evidence that bounds every count in the container.
+///
+/// # Side effects
+///
+/// Writes the container to `--vcon-out` or to stdout, and every refusal to
+/// stderr — `eprintln!` rather than `tracing`, matching `--call-report`,
+/// because the message decides the process exit code and has to survive
+/// logging being off.
+#[cfg(feature = "vcon")]
+fn export_vcon(
+    cli: &Cli,
+    dialog_store: &DialogStore,
+    stream_store: &StreamStore,
+    frames_read: u64,
+) -> bool {
+    let Some(call_id) = cli.output_args.export_vcon.as_deref() else {
+        return true;
+    };
+    let Some(dialog) = dialog_store.get(call_id) else {
+        eprintln!(
+            "Call-ID '{call_id}' not found in tracked dialogs, so there is no \
+             dialog to export. --report lists the Call-IDs this run holds."
+        );
+        return false;
+    };
+
+    let facts = crate::analysis::CaptureFacts::observed(dialog_store, stream_store, frames_read);
+    let analysis = crate::analysis::analyze_with(dialog_store, stream_store, None, &facts);
+    let container = crate::output::vcon::export_dialog(
+        dialog,
+        &crate::output::vcon::ExportContext {
+            capture_id: crate::output::vcon::dialog_capture_id(dialog),
+            facts: &facts,
+            analysis: Some(&analysis),
+        },
+    );
+
+    let mut json = match container.to_json() {
+        Ok(json) => json,
+        Err(e) => {
+            eprintln!("The vCon for Call-ID '{call_id}' would not serialize: {e}");
+            return false;
+        }
+    };
+    json.push('\n');
+
+    let Some(path) = cli.output_args.vcon_out.as_deref() else {
+        return write_stdout(&json);
+    };
+    if let Err(e) = std::fs::write(path, json.as_bytes()) {
+        eprintln!(
+            "Could not write the vCon for Call-ID '{call_id}' to '{}': {e}. \
+             Nothing was exported.",
+            path.display()
+        );
+        return false;
+    }
+    true
+}
+
+/// Refuse `--export-vcon` on a build that carries no exporter.
+///
+/// [`Cli::validate`] refuses the same flag before any capture opens, which is
+/// where an operator meets it. This second door exists because
+/// [`generate_reports`] is a public entry point a library consumer can reach
+/// without going through argument validation, and the failure it prevents is
+/// the quiet one: returning `true` here would report a successful run that
+/// wrote no container anywhere.
+#[cfg(not(feature = "vcon"))]
+fn export_vcon(
+    cli: &Cli,
+    _dialog_store: &DialogStore,
+    _stream_store: &StreamStore,
+    _frames_read: u64,
+) -> bool {
+    if cli.output_args.export_vcon.is_none() {
+        return true;
+    }
+    eprintln!(
+        "--export-vcon needs the 'vcon' Cargo feature, which this build does \
+         not carry. Rebuild with --features vcon (or --features full); \
+         `sipnab --version` lists the features a binary was built with."
+    );
+    false
 }
 
 // ── Unit tests for the batch runner's pure helpers ──────────────────────

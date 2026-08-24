@@ -49,9 +49,9 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 230 | 112 | 37 | 80 | 1 |
+| CLI flags | 232 | 114 | 37 | 80 | 1 |
 | HTTP routes | 9 | 9 | -- | 0 | 0 |
-| MCP tools | 37 | 37 | -- | 0 | 0 |
+| MCP tools | 38 | 38 | -- | 0 | 0 |
 
 **Flags with no occurrence at all:** `--syslog`
 
@@ -86,7 +86,7 @@ behind them.
 | `--help` | `-h` |  | Options | e2e | `tests/cli_test.rs` |  |  |
 | `--version` | `-V` |  | Options | e2e | `tests/cli_test.rs`, `tests/multi_input_test.rs` |  |  |
 | `--device` | `-d` | `IFACE` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/hep_test.rs` +1 |  |  |
-| `--input` | `-I` |  | Capture | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +34 |  |  |
+| `--input` | `-I` |  | Capture | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +35 |  |  |
 | `--recursive` |  |  | Capture | e2e | `tests/input_set_accounting_test.rs`, `tests/multi_input_test.rs` |  |  |
 | `--input-name` |  | `GLOB` | Capture | e2e | `tests/multi_input_test.rs` |  |  |
 | `--output` | `-O` | `FILE` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/integration_test.rs` +4 |  |  |
@@ -111,11 +111,11 @@ behind them.
 | `--split-keep` |  | `N` | Capture | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--replay` |  |  | Capture | e2e | `tests/mcp_stdio_shutdown_test.rs` |  |  |
 | `--pcapng` |  |  | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/integration_test.rs` +2 |  |  |
-| `--no-tui` | `-N` |  | Mode | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +33 |  |  |
+| `--no-tui` | `-N` |  | Mode | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +34 |  |  |
 | `--calls-only` | `-c` |  | Mode | e2e | `src/output/event_exec.rs`, `src/security/alerting.rs` +7 |  |  |
 | `--telephone-event` | `-t` |  | Mode | e2e | `tests/tui_e2e_test.rs` |  |  |
 | `--dtmf-cleartext` |  |  | Mode | referenced | `tests/dtmf_masking_test.rs` | **behavior** | dtmf_cleartext_emits_the_digit_value_at_debug_level (tests/dtmf_masking_test.rs), with an anti-vacuity guard |
-| `--quiet` | `-q` |  | Mode | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_wiring_test.rs` +19 |  |  |
+| `--quiet` | `-q` |  | Mode | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_wiring_test.rs` +20 |  |  |
 | `--resolve` |  |  | Name resolution | e2e | `tests/integration_test.rs` |  |  |
 | `--reverse-dns` |  |  | Name resolution | parsed | `src/cli.rs` |  |  |
 | `--dns-cache-entries` |  | `N` | Name resolution | e2e | `tests/config_wiring_test.rs` |  |  |
@@ -148,6 +148,8 @@ behind them.
 | `--analyze` |  |  | Output | e2e | `tests/analyze_test.rs` |  |  |
 | `--json-analyze` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/stun_test.rs` +1 |  |  |
 | `--call-report` |  |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_test.rs` +2 |  |  |
+| `--export-vcon` |  |  | Output | e2e | `tests/vcon_cli_test.rs` |  |  |
+| `--vcon-out` |  | `PATH` | Output | e2e | `tests/vcon_cli_test.rs` |  |  |
 | `--markdown` |  |  | Output | e2e | `tests/analyze_test.rs` |  |  |
 | `--hexdump` |  |  | Output | e2e | `tests/integration_test.rs` |  |  |
 | `--delta-time` |  |  | Output | referenced | `tests/cli_options_test.rs` | **behavior** | golden tests/cli/out/text-delta.trycmd pins relative stamps where the flagless golden pins absolute |
@@ -158,7 +160,7 @@ behind them.
 | `--color` |  | `WHEN` | Output | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--payload-limit` |  | `BYTES` | Output | referenced | `tests/cli_options_test.rs` | **behavior** | payload_limit_truncates_raw_dump: [truncated] appears, User-Agent disappears, against a no-flag baseline |
 | `--text-dump` | `-T` |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/integration_test.rs` |  |  |
-| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +15 |  |  |
+| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +16 |  |  |
 | `--wireshark` |  |  | Output | referenced | `src/cli.rs` | **behavior** | golden tests/cli/out/wireshark.trycmd adds two lines absent from the flagless golden |
 | `--lint` |  |  | Output | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--lint-fail-on` |  | `SEVERITY` | Output | referenced | `tests/cli_options_test.rs` | **parse-only** | EXIT 3 IS NEVER OBSERVED. The assertion is guarded behind `if findings > 0` and no checked-in capture produces a lint finding |
@@ -342,6 +344,7 @@ behind them.
 | `explain_rule` | exercised | `tests/mcp_lint_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
 | `export_audio` | exercised | `tests/mcp_stdio_test.rs` |
 | `export_capture` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
+| `export_vcon` | exercised | `tests/mcp_stdio_test.rs` |
 | `find_correlated` | exercised | `tests/leg_correlation_window_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
 | `find_problems` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
 | `get_capture_report` | exercised | `tests/mcp_stdio_test.rs` |

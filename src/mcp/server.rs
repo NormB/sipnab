@@ -810,6 +810,20 @@ pub struct GetCaptureReportParams {
     pub format: Option<String>,
 }
 
+/// Parameters for `export_vcon`.
+///
+/// No `format`, unlike its neighbors. A vCon IS a JSON container defined by
+/// `draft-ietf-vcon-vcon-core`, so a "markdown" arm would be a rendering of a
+/// document whose whole purpose is to travel between machines — and offering
+/// one invites an agent to ask for it and then hand the prose to something
+/// expecting a container.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct ExportVconParams {
+    /// Call-ID identifying the dialog to export.
+    pub call_id: String,
+}
+
 /// Parameters for `media_diagnostics`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -3718,6 +3732,122 @@ impl SipnabMcp {
         // instead of a marker pair that cannot be placed accurately here.
         Ok(CallToolResult::success(vec![
             content,
+            ContentBlock::text(super::shape::untrusted_note()),
+        ]))
+    }
+
+    /// Build the vCon container for one Call-ID.
+    ///
+    /// Split out of [`Self::export_vcon`] so the feature refusal is a whole
+    /// function rather than a branch: the exporter lives behind the `vcon`
+    /// Cargo feature, and a body that referenced it under `cfg!()` would fail
+    /// to compile on the builds that need the refusal most.
+    ///
+    /// The capture analysis is run rather than skipped, so the container's
+    /// blind-spot list means "somebody looked" instead of "nobody looked" —
+    /// two answers `CaptureCompleteness` deliberately keeps apart. It is
+    /// unfiltered for the reason [`crate::analysis::analyze`] gives: an
+    /// undecodable frame belongs to no dialog.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when the store holds no such Call-ID.
+    /// `internal_error` (-32603) when the container will not serialize, which
+    /// is a bug in the types rather than anything the caller sent.
+    #[cfg(feature = "vcon")]
+    fn build_vcon(&self, call_id: &str) -> Result<serde_json::Value, rmcp::ErrorData> {
+        // Dialogs then streams, the order `CaptureState` documents, so the
+        // container and the completeness caveat describe one store revision.
+        let ds = self.dialog_store.read();
+        let dialog = match ds.get(call_id) {
+            Some(dialog) => dialog,
+            None => {
+                drop(ds);
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!("call_id '{call_id}' not found"),
+                    None,
+                ));
+            }
+        };
+        let ss = self.stream_store.read();
+
+        let facts =
+            crate::analysis::CaptureFacts::observed(&ds, &ss, crate::capture::captured_packets());
+        let analysis = crate::analysis::analyze_with(&ds, &ss, None, &facts);
+        let container = crate::output::vcon::export_dialog(
+            dialog,
+            &crate::output::vcon::ExportContext {
+                capture_id: crate::output::vcon::dialog_capture_id(dialog),
+                facts: &facts,
+                analysis: Some(&analysis),
+            },
+        );
+        let value = serde_json::to_value(&container).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("vCon serialization failed: {e}"), None)
+        });
+        drop(ss);
+        drop(ds);
+        value
+    }
+
+    /// Refuse a vCon on a build that carries no exporter.
+    ///
+    /// The tool stays registered rather than disappearing, so an agent that
+    /// asks for a container is told which build it is talking to instead of
+    /// getting "no such tool" — which reads as sipnab not supporting vCon at
+    /// all. `server_capabilities` lists the features this binary carries.
+    ///
+    /// # Errors
+    ///
+    /// Always `invalid_params` (-32602).
+    #[cfg(not(feature = "vcon"))]
+    fn build_vcon(&self, _call_id: &str) -> Result<serde_json::Value, rmcp::ErrorData> {
+        Err(rmcp::ErrorData::invalid_params(
+            "this sipnab was built without the 'vcon' Cargo feature, so it has \
+             no vCon exporter. Rebuild with --features vcon (or --features \
+             full); server_capabilities lists what this binary carries",
+            None,
+        ))
+    }
+
+    /// Export one observed dialog as a vCon conversation container.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) for an unknown `call_id`, and on a build
+    /// without the `vcon` feature.
+    #[tool(
+        name = "export_vcon",
+        description = "Exports one dialog as a vCon container \
+                       (draft-ietf-vcon-vcon-core, syntax 0.4.0) and returns it \
+                       as structured JSON. This is an OBSERVER vCon: sipnab \
+                       watched packets go past a tap, so nothing is signed, no \
+                       party carries a name, and the container holds SIGNALING \
+                       ONLY -- no media and no reference to media held \
+                       elsewhere. What the capture MISSED travels with it, in \
+                       the analysis object and in a sipnab-capture-completeness \
+                       attachment. Returns an error when the Call-ID is not in \
+                       the active store, or when this binary was built without \
+                       the 'vcon' feature.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn export_vcon(
+        &self,
+        Parameters(params): Parameters<ExportVconParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        // `ContentBlock::json` of the SERIALIZED container, never a rendered
+        // string handed back for the caller to parse. `get_capture_report`
+        // shipped the second shape: it asked a renderer with no JSON arm for
+        // JSON, failed to parse the prose that came back, and fell through to
+        // a text block -- so every agent that took the default format got
+        // prose and nothing saying the structure it asked for was never there.
+        let container = self.build_vcon(&params.call_id)?;
+        // A container carries `sip_display_name` and `sip_contact` verbatim:
+        // whatever the sender wrote in its own headers. The note says so
+        // rather than fencing the document, because fencing it would tell the
+        // agent to distrust sipnab's own completeness caveat as well.
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(container)?,
             ContentBlock::text(super::shape::untrusted_note()),
         ]))
     }
@@ -8427,6 +8557,162 @@ mod tests {
         assert!(!raw.is_empty(), "markdown report must be non-empty");
         // markdown report is not valid standalone JSON
         assert!(serde_json::from_str::<serde_json::Value>(&raw).is_err());
+    }
+
+    // ── export_vcon ──────────────────────────────────────────────────
+
+    /// The container an `export_vcon` call answered with, parsed.
+    ///
+    /// Goes through the CONTENT BLOCK rather than calling the exporter, so a
+    /// handler that rendered the container to a string and handed back prose
+    /// fails here instead of being papered over by a direct call.
+    #[cfg(feature = "vcon")]
+    async fn exported_vcon(server: &SipnabMcp, call_id: &str) -> serde_json::Value {
+        let result = server
+            .export_vcon(Parameters(ExportVconParams {
+                call_id: call_id.to_string(),
+            }))
+            .await
+            .expect("exporting a known Call-ID should succeed");
+        let raw = text_of(&result);
+        serde_json::from_str(&raw).unwrap_or_else(|e| {
+            panic!("export_vcon answered with something that is not JSON: {e}\n{raw}")
+        })
+    }
+
+    /// A known Call-ID answers with a structured container describing it.
+    ///
+    /// `is_object` is load-bearing, not decoration. A handler that serialized
+    /// the container to a string and wrapped THAT parses back to a JSON
+    /// *string*, and a handler that rendered prose does not parse at all --
+    /// `get_capture_report` shipped the second shape and returned prose under
+    /// its own default format for a release.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn export_vcon_returns_a_structured_container_for_a_known_call() {
+        let server = server_with_dialog("vcon-ok@x");
+        let v = exported_vcon(&server, "vcon-ok@x").await;
+
+        assert!(
+            v.is_object(),
+            "export_vcon must answer with a JSON object, not a stringified \
+             blob or a rendered report: {v}"
+        );
+        assert_eq!(
+            v["vcon"],
+            crate::output::vcon::VCON_SYNTAX_VERSION,
+            "the container must state the syntax version a consumer parses \
+             against"
+        );
+        assert_eq!(
+            v["dialog"][0]["sip_call_id"], "vcon-ok@x",
+            "the container names a different dialog than the one asked for"
+        );
+
+        let parties = v["parties"].as_array().expect("parties is an array");
+        assert_eq!(
+            parties.len(),
+            3,
+            "expected the two observed parties plus the sipnab observer, got {}",
+            parties.len()
+        );
+        assert_eq!(
+            parties[2]["role"], "observer",
+            "the last party must be the sipnab observer, or every attachment's \
+             `party` index points at a caller"
+        );
+        for party in parties {
+            assert!(
+                party.get("name").is_none(),
+                "a party carries a `name`, which reads as an established \
+                 identity nobody established: {party}"
+            );
+        }
+    }
+
+    /// Two different dialogs answer with two different containers.
+    ///
+    /// Without this a handler returning one constant satisfies every other
+    /// assertion here.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn export_vcon_discriminates_between_two_dialogs() {
+        let server = server_with_simultaneous_dialogs(&["vcon-a@x", "vcon-b@x"]);
+        let a = exported_vcon(&server, "vcon-a@x").await;
+        let b = exported_vcon(&server, "vcon-b@x").await;
+
+        assert_eq!(a["dialog"][0]["sip_call_id"], "vcon-a@x");
+        assert_eq!(b["dialog"][0]["sip_call_id"], "vcon-b@x");
+        assert_ne!(
+            a["uuid"], b["uuid"],
+            "two conversations share one vCon uuid, so a consumer \
+             deduplicating on it keeps one and discards the other. These two \
+             dialogs share a `created_at` deliberately -- the uuid's timestamp \
+             half cannot tell them apart, and only the Call-ID seed can"
+        );
+    }
+
+    /// Re-exporting one dialog keeps its identifier.
+    ///
+    /// The assertion that discriminates, and the opposite of the one above: an
+    /// exporter minting a fresh uuid per call passes
+    /// `export_vcon_discriminates_between_two_dialogs` and breaks every
+    /// consumer that deduplicates on the identifier.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn export_vcon_is_stable_across_calls_for_one_dialog() {
+        let server = server_with_dialog("vcon-stable@x");
+        let first = exported_vcon(&server, "vcon-stable@x").await;
+        let second = exported_vcon(&server, "vcon-stable@x").await;
+        assert_eq!(
+            first["uuid"], second["uuid"],
+            "two exports of one dialog minted two identifiers"
+        );
+    }
+
+    /// An unknown Call-ID errors with invalid_params (-32602).
+    ///
+    /// Not `internal_error`, and emphatically not an empty success: an agent
+    /// handed `{}` reads it as a conversation with no parties.
+    #[tokio::test]
+    async fn export_vcon_unknown_call_id_errors() {
+        let server = empty_server();
+        let err = server
+            .export_vcon(Parameters(ExportVconParams {
+                call_id: "nonexistent@nowhere".to_string(),
+            }))
+            .await
+            .expect_err("unknown call_id must error");
+        let json = serde_json::to_value(err).expect("error should serialize");
+        assert_eq!(json["code"], -32602);
+    }
+
+    /// A build with no exporter refuses by name rather than answering.
+    ///
+    /// The paired half of the success test above. Both arms compile in every
+    /// build and each runs in the one it describes, so neither rots into an
+    /// assertion nothing exercises.
+    #[cfg(not(feature = "vcon"))]
+    #[tokio::test]
+    async fn export_vcon_without_the_feature_refuses_and_names_it() {
+        let server = server_with_dialog("vcon-nofeat@x");
+        let err = server
+            .export_vcon(Parameters(ExportVconParams {
+                call_id: "vcon-nofeat@x".to_string(),
+            }))
+            .await
+            .expect_err("a build with no exporter must refuse");
+        let json = serde_json::to_value(err).expect("error should serialize");
+        assert_eq!(json["code"], -32602);
+        let message = json["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("vcon"),
+            "the refusal must name the missing feature: {message}"
+        );
+        assert!(
+            message.contains("--features"),
+            "the refusal must name what produces a binary that can: {message}"
+        );
     }
 
     // ── get_dialog ───────────────────────────────────────────────────

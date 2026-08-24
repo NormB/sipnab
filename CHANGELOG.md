@@ -12,6 +12,19 @@ entry that carries them.
 
 ### Added
 
+- **`--export-vcon <CALL-ID>` and the `export_vcon` MCP tool — two doors on the
+  vCon exporter.** The exporter landed correct and unreachable: a `pub fn`
+  returning a conversation container that nothing anyone could run ever called.
+  The CLI flag writes the container to stdout, or to `--vcon-out <PATH>`; the
+  MCP tool answers with it as structured JSON. Both emit an OBSERVER vCon
+  (`draft-ietf-vcon-vcon-core`, syntax `0.4.0`): unsigned, no party `name`,
+  signaling only, and carrying what the capture missed in both the analysis
+  object and a `sipnab-capture-completeness` attachment. Needs the `vcon` Cargo
+  feature, which is in `full` and not in the default set; a build without it
+  refuses each door by name rather than exporting nothing. `--export-vcon`
+  implies `-N` and owns stdout when the container goes there, because a
+  per-message line beside a vCon makes the file unparseable.
+
 - **`GET /v1/report` — the whole-capture analysis over REST.** Findings across
   every dialog and stream, orphaned media, STUN and ICMP evidence, and what the
   retention caps shed. `GET /v1/dialogs/{call_id}/report` answers for one call;

@@ -402,6 +402,39 @@ pub struct ExportContext<'a> {
     pub analysis: Option<&'a CaptureAnalysis>,
 }
 
+/// What [`dialog_capture_id`] returns for a dialog that carries no provenance.
+///
+/// A literal placeholder rather than an empty string: `capture_id` is mixed
+/// into [`dialog_uuid`], and an empty one would give every provenance-less
+/// dialog the same seed as every other, which reads as "these came from the
+/// same capture" instead of "nobody knows where these came from".
+pub const UNKNOWN_CAPTURE: &str = "unknown-capture";
+
+/// Identify the capture a dialog came from, for [`ExportContext::capture_id`].
+///
+/// Reads the SOURCE half of the dialog's own first frame pointer — the capture
+/// file path on a replay, the device name on a live capture, the listener on a
+/// HEP feed. That is content-anchored in the sense `capture_id` asks for: it
+/// names where these bytes were read, so re-exporting one dialog out of one
+/// file keeps one uuid, and the same Call-ID observed in a different file gets
+/// a different one.
+///
+/// The OPENING message decides, matching the rule the parties follow. A dialog
+/// whose messages arrived through two `-I` files would otherwise be attributed
+/// to whichever of them the last packet happened to sit in.
+///
+/// Returns [`UNKNOWN_CAPTURE`] when no message carries a pointer at all — a
+/// synthesized dialog, or a source that cannot number its frames. Naming the
+/// gap beats inventing an identifier that looks like provenance.
+#[must_use]
+pub fn dialog_capture_id(dialog: &SipDialog) -> &str {
+    dialog
+        .messages
+        .first()
+        .and_then(|m| m.frame.as_ref())
+        .map_or(UNKNOWN_CAPTURE, |frame| &frame.source)
+}
+
 /// Export one dialog as a vCon, stamped with the current time.
 ///
 /// See [`export_dialog_at`] for the pure form and for what the container

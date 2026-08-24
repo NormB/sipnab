@@ -73,7 +73,7 @@ wrong at once, and one of them is a test that pins the *complement*:
   pcap reconstruction (`-I`) … Advanced features (live capture, per-message
   output ordering, security detectors, SRTP decrypt) use the single-threaded
   path regardless."*
-- `cores_ignored_warning` ([`bootstrap.rs:2791`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2791)),
+- `cores_ignored_warning` ([`bootstrap.rs:2810`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2810)),
   whose live-capture branch says *"this run captures live rather than reading a
   saved file … parallel reconstruction is offline-only — it shards a capture
   FILE by host pair, which needs the whole capture up front. This run continues
@@ -233,7 +233,7 @@ from a headless run — `start_servers` is called with `metrics: true` and the
 real meter from [`batch.rs:1861-1879`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1861-L1879).
 
 **One gap worth fixing before the experiment.** `CaptureCounters`, the
-`capture_health` MCP response ([`server.rs:6699`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6699)),
+`capture_health` MCP response ([`server.rs:6854`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6854)),
 carries `packets`, `kernel_dropped`, `interface_dropped`, `invalid_timestamps`
 and `undecodable_frames` — and **no queue depth and no backpressure count**. So
 the surface built for production field reports

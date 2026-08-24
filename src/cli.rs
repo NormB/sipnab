@@ -906,6 +906,52 @@ pub struct OutputArgs {
     #[arg(help_heading = "Output", long, value_name = "CALL-ID")]
     pub call_report: Option<String>,
 
+    /// Export one dialog, named by Call-ID, as a vCon container
+    /// (`draft-ietf-vcon-vcon-core`).
+    ///
+    /// What sipnab writes is an OBSERVER vCon, and the container says so in its
+    /// own parties. sipnab watched packets go past a tap: it did not place the
+    /// call, record it, or obtain anyone's permission to keep it. So nothing
+    /// here carries a signature, no party carries a `name` — a `From` header is
+    /// what the sender chose to write, not an identity anyone established — and
+    /// the export carries SIGNALING ONLY, with no media and no URL pointing at
+    /// media held elsewhere, because sipnab hosts nothing to point at.
+    ///
+    /// It also carries what THIS capture missed: frames no decoder could read,
+    /// SIP a port gate discarded, messages a retention cap evicted. vCon has no
+    /// field meaning "this record is incomplete" — `dialog.type: "incomplete"`
+    /// says the CALL did not complete, which is an accusation against the
+    /// traffic rather than a limit of the tap — so the caveat travels in the
+    /// analysis object and in a `sipnab-capture-completeness` attachment, both
+    /// built from one value so the two cannot contradict each other.
+    ///
+    /// Goes to stdout unless `--vcon-out` names a file. Implies `-N` for the
+    /// reason `--call-report` does: a container written into a TUI's alternate
+    /// screen reaches nobody, and the run still exits 0.
+    ///
+    /// Needs the `vcon` Cargo feature, which is in `full` and not in the
+    /// default set. A build without it refuses the flag by name instead of
+    /// exporting nothing; `sipnab --version` lists what this binary carries.
+    #[arg(help_heading = "Output", long = "export-vcon", value_name = "CALL-ID")]
+    pub export_vcon: Option<String>,
+
+    /// Write the `--export-vcon` container to this path instead of stdout.
+    ///
+    /// A flag of its own rather than a second value packed onto `--export-vcon`:
+    /// a Call-ID is an arbitrary string the caller's UA chose, and it routinely
+    /// contains whatever separator a packed spelling would have to reserve.
+    ///
+    /// A write that fails is reported and exits non-zero rather than being
+    /// swallowed. An operator who believes a container reached the disk and
+    /// finds nothing there later has lost the capture it described as well.
+    #[arg(
+        help_heading = "Output",
+        long = "vcon-out",
+        value_name = "PATH",
+        requires = "export_vcon"
+    )]
+    pub vcon_out: Option<std::path::PathBuf>,
+
     /// Format report output as Markdown.
     #[arg(help_heading = "Output", long)]
     pub markdown: bool,
@@ -3742,9 +3788,27 @@ impl Cli {
     ///
     /// `validate` still carries its own `call_report.is_none()` guard, because
     /// a `Cli` built directly in a test never passes through here.
+    ///
+    /// `--export-vcon` is normalized alongside it and for the same reason. It
+    /// is a one-shot document written to stdout, so a run that raised the TUI
+    /// instead would emit alt-screen escape codes over the container and exit
+    /// 0 — the identical failure, reached by a flag added years later.
+    ///
+    /// It takes one more implication that `--call-report` does not need. A
+    /// call report is prose, and a per-message stream printed above it is
+    /// untidy; a vCon is a single JSON document, and anything else on the same
+    /// descriptor makes it unparseable. `sipnab -N -I x.pcap --export-vcon
+    /// <id> > call.vcon` is the obvious invocation and it would have produced
+    /// a file no vCon consumer could read, exit 0. So the container OWNS
+    /// stdout when it is going there — and only then, because with
+    /// `--vcon-out` the container is elsewhere and suppressing `--json` beside
+    /// it would discard output the operator asked for.
     fn normalize(&mut self) {
-        if self.output_args.call_report.is_some() {
+        if self.output_args.call_report.is_some() || self.output_args.export_vcon.is_some() {
             self.mode_args.no_tui = true;
+        }
+        if self.output_args.export_vcon.is_some() && self.output_args.vcon_out.is_none() {
+            self.output_args.no_cli_print = true;
         }
     }
 
@@ -3835,11 +3899,29 @@ impl Cli {
         if !output_flags_used.is_empty()
             && !self.mode_args.no_tui
             && self.output_args.call_report.is_none()
+            && self.output_args.export_vcon.is_none()
         {
             return Err(crate::Error::CliValidation(format!(
-                "Output flags ({}) require -N/--no-tui mode (or --call-report)",
+                "Output flags ({}) require -N/--no-tui mode (or --call-report, or --export-vcon)",
                 output_flags_used.join(", ")
             )));
+        }
+
+        // A vCon export from a build with no exporter in it. Refused HERE, not
+        // at the point of use: the point of use is after the whole capture has
+        // been read, so an operator would pay for the read and then be told the
+        // binary could never have written the file. The remedy names both the
+        // feature and where to check which one this binary carries, because
+        // "not compiled in" is otherwise indistinguishable from a typo in the
+        // Call-ID.
+        if self.output_args.export_vcon.is_some() && !cfg!(feature = "vcon") {
+            return Err(crate::Error::CliValidation(
+                "--export-vcon needs the 'vcon' Cargo feature, which this build \
+                 does not carry. Rebuild with --features vcon (or --features \
+                 full); `sipnab --version` lists the features a binary was \
+                 built with"
+                    .to_string(),
+            ));
         }
 
         // Reject an unknown --group-by field at startup. This flag previously
@@ -3869,6 +3951,14 @@ impl Cli {
                 (self.output_args.wireshark, "--wireshark"),
                 (self.output_args.call_report.is_some(), "--call-report"),
                 (self.output_args.tshark_filter.is_some(), "--tshark-filter"),
+                // Only when it lands on stdout: `--export-vcon --vcon-out
+                // file.vcon` writes to a path and never touches the JSON-RPC
+                // wire, so refusing that combination would deny an agent the
+                // one spelling that is safe.
+                (
+                    self.output_args.export_vcon.is_some() && self.output_args.vcon_out.is_none(),
+                    "--export-vcon",
+                ),
             ]
             .iter()
             .filter(|(active, _)| *active)
@@ -4587,6 +4677,92 @@ mod tests {
         // An explicit -N is unchanged, not doubly applied.
         let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "-N"]);
         assert!(cli.mode_args.no_tui);
+    }
+
+    /// `--export-vcon` implies `-N`, and OWNS stdout when the container goes
+    /// there.
+    ///
+    /// Both implications, and the case where the second one must NOT fire. A
+    /// vCon is a single JSON document: a per-message line printed beside it
+    /// makes the file unparseable, and `sipnab ... --export-vcon <id> >
+    /// call.vcon` is the invocation an operator reaches for first. With
+    /// `--vcon-out` the container is elsewhere, so suppressing `--json` there
+    /// would silently discard output the operator asked for.
+    #[test]
+    fn export_vcon_normalizes_to_non_interactive_and_owns_stdout() {
+        let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--export-vcon", "a@b"]);
+        assert!(
+            cli.mode_args.no_tui,
+            "--export-vcon must imply -N, or the container is written into a \
+             TUI alternate screen and the run still exits 0"
+        );
+        assert!(
+            cli.output_args.no_cli_print,
+            "the container is on stdout, so the per-message stream must be off \
+             -- one stray line and no vCon consumer can read the file"
+        );
+
+        // With a file to write to, stdout is nobody's document: the
+        // per-message stream is left exactly as the operator set it.
+        let cli = Cli::parse_from_args([
+            "sipnab",
+            "-I",
+            "x.pcap",
+            "--export-vcon",
+            "a@b",
+            "--vcon-out",
+            "out.vcon",
+        ]);
+        assert!(cli.mode_args.no_tui);
+        assert!(
+            !cli.output_args.no_cli_print,
+            "--vcon-out moves the container off stdout, so suppressing the \
+             per-message stream would discard output nobody asked to lose"
+        );
+
+        // Neither implication fires without the flag.
+        let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
+        assert!(!cli.mode_args.no_tui);
+        assert!(!cli.output_args.no_cli_print);
+    }
+
+    /// A build carrying the exporter accepts `--export-vcon`.
+    ///
+    /// Paired with the refusal below. Both arms compile in every build and
+    /// each runs in the one it describes, so neither can rot into an assertion
+    /// nothing exercises.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn export_vcon_validates_on_a_build_that_carries_the_exporter() {
+        let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--export-vcon", "a@b"]);
+        assert!(
+            cli.validate().is_ok(),
+            "this build carries the vcon feature and validate() still refused"
+        );
+    }
+
+    /// A build without the exporter refuses `--export-vcon` before capture.
+    ///
+    /// Refused in `validate()` rather than at the point of use, because the
+    /// point of use is after the whole capture has been read: an operator
+    /// would pay for the read and only then learn the binary could never have
+    /// written the file.
+    #[cfg(not(feature = "vcon"))]
+    #[test]
+    fn export_vcon_is_refused_when_the_build_carries_no_exporter() {
+        let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--export-vcon", "a@b"]);
+        let err = cli
+            .validate()
+            .expect_err("a build with no exporter must refuse the flag");
+        let message = err.to_string();
+        assert!(
+            message.contains("vcon"),
+            "the refusal must name the missing feature: {message}"
+        );
+        assert!(
+            message.contains("--features"),
+            "the refusal must name what produces a binary that can: {message}"
+        );
     }
 
     /// Rotation defaults on; `--no-rotate` opts out; when both flags are

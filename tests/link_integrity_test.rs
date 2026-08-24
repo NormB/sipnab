@@ -610,7 +610,15 @@ fn wiki_intra_docs_links_resolve() {
     // `media-relay` assertion IS rather than re-explaining relay attribution
     // twice. Two pages, one link each; the site mirrors are generated and this
     // gate reads docs/.
-    const EXPECTED_WIKI_LINKS: usize = 480;
+    // 480 -> 482: two links in `docs/mcp-tools.md` for the `export_vcon`
+    // section -- its row in the tool index, so the tool is addressable from
+    // the table a reader starts at, and a pointer from the feature-gate note
+    // to `server_capabilities`, which is what answers "does this binary carry
+    // the exporter". Attributed by measurement before the number moved with
+    // this gate's OWN rule (relative targets that are same-page anchors or end
+    // in `.md`): that page went 93 -> 95 and no other page under docs/ moved.
+    // The site mirrors are generated and this extractor reads docs/.
+    const EXPECTED_WIKI_LINKS: usize = 482;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

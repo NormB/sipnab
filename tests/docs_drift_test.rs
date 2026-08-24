@@ -2121,9 +2121,13 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // says about the capture as a whole -- orphaned media, STUN, ICMP evidence,
     // what the caps shed -- was reachable from the CLI and the REST API and
     // from no MCP tool. An agent could be handed a count it could not expand.
+    // Raised 36 -> 37 by `capture_health`, the capture-path counters read twice.
+    // Raised 37 -> 38 by `export_vcon` (VCON3), which hands one observed dialog
+    // to a conversation-data pipeline in the interchange format that pipeline
+    // already reads, rather than in a sipnab-shaped JSON nobody else parses.
     assert_eq!(
         registered.len(),
-        37,
+        38,
         "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -2630,7 +2634,14 @@ fn no_documentation_table_repeats_a_row() {
     // `docs/design/backlog.md` -- the ten items and their state. Attributed by
     // measurement before the number moved: that file gained exactly one table
     // separator and design docs have no generated mirror.
-    const EXPECTED_TABLES: usize = 645;
+    // 645 -> 648: three tables. One hand-written and its generated mirror, in
+    // `docs/mcp-tools.md` -- the `export_vcon` parameter table, which that
+    // tool's new section needs like every other tool section on the page. One
+    // more in `docs/design/vcon.md`, recording what a real vCon store measured
+    // against what the draft says. Attributed by measurement before the number
+    // moved: those three files gained exactly one table separator each, no
+    // other page gained any, and design docs have no generated mirror.
+    const EXPECTED_TABLES: usize = 648;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
