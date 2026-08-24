@@ -80,7 +80,13 @@ WIKI_TREES = frozenset(code_trees())
 ROOT_FILES = tuple(sorted(f for f in tracked if "/" not in f))
 
 BINARY = {".pcap", ".pcapng", ".png", ".webp", ".gif", ".gz", ".zip", ".tar",
-          ".jpg", ".jpeg", ".ico", ".woff", ".woff2", ".pdf"}
+          ".jpg", ".jpeg", ".ico", ".woff", ".woff2", ".pdf",
+          # `.bin` reached here as a captured `ng` control reply used as a test
+          # fixture, and got a /blob/ URL -- the page that says it cannot be
+          # shown. Any suffix missing from this set fails that way silently,
+          # because the link resolves and only a human notices it renders
+          # nothing.
+          ".bin"}
 
 
 def split_lines(p: str) -> tuple[str, str]:

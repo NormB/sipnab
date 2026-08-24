@@ -3215,7 +3215,7 @@ are exactly the cases a signaling-only view gets wrong.
   as a tag, `--rtpengine-control` would attribute a recording stream as a call
   leg -- the exact misattribution the passive path refuses, arriving through
   the active one. The 12.5.1 reply captured in
-  [`tests/fixtures/rtpengine/query-reply-12.5.1.bin`](https://github.com/NormB/sipnab/blob/main/tests/fixtures/rtpengine/query-reply-12.5.1.bin) nests `subscriptions` and
+  [`tests/fixtures/rtpengine/query-reply-12.5.1.bin`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/rtpengine/query-reply-12.5.1.bin) nests `subscriptions` and
   `subscribers` INSIDE a tag rather than beside it, which suggests it is fine,
   but that capture had no recording running and nothing has tested it.
 

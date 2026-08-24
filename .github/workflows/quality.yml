@@ -400,11 +400,24 @@ jobs:
       # Zola-shaped anchor as dead; "fixing" it to satisfy lychee broke all three
       # of the gates above, which are the ones describing where these documents
       # are actually published.
+      # `--exclude` this repository's own blob/raw URLs, for the reason the
+      # built-site pass below already excludes them: a file added on a BRANCH
+      # 404s on `main` until the branch merges, which is after this gate has to
+      # pass. `repo_paths_in_docs_are_clickable` DEMANDS that a tracked file
+      # mentioned in prose be linked, so without this exclusion the two gates
+      # contradict each other on every new file -- one insists on the link, the
+      # other rejects it, and no edit satisfies both.
+      #
+      # `dev_docs_drift_test::linked_code_targets_exist` and
+      # `doc_link_hygiene_test` resolve these against the working tree, which
+      # is the stronger check: it cannot be satisfied by a stale copy on main.
+      # External links, including other repositories on github.com, still run.
       - name: Dead links (docs Markdown)
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
           args: >-
             --no-progress --config lychee.toml
+            --exclude '^https://github\.com/NormB/sipnab/(blob|raw)/'
             'docs/**/*.md' 'README.md' 'CONTRIBUTING.md' 'SECURITY.md'
           fail: true
         env:
