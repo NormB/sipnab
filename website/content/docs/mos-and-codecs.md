@@ -24,9 +24,23 @@ The short version:
 | G.722, G.726, iLBC, everything else | Not implemented | Placeholder, flagged |
 
 Anything in the last three rows scores **4.216 at 10 ms jitter — the same value
-an unidentified stream gets.** That is a placeholder, not a measurement. Tools
-that publish it say so: the `rtp_stats` MCP tool carries `mos_grounded: false`,
-`mos_grounding: "unpublished"` and a note.
+an unidentified stream gets.** That is a placeholder, not a measurement.
+
+Every door that publishes the number publishes what it is worth, in the same
+words:
+
+| Surface | How it says so |
+|---------|----------------|
+| MCP `rtp_stats` | `mos_grounded: false`, `mos_grounding: "unpublished"`, `mos_note` |
+| `GET /v1/streams` | the same three keys on every row |
+| `GET /v1/streams?mos_below=` | **never selects an ungrounded stream**, and reports `ungrounded_excluded` |
+| MCP `search_streams` with `min_mos`/`max_mos` | the same refusal, and the same count |
+| TUI stream detail | the score renders muted rather than in a quality band, annotated `no published Ie` |
+
+The filters are the part that matters most. A placeholder is a *high-looking*
+number that means nothing, so a MOS bound applied without the grounding test
+returns every stream sipnab could not score, dressed as a bad call — and an
+operator working a bad-call list goes down it top to bottom.
 
 ## Declaring an impairment factor sipnab does not have
 

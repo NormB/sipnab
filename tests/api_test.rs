@@ -166,7 +166,14 @@ fn streams_endpoints_validate_against_stream_schema() {
     let resp = srv.get("/v1/streams");
     assert_eq!(resp.status, 200, "/v1/streams status");
     let body = resp.json();
-    assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["schema_version"], 2);
+    // Present at zero on every response, not only on the ones that held
+    // something back: a key that shows up only when a filter bites is a key no
+    // client learns exists.
+    assert_eq!(
+        body["ungrounded_excluded"], 0,
+        "an unfiltered list bounded nothing, so it held nothing back: {body}"
+    );
     let streams = body["streams"].as_array().expect("streams array");
     assert!(!streams.is_empty(), "RTP fixture must yield streams");
     let ssrc = streams[0]["ssrc"]
@@ -182,10 +189,29 @@ fn streams_endpoints_validate_against_stream_schema() {
             "jitter_ms",
             "loss_pct",
             "mos",
+            // What that `mos` is worth, on the same row and never optional.
+            // A summary carrying the number without its grounding is the
+            // shape that let a placeholder pass for a measurement.
+            "mos_grounded",
+            "mos_grounding",
         ] {
             assert!(s.get(k).is_some(), "stream summary missing `{k}`");
         }
     }
+
+    // The fixture is G.711, which G.113 publishes an impairment value for, so
+    // this is the grounded arm end to end -- through a real server, a real
+    // pcap and a real HTTP response rather than a hand-built struct.
+    assert_eq!(
+        streams[0]["mos_grounding"], "published",
+        "sip-rtp-g711.pcap is PCMU: {}",
+        streams[0]
+    );
+    assert!(
+        streams[0]["mos_note"].is_null(),
+        "a published score has no caveat to disclose: {}",
+        streams[0]
+    );
 
     // Detail: the full StreamJson validates against the T1.3 stream schema.
     let stream_schema = load_validator("stream.schema.json");

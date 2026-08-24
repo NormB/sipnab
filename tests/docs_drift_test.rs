@@ -2577,7 +2577,14 @@ fn no_documentation_table_repeats_a_row() {
     // `docs/design/testing-matrix.md`. It reports what a person found in the
     // 80 flags the generator could only call "referenced" -- 62 of them do
     // have a real behavior test, which a token search cannot see.
-    const EXPECTED_TABLES: usize = 623;
+    // 623 -> 627: two hand-written tables and their two generated mirrors, both
+    // about what a MOS is worth. `docs/mos-and-codecs.md` gained the per-surface
+    // table (which door says a score is a placeholder, and how); `docs/rest-api.md`
+    // gained the `mos_grounded`/`mos_grounding`/`mos_note` key table for
+    // `GET /v1/streams`. `website/content/docs/{mos-and-codecs,api}.md` are the
+    // generated copies. Attributed by measurement before the number moved: those
+    // four files gained exactly one each and no other page gained any.
+    const EXPECTED_TABLES: usize = 627;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

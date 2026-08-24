@@ -4,7 +4,9 @@ sipnab includes an optional REST API and Prometheus metrics endpoint, enabled wi
 
 [CLI Reference](cli-reference.md#network-listeners) catalogs every API flag.
 
-> **Looking for AI-agent access?** sipnab also exposes the same dialog / RTP / diagnostic data as a Model Context Protocol server. See [MCP Server](mcp.md) -- the MCP path uses the same in-memory stores as this REST API, so a running sipnab instance can serve both surfaces simultaneously.
+> **Looking for AI-agent access?** sipnab also serves the dialog / RTP / diagnostic stores over the Model Context Protocol. See [MCP Server](mcp.md) -- both doors read the same in-memory stores in the same process, so one running instance can serve both at once.
+>
+> The two response *shapes* are converging deliberately and are not yet identical. Where a metric is reachable through one door and not the other, that is drift rather than design: [`tests/surface_parity_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/surface_parity_test.rs) fails the build on it, and the fix is always to add the metric to the missing surface.
 
 ## Getting started
 
@@ -745,7 +747,7 @@ List all tracked RTP streams with quality metrics.
 | Parameter  | Type  | Default | Description |
 |------------|-------|---------|-------------|
 | `orphaned` | bool  | --      | `true` keeps only streams no dialog claims, `false` only those one does. The test is the stream's dialog association, applied from the stream's first packet, so `orphaned=true` catches short unclaimed streams as well as long ones |
-| `mos_below`| float | --      | Filter streams with MOS below this threshold |
+| `mos_below`| float | --      | Keep only streams whose **grounded** estimated MOS is strictly below this threshold. Streams whose codec has no impairment value score a placeholder meaning "unknown", not a low score, and are never selected by this filter -- `ungrounded_excluded` in the response counts what the filter skipped |
 | `limit`    | int   | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`   | int   | 0       | Pagination offset |
 
@@ -815,10 +817,11 @@ streams.forEach(s =>
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "total": 14,
   "offset": 0,
   "limit": 50,
+  "ungrounded_excluded": 0,
   "streams": [
     {
       "ssrc": "0x1a2b3c4d",
@@ -830,11 +833,48 @@ streams.forEach(s =>
       "loss_pct": 0.0,
       "orphaned": false,
       "associated_dialog": "12013223@203.0.113.195",
-      "mos": 4.2
+      "mos": 4.2,
+      "mos_grounded": true,
+      "mos_grounding": "published"
     }
   ]
 }
 ```
+
+#### What the MOS is worth
+
+`mos` is always a number, on every stream. It is not always a measurement.
+
+sipnab scores MOS with the ITU-T G.107 E-model, which needs an equipment
+impairment factor (`Ie`) for the codec. G.113 publishes one for some codecs and
+not for others, and for a codec with none the score falls back to a placeholder
+that means **"unknown"** -- not "about 4.2", even though 4.2 is roughly what it
+prints. A placeholder and a genuine G.711 estimate are byte-identical in the
+`mos` field.
+
+Three keys keep them apart:
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `mos_grounded` | bool | `true` when `mos` rests on a real impairment value. Always present -- every stream has a grounding, and an absent key would read as "unknown", which is a different claim |
+| `mos_grounding` | string | Which one: `published` (ITU-T G.113), `operator_declared` (this deployment's `[media.codec_ie]`), or `unpublished` (the placeholder) |
+| `mos_note` | string | The caveat, when there is one. **Absent** for a `published` score, which has nothing to disclose |
+
+sipnab keeps `published` and `operator_declared` apart because the remedies
+differ: a published score that looks wrong means suspecting sipnab's vantage
+point, a declared one means suspecting a file on your own disk.
+
+Act on `mos_grounded` before acting on `mos`. Otherwise a dashboard that sorts
+by MOS and shows the worst ten fills with streams nobody ever scored.
+
+> **`schema_version` 2.** Version 1 served `mos` with no grounding beside it,
+> and its `mos_below` filter selected placeholders. A client that reads only
+> the fields it knows sees no change; a client asserting on the exact key set
+> does.
+
+The MCP `rtp_stats` tool carries the same three keys, and the TUI's stream
+detail view draws the same distinction: an ungrounded score renders muted and
+annotated rather than in a quality band color.
 
 ---
 

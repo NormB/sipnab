@@ -2648,36 +2648,13 @@ fn stream_json(
         );
         obj.insert(
             "mos_grounding".into(),
-            serde_json::Value::String(mos_grounding_label(grounding).into()),
+            serde_json::Value::String(grounding.as_str().into()),
         );
-        match grounding {
-            crate::rtp::quality::MosGrounding::Published => {}
-            // Said out loud, because the number now looks exactly like a
-            // grounded G.711 score and did not come from a standard. An agent
-            // that cites it should cite the operator, not ITU-T G.113.
-            crate::rtp::quality::MosGrounding::OperatorDeclared => {
-                obj.insert(
-                    "mos_note".into(),
-                    serde_json::Value::String(
-                        "ITU-T G.113 publishes no impairment value for this codec; \
-                         this deployment declared the one used, in \
-                         [media.codec_ie]. The MOS is an estimate on the \
-                         operator's figure, not on a published one."
-                            .into(),
-                    ),
-                );
-            }
-            crate::rtp::quality::MosGrounding::Unpublished => {
-                obj.insert(
-                    "mos_note".into(),
-                    serde_json::Value::String(
-                        "No published ITU-T G.113 impairment value for this codec, \
-                         and none declared in [media.codec_ie]. The MOS is a \
-                         placeholder meaning 'unknown', not an estimate."
-                            .into(),
-                    ),
-                );
-            }
+        // The caveat, from the same enum that named the grounding, so an agent
+        // cannot be told `operator_declared` under a sentence about G.113.
+        // `None` is the Published case and is emitted as nothing at all.
+        if let Some(note) = grounding.note() {
+            obj.insert("mos_note".into(), serde_json::Value::String(note.into()));
         }
 
         // Latency, the third of the three numbers that decide whether a call
@@ -2756,10 +2733,10 @@ fn stream_mos(s: &crate::rtp::stream::RtpStream, delay: crate::rtp::quality::Mos
 /// opposite of what happened. WHICH of the two grounded it is the separate
 /// question `mos_grounding` answers below.
 fn mos_is_grounded(s: &crate::rtp::stream::RtpStream) -> bool {
-    !matches!(
-        crate::rtp::quality::mos_grounding(s.codec.as_deref()),
-        crate::rtp::quality::MosGrounding::Unpublished
-    )
+    // One definition site: `quality::mos_is_grounded`. This wrapper only
+    // adapts a stream to it, so REST and MCP cannot drift on what "grounded"
+    // means -- which they had, and REST was the one that was wrong.
+    crate::rtp::quality::mos_is_grounded(s.codec.as_deref())
 }
 
 /// The QoS marking block of a `media_diagnostics` stream.
@@ -2933,19 +2910,6 @@ fn endpoint_reported_json(
         );
     }
     Some(v)
-}
-/// The name `rtp_stats` publishes for where this stream's `Ie` came from.
-///
-/// A separate field from `mos_grounded` because the remedies differ: a
-/// `published` score that looks wrong means suspecting sipnab's vantage point,
-/// an `operator_declared` one means suspecting a file on the operator's own
-/// disk, and an `unpublished` one means the number was never an estimate.
-fn mos_grounding_label(grounding: crate::rtp::quality::MosGrounding) -> &'static str {
-    match grounding {
-        crate::rtp::quality::MosGrounding::Published => "published",
-        crate::rtp::quality::MosGrounding::OperatorDeclared => "operator_declared",
-        crate::rtp::quality::MosGrounding::Unpublished => "unpublished",
-    }
 }
 /// The tie-break half of a stream cursor: `0xSSRC@src>dst`.
 ///

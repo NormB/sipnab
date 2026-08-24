@@ -1283,6 +1283,53 @@ pub enum MosGrounding {
     Unpublished,
 }
 
+impl MosGrounding {
+    /// The wire spelling every surface serializes this as.
+    ///
+    /// One vocabulary in one place, the same rule
+    /// [`InputOrigin::as_str`](crate::capture::parse::InputOrigin::as_str) and
+    /// [`EndpointAssertion::as_str`](crate::rtp::stream_store::EndpointAssertion::as_str)
+    /// follow. It lived as a private `mos_grounding_label` inside the MCP
+    /// server, which is exactly how REST came to serve a MOS with no grounding
+    /// at all: the only spelling of the vocabulary was behind a door REST does
+    /// not open.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Published => "published",
+            Self::OperatorDeclared => "operator_declared",
+            Self::Unpublished => "unpublished",
+        }
+    }
+
+    /// The sentence a reader needs beside the number, or `None` when the score
+    /// is a plain published estimate and there is nothing to disclose.
+    ///
+    /// `None` is a real answer here and not an omission: a `Published` score
+    /// carries no caveat, and manufacturing one ("this MOS is fine") would
+    /// train readers to skip the field on the two occasions it matters.
+    #[must_use]
+    pub const fn note(self) -> Option<&'static str> {
+        match self {
+            Self::Published => None,
+            // Said out loud, because the number now looks exactly like a
+            // grounded G.711 score and did not come from a standard. Anything
+            // that cites it should cite the operator, not ITU-T G.113.
+            Self::OperatorDeclared => Some(
+                "ITU-T G.113 publishes no impairment value for this codec; \
+                 this deployment declared the one used, in [media.codec_ie]. \
+                 The MOS is an estimate on the operator's figure, not on a \
+                 published one.",
+            ),
+            Self::Unpublished => Some(
+                "No published ITU-T G.113 impairment value for this codec, \
+                 and none declared in [media.codec_ie]. The MOS is a \
+                 placeholder meaning 'unknown', not an estimate.",
+            ),
+        }
+    }
+}
+
 /// Whether [`estimate_mos`] can ground its answer for `codec`.
 ///
 /// Deliberately keyed on the same names the `match` in [`estimate_mos`] uses,
@@ -1301,6 +1348,23 @@ pub fn mos_grounding(codec: Option<&str>) -> MosGrounding {
         | Some("Opus") => MosGrounding::Published,
         _ => MosGrounding::Unpublished,
     }
+}
+
+/// Whether a MOS for this codec is a measurement rather than a placeholder.
+///
+/// The distinction is not cosmetic and it is not visible in the number.
+/// `MosGrounding::Unpublished` means "unknown", not "about 4.2", and the score
+/// sipnab returns for an unpublished codec is byte-identical to a grounded
+/// G.711 one. Anything that FILTERS on MOS has to consult this first, or it
+/// selects placeholders and presents them as findings.
+///
+/// Lifted here from a private helper in the MCP server, which was the only
+/// surface consulting it: `GET /v1/streams?mos_below=` did not, and silently
+/// returned every unpublished-codec stream whose placeholder fell below the
+/// bound. One rule, one definition site, every caller.
+#[must_use]
+pub fn mos_is_grounded(codec: Option<&str>) -> bool {
+    !matches!(mos_grounding(codec), MosGrounding::Unpublished)
 }
 
 /// Where a MOS shown beside a stream came from.

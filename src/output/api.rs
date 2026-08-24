@@ -796,16 +796,28 @@ async fn get_dialog_report(
 /// * `addr` — Client socket address used for rate limiting.
 /// * `headers` — Request headers (auth).
 /// * `params` — Offset/limit pagination plus `orphaned` (exact match) and
-///   `mos_below` (streams whose estimated MOS is strictly below the
+///   `mos_below` (streams whose GROUNDED estimated MOS is strictly below the
 ///   threshold) filters.
+///
+/// `mos_below` admits only streams whose MOS is a measurement. A codec with no
+/// published impairment value scores a placeholder that means "unknown", and
+/// the placeholder is low, so a bound applied without that test returns every
+/// unscoreable stream dressed as a bad one. How many were held back is
+/// reported rather than hidden — see `ungrounded_excluded` below.
 ///
 /// # Returns
 ///
-/// 200 with `{schema_version, total, offset, limit, streams}` where
-/// `total` is the FILTERED result-set size (the count the returned rows are
-/// drawn from, after `orphaned`/`mos_below` filters), so paging by `total`
-/// terminates correctly; 401/503 from the guard. `limit` is clamped to
-/// `--api-max-rows` (default 1000).
+/// 200 with `{schema_version, total, offset, limit, ungrounded_excluded,
+/// streams}` where `total` is the FILTERED result-set size (the count the
+/// returned rows are drawn from, after `orphaned`/`mos_below` filters), so
+/// paging by `total` terminates correctly, and `ungrounded_excluded` is how
+/// many streams `mos_below` skipped for want of a grounded score (always 0
+/// when `mos_below` is absent, because nothing was bounded); 401/503 from the
+/// guard. `limit` is clamped to `--api-max-rows` (default 1000).
+///
+/// `schema_version` is 2. Version 1 served a `mos` with no grounding beside it
+/// and a `mos_below` that selected placeholders; each row now carries
+/// `mos_grounded`, `mos_grounding` and, when there is a caveat, `mos_note`.
 ///
 /// # Side effects
 ///
@@ -834,6 +846,11 @@ async fn list_streams(
     // Materialize the FILTERED set first so `total` reflects what the page is
     // drawn from (see `list_dialogs`); the unfiltered store size would break a
     // client paging by `total`.
+    // Streams a `mos_below` bound would have selected on a placeholder, and
+    // did not. Counted rather than silently dropped: a caller asking "show me
+    // bad calls" who gets four rows must be able to tell that from the same
+    // four rows out of a store where sixty streams could not be scored at all.
+    let mut ungrounded_excluded = 0usize;
     let filtered: Vec<&crate::rtp::stream::RtpStream> = ss
         .iter()
         .filter(|s| {
@@ -843,6 +860,17 @@ async fn list_streams(
                 return false;
             }
             if let Some(threshold) = mos_threshold {
+                // Grounding first, and independently of the bound. An
+                // unpublished codec scores the placeholder, the placeholder is
+                // low, and a `mos_below` filter without this test returns every
+                // stream sipnab could not score AS IF it had scored them badly
+                // -- which is the one answer worse than returning nothing. MCP
+                // has tested this since `min_mos` existed; REST had not, and
+                // both now decide through `quality::mos_is_grounded`.
+                if !quality::mos_is_grounded(s.codec.as_deref()) {
+                    ungrounded_excluded += 1;
+                    return false;
+                }
                 let mos = approximate_mos(s, delay);
                 if mos >= threshold {
                     return false;
@@ -862,10 +890,11 @@ async fn list_streams(
     drop(ss);
 
     Ok(Json(json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "total": total,
         "offset": offset,
         "limit": limit,
+        "ungrounded_excluded": ungrounded_excluded,
         "streams": streams,
     })))
 }
@@ -1944,6 +1973,19 @@ mod tests {
     /// Returns after a single packet so the stream exists with `packet_count`
     /// of at least 1 and no loss/jitter (MOS near the codec ceiling).
     fn add_stream(state: &ApiState, ssrc: u32, src_port: u16, dst_port: u16) {
+        // PT 0 is PCMU, which G.113 publishes an impairment value for -- so
+        // every stream built by this helper carries a GROUNDED MOS. Tests that
+        // need the other case say so by naming a payload type.
+        add_stream_with_pt(state, ssrc, src_port, dst_port, 0);
+    }
+
+    /// `add_stream`, with the RTP payload type spelled out.
+    ///
+    /// Exists because grounding is decided by the codec and nothing else: a
+    /// dynamic payload type with no SDP to name it leaves `codec` unknown, and
+    /// an unknown codec scores the placeholder. That is the stream a
+    /// `mos_below` bound must refuse to select.
+    fn add_stream_with_pt(state: &ApiState, ssrc: u32, src_port: u16, dst_port: u16, pt: u8) {
         use crate::capture::parse::TransportProto;
         use crate::rtp::parser::RtpHeader;
 
@@ -1971,7 +2013,7 @@ mod tests {
             extension: false,
             csrc_count: 0,
             marker: false,
-            payload_type: 0, // PCMU
+            payload_type: pt,
             sequence: 1,
             timestamp: 160,
             ssrc,
@@ -2050,6 +2092,112 @@ mod tests {
             // total reflects the filtered result-set (1), not the store's 2.
             assert_eq!(parsed["total"], 1, "{query} reported the store size");
         }
+    }
+
+    /// A `mos_below` bound selects only streams whose MOS is a MEASUREMENT,
+    /// and reports how many it held back for want of one.
+    ///
+    /// The bug this pins: a codec sipnab has no impairment value for still
+    /// scores a number, because every surface showing MOS predates the
+    /// distinction and a sudden `Option` would break four of them at once.
+    /// That number is a placeholder standing in for "unknown". Applied without
+    /// a grounding test, `?mos_below=5.0` therefore returned every unscoreable
+    /// stream in the store dressed as a bad call -- and an operator triaging a
+    /// bridge would work the list top to bottom, chasing streams whose quality
+    /// nobody ever measured.
+    ///
+    /// MCP has tested this since `min_mos` existed. REST had not, which is the
+    /// whole reason both now decide through `quality::mos_is_grounded`.
+    ///
+    /// Two streams, identical but for the payload type: PT 0 is PCMU and
+    /// grounded; PT 96 is dynamic with no SDP to name it, so the codec is
+    /// unknown and the score is the placeholder. A bound generous enough to
+    /// admit both on the number alone must admit exactly one.
+    #[tokio::test]
+    async fn mos_below_refuses_to_select_on_a_placeholder_and_counts_what_it_held_back() {
+        let state = make_state();
+        add_stream_with_pt(&state, 0x5555_5555, 23000, 33000, 0);
+        add_stream_with_pt(&state, 0x6666_6666, 23002, 33002, 96);
+        let app = build_router(state);
+
+        let resp = app
+            .clone()
+            .oneshot(test_request("/v1/streams?mos_below=5.0"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let parsed: Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+
+        let rows = parsed["streams"].as_array().expect("array");
+        assert_eq!(
+            rows.len(),
+            1,
+            "a bound below 5.0 admitted the ungrounded stream: {}",
+            parsed["streams"]
+        );
+        assert_eq!(
+            rows[0]["ssrc"], "0x55555555",
+            "the wrong stream survived the bound"
+        );
+        assert!(
+            rows[0]["mos_grounded"].as_bool().expect("mos_grounded"),
+            "a row a MOS bound admitted must carry a grounded MOS"
+        );
+        assert_eq!(rows[0]["mos_grounding"], "published");
+        assert!(
+            rows[0].get("mos_note").is_none(),
+            "a published score has no caveat to disclose: {}",
+            rows[0]
+        );
+        assert_eq!(parsed["total"], 1, "total must count the filtered set");
+        assert_eq!(
+            parsed["ungrounded_excluded"], 1,
+            "the stream the bound could not score must be counted, not silently \
+             dropped -- four rows out of a store where sixty were unscoreable is \
+             a different answer from four out of four"
+        );
+    }
+
+    /// Without a bound there is nothing to hold back, and every row still says
+    /// what its MOS is worth.
+    ///
+    /// The counterpart to the test above, and the one that keeps its number
+    /// honest: a `ungrounded_excluded` that counted ungrounded streams
+    /// regardless of whether anything was filtered would report a store's
+    /// codec mix as an exclusion, on a request that excluded nothing.
+    #[tokio::test]
+    async fn an_unbounded_list_holds_nothing_back_and_still_grounds_every_row() {
+        let state = make_state();
+        add_stream_with_pt(&state, 0x7777_7777, 24000, 34000, 96);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/streams"))
+            .await
+            .expect("oneshot");
+        let parsed: Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+
+        assert_eq!(parsed["schema_version"], 2);
+        assert_eq!(
+            parsed["ungrounded_excluded"], 0,
+            "nothing was bounded, so nothing was held back"
+        );
+        let row = &parsed["streams"][0];
+        assert_eq!(row["ssrc"], "0x77777777");
+        assert_eq!(
+            row["mos_grounded"], false,
+            "an unknown codec has no published impairment value"
+        );
+        assert_eq!(row["mos_grounding"], "unpublished");
+        assert!(
+            row["mos_note"]
+                .as_str()
+                .expect("an ungrounded score owes the reader a sentence")
+                .contains("placeholder"),
+            "the note must say the number is a placeholder: {row}"
+        );
     }
 
     /// `mos_below` excludes a clean high-MOS stream at 1.0 and includes it

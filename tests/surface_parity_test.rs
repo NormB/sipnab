@@ -218,6 +218,21 @@ const QUALITY_METRICS: &[Metric] = &[
         name: "dscp",
         aliases: &["dscp_first", "dscp_last", "dscp_remarked"],
     },
+    // What the MOS beside it MEANS. Tracked here rather than folded into
+    // `mos` because the two are not the same fact and the number cannot carry
+    // the second: sipnab returns the identical score for a grounded G.711
+    // stream and for an unpublished codec where the score is a placeholder
+    // standing in for "unknown". A surface serving `mos` without the grounding
+    // serves a guess in the shape of a measurement.
+    //
+    // The alias list is the usual reason -- MCP serializes the label as
+    // `mos_grounding` and the boolean as `mos_grounded`, and the filters on
+    // both surfaces decide through the predicate `mos_is_grounded`, which
+    // whole-identifier matching sees in neither key.
+    Metric {
+        name: "mos_grounding",
+        aliases: &["mos_grounded", "mos_is_grounded"],
+    },
 ];
 
 /// A quality metric and every identifier that carries it.
