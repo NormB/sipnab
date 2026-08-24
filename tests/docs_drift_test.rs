@@ -2551,7 +2551,11 @@ fn no_documentation_table_repeats_a_row() {
     // coverage matrix. One file, and the only one this change adds --
     // `docs/design/` is repo-only, so it adds nothing to the website or to
     // llms-full.txt, which a 274-row table would otherwise bloat.
-    const EXPECTED_MARKDOWN_FILES: usize = 164;
+    // 164 -> 165: `docs/design/vcon.md`, the Phase 0 decision on emitting
+    // vCon containers. One file. A design doc has no website mirror, so it
+    // costs this counter one and not two, and the pointer it gained in
+    // `docs/design/backlog.md` is a row in a table that already existed.
+    const EXPECTED_MARKDOWN_FILES: usize = 165;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -2615,7 +2619,14 @@ fn no_documentation_table_repeats_a_row() {
     // holds, in the new SP section of `docs/design/backlog.md`. Attributed by
     // measurement before the number moved: that file gained exactly one table
     // separator, and design docs have no generated mirror.
-    const EXPECTED_TABLES: usize = 641;
+    // 641 -> 644: three tables in the new `docs/design/vcon.md` -- the six
+    // vCon decisions and the fact each turns on, the sipnab PARTIAL clause
+    // against the vCon field that could carry it, and what is declined
+    // outright. Attributed by measurement before the number moved: that file
+    // holds exactly three table separators, no other page gained any (the
+    // backlog's pointer is a row in a table that already existed), and design
+    // docs have no generated mirror.
+    const EXPECTED_TABLES: usize = 644;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
