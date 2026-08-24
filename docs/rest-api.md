@@ -738,6 +738,135 @@ Returns `404` if the Call-ID is not found.
 
 ---
 
+### GET /v1/dialogs/:call_id/vcon
+
+Export one observed dialog as a [vCon](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/)
+container — the IETF interchange format for a conversation record.
+
+This route exists only in a build that carries the `vcon` feature, which
+`--features full` includes and the default build does not. A build without it
+has no route at that path, so the server answers `404` for every Call-ID. Check
+`sipnab --version`, which lists the features compiled in.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/dialogs/test-call-1%4010.0.0.1/vcon" | jq .
+```
+
+Percent-encode the `@`. A raw `@` in the path works in most clients, and the
+escaped form works in all of them.
+
+**Response** (trimmed — the `sip-message-trace` attachment carries one entry
+per SIP message and grows with the call):
+
+```json
+{
+  "vcon": "0.4.0",
+  "uuid": "018bcfe5-6800-8795-a667-78f1c5213800",
+  "created_at": "2026-08-24T22:03:38.989752721+00:00",
+  "extensions": ["sip-signaling"],
+  "parties": [
+    {
+      "sip": "sip:1001@10.0.0.1",
+      "validation": "none",
+      "sip_contact": "<sip:1001@10.0.0.1:5060>",
+      "sip_user_agent": "sipnab-test/1.0"
+    },
+    { "sip": "sip:1002@10.0.0.2", "validation": "none" },
+    {
+      "validation": "none",
+      "role": "observer",
+      "sip_user_agent": "sipnab/0.5.124 (observer; node thor-02)"
+    }
+  ],
+  "dialog": [{ "sip_call_id": "test-call-1@10.0.0.1" }],
+  "attachments": [
+    { "purpose": "sip-message-trace", "party": 2, "mediatype": "application/json", "encoding": "json", "body": { "schema_version": 1, "messages": ["..."] } },
+    {
+      "purpose": "sipnab-capture-completeness",
+      "party": 2,
+      "mediatype": "application/json",
+      "encoding": "json",
+      "body": {
+        "note": "Produced by sipnab 0.5.124 on node thor-02. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "node": "thor-02",
+        "sipnab_version": "0.5.124",
+        "frames_read": 7,
+        "undecodable_frames": 0,
+        "sip_discarded_by_port_gate": 0,
+        "sip_discarded_by_websocket_gate": 0,
+        "messages_evicted": 0,
+        "dialogs_refused": 0,
+        "dialogs_rotated": 0,
+        "blind_spots": []
+      }
+    }
+  ],
+  "analysis": [
+    {
+      "type": "report",
+      "dialog": 0,
+      "vendor": "sipnab",
+      "product": "sipnab 0.5.124 (passive observer; signaling only)",
+      "schema": "sipnab-dialog-diagnosis/1",
+      "mediatype": "application/json",
+      "encoding": "json",
+      "body": { "schema_version": 1, "sip_call_id": "test-call-1@10.0.0.1", "final_status_code": 200, "capture_completeness": { "...": "the same object as the attachment above" } }
+    }
+  ]
+}
+```
+
+The container arrives as a JSON object, so `jq` reads straight into it. No
+field holds the whole container as a string for a client to parse a second
+time.
+
+#### What you must not conclude from this container
+
+A sipnab vCon records an **observation**, never a recording. sipnab watched
+these packets go past. It did not place the call, record it, or ask anyone for
+permission to keep the result, and four absences follow from that:
+
+- **No media, and no `url` pointing at media.** The container carries signaling
+  only. An empty `streams` list elsewhere in this API means "no RTP reached
+  this capture", but a vCon says nothing at all about audio.
+- **No signature.** Nothing here carries a JWS. A signature would say sipnab
+  vouches for the contents of the conversation, and sipnab vouches only for
+  what it saw.
+- **No party `name`, ever.** Each party carries `validation: "none"` and a
+  `sip_display_name` at most. What the `From` and `To` headers said is a claim
+  by whoever sent the request, not an identity anyone checked.
+- **No consent record.** Nobody gave sipnab permission for anything, and an
+  empty consent field would read as "none recorded" rather than "never asked".
+
+**Read `capture_completeness.note` before you treat a container as a record of
+the call.** vCon has no field for "this container is an incomplete record", so
+sipnab writes the caveat into two places a consumer walks past: the `analysis`
+body and the `sipnab-capture-completeness` attachment. Both come from one
+value, so they cannot disagree. The note names what this run read and what it
+dropped — messages idle compaction discarded, SIP a port gate refused, blind
+spots the capture analysis ranked — which is the difference between a short
+call and a capture that missed most of one.
+
+Two details worth knowing before you build on the output:
+
+- `dialog[0].type` reaches `"incomplete"` only when sipnab observed a final
+  failure response. sipnab never sets it because the capture missed part of the
+  call, since that would turn a limitation of the tap into an accusation
+  against the traffic.
+- `uuid` stays the same for one dialog however many times you ask for it, so a
+  consumer can deduplicate on it. `created_at` records when sipnab wrote the
+  container and moves on every request. Two captures of the same Call-ID on one
+  node share a `uuid`, because this door knows the call and not the file it
+  came from.
+
+Returns `404` if the Call-ID is not found, and `404` for every Call-ID in a
+build without the `vcon` feature.
+
+---
+
 ### GET /v1/streams
 
 List all tracked RTP streams with quality metrics.

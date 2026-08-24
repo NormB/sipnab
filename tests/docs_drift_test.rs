@@ -2630,7 +2630,15 @@ fn no_documentation_table_repeats_a_row() {
     // `docs/design/backlog.md` -- the ten items and their state. Attributed by
     // measurement before the number moved: that file gained exactly one table
     // separator and design docs have no generated mirror.
-    const EXPECTED_TABLES: usize = 645;
+    // 645 -> 646: one table, in `docs/design/vcon.md` section 4b -- the two
+    // vocabularies that collide on the word "recording", each against what it
+    // means and who emits it. Attributed by measurement before the number
+    // moved: that file went from three table separators to four, every other
+    // page under docs/ and website/content/ held its count, and design docs
+    // have no generated mirror. The vCon REST and TUI surfaces landed in the
+    // same window and added no table of their own: the endpoint reference is
+    // prose plus a JSON block, and the TUI note is prose.
+    const EXPECTED_TABLES: usize = 646;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

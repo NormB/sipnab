@@ -125,8 +125,7 @@ fn every_container_carries_the_two_fields_the_store_requires() {
         },
     );
     let json: serde_json::Value =
-        serde_json::from_str(&vcon.to_json().expect("a container serializes"))
-            .expect("valid JSON");
+        serde_json::from_str(&vcon.to_json().expect("a container serializes")).expect("valid JSON");
 
     let uuid = json["uuid"].as_str().expect("uuid is present and a string");
     // "Must parse as a UUID" is the store's rule, so check the SHAPE rather
@@ -144,7 +143,8 @@ fn every_container_carries_the_two_fields_the_store_requires() {
         "uuid must be hex and dashes: {uuid}"
     );
     assert_eq!(
-        groups[2].as_bytes()[0], b'8',
+        groups[2].as_bytes()[0],
+        b'8',
         "the version nibble must say 8 (UUIDv8): {uuid}"
     );
 

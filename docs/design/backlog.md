@@ -4048,7 +4048,7 @@ name the commit that closed them.
 | `VCON6` | TODO | **User documentation + walkthrough.** Task-first: what a vCon is, why sipnab's is an observer's, how to produce one, and what a consumer must not read into it |
 | `VCON7` | TODO | **Developer documentation.** The shape of the module, where the caveat is duplicated from, and how to add a field without breaking the divergence gate |
 | `VCON8` | TODO | **Make the credential strip load-bearing.** Today it guards a projection that carries no raw headers, so it removes nothing. Either the trace gains a header list and the filter starts working, or the docs stop implying it does |
-| `VCON9` | **ACTIVE** | Phase 2 media. `recording` Dialog Objects, inline base64url only, with a `recording-set` object carrying the call's `start`/`duration` when the ring wrapped — the one in-spec way to say "the file is shorter than the call". Routed to the OBSERVER subject, never a consumer's `recordings` table: see `docs/design/vcon.md` §4b for why the two vocabularies collide on that word |
+| `VCON9` | **ACTIVE** | Phase 2 media. `recording` Dialog Objects, inline base64url only, with a `recording-set` object carrying the call's `start`/`duration` when the ring wrapped — the one in-spec way to say "the file is shorter than the call". Routed to the OBSERVER subject, never a consumer's `recordings` table: see [`docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md) §4b for why the two vocabularies collide on that word |
 | `VCON10` | TODO | Ingress wiring. A consumer now exists, so §6's falsification clock has started. Publishing is unbuilt. Addresses and the scoped token live in an operator's environment and must never enter this repository |
 
 ### The bar these are held to
