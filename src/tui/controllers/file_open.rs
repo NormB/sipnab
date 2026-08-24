@@ -122,15 +122,18 @@ pub(in crate::tui) fn refresh_file_entries(app: &mut App) {
         }
     }
 
-    entries.sort_by(|a, b| match (a.name.as_str(), b.name.as_str()) {
-        ("..", _) => std::cmp::Ordering::Less,
-        (_, "..") => std::cmp::Ordering::Greater,
-        _ => match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    crate::sort::sort_by_dyn(
+        &mut entries,
+        &mut |a, b| match (a.name.as_str(), b.name.as_str()) {
+            ("..", _) => std::cmp::Ordering::Less,
+            (_, "..") => std::cmp::Ordering::Greater,
+            _ => match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            },
         },
-    });
+    );
 
     app.file_open.entries = entries;
     if app.file_open.selected >= app.file_open.entries.len() {

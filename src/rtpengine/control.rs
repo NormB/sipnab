@@ -495,7 +495,7 @@ pub fn parse_query_reply(body: &[u8], call_id: &str) -> anyhow::Result<ControlRe
 
     // A deterministic order, so two runs against the same relay produce the
     // same report and a diff of two reports means something changed.
-    tags.sort_by(|a, b| a.tag.cmp(&b.tag));
+    crate::sort::sort_by_dyn(&mut tags, &mut |a, b| a.tag.cmp(&b.tag));
 
     Ok(ControlReply::Call(CallView {
         call_id: call_id.to_owned(),

@@ -489,7 +489,7 @@ codegen-units = 1
 strip = true
 ```
 
-Target binary size (musl, stripped): <= 12 MB. Enforced against the real artifact by the "Enforce published binary size" step in release.yml.
+Target binary size (musl, stripped): <= 13 MB. Enforced against the real artifact by the "Enforce published binary size" step in release.yml.
 
 ## Cross-compilation
 

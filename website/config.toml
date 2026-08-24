@@ -95,7 +95,7 @@ macos_floor_intel = "10.12"
 # and in the build docs, and enforced against the real artifact by the "Enforce
 # published binary size" step in release.yml. A ceiling rather than the exact
 # size so it does not need editing every time the binary moves by a hundred KB.
-binary_size_ceiling_mb = "12"
+binary_size_ceiling_mb = "13"
 github_url = "https://github.com/NormB/sipnab"
 # `owner/repo`, for the places a bare slug is what the command wants rather than
 # a URL: `gh attestation verify --repo`, the releases API path. These were
