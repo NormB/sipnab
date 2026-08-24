@@ -131,6 +131,40 @@ def parse_call_spans(text):
     return spans
 
 
+# What actually drives a running surface in THIS repository's tests.
+#
+# Each entry is a real client-side idiom, and each is matched on a WHOLE
+# IDENTIFIER rather than as a substring. The substring version of this list was
+# wrong in the worst available way -- quietly, and in the direction of claiming
+# coverage:
+#
+#   * `serve(` matched `observe(`, a local helper in
+#     tests/arrival_order_parity_test.rs that has nothing to do with a server.
+#     That file drives nothing, and every route or tool name it happened to
+#     mention would have been reported as EXERCISED.
+#   * `serve(` also matched `fn tls_flags_fail_fast_and_do_not_serve()`, which
+#     is a test asserting the server did NOT start. tests/api_test.rs does drive
+#     a server, thoroughly -- but the evidence this script cited for it was a
+#     function name saying the opposite, and renaming that one test would have
+#     silently downgraded every REST row in the matrix.
+#
+# `reqwest` was in the list and appears nowhere in the tree, which is the
+# harmless half of the same mistake: a marker nobody can trigger.
+SERVER_DRIVERS = (
+    # REST: the in-tree harness that spawns a real sipnab and speaks HTTP to it.
+    "ApiServer",
+    # REST/metrics: a raw socket against a listening port.
+    "TcpStream",
+    # MCP over stdio: the JSON-RPC method, and the harness that sends it.
+    "tools/call",
+    "call_tool",
+    "call_tool_with_args",
+    "McpSession",
+    # axum's own test path: a router driven in-process without a socket.
+    "oneshot",
+)
+
+
 def drives_server(text):
     """Does this file actually exercise a running surface?
 
@@ -138,19 +172,58 @@ def drives_server(text):
     CLI-shaped checks above cannot see them and every row collapsed to
     `referenced` -- a column that says the same thing about all 45 of them
     tells a reader nothing.
+
+    Whole-identifier matching, for the reason SERVER_DRIVERS records above.
     """
-    return any(
-        m in text
-        for m in ("serve(", "reqwest", "TcpStream", "tools/call", "call_tool")
-    )
+    return any(uses_identifier(text, m) for m in SERVER_DRIVERS)
 
 
-def classify_surface(name, files):
+def uses_identifier(hay, needle):
+    """Does `hay` use `needle` as a whole identifier?
+
+    The same rule tests/surface_parity_test.rs applies, and for the same reason:
+    a substring match reports a coincidence as evidence.
+    """
+    n = len(needle)
+    for i in range(len(hay)):
+        if not hay.startswith(needle, i):
+            continue
+        before = hay[i - 1] if i else ""
+        after = hay[i + n] if i + n < len(hay) else ""
+        if (before.isalnum() or before == "_") or (after.isalnum() or after == "_"):
+            continue
+        return True
+    return False
+
+
+def route_pattern(route):
+    """A regex matching every way a test can write `route`.
+
+    Axum spells a path parameter `{call_id}`; a test writes either its OWN
+    placeholder name -- `format!("/v1/streams/{ssrc}")`, which is the literal
+    text of an inline format argument -- or a concrete value,
+    `"/v1/dialogs/12013223@example"`. Neither is the route string, so matching
+    the route literally reported all three of sipnab's parameterized routes as
+    `defined only` while tests/api_test.rs was driving every one of them.
+
+    Each `{...}` becomes one path segment. The match is anchored on the right by
+    a lookahead for `"` or `?`, so `/v1/dialogs/{call_id}` is NOT credited by a
+    request to `/v1/dialogs/x/report` -- a different route, with its own row.
+    """
+    parts = re.split(r"\{[^}]*\}", route)
+    return re.compile(r'[^"/?]+'.join(re.escape(p) for p in parts) + r'(?=["?])')
+
+
+def classify_surface(name, files, is_route=False):
     """Evidence for a route or a tool: exercised by a test, or only defined."""
     exercised, defined = [], []
+    pattern = route_pattern(name) if is_route else None
     quoted = f'"{name}"'
     for path, text in files.items():
-        if quoted not in text:
+        if pattern is not None:
+            if not pattern.search(text):
+                continue
+        elif quoted not in text:
             continue
         rel = str(path.relative_to(ROOT))
         if rel.startswith("tests/") and drives_server(text):
@@ -309,7 +382,7 @@ def main():
 
     route_rows = []
     for r in routes:
-        tier, where = classify_surface(r, files)
+        tier, where = classify_surface(r, files, is_route=True)
         route_rows.append([f"`{r}`", tier, cite(where)])
 
     tool_rows = []
@@ -363,6 +436,24 @@ The tiers above `parsed` need a human to distinguish "a test names this" from
 "a test would fail if this broke". This generator does not guess at that, and
 no row here should be read as a mutation-checked guarantee unless a person
 put it there.
+
+HTTP routes and MCP tools are not command-line arguments and use their own two
+tiers:
+
+| Tier | Established by | What it proves |
+|---|---|---|
+| `exercised` | the route or tool is named in a test file that also drives a running surface | a test reached it through the door users reach it through |
+| `defined only` | it is named, but nowhere that drives anything | it exists; nothing here reached it |
+
+"Drives a running surface" means the file uses one of a named set of client
+idioms -- the REST test harness, a raw socket, an MCP session, a `tools/call`.
+A route is matched allowing for its path parameters, because a test writes
+`format!("/v1/streams/{{ssrc}}")` or a concrete SSRC where the route says
+`{{id}}`. Both of those rules used to be substring tests, and both were wrong in
+the direction of a wrong answer rather than no answer: `serve(` matched
+`observe(` in a file that drives nothing, and matching a route literally
+reported every parameterized route as `defined only` while the REST test suite
+was driving all of them.
 
 ## Totals
 

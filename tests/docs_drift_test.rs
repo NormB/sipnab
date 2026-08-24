@@ -2584,7 +2584,13 @@ fn no_documentation_table_repeats_a_row() {
     // `GET /v1/streams`. `website/content/docs/{mos-and-codecs,api}.md` are the
     // generated copies. Attributed by measurement before the number moved: those
     // four files gained exactly one each and no other page gained any.
-    const EXPECTED_TABLES: usize = 627;
+    // 627 -> 628: one table, in the generated `docs/design/testing-matrix.md`.
+    // Its "what a tier claims" section described the CLI tiers only, while the
+    // route and tool tables use two tiers of their own (`exercised`,
+    // `defined only`) that the page never defined. Attributed by measurement
+    // before the number moved: that file gained exactly one table separator and
+    // no other page gained any, and design docs have no generated mirror.
+    const EXPECTED_TABLES: usize = 628;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
