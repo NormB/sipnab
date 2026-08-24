@@ -234,6 +234,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/dialogs/{call_id}/report", get(get_dialog_report))
         .route("/v1/streams", get(list_streams))
         .route("/v1/streams/{id}", get(get_stream))
+        .route("/v1/report", get(get_capture_report))
         .route("/v1/stats", get(get_stats))
         .route("/metrics", get(get_metrics))
         .with_state(state)
@@ -946,6 +947,61 @@ async fn get_stream(
 
     let parsed: Value =
         serde_json::from_str(&json_str).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(parsed))
+}
+
+/// `GET /v1/report` — the whole-capture analysis report.
+///
+/// The capture-level view: findings across every dialog and stream, orphaned
+/// media, STUN and ICMP evidence, and what the retention caps shed.
+/// `GET /v1/dialogs/{call_id}/report` answers for one Call-ID; this answers for
+/// the capture. The CLI has had it as `--report` since before either server
+/// existed, and MCP as `get_capture_report`; REST could not answer the question
+/// at all, so a client wanting it had to reimplement the analysis it came here
+/// for.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+///
+/// # Returns
+///
+/// 200 with the analysis object; 401/503 from the guard. Frames read comes from
+/// [`crate::capture::captured_packets`], the same process-global the Prometheus
+/// scrape reports, so the denominator here is the one every other number in the
+/// run is read against.
+///
+/// # Side effects
+///
+/// Holds both store read locks while building the report; mutates the rate
+/// limiter.
+async fn get_capture_report(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, StatusCode> {
+    guard(&state, &headers, addr.ip())?;
+
+    let analysis = {
+        // Dialogs then streams, the order `CaptureState` documents and the
+        // order MCP's `get_capture_report` takes them in, so the two halves of
+        // one analysis describe one store revision -- and so the two doors can
+        // never deadlock against each other.
+        let ds = state.dialog_store.read();
+        let ss = state.stream_store.read();
+        crate::analysis::analyze(&ds, &ss, None, crate::capture::captured_packets())
+    };
+
+    // Serialized from the ANALYSIS, not re-parsed out of a rendered report.
+    // `print_analysis_report_as` looks like it has a JSON arm and does not: its
+    // `format` argument only chooses between markdown headings and plain text,
+    // so `ReportFormat::Json` returns prose. Asking it for JSON and parsing the
+    // result is how this endpoint first returned 500 -- and how MCP's tool of
+    // the same name had been quietly serving text under a `format: "json"`
+    // default, because its parse failure fell through to a text block.
+    let parsed = serde_json::to_value(&analysis).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(parsed))
 }
 
@@ -1947,6 +2003,54 @@ mod tests {
         }
         // 6th should fail
         assert!(!limiter.check(ip));
+    }
+
+    /// `GET /v1/report` answers for the whole capture, and says what it could
+    /// not see.
+    ///
+    /// The per-call route below answers for one Call-ID. This is the view that
+    /// names orphaned media, STUN and ICMP evidence, and what the retention
+    /// caps shed -- the things belonging to no single dialog and therefore
+    /// invisible to every other REST route.
+    ///
+    /// Asserted as STRUCTURED JSON, not a string. The generator returns a
+    /// String and the handler re-parses it; a handler that forgot to would
+    /// still return 200 with a body that looks like JSON to a human and is a
+    /// quoted blob to a parser.
+    #[tokio::test]
+    async fn the_capture_report_is_answerable_over_rest() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/report"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK, "/v1/report status");
+
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert!(
+            parsed.is_object(),
+            "the report must be an object a client can read fields out of, not \
+             a stringified blob it has to parse a second time: {body}"
+        );
+        // The facts that make this a capture-level answer rather than a sum of
+        // per-call ones. `complete` is the honesty flag: a findings list built
+        // from a capture that lost packets is a FLOOR, and a reader who does
+        // not know that reads it as a total.
+        for key in ["dialogs_examined", "streams_examined", "complete"] {
+            assert!(
+                parsed.get(key).is_some(),
+                "`{key}` missing -- the report must say what it looked at and \
+                 whether it saw all of it: {parsed}"
+            );
+        }
+        assert_eq!(
+            parsed["dialogs_examined"], 3,
+            "the report must describe the store it was built from: {parsed}"
+        );
     }
 
     /// `GET /v1/dialogs/:call_id/report` returns 200 with a JSON report

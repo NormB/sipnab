@@ -3606,25 +3606,33 @@ impl SipnabMcp {
             }
         };
 
-        let report = {
+        let analysis = {
             // Dialogs then streams, the order `CaptureState` documents, so the
             // two halves of the analysis describe one store revision.
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
-            let analysis =
-                crate::analysis::analyze(&ds, &ss, None, crate::capture::captured_packets());
-            crate::output::analysis_report::print_analysis_report_as(&analysis, format)
+            crate::analysis::analyze(&ds, &ss, None, crate::capture::captured_packets())
         };
 
         let content = if format == ReportFormat::Json {
-            // Re-parse so the response is structured JSON rather than a
-            // stringified blob, matching `get_dialog_report`.
-            match serde_json::from_str::<serde_json::Value>(&report) {
-                Ok(v) => ContentBlock::json(v)?,
-                Err(_) => ContentBlock::text(report),
-            }
+            // Serialized from the ANALYSIS, not re-parsed out of a rendered
+            // report. `print_analysis_report_as` looks like it has a JSON arm
+            // and does not: its `format` argument only chooses between markdown
+            // headings and plain text, so `ReportFormat::Json` returns prose.
+            //
+            // This asked it for JSON, tried to parse the prose, failed, and
+            // fell through to `ContentBlock::text`. Since `json` is the DEFAULT
+            // format, every agent that called this tool without an argument got
+            // a text blob and no indication that the structure it asked for was
+            // never there. The fallback is gone with it: a serialization
+            // failure here is a bug, and swallowing it is what hid this one.
+            ContentBlock::json(serde_json::to_value(&analysis).map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("report serialization failed: {e}"), None)
+            })?)?
         } else {
-            ContentBlock::text(report)
+            ContentBlock::text(crate::output::analysis_report::print_analysis_report_as(
+                &analysis, format,
+            ))
         };
         Ok(CallToolResult::success(vec![content]))
     }
@@ -8730,6 +8738,59 @@ mod tests {
     /// STUN, ICMP evidence and what the caps shed -- had no MCP path at all.
     /// The test is surface parity: nothing reachable from `--report` should be
     /// unreachable to an agent.
+    /// The default format is `json`, and it returns JSON.
+    ///
+    /// It did not. `print_analysis_report_as` looks like it has a JSON arm and
+    /// does not -- its `format` argument only chooses between markdown headings
+    /// and plain text -- so this tool asked it for JSON, got prose, failed to
+    /// parse the prose, and fell through to a text block. `json` is the DEFAULT,
+    /// so every agent that called this without an argument received a text blob
+    /// with nothing to say the structure it asked for was never there.
+    ///
+    /// The discriminator is the PARSE. `ContentBlock::json` reaches a client as
+    /// a block whose text is JSON, so reading the payload is the same call
+    /// either way -- and before the fix that payload was
+    /// "Capture analysis: 0 finding(s) ...", which `from_str` rejects. A test
+    /// that only checked the payload was non-empty would have passed
+    /// throughout.
+    #[tokio::test]
+    async fn the_default_capture_report_format_is_actually_json() {
+        let server = server_with_one_orphan_and_one_linked();
+
+        let result = server
+            .get_capture_report(Parameters(GetCaptureReportParams { format: None }))
+            .await
+            .expect("report should render");
+
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result))
+            .expect("the default format is json, so the payload must parse as json");
+        assert!(
+            v.is_object(),
+            "the default format is json and must return an object a client can \
+             read fields out of: {v}"
+        );
+        for key in ["dialogs_examined", "streams_examined", "complete"] {
+            assert!(
+                v.get(key).is_some(),
+                "`{key}` missing -- the report must say what it looked at and \
+                 whether it saw all of it: {v}"
+            );
+        }
+
+        // The other formats still render prose, which is what they are for.
+        let text = server
+            .get_capture_report(Parameters(GetCaptureReportParams {
+                format: Some("text".to_string()),
+            }))
+            .await
+            .expect("text report should render");
+        assert!(
+            !text_of(&text).trim().is_empty(),
+            "a capture with no findings still gets a line, because silence is \
+             indistinguishable from the tool not having run"
+        );
+    }
+
     #[tokio::test]
     async fn get_capture_report_answers_for_the_whole_capture() {
         let server = server_with_one_orphan_and_one_linked();

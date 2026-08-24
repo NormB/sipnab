@@ -10,6 +10,29 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **`GET /v1/report` — the whole-capture analysis over REST.** Findings across
+  every dialog and stream, orphaned media, STUN and ICMP evidence, and what the
+  retention caps shed. `GET /v1/dialogs/{call_id}/report` answers for one call;
+  this answers for the capture, and it is the only REST route that can, because
+  orphaned media and shed retention belong to no single dialog. The CLI has had
+  it as `--report` since before either server existed and MCP as
+  `get_capture_report`; a REST client wanting it had to reimplement the analysis
+  it came to sipnab for.
+
+### Fixed
+
+- **`get_capture_report` returned TEXT under its `json` default.**
+  `print_analysis_report_as` looks like it has a JSON arm and does not — its
+  `format` argument only chooses between markdown headings and plain text — so
+  the tool asked for JSON, got prose, failed to parse the prose, and fell
+  through to a text block. Because `json` is the default, every agent that
+  called this tool without an argument received a text blob with nothing to say
+  the structure it asked for was never there. Both doors now serialize the
+  analysis directly, and the silent fallback is gone: a serialization failure
+  there is a bug, and swallowing it is what hid this one.
+
 ## [0.5.124] - 2026-08-24
 
 ### Added
