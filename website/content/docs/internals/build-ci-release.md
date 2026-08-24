@@ -13,7 +13,7 @@ can safely ignore.
 
 ## Features
 
-`Cargo.toml`'s `[features]` table has thirteen entries: the twelve named
+`Cargo.toml`'s `[features]` table has fourteen entries: the thirteen named
 features below, plus `default` — which is `native, tui, audio, metrics`.
 `full` is everything except `wasm` and `bpf`, which is not the whole story of
 what ships.
@@ -51,6 +51,7 @@ included.
 | `mcp-http` | `mcp` + `api` | Streamable-HTTP MCP transport; depends on `api` so both share one axum stack rather than duplicating it. |
 | `plugins` | `native` | The `wasmi` WASM plugin host. **Non-default on purpose** — someone who does not want an interpreter inside their capture tool does not get one. See [`../design/wasm-plugin-api.md`](https://github.com/NormB/sipnab/blob/main/docs/design/wasm-plugin-api.md), which measures the cost at +1.56 MB and 15 crates. |
 | `wasm` | — | The browser analyzer bindings. Lib-only: its test and bin targets are meaningless on the host. |
+| `vcon` | `native` | vCon export: one observed dialog as an unsigned, signaling-only conversation container. **Non-default on purpose** — the stock build gains no conversation-container writer at all. It sits INSIDE `full`, so the pre-commit hook's `cargo test --features full` covers it. sipnab writes the container as an observer: nothing signed, no media, and no party name. |
 | `bpf` | `native` | The eBPF uprobe backend — the only one that can report the peer address a TLS session went out to, because it pairs each write with its `tcp_sendmsg`. **Outside `full`**: the kernel half needs nightly and `bpf-linker`. Shipped on the four `*-linux-gnu` release artifacts, not on musl or macOS. |
 | `full` | everything but `wasm` and `bpf` | What the pre-commit hook and most local testing use. The released gnu binaries add `bpf` on top. |
 
@@ -191,9 +192,11 @@ before committing.
   `cargo fmt --check`, `cargo doc --no-deps --all-features --workspace`, plus
   the `--ignored` PTY TUI end-to-end tests.
 - **`features`** — `cargo check --no-default-features --features X --tests`
-  across twelve feature sets: each of `native`, `tls`, `api`, `mcp`, `hep`,
+  across thirteen feature sets: each of `native`, `tls`, `api`, `mcp`, `hep`,
   `metrics`, then `tls,api`, `native,tui,audio`, `native,tui,tls,hep,api`,
-  `native,hep,api,mcp,mcp-http`, `bpf`, and `wasm` (lib-only). The documented
+  `native,hep,api,mcp,mcp-http`, `bpf`, `vcon`, and `wasm` (lib-only). `vcon`
+  is in `full`, so `--all-features` already builds it; this leg is what proves
+  it also builds without `tui`, `tls`, `api` or `mcp`. The documented
   headless server recipe (`native,hep,api,mcp,mcp-http`) gets a full `cargo
   test`, not just a compile check. `bpf` is here because every published
   `*-linux-gnu` binary carries it: this leg compiles its userspace half and
@@ -339,10 +342,10 @@ That means **every commit runs clippy and the whole test suite** and takes
 minutes. It is not optional theatre: the homepage-count gate alone means adding
 a test obliges you to update [`website/templates/index.html`](https://github.com/NormB/sipnab/blob/main/website/templates/index.html) in the same commit.
 
-Three checks stay out of the hook on purpose: the twelve-combination feature
+Three checks stay out of the hook on purpose: the thirteen-combination feature
 matrix, Vale prose linting, and rustdoc. The hook already costs minutes and
 each of those adds more. [`pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) picks up
-rustdoc and three of the twelve combinations before anything leaves the
+rustdoc and three of the thirteen combinations before anything leaves the
 machine, and CI runs the rest. Moving them into the pre-commit hook buys
 nothing — it is the same wait, on every commit instead of every push.
 
@@ -374,7 +377,7 @@ someone builds without that feature. It has bitten twice — the `features` job
 below records "at one point 7 of 8 reduced combos failed to build", and it
 happened again on the 0.5.61 release commit, where a test reflecting over `Cli`
 (behind `native`) took a whole test target out of every build without it. Three
-combinations, not twelve: `tls` and `api` are the ones that *exclude* `native`,
+combinations, not thirteen: `tls` and `api` are the ones that *exclude* `native`,
 where the breakage lives, and `wasm` is the most distant target. The full matrix
 stays in CI. CI skips a combination the crate does not define, the way the
 fuzz gate skips a missing `fuzz/`.

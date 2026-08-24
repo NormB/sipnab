@@ -18,6 +18,8 @@
 //! - `sink` — buffered stdout sink for batch-mode per-message output
 //! - `synthetic` — synthetic Ethernet/IPv4/UDP packet construction for pcap
 //!   export
+//! - `vcon` — one observed dialog as an unsigned, signaling-only vCon
+//!   container (feature-gated: `vcon`)
 //! - `wireshark` — filter-DSL → Wireshark display-filter translation and
 //!   tshark command generation
 //!
@@ -42,6 +44,8 @@ pub mod prometheus_server;
 pub mod sink;
 pub mod stun_report;
 pub mod synthetic;
+#[cfg(feature = "vcon")]
+pub mod vcon;
 pub mod wireshark;
 
 pub use analysis_report::{print_analysis_report, print_analysis_report_as};

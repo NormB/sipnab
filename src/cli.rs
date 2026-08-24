@@ -193,6 +193,9 @@ fn compiled_features() -> Vec<&'static str> {
     if cfg!(feature = "bpf") {
         out.push("bpf");
     }
+    if cfg!(feature = "vcon") {
+        out.push("vcon");
+    }
     out
 }
 

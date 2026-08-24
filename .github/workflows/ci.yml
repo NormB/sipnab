@@ -434,6 +434,10 @@ jobs:
           # `a_release_build_refuses_to_ship_without_the_kernel_programs`
           # proves the release cannot ship the placeholder.
           - bpf
+          # vCon export. In `full`, so `--all-features` already builds it --
+          # this leg is what proves it still builds WITHOUT tui, tls, api or
+          # mcp, which is the class of break `--all-features` cannot see.
+          - vcon
           - wasm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
