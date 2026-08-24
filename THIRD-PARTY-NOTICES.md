@@ -249,7 +249,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | parking_lot | 0.12.5 | MIT OR Apache-2.0 |
 | parking_lot_core | 0.9.12 | MIT OR Apache-2.0 |
 | pastey | 0.2.2 | MIT OR Apache-2.0 |
-| pcap | 2.4.0 | MIT OR Apache-2.0 |
+| pcap | 2.5.0 | MIT OR Apache-2.0 |
 | pcap-file | 2.0.0 | MIT |
 | pem-rfc7468 | 0.7.0 | Apache-2.0 OR MIT |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 |
@@ -293,8 +293,8 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | regex-automata | 0.4.16 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
-| rmcp | 3.1.2 | Apache-2.0 |
-| rmcp-macros | 3.1.2 | Apache-2.0 |
+| rmcp | 3.1.3 | Apache-2.0 |
+| rmcp-macros | 3.1.4 | Apache-2.0 |
 | rsa | 0.9.10 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
@@ -392,15 +392,15 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | wasm-bindgen-macro | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-macro-support | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-shared | 0.2.117 | MIT OR Apache-2.0 |
-| wasm-encoder | 0.256.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasm-encoder | 0.257.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasmi | 1.1.0 | MIT/Apache-2.0 |
 | wasmi_collections | 1.1.0 | MIT/Apache-2.0 |
 | wasmi_core | 1.1.0 | MIT/Apache-2.0 |
 | wasmi_ir | 1.1.0 | MIT/Apache-2.0 |
 | wasmparser | 0.239.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wasmparser | 0.256.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wast | 256.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wat | 1.256.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasmparser | 0.257.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wast | 257.0.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wat | 1.257.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wezterm-bidi | 0.2.3 | MIT AND Unicode-DFS-2016 |
 | wezterm-blob-leases | 0.1.1 | MIT |
 | wezterm-color-types | 0.3.0 | MIT |

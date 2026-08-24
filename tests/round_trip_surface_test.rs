@@ -52,6 +52,13 @@ fn unmeasured() -> serde_json::Value {
         orphaned: false,
         associated_dialog: None,
         mos: 4.4,
+        // PCMU above, so the score is a published estimate. Spelled out rather
+        // than defaulted: this suite hand-builds a summary, and a fixture that
+        // silently claimed a grounding it had not thought about is how the
+        // round-trip keys would come to be tested against an impossible row.
+        mos_grounded: true,
+        mos_grounding: "published".into(),
+        mos_note: None,
         frame: None,
         round_trip_ms: None,
         round_trip_source: None,
@@ -108,6 +115,13 @@ fn a_measured_round_trip_carries_its_provenance() {
         orphaned: false,
         associated_dialog: None,
         mos: 4.4,
+        // PCMU above, so the score is a published estimate. Spelled out rather
+        // than defaulted: this suite hand-builds a summary, and a fixture that
+        // silently claimed a grounding it had not thought about is how the
+        // round-trip keys would come to be tested against an impossible row.
+        mos_grounded: true,
+        mos_grounding: "published".into(),
+        mos_note: None,
         frame: None,
         round_trip_ms: None,
         round_trip_source: None,
@@ -155,6 +169,13 @@ fn a_measured_zero_is_reported_rather_than_hidden() {
         orphaned: true,
         associated_dialog: None,
         mos: 4.4,
+        // PCMU above, so the score is a published estimate. Spelled out rather
+        // than defaulted: this suite hand-builds a summary, and a fixture that
+        // silently claimed a grounding it had not thought about is how the
+        // round-trip keys would come to be tested against an impossible row.
+        mos_grounded: true,
+        mos_grounding: "published".into(),
+        mos_note: None,
         frame: None,
         round_trip_ms: None,
         round_trip_source: None,

@@ -160,8 +160,13 @@ step "vale (CI-pinned version)"
 # runners. `degraded` and not `ok` for return 2: under PREFLIGHT_STRICT=1 --
 # the DEFAULT whenever stdout is not a tty, so a log file, a CI job or an agent
 # -- that sets FAILED=1, because a gate that could not run must not read green.
-prose_vale_run
-case $? in
+# `&& rc=0 || rc=$?`, matching .githooks/pre-commit and .githooks/pre-push.
+# This script runs without `set -e`, so a bare call would survive here today --
+# and would start dying silently the moment someone added it, which is exactly
+# how the hooks lost their vale output. One spelling, everywhere, so the
+# difference cannot come back.
+prose_vale_run && prose_rc=0 || prose_rc=$?
+case $prose_rc in
 0)
     ok
     ;;
@@ -205,8 +210,8 @@ _root=$(git rev-parse --show-toplevel 2>/dev/null) &&
 . "$PROSE_LIB"
 step "codespell"
 # Paths and resolution from scripts/prose-gates.sh, as above.
-prose_codespell_run
-case $? in
+prose_codespell_run && prose_rc=0 || prose_rc=$?
+case $prose_rc in
 0)
     ok
     ;;

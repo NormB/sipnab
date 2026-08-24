@@ -150,10 +150,27 @@ pub fn render_stream_detail(
     // word it differently from the next one.
     let delay_note = format!("delay {one_way:.0}ms {}", delay_src.label());
 
+    // What that number MEANS, in the vocabulary the enum owns rather than one
+    // this view invents. sipnab returns the same digits for a grounded G.711
+    // score and for a codec nobody publishes an impairment value for, where the
+    // number is a placeholder standing in for "unknown" -- so the terminal has
+    // to say which it is, for the same reason RTT above renders `n/a` instead
+    // of 0. REST and MCP carry this as `mos_grounded`/`mos_grounding`; an
+    // operator at the terminal is looking at the same stream.
+    let grounding = crate::rtp::quality::mos_grounding(stream.codec.as_deref());
+    let grounded = crate::rtp::quality::mos_is_grounded(stream.codec.as_deref());
+
     let mos_band = MosBand::of(mos, quality_bands);
-    let mos_style = Style::default()
-        .fg(mos_band.color(theme))
-        .add_modifier(Modifier::BOLD);
+    // A band color on a placeholder is the lie in its most convincing form: it
+    // paints "unknown" bold green and calls it Good. Ungrounded scores render
+    // muted, so the color says what the number is worth.
+    let mos_style = if grounded {
+        Style::default()
+            .fg(mos_band.color(theme))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.muted)
+    };
     let mos_label = mos_band.label();
 
     lines.push(section_header("Quality", theme));
@@ -161,6 +178,18 @@ pub fn render_stream_detail(
     lines.push(Line::from(vec![
         Span::raw("  MOS: "),
         Span::styled(format!("{mos:.1} ({mos_label})"), mos_style),
+        // Short enough for the triage row; the sentence behind it is on the
+        // APIs as `mos_note`. Empty for a published score, which needs no
+        // caveat -- a reassurance here would train the eye to skip the field
+        // on the two occasions it carries a warning.
+        Span::styled(
+            match grounding {
+                crate::rtp::quality::MosGrounding::Published => "",
+                crate::rtp::quality::MosGrounding::OperatorDeclared => " operator Ie",
+                crate::rtp::quality::MosGrounding::Unpublished => " no published Ie",
+            },
+            Style::default().fg(theme.muted),
+        ),
         Span::raw("    Jitter: "),
         Span::styled(
             format!("{:.1}ms", stream.jitter),

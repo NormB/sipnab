@@ -1682,7 +1682,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `tail_dialogs` | `DialogStore::iter` filtered by `updated_at > cursor` |
 | `security_findings` | `security::AlertEngine` history (extend with ring buffer) |
 | `snapshot_pcap` | `capture::PcapWriter` + filter on captured packets |
-| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:952`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L952)) |
+| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:981`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L981)) |
 
 | Phase 8 infra | Reuses |
 |---|---|

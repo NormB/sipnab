@@ -748,8 +748,12 @@ else
 . "$PROSE_LIB"
 
 printf '  vale (prose style) ... '
-prose_vale_run
-case $? in
+# See the note in .githooks/pre-commit: `set -eu` is on, so a bare
+# `prose_vale_run` returning the CONTRACT's 1 killed the hook before the `case`
+# that renders the findings. A blocked push with no reason printed is worse than
+# no gate at all -- the next move is a guess.
+prose_vale_run && prose_rc=0 || prose_rc=$?
+case $prose_rc in
 0)
 	printf '%bOK%b\n' "$GREEN" "$NC"
 	;;
@@ -767,8 +771,9 @@ esac
 rm -f "$PROSE_OUTPUT"
 
 printf '  codespell (spelling) ... '
-prose_codespell_run
-case $? in
+# Same shape as vale above, and it failed the same way.
+prose_codespell_run && prose_rc=0 || prose_rc=$?
+case $prose_rc in
 0)
 	printf '%bOK%b\n' "$GREEN" "$NC"
 	;;

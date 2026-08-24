@@ -681,6 +681,81 @@ grep -q 'if ! UNWRAP_OUT=\$(python3 scripts/check-unwrap.py' "$HOOK" \
 	&& ok "hook reads the scanner's exit status" \
 	|| bad "hook must branch on the scanner's exit status, not parse its output"
 
+# ── Scenario 7: a prose gate that FINDS something says what it found ───────
+# The regression: `set -e` is on, `prose_vale_run` is a simple command, and the
+# CONTRACT in scripts/prose-gates.sh has it return 1 for "the tool ran and found
+# something". `set -e` therefore killed the hook on that return -- BEFORE the
+# `case $?` written to render it -- and before the `rm -f "$PROSE_OUTPUT"` that
+# would at least have left the findings on disk. What an operator saw was the
+# literal string `  Vale... ` and exit 1: no findings, no file names, no
+# "Commit blocked" line, and nothing to distinguish a prose failure from a hook
+# that crashed. Measured 2026-08-24 against the real hook.
+#
+# Both gates are exercised, because they are two copies of one shape and the
+# first fix touched only one of them.
+prose_sandbox() { # prose_sandbox <vale-exit> <codespell-exit>; echoes the dir
+	_p=$(sandbox 100)
+	mkdir -p "$_p/.github/workflows" "$_p/.config"
+	cp "$REPO_ROOT/scripts/prose-gates.sh" "$_p/scripts/"
+	# The pin the stub below must match. prose_vale_pin() reads it from here,
+	# and a mismatch is return 2 (NOT CHECKED), which is neither arm under test.
+	printf "env:\n  VALE_VERSION: '9.9.9'\n" > "$_p/.github/workflows/quality.yml"
+	echo 'docs' > "$_p/.config/vale-paths.txt"
+	echo 'docs' > "$_p/.config/codespell-paths.txt"
+	mkdir -p "$_p/docs"
+	echo 'Some prose.' > "$_p/docs/page.md"
+
+	cat > "$_p/bin/vale" <<-EOF
+		#!/bin/sh
+		case "\$1" in --version) echo "vale version 9.9.9"; exit 0 ;; esac
+		echo "docs/page.md:1:1  error  A findable prose problem  Some.Rule"
+		exit $1
+	EOF
+	cat > "$_p/bin/codespell" <<-EOF
+		#!/bin/sh
+		echo "docs/page.md:1: a findable spelling problem"
+		exit $2
+	EOF
+	chmod +x "$_p/bin/vale" "$_p/bin/codespell"
+	( cd "$_p" && git add -A && git commit -qm prose )
+	echo "$_p"
+}
+
+D=$(prose_sandbox 1 0)
+run_hook "$D"
+if printf '%s' "$HOOK_OUT" | grep -q 'A findable prose problem'; then
+	ok "a vale finding reaches the operator instead of dying with set -e"
+else
+	bad "vale found something and the hook printed nothing about it: $HOOK_OUT"
+fi
+if [ "$HOOK_RC" -ne 0 ] && printf '%s' "$HOOK_OUT" | grep -q 'Commit blocked'; then
+	ok "a vale finding blocks the commit, and says so"
+else
+	bad "a vale finding must block and name itself; rc=$HOOK_RC out: $HOOK_OUT"
+fi
+rm -rf "$D"
+
+D=$(prose_sandbox 0 1)
+run_hook "$D"
+if printf '%s' "$HOOK_OUT" | grep -q 'a findable spelling problem'; then
+	ok "a codespell finding reaches the operator too"
+else
+	bad "codespell found something and the hook printed nothing about it: $HOOK_OUT"
+fi
+rm -rf "$D"
+
+# The clean arm, so the two above are not passing because the hook prints
+# everything unconditionally: with both tools silent the gate must say OK and
+# carry on to the gates after it.
+D=$(prose_sandbox 0 0)
+run_hook "$D"
+if printf '%s' "$HOOK_OUT" | grep -q 'Vale... .*OK'; then
+	ok "a clean tree passes the prose gates rather than reporting a finding"
+else
+	bad "a clean prose run must render OK: $HOOK_OUT"
+fi
+rm -rf "$D"
+
 printf '\n%d passed, %d failed, %d skipped (host: %s)\n' \
 	"$PASS" "$FAIL" "$SKIP" "$(uname -s)"
 if [ "$SKIP" -ne 0 ]; then

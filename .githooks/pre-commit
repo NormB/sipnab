@@ -117,8 +117,19 @@ else
 . "$PROSE_LIB"
 
 echo -n "  Vale... "
-prose_vale_run
-case $? in
+# `set -e` is on, and a bare `prose_vale_run` is a simple command: a return of 1
+# -- the CONTRACT's "the tool ran and found something" -- killed the hook right
+# here, BEFORE the `case` that renders it. The operator saw `Vale... ` and exit
+# 1, with the findings written to $PROSE_OUTPUT and then never read. A gate that
+# blocks a commit without naming what it found is the "empty output is not
+# evidence" shape, in the gate itself.
+#
+# `&& rc=0 || rc=$?` puts the call in a compound list, where `set -e` is
+# suspended, and keeps all three contract values apart -- which a plain
+# `if prose_vale_run` would collapse, turning "vale is not installed" into a
+# FAIL. Every call of a CONTRACT runner in this repository is spelled this way.
+prose_vale_run && prose_rc=0 || prose_rc=$?
+case $prose_rc in
 0) echo -e "${GREEN}OK${NC}" ;;
 1)
     echo -e "${RED}FAIL${NC}"
@@ -131,8 +142,9 @@ esac
 rm -f "$PROSE_OUTPUT"
 
 echo -n "  Codespell... "
-prose_codespell_run
-case $? in
+# Same shape as vale above, and it failed the same way.
+prose_codespell_run && prose_rc=0 || prose_rc=$?
+case $prose_rc in
 0) echo -e "${GREEN}OK${NC}" ;;
 1)
     echo -e "${RED}FAIL${NC}"
