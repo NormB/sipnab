@@ -3928,7 +3928,9 @@ belongs to. This page fixes that.
 has media and nothing to name it with. rtpengine knows the name — its `ng`
 control protocol carries the Call-ID and the ports it allocated — and it can
 already mirror that control plane to a Homer collector. sipnab reads that
-mirror and ties the media to the call.
+mirror and ties the media to the call. A call that was already up when the
+capture opened left no control message for the mirror to carry, so
+`--rtpengine-control` asks the relay for that one directly.
 
 ## The problem, on a real capture
 
@@ -3992,6 +3994,11 @@ Read down the first column and stop at the first row you can satisfy.
 | rtpengine reports nowhere yet | Turn on `--homer-enable-ng`, point it anywhere sipnab can see | Yes, once | The destination can be a collector, or a host that discards the traffic |
 | You need it delivered rather than sniffed | `--hep-listen` on sipnab, point rtpengine at it | Yes | Costs you the collector — see the warning below |
 
+Every row here covers control messages that cross the wire while sipnab
+runs. None of them reaches a call the relay set up before the capture
+opened. For that, add `--rtpengine-control`, which asks the relay and runs
+alongside whichever row you picked.
+
 **rtpengine takes exactly one Homer destination.** `--homer` is a single
 value, not a repeatable option, so "send to the real collector and to sipnab"
 does not exist. Anything that points rtpengine at sipnab takes it away from
@@ -4007,7 +4014,7 @@ Nothing to configure. Capture on the relay host and sipnab decodes the
 control plane it sees:
 
 ```sh
-sudo sipnab -i eth0
+sudo sipnab -d eth0
 ```
 
 Confirm rtpengine is mirroring the control plane and not only RTCP stats:
@@ -4044,7 +4051,7 @@ each relay a distinct one.
 Place one call through the relay, then check that sipnab saw control traffic:
 
 ```sh
-sudo sipnab -i eth0 --report
+sudo sipnab -N -d eth0 --report
 ```
 
 A working setup names the call under **Calls named by a media relay**. If it
@@ -4075,6 +4082,132 @@ In the deployment this targets, that something is your real Homer collector,
 which is already there. If you are testing without one, run any UDP sink at
 the address. The harness ships one for exactly this reason — see
 `harness/hep-sink`.
+
+## Name a call that was already up when you started
+
+Everything above reads the control plane off the wire, so it names the calls
+whose `offer` crossed that wire while sipnab was running. Incident response
+rarely starts that way. You attach to a relay because something is wrong
+now, and the calls you care about went up minutes or hours ago — their
+`offer` happened in the past, no capture can recover it, and their media
+lands in the orphan list.
+
+`--rtpengine-control` closes that gap by asking the relay. Give it the
+address rtpengine's ng control socket listens on — its `listen-ng` value.
+Same host first:
+
+```sh
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --report
+```
+
+A relay on its own host answers the same question over the network:
+
+```sh
+sudo sipnab -N -d eth0 --rtpengine-control 10.0.0.40:22222 --report
+```
+
+`-N` earns its place in both. sipnab writes these summaries as log lines on
+stderr, and the TUI silences logs to keep the alternate screen intact.
+
+sipnab asks at two moments and no others: once at startup, before the
+capture opens, and again when a stream turns up that nothing else explains.
+There is no interval flag because there is no timer. A tool that talks to a
+production relay on a schedule is a service, and this is a diagnostic.
+
+### What you see when it works
+
+The startup question happens before the first packet, so its answer comes
+first. Against rtpengine 12.5.1:
+
+```text
+rtpengine at 127.0.0.1:22222: 2 call(s) enumerated, complete; queried 2 of them, 8 relay port(s) now attributable
+```
+
+Read it in three parts. **Enumerated, complete** means the relay listed
+everything it held rather than capping the answer. **Queried 2 of them** is
+one `query` per call, which is the only command that says which relay-side
+port belongs to which call. **8 relay ports now attributable** is the index
+sipnab keeps for the rest of the run: media on any of those eight sockets
+takes its Call-ID from memory and costs the relay nothing further.
+
+Streams the relay accounts for stop orphaning. A call whose own signaling
+never appears in the capture — the whole reason for asking — lands under
+**Calls named by a media relay**, the same heading the mirrored control
+plane fills.
+
+The second summary arrives when the capture ends:
+
+```text
+rtpengine at 127.0.0.1:22222: 2 unexplained stream(s) offered, 0 attributed, 4 control transaction(s) spent of a ceiling of 66
+```
+
+The capture path handed two streams to the asking thread, neither of them
+gained a Call-ID, and the run spent four control transactions of the 66 it
+may spend. A count of zero with no reason line beside it is the honest
+answer rather than a failure: the relay answered and holds neither port, so
+that media belongs to something else on the host.
+
+### What it refuses
+
+Reading a file, sipnab refuses to ask, and says why:
+
+```sh
+sipnab -N -I capture.pcap --rtpengine-control 127.0.0.1:22222
+```
+
+```text
+--rtpengine-control 127.0.0.1:22222 asks a live relay which calls are up
+right now, but this run is reading a capture FILE — offline analysis never
+transmits. The calls in a file ended in the past; the relay's answer would
+describe whatever is up TODAY, which is other people's traffic. Passive
+decoding of any relay control plane already in the capture still runs;
+capture live with -d <device> to ask.
+```
+
+The analysis still runs and still exits 0. What the run loses is the ask,
+and it says so before the capture opens rather than looking like a run that
+asked and learned nothing.
+
+The two questions sipnab can put to a relay are `list` and `query`, and
+that is a property of the type reaching the relay rather than a convention.
+ng also carries `offer`, `answer`, `delete` and `start recording`, each of
+which changes a production relay. None of them has a representation on this
+path, so no call site reaches one by accident.
+
+Three bounds hold the asking down, and none of them grows with how much
+traffic the capture carries:
+
+- sipnab asks about each relay-side socket at most once for the whole run,
+  so a stream that stays unexplained does not re-ask on every packet.
+- A per-run ceiling caps control transactions at 66 — one `list` plus a
+  `query` per call at rtpengine's own list limit of 32, twice over. Enough
+  for a full startup snapshot and one comparable refresh, and no more.
+- The queue handing sockets from the capture path to the asking thread is
+  bounded, so a slow relay cannot grow it.
+
+When a bound bites, sipnab counts it and says so. The asking runs on its
+own thread, so the packet path offers a socket and moves on rather than
+waiting out a round trip to a relay that may be down.
+
+### Read a run that attributed nothing
+
+"Nothing came back" has five meanings, and sipnab keeps them apart rather
+than collapsing them into one shrug:
+
+- **The relay did not answer, or refused the question.** sipnab knows
+  nothing about the port.
+- **The relay named calls sipnab could not read.** The port may belong to
+  one of those.
+- **The relay capped its own enumeration.** The list came back partial, so
+  the port may belong to a call the relay never named.
+- **The run spent its transaction ceiling.** sipnab never asked about the
+  port at all.
+- **The relay does not hold the port.** This one, and only this one, says
+  something about the relay: the stream is not its media.
+
+The first four are gaps in what sipnab learned. Reporting any of them as
+the fifth would turn a run that never reached the relay into a run that
+asked and heard the stream belongs to nobody.
 
 ## What rtpengine's forwarding mode changes
 
@@ -4109,17 +4242,24 @@ Stated here rather than discovered later.
 - **It does not attribute recording or forking streams.** Those commands
   create media that belongs to the call without being one of its two legs, and
   counting one as an ordinary leg would turn a two-party call into a
-  three-stream one. sipnab counts them and says so instead.
-- **It does not name a call that started before the capture did.** A control
-  message that already happened never reaches the wire, so sipnab cannot read
-  it. Asking rtpengine directly closes that gap, and RE4 tracks that work.
+  three-stream one. sipnab counts them and says so instead: `--report`
+  prints **Media-creating relay commands seen** with the count, beside the
+  relay-named calls, and their media joins the orphaned streams where the
+  capture holds it.
+- **It does not name a call that started before the capture did, from the
+  wire alone.** A control message that already happened never reaches the
+  wire, so no capture can recover it. Give `--rtpengine-control` and sipnab
+  asks the relay instead, which closes the gap on a live run. Without the
+  flag, or on an `-I <file>` run where sipnab refuses to ask, their media
+  stays in the orphan list.
 
 ## Where this is going: the next phase
 
 **None of this section describes what sipnab does today.** What this page
 documents above is one hop naming its own media, proven against a recorded
-capture. This section states what that foundation exists FOR, so the next
-phase aims at a goal rather than at whatever comes next.
+capture and against a live relay. This section states what that foundation
+exists FOR, so the next phase aims at a goal rather than at whatever comes
+next.
 
 The goal is a call that crosses an SBC, a proxy, an rtpengine and a PBX,
 assembled end to end, so that an operator can ask a question in their own
@@ -6659,9 +6799,9 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sipnab -N -I capture.pcap --max-streams 100000` — batch-analyze RTP streams with a raised stream cap. The statistics arrive once, when the capture ends
 - `sipnab -N -I long-call.pcap --max-lost-sequences 100000 --json-dialogs --no-cli-print` — keep every loss from a half-hour call that an operator escalated, so the Packet Loss Map covers the whole call and the burst count is the real one rather than the tail's
 - `sudo sipnab -d eth0 --max-lost-sequences 200` — watch a busy trunk on a small box, holding a fifth of the shipped loss history per stream; the map still shows where loss is landing right now and marks itself truncated
-- `sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:2223` — start capturing on a proxy that shares a host with rtpengine, and ask the relay once, at startup, which calls are already up. Streams whose offer happened before sipnab started get a Call-ID, where otherwise sipnab would report them as orphans
-- `sudo sipnab -d eth0 --rtpengine-control 192.0.2.50:2223 --max-streams 10000` — the relay on its own host: same question, over the network to its ng control port. sipnab sends only `list` and `query`, and asks again only when a stream turns up that the signaling does not explain — each socket once, under a ceiling it reports when it reaches
-- `sipnab -N -I capture.pcap --rtpengine-control 127.0.0.1:2223` — refused, and says so: reading a file, sipnab never transmits, and the relay's answer would describe today's calls rather than the capture's
+- `sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222` — start capturing on a proxy that shares a host with rtpengine, and ask the relay once, at startup, which calls are already up. Streams whose offer happened before sipnab started get a Call-ID, where otherwise sipnab would report them as orphans
+- `sudo sipnab -N -d eth0 --rtpengine-control 192.0.2.50:22222 --max-streams 10000` — the relay on its own host: same question, over the network to its ng control port. sipnab sends only `list` and `query`, and asks again only when a stream turns up that the signaling does not explain — each socket once, under a ceiling it reports when it reaches
+- `sipnab -N -I capture.pcap --rtpengine-control 127.0.0.1:22222` — refused, and says so: reading a file, sipnab never transmits, and the relay's answer would describe today's calls rather than the capture's
 
 
 ## Diagnosis thresholds
@@ -6752,7 +6892,7 @@ report a healthy network in the middle of an outage.
 | `--kill-response` | `<CODE>` | `200` | SIP response code for the kill response (100-699) |
 | `-K`, `--kill-target` | `<ADDR[:PORT-RANGE]>` | -- | Targeted kill (sipgrep `-K`): send the kill response to any SIP request whose source matches ADDR and an optional port range (`192.0.2.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection. Repeatable; spawns the kill worker on its own (no `--kill-scanner` needed) |
 | `--kill-spoof` | `<MODE>` | `auto` | Source-address strategy for the kill response (Linux only; other platforms always `ephemeral`). `auto` forges the victim's ip:port via a raw socket when `CAP_NET_RAW` is available (so the reply appears to come from the targeted SIP port), falling back to an ephemeral source otherwise; `raw` requires the spoof and errors when it cannot open the raw socket; `ephemeral` never spoofs |
-| `--kill-rate-limit` | `<N>` | `10` | Scanner-kill responses per second sipnab may put on the wire. This bounds the one feature that transmits, and the sender of each packet sipnab answers chose the address that answer goes to, so there is no unlimited setting and sipnab rejects `0`. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. Config: `[security] kill_rate_limit` |
+| `--kill-rate-limit` | `<N>` | `10` | Scanner-kill responses per second sipnab may put on the wire. This bounds the one feature that answers an address out of the capture, and the sender of each packet sipnab answers chose the address that answer goes to, so there is no unlimited setting and sipnab rejects `0`. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. Config: `[security] kill_rate_limit` |
 | `--fraud-detect` | -- | off | Enable fraud detection heuristics |
 | `--business-hours` | `<START-END>` | -- | Business hours in whole UTC hours, for example `8-18`, or `22-6` for an overnight window. This is what makes the off-hours fraud detection reachable: with no window declared there is no outside for a call to fall in. Needs `--fraud-detect`. Config: `[security] business_hours` |
 | `--fraud-short-call` | `<SECS>` | `3` | Measured duration below which `--fraud-detect` counts a completed call as short for wangiri detection. Three seconds is under a normal ring-no-answer on some carriers. Config: `[security] fraud_short_call_secs` |
@@ -9373,7 +9513,7 @@ Security detection defaults.
 | `alert` | array of strings | `[]` | Alert channels: `"syslog"`, `"json"`, `"exec"` |
 | `alert_exec` | string | -- | Command to execute on alert |
 | `reg_flood_threshold` | integer | `50` | REGISTER requests per second from one source before `--reg-flood` reports a flood. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets, and it fires all through a re-REGISTER storm on a registrar that just restarted. `--reg-flood-threshold` overrides it. `0` fails validation and names the key |
-| `kill_rate_limit` | integer | `10` | Scanner-kill responses per second sipnab may put on the wire. This bounds the one feature that transmits, and whoever forged the source address chose where each response goes, so there is no unlimited setting and `0` fails validation. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. `--kill-rate-limit` overrides it |
+| `kill_rate_limit` | integer | `10` | Scanner-kill responses per second sipnab may put on the wire. This bounds the one feature that answers an address out of the capture, and whoever forged the source address chose where each response goes, so there is no unlimited setting and `0` fails validation. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. `--kill-rate-limit` overrides it |
 | `business_hours` | string | -- | Business hours as `"START-END"` in whole UTC hours, for example `"8-18"`. A wrapping range such as `"22-6"` is the overnight window. This is what makes the off-hours fraud detection reachable: with no window declared there is no outside for a call to fall in. `--business-hours` overrides it |
 | `fraud_short_call_secs` | integer | `3` | Measured call duration below which `--fraud-detect` counts a completed call as short for wangiri detection. Three seconds is under a normal ring-no-answer on some carriers, which reports ordinary unanswered calls as lures. `--fraud-short-call` overrides it |
 | `fraud_wangiri_calls` | integer | `3` | Short calls to one destination prefix before `--fraud-detect` reports wangiri. `--fraud-wangiri-calls` overrides it |
@@ -19132,8 +19272,11 @@ capture thread(s)              │                          │
     ├── metrics-server thread          app::servers::start_servers
     │     raw std::net::TcpListener accept loop + one short-lived
     │     metrics-conn thread per scrape
-    └── DNS resolver thread            app::build_resolver
-          std::mpsc queue; spawned only when reverse DNS is enabled
+    ├── DNS resolver thread            app::build_resolver
+    │     std::mpsc queue; spawned only when reverse DNS is enabled
+    └── rtpengine reconciler           app::relay_reconciler::spawn
+          bounded hand-off queue; starts only when --rtpengine-control
+          names a relay on a live run
 
   batch mode only
     └── scanner-kill worker            process_isolation::spawn_scanner_kill_worker
@@ -19141,21 +19284,22 @@ capture thread(s)              │                          │
 ```
 
 The mode column above is the part to keep true, and it is worth saying why.
-An earlier revision of this diagram drew all four auxiliary threads as
-children of the TUI event loop. Not one of them is: both run modes start three
-of them, and batch alone starts the scanner-kill worker. That is not a cosmetic
-error — `--metrics` really did ship wired to the TUI path alone, so every
+An earlier revision of this diagram drew every auxiliary thread as a child of
+the TUI event loop. Not one of them is: both run modes start four of them, and
+batch alone starts the scanner-kill worker. That is not a cosmetic error —
+`--metrics` really did ship wired to the TUI path alone, so every
 headless `-N` deployment (which is every container and systemd unit) got no
 metrics at all, and this page said nothing that would have contradicted it.
 A diagram that groups threads by *who spawns them* rather than by *which mode
 runs them* reads as reassurance and hides exactly that class of defect.
 
-The three spawn sites, none of which is the TUI event loop:
+The four spawn sites, none of which is the TUI event loop:
 [`start_servers()`](../../src/app/servers.rs) for the server runtime and the
 metrics listener, [`build_resolver()`](../../src/app/mod.rs) for the reverse-DNS
-worker, and
-[`spawn_scanner_kill_worker()`](../../src/process_isolation.rs) for the
-kill worker.
+worker, [`spawn_scanner_kill_worker()`](../../src/process_isolation.rs) for the
+kill worker, and
+[`relay_reconciler::spawn()`](../../src/app/relay_reconciler.rs) for the
+rtpengine reconciler.
 
 The Prometheus listener is **not** a task on the shared tokio runtime, and the
 distinction matters when reasoning about blocking: it is a raw
@@ -19190,7 +19334,8 @@ well as in the TUI. `TUI` and `batch` mean it does not.
 | `metrics-server` | both | [`output/prometheus_server.rs`](../../src/output/prometheus_server.rs) | Raw TCP accept loop for Prometheus scrapes. |
 | `metrics-conn` | both | [`output/prometheus_server.rs`](../../src/output/prometheus_server.rs) | One short-lived thread per accepted scrape, capped at 16 concurrent. |
 | `sipnab-dns` | both | [`names.rs`](../../src/names.rs) | Reverse-DNS resolver draining an `std::sync::mpsc` queue so the render path never blocks on a lookup. Starts only when the run turns reverse DNS on. |
-| `scanner-kill` | batch | [`process_isolation.rs`](../../src/process_isolation.rs) | Isolated worker that transmits kill responses; the only thread allowed to send. `--kill-scanner` has no TUI path. |
+| `scanner-kill` | batch | [`process_isolation.rs`](../../src/process_isolation.rs) | Isolated worker that transmits kill responses — the only thread that answers an address the capture supplied. `--kill-scanner` has no TUI path. |
+| `rtpengine-reconcile` | both | [`app/relay_reconciler.rs`](../../src/app/relay_reconciler.rs) | Asks an rtpengine relay which calls it holds, over the relay's read-only `list` and `query`, so a stream the signaling does not explain still gets a Call-ID. Starts only when `--rtpengine-control` names a relay on a live run, and keeps the round trip off the packet path. |
 | `pcap-load` | TUI | [`tui/controllers/file_open.rs`](../../src/tui/controllers/file_open.rs) | Loads a pcap chosen from inside the TUI, writing the live stores. |
 | `clipboard` | TUI | [`tui/clipboard.rs`](../../src/tui/clipboard.rs) | Holds the X11/Wayland selection alive after a copy without stalling the UI. |
 | `crash-probe` | tests | [`crash.rs`](../../src/crash.rs) | **Not a production thread.** Only `mod tests` spawns this name, to prove the panic hook records a thread name. It appears in no shipped backtrace. This row exists so the next reader who greps the name does not re-add it as one. |
@@ -19308,6 +19453,7 @@ flow's packets share a host pair and therefore a worker.
 | `--cores` reader → workers, file input | crossbeam `bounded::<Vec<Packet>>(64)` carrying batches of 128 ([`run_offline_parallel_file()`](../../src/parallel.rs)) — same ~8192 in-flight packet cap, one channel hop per 128 packets instead of per packet |
 | `--cores` per-file reader → dispatcher, multi-file input | crossbeam `bounded` carrying one batch per item ([`shard_set_parallel()`](../../src/parallel.rs)). The queue depth is not the bound that matters: `READ_AHEAD_BYTES` caps in **bytes** how far a LATER file's reader may run ahead of the file the dispatcher holds, because a batch is 128 packets of any size and the default snaplen is 65535 |
 | scanner-kill request / response | crossbeam `bounded(256)` in each direction ([`process_isolation.rs`](../../src/process_isolation.rs)) |
+| packet path → rtpengine reconciler | `std::sync::mpsc::sync_channel(1024)` ([`orphan_channel()`](../../src/rtpengine/reconcile.rs)) — the capture path offers a relay-side socket and never waits on it: a full queue drops the offer and counts it, because stalling packet processing on a relay round trip is the trade `--rtpengine-control` exists to avoid |
 | DNS resolve queue | `std::sync::mpsc` ([`names.rs`](../../src/names.rs)) |
 | inside api/mcp servers | tokio (axum/rmcp internals) |
 
@@ -19779,9 +19925,10 @@ with that cost stated.
 |---|---|
 | [`src/rtpengine/bencode.rs`](../../src/rtpengine/bencode.rs) | Bencode decoder. Borrowed values, depth-limited, hostile-input facing |
 | [`src/rtpengine/ng.rs`](../../src/rtpengine/ng.rs) | Cookie/body split, command classification, field extraction |
-| [`src/rtpengine/control.rs`](../../src/rtpengine/control.rs) | The two read-only requests, their replies, and the client that carries them |
-| [`src/rtpengine/reconcile.rs`](../../src/rtpengine/reconcile.rs) | The two moments sipnab asks, the port index, and the bounds that keep asking from becoming polling |
+| [`src/rtpengine/control.rs`](../../src/rtpengine/control.rs) | `list` and `query`, their reply parsers, and the UDP client that carries them |
+| [`src/rtpengine/reconcile.rs`](../../src/rtpengine/reconcile.rs) | The two moments sipnab asks, the port index, the bounds that keep asking from becoming polling, and the hand-off the capture path offers to |
 | [`src/rtpengine/mod.rs`](../../src/rtpengine/mod.rs) | `sdp_links_from_ng`, the bridge into the existing SDP linking |
+| [`src/app/relay_reconciler.rs`](../../src/app/relay_reconciler.rs) | The thread that drains the hand-off and does the asking |
 
 The decoder is hostile-input facing on both delivery paths, so every length is
 bounds-checked before use, `bencode::MAX_DEPTH` bounds the recursion, and
@@ -19950,6 +20097,154 @@ transmit path, which passes the transmit tap.
 
 Note the module is still `xt_RTPENGINE` at 12.5.1, not `nft_rtpengine`.
 
+## Asking the relay directly
+
+Everything above decodes a message somebody else sent. A control message that
+already happened never returns to the wire, so a call already running when the
+capture starts stays unnamed until a re-offer — and incident response usually
+begins mid-call. `--rtpengine-control` names the relay's own `ng` port, and
+sipnab asks it.
+
+Two questions reach the relay: `list`, which names the active calls, and
+`query`, which says which relay-side PORT belongs to which call. The port is
+the one thing sipnab can already see in a capture, and the relay is the only
+thing that knows what it allocated the port for.
+
+Nothing else reaches it, and the last section on this page says why `delete`
+is unreachable rather than merely unused. A `TransmitPermit` gates both
+questions and only a live capture source yields one, so an analyst opening a
+customer's pcap cannot make sipnab send packets at the addresses inside it.
+
+### Two triggers, and neither of them a clock
+
+**Startup, before the capture opens.**
+[`bootstrap::relay_startup_snapshot`](../../src/app/bootstrap.rs) runs inside
+`launch`'s privileged window, against the RESOLVED capture source, and spends
+one `list` plus one `query` per call. The answers become a port index, and
+[`pipeline::apply_relay_snapshot`](../../src/pipeline.rs) registers every
+socket in it as a media ENDPOINT through `link_endpoint_from`.
+
+Registering rather than linking is what the rest of this depends on. A stream
+that turns up later resolves its endpoint from memory at creation, exactly as
+it would from an SDP body already on file, so the packet path never makes a
+network call. Against rtpengine 12.5.1:
+
+```text
+rtpengine at 127.0.0.1:22222: 2 call(s) enumerated, complete; queried 2 of them, 8 relay port(s) now attributable
+```
+
+**A stream nothing explains.**
+[`rtp::stream_store`](../../src/rtp/stream_store.rs) records an orphan socket
+at stream CREATION, under the write lock the RTP path already holds. That is
+what makes the second trigger an event rather than a periodic sweep: nothing
+rescans the store looking for orphans, and a run whose relay accounts for
+every stream it sees asks nothing after startup.
+
+Both ends of the stream go into the hand-off, because which end belongs to the
+relay is exactly what the packet cannot say. A socket the relay does not hold
+costs one lookup in the index the startup snapshot already built.
+
+```text
+rtpengine at 127.0.0.1:22222: 2 unexplained stream(s) offered, 0 attributed, 4 control transaction(s) spent of a ceiling of 66
+```
+
+### Why the asking runs on a thread
+
+One question is a UDP round trip, and `DEFAULT_CONTROL_TIMEOUT` gives it two
+seconds. Asking from the packet path would stall capture for as long as the
+relay stayed quiet, trading dropped packets for an attribution, which is the
+wrong way round for a tool whose job is watching the traffic. So the
+capture path only OFFERS a socket: `OrphanSink` has no blocking send at all,
+so the only way to hand a socket over cannot wait, however long the relay
+takes.
+
+[`app::relay_reconciler`](../../src/app/relay_reconciler.rs) does the asking,
+and it holds no timer. Its loop blocks on the hand-off queue and wakes only
+when the capture path finds a stream nothing explains. When every `OrphanSink`
+drops, the queue closes, the loop ends, and the thread prints what it did.
+There is no flag to poll and no timeout to pick.
+
+**The join order follows from that.** The run joins the reconciler only AFTER
+the capture-processing thread, because that thread owns the sink whose drop
+closes the queue. Join the reconciler first and it waits on a queue nothing
+has closed, forever.
+
+### Three bounds, and none of them the traffic
+
+Three things bound the asking, and not one of them depends on how much traffic
+the capture carries:
+
+- **Once per socket.** `asked_ports` latches, so a stream that stays
+  unexplained — the normal case for media the relay never touched — costs one
+  lookup for the run rather than one per packet.
+- **A ceiling on transactions.** `DEFAULT_BUDGET` is `2 * (DEFAULT_LIST_LIMIT
+  + 1)`, 66 at the defaults, which covers a full startup snapshot and a
+  comparable refresh after it. A capture full of orphans cannot turn into a
+  flood of control traffic.
+- **A bounded hand-off.** `ORPHAN_QUEUE_DEPTH` caps the queue and
+  `MAX_PENDING_ORPHAN_SOCKETS` caps the buffer feeding it, and neither one
+  ever makes the capture path wait.
+
+When one of them bites, sipnab counts it and says so — `OrphanSink::dropped`
+and `StreamStore::orphan_sockets_dropped` for the hand-off, and the
+offered-versus-attributed and spent-of-ceiling figures in the closing line
+above for the other two. A stream sipnab never asked about is not a stream the
+relay disowned, and a bound that bites quietly is how those two turn into the
+same sentence.
+
+`ReadyReconciler` carries the reconciler from launch into the capture loop
+rather than rebuilding it there, because rebuilding discards all three at
+once: a second reconciler starts with a full ceiling, an empty `asked_ports`,
+and no memory of which calls it had already read.
+
+### Why the index keys on address and port
+
+`Reconciler`'s index keys on `(IpAddr, u16)`, matching the key `StreamStore`
+uses for SDP endpoints. The two indexes join on that key, so they have to
+agree on what a socket is.
+
+Keying on the port alone was wrong, and not subtly: rtpengine allocates from
+ONE port range across every `--interface`, so the same port number genuinely
+sits on two addresses at once. A port-keyed index hands one interface's media
+to the other's call, and reports it with the same confidence as a correct
+answer.
+
+### The provenance of an answer nobody captured
+
+`SdpProvenance::relay_queried` sets `origin: None`, and the absence is the
+point. `Wire`, `Hep` and `Uprobe` each assert that sipnab OBSERVED the
+addressing somewhere. This addressing sipnab ASKED FOR instead, and no
+`InputOrigin` says that honestly. A binding made from such an endpoint
+therefore withholds the cross-source claim rather than inventing one — the
+same rule `EndpointAssertion` follows earlier on this page, applied to the
+other axis.
+
+The rtpmap stays empty for a related reason: a `query` reply names a codec but
+no payload type, and an rtpmap entry needs both. Synthesizing the missing half
+would put a number sipnab never heard into a field an operator reads as
+measured.
+
+### Naming what "nothing" means
+
+`Unattributed` exists to prevent one collapse. "The relay does not hold this
+port" and "sipnab could not ask" are different facts, and a type with a single
+way of saying no reports the second as the first — a run that never reached
+the relay then reads exactly like a run the relay answered.
+
+So it keeps five reasons apart:
+
+- the relay refused the question, or nothing answered at all
+- the relay named calls sipnab could not read
+- the relay's enumeration came back capped
+- the run had already spent its transaction ceiling
+- sipnab asked, and the relay does not hold the port
+
+Only the last of those says anything about the relay. `why_not` tests them
+most-conclusive-first, so the last arm becomes reachable only after a complete
+answer. Where two gaps hold at once it names the truncated enumeration first,
+because that is the wider gap and the operator's fix for it — raise the limit,
+or enumerate over TCP — shrinks the other one too.
+
 ## What is deliberately not here
 
 - **`subscribe` / `publish` / `start recording` and friends.** They carry a
@@ -19957,17 +20252,25 @@ Note the module is still `xt_RTPENGINE` at 12.5.1, not `nft_rtpengine`.
   complexity: a recording subscription creates a stream that belongs to the
   call without being one of its two legs, and attributed as an ordinary leg a
   two-party call shows three streams — after which the media analysis that
-  judges one-way audio and asymmetry answers a question nobody asked. They are
-  counted (`rtpengine::media_creating_commands_seen`) so a run can say what it
-  did not attribute.
+  judges one-way audio and asymmetry answers a question nobody asked. sipnab
+  counts them (`rtpengine::media_creating_commands_seen`) and
+  [`output::dialog_report`](../../src/output/dialog_report.rs) prints that
+  count beside the relay-named calls, on a line beginning `Media-creating
+  relay commands seen:`, so a run says what it did not attribute. The counter
+  landed first and no surface read it, which is the same silence it exists to
+  break. A run that saw none prints nothing rather than a zero.
 - **HEP carrying SIP or RTP off the wire.** The claim covers `ng` only.
   Claiming those here would change what every existing capture containing HEP
   reports, which is a much larger decision than this required.
-- **Mid-call reconciliation.** A control message that already happened is not
-  on the wire for sipnab to read, so a call already running when the capture starts stays
-  unnamed until a re-offer. Closing it means asking rtpengine directly, which
-  makes sipnab send packets to a production relay — tracked as RE4 with the
-  bounds that keeps it from becoming a service.
+- **Sending anything that changes the relay.** `offer`, `answer`, `delete`
+  and `start recording` are the other half of the `ng` protocol, and every one
+  of them changes a production box: it moves media, tears a call down, or
+  fills a disk. None of them is reachable: `ReadOnlyCommand` has two
+  variants and `ReadOnlyRelay` has two methods, so no value in this codebase
+  means `delete`. A reviewer asking "does sipnab ever tell a relay to do
+  something" reads one enum instead of auditing every call site, and an edit
+  that wants to send one has to add a variant — which shows up in a diff
+  rather than passing as an oversight.
 
 ---
 

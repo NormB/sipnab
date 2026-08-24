@@ -1305,11 +1305,11 @@ pub struct SecurityArgs {
 
     /// Scanner-kill responses per second sipnab may put on the wire.
     ///
-    /// This is the blast radius of the one feature that TRANSMITS. The kill
-    /// path answers packets whose source address the sender chose, so every
-    /// response is aimed by somebody else; the cap is what keeps a misfiring
-    /// signature from becoming a reflector. There is no unlimited setting and
-    /// `0` is refused — see `[security] kill_rate_limit`.
+    /// This is the blast radius of the one feature that answers an address out
+    /// of the CAPTURE. The kill path answers packets whose source address the
+    /// sender chose, so every response is aimed by somebody else; the cap is
+    /// what keeps a misfiring signature from becoming a reflector. There is no
+    /// unlimited setting and `0` is refused — see `[security] kill_rate_limit`.
     ///
     /// A per-destination cap of 3/minute applies underneath this and is not
     /// tunable, so raising this widens how many DISTINCT hosts may be answered

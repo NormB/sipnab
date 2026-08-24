@@ -569,7 +569,15 @@ fn linked_code_targets_exist() {
     // is the only page this change added a link to -- the other docs touched
     // had `#L` anchors re-pointed by `scripts/fix-line-anchors.py --apply`,
     // which moves citations without adding any.
-    const EXPECTED_CODE_LINKS: usize = 369;
+    // 369 -> 378: RE4's active half reached the developer docs. Attributed by
+    // measurement before the number moved, and only two pages moved:
+    // `docs/internals/rtpengine-control-plane.md` 13 -> 19, which gained a
+    // section on asking the relay plus a module-table row for
+    // `src/app/relay_reconciler.rs`; and `docs/internals/threading.md`
+    // 36 -> 39, which had claimed to list every long-lived thread while the
+    // reconciler thread had no row, and claimed scanner-kill was the only
+    // thread allowed to send.
+    const EXPECTED_CODE_LINKS: usize = 378;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -617,7 +625,11 @@ fn rust_files_under(path: &Path) -> Vec<PathBuf> {
 #[test]
 fn linked_symbols_resolve_to_a_definition() {
     /// Symbol claims the developer docs are expected to cite.
-    const EXPECTED_SYMBOL_CLAIMS: usize = 66;
+    // 66 -> 68: both from `docs/internals/threading.md`, which now cites
+    // `relay_reconciler::spawn()` and `orphan_channel()` -- the spawn site and
+    // the bounded hand-off it reads from. Both resolve to a definition, which
+    // is what the assertion below this one checks.
+    const EXPECTED_SYMBOL_CLAIMS: usize = 68;
     // A definition boundary, not a substring. `source.contains("fn run_offline_paral")`
     // was satisfied by `fn run_offline_parallel`, so a doc could name a function
     // that has never existed and resolve against a real one whose name merely

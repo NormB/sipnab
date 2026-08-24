@@ -91,6 +91,21 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/rtpengine-control-plane.md",
         ],
     ),
+    // `--interface` is RTPENGINE's too, and the control-plane page has to name
+    // it exactly: rtpengine allocates from ONE port range across every
+    // `--interface`, which is the whole reason sipnab keys a relay-side socket
+    // on address AND port. Keyed on the port alone, one interface's media gets
+    // attributed to the other interface's call. Writing it without the dashes
+    // would satisfy this guard and lose the fact that it is a real flag a
+    // reader can go and look up. Scoped to that page and its generated mirror,
+    // so the same spelling anywhere else still fails.
+    (
+        "interface",
+        &[
+            "docs/internals/rtpengine-control-plane.md",
+            "website/content/docs/internals/rtpengine-control-plane.md",
+        ],
+    ),
     // `--now` is systemd's, on `systemctl enable --now`. The cookbook's
     // "Run sipnab as a service" recipe gives a unit file and then the two
     // commands that install it, and `enable` without `--now` leaves the

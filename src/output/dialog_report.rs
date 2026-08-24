@@ -63,6 +63,33 @@ fn row(md: bool, widths: &[usize], cells: &[String]) -> String {
     }
 }
 
+/// What to say about media-creating relay commands, or nothing.
+///
+/// `subscribe`, `publish` and `start recording` create media that belongs to a
+/// call without being one of its two legs. sipnab counts them rather than
+/// attributing them: counted as an ordinary leg, a two-party call reports
+/// three streams, and the media analysis that judges one-way audio and
+/// asymmetry then answers a question nobody asked.
+///
+/// Takes the count rather than reading the process-global tally, so a test can
+/// state what it is testing. The tally is shared by every test in the binary
+/// and an exact assertion against it is only true until the next test runs.
+///
+/// `None` at zero: a run with nothing to report says nothing, rather than
+/// printing a line whose only content is a zero.
+fn media_creating_note(count: u64) -> Option<String> {
+    (count > 0).then(|| {
+        format!(
+            "Media-creating relay commands seen: {count}. These create media \
+             that belongs to a call without being one of its two legs \
+             (recording or forking). Decoding them is what sipnab declines: \
+             counted as an ordinary leg, a two-party call reports three \
+             streams. This is a count of what went past, not a claim about \
+             where the media for it ended up."
+        )
+    })
+}
+
 /// The `---|---` separator markdown needs under a header row.
 fn md_rule(n: usize) -> String {
     format!("|{}\n", "---|".repeat(n))
@@ -281,6 +308,17 @@ pub fn print_dialog_report_as(
             };
             out.push_str(&row(md, &widths, &[shown, count.to_string()]));
         }
+    }
+
+    // A run that saw a recording or forking command and says nothing is the
+    // failure `note_media_creating_command` was added to prevent, and for a
+    // while it was the failure anyway: the count existed and no surface read
+    // it. Reported HERE, beside the relay-named calls, because both answer the
+    // same question -- what did the relay do that this report does not show as
+    // an ordinary call leg.
+    if let Some(note) = media_creating_note(crate::rtpengine::media_creating_commands_seen()) {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "{note}");
     }
 
     // ── Orphaned RTP streams ────────────────────────────────────────
@@ -1223,5 +1261,52 @@ mod tests {
             report.contains("sdp_endpoint"),
             "the weakest attributed tier must still reach the report:\n{report}"
         );
+    }
+
+    /// A run that saw a recording or forking command has to SAY so. The
+    /// counter existed for exactly this and no surface read it, which made
+    /// the promise in its own doc comment -- "a run can say what it did not
+    /// attribute" -- false for as long as it went unrendered.
+    #[test]
+    fn a_media_creating_command_reaches_the_report() {
+        let note = super::media_creating_note(3).expect("three commands is something to say");
+
+        assert!(
+            note.contains('3'),
+            "the operator needs the COUNT, not just that it happened:\n{note}"
+        );
+        assert!(
+            note.contains("not being one of its two legs") || note.contains("two legs"),
+            "and why it is not attributed, or the line reads as a defect:\n{note}"
+        );
+    }
+
+    /// The note must actually REACH the report. The two tests around this one
+    /// exercise the formatting helper, and would both stay green if the call
+    /// site rendering it were deleted -- which is precisely the state this
+    /// whole change fixed: a counter that existed and no surface read.
+    ///
+    /// Asserts presence rather than a count. The tally is process-global and
+    /// every test in this binary shares it, so an exact number is true only
+    /// until the next test runs. Presence after an increment is stable either
+    /// way, and it is what fails if the render site goes away.
+    #[test]
+    fn the_note_reaches_the_rendered_report() {
+        crate::rtpengine::note_media_creating_command();
+
+        let report = print_dialog_report(&[], &[]);
+
+        assert!(
+            report.contains("Media-creating relay commands seen:"),
+            "a command sipnab saw and did not attribute must appear in the \
+             report an operator actually reads:\n{report}"
+        );
+    }
+
+    /// Nothing seen, nothing said. A line whose only content is a zero is
+    /// noise in a report an operator reads under time pressure.
+    #[test]
+    fn a_run_that_saw_none_says_nothing_about_them() {
+        assert_eq!(super::media_creating_note(0), None, "zero is not a finding");
     }
 }

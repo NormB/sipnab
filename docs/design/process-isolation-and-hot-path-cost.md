@@ -287,11 +287,15 @@ and drain them after the guards drop. Then add the missing lock-ordering rule to
 
 ### R3 — Scanner-kill as a real child process *(P2, weeks — do only if `--kill-scanner` gets real use)*
 The single cleanest fork candidate in the tree, and the one D16 asked for. It
-holds a `CAP_NET_RAW` raw socket that outlives the privilege drop, it is the
-only component that *transmits*, and it already has no shared state — it talks
-over a crossbeam channel with messages that are **already**
+holds a `CAP_NET_RAW` raw socket that outlives the privilege drop, it
+*transmits*, and it already has no shared state — it talks over a crossbeam
+channel with messages that are **already**
 `Serialize`/`Deserialize` ([`process_isolation.rs:307, 329`](../../src/process_isolation.rs)),
 which is otherwise unexplained and is a fossil of the D16 IPC design.
+
+`--rtpengine-control` transmits too, and is not a second candidate: its
+reconciler thread writes the stream store, which is the shared state that
+disqualifies everything else on this page.
 
 Rank it P2 rather than P1 only because `--kill-scanner` is off by default and
 niche. If it becomes a headline feature, this moves up.

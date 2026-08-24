@@ -51,6 +51,19 @@ entry that carries them.
 
 ### Fixed
 
+- **sipnab counted the relay commands it could not attribute and never said
+  so.** `note_media_creating_command` has tallied `subscribe`, `publish` and
+  `start recording` since the `ng` decoder landed, and the counter's own doc
+  comment calls a run that sees one and stays silent "the failure this project
+  already named once -- a forensics tool that cannot say what it did not
+  attribute". No surface ever read the tally, so that is what every run did,
+  while two documentation pages said sipnab "counts them and says so instead".
+  The dialog report now carries the count, beside the calls a media relay
+  named, because both answer the same question: what did the relay do that
+  this report does not show as an ordinary call leg. A test renders a real
+  report and fails if the line stops appearing -- the formatting helper alone
+  would have stayed green through exactly the deletion that caused this.
+
 - **The home page's engineering-notes count said three where the template caps
   at three.** 0.5.123 recorded that "the home page carries the three most recent
   engineering notes"; the template takes `slice(end=3)`, which is a CAP, and the

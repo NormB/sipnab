@@ -42,8 +42,11 @@ capture thread(s)              │                          │
     ├── metrics-server thread          app::servers::start_servers
     │     raw std::net::TcpListener accept loop + one short-lived
     │     metrics-conn thread per scrape
-    └── DNS resolver thread            app::build_resolver
-          std::mpsc queue; spawned only when reverse DNS is enabled
+    ├── DNS resolver thread            app::build_resolver
+    │     std::mpsc queue; spawned only when reverse DNS is enabled
+    └── rtpengine reconciler           app::relay_reconciler::spawn
+          bounded hand-off queue; starts only when --rtpengine-control
+          names a relay on a live run
 
   batch mode only
     └── scanner-kill worker            process_isolation::spawn_scanner_kill_worker
@@ -51,21 +54,22 @@ capture thread(s)              │                          │
 ```
 
 The mode column above is the part to keep true, and it is worth saying why.
-An earlier revision of this diagram drew all four auxiliary threads as
-children of the TUI event loop. Not one of them is: both run modes start three
-of them, and batch alone starts the scanner-kill worker. That is not a cosmetic
-error — `--metrics` really did ship wired to the TUI path alone, so every
+An earlier revision of this diagram drew every auxiliary thread as a child of
+the TUI event loop. Not one of them is: both run modes start four of them, and
+batch alone starts the scanner-kill worker. That is not a cosmetic error —
+`--metrics` really did ship wired to the TUI path alone, so every
 headless `-N` deployment (which is every container and systemd unit) got no
 metrics at all, and this page said nothing that would have contradicted it.
 A diagram that groups threads by *who spawns them* rather than by *which mode
 runs them* reads as reassurance and hides exactly that class of defect.
 
-The three spawn sites, none of which is the TUI event loop:
+The four spawn sites, none of which is the TUI event loop:
 [`start_servers()`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) for the server runtime and the
 metrics listener, [`build_resolver()`](https://github.com/NormB/sipnab/blob/main/src/app/mod.rs) for the reverse-DNS
-worker, and
-[`spawn_scanner_kill_worker()`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs) for the
-kill worker.
+worker, [`spawn_scanner_kill_worker()`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs) for the
+kill worker, and
+[`relay_reconciler::spawn()`](https://github.com/NormB/sipnab/blob/main/src/app/relay_reconciler.rs) for the
+rtpengine reconciler.
 
 The Prometheus listener is **not** a task on the shared tokio runtime, and the
 distinction matters when reasoning about blocking: it is a raw
@@ -100,7 +104,8 @@ well as in the TUI. `TUI` and `batch` mean it does not.
 | `metrics-server` | both | [`output/prometheus_server.rs`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs) | Raw TCP accept loop for Prometheus scrapes. |
 | `metrics-conn` | both | [`output/prometheus_server.rs`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs) | One short-lived thread per accepted scrape, capped at 16 concurrent. |
 | `sipnab-dns` | both | [`names.rs`](https://github.com/NormB/sipnab/blob/main/src/names.rs) | Reverse-DNS resolver draining an `std::sync::mpsc` queue so the render path never blocks on a lookup. Starts only when the run turns reverse DNS on. |
-| `scanner-kill` | batch | [`process_isolation.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs) | Isolated worker that transmits kill responses; the only thread allowed to send. `--kill-scanner` has no TUI path. |
+| `scanner-kill` | batch | [`process_isolation.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs) | Isolated worker that transmits kill responses — the only thread that answers an address the capture supplied. `--kill-scanner` has no TUI path. |
+| `rtpengine-reconcile` | both | [`app/relay_reconciler.rs`](https://github.com/NormB/sipnab/blob/main/src/app/relay_reconciler.rs) | Asks an rtpengine relay which calls it holds, over the relay's read-only `list` and `query`, so a stream the signaling does not explain still gets a Call-ID. Starts only when `--rtpengine-control` names a relay on a live run, and keeps the round trip off the packet path. |
 | `pcap-load` | TUI | [`tui/controllers/file_open.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs) | Loads a pcap chosen from inside the TUI, writing the live stores. |
 | `clipboard` | TUI | [`tui/clipboard.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/clipboard.rs) | Holds the X11/Wayland selection alive after a copy without stalling the UI. |
 | `crash-probe` | tests | [`crash.rs`](https://github.com/NormB/sipnab/blob/main/src/crash.rs) | **Not a production thread.** Only `mod tests` spawns this name, to prove the panic hook records a thread name. It appears in no shipped backtrace. This row exists so the next reader who greps the name does not re-add it as one. |
@@ -218,5 +223,6 @@ flow's packets share a host pair and therefore a worker.
 | `--cores` reader → workers, file input | crossbeam `bounded::<Vec<Packet>>(64)` carrying batches of 128 ([`run_offline_parallel_file()`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs)) — same ~8192 in-flight packet cap, one channel hop per 128 packets instead of per packet |
 | `--cores` per-file reader → dispatcher, multi-file input | crossbeam `bounded` carrying one batch per item ([`shard_set_parallel()`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs)). The queue depth is not the bound that matters: `READ_AHEAD_BYTES` caps in **bytes** how far a LATER file's reader may run ahead of the file the dispatcher holds, because a batch is 128 packets of any size and the default snaplen is 65535 |
 | scanner-kill request / response | crossbeam `bounded(256)` in each direction ([`process_isolation.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs)) |
+| packet path → rtpengine reconciler | `std::sync::mpsc::sync_channel(1024)` ([`orphan_channel()`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/reconcile.rs)) — the capture path offers a relay-side socket and never waits on it: a full queue drops the offer and counts it, because stalling packet processing on a relay round trip is the trade `--rtpengine-control` exists to avoid |
 | DNS resolve queue | `std::sync::mpsc` ([`names.rs`](https://github.com/NormB/sipnab/blob/main/src/names.rs)) |
 | inside api/mcp servers | tokio (axum/rmcp internals) |

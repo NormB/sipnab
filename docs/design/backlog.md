@@ -3200,9 +3200,24 @@ are exactly the cases a signaling-only view gets wrong.
   whose grammar carries `CALL-ID`, `TAG` and a `STREAM n details` line. That
   turns a protocol problem into an input problem, in a format sipnab reads
   natively. A spool READER is method-agnostic: files land there whichever
-  `recording-method` is set. Today sipnab already counts these commands
-  (`rtpengine::media_creating_commands_seen`); what is missing is surfacing
-  the count and reading the spool.
+  `recording-method` is set.
+
+  **The counting half landed 2026-08-23.** `media_creating_commands_seen` had
+  tallied these commands since the `ng` decoder shipped, and no surface read
+  the tally -- so two pages claimed sipnab "counts them and says so" while
+  every run stayed silent. The dialog report now prints the count beside the
+  relay-named calls. Reading the spool is what remains, and it is what turns a
+  count into an attribution.
+
+  **Worth proving before RE5 goes further:** whether an rtpengine `query`
+  reply reports a recording subscriber as its own tag. RE4's parser walks
+  every tag in the reply and absorbs its streams, so if a subscriber arrives
+  as a tag, `--rtpengine-control` would attribute a recording stream as a call
+  leg -- the exact misattribution the passive path refuses, arriving through
+  the active one. The 12.5.1 reply captured in
+  [`tests/fixtures/rtpengine/query-reply-12.5.1.bin`](https://github.com/NormB/sipnab/blob/main/tests/fixtures/rtpengine/query-reply-12.5.1.bin) nests `subscriptions` and
+  `subscribers` INSIDE a tag rather than beside it, which suggests it is fine,
+  but that capture had no recording running and nothing has tested it.
 
 - [ ] **RE7 — record from sipnab's own capture, and never command the relay.**
   `-O` writes captured packets verbatim before parse with real wire
