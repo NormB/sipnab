@@ -4028,6 +4028,59 @@ free, because the free was mimalloc's.
 several times slower — but see [`tests/support/timeout.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/timeout.rs) for the corrected
 reason it was introduced.
 
+## VCON — vCon export (added 2026-08-24)
+
+The decision is taken and the library exists. What is missing is everything a
+user touches: no door opens the exporter, nobody has been told it is there, and
+no page shows a worked example.
+
+Tagged `VCON` so the whole programme can be found with one grep. Ticked items
+name the commit that closed them.
+
+| Item | State | What it is |
+|---|---|---|
+| `VCON0` | **DONE** | Phase 0 decision — observer vCons only. [`docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md) |
+| `VCON1` | **DONE** | Phase 1 library — `src/output/vcon.rs`, one dialog, signaling only, behind the non-default `vcon` feature |
+| `VCON2` | TODO | **CLI surface.** A flag that exports one dialog, and refuses honestly when the build lacks the feature or the Call-ID is unknown |
+| `VCON3` | TODO | **MCP tool.** `export_vcon`, returning the container as structured JSON rather than a stringified blob |
+| `VCON4` | TODO | **REST endpoint.** `GET /v1/dialogs/{call_id}/vcon`, 404 on an unknown Call-ID, and absent entirely without the feature |
+| `VCON5` | TODO | **TUI reachability.** An operator looking at a call must be able to see that export exists and what it would leave out |
+| `VCON6` | TODO | **User documentation + walkthrough.** Task-first: what a vCon is, why sipnab's is an observer's, how to produce one, and what a consumer must not read into it |
+| `VCON7` | TODO | **Developer documentation.** The shape of the module, where the caveat is duplicated from, and how to add a field without breaking the divergence gate |
+| `VCON8` | TODO | **Make the credential strip load-bearing.** Today it guards a projection that carries no raw headers, so it removes nothing. Either the trace gains a header list and the filter starts working, or the docs stop implying it does |
+| `VCON9` | DEFERRED | Phase 2 media. `recording` Dialog Objects, inline base64url only, with a `recording-set` object carrying the call's `start`/`duration` when the ring wrapped — the one in-spec way to say "the file is shorter than the call" |
+
+### The bar these are held to
+
+Every item above carries the same requirements, and an item is not done until
+all four hold:
+
+- **Tests written first, with a failure case and a success case.** A test that
+  only asserts the happy path cannot tell a working exporter from one that
+  emits the same thing for every input. Where a gate exists, it must be shown
+  to fail under a stated mutation.
+- **User documentation AND developer documentation.** They answer different
+  questions: one is "how do I produce a vCon and what may I conclude from it",
+  the other is "how is this built and what breaks if I change it".
+- **A worked example, not a synopsis.** Real commands against a real capture,
+  with the output a reader can compare against.
+- **Every door, or a stated reason.** CLI, REST, MCP and the TUI. A surface
+  left out silently is the drift `tests/surface_parity_test.rs` exists to
+  catch.
+
+### VCON8 in more detail, because it is the one that misleads
+
+`no_credential_survives_an_export` passes today, and it passes for the wrong
+reason. `build_message_json` emits a projection — timestamps, addresses,
+method, From/To/Contact/User-Agent, SDP — and carries no raw header map, so an
+`Authorization` value cannot reach the trace to be stripped. The filter is a
+regression gate for a field that does not exist yet.
+
+That is recorded rather than hidden, in the module docs and in the commit that
+introduced it. The resolution is a decision, not a fix: a real SIP trace
+arguably SHOULD carry raw headers, and the moment it does the filter becomes
+load-bearing and the test starts proving what it claims.
+
 ## SP — surface parity (added 2026-08-24)
 
 Nine increments closed the gap between what MCP, REST, the CLI, the TUI and the

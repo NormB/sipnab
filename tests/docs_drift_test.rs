@@ -2626,7 +2626,11 @@ fn no_documentation_table_repeats_a_row() {
     // holds exactly three table separators, no other page gained any (the
     // backlog's pointer is a row in a table that already existed), and design
     // docs have no generated mirror.
-    const EXPECTED_TABLES: usize = 644;
+    // 644 -> 645: one table, the tagged VCON programme in
+    // `docs/design/backlog.md` -- the ten items and their state. Attributed by
+    // measurement before the number moved: that file gained exactly one table
+    // separator and design docs have no generated mirror.
+    const EXPECTED_TABLES: usize = 645;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
