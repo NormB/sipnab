@@ -66,6 +66,11 @@ fn unmeasured() -> serde_json::Value {
         // capture source, and `None` is the honest answer rather than `wire`.
         input_origin: None,
         dialog_origin: None,
+        // Nobody said who asserted the endpoint, which is what a hand-built
+        // summary honestly knows. `None` here is "nobody said" and must not be
+        // filled in with `signaled` -- that is a claim, and it is the exact
+        // claim this field exists to keep apart from a relay's.
+        dialog_assertion: None,
     };
     serde_json::to_value(s).expect("serialize")
 }
@@ -129,6 +134,11 @@ fn a_measured_round_trip_carries_its_provenance() {
         // capture source, and `None` is the honest answer rather than `wire`.
         input_origin: None,
         dialog_origin: None,
+        // Nobody said who asserted the endpoint, which is what a hand-built
+        // summary honestly knows. `None` here is "nobody said" and must not be
+        // filled in with `signaled` -- that is a claim, and it is the exact
+        // claim this field exists to keep apart from a relay's.
+        dialog_assertion: None,
     };
 
     let xr = serde_json::to_value(
@@ -181,6 +191,11 @@ fn a_measured_zero_is_reported_rather_than_hidden() {
         round_trip_source: None,
         input_origin: None,
         dialog_origin: None,
+        // Nobody said who asserted the endpoint, which is what a hand-built
+        // summary honestly knows. `None` here is "nobody said" and must not be
+        // filled in with `signaled` -- that is a claim, and it is the exact
+        // claim this field exists to keep apart from a relay's.
+        dialog_assertion: None,
     }
     .with_round_trip(Some((0.0, RttSource::XrVoipMetrics)));
 

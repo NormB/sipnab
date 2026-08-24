@@ -605,7 +605,12 @@ fn wiki_intra_docs_links_resolve() {
     // The changelog lives in CHANGELOG.md; a tool reference describes what the
     // tools do now. No other page moved, and the extractor still matches --
     // the drop is a deletion, not a narrowing.
-    const EXPECTED_WIKI_LINKS: usize = 478;
+    // 478 -> 480: two links to rtpengine.md, one from docs/rest-api.md and one
+    // from docs/mcp-tools.md, where each `dialog_assertion` section says what a
+    // `media-relay` assertion IS rather than re-explaining relay attribution
+    // twice. Two pages, one link each; the site mirrors are generated and this
+    // gate reads docs/.
+    const EXPECTED_WIKI_LINKS: usize = 480;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

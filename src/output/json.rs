@@ -264,6 +264,29 @@ struct StreamJson {
     /// which is a claim.
     #[serde(skip_serializing_if = "Option::is_none")]
     dialog_origin: Option<&'static str>,
+    /// WHO asserted the SDP media endpoint that named this stream's dialog:
+    /// `signaled` (a negotiating party describing its own address) or
+    /// `media-relay` (an rtpengine relay describing a port it allocated).
+    ///
+    /// A different question from [`dialog_origin`](Self::dialog_origin), which
+    /// says which capture SOURCE delivered the assertion. Both can be
+    /// surprising on their own and they are surprising in different ways: a
+    /// cross-source binding means two halves of the evidence came from places
+    /// that can disagree, while a relay assertion means the address is
+    /// authoritative -- the relay cannot be wrong about which port it opened --
+    /// but names the leg's MIDPOINT rather than either party's endpoint.
+    ///
+    /// An operator reading `signaled` and an operator reading `media-relay` are
+    /// looking at different pictures of where the media went, and until this
+    /// key existed neither could tell which they had.
+    ///
+    /// Emitted whenever it is known, INCLUDING `signaled`, which is the common
+    /// case. Omitting the common case would make absence mean two things --
+    /// "a party said so" and "nobody recorded who said so" -- and the whole
+    /// reason to record this is to keep a relay's claim apart from a party's.
+    /// Absent therefore means only "nobody said".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dialog_assertion: Option<&'static str>,
     /// DSCP of this stream's MOST RECENT packet, when it differs from
     /// [`dscp`](Self::dscp).
     ///
@@ -900,6 +923,13 @@ fn build_stream_json(stream: &RtpStream) -> StreamJson {
             .dialog_bound_across_sources()
             .then(|| stream.dialog_origin.map(|o| o.as_str()))
             .flatten(),
+        // NOT gated on anything, unlike `dialog_origin` above. That one is
+        // emitted only when the binding crossed sources because agreement is
+        // the uninteresting case and its absence is well defined. Here the
+        // common case is `signaled`, and suppressing it would leave absence
+        // meaning both "a party said so" and "nobody said" -- which is exactly
+        // the distinction this field exists to preserve.
+        dialog_assertion: stream.dialog_assertion.map(|a| a.as_str()),
     }
 }
 

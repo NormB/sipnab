@@ -272,6 +272,21 @@ pub struct StreamSummary {
     /// agree", which is a claim.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dialog_origin: Option<String>,
+    /// WHO asserted the SDP media endpoint that named this stream's dialog:
+    /// `signaled` (a negotiating party describing its own address) or
+    /// `media-relay` (an rtpengine relay describing a port it allocated).
+    ///
+    /// Separate from [`Self::dialog_origin`], which says which capture SOURCE
+    /// delivered the assertion. A relay's address is authoritative -- it cannot
+    /// be wrong about which port it opened -- but it names the leg's MIDPOINT,
+    /// not either party's endpoint, so an operator tracing where media actually
+    /// went needs to know which kind of claim they are reading.
+    ///
+    /// Emitted whenever it is known, `signaled` included. Suppressing the
+    /// common case would make absence mean both "a party said so" and "nobody
+    /// recorded who said so", collapsing the one distinction this field is for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dialog_assertion: Option<String>,
 }
 
 impl StreamSummary {
@@ -358,6 +373,10 @@ impl StreamSummary {
                 .dialog_bound_across_sources()
                 .then(|| s.dialog_origin.map(|o| o.as_str().to_string()))
                 .flatten(),
+            // Ungated, unlike `dialog_origin`: see the field's own note. The
+            // spelling is the enum's, so REST, MCP and the call report cannot
+            // name a relay assertion three ways.
+            dialog_assertion: s.dialog_assertion.map(|a| a.as_str().to_string()),
         }
     }
 }

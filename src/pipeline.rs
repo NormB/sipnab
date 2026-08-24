@@ -2815,6 +2815,122 @@ mod relay_control_tests {
         );
     }
 
+    /// The relay assertion survives all the way to a reader.
+    ///
+    /// The test below proves the pipeline writes the right provenance onto the
+    /// stream. That is not the same as anyone being able to SEE it, and for as
+    /// long as this feature existed nobody could: `dialog_assertion` was
+    /// written on every binding, and `EndpointAssertion::as_str` carried a doc
+    /// comment describing itself as "the name this assertion is written under
+    /// on every output surface" while no output surface wrote it and nothing
+    /// outside tests ever called it. The whole point of asking an rtpengine
+    /// relay what it is carrying is to be able to tell its claim about a port
+    /// apart from a party's claim about its own address -- and the answer
+    /// reached no operator, no agent and no HTTP client.
+    ///
+    /// Asserted through the SHARED renderer both APIs and the call report
+    /// serialize through, so this covers `GET /v1/streams/{id}`, MCP
+    /// `rtp_stats` and the `streams` array of a call report at once.
+    ///
+    /// Gated on the ITEM rather than the module, per the pre-push hook's own
+    /// advice: `crate::output` is `native`-only, and gating the whole
+    /// `relay_control_tests` module would take the three tests either side of
+    /// this one out of every feature combination that does not build a
+    /// renderer -- which is exactly where a store-level regression would be
+    /// cheapest to catch.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_relay_assertion_reaches_the_serialized_stream() {
+        use crate::capture::ParsedPacket;
+        use crate::capture::parse::{InputOrigin, TransportProto};
+        use crate::rtp::parser::RtpHeader;
+        use crate::rtp::stream_store::StreamStore;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let relay = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 40));
+        let ts = chrono::Utc::now();
+
+        // One RTP packet at the endpoint under test, built the way production
+        // builds one. Registration alone creates no stream -- a stream is a
+        // thing packets made -- so without this there is nothing to serialize.
+        let media = |port: u16| ParsedPacket {
+            frame: None,
+            timestamp: ts,
+            src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: relay,
+            src_port: 20000,
+            dst_port: port,
+            transport: TransportProto::Udp,
+            payload: vec![0u8; 12 + 160].into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            dscp: None,
+            input_origin: InputOrigin::Wire,
+        };
+        let rtp = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 160,
+            ssrc: 0xDEAD_BEEF,
+            payload_offset: 12,
+        };
+
+        let rendered = |store: &StreamStore| -> serde_json::Value {
+            let stream = store.iter().next().expect("the packet created a stream");
+            serde_json::from_str(&crate::output::json::stream_to_json(stream))
+                .expect("the renderer emits valid JSON")
+        };
+
+        // The relay's own `ng` control plane naming a port it allocated.
+        let sdp = "v=0\r\nc=IN IP4 10.0.0.40\r\nm=audio 38664 RTP/AVP 0";
+        let raw = format!("ck d3:sdp{}:{sdp}6:result2:oke", sdp.len());
+        let links = crate::rtpengine::sdp_links_from_ng(raw.as_bytes(), Some("cid1"));
+        assert_eq!(links.len(), 1, "fixture must yield exactly one endpoint");
+
+        let mut relay_store = StreamStore::new(1000);
+        super::apply_relay_control_links(&mut relay_store, &links, InputOrigin::Hep, ts);
+        relay_store.process_rtp(&media(links[0].1), &rtp, ts);
+        let relay_json = rendered(&relay_store);
+
+        assert_eq!(
+            relay_json["dialog_assertion"], "media-relay",
+            "a reader must be able to tell the relay named this port: {relay_json}"
+        );
+
+        // The other arm, and the reason the first one means anything. If a
+        // relay assertion and an ordinary signaled one rendered the same, the
+        // key would be decoration -- present, stable, and carrying nothing.
+        let mut signaled_store = StreamStore::new(1000);
+        signaled_store.link_to_dialog_with_sdp_from(
+            links[0].0,
+            links[0].1,
+            &links[0].2,
+            &links[0].3,
+            crate::rtp::stream_store::SdpProvenance::observed(InputOrigin::Wire, ts),
+        );
+        signaled_store.process_rtp(&media(links[0].1), &rtp, ts);
+        let signaled_json = rendered(&signaled_store);
+
+        assert_eq!(
+            signaled_json["dialog_assertion"], "signaled",
+            "a party's own SDP must not read as a relay's claim: {signaled_json}"
+        );
+        assert_ne!(
+            relay_json["dialog_assertion"], signaled_json["dialog_assertion"],
+            "the two assertions must be distinguishable on the wire, or the key \
+             tells a reader nothing"
+        );
+    }
+
     /// RE3, at the point it actually matters: the endpoint WRITTEN to the
     /// store must record that a media relay asserted it.
     ///

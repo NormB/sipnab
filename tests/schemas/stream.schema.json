@@ -65,6 +65,14 @@
       ],
       "description": "Which capture source this stream's MEDIA arrived over. Absent rather than null when the stream came from no captured packet."
     },
+    "dialog_assertion": {
+      "type": "string",
+      "enum": [
+        "signaled",
+        "media-relay"
+      ],
+      "description": "WHO asserted the SDP media endpoint that named this stream's dialog: `signaled` (a negotiating party describing its own address) or `media-relay` (an rtpengine relay describing a port it allocated, learned from its `ng` control plane). A different question from `dialog_origin`, which says which capture SOURCE delivered the assertion. A relay's address is authoritative -- it cannot be wrong about which port it opened -- but it names the leg's MIDPOINT rather than either party's endpoint, so the two answers describe different pictures of where the media went. Emitted whenever it is known, `signaled` included: suppressing the common case would make absence mean both 'a party said so' and 'nobody recorded who said so'. Absent therefore means only the latter."
+    },
     "dialog_origin": {
       "type": "string",
       "enum": [

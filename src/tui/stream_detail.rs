@@ -113,6 +113,20 @@ pub fn render_stream_detail(
         ),
         Span::raw("  Dialog: "),
         Span::raw(stream.associated_dialog.as_deref().unwrap_or("(orphaned)")),
+        // WHO said this stream belongs to that dialog. A relay's assertion is
+        // authoritative about the port -- it opened it -- but names the leg's
+        // MIDPOINT, so an operator tracing where media actually went is looking
+        // at a different picture from the one a signaled endpoint gives them.
+        // Beside the Call-ID because it qualifies the Call-ID and nothing else,
+        // and absent (rather than a word meaning "probably a party") when
+        // nobody recorded who asserted it.
+        Span::styled(
+            stream
+                .dialog_assertion
+                .map(|a| format!(" (via {})", a.as_str()))
+                .unwrap_or_default(),
+            Style::default().fg(theme.muted),
+        ),
     ]));
 
     lines.push(Line::raw(""));
