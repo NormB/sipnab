@@ -289,6 +289,109 @@ already how the size cap in §2.5 behaves, and it is the same rule
 `nothing_to_decode` follows: a tool that cannot say it lost evidence should say
 that, rather than emit a clean-looking artefact.
 
+## 4a. Measured against a real consumer
+
+Everything above §4 reasons from the draft. This section reasons from a running
+backend: a vCon store reachable over NATS and HTTP, probed on 2026-08-24 with
+synthetic containers, every claim checked against the stack rather than read off
+upstream documentation.
+
+These are properties of ONE consumer, not of the format. They are recorded
+because they change what the emitter must do, and because two of them are
+things upstream does not say.
+
+### 4a.1 A `204` does not mean the container was stored
+
+The finding that matters most. A container carrying roughly 12 MB of inline
+base64 returned **HTTP 204**, landed in Postgres, and the file spool rejected
+it — `16777749 > 10485760`. The bridge acknowledges on that 204, so the message
+leaves the queue. **Neither transport reports the partial write.**
+
+A producer is told "accepted" while one storage backend silently dropped the
+payload.
+
+This is the shape §3.2 describes, one layer out. There, a run's limits present
+as a fact about the conversation. Here, a limit of the CONSUMER presents as
+nothing at all — it reaches no one, not even the producer that could have
+retried.
+
+Three points were measured, not one: roughly 1 MB and roughly 5 MB store in
+both backends, and roughly 12 MB stores in Postgres alone.
+
+**The constraint on sipnab: keep the encoded container under 10 MB, and prefer
+to stay near the 5 MB that was observed landing everywhere.** Base64 inflates
+by four thirds, so the media budget behind the hard ceiling is roughly 7.8 MB.
+§2.5's "size cap and an explicit refusal above it" now has a measured number to
+be set from rather than a guess, and the refusal has to happen in sipnab,
+because the acknowledgement cannot be trusted to carry the failure back.
+
+### 4a.2 What is stored is not, byte for byte, what was emitted
+
+The store adds `subject`, `amended` and the empty collections; the chain
+appends a tags attachment. A checksum taken before emission does not match the
+container at rest.
+
+That costs nothing today, and it is evidence for §2.2 rather than a new
+problem: a signature over the emitted bytes would not verify against the stored
+object. Anyone reopening the signing decision has to answer this as well as the
+semantic argument, and the semantic argument was already the harder one.
+
+### 4a.3 Unknown top-level fields survive, and that does not solve §3
+
+A container sent with `"sipnab_capture_gap": "ring wrapped"` came back intact.
+Custom provenance at the top level does reach the far side.
+
+**It is tempting and it is not the answer.** §3.3 is about whether anyone is
+obliged to READ a caveat, not whether it survives transport. A field that
+arrives and is never looked at is the ignorable half of the extension
+mechanism wearing a different hat. The duplication rule of §4 stands unchanged;
+this finding widens where a caveat may be put, not whether one place suffices.
+
+### 4a.4 The consumer solved the role problem the format cannot
+
+The most interesting finding, because it answers §3 halfway and says so.
+
+§3 proves vCon has no position inside a container that a consumer is obliged to
+read. This backend therefore enforces role **outside** the container entirely:
+the subject a producer publishes to selects the ingress list, which selects the
+chain, which selects the storage table. An observer's containers land in one
+table and a recorder's in another, and a consumer holds `SELECT` on views only
+— querying the wrong one is `permission denied` rather than a wrong answer.
+
+Nothing can label itself as sipnab, and sipnab cannot label itself as anything
+else, because the routing key is the subject rather than any field in the
+payload.
+
+That is a real guarantee and it is worth naming what it does NOT do. Its own
+documentation is explicit: the completeness gap of §3 **is not solved, and
+cannot be, here or anywhere in the format**. What the backend guarantees is
+only that nobody mistakes an observation for a recording. The duplication rule
+of §4 remains sipnab's problem.
+
+It also declines correlation: two taps on one conversation produce two
+containers with two uuids, and reconciling them belongs to the consumer holding
+both. That matches what sipnab already declines to do across nodes.
+
+### 4a.5 A malformed container is dropped, not retried
+
+The bridge retries a 5xx, a 429 and an unreachable store, and **drops a 4xx**
+— correctly, because retrying a malformed container cannot help.
+
+So a missing required field is not a delayed delivery. The container is logged
+and gone, while the producer's own queue shows it acknowledged. That is why
+§4a.6 is a gate and not a note.
+
+### 4a.6 The three fields that are actually required
+
+`uuid` must parse as a UUID, `created_at` must be present, and `vcon` must
+carry the syntax version. Any of them missing or malformed is a **422**;
+everything else defaults to an empty collection.
+
+Cheap to guarantee and worth a gate, because a 422 at ingest is a container
+that never arrives at all —
+[`tests/vcon_ingest_contract_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/vcon_ingest_contract_test.rs)
+holds sipnab to it.
+
 ## 5. Declined outright
 
 Recorded as declined with reasons rather than filed as future work, so that
