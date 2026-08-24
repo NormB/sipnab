@@ -277,6 +277,31 @@ const CAPTURE_CAVEAT_COUNTERS: &[Caveat] = &[
             aliases: &["app_data_records", "TlsDecryptReport", "read_nothing"],
         },
     },
+    // SIP the port gate excluded before anything analyzed it.
+    //
+    // On the corpus this was 2,311 dialogs against 3,712 real -- 37.7% lost,
+    // because a third of the SIP never touches 5060/5061. `dialog_count` alone
+    // reads as "how much was there", and a capture missing a third of its calls
+    // renders identically to one that only had two-thirds. The ports are
+    // reported with it so the answer names its own remedy: they are what an
+    // operator passes to `--portrange`.
+    Caveat {
+        kept_in: "src/pipeline.rs",
+        metric: Metric {
+            name: "unanalysed_sip_messages",
+            aliases: &["portrange_skip_report", "unanalysed_busiest_ports"],
+        },
+    },
+    // The same loss on a different transport, and NOT recovered by the same
+    // remedy: SIP-over-WebSocket outside the WS port set needs
+    // `--ws-portrange`, and widening `--portrange` recovers none of it.
+    Caveat {
+        kept_in: "src/pipeline.rs",
+        metric: Metric {
+            name: "unanalysed_websocket_messages",
+            aliases: &["ws_port_skip_report", "unanalysed_websocket_ports"],
+        },
+    },
 ];
 
 /// A counter, and the file that keeps it.

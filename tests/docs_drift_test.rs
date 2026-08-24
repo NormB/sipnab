@@ -2605,7 +2605,13 @@ fn no_documentation_table_repeats_a_row() {
     // `capture_quality` block beside it, which counts what the capture LOST.
     // Attributed by measurement before the number moved: those four files
     // gained exactly one table separator each and no other page gained any.
-    const EXPECTED_TABLES: usize = 638;
+    // 638 -> 640: one hand-written table and its generated mirror, in
+    // `docs/rest-api.md`, listing the four port-gate keys `/v1/stats` gained --
+    // SIP and SIP-over-WebSocket the gate read, recognized and set aside, each
+    // with the ports carrying it. Attributed by measurement before the number
+    // moved: those two files gained exactly one table separator each and no
+    // other page gained any.
+    const EXPECTED_TABLES: usize = 640;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

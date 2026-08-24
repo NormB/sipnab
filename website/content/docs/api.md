@@ -1033,6 +1033,10 @@ console.log(`PDD p50: ${timing.pdd_p50_ms}ms, p95: ${timing.pdd_p95_ms}ms`);
   "caveats": {
     "media_creating_commands": 0
   },
+  "unanalysed_sip_messages": 0,
+  "unanalysed_busiest_ports": [],
+  "unanalysed_websocket_messages": 0,
+  "unanalysed_websocket_ports": [],
   "timing": {
     "pdd_p50_ms": 120,
     "pdd_p95_ms": 850,
@@ -1107,6 +1111,40 @@ the end-of-run summary the command line prints.
 
 The MCP `capture_status` tool carries the same block under the same name, so
 this endpoint and an agent never disagree about it.
+
+### SIP the port gate never analyzed
+
+`unanalysed_sip_messages` is the largest loss this project has measured, and it
+is the one `capture_quality` cannot see. No packet went missing and no decoder gave up — sipnab read the
+bytes, recognized them as SIP, and set them aside because both ports fell
+outside `--portrange`.
+
+On the corpus that was **2,311 dialogs against 3,712 real: 37.7% gone**, because
+a third of the SIP never touches 5060/5061. `dialogs.total` alone reads as "how
+much was there", and a capture missing a third of its calls renders identically
+to one that only had two-thirds.
+
+| Key | Meaning |
+|-----|---------|
+| `unanalysed_sip_messages` | plain SIP with both ports outside `--portrange` |
+| `unanalysed_busiest_ports` | the top five ports carrying it, busiest first |
+| `unanalysed_websocket_messages` | SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)) outside the WebSocket port set |
+| `unanalysed_websocket_ports` | the top five ports carrying that |
+
+The ports travel with the counts because the answer has to name its own remedy —
+they are what you write into `--portrange`. A bare number says something is
+wrong without saying where to look.
+
+**The two counts stay apart because the remedies differ.** Widening
+`--portrange` recovers none of the WebSocket half. That needs `--ws-portrange`.
+This is the common case behind a WSS listener on a reverse proxy, and on
+Kamailio, OpenSIPS and Janus, which all default outside sipnab's shipped
+80/443/8080/8443.
+
+Both are zero on a live capture, where BPF filtered before the pipeline saw
+anything and there is nothing to under-report.
+
+MCP `capture_status` carries all four under the same names.
 
 `capture_quality` says how much of the wire the rest of the response draws
 from. Read it before the counts, not after: with `degraded` true, every number

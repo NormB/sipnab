@@ -1026,6 +1026,33 @@ async fn get_stats(
     // do and owes the reader a number for. Same projection MCP's
     // `capture_status` embeds, so the two doors cannot disagree about it.
     let caveats = output::json::CaptureCaveats::current();
+    // SIP the PORT GATE excluded, before anything analyzed it. A different loss
+    // from `capture_quality` above -- nothing was dropped and nothing failed to
+    // decode; the bytes were read and then set aside because both ports fell
+    // outside the configured range.
+    //
+    // Measured on the corpus: 2,311 dialogs against 3,712 real, 37.7% lost,
+    // because a third of the SIP never touches 5060/5061. `dialogs.total` alone
+    // reads as "how much was there", and a capture missing a third of its calls
+    // renders identically to one that only had two-thirds.
+    //
+    // Same keys and same names as MCP `capture_status`, deliberately: a client
+    // that learned this from one door must not have to learn it again at the
+    // other.
+    let skipped = crate::pipeline::portrange_skip_report();
+    let ws_skipped = crate::pipeline::ws_port_skip_report();
+    // Top five, because the answer names its own remedy and an operator writes
+    // a `--portrange` from it. A full table would bury that.
+    // Takes the port slice rather than either report type: the two reports are
+    // separate structs that happen to carry the same `Vec<SkippedPort>`, and a
+    // closure over the slice serves both without a trait or a second copy.
+    let port_rows = |ports: &[crate::pipeline::SkippedPort]| -> Vec<Value> {
+        ports
+            .iter()
+            .take(5)
+            .map(|p| json!({ "port": p.port, "messages": p.messages }))
+            .collect()
+    };
 
     Ok(Json(json!({
         // 2: `dialogs.in_call` added. `dialogs.active` is unchanged — it
@@ -1054,6 +1081,16 @@ async fn get_stats(
         // Always present, always complete, and zero is a real answer. A key
         // that shows up only on a bad run is a key no client learns exists.
         "caveats": caveats.to_json(),
+        // Kept at the top level rather than folded into `caveats`, because MCP
+        // publishes them at the top level and the whole point is that the two
+        // doors name one fact the same way.
+        "unanalysed_sip_messages": skipped.messages,
+        "unanalysed_busiest_ports": port_rows(&skipped.ports),
+        // Counted apart, because the remedies differ and only one of them is
+        // `--portrange`. SIP-over-WebSocket outside the WS port set needs
+        // `--ws-portrange`; widening `--portrange` recovers none of it.
+        "unanalysed_websocket_messages": ws_skipped.messages,
+        "unanalysed_websocket_ports": port_rows(&ws_skipped.ports),
         "timing": {
             "pdd_p50_ms": pdd_p50,
             "pdd_p95_ms": pdd_p95,
@@ -1435,6 +1472,111 @@ mod tests {
 
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// SIP the port gate excluded is on `/v1/stats`, under the SAME names MCP
+    /// `capture_status` uses, and the busiest ports come with it.
+    ///
+    /// The loss this catches is the largest one this project has measured: on
+    /// the corpus, 2,311 dialogs against 3,712 real -- 37.7% gone, because a
+    /// third of the SIP never touches 5060/5061. Nothing was dropped and
+    /// nothing failed to decode, so `capture_quality` is clean and
+    /// `dialogs.total` reads as "how much was there". A capture missing a third
+    /// of its calls renders identically to one that only had two-thirds.
+    ///
+    /// The ports travel with the count because the answer has to name its own
+    /// remedy: they are literally what an operator writes into `--portrange`.
+    /// A bare number tells a reader something is wrong and not where to look.
+    ///
+    /// Driven through the REAL gate rather than by poking the tally, so this
+    /// also proves the endpoint reads the counter the pipeline actually writes.
+    /// `serial`, because that counter is process-global and shared with every
+    /// other test in this binary.
+    #[tokio::test]
+    #[serial_test::serial(portrange_skips)]
+    async fn stats_reports_sip_the_port_gate_excluded_and_where_it_was() {
+        use crate::capture::parse::TransportProto;
+
+        crate::pipeline::reset_portrange_skips();
+
+        let app = build_router(make_state());
+        let stats = |app: axum::Router| async move {
+            let body = body_to_string(
+                app.oneshot(test_request("/v1/stats"))
+                    .await
+                    .expect("oneshot")
+                    .into_body(),
+            )
+            .await;
+            serde_json::from_str::<Value>(&body).expect("valid JSON")
+        };
+
+        let v = stats(app.clone()).await;
+        // Present at ZERO. A key that shows up only on a bad capture is a key
+        // no client learns exists, and a dashboard cannot ask for a field it
+        // has never seen.
+        for key in [
+            "unanalysed_sip_messages",
+            "unanalysed_busiest_ports",
+            "unanalysed_websocket_messages",
+            "unanalysed_websocket_ports",
+        ] {
+            assert!(v.get(key).is_some(), "`{key}` missing from /v1/stats: {v}");
+        }
+        assert_eq!(v["unanalysed_sip_messages"], 0);
+        assert!(
+            v["unanalysed_busiest_ports"]
+                .as_array()
+                .expect("array")
+                .is_empty()
+        );
+
+        // One OPTIONS to a SIP service on 8090, with the gate set to 5060-5061.
+        // The pipeline recognizes it as SIP, declines it, and counts it.
+        let sip = b"OPTIONS sip:probe@test SIP/2.0\r\nCall-ID: oor@test\r\nCSeq: 1 OPTIONS\r\n\r\n";
+        let pp = crate::capture::ParsedPacket {
+            frame: None,
+            timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("ts"),
+            src_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: 41000,
+            dst_port: 8090,
+            transport: TransportProto::Udp,
+            payload: sip.to_vec().into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            dscp: None,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
+        };
+        let gated = crate::pipeline::PipelineOptions {
+            sip_portrange: Some((5060, 5061)),
+            ..Default::default()
+        };
+        let mut decrypt = crate::pipeline::MediaDecrypt::default();
+        let mut heuristic = crate::rtp::heuristic::RtpHeuristic::default();
+        let action = crate::pipeline::classify_packet(&pp, &mut heuristic, &gated, &mut decrypt);
+        assert!(
+            matches!(action, crate::pipeline::PacketAction::None),
+            "the gate must still skip -- --portrange means what it says"
+        );
+
+        let v = stats(app).await;
+        assert_eq!(
+            v["unanalysed_sip_messages"], 1,
+            "the skipped SIP did not reach the response: {v}"
+        );
+        assert_eq!(
+            v["unanalysed_busiest_ports"][0]["port"], 8090,
+            "the count arrived without the port an operator needs. The service \
+             port is a request's DESTINATION, not the ephemeral client port: {v}"
+        );
+        assert_eq!(v["unanalysed_busiest_ports"][0]["messages"], 1);
+
+        crate::pipeline::reset_portrange_skips();
     }
 
     /// The declined-work count is on `/v1/stats`, present at zero, and moves
