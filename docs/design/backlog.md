@@ -577,8 +577,8 @@ Tiers:
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:4428`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4428)) currently takes
-  nowhere; `security_findings` ([`src/mcp/server.rs:4428`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4428)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:4406`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4406)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:4406`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4406)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -795,8 +795,8 @@ Tiers:
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:4525`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4525),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:4525`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4525),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:4503`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4503),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:4503`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4503),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -1542,7 +1542,7 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:94`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L94)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:5832`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5832), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:5810`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5810), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and

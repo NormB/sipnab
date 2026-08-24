@@ -81,3 +81,81 @@ fn the_matrix_lists_every_flag_the_program_has() {
         stale.join(", "),
     );
 }
+
+/// Every HTTP route axum registers has a row, and none of them reads
+/// `defined only`.
+///
+/// The second half is the assertion with teeth, and it is here because the
+/// generator got it wrong in the direction that matters. Axum spells a path
+/// parameter `{call_id}`; a test writes its own placeholder --
+/// `format!("/v1/streams/{ssrc}")`, whose literal source text is what the
+/// generator reads -- or a concrete value. Matching the route string literally,
+/// all three of sipnab's parameterized routes reported `defined only` while
+/// `tests/api_test.rs` was driving every one of them, including the call-report
+/// route an operator reaches for first.
+///
+/// A document that understates coverage is as untrustworthy as one that
+/// overstates it: both stop being read. If a route genuinely has no test, the
+/// answer is to write the test, not to relax this.
+#[test]
+fn every_http_route_has_a_row_and_none_of_them_is_only_defined() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let matrix = std::fs::read_to_string(root.join("docs/design/testing-matrix.md"))
+        .expect("read testing-matrix.md");
+    let api = std::fs::read_to_string(root.join("src/output/api.rs")).expect("read api.rs");
+
+    // Every `.route("...")` axum is handed, read from the source rather than
+    // restated here -- a list written twice is a list that disagrees.
+    let mut registered = BTreeSet::new();
+    for (i, _) in api.match_indices(".route(") {
+        let rest = &api[i + ".route(".len()..];
+        let Some(open) = rest.find('"') else { continue };
+        let Some(close) = rest[open + 1..].find('"') else {
+            continue;
+        };
+        registered.insert(rest[open + 1..open + 1 + close].to_string());
+    }
+    assert!(
+        registered.len() >= 5,
+        "only {} routes were read out of api.rs, so this gate is comparing \
+         almost nothing -- the `.route(` scan stopped working",
+        registered.len()
+    );
+
+    // The matrix's route rows: `| `/v1/streams` | exercised | ... |`
+    let mut rows = BTreeSet::new();
+    let mut only_defined = Vec::new();
+    for line in matrix.lines() {
+        if !line.starts_with("| `/") {
+            continue;
+        }
+        let mut cells = line.split('|').map(str::trim);
+        cells.next();
+        let Some(route) = cells.next().and_then(|c| c.split('`').nth(1)) else {
+            continue;
+        };
+        let tier = cells.next().unwrap_or("");
+        rows.insert(route.to_string());
+        if tier == "defined only" || tier == "none" {
+            only_defined.push(format!("{route} ({tier})"));
+        }
+    }
+
+    let missing: Vec<_> = registered.difference(&rows).cloned().collect();
+    assert!(
+        missing.is_empty(),
+        "routes with no row in docs/design/testing-matrix.md: {}\n\
+         Regenerate: cargo build --features full && python3 scripts/coverage-matrix.py",
+        missing.join(", ")
+    );
+
+    assert!(
+        only_defined.is_empty(),
+        "the matrix reports these routes as unexercised: {}\n\n\
+         Either a test that drives them stopped being recognized -- check \
+         `route_pattern` and `SERVER_DRIVERS` in scripts/coverage-matrix.py, \
+         which is where this went wrong last time -- or the route really has no \
+         test, and the fix is the test.",
+        only_defined.join(", ")
+    );
+}

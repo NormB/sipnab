@@ -176,6 +176,37 @@ pub struct StreamSummary {
     pub associated_dialog: Option<String>,
     /// E-model MOS estimate (1.0–4.5).
     pub mos: f64,
+    /// Whether [`Self::mos`] rests on a real impairment value rather than the
+    /// placeholder.
+    ///
+    /// Carried beside the number because it is not visible in it. sipnab
+    /// returns the same score for a grounded G.711 stream and for a codec
+    /// nobody publishes an impairment value for, where the number means
+    /// "unknown" — see
+    /// [`MosGrounding::Unpublished`](crate::rtp::quality::MosGrounding::Unpublished).
+    /// A reader who cannot tell those apart will act on the second as if it
+    /// were the first.
+    ///
+    /// Not `Option`: every stream has a grounding, and an absent key would
+    /// read as "not known", which is a different and untrue claim.
+    pub mos_grounded: bool,
+    /// WHICH grounding: `published`, `operator_declared` or `unpublished`.
+    ///
+    /// A separate field from [`Self::mos_grounded`] because the remedies
+    /// differ. A `published` score that looks wrong means suspecting sipnab's
+    /// vantage point; an `operator_declared` one means suspecting a file on
+    /// the operator's own disk; an `unpublished` one means the number was
+    /// never an estimate. Collapsing the three into the boolean loses the
+    /// middle case entirely, and that is the case where the number is right
+    /// and the citation would be wrong.
+    pub mos_grounding: String,
+    /// The caveat that belongs beside [`Self::mos`], when there is one.
+    ///
+    /// Absent for a published score, where there is nothing to disclose.
+    /// Writing a reassurance there instead would train readers to skip the
+    /// field on the two occasions it carries a warning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mos_note: Option<String>,
     /// Pointer to the frame this stream's first packet arrived in, as
     /// `<source>#<ordinal>@<digest>`.
     ///
@@ -290,6 +321,7 @@ impl StreamSummary {
     #[must_use]
     pub fn of(s: &RtpStream, delay: crate::rtp::quality::MosDelay<'_>) -> Self {
         let loss_pct = s.loss_percent();
+        let grounding = crate::rtp::quality::mos_grounding(s.codec.as_deref());
         Self {
             ssrc: format!("0x{:08x}", s.key.ssrc),
             codec: s.codec.clone(),
@@ -301,6 +333,12 @@ impl StreamSummary {
             orphaned: s.orphaned(),
             associated_dialog: s.associated_dialog.clone(),
             mos: delay.score(s),
+            // Resolved once and destructured three ways, so the boolean, the
+            // label and the note cannot describe three different groundings of
+            // one stream. The vocabulary is the enum's, not this module's.
+            mos_grounded: grounding != crate::rtp::quality::MosGrounding::Unpublished,
+            mos_grounding: grounding.as_str().to_string(),
+            mos_note: grounding.note().map(ToString::to_string),
             // From the stream's own record of where it began. There is no
             // second source to derive it from: unlike a dialog, a stream
             // retains no packets at all.

@@ -27,12 +27,30 @@ The tiers above `parsed` need a human to distinguish "a test names this" from
 no row here should be read as a mutation-checked guarantee unless a person
 put it there.
 
+HTTP routes and MCP tools are not command-line arguments and use their own two
+tiers:
+
+| Tier | Established by | What it proves |
+|---|---|---|
+| `exercised` | the route or tool is named in a test file that also drives a running surface | a test reached it through the door users reach it through |
+| `defined only` | it is named, but nowhere that drives anything | it exists; nothing here reached it |
+
+"Drives a running surface" means the file uses one of a named set of client
+idioms -- the REST test harness, a raw socket, an MCP session, a `tools/call`.
+A route is matched allowing for its path parameters, because a test writes
+`format!("/v1/streams/{ssrc}")` or a concrete SSRC where the route says
+`{id}`. Both of those rules used to be substring tests, and both were wrong in
+the direction of a wrong answer rather than no answer: `serve(` matched
+`observe(` in a file that drives nothing, and matching a route literally
+reported every parameterized route as `defined only` while the REST test suite
+was driving all of them.
+
 ## Totals
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
 | CLI flags | 230 | 112 | 37 | 80 | 1 |
-| HTTP routes | 8 | 5 | -- | 3 | 0 |
+| HTTP routes | 8 | 8 | -- | 0 | 0 |
 | MCP tools | 37 | 37 | -- | 0 | 0 |
 
 **Flags with no occurrence at all:** `--syslog`
@@ -301,13 +319,13 @@ behind them.
 | Route | Evidence | Where |
 |---|---|---|
 | `/health` | exercised | `tests/api_test.rs` |
-| `/metrics` | exercised | `tests/api_test.rs` |
-| `/v1/dialogs` | exercised | `tests/api_test.rs` |
-| `/v1/dialogs/{call_id}` | defined only | `src/output/api.rs` |
-| `/v1/dialogs/{call_id}/report` | defined only | `src/output/api.rs` |
-| `/v1/stats` | exercised | `tests/api_test.rs`, `tests/config_wiring_test.rs` +1 |
-| `/v1/streams` | exercised | `tests/api_test.rs` |
-| `/v1/streams/{id}` | defined only | `src/output/api.rs` |
+| `/metrics` | exercised | `tests/api_test.rs`, `tests/api_token_test.rs` +2 |
+| `/v1/dialogs` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` +2 |
+| `/v1/dialogs/{call_id}` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` |
+| `/v1/dialogs/{call_id}/report` | exercised | `tests/api_test.rs` |
+| `/v1/stats` | exercised | `tests/api_test.rs`, `tests/api_token_test.rs` +3 |
+| `/v1/streams` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` +1 |
+| `/v1/streams/{id}` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` |
 
 ## MCP tools
 
@@ -315,38 +333,38 @@ behind them.
 |---|---|---|
 | `aggregate_dialogs` | exercised | `tests/mcp_stdio_test.rs` |
 | `capture_health` | exercised | `tests/mcp_stdio_test.rs` |
-| `capture_status` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_scope_test.rs` +2 |
-| `check_codec_negotiation` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
+| `capture_status` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_open_capture_test.rs` +5 |
+| `check_codec_negotiation` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
 | `compare_dialogs` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
 | `diagnose_registration` | exercised | `tests/mcp_stdio_test.rs` |
 | `explain_response_code` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
-| `explain_rule` | exercised | `tests/mcp_lint_tools_test.rs`, `tests/mcp_stdio_test.rs` |
+| `explain_rule` | exercised | `tests/mcp_lint_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
 | `export_audio` | exercised | `tests/mcp_stdio_test.rs` |
 | `export_capture` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
-| `find_correlated` | exercised | `tests/mcp_stdio_test.rs` |
-| `find_problems` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
+| `find_correlated` | exercised | `tests/leg_correlation_window_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
+| `find_problems` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
 | `get_capture_report` | exercised | `tests/mcp_stdio_test.rs` |
-| `get_dialog` | exercised | `tests/mcp_stdio_test.rs` |
-| `get_dialog_report` | exercised | `tests/mcp_stdio_test.rs` |
+| `get_dialog` | exercised | `tests/mcp_operator_flows_test.rs`, `tests/mcp_stdio_test.rs` |
+| `get_dialog_report` | exercised | `tests/mcp_operator_flows_test.rs`, `tests/mcp_stdio_test.rs` |
 | `get_message` | exercised | `tests/mcp_stdio_test.rs` |
-| `get_sdp_timeline` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
-| `lint_dialog` | exercised | `tests/mcp_lint_tools_test.rs`, `tests/mcp_stdio_test.rs` |
+| `get_sdp_timeline` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
+| `lint_dialog` | exercised | `tests/mcp_lint_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
 | `list_captures` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
-| `list_dialogs` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +1 |
+| `list_dialogs` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +3 |
 | `list_tls_libraries` | exercised | `tests/mcp_stdio_test.rs` |
 | `media_diagnostics` | exercised | `tests/mcp_media_diagnostics_test.rs`, `tests/mcp_stdio_test.rs` |
-| `open_capture` | exercised | `tests/mcp_stdio_test.rs` |
-| `render_ladder` | exercised | `tests/mcp_stdio_test.rs` |
-| `rtp_stats` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
-| `save_findings` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_stdio_test.rs` |
+| `open_capture` | exercised | `tests/mcp_open_capture_test.rs`, `tests/mcp_stdio_test.rs` |
+| `render_ladder` | exercised | `tests/mcp_operator_flows_test.rs`, `tests/mcp_stdio_test.rs` |
+| `rtp_stats` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
+| `save_findings` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_save_findings_test.rs` +1 |
 | `search_by_time` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
 | `search_messages` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_stdio_test.rs` |
-| `security_findings` | exercised | `tests/mcp_stdio_test.rs` |
-| `server_capabilities` | exercised | `tests/mcp_stdio_test.rs` |
-| `show_evidence` | exercised | `tests/mcp_stdio_test.rs` |
+| `security_findings` | exercised | `tests/mcp_operator_flows_test.rs`, `tests/mcp_stdio_test.rs` |
+| `server_capabilities` | exercised | `tests/mcp_open_capture_test.rs`, `tests/mcp_stdio_test.rs` |
+| `show_evidence` | exercised | `tests/mcp_operator_flows_test.rs`, `tests/mcp_stdio_test.rs` |
 | `shutdown_server` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_scope_test.rs` +1 |
 | `start_tls_capture` | exercised | `tests/mcp_stdio_test.rs` |
 | `stop_tls_capture` | exercised | `tests/mcp_stdio_test.rs` |
-| `tail_dialogs` | exercised | `tests/mcp_stdio_test.rs` |
-| `triage_call` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
+| `tail_dialogs` | exercised | `tests/mcp_open_capture_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
+| `triage_call` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
 | `validate_message` | exercised | `tests/mcp_lint_tools_test.rs`, `tests/mcp_stdio_test.rs` |
