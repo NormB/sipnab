@@ -2096,7 +2096,12 @@ fn probe_reassembly_ttl_secs() -> (String, String) {
 /// 20 ms, so any connect races a process that has already exited.
 #[cfg(feature = "metrics")]
 fn probe_metrics_max_conn() -> (String, String) {
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
+
+    /// What `handle_metrics_connection` gives a client to send its request
+    /// line, and therefore how long a parked connection holds its slot.
+    /// Mirrors the `set_read_timeout` in `src/output/prometheus_server.rs`.
+    const METRICS_HANDLER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
     /// Bind an ephemeral port and release it, so the probe knows the number.
     fn free_port() -> u16 {
@@ -2126,22 +2131,72 @@ fn probe_metrics_max_conn() -> (String, String) {
             .spawn()
             .expect("spawn sipnab");
 
-        // Wait for the listener, without consuming a slot: a connect that is
-        // closed again releases its permit when the handler's read fails.
+        // Wait until the server actually SERVES, not merely until a connect
+        // succeeds. A bare connect takes a permit and its handler holds it for
+        // as long as the read blocks, so under `metrics_max_conn = 1` the
+        // readiness probe itself can still own the only slot when the parked
+        // connection arrives -- the parked one is then refused, holds nothing,
+        // and the measurement below reads "served" while the key works fine.
+        // A completed scrape proves both that the server is up and that a
+        // permit is free again.
+        let ready_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let mut up = false;
-        for _ in 0..60 {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            if std::net::TcpStream::connect(&addr).is_ok() {
-                up = true;
-                break;
+        while std::time::Instant::now() < ready_by {
+            if let Ok(mut s) = std::net::TcpStream::connect(&addr) {
+                let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                let _ = write!(
+                    s,
+                    "GET /metrics HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+                );
+                let mut line = String::new();
+                if BufReader::new(&s).read_line(&mut line).unwrap_or(0) > 0
+                    && !line.contains(" 503 ")
+                {
+                    up = true;
+                    break;
+                }
             }
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        assert!(up, "the metrics server never came up on {addr}");
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(up, "the metrics server never served a scrape on {addr}");
 
-        // One connection parked mid-request, holding its slot.
-        let parked = std::net::TcpStream::connect(&addr).expect("park a connection");
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        // Park a connection and PROVE it holds a slot, rather than sleeping and
+        // assuming the accept loop got to it. The two outcomes are
+        // distinguishable on the wire: a REFUSED connection is answered `503`
+        // and closed, while a HELD one receives nothing at all, because its
+        // handler is blocked reading a request line this probe never sends. So
+        // an empty read IS the proof, and a 503 means this attempt took no slot
+        // and must be retried.
+        let parked_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let parked = loop {
+            assert!(
+                std::time::Instant::now() < parked_by,
+                "no connection ever held a metrics slot on {addr}, so the \
+                 premise this probe rests on was never established. That is a \
+                 statement about this machine, not about the key."
+            );
+            let s = std::net::TcpStream::connect(&addr).expect("park a connection");
+            let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(250)));
+            let mut buf = [0u8; 32];
+            match (&s).read(&mut buf) {
+                // Timed out with no bytes: a handler owns this socket and is
+                // blocked on the request line. The slot is held.
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    break s;
+                }
+                // Anything else -- a `503`, or a close -- means no slot was
+                // taken. Drop it and try again.
+                _ => {}
+            }
+        };
+        // Every measurement below must land inside the handler's read timeout,
+        // or the parked connection releases its slot mid-probe.
+        let held_since = std::time::Instant::now();
 
         let mut status = String::from("no-answer");
         if let Ok(mut s) = std::net::TcpStream::connect(&addr) {
@@ -2159,6 +2214,22 @@ fn probe_metrics_max_conn() -> (String, String) {
                 };
             }
         }
+
+        // A "served" verdict is only evidence about the key if the parked
+        // connection still held its slot throughout. Past the handler's read
+        // timeout it does not, and "served" would then say nothing -- exactly
+        // the reading that would get a working key deleted.
+        let elapsed = held_since.elapsed();
+        assert!(
+            status == "second-scrape-refused" || elapsed < METRICS_HANDLER_READ_TIMEOUT,
+            "the second scrape took {elapsed:?}, past the {:?} the parked \
+             connection holds its slot for, so `{status}` is not evidence \
+             about metrics_max_conn -- the slot was released mid-probe. This \
+             machine was too slow to OBSERVE the key; that is not the same as \
+             the key being dead, and the limit must not be deleted on the \
+             strength of it.",
+            METRICS_HANDLER_READ_TIMEOUT
+        );
 
         drop(parked);
         let _ = child.kill();
