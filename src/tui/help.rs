@@ -130,6 +130,20 @@ COPY & PASTE:
   E                Export Mermaid diagram to clipboard (Call Flow view)
   F12              Toggle mouse capture for native drag-to-select \u{2014} global
 
+VCON EXPORT (one call, for handing to somebody else):
+This program exports one call as a vCon container, the IETF interchange
+format for a conversation record. It holds what sipnab observed: the ladder
+on screen, and nothing else. It carries no audio and no link to audio held
+somewhere else, and sipnab signs nothing \u{2014} it watched this call rather than
+taking part in it. Each party shows what the From and To headers claimed,
+never an identity anyone checked. Every container also states what it lost:
+messages idle compaction discarded, SIP a port gate dropped, blind spots the
+capture analysis ranked. Read that note before you treat one as a record of
+the call.
+Ask for a container over REST at GET /v1/dialogs/<call-id>/vcon, or reach for
+the command-line and MCP surfaces. A build carries the exporter when the
+version line above lists the vcon feature.
+
 Copies use OSC 52, which works over SSH (most modern terminals support it).
 Mouse wheel scrolls or moves the selection in the scrollable views while
 capture is on (the call timeline is a single fixed screen — nothing to
@@ -403,6 +417,89 @@ mod tests {
         assert!(
             rendered.contains("9.9.9 (abc) features: tui"),
             "got: {rendered}"
+        );
+    }
+
+    /// Every clause the vCon note must carry, checked one at a time.
+    ///
+    /// Listed here rather than compared as one blob so a failure names the
+    /// clause that went missing. Each is a thing an operator would otherwise
+    /// have to already know: that sipnab only WATCHED the call, that the
+    /// container holds no audio, that nothing in it is signed, and that a
+    /// capture which lost messages says so inside the container.
+    const REQUIRED_VCON_CLAUSES: &[&str] = &[
+        "vCon",
+        "sipnab observed",
+        "no audio",
+        "sipnab signs nothing",
+        "what it lost",
+        "/vcon",
+    ];
+
+    /// The help text names vCon export and, beside it, what it leaves out.
+    ///
+    /// The failure this prevents is the one the whole feature turns on: an
+    /// operator handing a sipnab vCon to somebody who reads it as a recording
+    /// of the call. Naming the export without naming its limits would make
+    /// this surface the cause of that rather than the guard against it.
+    #[test]
+    fn help_text_names_vcon_export_and_what_it_leaves_out() {
+        for clause in REQUIRED_VCON_CLAUSES {
+            assert!(
+                HELP_TEXT.contains(clause),
+                "the vCon note lost `{clause}` — a container described only by \
+                 what it contains reads as a complete record of the call"
+            );
+        }
+    }
+
+    /// The note REACHES a rendered frame, not merely the constant.
+    ///
+    /// `HELP_TEXT` is the source; `build_help_lines` is what an operator sees.
+    /// The two can part company — the builder classifies every line and could
+    /// drop or swallow one — and a caveat that exists only in a constant has
+    /// warned nobody.
+    #[test]
+    fn the_vcon_note_reaches_the_rendered_help() {
+        let theme = crate::tui::Theme::default();
+        let lines = build_help_lines(&theme, "1.2.3", 78);
+        let rendered: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        for clause in REQUIRED_VCON_CLAUSES {
+            assert!(
+                rendered.contains(clause),
+                "`{clause}` is in HELP_TEXT and never reaches the screen: \
+                 {rendered}"
+            );
+        }
+    }
+
+    /// The note is prose, and no line of it can be read as a key binding.
+    ///
+    /// Not cosmetic. `tests/keybinding_drift_test.rs` takes everything before
+    /// the first run of two or more spaces on ANY help line as key tokens, and
+    /// checks them against the keymap. A prose line aligned with two spaces
+    /// would inject words like "vCon" into that set and fail a gate that has
+    /// nothing to do with this change — and the obvious repair, relaxing the
+    /// gate, would cost the project the drift check on every real binding.
+    ///
+    /// This note deliberately binds no key: sipnab's TUI cannot write a vCon,
+    /// and a key that did nothing in a build without the `vcon` feature is the
+    /// failure the REST route's `#[cfg]` gate exists to avoid.
+    #[test]
+    fn the_vcon_note_carries_no_key_binding_column() {
+        let offenders: Vec<&str> = HELP_TEXT
+            .lines()
+            .filter(|l| l.contains("vCon") || l.contains("vcon"))
+            .filter(|l| l.trim_start().contains("  "))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "these vCon lines have a two-space gap and read as key bindings to \
+             the keybinding-drift gate: {offenders:?}"
         );
     }
 
