@@ -76,7 +76,7 @@ together and one of them evaporates.
 
 ### 2.2 What `launch` does with the answer
 
-`launch` ([`src/app/bootstrap.rs:1127`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1127)) takes the same singular `Option`. Four
+`launch` ([`src/app/bootstrap.rs:1179`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1179)) takes the same singular `Option`. Four
 decisions downstream read the source as a scalar:
 
 - **Auto-detection.** [`src/app/bootstrap.rs:880`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L880) substitutes a default interface
@@ -429,7 +429,7 @@ means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
 ([`src/app/bootstrap.rs:687`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L687)), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:2791`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2791)) already names both reasons a
+`cores_ignored_warning` ([`src/app/bootstrap.rs:2810`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2810)) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
@@ -493,7 +493,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
 message ([`src/app/bootstrap.rs:629-655`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L629-L655)), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:2791`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2791)), `-I` beating `-d` warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:2810`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2810)), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:315`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L315)). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a

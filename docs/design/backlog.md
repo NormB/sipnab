@@ -542,7 +542,7 @@ Tiers:
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:2791`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2791)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:2810`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2810)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -577,8 +577,8 @@ Tiers:
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:4406`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4406)) currently takes
-  nowhere; `security_findings` ([`src/mcp/server.rs:4406`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4406)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:4557`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4557)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:4557`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4557)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -795,8 +795,8 @@ Tiers:
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:4503`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4503),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:4503`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4503),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:4654`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4654),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:4654`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4654),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -1542,16 +1542,16 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:94`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L94)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:5810`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5810), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:5965`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5965), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1299`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1299)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1313`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1313)), which attaches `frame_ref`
     (`#[tool(` at [`src/mcp/server.rs:4528`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4528), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1299`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1299)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1313`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1313)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -2043,7 +2043,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:6945`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6945), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:7098`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7098), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -4028,6 +4028,60 @@ free, because the free was mimalloc's.
 several times slower — but see [`tests/support/timeout.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/timeout.rs) for the corrected
 reason it was introduced.
 
+## VCON — vCon export (added 2026-08-24)
+
+The decision is taken and the library exists. What is missing is everything a
+user touches: no door opens the exporter, nobody has been told it is there, and
+no page shows a worked example.
+
+Tagged `VCON` so the whole programme can be found with one grep. Ticked items
+name the commit that closed them.
+
+| Item | State | What it is |
+|---|---|---|
+| `VCON0` | **DONE** | Phase 0 decision — observer vCons only. [`docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md) |
+| `VCON1` | **DONE** | Phase 1 library — [`src/output/vcon.rs`](https://github.com/NormB/sipnab/blob/main/src/output/vcon.rs), one dialog, signaling only, behind the non-default `vcon` feature |
+| `VCON2` | TODO | **CLI surface.** A flag that exports one dialog, and refuses honestly when the build lacks the feature or the Call-ID is unknown |
+| `VCON3` | TODO | **MCP tool.** `export_vcon`, returning the container as structured JSON rather than a stringified blob |
+| `VCON4` | TODO | **REST endpoint.** `GET /v1/dialogs/{call_id}/vcon`, 404 on an unknown Call-ID, and absent entirely without the feature |
+| `VCON5` | TODO | **TUI reachability.** An operator looking at a call must be able to see that export exists and what it would leave out |
+| `VCON6` | TODO | **User documentation + walkthrough.** Task-first: what a vCon is, why sipnab's is an observer's, how to produce one, and what a consumer must not read into it |
+| `VCON7` | TODO | **Developer documentation.** The shape of the module, where the caveat is duplicated from, and how to add a field without breaking the divergence gate |
+| `VCON8` | TODO | **Make the credential strip load-bearing.** Today it guards a projection that carries no raw headers, so it removes nothing. Either the trace gains a header list and the filter starts working, or the docs stop implying it does |
+| `VCON9` | **ACTIVE** | Phase 2 media. `recording` Dialog Objects, inline base64url only, with a `recording-set` object carrying the call's `start`/`duration` when the ring wrapped — the one in-spec way to say "the file is shorter than the call". Routed to the OBSERVER subject, never a consumer's `recordings` table: see [`docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md) §4b for why the two vocabularies collide on that word |
+| `VCON10` | TODO | Ingress wiring. A consumer now exists, so §6's falsification clock has started. Publishing is unbuilt. Addresses and the scoped token live in an operator's environment and must never enter this repository |
+
+### The bar these are held to
+
+Every item above carries the same requirements, and an item is not done until
+all four hold:
+
+- **Tests written first, with a failure case and a success case.** A test that
+  only asserts the happy path cannot tell a working exporter from one that
+  emits the same thing for every input. Where a gate exists, it must be shown
+  to fail under a stated mutation.
+- **User documentation AND developer documentation.** They answer different
+  questions: one is "how do I produce a vCon and what may I conclude from it",
+  the other is "how is this built and what breaks if I change it".
+- **A worked example, not a synopsis.** Real commands against a real capture,
+  with the output a reader can compare against.
+- **Every door, or a stated reason.** CLI, REST, MCP and the TUI. A surface
+  left out silently is the drift [`tests/surface_parity_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/surface_parity_test.rs) exists to
+  catch.
+
+### VCON8 in more detail, because it is the one that misleads
+
+`no_credential_survives_an_export` passes today, and it passes for the wrong
+reason. `build_message_json` emits a projection — timestamps, addresses,
+method, From/To/Contact/User-Agent, SDP — and carries no raw header map, so an
+`Authorization` value cannot reach the trace to be stripped. The filter is a
+regression gate for a field that does not exist yet.
+
+That is recorded rather than hidden, in the module docs and in the commit that
+introduced it. The resolution is a decision, not a fix: a real SIP trace
+arguably SHOULD carry raw headers, and the moment it does the filter becomes
+load-bearing and the test starts proving what it claims.
+
 ## SP — surface parity (added 2026-08-24)
 
 Nine increments closed the gap between what MCP, REST, the CLI, the TUI and the
@@ -4048,34 +4102,7 @@ carried a doc comment calling itself "the name this assertion is written under
 on every output surface". The caveat gate is the strictest because a missing
 caveat counter does not make a response incomplete -- it makes it read as clean.
 
-### SP1 — capture identity and context on REST — DONE
-
-Both blockers below were real and both were resolved rather than worked
-around.
-
-`CaptureState` and `CaptureContext` moved to
-[`src/capture/session.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/session.rs),
-outside both server modules, with the two MCP-only fields `#[cfg]`-gated the
-way [`MediaDecrypt`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs)
-gates its `tls`-only ones. [`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) builds ONE instance before
-either server arm and hands the same handle to both, so a rotation one door
-performs is a rotation the other sees. A copy would have been simpler and
-wrong: the identity rotates when `open_capture` swaps the file underneath, and
-two copies disagree from that moment on.
-
-`get_stats` now holds capture, dialogs and streams across the read, in the
-order `CaptureState` documents. It released the dialog guard before taking the
-stream guard, which was survivable while nothing tied the counts together and
-stopped being survivable the moment one etag claimed they belong to each other.
-
-The test that proves it was itself wrong first. Asserting only that the
-identity CHANGES after a rotation passed against a handler minting a fresh
-identity per request -- the exact private-copy design this change exists to
-avoid. Mutation testing caught it. The assertion that discriminates is the
-opposite one: two reads with nothing between them must return the SAME
-instance.
-
-### SP1 (original entry, kept for the reasoning) — BLOCKED on a decision
+### SP1 — capture identity and context on REST — BLOCKED on a decision
 
 `GET /v1/stats` still lacks `capture_identity`, `source_exhausted`,
 `writing_to` and `unsaved`, all of which MCP `capture_status` has. Unlike every
@@ -4112,3 +4139,4 @@ as an oversight.
 | gRPC API | REMOVED | REST API is complete; re-add only if streaming demand arises. |
 | STIR/SHAKEN cert verification | DEFERRED | Would require HTTP cert fetching — added attack surface, intentionally skipped. |
 | WASM plugins | **SHIPPED in 0.5.69**, behind the `plugins` feature — this row said FUTURE until 2026-08-05 | D7 ruled out Lua and named WASM as the path. That path was taken: `plugins = ["native", "dep:wasmi"]` in Cargo.toml, wasmi as a pure-safe-Rust interpreter, a sandbox test and a worked example. The stock build still gains no interpreter and no dependency, which is what made shipping it acceptable. |
+| vCon export (`draft-ietf-vcon-vcon-core`) | PHASE 0 DECIDED | sipnab is a vCon *contributor*, not a producer — observer vCons only, with signing, encryption, consent and lawful-basis attachments declined outright. The format has no field for "this container is an incomplete record of the conversation", and that gap shapes the whole design: [`docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md). |

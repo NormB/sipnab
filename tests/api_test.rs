@@ -93,6 +93,70 @@ fn unknown_dialog_returns_404() {
     assert_eq!(resp.status, 404, "unknown dialog must 404");
 }
 
+/// `GET /v1/dialogs/{call_id}/vcon` is served by the binary that ships, and an
+/// unknown Call-ID is a 404 there too.
+///
+/// Driven through `ApiServer::spawn` rather than the in-process router, for
+/// the reason `/v1/report` is: a handler can be correct, and tested, and still
+/// not be wired into the shipping binary. That is a live risk here in a way it
+/// is not elsewhere, because both the route registration and the handler sit
+/// behind `#[cfg(feature = "vcon")]` — a build that silently lost the feature
+/// would keep every in-process test compiling and stop answering.
+///
+/// The caveat assertions are the point of the route rather than decoration.
+/// A sipnab vCon is an OBSERVER's record: it carries signaling only, nothing
+/// in it is signed, and a capture that lost messages to compaction or a port
+/// gate has to say so. A container that reached a consumer without that text
+/// would read as a recording of the call.
+#[cfg(feature = "vcon")]
+#[test]
+fn vcon_route_is_served_by_the_shipping_binary() {
+    let srv = ApiServer::spawn(&[]);
+
+    let resp = srv.get(&format!("/v1/dialogs/{CALL_ID}/vcon"));
+    assert_eq!(resp.status, 200, "/v1/dialogs/{CALL_ID}/vcon status");
+    let body = resp.json();
+    assert!(
+        body.is_object(),
+        "the container must arrive as an object, not a stringified blob: {body}"
+    );
+    assert_eq!(
+        body["vcon"], "0.4.0",
+        "the syntax version a consumer keys its parser on: {body}"
+    );
+    assert_eq!(
+        body["dialog"][0]["sip_call_id"], CALL_ID,
+        "the container must name the Call-ID it was built from: {body}"
+    );
+
+    // draft-ietf-vcon-vcon-core §2.3.2 makes `body` a String, so the read goes
+    // through a parse. A `Value` index here would silently yield `null` against
+    // a spec-conforming container and pass against a non-conforming one.
+    let analysis_body: serde_json::Value = serde_json::from_str(
+        body["analysis"][0]["body"]
+            .as_str()
+            .unwrap_or_else(|| panic!("an analysis body must be a string: {body}")),
+    )
+    .unwrap_or_else(|e| panic!("the analysis body must parse: {e}: {body}"));
+    let note = analysis_body["capture_completeness"]["note"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no completeness note: {body}"));
+    for clause in ["OBSERVED", "SIGNALING ONLY", "nothing here is signed"] {
+        assert!(
+            note.contains(clause),
+            "the caveat must say `{clause}` — without it the container reads \
+             as a recording of the call: {note}"
+        );
+    }
+
+    let unknown = srv.get("/v1/dialogs/does-not-exist@nowhere/vcon");
+    assert_eq!(
+        unknown.status, 404,
+        "an unknown Call-ID must 404 here as it does on every other per-call \
+         route, rather than return an empty container"
+    );
+}
+
 /// `GET /v1/stats` returns 200 with schema_version 2, correct dialog counts
 /// for the fixture, and a `timing` object.
 ///

@@ -1,0 +1,28 @@
+[1;33mRunning pre-commit checks...[0m
+  Formatting... [0;32mOK[0m
+  Vale... [0;32mOK[0m
+  Codespell... [0;32mOK[0m
+  Clippy... [0;32mOK[0m
+  Tests... [0;31mFAIL[0m
+  2 test(s) failed:
+    docs_page_weights_are_unique_and_descriptions_present
+    every_docs_page_is_in_the_sidebar_and_dropdown_navs
+
+  docs_page_weights_are_unique_and_descriptions_present
+    thread 'docs_page_weights_are_unique_and_descriptions_present' (1842901) panicked at tests/site_journey_test.rs:1981:5:
+    docs frontmatter problems:
+    weight 29 used by tls-capture.md and vcon.md
+    
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+  every_docs_page_is_in_the_sidebar_and_dropdown_navs
+    thread 'every_docs_page_is_in_the_sidebar_and_dropdown_navs' (1842926) panicked at tests/site_journey_test.rs:3177:9:
+    assertion `left != right` failed: duplicate docs weight 29: tls-capture.md and vcon.md — prev/next order is arbitrary
+      left: 29
+     right: 29
+
+    test result: FAILED. 59 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.89s
+
+  Reproduce: cargo test --features full docs_page_weights_are_unique_and_descriptions_present -- --exact --nocapture
+  Full output: /home/gator/Development/sipnab/.git/worktrees/agent-a5e2869719ebf7e01/sipnab-pre-commit-tests.log
+HOOK_EXIT=1

@@ -475,6 +475,15 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
                 .check(std::path::Path::new(out), "-O/--output", split_active)
                 .map_err(PlanError::arg)?;
         }
+        // `--vcon-out` writes a file, so it reaches the same mistake by the
+        // same route. A container written over the capture it describes
+        // destroys the evidence the container is a summary of, and the run
+        // would exit 0 having done it. Never rotates, so `split` is false.
+        if let Some(ref out) = cli.output_args.vcon_out {
+            protected
+                .check(out, "--vcon-out", false)
+                .map_err(PlanError::arg)?;
+        }
 
         Some(CaptureSource::File { paths })
     } else if let Some(ref device) = cli.capture_args.device {

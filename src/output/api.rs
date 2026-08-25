@@ -13,6 +13,7 @@
 //! | GET    | `/v1/dialogs`                   | List dialogs (paginated)        |
 //! | GET    | `/v1/dialogs/:call_id`          | Get single dialog               |
 //! | GET    | `/v1/dialogs/:call_id/report`   | Get dialog call report          |
+//! | GET    | `/v1/dialogs/:call_id/vcon`     | Export dialog as vCon (`vcon`)  |
 //! | GET    | `/v1/streams`                   | List RTP streams (paginated)    |
 //! | GET    | `/v1/streams/:id`               | Get single RTP stream           |
 //! | GET    | `/v1/stats`                     | Aggregate statistics            |
@@ -248,11 +249,18 @@ async fn request_timeout_mw(
 ///
 /// * `state` — Shared stores, verifier, and rate limiter for all handlers.
 pub fn build_router(state: ApiState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/health", get(health_check))
         .route("/v1/dialogs", get(list_dialogs))
         .route("/v1/dialogs/{call_id}", get(get_dialog))
-        .route("/v1/dialogs/{call_id}/report", get(get_dialog_report))
+        .route("/v1/dialogs/{call_id}/report", get(get_dialog_report));
+    // Registered only where the exporter exists. A route that answered 501
+    // in a build without the feature would leave a client unable to tell
+    // "this sipnab cannot" from "this call has no data", and the second
+    // reading is the one it would act on.
+    #[cfg(feature = "vcon")]
+    let router = router.route("/v1/dialogs/{call_id}/vcon", get(get_dialog_vcon));
+    router
         .route("/v1/streams", get(list_streams))
         .route("/v1/streams/{id}", get(get_stream))
         .route("/v1/report", get(get_capture_report))
@@ -807,6 +815,119 @@ async fn get_dialog_report(
 
     let parsed: Value =
         serde_json::from_str(&report).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(parsed))
+}
+
+/// The capture identifier this door mixes into every vCon `uuid`.
+///
+/// A constant, and deliberately so.
+/// [`ExportContext::capture_id`](crate::output::vcon::ExportContext::capture_id)
+/// exists to do two jobs: keep one dialog's `uuid` stable across repeated
+/// exports of one capture, and separate the same Call-ID observed in two
+/// different captures. A REST server holds exactly one capture for its whole
+/// life and has no name for it — the source may be a live interface, a merged
+/// set of files, or a HEP feed, and none of those reaches
+/// [`ApiState`]. Anything invented here per request would rotate, and a
+/// rotating value mints a fresh `uuid` on every GET: a consumer that
+/// deduplicates on `uuid`, which is what the field is for, then accumulates
+/// one copy of the conversation per poll.
+///
+/// So this keeps the first job and leans on the rest of the derivation for the
+/// second. `dialog_uuid` is a function of the dialog's OWN first-message
+/// timestamp as well as the Call-ID, so two captures that saw different parts
+/// of one call already differ in the timestamp and land on different `uuid`s
+/// without help from here. What a constant gives up is narrower than it looks:
+/// two captures on ONE node that both saw the same first packet of one call
+/// and then diverged — one behind a port gate, one not — collide, and
+/// `the_uuid_identifies_the_dialog_and_not_the_moment_of_export` in
+/// `tests/vcon_ingest_contract_test.rs` records what a collision costs at a
+/// store, which is that one record is lost.
+///
+/// That residue is left rather than patched here on purpose. A per-door
+/// capture-id policy is how three doors end up with three answers, and the
+/// choice a live capture needs (each run IS a new capture) is the opposite of
+/// the one a file needs (reopening is not). That belongs beside
+/// [`crate::output::vcon::ExportContext`], where every door reads it, not in
+/// one handler.
+#[cfg(feature = "vcon")]
+const REST_CAPTURE_ID: &str = "sipnab-rest";
+
+/// `GET /v1/dialogs/:call_id/vcon` — one observed dialog as a vCon container.
+///
+/// Registered only in a build with the `vcon` feature. See the gate in
+/// [`build_router`] for why the route is absent rather than answering an
+/// error: a client can distinguish a missing route from a missing call, and
+/// cannot distinguish two different errors on the same one.
+///
+/// # What this returns, and what a reader must not conclude from it
+///
+/// An OBSERVER's record. sipnab watched these packets go past; it did not
+/// place the call, record it, or obtain anyone's consent to keep it. The
+/// container carries signaling only — no media and no reference to media held
+/// elsewhere — nothing in it is signed, and the party entries are what the
+/// `From` and `To` headers said rather than identities anyone established.
+/// Every one of those is stated inside the container itself, in the
+/// completeness caveat that [`crate::output::vcon`] duplicates into the
+/// analysis body and an attachment.
+///
+/// # Why the capture analysis runs here
+///
+/// `blind_spots: None` and `blind_spots: []` are different answers — "nobody
+/// looked" against "somebody looked and found nothing" — and this door has
+/// both stores in hand, so declining to look would make every container it
+/// emits read as unexamined. `/v1/report` already pays the same per-request
+/// analysis cost for the same stores.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `call_id` — Call-ID path segment identifying the dialog.
+///
+/// # Returns
+///
+/// 200 with the container serialized as a JSON OBJECT — not
+/// [`Vcon::to_json`](crate::output::vcon::Vcon::to_json)'s string, which would
+/// make a client parse JSON out of JSON; 404 when the Call-ID is unknown; 500
+/// if the container fails to serialize; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Holds the dialog- then stream-store read locks (in that order, the one
+/// `/v1/report` takes, so the two can never deadlock against each other)
+/// while reading the facts and running the analysis; mutates the rate limiter.
+#[cfg(feature = "vcon")]
+async fn get_dialog_vcon(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(call_id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    guard(&state, &headers, addr.ip())?;
+
+    let ds = state.dialog_store.read();
+    let dialog = ds.get(&call_id).ok_or(StatusCode::NOT_FOUND)?;
+    let ss = state.stream_store.read();
+
+    // Frames read comes from the same process-global the Prometheus scrape and
+    // `/v1/report` report, so the denominator the caveat quotes is the one
+    // every other number in the run is read against.
+    let facts =
+        crate::analysis::CaptureFacts::observed(&ds, &ss, crate::capture::captured_packets());
+    let analysis = crate::analysis::analyze_with(&ds, &ss, None, &facts);
+    let container = output::vcon::export_dialog(
+        dialog,
+        &output::vcon::ExportContext {
+            capture_id: REST_CAPTURE_ID,
+            facts: &facts,
+            analysis: Some(&analysis),
+        },
+    );
+    drop(ss);
+    drop(ds);
+
+    let parsed = serde_json::to_value(&container).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(parsed))
 }
 
@@ -2328,6 +2449,209 @@ mod tests {
             "report should contain call_id, got: {body}"
         );
         assert!(parsed.is_object(), "report should be a JSON object");
+    }
+
+    /// `GET /v1/dialogs/:call_id/vcon` returns the container as an OBJECT,
+    /// carrying the syntax version and the Call-ID it was built from.
+    ///
+    /// The object check is the half with teeth. `Vcon::to_json` exists and
+    /// returns a `String`, so the shortest handler that compiles hands back a
+    /// stringified blob — and a client then parses JSON out of JSON, which is
+    /// exactly the mistake `get_capture_report` was written to correct after
+    /// MCP had been serving text under a `format: "json"` default.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn dialog_vcon_returns_a_container_object() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/call-1@test/vcon"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert!(
+            parsed.is_object(),
+            "the container must be an object a client reads fields out of, \
+             not a string it parses a second time: {body}"
+        );
+        assert_eq!(
+            parsed["vcon"],
+            crate::output::vcon::VCON_SYNTAX_VERSION,
+            "the syntax version names the draft the layout was written \
+             against; a consumer keys its parser on it: {parsed}"
+        );
+        assert_eq!(
+            parsed["dialog"][0]["sip_call_id"], "call-1@test",
+            "the container must name the Call-ID it was built from: {parsed}"
+        );
+    }
+
+    /// The completeness caveat reaches BOTH surfaces through this door.
+    ///
+    /// The caveat is the whole reason an observer vCon is defensible, and
+    /// `export_dialog` duplicates it into the analysis body and an attachment
+    /// on purpose. A handler that serialized some narrower projection —
+    /// `DialogSummary`, a hand-built object, the analysis alone — would still
+    /// pass every shape assertion above while shipping a container that reads
+    /// as a complete record of the call.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn dialog_vcon_carries_the_completeness_caveat_on_both_surfaces() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/call-1@test/vcon"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let parsed: Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+
+        let attachment = parsed["attachments"]
+            .as_array()
+            .expect("attachments array")
+            .iter()
+            .find(|a| a["purpose"] == crate::output::vcon::COMPLETENESS_PURPOSE)
+            .unwrap_or_else(|| panic!("no completeness attachment: {parsed}"));
+        // §2.3.2 makes `body` a String, so both reads parse it rather than
+        // indexing a `Value` that is not an object.
+        let attachment_body: serde_json::Value = serde_json::from_str(
+            attachment["body"]
+                .as_str()
+                .expect("a json body is a string"),
+        )
+        .expect("the attachment body parses");
+        let from_attachment = attachment_body["note"]
+            .as_str()
+            .unwrap_or_else(|| panic!("attachment note is not a string: {parsed}"));
+        let analysis_body: serde_json::Value = serde_json::from_str(
+            parsed["analysis"][0]["body"]
+                .as_str()
+                .expect("a json body is a string"),
+        )
+        .expect("the analysis body parses");
+        let from_analysis = analysis_body["capture_completeness"]["note"]
+            .as_str()
+            .unwrap_or_else(|| panic!("analysis note is not a string: {parsed}"));
+
+        assert_eq!(
+            from_attachment, from_analysis,
+            "two caveats that disagree read as authoritative while \
+             contradicting each other, which is worse than carrying none"
+        );
+        assert!(
+            from_attachment.contains("SIGNALING ONLY"),
+            "the caveat must say this container carries no media: \
+             {from_attachment}"
+        );
+        assert!(
+            analysis_body["capture_completeness"]["blind_spots"].is_array(),
+            "this door runs the capture analysis, so `blind_spots` must be a \
+             list and not absent — absent means NOBODY LOOKED, and an export \
+             that skipped the analysis would then read as a clean one: {parsed}"
+        );
+    }
+
+    /// An unknown Call-ID is a 404, matching every other per-call route.
+    ///
+    /// The alternative a handler falls into is a 200 carrying an empty or
+    /// default container, which a client cannot tell from a real observation
+    /// of a call that had no messages.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn unknown_call_id_has_no_vcon() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/does-not-exist@nowhere/vcon"))
+            .await
+            .expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "an unknown Call-ID must 404 rather than return an empty container"
+        );
+    }
+
+    /// Two different dialogs export two different containers.
+    ///
+    /// Without this a handler that ignores its `call_id` and always exports
+    /// the first dialog in the store passes both the success and the 404 case
+    /// above, and every client silently receives one call's record under every
+    /// other call's URL.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn two_dialogs_export_two_different_containers() {
+        let state = make_state();
+        populate_dialogs(&state);
+
+        let mut seen = Vec::new();
+        for call_id in ["call-0@test", "call-1@test"] {
+            let app = build_router(state.clone());
+            let resp = app
+                .oneshot(test_request(&format!("/v1/dialogs/{call_id}/vcon")))
+                .await
+                .expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::OK, "{call_id} status");
+            let parsed: Value =
+                serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+            seen.push((
+                parsed["dialog"][0]["sip_call_id"].clone(),
+                parsed["uuid"].clone(),
+            ));
+        }
+
+        assert_eq!(seen[0].0, "call-0@test", "first container names its call");
+        assert_eq!(seen[1].0, "call-1@test", "second container names its call");
+        assert_ne!(
+            seen[0].1, seen[1].1,
+            "two conversations must not share a uuid — a consumer keyed on it \
+             would keep one and discard the other: {seen:?}"
+        );
+    }
+
+    /// Re-exporting ONE dialog returns the SAME uuid.
+    ///
+    /// The assertion that discriminates, and the one the other tests cannot
+    /// make. "The containers differ" passes against a handler that stamps
+    /// something fresh per request — a rotated capture instance, a random id,
+    /// the export clock — and a consumer deduplicating on `uuid` then
+    /// accumulates one copy of the conversation per poll. `created_at` is
+    /// deliberately NOT asserted stable: it records when the container was
+    /// written and legitimately moves.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn re_exporting_one_dialog_keeps_its_uuid() {
+        let state = make_state();
+        populate_dialogs(&state);
+
+        let mut uuids = Vec::new();
+        for _ in 0..2 {
+            let app = build_router(state.clone());
+            let resp = app
+                .oneshot(test_request("/v1/dialogs/call-1@test/vcon"))
+                .await
+                .expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::OK);
+            let parsed: Value =
+                serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON");
+            uuids.push(parsed["uuid"].clone());
+        }
+
+        assert_eq!(
+            uuids[0], uuids[1],
+            "one dialog out of one capture is one container, however many \
+             times it is asked for: {uuids:?}"
+        );
     }
 
     /// `GET /v1/streams` on an empty store returns 200 with an empty array

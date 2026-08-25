@@ -65,6 +65,12 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             // against this crate, so `--features native` is the one thing
             // between them and a compile error.
             "docs/library.md",
+            // `vcon` is NON-DEFAULT, so a reader following the walkthrough has
+            // no export at all without naming it. The whole point of the page
+            // is a runnable sequence, and a stock binary silently lacking the
+            // flag is the first thing that would stop them.
+            "docs/vcon.md",
+            "website/content/docs/vcon.md",
         ],
     ),
     // `--homer` and `--homer-enable-ng` are RTPENGINE's, named on the pages
@@ -154,7 +160,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // produces a loadable plugin, and a half-quoted command is not runnable.
     (
         "release",
-        &["docs/plugins.md", "website/content/docs/plugins.md"],
+        &[
+            "docs/plugins.md",
+            "website/content/docs/plugins.md",
+            // The vCon walkthrough builds a release binary because the export
+            // runs over a capture, and a debug build is slow enough on a real
+            // one to read as a hang.
+            "docs/vcon.md",
+            "website/content/docs/vcon.md",
+        ],
     ),
     (
         "target",
@@ -625,6 +639,11 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "docs/internals/tui-testing.md",
             "website/content/docs/internals/testing.md",
             "website/content/docs/internals/tui-testing.md",
+            // The vCon page names the test binary that proves the export, so a
+            // reader can run the same check the repository runs rather than
+            // taking the page's word for it.
+            "docs/vcon.md",
+            "website/content/docs/vcon.md",
         ],
     ),
     (
@@ -1898,8 +1917,8 @@ fn readme_feature_table_covers_every_cargo_feature() {
     }
 
     assert_eq!(
-        seen, 13,
-        "feature extraction found {seen} features, expected 13. Bump when a \
+        seen, 14,
+        "feature extraction found {seen} features, expected 14. Bump when a \
          feature is added; a drop means the parser stopped reading Cargo.toml's \
          table and the comparison below narrowed."
     );
@@ -2121,9 +2140,13 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // says about the capture as a whole -- orphaned media, STUN, ICMP evidence,
     // what the caps shed -- was reachable from the CLI and the REST API and
     // from no MCP tool. An agent could be handed a count it could not expand.
+    // Raised 36 -> 37 by `capture_health`, the capture-path counters read twice.
+    // Raised 37 -> 38 by `export_vcon` (VCON3), which hands one observed dialog
+    // to a conversation-data pipeline in the interchange format that pipeline
+    // already reads, rather than in a sipnab-shaped JSON nobody else parses.
     assert_eq!(
         registered.len(),
-        37,
+        38,
         "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -2551,7 +2574,16 @@ fn no_documentation_table_repeats_a_row() {
     // coverage matrix. One file, and the only one this change adds --
     // `docs/design/` is repo-only, so it adds nothing to the website or to
     // llms-full.txt, which a 274-row table would otherwise bloat.
-    const EXPECTED_MARKDOWN_FILES: usize = 164;
+    // 164 -> 165: `docs/design/vcon.md`, the Phase 0 decision on emitting
+    // vCon containers. One file. A design doc has no website mirror, so it
+    // costs this counter one and not two, and the pointer it gained in
+    // `docs/design/backlog.md` is a row in a table that already existed.
+    // 165 -> 169: the vCon pages. Attributed by measurement against `main`,
+    // which carries 164: this branch adds `docs/vcon.md`,
+    // `docs/internals/vcon.md`, `docs/design/vcon.md` and the two generated
+    // site mirrors of the first two. 164 + 5 = 169, and the 165 this replaces
+    // had accounted for one of them.
+    const EXPECTED_MARKDOWN_FILES: usize = 169;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -2615,13 +2647,43 @@ fn no_documentation_table_repeats_a_row() {
     // holds, in the new SP section of `docs/design/backlog.md`. Attributed by
     // measurement before the number moved: that file gained exactly one table
     // separator, and design docs have no generated mirror.
-    // 641 -> 643: one hand-written table and its generated mirror, listing the
-    // capture-context keys `/v1/stats` gained beside `capture_identity` --
-    // source, name, uptime, exhausted, writing-to and unsaved. Attributed by
-    // measurement before the number moved: `docs/rest-api.md` and
-    // `website/content/docs/api.md` gained exactly one table separator each and
-    // no other page gained any.
-    const EXPECTED_TABLES: usize = 643;
+    // 641 -> 644: three tables in the new `docs/design/vcon.md` -- the six
+    // vCon decisions and the fact each turns on, the sipnab PARTIAL clause
+    // against the vCon field that could carry it, and what is declined
+    // outright. Attributed by measurement before the number moved: that file
+    // holds exactly three table separators, no other page gained any (the
+    // backlog's pointer is a row in a table that already existed), and design
+    // docs have no generated mirror.
+    // 644 -> 645: one table, the tagged VCON programme in
+    // `docs/design/backlog.md` -- the ten items and their state. Attributed by
+    // measurement before the number moved: that file gained exactly one table
+    // separator and design docs have no generated mirror.
+    // 645 -> 648: three tables. One hand-written and its generated mirror, in
+    // `docs/mcp-tools.md` -- the `export_vcon` parameter table, which that
+    // tool's new section needs like every other tool section on the page. One
+    // more in `docs/design/vcon.md`, recording what a real vCon store measured
+    // against what the draft says. Attributed by measurement before the number
+    // moved: those three files gained exactly one table separator each, no
+    // other page gained any, and design docs have no generated mirror.
+    // 648 -> 650: one table and its generated mirror, in `docs/mcp-tools.md`
+    // -- the four values `capture_completeness.media` can take, now that a
+    // container may carry audio. The table exists because an absent
+    // `recording` object has four quite different causes and an agent must not
+    // have to infer which one from a missing key. Attributed by measurement
+    // before the number moved: those two files gained exactly one table
+    // separator each (47 -> 48), and no other page gained any.
+    // 650 -> 664. Attributed per file by counting tables at `main` and here,
+    // not by arithmetic on the gate's own number. `main` carries 643 and this
+    // branch adds 21: the three new vCon pages (`docs/vcon.md` +4,
+    // `docs/design/vcon.md` +4, `docs/internals/vcon.md` +2) and their site
+    // mirrors (+4, +2), `docs/mcp-tools.md` +2 for the `export_vcon` rows and
+    // its mirror +2, and `docs/design/backlog.md` +1 for the VCON backlog
+    // table. 643 + 21 = 664; the 650 this replaces accounted for seven of them.
+    // Then 664 -> 666 for the type-rule table `docs/vcon.md` gained when the
+    // conserver interop audit changed how a Dialog Object is typed: one table
+    // saying which `type` and `disposition` each kind of object carries, plus
+    // its generated site mirror. Two files, one table each.
+    const EXPECTED_TABLES: usize = 666;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

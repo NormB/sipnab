@@ -610,12 +610,25 @@ fn wiki_intra_docs_links_resolve() {
     // `media-relay` assertion IS rather than re-explaining relay attribution
     // twice. Two pages, one link each; the site mirrors are generated and this
     // gate reads docs/.
-    // 480 -> 481: one link to design/positioning.md from the multi-relay
-    // section of docs/rtpengine.md, which says sipnab aggregates nothing across
-    // nodes and links the page that DECIDED that rather than re-arguing it.
-    // One page, one link; the site mirror is generated and this gate reads
-    // docs/.
-    const EXPECTED_WIKI_LINKS: usize = 481;
+    // 480 -> 482: two links in `docs/mcp-tools.md` for the `export_vcon`
+    // section -- its row in the tool index, so the tool is addressable from
+    // the table a reader starts at, and a pointer from the feature-gate note
+    // to `server_capabilities`, which is what answers "does this binary carry
+    // the exporter". Attributed by measurement before the number moved with
+    // this gate's OWN rule (relative targets that are same-page anchors or end
+    // in `.md`): that page went 93 -> 95 and no other page under docs/ moved.
+    // The site mirrors are generated and this extractor reads docs/.
+    // 482 -> 498 by the vCon pages. Attributed per file against `main` with
+    // this gate's own rules -- `docs/*.md` and `docs/internals/` only, code
+    // blocks stripped, same-page anchors counted: `docs/vcon.md` +7 (the new
+    // operator page), `docs/internals/vcon.md` +6 (the maintainer page),
+    // `docs/mcp-tools.md` +2 for the `export_vcon` section, and +1 each to
+    // `docs/README.md` and `docs/internals/README.md` registering the two new
+    // pages. `docs/design/vcon.md` contributes nothing: it is outside this
+    // walk. A standalone reproduction of the count lands one above the gate's,
+    // because `prose()` strips more than fenced blocks; the gate's own number
+    // is the one pinned here.
+    const EXPECTED_WIKI_LINKS: usize = 498;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1072,7 +1085,14 @@ fn slugify_matches_known_rendered_anchors() {
 #[test]
 fn every_docs_page_is_linked_from_the_index() {
     /// Pages the docs walk is expected to reach.
-    const EXPECTED_DOCS_PAGES: usize = 47;
+    // Raised 47 -> 49 by the vCon pair, the same shape as the rtpengine pair
+    // above: `vcon.md` for the operator and `internals/vcon.md` for the
+    // maintainer, both registered in their indexes. `docs/design/vcon.md` is
+    // the third page this branch adds and does NOT move this number --
+    // `wiki_source_files()` walks `docs/*.md` and `docs/internals/` only, so a
+    // design note has never been in this walk. Attributed per file before the
+    // number moved.
+    const EXPECTED_DOCS_PAGES: usize = 49;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

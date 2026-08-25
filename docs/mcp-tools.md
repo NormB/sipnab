@@ -53,6 +53,7 @@ ordinary update.
 | [`list_captures`](#list_captures) | -- | Capture files in `--mcp-file-root`, with sizes |
 | [`export_capture`](#export_capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
 | [`export_audio`](#export_audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
+| [`export_vcon`](#export_vcon) | `call_id` | One dialog as a vCon conversation container, structured JSON. Unsigned, retained audio inline, and it carries what the capture missed |
 | [`shutdown_server`](#shutdown_server) | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
 | [`open_capture`](#open_capture) | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
 | [`save_findings`](#save_findings) | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
@@ -2092,6 +2093,182 @@ decode. Audio payload retention was off for this run — that is a capture
 setting, not a finding that the call was silent. Start the server with
 --retain-audio to hold payload for export.
 ```
+
+### `export_vcon`
+
+One observed dialog as a **vCon** conversation container
+([`draft-ietf-vcon-vcon-core`](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/),
+syntax `0.4.0`) — the interchange format a conversation travels in once it
+leaves the system that captured it. Backed by
+[`output::vcon`](https://github.com/NormB/sipnab/blob/main/src/output/vcon.rs).
+`--export-vcon` writes the same container from the CLI.
+
+Unlike its file-writing neighbors this tool writes nothing and needs no
+`--mcp-file-root`. It returns the container inline, so `read_only_hint` is
+`true` and the agent decides what to do with it.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `call_id` | string | A Call-ID the store holds. An unknown one fails with `invalid_params` (-32602) naming the value. | Required — the call fails. |
+
+There is no `format`. A vCon IS a JSON container defined by the draft, so a
+markdown arm would render a document whose whole purpose is to travel between
+machines — and an agent offered one would eventually hand the prose to
+something expecting a container.
+
+**What sipnab claims, and what it refuses to claim.** The container is an
+**observer** vCon and says so in its own parties. sipnab read a mirror port: it
+did not place the call, record it, or obtain anyone's permission to keep it. So
+four things are absent by design, and their absence is the message:
+
+- **No signature and no encryption.** A JWS over this container reads as *the
+  domain that constructed this vouches for it*. What sipnab could truthfully
+  sign is *these bytes are what sipnab observed*, and no signature algorithm
+  carries that distinction. A verifier would check it, get back "authentic",
+  and draw the wrong conclusion.
+- **No party `name`, ever, and `validation` is always `"none"`.** `From` and
+  `To` are a claim the sender made about itself. The display name travels under
+  `sip_display_name` instead, so a reader sees it as what a header said.
+- **No consent and no lawful-basis attachment.** An empty consent field reads
+  as "nobody recorded consent", a statement about the CALL. The truth is a
+  statement about the producer: sipnab was never in a position to record one.
+- **No `url`, ever.** Media travels INLINE or not at all, because sipnab hosts
+  nothing a URL could reach and a dead link inside a record is
+  indistinguishable from evidence somebody removed.
+
+**What happens to the audio.** `dialog.type: "recording"` is a FORMAT term for
+a Dialog Object carrying media. A consumer's `recordings` table is a PROVENANCE
+term for containers from an in-path recorder. sipnab emits the first and is
+never the second: it reconstructed the audio from a mirror port, and every WAV
+it writes says "not a recording made by the endpoints".
+
+So audio the run RETAINED travels inline -- base64url, `mediatype:
+"audio/x-wav"`, and a `content_hash` of `sha512-` plus the base64url SHA-512 of
+the DECODED bytes, which `sha512sum` on the exported `.wav` reproduces. The
+`duration` on that object is the FILE's, never the call's. When a payload ring
+dropped frames, a `recording-set` wraps it carrying the CALL's media window, so
+the two clocks stand side by side -- that is the only way the format can say
+"this file is a fragment of that call".
+
+`capture_completeness.media` says which of four things happened, so nobody has
+to read a missing `recording` object as an answer:
+
+| `media` | What it means |
+|---|---|
+| `carried` | The audio is inline in a `recording` Dialog Object |
+| `refused-over-budget` | sipnab decoded audio and REFUSED to inline it. One probed store answers 204 and drops a payload over 10485760 bytes without telling the producer, so the emitter enforces a 5 MiB budget itself. The audio exists and was not truncated |
+| `none-decodable` | The run decoded no audio. `media_note` reports the measurement -- never that the call was silent |
+| `not-considered` | Nobody asked this export for media. A fact about the export, not about the call |
+
+**What the capture MISSED travels with the container, in two places.** vCon has
+no field meaning "this record is incomplete" — `dialog.type: "incomplete"` says
+the CALL did not complete, which accuses the traffic rather than the tap. So the
+caveat rides in the `analysis` object AND in a `sipnab-capture-completeness`
+attachment, both built from ONE value so the two cannot contradict each other.
+Read `capture_completeness.note` before the contents: every clause in it is a
+measurement of what this run READ and dropped.
+
+The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+
+```jsonc
+// export_vcon { "call_id": "1-1966@10.0.2.20" }
+{
+  "vcon": "0.4.0",
+  "uuid": "0158a120-0392-86a4-a667-78f1c5213800",
+  "created_at": "2026-08-24T22:13:31.238368261+00:00",
+  "extensions": ["sip-signaling"],
+  "parties": [
+    {
+      "sip": "sip:sipp@10.0.2.20:5060",
+      "sip_contact": "sip:sipp@10.0.2.20:5060",
+      "sip_display_name": "PCMU/8000",
+      "validation": "none"
+    },
+    {
+      "sip": "sip:test@10.0.2.15:5060",
+      "sip_display_name": "test",
+      "sip_user_agent": "FreeSWITCH-mod_sofia/1.6.12-20-b91a0a6~64bit",
+      "validation": "none"
+    },
+    {
+      "role": "observer",
+      "sip_user_agent": "sipnab/0.5.124 (observer; node thor-02)",
+      "validation": "none"
+    }
+  ],
+  "dialog": [ { "sip_call_id": "1-1966@10.0.2.20" } ],
+  "attachments": [
+    {
+      "purpose": "sip-message-trace",
+      "party": 2,
+      "mediatype": "application/json",
+      "encoding": "json",
+      "body": { "schema_version": 1, "sip_call_id": "1-1966@10.0.2.20", "messages": [ /* the same objects --json emits, one per message */ ] }
+    },
+    {
+      "purpose": "sipnab-capture-completeness",
+      "party": 2,
+      "mediatype": "application/json",
+      "encoding": "json",
+      "body": {
+        "note": "Produced by sipnab 0.5.124 on node thor-02. sipnab OBSERVED this dialog and took no part in it: ... sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "node": "thor-02",
+        "sipnab_version": "0.5.124",
+        "frames_read": 852,
+        "undecodable_frames": 0,
+        "sip_discarded_by_port_gate": 0,
+        "sip_discarded_by_websocket_gate": 0,
+        "messages_evicted": 0,
+        "dialogs_refused": 0,
+        "dialogs_rotated": 0,
+        "blind_spots": [],
+        "media": "none-decodable",
+        "media_note": "No audio payload retained: sipnab measured 425 RTP packet(s) of PCMU on 1 decodable stream, but kept none of their payload, so there is nothing to decode. This is a statement about what this run kept, not a finding that the call was silent. ..."
+      }
+    }
+  ],
+  "analysis": [
+    {
+      "type": "report",
+      "dialog": 0,
+      "vendor": "sipnab",
+      "product": "sipnab 0.5.124 (passive observer; not a recording system)",
+      "schema": "sipnab-dialog-diagnosis/1",
+      "mediatype": "application/json",
+      "encoding": "json",
+      "body": { "schema_version": 1, "sip_call_id": "1-1966@10.0.2.20", "final_status_code": 200, "capture_completeness": { /* the same object the attachment carries */ } }
+    }
+  ]
+}
+```
+
+An unknown Call-ID answers with an error, never an empty container:
+
+```jsonc
+// export_vcon { "call_id": "no-such@nowhere" }
+{ "code": -32602, "message": "call_id 'no-such@nowhere' not found" }
+```
+
+**Three things a reader must not conclude.**
+
+`blind_spots: []` is not the same answer as an absent `blind_spots`. The empty
+array means a capture analysis ran and ranked nothing. The absent field means
+nobody looked. Both doors here always run the analysis, so an absent field on a
+container from this tool would be a defect rather than a clean bill.
+
+The observer party is always the LAST entry, and every attachment's `party`
+index points at it. Do not hard-code `2`: the count changes the day a container
+carries a party the two observed headers did not name.
+
+`uuid` is a UUIDv8 whose timestamp half is the DIALOG's, not the export's, so
+re-exporting one dialog out of one capture keeps one identifier and a consumer
+can deduplicate on it. Two dialogs that opened in the same millisecond on the
+same node have only 12 bits separating them — that is inherent in the draft's
+layout, which spends a v7's entropy on a host-derived `rand_b`.
+
+A binary built without the `vcon` Cargo feature refuses this tool with
+`invalid_params` and names the feature, rather than the tool being absent.
+[`server_capabilities`](#server_capabilities) lists what a given binary carries.
 
 ### `shutdown_server`
 

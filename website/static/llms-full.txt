@@ -2727,6 +2727,135 @@ Returns `404` if the Call-ID is not found.
 
 ---
 
+### GET /v1/dialogs/:call_id/vcon
+
+Export one observed dialog as a [vCon](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/)
+container — the IETF interchange format for a conversation record.
+
+This route exists only in a build that carries the `vcon` feature, which
+`--features full` includes and the default build does not. A build without it
+has no route at that path, so the server answers `404` for every Call-ID. Check
+`sipnab --version`, which lists the features compiled in.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/dialogs/test-call-1%4010.0.0.1/vcon" | jq .
+```
+
+Percent-encode the `@`. A raw `@` in the path works in most clients, and the
+escaped form works in all of them.
+
+**Response** (trimmed — the `sip-message-trace` attachment carries one entry
+per SIP message and grows with the call):
+
+```json
+{
+  "vcon": "0.4.0",
+  "uuid": "018bcfe5-6800-8795-a667-78f1c5213800",
+  "created_at": "2026-08-24T22:03:38.989752721+00:00",
+  "extensions": ["sip-signaling"],
+  "parties": [
+    {
+      "sip": "sip:1001@10.0.0.1",
+      "validation": "none",
+      "sip_contact": "<sip:1001@10.0.0.1:5060>",
+      "sip_user_agent": "sipnab-test/1.0"
+    },
+    { "sip": "sip:1002@10.0.0.2", "validation": "none" },
+    {
+      "validation": "none",
+      "role": "observer",
+      "sip_user_agent": "sipnab/0.5.124 (observer; node thor-02)"
+    }
+  ],
+  "dialog": [{ "sip_call_id": "test-call-1@10.0.0.1" }],
+  "attachments": [
+    { "purpose": "sip-message-trace", "party": 2, "mediatype": "application/json", "encoding": "json", "body": { "schema_version": 1, "messages": ["..."] } },
+    {
+      "purpose": "sipnab-capture-completeness",
+      "party": 2,
+      "mediatype": "application/json",
+      "encoding": "json",
+      "body": {
+        "note": "Produced by sipnab 0.5.124 on node thor-02. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "node": "thor-02",
+        "sipnab_version": "0.5.124",
+        "frames_read": 7,
+        "undecodable_frames": 0,
+        "sip_discarded_by_port_gate": 0,
+        "sip_discarded_by_websocket_gate": 0,
+        "messages_evicted": 0,
+        "dialogs_refused": 0,
+        "dialogs_rotated": 0,
+        "blind_spots": []
+      }
+    }
+  ],
+  "analysis": [
+    {
+      "type": "report",
+      "dialog": 0,
+      "vendor": "sipnab",
+      "product": "sipnab 0.5.124 (passive observer; signaling only)",
+      "schema": "sipnab-dialog-diagnosis/1",
+      "mediatype": "application/json",
+      "encoding": "json",
+      "body": { "schema_version": 1, "sip_call_id": "test-call-1@10.0.0.1", "final_status_code": 200, "capture_completeness": { "...": "the same object as the attachment above" } }
+    }
+  ]
+}
+```
+
+The container arrives as a JSON object, so `jq` reads straight into it. No
+field holds the whole container as a string for a client to parse a second
+time.
+
+#### What you must not conclude from this container
+
+A sipnab vCon records an **observation**, never a recording. sipnab watched
+these packets go past. It did not place the call, record it, or ask anyone for
+permission to keep the result, and four absences follow from that:
+
+- **No media, and no `url` pointing at media.** The container carries signaling
+  only. An empty `streams` list elsewhere in this API means "no RTP reached
+  this capture", but a vCon says nothing at all about audio.
+- **No signature.** Nothing here carries a JWS. A signature would say sipnab
+  vouches for the contents of the conversation, and sipnab vouches only for
+  what it saw.
+- **No party `name`, ever.** Each party carries `validation: "none"` and a
+  `sip_display_name` at most. What the `From` and `To` headers said is a claim
+  by whoever sent the request, not an identity anyone checked.
+- **No consent record.** Nobody gave sipnab permission for anything, and an
+  empty consent field would read as "none recorded" rather than "never asked".
+
+**Read `capture_completeness.note` before you treat a container as a record of
+the call.** vCon has no field for "this container is an incomplete record", so
+sipnab writes the caveat into two places a consumer walks past: the `analysis`
+body and the `sipnab-capture-completeness` attachment. Both come from one
+value, so they cannot disagree. The note names what this run read and what it
+dropped — messages idle compaction discarded, SIP a port gate refused, blind
+spots the capture analysis ranked — which is the difference between a short
+call and a capture that missed most of one.
+
+Two details worth knowing before you build on the output:
+
+- `dialog[0].type` reaches `"incomplete"` only when sipnab observed a final
+  failure response. sipnab never sets it because the capture missed part of the
+  call, since that would turn a limitation of the tap into an accusation
+  against the traffic.
+- `uuid` stays the same for one dialog however many times you ask for it, so a
+  consumer can deduplicate on it. `created_at` records when sipnab wrote the
+  container and moves on every request. Two captures of the same Call-ID on one
+  node share a `uuid`, because this door knows the call and not the file it
+  came from.
+
+Returns `404` if the Call-ID is not found, and `404` for every Call-ID in a
+build without the `vcon` feature.
+
+---
+
 ### GET /v1/streams
 
 List all tracked RTP streams with quality metrics.
@@ -7046,6 +7175,8 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--plugin` | `<PATH>` | -- | Load a WASM plugin that contributes its own dialog detections; repeatable. Findings appear under `plugin_findings`. Requires the `plugins` Cargo feature (**not** in the default set). A plugin runs with no imports — no filesystem, network or clock — but still sees each message's headers, so loading one is a trust decision. See [wasm-plugin-api.md](design/wasm-plugin-api.md) |
 | `--report` | -- | off | Generate summary report after capture completes. Requires `-N` |
 | `--call-report` | `<CALL-ID>` | -- | Generate a detailed report for a specific Call-ID. Implies non-interactive |
+| `--export-vcon` | `<CALL-ID>` | -- | Export one dialog as a vCon container ([`draft-ietf-vcon-vcon-core`](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/), syntax `0.4.0`), the interchange format a conversation travels in when it leaves the system that captured it. What sipnab writes is an **observer** vCon and says so in its own parties: sipnab watched packets go past a tap, so it signs nothing, no party carries a `name` — a `From` header is what the sender chose to write, not an identity anyone established — and no URL ever points at media held elsewhere, because sipnab hosts nothing. Audio this run RETAINED travels INSIDE the container as a `recording` Dialog Object -- the WAV inline as base64url with a `sha512` `content_hash` -- carrying the same "not a recording made by the endpoints" note the exported file carries; a `recording-set` wraps it when the payload ring dropped frames, so the call's clock and the file's stand side by side. Above a measured 5 MiB budget sipnab REFUSES the media out loud instead of dropping it, because one probed store answers 204 and discards the payload without telling the producer. What the capture MISSED travels with it: undecodable frames, SIP a port gate discarded, messages a retention cap evicted, and the blind spots the capture analysis ranked. vCon has no field meaning "this record is incomplete" (`dialog.type: "incomplete"` says the CALL did not complete, which accuses the traffic rather than the tap), so that caveat rides in the analysis object AND in a `sipnab-capture-completeness` attachment, both built from one value so the two cannot disagree. Goes to stdout unless `--vcon-out` names a file, and OWNS stdout when it goes there, silencing the per-message stream, because one stray line makes the container unparseable. Implies non-interactive. Needs the `vcon` Cargo feature (in `full`, **not** in the default set); a build without it refuses the flag by name |
+| `--vcon-out` | `<PATH>` | stdout | Write the `--export-vcon` container to this path instead of stdout. Requires `--export-vcon`. Refuses a path that names a capture this run reads, before opening any writer — a container written over the capture it describes destroys the evidence it summarizes. A write that fails exits non-zero rather than reporting a file that is not there. Leaves the per-message stream alone, since the container no longer shares stdout with it. Pair with `--no-cli-print` for a silent run |
 | `--markdown` | -- | off | Format report output as Markdown |
 | `--stun` | -- | off | Report the STUN and TURN activity in the capture, and what it achieved: one row per transaction (Binding, Allocate, Refresh, ChannelBind, …) naming the method, how many requests it took, whether anything answered, and the reflexive or relayed address the server reported back. The row that matters is the unanswered one — a client whose Binding Request draws no reply never learns its public address, advertises the private one in its SDP, and the media never arrives. A TURN allocations section appears when a relay is in the capture, with the lifetime that decides when each one lapses. Columns for the relayed address, the ICE role and a FAILED `FINGERPRINT` appear only when the capture holds one. On a capture holding ICE connectivity checks an ICE section names the candidate pair the agents nominated -- the ICE analogue of the mapped address, and the only thing that says which path the media took -- and any pair where both agents claimed the same role or answered `487 Role Conflict`. Where a relay carried media, the allocations section says which channel carried which SSRC, so a reader can trace a relayed stream in the stream list back to the allocation that carried it. Silent when the capture holds no STUN and no TURN. Requires `-N` |
 | `--json-stun` | -- | off | NDJSON, one object per STUN/TURN transaction and per TURN allocation, emitted after capture. Each carries a `record` field (`transaction`, `turn_allocation` or `ice`) so a consumer never infers the kind from which keys are present; an allocation also carries the derived `lapsed` and the `channels` that attribute relayed media to it, and the single `ice` record carries the checks, the nominated pairs and any role conflicts. The machine-readable form of `--stun`. Requires `-N` |
@@ -7100,6 +7231,10 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sipnab -N -I busy-day.pcap --group-by call-id --max-groups 250000 --no-cli-print` — group a capture holding more calls than the shipped 100000-key cap, instead of taking the first hundred thousand and a warning naming how many keys sipnab turned away
 - `sipnab -N -I busy-day.pcap --group-by from --max-grouped-messages 2000000 --json` — regroup a large capture by caller with room for every message, keeping the output one valid JSON object per line
 - `sipnab -N -I untrusted.pcap --group-by call-id --max-groups 500 --max-grouped-messages 5000 --no-cli-print` — group a capture from outside your network under a tight pair of caps, so an attacker-chosen Call-ID cannot buy more memory than you allowed
+- `sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20' > call.vcon` -- hand one observed dialog to a conversation-data pipeline in the interchange format it already reads, instead of a sipnab-shaped JSON nobody else parses. The container names sipnab as an observer party and carries what this capture missed, so a consumer weighs it as an observation rather than as a recording
+- `sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20' --vcon-out ./call.vcon --no-cli-print` -- the same container to a file, with the run otherwise silent. Use this spelling in a script: the exit code is the whole answer, and a path sipnab cannot write fails the run rather than leaving an operator to discover the missing file later
+- `sipnab -N -I ./captures --export-vcon '1-1966@10.0.2.20' --vcon-out ./captures/1-1966.vcon` -- refused before anything opens a writer. `--vcon-out` goes through the guard `-O` does, so a container cannot land inside a directory this run reads: a name that is free today becomes an input on the next run, and the container would then overwrite the evidence it summarizes
+- `sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20' | jq '.analysis[0].body.capture_completeness.note'` -- read the caveat before the contents. The note comes from this run's own counters and says what sipnab READ and dropped; it never says the call was short, silent or broken, because none of that follows from a capture that missed something
 - `sipnab -N -I capture.pcap --tshark-filter 'sip.Method == "INVITE"'` — print a tshark-compatible display filter for the INVITE traffic in a capture. sipnab hands the expression to tshark's `-Y` verbatim, so it takes WIRESHARK display-filter syntax rather than sipnab's `--filter` DSL: `sip.Method`, not `method`. Quote the whole expression in single quotes so the inner double quotes survive the shell
 
 
@@ -13087,6 +13222,7 @@ ordinary update.
 | [`list_captures`](#list_captures) | -- | Capture files in `--mcp-file-root`, with sizes |
 | [`export_capture`](#export_capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
 | [`export_audio`](#export_audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
+| [`export_vcon`](#export_vcon) | `call_id` | One dialog as a vCon conversation container, structured JSON. Unsigned, retained audio inline, and it carries what the capture missed |
 | [`shutdown_server`](#shutdown_server) | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
 | [`open_capture`](#open_capture) | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
 | [`save_findings`](#save_findings) | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
@@ -15127,6 +15263,182 @@ setting, not a finding that the call was silent. Start the server with
 --retain-audio to hold payload for export.
 ```
 
+### `export_vcon`
+
+One observed dialog as a **vCon** conversation container
+([`draft-ietf-vcon-vcon-core`](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/),
+syntax `0.4.0`) — the interchange format a conversation travels in once it
+leaves the system that captured it. Backed by
+[`output::vcon`](https://github.com/NormB/sipnab/blob/main/src/output/vcon.rs).
+`--export-vcon` writes the same container from the CLI.
+
+Unlike its file-writing neighbors this tool writes nothing and needs no
+`--mcp-file-root`. It returns the container inline, so `read_only_hint` is
+`true` and the agent decides what to do with it.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `call_id` | string | A Call-ID the store holds. An unknown one fails with `invalid_params` (-32602) naming the value. | Required — the call fails. |
+
+There is no `format`. A vCon IS a JSON container defined by the draft, so a
+markdown arm would render a document whose whole purpose is to travel between
+machines — and an agent offered one would eventually hand the prose to
+something expecting a container.
+
+**What sipnab claims, and what it refuses to claim.** The container is an
+**observer** vCon and says so in its own parties. sipnab read a mirror port: it
+did not place the call, record it, or obtain anyone's permission to keep it. So
+four things are absent by design, and their absence is the message:
+
+- **No signature and no encryption.** A JWS over this container reads as *the
+  domain that constructed this vouches for it*. What sipnab could truthfully
+  sign is *these bytes are what sipnab observed*, and no signature algorithm
+  carries that distinction. A verifier would check it, get back "authentic",
+  and draw the wrong conclusion.
+- **No party `name`, ever, and `validation` is always `"none"`.** `From` and
+  `To` are a claim the sender made about itself. The display name travels under
+  `sip_display_name` instead, so a reader sees it as what a header said.
+- **No consent and no lawful-basis attachment.** An empty consent field reads
+  as "nobody recorded consent", a statement about the CALL. The truth is a
+  statement about the producer: sipnab was never in a position to record one.
+- **No `url`, ever.** Media travels INLINE or not at all, because sipnab hosts
+  nothing a URL could reach and a dead link inside a record is
+  indistinguishable from evidence somebody removed.
+
+**What happens to the audio.** `dialog.type: "recording"` is a FORMAT term for
+a Dialog Object carrying media. A consumer's `recordings` table is a PROVENANCE
+term for containers from an in-path recorder. sipnab emits the first and is
+never the second: it reconstructed the audio from a mirror port, and every WAV
+it writes says "not a recording made by the endpoints".
+
+So audio the run RETAINED travels inline -- base64url, `mediatype:
+"audio/x-wav"`, and a `content_hash` of `sha512-` plus the base64url SHA-512 of
+the DECODED bytes, which `sha512sum` on the exported `.wav` reproduces. The
+`duration` on that object is the FILE's, never the call's. When a payload ring
+dropped frames, a `recording-set` wraps it carrying the CALL's media window, so
+the two clocks stand side by side -- that is the only way the format can say
+"this file is a fragment of that call".
+
+`capture_completeness.media` says which of four things happened, so nobody has
+to read a missing `recording` object as an answer:
+
+| `media` | What it means |
+|---|---|
+| `carried` | The audio is inline in a `recording` Dialog Object |
+| `refused-over-budget` | sipnab decoded audio and REFUSED to inline it. One probed store answers 204 and drops a payload over 10485760 bytes without telling the producer, so the emitter enforces a 5 MiB budget itself. The audio exists and was not truncated |
+| `none-decodable` | The run decoded no audio. `media_note` reports the measurement -- never that the call was silent |
+| `not-considered` | Nobody asked this export for media. A fact about the export, not about the call |
+
+**What the capture MISSED travels with the container, in two places.** vCon has
+no field meaning "this record is incomplete" — `dialog.type: "incomplete"` says
+the CALL did not complete, which accuses the traffic rather than the tap. So the
+caveat rides in the `analysis` object AND in a `sipnab-capture-completeness`
+attachment, both built from ONE value so the two cannot contradict each other.
+Read `capture_completeness.note` before the contents: every clause in it is a
+measurement of what this run READ and dropped.
+
+The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+
+```jsonc
+// export_vcon { "call_id": "1-1966@10.0.2.20" }
+{
+  "vcon": "0.4.0",
+  "uuid": "0158a120-0392-86a4-a667-78f1c5213800",
+  "created_at": "2026-08-24T22:13:31.238368261+00:00",
+  "extensions": ["sip-signaling"],
+  "parties": [
+    {
+      "sip": "sip:sipp@10.0.2.20:5060",
+      "sip_contact": "sip:sipp@10.0.2.20:5060",
+      "sip_display_name": "PCMU/8000",
+      "validation": "none"
+    },
+    {
+      "sip": "sip:test@10.0.2.15:5060",
+      "sip_display_name": "test",
+      "sip_user_agent": "FreeSWITCH-mod_sofia/1.6.12-20-b91a0a6~64bit",
+      "validation": "none"
+    },
+    {
+      "role": "observer",
+      "sip_user_agent": "sipnab/0.5.124 (observer; node thor-02)",
+      "validation": "none"
+    }
+  ],
+  "dialog": [ { "sip_call_id": "1-1966@10.0.2.20" } ],
+  "attachments": [
+    {
+      "purpose": "sip-message-trace",
+      "party": 2,
+      "mediatype": "application/json",
+      "encoding": "json",
+      "body": { "schema_version": 1, "sip_call_id": "1-1966@10.0.2.20", "messages": [ /* the same objects --json emits, one per message */ ] }
+    },
+    {
+      "purpose": "sipnab-capture-completeness",
+      "party": 2,
+      "mediatype": "application/json",
+      "encoding": "json",
+      "body": {
+        "note": "Produced by sipnab 0.5.124 on node thor-02. sipnab OBSERVED this dialog and took no part in it: ... sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "node": "thor-02",
+        "sipnab_version": "0.5.124",
+        "frames_read": 852,
+        "undecodable_frames": 0,
+        "sip_discarded_by_port_gate": 0,
+        "sip_discarded_by_websocket_gate": 0,
+        "messages_evicted": 0,
+        "dialogs_refused": 0,
+        "dialogs_rotated": 0,
+        "blind_spots": [],
+        "media": "none-decodable",
+        "media_note": "No audio payload retained: sipnab measured 425 RTP packet(s) of PCMU on 1 decodable stream, but kept none of their payload, so there is nothing to decode. This is a statement about what this run kept, not a finding that the call was silent. ..."
+      }
+    }
+  ],
+  "analysis": [
+    {
+      "type": "report",
+      "dialog": 0,
+      "vendor": "sipnab",
+      "product": "sipnab 0.5.124 (passive observer; not a recording system)",
+      "schema": "sipnab-dialog-diagnosis/1",
+      "mediatype": "application/json",
+      "encoding": "json",
+      "body": { "schema_version": 1, "sip_call_id": "1-1966@10.0.2.20", "final_status_code": 200, "capture_completeness": { /* the same object the attachment carries */ } }
+    }
+  ]
+}
+```
+
+An unknown Call-ID answers with an error, never an empty container:
+
+```jsonc
+// export_vcon { "call_id": "no-such@nowhere" }
+{ "code": -32602, "message": "call_id 'no-such@nowhere' not found" }
+```
+
+**Three things a reader must not conclude.**
+
+`blind_spots: []` is not the same answer as an absent `blind_spots`. The empty
+array means a capture analysis ran and ranked nothing. The absent field means
+nobody looked. Both doors here always run the analysis, so an absent field on a
+container from this tool would be a defect rather than a clean bill.
+
+The observer party is always the LAST entry, and every attachment's `party`
+index points at it. Do not hard-code `2`: the count changes the day a container
+carries a party the two observed headers did not name.
+
+`uuid` is a UUIDv8 whose timestamp half is the DIALOG's, not the export's, so
+re-exporting one dialog out of one capture keeps one identifier and a consumer
+can deduplicate on it. Two dialogs that opened in the same millisecond on the
+same node have only 12 bits separating them — that is inherent in the draft's
+layout, which spends a v7's entropy on a host-derived `rand_b`.
+
+A binary built without the `vcon` Cargo feature refuses this tool with
+`invalid_params` and names the feature, rather than the tool being absent.
+[`server_capabilities`](#server_capabilities) lists what a given binary carries.
+
 ### `shutdown_server`
 
 **Destructive.** Requires `--mcp-allow-shutdown`, which is off by default.
@@ -15901,7 +16213,7 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 37 carry MCP annotations, so a host
+- **Every tool declares what it does.** All 38 carry MCP annotations, so a host
   can decide what to call without asking. Thirty are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the five that are
   not. Every tool sets `openWorldHint` to `false`, because sipnab answers from
@@ -15987,7 +16299,7 @@ something the file does not contain.
 
 ## What the write verbs do
 
-Thirty of the 37 tools are `readOnlyHint: true`. These seven are not, and
+Thirty-one of the 38 tools are `readOnlyHint: true`. These seven are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 
@@ -16946,6 +17258,479 @@ than applying all of them at once.
 - [Configuration](config-reference.md) — the `[capture]` section
 - [Benchmarks](benchmarks.md) — measured throughput and method
 - [Troubleshooting](troubleshooting.md)
+
+---
+
+<!-- source: docs/vcon.md -->
+
+# Export one observed call as a vCon
+
+Something downstream wants the call rather than the packets. A conversation
+archive, a compliance store, an agent that reasons over calls: hand any of them
+a pcap and you have made the decoding their problem. vCon is the interchange
+container those systems already read, and sipnab writes one per observed
+dialog.
+
+**The short version.** A vCon is a JSON object about one conversation — the
+parties, what passed between them, and what some tool concluded about it.
+sipnab fills that shape from signaling it watched go past a tap. Each container
+carries the SIP ladder, the parties the `From` and `To` headers named, a
+diagnosis of the call, and — in two places, deliberately — a statement of what
+the capture missed. None of them carries audio, a signature, or any claim that
+somebody consented to anything. **A sipnab vCon records what an instrument
+saw, not what the parties said.** The honesty section below is the one part of
+this page to read before you trust a container.
+
+## What a vCon is, and what sipnab is to it
+
+vCon — "Conversation Data Container" — travels between systems as four arrays:
+`parties` (who took part), `dialog` (what passed between them and when),
+`analysis` (what a machine concluded about that) and `attachments` (documents
+riding alongside).
+
+The ecosystem around the format assumes a **recorder** — something inside the
+conversation, which took the media from a party and can say what that party
+agreed to. A recorder can write *"I received this audio from the caller."*
+
+sipnab was never inside the conversation. It reads a mirror port, so the
+strongest sentence it can honestly write is *"I saw packets claiming to be this
+call go past this tap."* Those two sentences look alike in JSON and mean
+entirely different things.
+
+So sipnab emits **observer** vCons. The container names sipnab as a passive
+party contributing to a record somebody else owns, which is a role the format
+itself defines, and it stops there. It never claims to **be** the conversation.
+[The Phase 0 decision](design/vcon.md) argues that position in full, including
+every refusal summarized further down this page.
+
+## Produce one
+
+The export sits behind the non-default `vcon` Cargo feature, so a stock build
+does not carry it. The `full` feature includes it. On its own it looks like
+this:
+
+```sh
+cargo build --release --features vcon
+```
+
+The feature is non-default for the reason every capture-side feature is: a
+container that leaves the machine is a publication surface, and a capture tool
+should not grow one unless an operator asks for it.
+
+sipnab builds a container from one dialog, and every surface that offers the
+export writes the same bytes. Pick the door that suits you:
+
+| You are | Ask this way | Answers with |
+|---|---|---|
+| At a shell, reading a capture file | `sipnab -r call.pcap --export-vcon <call-id> --vcon-out out.json` | the container in `out.json` |
+| At a shell, wanting it on stdout | `sipnab -r call.pcap --export-vcon <call-id>` | the container on stdout |
+| An agent holding an MCP session | the `export_vcon` tool, with `call_id` | a structured content block |
+| A program over HTTP | `GET /v1/dialogs/{call_id}/vcon` | `200` and the container, or `404` |
+| Rust, in-process | `sipnab::output::vcon::export_dialog` | a `Vcon` value |
+
+Two notes on the CLI pair. `--vcon-out` requires `--export-vcon`, because a
+path with nothing to write to it is a mistake sipnab would rather name than
+ignore. And sipnab refuses a `--vcon-out` that names the capture it is reading,
+because an export that overwrites its own evidence is not an export.
+
+The TUI does not offer the export. It is a live view of a running capture, and
+it points at the doors above — its help screen names the REST route and the
+feature flag rather than growing a key binding that would do nothing in a build
+without the feature.
+
+Read on for what the container means once you hold one.
+
+## Walk through one, end to end
+
+The capture is [`tests/fixtures/sip_call.pcap`](../tests/fixtures/sip_call.pcap),
+committed to this repository: one INVITE, a 100, a 180, a 200, the ACK, a BYE
+and its 200. Seven messages, one Call-ID, two parties.
+
+### Step 1 — check the build carries the feature
+
+The committed integration test drives the whole export through the public API
+against that capture, so running it confirms both the feature and the fixture
+in one command:
+
+```sh
+cargo test --features vcon --test vcon_export_test
+```
+
+```text
+running 2 tests
+test a_real_capture_exports_a_complete_signaling_only_container ... ok
+test re_exporting_one_dialog_from_one_capture_keeps_its_identifier ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+```
+
+### Step 2 — build the container
+
+Read the capture into a `DialogStore` the ordinary way — the
+[library page](library.md) covers that part, and
+[the committed test](../tests/vcon_export_test.rs) holds the whole program —
+then hand one dialog and the run's own counters to `export_dialog`:
+
+```rust
+use sipnab::analysis::CaptureFacts;
+use sipnab::output::vcon::{ExportContext, export_dialog};
+
+let dialog = store.get(&call_id).expect("the dialog is in the store");
+let vcon = export_dialog(
+    dialog,
+    &ExportContext {
+        // Derive this from the capture's CONTENT — a file name, a frame
+        // digest. Never from a per-process identifier: the container's uuid
+        // hashes this value, so a rotating one mints a fresh uuid every time
+        // you reopen the same file.
+        capture_id: "sip_call.pcap",
+        // What the RUN saw outside this one dialog: frames read, SIP a port
+        // gate discarded, dialogs the store rotated away.
+        facts: &facts,
+        // The ranked capture analysis, when the run did one. `None` is an
+        // honest answer, and the container reports it as one rather than as
+        // a clean bill.
+        analysis: None,
+    },
+);
+println!("{}", vcon.to_json().expect("the container serializes"));
+```
+
+### Step 3 — read what came out
+
+Real output from that fixture, elided only where the message trace repeats
+itself. Every value below came off a run against the committed capture.
+
+**One reading convention, stated once.** Every `body` is a JSON-encoded
+*string* on the wire — §2.3.2 of the draft allows nothing else, and a store
+normalizes it to one anyway. The blocks below show each `body` **decoded**, as
+an object, because an escaped one-line string is unreadable on a page. What
+sipnab actually writes for the first one is `"body": "{\"messages\":[…]}"`,
+and a consumer parses it before indexing into it.
+
+```json
+{
+  "vcon": "0.4.0",
+  "uuid": "018bcfe5-6800-8a6b-a667-78f1c5213800",
+  "created_at": "2026-08-24T17:05:12+00:00",
+  "extensions": [
+    "sip-signaling"
+  ],
+  "parties": [
+    {
+      "sip": "sip:1001@10.0.0.1",
+      "validation": "none",
+      "sip_contact": "<sip:1001@10.0.0.1:5060>",
+      "sip_user_agent": "sipnab-test/1.0"
+    },
+    {
+      "sip": "sip:1002@10.0.0.2",
+      "validation": "none"
+    },
+    {
+      "validation": "none",
+      "role": "observer",
+      "sip_user_agent": "sipnab/0.5.124 (observer; node thor-02)"
+    }
+  ],
+  "dialog": [
+    {
+      "sip_call_id": "test-call-1@10.0.0.1"
+    }
+  ],
+  "attachments": [
+    {
+      "purpose": "sip-message-trace",
+      "party": 2,
+      "mediatype": "application/json",
+      "encoding": "json",
+      "body": {
+        "messages": [
+          {
+            "call_id": "test-call-1@10.0.0.1",
+            "contact": "<sip:1001@10.0.0.1:5060>",
+            "cseq": {
+              "method": "INVITE",
+              "number": 1
+            },
+            "dscp": 0,
+            "dst": "10.0.0.2",
+            "dst_port": 5060,
+            "frame": "…/tests/fixtures/sip_call.pcap#0@bdb6cdb98013efe4",
+            "from": "<sip:1001@10.0.0.1>;tag=1928301774",
+            "is_request": true,
+            "method": "INVITE",
+            "schema_version": 1,
+            "sdp": "",
+            "src": "10.0.0.1",
+            "src_port": 5060,
+            "timestamp": "2023-11-14T22:13:20+00:00",
+            "to": "<sip:1002@10.0.0.2>",
+            "transport": "UDP",
+            "ua": "sipnab-test/1.0"
+          }
+          … ELIDED: the 100, the 180, the 200, the ACK, the BYE and its 200,
+          six more objects of the same shape …
+        ],
+        "schema_version": 1,
+        "sip_call_id": "test-call-1@10.0.0.1"
+      }
+    },
+    {
+      "purpose": "sipnab-capture-completeness",
+      "party": 2,
+      "mediatype": "application/json",
+      "encoding": "json",
+      "body": {
+        "dialogs_refused": 0,
+        "dialogs_rotated": 0,
+        "frames_read": 22,
+        "messages_evicted": 0,
+        "node": "thor-02",
+        "note": "Produced by sipnab 0.5.124 on node thor-02. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 22 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. No capture-level analysis was supplied for this export, so nothing here rules out a blind spot.",
+        "sip_discarded_by_port_gate": 0,
+        "sip_discarded_by_websocket_gate": 0,
+        "sipnab_version": "0.5.124",
+        "undecodable_frames": 0
+      }
+    }
+  ],
+  "analysis": [
+    {
+      "type": "report",
+      "dialog": 0,
+      "vendor": "sipnab",
+      "product": "sipnab 0.5.124 (passive observer; signaling only)",
+      "schema": "sipnab-dialog-diagnosis/1",
+      "mediatype": "application/json",
+      "encoding": "json",
+      "body": {
+        "capture_completeness": {
+          … ELIDED: byte for byte the completeness body above …
+        },
+        "final_status_code": 200,
+        "schema_version": 1,
+        "sip_call_id": "test-call-1@10.0.0.1"
+      }
+    }
+  ]
+}
+```
+
+Four things in that output repay a second look.
+
+**Three parties for a two-party call.** The last entry is sipnab. It carries no
+`sip` URI, because sipnab sent no SIP and a synthesized one would name a
+participant that never existed. Its `role` says `observer`, and both
+attachments point their `party` index at it — index 2 — so every document in
+the container has a stated origin.
+
+**The callee has fewer fields than the caller.** Party 1 carries a `sip` and
+nothing else. sipnab reads a party's `Contact` and `User-Agent` off a message
+that party sent, and in this capture the first message coming back is a bare
+`100 Trying` that carries neither. An absent field means the capture never saw
+one, not that the endpoint has none.
+
+**The Dialog Object is nearly empty, and that is correct.** One `sip_call_id`,
+no `type`, no `disposition`, no media description. The call in this fixture
+completed, so nothing about it failed. A signaling-only export has no media, so
+inventing a `mediatype` or a `url` would describe a file that does not exist.
+
+**The completeness body appears twice.** Once as an attachment, once inside the
+report. The next section is about why.
+
+## The container cannot say "this is an incomplete record", so sipnab says it twice
+
+This is the point of the page.
+
+sipnab's central discipline is reporting what it understood rather than what
+the wire held. Its ranked problem list puts incompleteness findings *in* the
+list at `Severity::Blind`, above every call fault, so a capture that failed to
+decode or hit a retention cap can never render as clean.
+
+**vCon has no field for that.** Not a weak one — none. The `type` enum admits
+five values and no others: `recording`, `recording-set`, `text`, `transfer`,
+`incomplete`. Four of the five promise content the object holds, and every
+Dialog Object must carry one of them.
+
+So sipnab types the object by **what it carries**, never by what the call did:
+
+| The object holds | `type` | `disposition` |
+|---|---|---|
+| audio | `recording` | absent — it is an `incomplete` field |
+| no content | `incomplete` | present only when sipnab SAW a final failure |
+
+That leaves `incomplete` doing double duty, and the honest reading of it here
+is *an incompleted record*, which a signaling-only export is. The alternative
+is worse in a way that is not a matter of taste: an object typed `recording`
+carrying neither `url` nor `body` promises content that is not there, and a
+conserver chain link that selects `type == "recording"` reads `dialog["url"]`
+unguarded — it raises, and the conserver dead-letters the **whole** container
+rather than the one step. A label that is imprecise beats a label that destroys
+the record.
+
+What the object cannot say, `disposition` and the caveat do. `disposition`
+names a failure **only** when sipnab saw the final response that caused it, so
+its absence never means "the call succeeded".
+
+The extension mechanism offers no repair either. An extension is *ignorable*,
+in which case the consumer that most needs the caveat drops it, or *fatal*, in
+which case an ordinary consumer refuses the whole container. Nothing in between
+means "read this before trusting the contents".
+
+So sipnab duplicates the caveat into two surfaces a consumer walks past, from
+one source value:
+
+| Surface | Where it sits | Who reads it |
+|---|---|---|
+| `analysis[0].body.capture_completeness` | inside the report, beside the diagnosis | anything that reads what sipnab concluded |
+| the `sipnab-capture-completeness` attachment | a document in `attachments`, attributed to the observer | anything that walks the attachments |
+
+Both hold the same value byte for byte, and a test fails if they diverge. Two
+caveats that disagreed would read as authoritative while contradicting
+themselves, which is worse than carrying none.
+
+### What the caveat looks like when the run lost something
+
+Same capture, same dialog, a run whose parser rejected three frames and whose
+idle compaction discarded four messages it had already captured:
+
+```json
+{
+  "purpose": "sipnab-capture-completeness",
+  "party": 2,
+  "mediatype": "application/json",
+  "encoding": "json",
+  "body": {
+    "dialogs_refused": 0,
+    "dialogs_rotated": 0,
+    "frames_read": 22,
+    "messages_evicted": 4,
+    "node": "thor-02",
+    "note": "Produced by sipnab 0.5.124 on node thor-02. … sipnab read 22 frame(s) for this capture. — INCOMPLETE: 3 frame(s) reached the parser and produced nothing, so any count in this container is a floor. — INCOMPLETE: idle compaction discarded 4 message(s) sipnab had already captured, so the trace in this container may be shorter than the call was. Raise [limits] keep_messages_per_idle_dialog to hold more. No capture-level analysis was supplied for this export, so nothing here rules out a blind spot.",
+    "sip_discarded_by_port_gate": 0,
+    "sip_discarded_by_websocket_gate": 0,
+    "sipnab_version": "0.5.124",
+    "undecodable_frames": 3
+  }
+}
+```
+
+Elided at the `…` only: the fixed preamble is identical to the clean run's.
+Read the shape rather than the wording. Every clause is a **measurement** of
+this run, and none of them says the call was short, silent or broken, because
+none of that follows from a capture that missed something. `messages_evicted:
+4` and the sentence naming it move together, so a consumer that reads fields
+reaches the same verdict as one that reads prose.
+
+Note the last clause in both runs: no capture analysis reached this export, so
+the note says so. "Nobody checked" and "checked and found nothing" are
+different answers, and the container keeps them apart — an analysis that ranked
+nothing emits `blind_spots: []`, while an export that skipped the analysis
+omits the field entirely.
+
+## Someone handed you a sipnab vCon — what may you conclude?
+
+Read the container as evidence from an instrument, not as a record from a
+participant.
+
+| What you see | What it licenses you to say | What it does not |
+|---|---|---|
+| `parties[].sip` | the `From` or `To` header carried this URI | that anyone with that URI took part |
+| `parties[].sip_display_name` | the sender wrote this string in its header | that this names a person |
+| `validation: "none"` on every party | nobody checked anything about this party | that a check failed — the field never carries another value |
+| a `role: "observer"` party | this container came from a tap | that the tap was in the media path |
+| `attachments[].party` | the observer contributed this document | that a participant did |
+| the message trace | these messages reached sipnab's parser | that they are all the messages |
+| `analysis[0].body` | sipnab's diagnosis of what it held | a diagnosis of the call |
+| an absent field | the capture did not carry it | that the call lacked it |
+| an empty `dialog[]` media description | this export carries no media | that the call had none |
+
+Three rules follow from that table.
+
+**A missing thing is a missing observation.** Every absence in a sipnab vCon
+describes the capture. It never describes the conversation. That distinction is
+the whole reason the completeness caveat exists, and a consumer that collapses
+it turns a configuration choice on a capture host into a claim about somebody's
+call.
+
+**sipnab signs nothing, so cryptography attributes nothing here.** Trust the
+container exactly as much as you trust whoever handed it to you.
+
+**Two containers about one call do not merge themselves.** sipnab writes the
+parties of the dialog it observed and infers none. One tap on a proxied call
+sees two legs of one conversation or one leg of three, and a second tap that
+saw the other leg writes its own container. Reconciling them belongs to the
+consumer, because the consumer is the only one holding both.
+
+## What sipnab refuses to put in a container
+
+Each refusal has an argument behind it in
+[the design decision](design/vcon.md). The one-line version:
+
+| Refused | Why |
+|---|---|
+| a JWS signature | a signature over an observation verifies as a signature over a recording |
+| JWE encryption | it asserts a custody relationship sipnab does not have |
+| consent attachments | sipnab obtained no consent, and an empty consent field reads as "none recorded" |
+| lawful-basis attachments | the same, with a named regulatory reader on the other end |
+| a party `name` | `From` and `To` are the caller's claim about the caller, trivially spoofed |
+| hosted artefacts by `url` | sipnab hosts nothing, so it cannot promise where a file lives |
+
+The party `name` refusal has a structural form worth knowing about: the Rust
+type has no `name` field at all, so no later edit can populate one by accident.
+
+### One thing sipnab does supply, narrowly: `tel`
+
+A conserver indexes parties by `tel`, `mailto` and `name` and by nothing else,
+so a consumer can retrieve a container carrying none of the three by its UUID
+and by nothing else — a party search never surfaces it. An operator who knows only the phone number cannot
+find the capture.
+
+`tel` is the only one of the three sipnab can supply from evidence, and it
+supplies it only when the SIP user part is unambiguously a telephone number:
+`+` followed by digits, an RFC 3966 global number. Everything else gets
+nothing, including bare digit runs — `1001` is an extension, and indexing it as
+a telephone number would put a wrong answer in a search index rather than no
+answer. The observer party never carries one at all.
+
+### The tags that tell forked legs apart
+
+The dialog object carries `sip_from_tag` and `sip_to_tag` when the capture
+observed them. A Call-ID alone cannot distinguish one leg of a forked INVITE
+from another — every fork shares it — so a consumer correlating legs across
+nodes needs the tags. `sip_to_tag` is absent until the callee answers, which is
+itself a signal: nothing established a dialog.
+
+## What this does not do
+
+Stated here rather than discovered later.
+
+- **It does not carry audio.** The container holds signaling only, and it holds
+  no `url` pointing at media held elsewhere. Export audio through sipnab's own
+  audio path, which carries its own partial-capture caveat.
+- **It does not tie the two halves of a B2BUA call together.** Two Call-IDs
+  produce two containers, and nothing in either one links them.
+- **It does not assemble a call across hops.** One container describes one
+  observed dialog from one capture.
+- **It does not deduplicate across taps.** Two sipnab boxes that saw the same
+  dialog mint different uuids, because the uuid mixes in the node and the
+  capture identity along with the Call-ID.
+- **It does not survive as a stable identifier across dialogs that opened in
+  the same millisecond on one node.** The uuid layout spends its entropy on the
+  node, leaving 12 bits to separate same-millisecond dialogs. Deduplication on
+  `uuid` is safe for re-exports of one dialog, which is what it exists for.
+- **It does not store anything.** sipnab writes a container and forgets it. No
+  vCon store, no index, no retention.
+
+## See also
+
+- [The Phase 0 decision](design/vcon.md) — what sipnab may put in a vCon, what
+  it refuses to, and the structural gap in the format that decides both
+- [vCon internals](internals/vcon.md) — for anyone changing the exporter
+- [Output formats](output-formats.md) — the NDJSON and report surfaces the
+  message trace shares its projection with
+- [Library API](library.md) — filling a `DialogStore` from a capture
 
 ---
 
@@ -18843,7 +19628,7 @@ can safely ignore.
 
 ## Features
 
-`Cargo.toml`'s `[features]` table has thirteen entries: the twelve named
+`Cargo.toml`'s `[features]` table has fourteen entries: the thirteen named
 features below, plus `default` — which is `native, tui, audio, metrics`.
 `full` is everything except `wasm` and `bpf`, which is not the whole story of
 what ships.
@@ -18881,6 +19666,7 @@ included.
 | `mcp-http` | `mcp` + `api` | Streamable-HTTP MCP transport; depends on `api` so both share one axum stack rather than duplicating it. |
 | `plugins` | `native` | The `wasmi` WASM plugin host. **Non-default on purpose** — someone who does not want an interpreter inside their capture tool does not get one. See [`../design/wasm-plugin-api.md`](../design/wasm-plugin-api.md), which measures the cost at +1.56 MB and 15 crates. |
 | `wasm` | — | The browser analyzer bindings. Lib-only: its test and bin targets are meaningless on the host. |
+| `vcon` | `native` | vCon export: one observed dialog as an unsigned OBSERVER conversation container. **Non-default on purpose** — the stock build gains no conversation-container writer at all. It sits INSIDE `full`, so the pre-commit hook's `cargo test --features full` covers it. sipnab writes the container as an observer: nothing signed, no party name, and no `url` — retained audio travels INLINE as base64url or not at all, under a measured size budget the emitter refuses out loud. |
 | `bpf` | `native` | The eBPF uprobe backend — the only one that can report the peer address a TLS session went out to, because it pairs each write with its `tcp_sendmsg`. **Outside `full`**: the kernel half needs nightly and `bpf-linker`. Shipped on the four `*-linux-gnu` release artifacts, not on musl or macOS. |
 | `full` | everything but `wasm` and `bpf` | What the pre-commit hook and most local testing use. The released gnu binaries add `bpf` on top. |
 
@@ -19021,9 +19807,11 @@ before committing.
   `cargo fmt --check`, `cargo doc --no-deps --all-features --workspace`, plus
   the `--ignored` PTY TUI end-to-end tests.
 - **`features`** — `cargo check --no-default-features --features X --tests`
-  across twelve feature sets: each of `native`, `tls`, `api`, `mcp`, `hep`,
+  across thirteen feature sets: each of `native`, `tls`, `api`, `mcp`, `hep`,
   `metrics`, then `tls,api`, `native,tui,audio`, `native,tui,tls,hep,api`,
-  `native,hep,api,mcp,mcp-http`, `bpf`, and `wasm` (lib-only). The documented
+  `native,hep,api,mcp,mcp-http`, `bpf`, `vcon`, and `wasm` (lib-only). `vcon`
+  is in `full`, so `--all-features` already builds it; this leg is what proves
+  it also builds without `tui`, `tls`, `api` or `mcp`. The documented
   headless server recipe (`native,hep,api,mcp,mcp-http`) gets a full `cargo
   test`, not just a compile check. `bpf` is here because every published
   `*-linux-gnu` binary carries it: this leg compiles its userspace half and
@@ -19169,10 +19957,10 @@ That means **every commit runs clippy and the whole test suite** and takes
 minutes. It is not optional theatre: the homepage-count gate alone means adding
 a test obliges you to update [`website/templates/index.html`](../../website/templates/index.html) in the same commit.
 
-Three checks stay out of the hook on purpose: the twelve-combination feature
+Three checks stay out of the hook on purpose: the thirteen-combination feature
 matrix, Vale prose linting, and rustdoc. The hook already costs minutes and
 each of those adds more. [`pre-push`](../../.githooks/pre-push) picks up
-rustdoc and three of the twelve combinations before anything leaves the
+rustdoc and three of the thirteen combinations before anything leaves the
 machine, and CI runs the rest. Moving them into the pre-commit hook buys
 nothing — it is the same wait, on every commit instead of every push.
 
@@ -19204,7 +19992,7 @@ someone builds without that feature. It has bitten twice — the `features` job
 below records "at one point 7 of 8 reduced combos failed to build", and it
 happened again on the 0.5.61 release commit, where a test reflecting over `Cli`
 (behind `native`) took a whole test target out of every build without it. Three
-combinations, not twelve: `tls` and `api` are the ones that *exclude* `native`,
+combinations, not thirteen: `tls` and `api` are the ones that *exclude* `native`,
 where the breakage lives, and `wasm` is the most distant target. The full matrix
 stays in CI. CI skips a combination the crate does not define, the way the
 fuzz gate skips a missing `fuzz/`.
@@ -20997,6 +21785,325 @@ sudo grep sipnab_ /sys/kernel/tracing/uprobe_events
 If that last command prints anything after sipnab has exited, probes leaked.
 Remove each by appending `-:<name>` to `uprobe_events`. **Never truncate the
 file** — every other tracer on the host shares it.
+
+---
+
+<!-- source: docs/internals/vcon.md -->
+
+# The vCon exporter
+
+What [`src/output/vcon.rs`](../../src/output/vcon.rs) holds, which sipnab type
+feeds each part of the container, and the two mechanisms an editor has to
+respect: the duplicated completeness caveat, and the deterministic uuid.
+
+Read [Export one observed call as a vCon](../vcon.md) for the operator's view
+and [the Phase 0 decision](../design/vcon.md) for why the module refuses what it
+refuses. This page is about the code.
+
+## Shape of the module
+
+One file behind the non-default `vcon` feature, which `full` carries. It has no
+submodules and no state: every input arrives as an argument, and nothing in it
+reads a process global except the node name.
+
+The public surface is a struct per vCon section — `Vcon`, `Party`, `Dialog`,
+`Attachment`, `Analysis` — plus `BlindSpot` and `CaptureCompleteness` for the
+caveat, `ExportContext` for everything the dialog itself does not carry, and
+three functions: [`export_dialog()`](../../src/output/vcon.rs),
+[`export_dialog_at()`](../../src/output/vcon.rs) and
+[`dialog_uuid()`](../../src/output/vcon.rs).
+
+`export_dialog_at()` is the pure form and the one every test drives. Its third
+argument is the container's `created_at`, so two exports compare byte for byte
+and any difference between them came from the capture rather than from the
+clock. `export_dialog()` is the same function with `Utc::now()` supplied.
+
+Serialization is `serde`'s. Each struct maps one-to-one onto its vCon object,
+with `skip_serializing_if = "Option::is_none"` doing the work of "sipnab did
+not observe this" — an absent field, never a null.
+
+## Where each section comes from
+
+| vCon section | Read from | Built by |
+|---|---|---|
+| `vcon`, `extensions` | module constants | inline in `export_dialog_at()` |
+| `uuid` | the dialog's `Call-ID` and clock, the capture id, the node name | [`dialog_uuid()`](../../src/output/vcon.rs) |
+| `created_at` | the caller's clock, not the dialog's | the `exported_at` argument |
+| `parties[0]`, `parties[1]` | `SipDialog`'s `from_*`/`to_*` fields, the opening message, the first response | [`observed_parties()`](../../src/output/vcon.rs) |
+| `parties[].tel` | the SIP user part, only when it is an RFC 3966 global number | [`tel_uri()`](../../src/output/vcon.rs) |
+| `parties[last]` | [`node_name()`](../../src/provenance.rs) and the crate version | [`observer_party()`](../../src/output/vcon.rs) |
+| `dialog[0]` | the `Call-ID`, the observed tags, and [`final_status_code()`](../../src/sip/dialog.rs) | [`dialog_object()`](../../src/output/vcon.rs) |
+| `attachments[0]` | the message ladder, through [`message_to_json_value()`](../../src/output/json.rs) | [`message_trace_attachment()`](../../src/output/vcon.rs) |
+| `attachments[1]` | `CaptureFacts` and the ranked `CaptureAnalysis` | [`completeness_attachment()`](../../src/output/vcon.rs) |
+| `analysis[0]` | [`diagnose_signaling()`](../../src/sip/diagnosis.rs) and the same completeness value | [`report()`](../../src/output/vcon.rs) |
+
+Three of those rows carry a decision rather than a mapping.
+
+**`tel` is narrow because a wrong index entry beats no index entry only in
+appearance.** A conserver indexes parties by `tel`, `mailto` and `name` and by
+nothing else, so a container with none of the three answers only to its UUID.
+`tel_uri()` supplies one for `+` followed by digits and for nothing else — a
+bare digit run is an RFC 3966 LOCAL number needing a `phone-context`, and in
+SIP captures it is usually an extension. `1001` is not a telephone number.
+
+**The message trace reuses `--json`'s projection.** One serializer produces both,
+so a vCon and an NDJSON line describing one message cannot disagree about it. The
+cost of that reuse is the credential strip, further down.
+
+**The report reuses the signaling diagnosis.** It is already the wire shape the
+dialog-JSON surface emits, and a second projection of one analysis is two
+definitions waiting to drift apart.
+
+`ExportContext` exists for the same reason `CaptureFacts` does: it makes visible,
+in one place, exactly which facts a completeness claim stands on, and it lets a
+test state the capture it describes instead of mutating a global.
+
+## The completeness carrier
+
+This is the mechanism the whole module exists for, and the one an edit is most
+likely to break.
+
+sipnab's ranked problem list puts incompleteness findings **inside** the list at
+`Severity::Blind`, above every call fault, so "no problems found" is
+structurally unreachable for an incomplete read. vCon offers no position with
+that property. `analysis[]` is a list of conclusions, and a caveat placed there
+is one entry among others.
+
+### Why duplication rather than one field
+
+The obvious repair is a custom extension carrying the caveat, and the format
+rules it out. An extension is either **compatible** — a consumer that does not
+implement it ignores it safely — or **critical**, which a consumer that does not
+implement it MUST NOT process except to reject. There is no third level meaning
+*read this before trusting the contents*.
+
+Pick either and the caveat fails. Ignorable, and the consumer that most needs it
+drops it. Critical, and an ordinary vCon reader refuses the whole container, so
+sipnab has emitted something nobody can read.
+
+So the caveat goes into two surfaces a consumer walks past anyway:
+
+1. `capture_completeness` inside `analysis[0].body`, beside the diagnosis.
+   `body` is a JSON-encoded **string**, so that is a path through the decoded
+   text, not a path a reader can index directly — see below.
+2. An attachment with purpose `sipnab-capture-completeness`, whose `party`
+   index names the sipnab observer.
+
+### One value, embedded twice
+
+[`completeness_of()`](../../src/output/vcon.rs) builds **one**
+`CaptureCompleteness`. `export_dialog_at()` then hands the same value to
+`completeness_attachment()` and to `report()`. Nothing rebuilds it, and nothing
+formats it a second time.
+
+That distinction is the whole rule. Two strings built twice drift, and a
+container whose two caveats disagree reads as authoritative while contradicting
+itself — worse than one carrying no caveat at all. The audio exporter learned
+this the expensive way: it built its embedded note and its printed summary
+separately, a clause reached one and not the other, and a comparison test caught
+it. This module copies that shape deliberately.
+
+**The divergence gate is
+`the_two_completeness_surfaces_carry_one_value`.** It exports one dialog against
+facts carrying two distinct losses, then asserts that the attachment body and the
+report's `capture_completeness` compare equal as JSON values. Rebuild the caveat
+in either place and it fails.
+
+Two more tests hold the ends of it:
+
+- `the_completeness_carrier_discriminates_a_lossy_run_from_a_clean_one` exports
+  one dialog twice, against a run that lost seven captured messages and a run
+  that lost none, and requires the two notes to differ. Without it the carrier
+  could be decoration — identical on every run, and equal to itself. Deleting
+  the `messages_evicted` clause fails it.
+- `an_absent_analysis_is_not_a_clean_bill` separates "nobody looked" from
+  "looked and found nothing". `blind_spots` stays absent when no analysis
+  reached the export and becomes `[]` when one ran and ranked nothing.
+  Collapsing the two lets a run that skipped the analysis read as clean.
+
+## The spec is the gate, not our reading of it
+
+Two decisions in this module came from reading
+[the draft](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/) and
+the reference implementation rather than from what looked natural in Rust. Both
+were wrong in the first cut, and a hand-written test agreed with the wrong
+answer, because the same misreading produced both.
+
+**`body` is a String, never an object.** §2.3.2 says so, and
+`vcon-server`'s own model enforces it: hand its `Vcon` a `dict` and it
+JSON-encodes the value before anything else sees the attachment. So
+[`json_text()`](../../src/output/vcon.rs) serializes every structured body to
+text on the way out, and every test that reads one parses it back. A body typed
+as `serde_json::Value` round-trips fine through `serde_json` and fails against a
+real store, which is exactly the class of defect a local test cannot see.
+
+**The format demands some fields even when there is nothing to say.** The
+working group's schema makes `type` and `start` mandatory on every dialog
+object and `start`, `party` and `dialog` mandatory on every attachment. An
+empty dialog object reads as tidy and is invalid. `dialog_object()` therefore
+always names a `type` and always carries a `start`.
+
+**The `type` follows the CONTENT, not the call.** `dialog_object()` builds
+`incomplete`, because at construction the object carries nothing. The media
+path retypes it to `recording` when audio actually arrives, and clears
+`disposition` with it. Typing an object `recording` when it carries no
+content — which this module did until 0.5.125 — is an ingest hazard rather than
+an imprecise label. The conserver's transcription link selects
+`type == "recording"` and then reads `dialog["url"]` with a bracket, so the
+link raises, and the conserver dead-letters the entire container. The converse
+costs as much: every `type == "recording"` selector skips audio left on an
+`incomplete` object, so the WAV sits in the container unreachable. `audio_never_rides_on_an_object_typed_incomplete`
+and `nothing_is_typed_a_recording_without_content_to_reach` pin both directions,
+and the second lives in the SIGNALING-ONLY test file on purpose: over a media
+fixture every object has a body, so the assertion passes vacuously and the
+mutation survives.
+
+**The repository carries the schema, so the gate runs offline.**
+[`tests/schemas/vcon.schema.json`](../../tests/schemas/vcon.schema.json) is the
+working group's own schema, vendored.
+`a_container_validates_against_the_working_group_schema` in
+[`tests/vcon_ingest_contract_test.rs`](../../tests/vcon_ingest_contract_test.rs)
+validates a real export against it. That one test found six violations that the
+hand-written assertions around it had all missed, because those assertions
+encoded what we believed the format required. Add a field and this gate — not
+a reviewer — tells you whether the format agrees.
+
+**Media enriches the signaling object rather than appending a second one.** A
+dialog is one conversation, and a container that carries a `recording` object
+beside a separate signaling object describes it as two. When audio decodes,
+`export_dialog_at()` fills the existing object's `start`, `duration`,
+`parties`, `mediatype`, `encoding`, `content_hash` and `body` in place. The one
+exception is a wrapped ring buffer, where the retained audio genuinely is a
+subset of a longer call: there the object becomes a `recording-set` and the
+audio hangs beneath it, which is what that type is for.
+
+## Adding a field without breaking the divergence gate
+
+The gate compares whole JSON objects, so the rule is short: **add the field to
+`CaptureCompleteness`, and to nothing else.**
+
+1. Add the field to the struct. Both surfaces serialize the same value, so both
+   gain it at once and the equality assertion still holds.
+2. Populate it in `completeness_of()`, from `ExportContext` and from nothing
+   else. Reading a process global here is what stops an export from reproducing.
+3. If the field describes a loss, add a clause to
+   [`completeness_note()`](../../src/output/vcon.rs) so the prose surface says
+   what the structured surface counts. Write it as a measurement of the run.
+   Never as a conclusion about the call: "the capture missed the answer" is a
+   fact about the tap, and "the call went unanswered" is a fact about the
+   traffic, and this module exists because vCon cannot tell them apart.
+4. Extend `the_completeness_carrier_discriminates_a_lossy_run_from_a_clean_one`
+   with a run that moves the new field, or the clause is unproven.
+
+What breaks the gate is building a value inside `report()` or inside
+`completeness_attachment()`. Both take a `&CaptureCompleteness` and serialize
+it. Keep it that way.
+
+Two adjacent rules an edit trips over:
+
+- **Never put a caveat in `subject`.** The core draft defines it as the topic of
+  the conversation, so a disclaimer there arrives styled as a fact about the
+  call. `the_container_declares_its_version_and_signs_nothing` asserts `subject`
+  stays absent, together with `signatures`, `payload`, `protected`, `jwe`,
+  `jws` and `consent`.
+- **Never widen `failure_disposition()` below 400.** A 3xx redirect did not
+  fail, and a container claiming it did sends an operator after a fault that is
+  not there. The redirect case sits inside the mapping test on purpose, so
+  widening the range fails there rather than shipping.
+
+## The uuid: deterministic by construction
+
+[`dialog_uuid()`](../../src/output/vcon.rs) writes a UUIDv8 laid out like a
+UUIDv7 — a 48-bit millisecond timestamp, a 12-bit `rand_a`, a 62-bit `rand_b` —
+with three choices that make it a function of the observation rather than of the
+run:
+
+| Field | Source | Why |
+|---|---|---|
+| 48-bit timestamp | the **dialog's** `created_at` | the export clock here would mint a new identifier on every re-export |
+| `rand_a`, 12 bits | SHA-256 of `Call-ID`, a `0x1e` separator, then `capture_id` | ties the value to the dialog and the capture it came from |
+| `rand_b`, 62 bits | the high 62 bits of SHA-256 over the node name | the draft asks for a host-derived value here |
+
+The separator byte matters: a bare concatenation collides `("ab", "c")` with
+`("a", "bc")`.
+
+Version bits go in the high nibble of octet 6 and the variant `10` in the two
+high bits of octet 8, per RFC 9562. `rand_b` shifts **down** by two rather than
+masking its top bits off, so the variant bits overwrite nothing the draft asked
+for.
+
+`created_at` still carries the export time, where the draft puts it. Two exports
+of one dialog days apart therefore share a uuid and differ in `created_at`, and
+`the_uuid_separates_dialogs_captures_and_clocks` asserts exactly that pair.
+
+**The collision window.** A host-derived `rand_b` spends the entropy a v7 would
+have used, so two dialogs that opened in the same millisecond on the same node
+have 12 bits between them. That is inherent in the layout the draft asks for.
+The module documents it rather than leaving a consumer to assume otherwise, and
+the operator page repeats it. Deduplication on `uuid` is safe for the case it
+exists for — the same dialog exported twice — and is not a uniqueness guarantee
+across a busy node.
+
+One more substitution to know about: the draft names SHA-1, and this tree has
+none. Adding a broken hash as a dependency to fill 62 bits of a non-security
+identifier is the worse trade, and UUIDv8 constrains only the version and
+variant bits, both of which this function writes. What changes is which bits
+land in `rand_b`, and nothing reads them.
+
+## The credential strip, and what it does today
+
+[`strip_credentials()`](../../src/output/vcon.rs) walks a JSON value at every
+depth and drops any key matching `CREDENTIAL_HEADERS` —
+`Authorization`, `Proxy-Authorization`, `WWW-Authenticate` and
+`Proxy-Authenticate` — comparing case-insensitively, because SIP header names
+are case-insensitive on the wire and a filter keyed on exact case is one an
+ordinary peer walks through.
+
+`Proxy-Authenticate` is on the list although the SIP-signaling extension names
+only three. It is the proxy-side twin of `WWW-Authenticate`, carries the same
+realm and nonce, and leaving it off would hold the rule for one hop and not the
+other.
+
+**It removes nothing today, and the module docs say so.** It guards a
+projection: `message_to_json_value()` carries no raw header map, so no message
+sipnab parses now reaches the filter with a banned key on it. The filter is a
+**regression gate at the publication boundary**, and the boundary is where the
+rule has to live. Giving that projection a `headers` field is an ordinary,
+sensible change to a debugging surface, and it would start putting digest
+credentials into a container that leaves this machine.
+
+Do not describe this filter as protecting the current export, and do not delete
+it because a coverage run shows it removing nothing. Two tests keep the
+distinction visible:
+
+- `the_credential_filter_removes_banned_headers_at_every_depth` is the half that
+  discriminates today. It runs against a hand-built value, because an end-to-end
+  export cannot reach the filter with anything to remove. Mutation-proven:
+  deleting the `retain` fails it, and its anti-vacuity assertions fail a filter
+  that emptied the object instead.
+- `no_credential_survives_an_export` is the end-to-end half. It passes on the
+  strength of the projection rather than of the filter, and it is what refuses
+  the digest response the day that changes.
+
+## What the tests cover
+
+Unit tests live in the module and reach its private helpers.
+[`tests/vcon_export_test.rs`](../../tests/vcon_export_test.rs) is the other half
+and proves two things the unit tests structurally cannot: that the whole export
+is reachable through the crate's **public** surface, and that a dialog off a
+real parsed capture carries what the hand-built fixtures carry. A projection can
+agree with a synthetic dialog and disagree with the parser.
+
+Both halves gate on the feature, so a build without `vcon` compiles neither.
+
+## See also
+
+- [Export one observed call as a vCon](../vcon.md) — the operator page
+- [The Phase 0 decision](../design/vcon.md) — the five refusals, and the
+  structural gap in the format that decides the module's shape
+- [Invariants](invariants.md) — the rules that must not break, and what enforces
+  each one
+- [Testing](testing.md) — the test tiers this module's two halves sit in
 
 ---
 

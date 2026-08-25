@@ -1682,17 +1682,17 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `tail_dialogs` | `DialogStore::iter` filtered by `updated_at > cursor` |
 | `security_findings` | `security::AlertEngine` history (extend with ring buffer) |
 | `snapshot_pcap` | `capture::PcapWriter` + filter on captured packets |
-| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:1058`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1058)) |
+| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:1179`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1179)) |
 
 | Phase 8 infra | Reuses |
 |---|---|
-| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:283`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L283)) |
+| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:291`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L291)) |
 | Bearer auth | `output::api::check_auth` + `constant_time_eq` ([`src/output/api.rs:279`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L279), `:309`) |
 | Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:72`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L72)) |
 | Shared store mirroring | `mirror_to_shared_stores` — **gone**; no such function exists today |
 | Server thread + tokio runtime | `start_api_server` — **gone**; see [`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) |
 | Privilege drop ordering | Existing capture-ready rendezvous + `privilege::drop_privileges` (`src/main.rs:387–442`) |
-| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:250`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L250)) with new routes; reuse the existing `guard()` middleware |
+| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:251`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L251)) with new routes; reuse the existing `guard()` middleware |
 
 | Phase 8.4 sink | Wraps |
 |---|---|

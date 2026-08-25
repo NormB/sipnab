@@ -588,7 +588,23 @@ fn linked_code_targets_exist() {
     // man-page check and omitted 3b, the live privilege-drop gate. Dropping a
     // link to a file the prose no longer has a reason to mention is the
     // deletion working, not the extractor narrowing.
-    const EXPECTED_CODE_LINKS: usize = 377;
+    // 377 -> 397: `docs/internals/vcon.md`, the vCon exporter page. Attributed
+    // by measurement before the number moved: that page carries exactly 20
+    // links into `src/` and `tests/`, and no other developer page gained one.
+    // Fourteen of them point at `src/output/vcon.rs` itself -- the section
+    // table names the builder for every vCon object, and a reader following one
+    // row lands on the function rather than on the file's first line.
+    // 397 -> 400: the conformance section of `docs/internals/vcon.md`, which
+    // cites `json_text()`, the vendored working-group schema
+    // (`tests/schemas/vcon.schema.json`) and the gate that validates against it
+    // (`tests/vcon_ingest_contract_test.rs`). Attributed by measurement before
+    // the number moved: that page gained exactly three links into `src/` and
+    // `tests/`, and no other developer page gained one.
+    // 400 -> 401 by one link: the section table in `internals/vcon.md` now has
+    // a `parties[].tel` row, and it names `tel_uri()` as the builder rather
+    // than restating the narrow rule the function documents. One row, one link,
+    // one page.
+    const EXPECTED_CODE_LINKS: usize = 401;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -640,7 +656,23 @@ fn linked_symbols_resolve_to_a_definition() {
     // `relay_reconciler::spawn()` and `orphan_channel()` -- the spawn site and
     // the bounded hand-off it reads from. Both resolve to a definition, which
     // is what the assertion below this one checks.
-    const EXPECTED_SYMBOL_CLAIMS: usize = 68;
+    // 68 -> 86: `docs/internals/vcon.md` again, and the same 20 links -- 18 of
+    // them carry a `()` symbol claim, because the page names the function that
+    // builds each vCon section rather than describing it. Attributed by
+    // measurement before the number moved: no other developer page gained a
+    // claim. The two links without one are the module itself and
+    // `tests/vcon_export_test.rs`.
+    // Raised 86 -> 87 by the conformance section of `internals/vcon.md` naming
+    // `json_text()` as the function that encodes every structured body to text,
+    // so the paragraph states who enforces the spec's String rule rather than
+    // leaving it to the reader to find. The other two functions that section
+    // names, `dialog_object()` and `export_dialog_at()`, the page already
+    // cited. Attributed per file: `internals/vcon.md` +1, every other developer
+    // page unchanged.
+    // Raised 87 -> 88 by that same `tel_uri()` citation — the only symbol the
+    // developer docs gained. Attributed per file: `internals/vcon.md` +1, every
+    // other developer page unchanged.
+    const EXPECTED_SYMBOL_CLAIMS: usize = 88;
     // A definition boundary, not a substring. `source.contains("fn run_offline_paral")`
     // was satisfied by `fn run_offline_parallel`, so a doc could name a function
     // that has never existed and resolve against a real one whose name merely
