@@ -628,7 +628,14 @@ fn wiki_intra_docs_links_resolve() {
     // walk. A standalone reproduction of the count lands one above the gate's,
     // because `prose()` strips more than fenced blocks; the gate's own number
     // is the one pinned here.
-    const EXPECTED_WIKI_LINKS: usize = 498;
+    // 498 -> 501 by three links, all pointing a reader at something runnable
+    // rather than restating it: `docs/output-formats.md` +1 to the vCon page
+    // from its new `--export-vcon` section, `docs/examples.md` +1 to the same
+    // page from recipe 13b, and `docs/examples.md` +1 to `rtpengine.md` from
+    // the §6b relay config, which previously told a reader to set up a mirror
+    // and never said what reads it. Attributed per file; every other page in
+    // this walk held its count.
+    const EXPECTED_WIKI_LINKS: usize = 501;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

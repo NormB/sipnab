@@ -193,6 +193,7 @@ mod tui_snapshots {
                 // branch and let the naming break silently.
                 dscp: Some(46),
                 input_origin: sipnab::capture::parse::InputOrigin::Wire,
+                hep: None,
             };
             let rtp1 = RtpHeader {
                 version: 2,
@@ -227,6 +228,7 @@ mod tui_snapshots {
                 ip_protocol: 17,
                 dscp: None,
                 input_origin: sipnab::capture::parse::InputOrigin::Wire,
+                hep: None,
             };
             let rtp2 = RtpHeader {
                 version: 2,
@@ -279,6 +281,7 @@ mod tui_snapshots {
             // let the naming break silently.
             dscp: Some(46),
             input_origin: sipnab::capture::parse::InputOrigin::Wire,
+            hep: None,
         };
         let rtp = RtpHeader {
             version: 2,

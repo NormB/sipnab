@@ -90,6 +90,7 @@ fn make_rtp_parsed(
         ip_protocol: 17,
         dscp: None,
         input_origin: sipnab::capture::parse::InputOrigin::Wire,
+        hep: None,
     }
 }
 

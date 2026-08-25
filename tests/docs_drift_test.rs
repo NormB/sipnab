@@ -33,6 +33,31 @@ mod markdown;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `--data-binary` is curl's. The cookbook and the vCon page pipe a
+    // container straight into a conserver, and `--data-binary @-` is what
+    // makes that a single runnable line rather than a file dance. Scoped to
+    // the pages that show the POST.
+    (
+        "data-binary",
+        &[
+            "docs/examples.md",
+            "website/content/docs/cookbook.md",
+            "docs/vcon.md",
+            "website/content/docs/vcon.md",
+        ],
+    ),
+    // `--example` is cargo's. The vCon page points at the committed
+    // `export_vcon` example because a program that compiles with the tree
+    // cannot drift from the API the way a fragment on a page can.
+    (
+        "example",
+        &[
+            "docs/vcon.md",
+            "website/content/docs/vcon.md",
+            "docs/examples.md",
+            "website/content/docs/cookbook.md",
+        ],
+    ),
     // `--keylogfile` is eCapture's, not sipnab's, and BOTH pages that name it
     // are legitimate: the cookbook's §7e tells the reader to run
     // `ecapture tls -m keylog --keylogfile=...` on the SIP host to lift secrets
@@ -56,6 +81,11 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             // cargo invocation has to be runnable as written.
             "docs/plugins.md",
             "website/content/docs/plugins.md",
+            // The troubleshooting page answers "sipnab refuses --export-vcon"
+            // with the cargo line that produces a binary carrying it. A remedy
+            // a reader cannot run is not a remedy.
+            "docs/troubleshooting.md",
+            "website/content/docs/troubleshooting.md",
             // The TLS chooser names `--features bpf` because method 4 needs a
             // build that carries it, exactly as the CLI reference does.
             "docs/tls-capture.md",
@@ -168,6 +198,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             // one to read as a hang.
             "docs/vcon.md",
             "website/content/docs/vcon.md",
+            // The troubleshooting page answers "sipnab refuses --export-vcon"
+            // with the same cargo line, for the same reason.
+            "docs/troubleshooting.md",
+            "website/content/docs/troubleshooting.md",
         ],
     ),
     (

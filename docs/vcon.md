@@ -102,10 +102,20 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 ### Step 2 — build the container
 
-Read the capture into a `DialogStore` the ordinary way — the
-[library page](library.md) covers that part, and
-[the committed test](../tests/vcon_export_test.rs) holds the whole program —
-then hand one dialog and the run's own counters to `export_dialog`:
+The shortest path is the committed example, which does everything below against
+that same capture and prints the container:
+
+```sh
+cargo run --features vcon --example export_vcon -- tests/fixtures/sip_call.pcap
+```
+
+Its source is [`examples/export_vcon.rs`](../examples/export_vcon.rs) and it
+compiles as part of the build, so it cannot drift from the API the way a
+fragment on a page can.
+
+In your own program: read the capture into a `DialogStore` the ordinary way —
+the [library page](library.md) covers that part — then hand one dialog and the
+run's own counters to `export_dialog`:
 
 ```rust
 use sipnab::analysis::CaptureFacts;

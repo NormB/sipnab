@@ -72,7 +72,7 @@ Read down the first column and stop at the first row you can satisfy.
 |---|---|---|---|
 | rtpengine already reports to a Homer collector | Capture on the relay host | **No** | sipnab reads the copy already on the wire. Nothing about your Homer pipeline changes. |
 | rtpengine reports nowhere yet | Turn on `--homer-enable-ng`, point it anywhere sipnab can see | Yes, once | The destination can be a collector, or a host that discards the traffic |
-| You need it delivered rather than sniffed | `--hep-listen` on sipnab, point rtpengine at it | Yes | Costs you the collector — see the warning below |
+| You need it delivered rather than sniffed | `--hep-listen` on sipnab, point rtpengine at it | Yes | Costs you the collector — see the warning below. Requires 0.5.125 or later: earlier builds accepted the traffic and decoded none of it |
 
 Every row here covers control messages that cross the wire while sipnab
 runs. None of them reaches a call the relay set up before the capture
@@ -106,7 +106,33 @@ Each relay host runs sipnab against its **own local** relay:
 
 ```bash
 # On relay-a, relay-b, relay-c — identical, and each asks only its own relay.
-sipnab -d eth0 --rtpengine-control 127.0.0.1:22222 --api 127.0.0.1:8080
+# The API binds to the host's own address, not loopback: the whole point of the
+# procedure below is that ANOTHER machine queries this one. A non-loopback bind
+# is refused without authentication, which is why --api-key is not optional
+# here.
+sudo sipnab -d eth0 --rtpengine-control 127.0.0.1:22222 \
+  --api 0.0.0.0:8080 --api-key "$SIPNAB_API_KEY"
+```
+
+The queries below need the address, the key and a Call-ID. Set them once, on
+whichever machine you are running `curl` from:
+
+`$H` interpolates `$KEY`, so set the key first — an `$H` built before `$KEY`
+exists carries an `Authorization` header with no token in it, and every query
+below then returns `401`.
+
+```bash
+KEY="$SIPNAB_API_KEY"
+```
+
+```bash
+H="-H 'Authorization: Bearer $KEY'"
+```
+
+Then the call you are chasing:
+
+```bash
+CALL_ID="1-1966@10.0.2.20"
 ```
 
 `--rtpengine-control` takes one address, and in this topology that is correct

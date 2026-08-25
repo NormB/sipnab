@@ -2126,6 +2126,35 @@ pub fn classify_packet(
     //
     // Ahead of the RTP pre-filter for the same reason LLMNR is: whatever else
     // happens, these bytes must not be read as media.
+    //
+    // TWO arms, because there are two ways `ng` reaches sipnab and they arrive
+    // in different shapes.
+    //
+    // This first arm is the DELIVERED one: `--hep-listen`, where sipnab is the
+    // collector rtpengine exports to. The listener strips the wrapper before
+    // the parser runs, so the payload here is the bare `ng` body and there is
+    // no HEP header left for the second arm to find. What the wrapper said
+    // travels in `pp.hep` instead — and the correlation id it carries is the
+    // ONLY thing naming the call on a reply, whose body has no `call-id` at
+    // all.
+    //
+    // This arm decoded nothing at all before 0.5.125 while the documentation
+    // offered the method, and the cost of that landed on the operator rather
+    // than here: rtpengine takes exactly one `--homer` destination, so anybody
+    // following the page gave up their Homer collector and received no relay
+    // visibility in exchange.
+    #[cfg(feature = "hep")]
+    if pp.transport == TransportProto::Udp
+        && let Some(hep) = &pp.hep
+        && crate::rtpengine::is_ng_over_hep(hep.protocol, &pp.payload)
+    {
+        let sdp_links =
+            crate::rtpengine::sdp_links_from_ng(&pp.payload, hep.correlation_id.as_deref());
+        return PacketAction::RelayControl { sdp_links };
+    }
+
+    // The second arm is the SNIFFED one: a HEP datagram read off the wire,
+    // wrapper intact, on its way to somebody else's collector.
     #[cfg(feature = "hep")]
     if pp.transport == TransportProto::Udp
         && let Ok(hep) = crate::capture::hep::parse_hep(&pp.payload)
@@ -2437,6 +2466,7 @@ mod quiet_bad_parse_tests {
             ip_protocol: 17,
             dscp: None,
             input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
         }
     }
 
@@ -2777,6 +2807,7 @@ mod relay_control_tests {
             ip_protocol: 17,
             dscp: None,
             input_origin: InputOrigin::Wire,
+            hep: None,
         };
         let rtp = RtpHeader {
             version: 2,
@@ -2870,6 +2901,7 @@ mod relay_control_tests {
             ip_protocol: 17,
             dscp: None,
             input_origin: InputOrigin::Wire,
+            hep: None,
         };
         let rtp = RtpHeader {
             version: 2,

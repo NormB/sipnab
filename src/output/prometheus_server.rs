@@ -759,6 +759,7 @@ mod tests {
             ip_protocol: 17,
             dscp: None,
             input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
         };
         let rtp = RtpHeader {
             version: 2,

@@ -604,7 +604,12 @@ fn linked_code_targets_exist() {
     // a `parties[].tel` row, and it names `tel_uri()` as the builder rather
     // than restating the narrow rule the function documents. One row, one link,
     // one page.
-    const EXPECTED_CODE_LINKS: usize = 401;
+    // 401 -> 402 by one link: the rtpengine control-plane page now names
+    // `tests/hep_listen_ng_test.rs` while recording that `--hep-listen`
+    // decoded nothing until 0.5.125, and the repo-path fixer linked it.
+    // Attributed per file: `internals/rtpengine-control-plane.md` +1, every
+    // other developer page unchanged.
+    const EXPECTED_CODE_LINKS: usize = 402;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

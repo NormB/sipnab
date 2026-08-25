@@ -41,6 +41,41 @@ sees the entire conversation, and serves it over MCP.
 | `sipnab`    | built from this repo (`mcp-http` feature) | live capture on the shared netns + MCP HTTP server |
 | `sipp-uas`  | trixie `sip-tester`                       | answers relayed calls |
 | `sipp-uac`  | trixie `sip-tester`                       | loops public SIPp scenarios through `opensips-1` |
+| `hep-sink`  | built from `harness/hep-sink`             | optional: a HEP destination that discards what it receives, so rtpengine has somewhere to mirror to |
+
+### Seeing the relay name a call
+
+By default `rtpengine` mirrors nowhere, so a media stream captured on the relay
+is an orphan: the relay carries no SIP, and nothing on the box says which call
+a stream belongs to. Set `HOMER` in `.env` (see `.env.example`) and rtpengine
+starts with `homer-enable-ng`, mirroring its `ng` control plane — the messages
+that carry the Call-ID and the SDP together.
+
+sipnab reads that copy **off the wire** in the shared netns. It needs no
+configuration of its own and takes nothing away from a real collector, which
+is the difference between this and pointing `--homer` at sipnab directly:
+rtpengine has exactly one Homer destination, so anything aimed at sipnab is
+taken from whatever it was feeding.
+
+`HOMER` is already set in `.env.example`, so start from it:
+
+```sh
+cp .env.example .env
+```
+
+```sh
+make up
+```
+
+Then drive a call through the proxy:
+
+```sh
+make call
+```
+
+The dialog report then carries a "calls named by a media relay" section for
+calls the relay named. `docs/rtpengine.md` covers what each field means and
+what the method cannot tell you.
 
 ## Prerequisites
 

@@ -298,6 +298,7 @@ fn rtp_packet(ssrc: u32, seq: u16, at: DateTime<Utc>) -> ParsedPacket {
         ip_protocol: 17,
         dscp: None,
         input_origin: sipnab::capture::parse::InputOrigin::Wire,
+        hep: None,
     }
 }
 

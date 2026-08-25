@@ -79,8 +79,25 @@ same decoder, not as a separate feature.
 
 ## Why the wire, and not our own listener
 
-sipnab could receive on `--hep-listen` and have rtpengine send to it. That
-works today with no new parsing at all, and it is the wrong default.
+sipnab can receive on `--hep-listen` and have rtpengine send to it. That works
+— since 0.5.125, and not before, although this page said it did.
+
+The claim was wrong in a way worth recording, because the shape recurs. The
+listener strips the HEP wrapper before the parser runs, so by the time the
+pipeline looked for `ng` there was no HEP header left to parse and the check
+never fired. Worse, the correlation id went with it — and an `ng` REPLY names
+its call in the correlation id and nowhere else, so even the half carrying the
+relay's allocated ports had lost the only route back to a call.
+
+"No new parsing at all" was true of the DECODER and false of the PATH, and
+nothing tested the path. The fix carries the wrapper's two load-bearing claims
+in `PreParsed` and gives the pipeline a second arm for the delivered shape.
+[`tests/hep_listen_ng_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/hep_listen_ng_test.rs) covers it, and
+`hep_to_packet_carries_the_capture_protocol_and_correlation_id` covers the
+listener half — which the integration tests structurally cannot, because they
+build `PreParsed` by hand. Mutation found that gap rather than review.
+
+It remains the wrong default.
 
 `--homer` is a single `G_OPTION_ARG_STRING`, not a repeatable option, so
 rtpengine has exactly ONE Homer destination. Pointing it at sipnab takes it

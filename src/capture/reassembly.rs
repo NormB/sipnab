@@ -831,6 +831,7 @@ mod tests {
             ip_protocol: 17, // UDP
             dscp: None,
             input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
         }
     }
 
@@ -861,6 +862,7 @@ mod tests {
             ip_protocol: 6, // TCP
             dscp: None,
             input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
         }
     }
 

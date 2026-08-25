@@ -218,6 +218,7 @@ fn rtp_packet(
         ip_protocol: 17,
         dscp: None,
         input_origin: sipnab::capture::parse::InputOrigin::Wire,
+        hep: None,
     }
 }
 

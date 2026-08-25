@@ -101,6 +101,8 @@ pub fn decode(raw: &[u8], ordinal: u64) -> Option<Packet> {
             src_port: sport,
             dst_port: dport,
             ip_protocol: IP_PROTO_TCP,
+            // A uprobe read has no wrapper to assert anything.
+            hep: None,
         },
     );
     // No digest, and none is possible: a digest exists so a resolver can prove

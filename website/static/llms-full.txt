@@ -353,9 +353,15 @@ Reload with `opensipsctl restart` (or `systemctl reload opensips` for graceful r
 homer = capture.example.com:9060
 homer-protocol = udp
 homer-id = 1
+# Without this, rtpengine mirrors RTCP statistics only -- which carry no
+# Call-ID and no SDP, so nothing sipnab reads can name a call or find a media
+# endpoint. It is the first thing to check when a relay looks silent.
+homer-enable-ng = true
 ```
 
-Restart with `systemctl restart rtpengine`.
+Restart with `systemctl restart rtpengine`. See
+[the rtpengine page](rtpengine.md) for what sipnab does with the result, and
+for the two ways to read it that do not cost you your collector.
 
 **Kamailio:**
 
@@ -1308,6 +1314,35 @@ WAV header and every player reads the file normally.
 - A CLI batch audio-export flag does **not** exist today. The library functions (`rtp::audio_export::export_stream_to_wav`, `export_dialog_to_wav`) are available if you want to build it; until then, scripted batch export means driving the TUI under `expect`/`tmux` or writing a small Rust binary that links the library.
 
 ---
+
+## 13b. Export one call to a conversation archive as a vCon
+
+`--export-vcon` writes one observed dialog as a vCon container — the IETF
+interchange format a conversation archive, a compliance store or an
+agent-facing pipeline already reads. Handing one of those a pcap makes the
+decoding their problem. Handing them a vCon does not.
+
+```sh
+sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20' --vcon-out call.vcon
+```
+
+Straight into a conserver, without a file in between:
+
+```sh
+sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20'   | curl -fsS -X POST "$CONSERVER/vcon"       -H 'Content-Type: application/json'       -H "Authorization: Bearer $CONSERVER_TOKEN" --data-binary @-
+```
+
+Read the caveat before you trust the contents. Every `body` is a JSON-encoded
+string, which means `jq` needs a parse on the way in:
+
+```sh
+sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20'   | jq -r '.analysis[0].body | fromjson | .capture_completeness.note'
+```
+
+Needs a build carrying the non-default `vcon` feature. `sipnab --version` lists
+what yours has. As a library, [`examples/export_vcon.rs`](../examples/export_vcon.rs)
+is the same thing as a program you can run. The [vCon page](vcon.md) covers what
+a consumer may and may not conclude from a container sipnab wrote.
 
 ## 14. Analyze a pcap without installing anything
 
@@ -4368,7 +4403,7 @@ Read down the first column and stop at the first row you can satisfy.
 |---|---|---|---|
 | rtpengine already reports to a Homer collector | Capture on the relay host | **No** | sipnab reads the copy already on the wire. Nothing about your Homer pipeline changes. |
 | rtpengine reports nowhere yet | Turn on `--homer-enable-ng`, point it anywhere sipnab can see | Yes, once | The destination can be a collector, or a host that discards the traffic |
-| You need it delivered rather than sniffed | `--hep-listen` on sipnab, point rtpengine at it | Yes | Costs you the collector — see the warning below |
+| You need it delivered rather than sniffed | `--hep-listen` on sipnab, point rtpengine at it | Yes | Costs you the collector — see the warning below. Requires 0.5.125 or later: earlier builds accepted the traffic and decoded none of it |
 
 Every row here covers control messages that cross the wire while sipnab
 runs. None of them reaches a call the relay set up before the capture
@@ -4402,7 +4437,33 @@ Each relay host runs sipnab against its **own local** relay:
 
 ```bash
 # On relay-a, relay-b, relay-c — identical, and each asks only its own relay.
-sipnab -d eth0 --rtpengine-control 127.0.0.1:22222 --api 127.0.0.1:8080
+# The API binds to the host's own address, not loopback: the whole point of the
+# procedure below is that ANOTHER machine queries this one. A non-loopback bind
+# is refused without authentication, which is why --api-key is not optional
+# here.
+sudo sipnab -d eth0 --rtpengine-control 127.0.0.1:22222 \
+  --api 0.0.0.0:8080 --api-key "$SIPNAB_API_KEY"
+```
+
+The queries below need the address, the key and a Call-ID. Set them once, on
+whichever machine you are running `curl` from:
+
+`$H` interpolates `$KEY`, so set the key first — an `$H` built before `$KEY`
+exists carries an `Authorization` header with no token in it, and every query
+below then returns `401`.
+
+```bash
+KEY="$SIPNAB_API_KEY"
+```
+
+```bash
+H="-H 'Authorization: Bearer $KEY'"
+```
+
+Then the call you are chasing:
+
+```bash
+CALL_ID="1-1966@10.0.2.20"
 ```
 
 `--rtpengine-control` takes one address, and in this topology that is correct
@@ -5582,6 +5643,53 @@ cooked v1 and cooked v2 alike.
 Build custom queries with the [Filter DSL](filter-dsl.md) -- 33 fields, regex support, boolean logic. See the [CLI Reference](cli-reference.md) for every flag and more recipes.
 
 If the capture itself is the problem -- drops on a busy link, a full kernel ring buffer, or loss that appears on every call at once -- see [Tuning capture on a busy server](tuning-capture.md).
+
+### sipnab refuses `--export-vcon`
+
+```text
+--export-vcon needs a build with the `vcon` feature
+```
+
+The exporter is behind a non-default Cargo feature, so a stock build does not
+carry it. Check what you have:
+
+```sh
+sipnab --version        # the feature list is on the version line
+```
+
+If `vcon` is absent, build one that has it:
+
+```sh
+cargo build --release --features vcon
+```
+
+The feature is non-default on purpose. A container that leaves the machine is a
+publication surface, and a capture tool should not grow one unless an operator
+asks for it.
+
+### `--export-vcon` says the Call-ID is not there
+
+```text
+Call-ID 'x@y' not found in tracked dialogs, so there is no dialog to export.
+```
+
+The run holds no dialog under that Call-ID. `--report` lists the ones it does
+hold — the usual cause is a Call-ID copied with surrounding quotes or a
+truncated one, and the second is a capture that never saw the dialog open.
+
+Quote the Call-ID in the shell. Most contain `@`, and many contain characters
+your shell would otherwise interpret.
+
+### The container came out with no audio in it
+
+The dialog object carries no `body` and the caveat says media was not decoded.
+That is a statement about what the RUN kept, never a finding that the call was
+silent — the container is careful to say so, and a consumer should read the
+`media_note` beside it.
+
+The usual cause is that the run did not retain the RTP payload. Audio also has
+an inline budget. A recording over it draws an out-loud refusal rather than a
+silent truncation, and the caveat names the size it turned down.
 
 ---
 
@@ -9849,6 +9957,26 @@ sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.complete'
 `--analyze` derives nothing new. `--analyze` aggregates the per-dialog diagnosis
 sipnab already computes and the capture-level evidence it already holds. It
 ranks and counts them, and adds no judgement of its own.
+
+## vCon (`--export-vcon`)
+
+A different kind of output from everything above. The formats on this page are
+sipnab's own shapes, read by sipnab and by whatever you write around it. A vCon
+is an interchange container other people's systems already parse — a
+conversation archive, a compliance store, an agent that reasons over calls.
+
+```sh
+sipnab -N -I call.pcap --export-vcon 'CALL-ID' --vcon-out out.json
+```
+
+One dialog per container, never a whole capture. sipnab writes it as an
+OBSERVER: it names itself as a party that took no part in the call, carries the
+audio inline when the run retained the RTP payload, and states in two places
+what the capture missed. It signs nothing.
+
+Behind the non-default `vcon` feature, so a stock build refuses the flag and
+says so. The [vCon page](vcon.md) covers what a consumer may and may not
+conclude from one, which matters more here than the field list.
 
 ## pcap / pcapng
 
@@ -17370,10 +17498,20 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 ### Step 2 — build the container
 
-Read the capture into a `DialogStore` the ordinary way — the
-[library page](library.md) covers that part, and
-[the committed test](../tests/vcon_export_test.rs) holds the whole program —
-then hand one dialog and the run's own counters to `export_dialog`:
+The shortest path is the committed example, which does everything below against
+that same capture and prints the container:
+
+```sh
+cargo run --features vcon --example export_vcon -- tests/fixtures/sip_call.pcap
+```
+
+Its source is [`examples/export_vcon.rs`](../examples/export_vcon.rs) and it
+compiles as part of the build, so it cannot drift from the API the way a
+fragment on a page can.
+
+In your own program: read the capture into a `DialogStore` the ordinary way —
+the [library page](library.md) covers that part — then hand one dialog and the
+run's own counters to `export_dialog`:
 
 ```rust
 use sipnab::analysis::CaptureFacts;
@@ -21149,8 +21287,25 @@ same decoder, not as a separate feature.
 
 ## Why the wire, and not our own listener
 
-sipnab could receive on `--hep-listen` and have rtpengine send to it. That
-works today with no new parsing at all, and it is the wrong default.
+sipnab can receive on `--hep-listen` and have rtpengine send to it. That works
+— since 0.5.125, and not before, although this page said it did.
+
+The claim was wrong in a way worth recording, because the shape recurs. The
+listener strips the HEP wrapper before the parser runs, so by the time the
+pipeline looked for `ng` there was no HEP header left to parse and the check
+never fired. Worse, the correlation id went with it — and an `ng` REPLY names
+its call in the correlation id and nowhere else, so even the half carrying the
+relay's allocated ports had lost the only route back to a call.
+
+"No new parsing at all" was true of the DECODER and false of the PATH, and
+nothing tested the path. The fix carries the wrapper's two load-bearing claims
+in `PreParsed` and gives the pipeline a second arm for the delivered shape.
+[`tests/hep_listen_ng_test.rs`](../../tests/hep_listen_ng_test.rs) covers it, and
+`hep_to_packet_carries_the_capture_protocol_and_correlation_id` covers the
+listener half — which the integration tests structurally cannot, because they
+build `PreParsed` by hand. Mutation found that gap rather than review.
+
+It remains the wrong default.
 
 `--homer` is a single `G_OPTION_ARG_STRING`, not a repeatable option, so
 rtpengine has exactly ONE Homer destination. Pointing it at sipnab takes it

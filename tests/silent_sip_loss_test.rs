@@ -61,6 +61,7 @@ fn parsed(payload: Vec<u8>, src_port: u16, dst_port: u16) -> ParsedPacket {
         ip_protocol: 17,
         dscp: None,
         input_origin: sipnab::capture::parse::InputOrigin::Wire,
+        hep: None,
     }
 }
 

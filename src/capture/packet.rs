@@ -10,6 +10,28 @@ use chrono::{DateTime, Utc};
 use std::net::IpAddr;
 use std::sync::Arc;
 
+/// What a HEP sender said about a datagram it delivered, beyond the addressing.
+///
+/// The HEP listener strips the wrapper before the packet reaches the parser, so
+/// everything the wrapper said is gone unless it travels here. Two chunks
+/// matter downstream and both used to be dropped on the floor:
+///
+/// - the capture protocol, which is how rtpengine's mirrored `ng` control
+///   plane announces itself (`0x3d`), and
+/// - the correlation id, which is the ONLY thing naming the call on an `ng`
+///   REPLY — a reply body carries no `call-id` at all.
+///
+/// Without them a relay could mirror its control plane straight at sipnab and
+/// sipnab would decode none of it, while the documentation said the method
+/// worked.
+#[derive(Debug, Clone)]
+pub struct HepOrigin {
+    /// HEP capture protocol byte, verbatim.
+    pub protocol: u8,
+    /// HEP correlation id, when the sender set one.
+    pub correlation_id: Option<String>,
+}
+
 /// Pre-parsed addressing metadata for packets that arrive from a source
 /// which already knows the inner addresses (e.g. a HEP listener that
 /// reads `src_addr` / `dst_addr` from HEP chunks). When present, the
@@ -27,6 +49,11 @@ pub struct PreParsed {
     pub dst_port: u16,
     /// IANA IP protocol number (17 = UDP, 6 = TCP, 132 = SCTP).
     pub ip_protocol: u8,
+    /// What the HEP wrapper said, when this packet came through a HEP source.
+    ///
+    /// `None` for every other pre-parsed source (uprobe reads, synthetic test
+    /// packets), which is the honest value: nothing wrapped them.
+    pub hep: Option<HepOrigin>,
 }
 
 /// Where in its source a packet was read from.

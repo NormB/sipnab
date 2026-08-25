@@ -149,6 +149,7 @@ fn parsed_for(ssrc: u32, payload: Vec<u8>) -> ParsedPacket {
         ip_protocol: 17,
         dscp: None,
         input_origin: sipnab::capture::parse::InputOrigin::Wire,
+        hep: None,
     }
 }
 
