@@ -141,13 +141,23 @@ fn vcon_route_is_served_by_the_shipping_binary() {
     let note = analysis_body["capture_completeness"]["note"]
         .as_str()
         .unwrap_or_else(|| panic!("no completeness note: {body}"));
-    for clause in ["OBSERVED", "SIGNALING ONLY", "nothing here is signed"] {
+    // NOT "SIGNALING ONLY". This door attempts media like the CLI and MCP
+    // doors since 0.5.125, so the caveat reports what this run MEASURED about
+    // media instead of a fixed claim that the container carries none. The two
+    // clauses below are the ones that must never soften: they are what stops a
+    // reader taking an observation for a recording of the call.
+    for clause in ["OBSERVED", "nothing here is signed"] {
         assert!(
             note.contains(clause),
             "the caveat must say `{clause}` — without it the container reads \
              as a recording of the call: {note}"
         );
     }
+    assert!(
+        note.contains("not a finding that the call was silent"),
+        "an absence of media must read as a fact about this RUN, never about \
+         the conversation: {note}"
+    );
 
     let unknown = srv.get("/v1/dialogs/does-not-exist@nowhere/vcon");
     assert_eq!(

@@ -2755,7 +2755,7 @@ per SIP message and grows with the call):
   "vcon": "0.4.0",
   "uuid": "018bcfe5-6800-8795-a667-78f1c5213800",
   "created_at": "2026-08-24T22:03:38.989752721+00:00",
-  "extensions": ["sip-signaling"],
+  "extensions": ["sip-signaling", "CC"],
   "parties": [
     {
       "sip": "sip:1001@10.0.0.1",
@@ -2798,7 +2798,7 @@ per SIP message and grows with the call):
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.124 (passive observer; signaling only)",
+      "product": "sipnab 0.5.124 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -4021,7 +4021,10 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `mcp` | Model Context Protocol server, stdio transport. Lets an AI agent (Claude Code, Claude Desktop, …) drive sipnab. | `native`, `tokio`, `rmcp` |
 | `mcp-http` | MCP server over HTTP (Streamable-HTTP). Adds the `--mcp-transport http` option. | `mcp`, `api`, `rmcp/transport-streamable-http-server` |
 | `metrics` | Standalone Prometheus `/metrics` server: a raw TCP listener and plain threads, no axum/tokio, so scraping does not drag in the `api` feature or its async runtime. Included by default. | `native`, `base64` |
-| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` | all |
+| `plugins` | WASM plugin host (`--plugin`): runs sandboxed third-party dialog detections, so a detection nobody here wrote cannot reach the process it inspects. | `native`, `wasmi` |
+| `bpf` | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key material. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run — without the linker the binary still builds and the backend refuses at runtime rather than capturing nothing silently. | `native`, `aya` |
+| `vcon` | vCon export: one observed dialog as an unsigned IETF conversation container, with the audio inline when the run retained it. Non-default, because a container that leaves the machine is a publication surface and a capture tool should not grow one unless an operator asks. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `base64` |
+| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` | all |
 | `wasm` | WebAssembly target for in-browser pcap analysis | wasm-bindgen toolchain |
 
 Build with specific features. For the TUI plus TLS decryption and nothing else:
@@ -7234,7 +7237,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20' > call.vcon` -- hand one observed dialog to a conversation-data pipeline in the interchange format it already reads, instead of a sipnab-shaped JSON nobody else parses. The container names sipnab as an observer party and carries what this capture missed, so a consumer weighs it as an observation rather than as a recording
 - `sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20' --vcon-out ./call.vcon --no-cli-print` -- the same container to a file, with the run otherwise silent. Use this spelling in a script: the exit code is the whole answer, and a path sipnab cannot write fails the run rather than leaving an operator to discover the missing file later
 - `sipnab -N -I ./captures --export-vcon '1-1966@10.0.2.20' --vcon-out ./captures/1-1966.vcon` -- refused before anything opens a writer. `--vcon-out` goes through the guard `-O` does, so a container cannot land inside a directory this run reads: a name that is free today becomes an input on the next run, and the container would then overwrite the evidence it summarizes
-- `sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20' | jq '.analysis[0].body.capture_completeness.note'` -- read the caveat before the contents. The note comes from this run's own counters and says what sipnab READ and dropped; it never says the call was short, silent or broken, because none of that follows from a capture that missed something
+- `sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20' | jq -r '.analysis[0].body | fromjson | .capture_completeness.note'` -- read the caveat before the contents. The `fromjson` is not optional: the draft makes every `body` a JSON-encoded STRING, so indexing into it without parsing yields nothing. The note comes from this run's own counters and says what sipnab READ and dropped; it never says the call was short, silent or broken, because none of that follows from a capture that missed something
 - `sipnab -N -I capture.pcap --tshark-filter 'sip.Method == "INVITE"'` — print a tshark-compatible display filter for the INVITE traffic in a capture. sipnab hands the expression to tshark's `-Y` verbatim, so it takes WIRESHARK display-filter syntax rather than sipnab's `--filter` DSL: `sip.Method`, not `method`. Quote the whole expression in single quotes so the inner double quotes survive the shell
 
 
@@ -15345,7 +15348,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
   "vcon": "0.4.0",
   "uuid": "0158a120-0392-86a4-a667-78f1c5213800",
   "created_at": "2026-08-24T22:13:31.238368261+00:00",
-  "extensions": ["sip-signaling"],
+  "extensions": ["sip-signaling", "CC"],
   "parties": [
     {
       "sip": "sip:sipp@10.0.2.20:5060",
@@ -17276,7 +17279,8 @@ parties, what passed between them, and what some tool concluded about it.
 sipnab fills that shape from signaling it watched go past a tap. Each container
 carries the SIP ladder, the parties the `From` and `To` headers named, a
 diagnosis of the call, and — in two places, deliberately — a statement of what
-the capture missed. None of them carries audio, a signature, or any claim that
+the capture missed. When the run retained the RTP payload, the container also
+carries the audio, inline. None of them carries a signature or any claim that
 somebody consented to anything. **A sipnab vCon records what an instrument
 saw, not what the parties said.** The honesty section below is the one part of
 this page to read before you trust a container.
@@ -17322,8 +17326,8 @@ export writes the same bytes. Pick the door that suits you:
 
 | You are | Ask this way | Answers with |
 |---|---|---|
-| At a shell, reading a capture file | `sipnab -r call.pcap --export-vcon <call-id> --vcon-out out.json` | the container in `out.json` |
-| At a shell, wanting it on stdout | `sipnab -r call.pcap --export-vcon <call-id>` | the container on stdout |
+| At a shell, reading a capture file | `sipnab -N -I call.pcap --export-vcon 'CALL-ID' --vcon-out out.json` | the container in `out.json` |
+| At a shell, wanting it on stdout | `sipnab -N -I call.pcap --export-vcon 'CALL-ID'` | the container on stdout |
 | An agent holding an MCP session | the `export_vcon` tool, with `call_id` | a structured content block |
 | A program over HTTP | `GET /v1/dialogs/{call_id}/vcon` | `200` and the container, or `404` |
 | Rust, in-process | `sipnab::output::vcon::export_dialog` | a `Vcon` value |
@@ -17414,7 +17418,8 @@ and a consumer parses it before indexing into it.
   "uuid": "018bcfe5-6800-8a6b-a667-78f1c5213800",
   "created_at": "2026-08-24T17:05:12+00:00",
   "extensions": [
-    "sip-signaling"
+    "sip-signaling",
+    "CC"
   ],
   "parties": [
     {
@@ -17500,7 +17505,7 @@ and a consumer parses it before indexing into it.
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.124 (passive observer; signaling only)",
+      "product": "sipnab 0.5.124 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -17531,10 +17536,12 @@ that party sent, and in this capture the first message coming back is a bare
 `100 Trying` that carries neither. An absent field means the capture never saw
 one, not that the endpoint has none.
 
-**The Dialog Object is nearly empty, and that is correct.** One `sip_call_id`,
-no `type`, no `disposition`, no media description. The call in this fixture
-completed, so nothing about it failed. A signaling-only export has no media, so
-inventing a `mediatype` or a `url` would describe a file that does not exist.
+**The Dialog Object describes no media, and that is correct here.** This run
+retained no RTP payload, so there is nothing to describe and inventing a
+`mediatype` or a `url` would name a file that does not exist. `type` is
+`incomplete` because that is the only value in the enum that claims no content
+— see the type rule above — and there is no `disposition`, because the call in
+this fixture completed and nothing about it failed.
 
 **The completeness body appears twice.** Once as an attachment, once inside the
 report. The next section is about why.
@@ -17583,7 +17590,7 @@ one source value:
 
 | Surface | Where it sits | Who reads it |
 |---|---|---|
-| `analysis[0].body.capture_completeness` | inside the report, beside the diagnosis | anything that reads what sipnab concluded |
+| `capture_completeness`, inside `analysis[0].body` | inside the report, beside the diagnosis | anything that reads what sipnab concluded |
 | the `sipnab-capture-completeness` attachment | a document in `attachments`, attributed to the observer | anything that walks the attachments |
 
 Both hold the same value byte for byte, and a test fails if they diverge. Two
@@ -17644,7 +17651,7 @@ participant.
 | the message trace | these messages reached sipnab's parser | that they are all the messages |
 | `analysis[0].body` | sipnab's diagnosis of what it held | a diagnosis of the call |
 | an absent field | the capture did not carry it | that the call lacked it |
-| an empty `dialog[]` media description | this export carries no media | that the call had none |
+| a `dialog[]` object with no media fields | this export carries no media | that the call had none |
 
 Three rules follow from that table.
 
@@ -17680,6 +17687,26 @@ Each refusal has an argument behind it in
 The party `name` refusal has a structural form worth knowing about: the Rust
 type has no `name` field at all, so no later edit can populate one by accident.
 
+### The message trace carries the headers, and strips the credentials
+
+Each message in the `sip-message-trace` attachment carries a `headers` object:
+the header name, and an array of its values so a repeated `Via` or
+`Record-Route` keeps the path the message actually took.
+
+Four headers never travel — `Authorization`, `Proxy-Authorization`,
+`WWW-Authenticate` and `Proxy-Authenticate` — because a digest challenge and
+its response are credential material and a container is a publication surface.
+That filter is worth one honest sentence: until 0.5.125 it did nothing,
+because the trace carried no raw headers for it to find. The test guarding it
+passed for that reason rather than because the filter worked. Headers and the
+filter that makes them safe to publish landed together, deliberately, and the
+same test now fails if anyone drops either half.
+
+Everything else on the wire is in the container. Decide whether that is
+acceptable for your traffic before you hand one to anybody. `P-Asserted-Identity`,
+`Diversion`, `Remote-Party-ID` and any custom header your platform sets all
+travel, exactly as the endpoint wrote them.
+
 ### One thing sipnab does supply, narrowly: `tel`
 
 A conserver indexes parties by `tel`, `mailto` and `name` and by nothing else,
@@ -17706,9 +17733,12 @@ itself a signal: nothing established a dialog.
 
 Stated here rather than discovered later.
 
-- **It does not carry audio.** The container holds signaling only, and it holds
-  no `url` pointing at media held elsewhere. Export audio through sipnab's own
-  audio path, which carries its own partial-capture caveat.
+- **It does not link to audio held elsewhere.** When the run retained the RTP
+  payload the container carries the audio INLINE, as a `recording` Dialog
+  Object with a `sha512-` content hash; when it did not, the container says so
+  in words and carries none. There is never a `url`, because sipnab hosts
+  nothing and cannot promise where a file lives tomorrow. Audio over the inline
+  budget draws an out-loud refusal rather than a silent truncation.
 - **It does not tie the two halves of a B2BUA call together.** Two Call-IDs
   produce two containers, and nothing in either one links them.
 - **It does not assemble a call across hops.** One container describes one
@@ -22022,7 +22052,7 @@ run:
 |---|---|---|
 | 48-bit timestamp | the **dialog's** `created_at` | the export clock here would mint a new identifier on every re-export |
 | `rand_a`, 12 bits | SHA-256 of `Call-ID`, a `0x1e` separator, then `capture_id` | ties the value to the dialog and the capture it came from |
-| `rand_b`, 62 bits | the high 62 bits of SHA-256 over the node name | the draft asks for a host-derived value here |
+| `rand_b`, 62 bits | the high 62 bits of SHA-256 over the node name, a `0x1e` separator, the `Call-ID`, another separator, then `capture_id` | host-derived, as the draft asks, and dialog-derived as well — see the collision window below |
 
 The separator byte matters: a bare concatenation collides `("ab", "c")` with
 `("a", "bc")`.
@@ -22036,13 +22066,26 @@ for.
 of one dialog days apart therefore share a uuid and differ in `created_at`, and
 `the_uuid_separates_dialogs_captures_and_clocks` asserts exactly that pair.
 
-**The collision window.** A host-derived `rand_b` spends the entropy a v7 would
-have used, so two dialogs that opened in the same millisecond on the same node
-have 12 bits between them. That is inherent in the layout the draft asks for.
-The module documents it rather than leaving a consumer to assume otherwise, and
-the operator page repeats it. Deduplication on `uuid` is safe for the case it
-exists for — the same dialog exported twice — and is not a uniqueness guarantee
-across a busy node.
+**The collision window, and how it closed.** Until 0.5.125 this keyed `rand_b`
+on the node ALONE, spending 62 of the 74 available bits on a value identical
+for every dialog on the box. Two dialogs opening in the same
+millisecond on one node had 12 bits between them, so roughly one pair in 4096
+collided — and §4.1.2 makes the uuid globally unique because a store KEYS on
+it. A collision raises nothing. It overwrites the record already there, losing
+one capture with no error anywhere.
+
+An earlier version of this page called that "inherent in the layout the draft
+asks for". It is not. The draft asks for a host-derived value in `rand_b`. It
+never asks for a value derived from the host and NOTHING ELSE. Folding the dialog and the
+capture into the same digest keeps every property the layout wanted and takes
+the discriminating bits from 12 to 74.
+
+Determinism is the property that had to survive, and it did: the digest is over
+stable inputs, so re-exporting one dialog from one capture still yields one
+identifier. `two_dialogs_in_one_millisecond_on_one_node_get_different_uuids`
+holds a real colliding pair found by brute force and asserts the precondition
+that they still share the old 12-bit bucket, so it fails loudly rather than
+passing vacuously if the seed ever changes.
 
 One more substitution to know about: the draft names SHA-1, and this tree has
 none. Adding a broken hash as a dependency to fill 62 bits of a non-security
@@ -22064,21 +22107,38 @@ only three. It is the proxy-side twin of `WWW-Authenticate`, carries the same
 realm and nonce, and leaving it off would hold the rule for one hop and not the
 other.
 
-**It removes nothing today, and the module docs say so.** It guards a
-projection: `message_to_json_value()` carries no raw header map, so no message
-sipnab parses now reaches the filter with a banned key on it. The filter is a
-**regression gate at the publication boundary**, and the boundary is where the
-rule has to live. Giving that projection a `headers` field is an ordinary,
-sensible change to a debugging surface, and it would start putting digest
-credentials into a container that leaves this machine.
+**It is load-bearing as of 0.5.125.** It was not before, and the honest
+history matters more than the current state, because the shape of the mistake
+recurs.
 
-Do not describe this filter as protecting the current export, and do not delete
-it because a coverage run shows it removing nothing. Two tests keep the
-distinction visible:
+The filter used to guard a projection that could not carry a credential:
+`message_to_json_value()` had no raw header map, so no message reached it with
+a banned key. `no_credential_survives_an_export` planted a real `Authorization`
+and a real `Proxy-Authorization` in its fixture and passed — not because the
+filter worked, but because the field did not exist. A regression gate for
+something that could not regress reads exactly like a working control, in a
+coverage report and to a reviewer.
 
-- `the_credential_filter_removes_banned_headers_at_every_depth` is the half that
-  discriminates today. It runs against a hand-built value, because an end-to-end
-  export cannot reach the filter with anything to remove. Mutation-proven:
+The old text here predicted its own resolution: "giving that projection a
+`headers` field is an ordinary, sensible change to a debugging surface, and it
+would start putting digest credentials into a container that leaves this
+machine." That is what 0.5.125 did — and the two halves landed in ONE change,
+deliberately. The `sip-signaling` extension names `headers` in its message
+structure and a SIP trace without them is a summary of a trace, so the field
+was going to arrive. A field that publishes credentials must never land in a
+release ahead of the filter that removes them.
+
+The filter is now mutation-proven end to end. Empty `CREDENTIAL_HEADERS` and
+`no_credential_survives_an_export` fails, which is the thing it always claimed
+to check. Three tests keep the distinction visible:
+
+- `the_trace_carries_the_headers_the_filter_exists_to_clean` is the half that
+  keeps the other two honest: drop `headers` from the trace and the filter has
+  nothing to remove again, so it fails rather than letting the pair go quietly
+  back to proving nothing.
+- `the_credential_filter_removes_banned_headers_at_every_depth` runs against a
+  hand-built value, so it covers nesting depths an ordinary export never
+  produces. Mutation-proven:
   deleting the `retain` fails it, and its anti-vacuity assertions fail a filter
   that emptied the object instead.
 - `no_credential_survives_an_export` is the end-to-end half. It passes on the

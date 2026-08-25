@@ -1328,6 +1328,23 @@ fn message_trace_attachment(dialog: &SipDialog, observer: usize, start: String) 
         .iter()
         .map(|m| {
             let mut value = crate::output::json::message_to_json_value(m);
+            // The headers ride BESIDE the shared `--json` projection rather
+            // than inside it: the projection is what a vCon and an NDJSON line
+            // must agree about, and this adds to the container without moving
+            // that line. The `sip-signaling` extension names `headers` in its
+            // message structure, and a SIP trace without them is a summary of
+            // a trace.
+            //
+            // This is also what makes `strip_credentials` do work. Until the
+            // headers arrived it filtered a projection that carried no
+            // `Authorization` to remove, so `no_credential_survives_an_export`
+            // passed because the field did not exist — a regression gate for
+            // something that could not regress. Emitting them and stripping
+            // them is one change, deliberately: the field and the filter that
+            // makes it safe to publish must never land apart.
+            if let Some(map) = value.as_object_mut() {
+                map.insert("headers".to_string(), header_map(m));
+            }
             strip_credentials(&mut value);
             value
         })
@@ -1368,6 +1385,31 @@ fn message_trace_attachment(dialog: &SipDialog, observer: usize, start: String) 
 /// start putting digest credentials into a container built to be handed to
 /// somebody else.
 ///
+/// Every header on one message, as a JSON object a consumer can index.
+///
+/// An OBJECT keyed by header name rather than a list of name/value pairs,
+/// because that is the shape [`strip_credentials`] can filter: it removes
+/// entries whose KEY is a credential, and a `[{"name": ..., "value": ...}]`
+/// list would hide every credential behind the key `"value"` where no filter
+/// keyed on names can reach it.
+///
+/// Values are arrays because SIP headers repeat — `Via` and `Record-Route`
+/// carry the path, and collapsing them to one value would lose the route the
+/// message actually took. A single-valued header is a one-element array rather
+/// than a bare string, so a consumer indexes one shape and never type-switches.
+fn header_map(msg: &crate::sip::SipMessage) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for header in &msg.headers {
+        let entry = map
+            .entry(header.name.to_string())
+            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        if let Some(list) = entry.as_array_mut() {
+            list.push(serde_json::Value::String(header.value.clone()));
+        }
+    }
+    serde_json::Value::Object(map)
+}
+
 /// Keys are compared case-insensitively. See [`CREDENTIAL_HEADERS`].
 fn strip_credentials(value: &mut serde_json::Value) {
     match value {
@@ -1704,11 +1746,31 @@ pub fn dialog_uuid(dialog: &SipDialog, capture_id: &str) -> String {
     bytes[6] = 0x80 | u8::try_from(rand_a >> 8).unwrap_or(0);
     bytes[7] = u8::try_from(rand_a & 0xff).unwrap_or(0);
 
-    // rand_b: the HIGH 62 bits of the host digest, shifted down so none of
-    // them are overwritten by the variant bits that follow. Masking the top
-    // two bits off instead would silently discard the two most significant
-    // bits the draft asks for.
-    let host = Sha256::digest(node_name().as_bytes());
+    // rand_b: 62 more bits keyed on the NODE AND THE DIALOG, shifted down so
+    // none of them are overwritten by the variant bits that follow. Masking
+    // the top two bits off instead would silently discard the two most
+    // significant bits the draft asks for.
+    //
+    // Keying this on the node ALONE — which it did until 0.5.125 — spent 62 of
+    // the identifier's 74 bits on a value identical for every dialog on the
+    // box. That left `rand_a`'s 12 bits as the only thing telling two dialogs
+    // apart within one millisecond on one node, so roughly one pair in 4096
+    // collided. §4.1.2 makes the uuid globally unique and a store KEYS on it:
+    // a collision raises nothing, it overwrites the record already there and
+    // one capture is gone. `two_dialogs_in_one_millisecond_on_one_node_get_different_uuids`
+    // holds a real colliding pair found by brute force.
+    //
+    // Determinism is untouched, and that is the property this must not buy the
+    // fix with: the digest is over stable inputs, so re-exporting one dialog
+    // from one capture still yields one identifier. The same separator as
+    // above keeps `("ab", "c")` apart from `("a", "bc")`.
+    let mut host = Sha256::new();
+    host.update(node_name().as_bytes());
+    host.update([0x1e]);
+    host.update(dialog.call_id.as_bytes());
+    host.update([0x1e]);
+    host.update(capture_id.as_bytes());
+    let host = host.finalize();
     let mut top = [0u8; 8];
     top.copy_from_slice(&host[..8]);
     let rand_b = u64::from_be_bytes(top) >> 2;
@@ -2125,15 +2187,53 @@ mod tests {
         }
     }
 
+    /// The trace carries the headers, which is what gives the filter work.
+    ///
+    /// This is the other half of `no_credential_survives_an_export` and exists
+    /// because that test can pass for two very different reasons: the filter
+    /// removed the credential, or the container never carried a header at all.
+    /// It passed for the second reason until 0.5.125. Drop `headers` again and
+    /// this fails, so the pair cannot silently go back to proving nothing.
+    #[test]
+    fn the_trace_carries_the_headers_the_filter_exists_to_clean() {
+        let dialog = dialog_with(&[response(200, "OK")]);
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        let trace = body_of(&v["attachments"][0]);
+        let first = &trace["messages"][0];
+
+        let headers = first["headers"]
+            .as_object()
+            .unwrap_or_else(|| panic!("every message must carry its headers: {first}"));
+        assert!(
+            !headers.is_empty(),
+            "an empty header map gives the credential filter nothing to \
+             remove, which is how a regression gate stops guarding: {first}"
+        );
+        for expected in ["From", "To", "Call-ID"] {
+            assert!(
+                headers.contains_key(expected),
+                "`{expected}` is on the wire and must reach the trace: {headers:?}"
+            );
+        }
+        // Repeats survive as repeats: a collapsed `Via` loses the path.
+        assert!(
+            headers.values().all(|v| v.is_array()),
+            "every header value must be an array so a consumer indexes one \
+             shape and repeated headers keep every value: {headers:?}"
+        );
+    }
+
     /// No credential reaches the container, end to end.
     ///
-    /// The projection this trace is built from carries no raw header map
-    /// today, so this passes on the strength of that projection rather than of
-    /// the filter. It is written as a REGRESSION gate: the day
-    /// `message_to_json_value` gains a `headers` field, this is what refuses
-    /// the digest response before it is handed to somebody else.
-    /// `the_credential_filter_removes_banned_headers_at_every_depth` is the
-    /// half that discriminates today.
+    /// This was written as a REGRESSION gate for a day that has now arrived.
+    /// Its old doc said "the projection this trace is built from carries no
+    /// raw header map today, so this passes on the strength of that projection
+    /// rather than of the filter … the day `message_to_json_value` gains a
+    /// `headers` field, this is what refuses the digest response before it is
+    /// handed to somebody else." 0.5.125 is that day: the trace carries every
+    /// header, so the `Authorization` and `Proxy-Authorization` planted below
+    /// are really in the container until the filter takes them out. Empty
+    /// `CREDENTIAL_HEADERS` and this fails, which is what it always claimed.
     #[test]
     fn no_credential_survives_an_export() {
         let challenged = message(

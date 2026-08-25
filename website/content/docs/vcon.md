@@ -16,7 +16,8 @@ parties, what passed between them, and what some tool concluded about it.
 sipnab fills that shape from signaling it watched go past a tap. Each container
 carries the SIP ladder, the parties the `From` and `To` headers named, a
 diagnosis of the call, and — in two places, deliberately — a statement of what
-the capture missed. None of them carries audio, a signature, or any claim that
+the capture missed. When the run retained the RTP payload, the container also
+carries the audio, inline. None of them carries a signature or any claim that
 somebody consented to anything. **A sipnab vCon records what an instrument
 saw, not what the parties said.** The honesty section below is the one part of
 this page to read before you trust a container.
@@ -62,8 +63,8 @@ export writes the same bytes. Pick the door that suits you:
 
 | You are | Ask this way | Answers with |
 |---|---|---|
-| At a shell, reading a capture file | `sipnab -r call.pcap --export-vcon <call-id> --vcon-out out.json` | the container in `out.json` |
-| At a shell, wanting it on stdout | `sipnab -r call.pcap --export-vcon <call-id>` | the container on stdout |
+| At a shell, reading a capture file | `sipnab -N -I call.pcap --export-vcon 'CALL-ID' --vcon-out out.json` | the container in `out.json` |
+| At a shell, wanting it on stdout | `sipnab -N -I call.pcap --export-vcon 'CALL-ID'` | the container on stdout |
 | An agent holding an MCP session | the `export_vcon` tool, with `call_id` | a structured content block |
 | A program over HTTP | `GET /v1/dialogs/{call_id}/vcon` | `200` and the container, or `404` |
 | Rust, in-process | `sipnab::output::vcon::export_dialog` | a `Vcon` value |
@@ -154,7 +155,8 @@ and a consumer parses it before indexing into it.
   "uuid": "018bcfe5-6800-8a6b-a667-78f1c5213800",
   "created_at": "2026-08-24T17:05:12+00:00",
   "extensions": [
-    "sip-signaling"
+    "sip-signaling",
+    "CC"
   ],
   "parties": [
     {
@@ -240,7 +242,7 @@ and a consumer parses it before indexing into it.
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.124 (passive observer; signaling only)",
+      "product": "sipnab 0.5.124 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -271,10 +273,12 @@ that party sent, and in this capture the first message coming back is a bare
 `100 Trying` that carries neither. An absent field means the capture never saw
 one, not that the endpoint has none.
 
-**The Dialog Object is nearly empty, and that is correct.** One `sip_call_id`,
-no `type`, no `disposition`, no media description. The call in this fixture
-completed, so nothing about it failed. A signaling-only export has no media, so
-inventing a `mediatype` or a `url` would describe a file that does not exist.
+**The Dialog Object describes no media, and that is correct here.** This run
+retained no RTP payload, so there is nothing to describe and inventing a
+`mediatype` or a `url` would name a file that does not exist. `type` is
+`incomplete` because that is the only value in the enum that claims no content
+— see the type rule above — and there is no `disposition`, because the call in
+this fixture completed and nothing about it failed.
 
 **The completeness body appears twice.** Once as an attachment, once inside the
 report. The next section is about why.
@@ -323,7 +327,7 @@ one source value:
 
 | Surface | Where it sits | Who reads it |
 |---|---|---|
-| `analysis[0].body.capture_completeness` | inside the report, beside the diagnosis | anything that reads what sipnab concluded |
+| `capture_completeness`, inside `analysis[0].body` | inside the report, beside the diagnosis | anything that reads what sipnab concluded |
 | the `sipnab-capture-completeness` attachment | a document in `attachments`, attributed to the observer | anything that walks the attachments |
 
 Both hold the same value byte for byte, and a test fails if they diverge. Two
@@ -384,7 +388,7 @@ participant.
 | the message trace | these messages reached sipnab's parser | that they are all the messages |
 | `analysis[0].body` | sipnab's diagnosis of what it held | a diagnosis of the call |
 | an absent field | the capture did not carry it | that the call lacked it |
-| an empty `dialog[]` media description | this export carries no media | that the call had none |
+| a `dialog[]` object with no media fields | this export carries no media | that the call had none |
 
 Three rules follow from that table.
 
@@ -420,6 +424,26 @@ Each refusal has an argument behind it in
 The party `name` refusal has a structural form worth knowing about: the Rust
 type has no `name` field at all, so no later edit can populate one by accident.
 
+### The message trace carries the headers, and strips the credentials
+
+Each message in the `sip-message-trace` attachment carries a `headers` object:
+the header name, and an array of its values so a repeated `Via` or
+`Record-Route` keeps the path the message actually took.
+
+Four headers never travel — `Authorization`, `Proxy-Authorization`,
+`WWW-Authenticate` and `Proxy-Authenticate` — because a digest challenge and
+its response are credential material and a container is a publication surface.
+That filter is worth one honest sentence: until 0.5.125 it did nothing,
+because the trace carried no raw headers for it to find. The test guarding it
+passed for that reason rather than because the filter worked. Headers and the
+filter that makes them safe to publish landed together, deliberately, and the
+same test now fails if anyone drops either half.
+
+Everything else on the wire is in the container. Decide whether that is
+acceptable for your traffic before you hand one to anybody. `P-Asserted-Identity`,
+`Diversion`, `Remote-Party-ID` and any custom header your platform sets all
+travel, exactly as the endpoint wrote them.
+
 ### One thing sipnab does supply, narrowly: `tel`
 
 A conserver indexes parties by `tel`, `mailto` and `name` and by nothing else,
@@ -446,9 +470,12 @@ itself a signal: nothing established a dialog.
 
 Stated here rather than discovered later.
 
-- **It does not carry audio.** The container holds signaling only, and it holds
-  no `url` pointing at media held elsewhere. Export audio through sipnab's own
-  audio path, which carries its own partial-capture caveat.
+- **It does not link to audio held elsewhere.** When the run retained the RTP
+  payload the container carries the audio INLINE, as a `recording` Dialog
+  Object with a `sha512-` content hash; when it did not, the container says so
+  in words and carries none. There is never a `url`, because sipnab hosts
+  nothing and cannot promise where a file lives tomorrow. Audio over the inline
+  budget draws an out-loud refusal rather than a silent truncation.
 - **It does not tie the two halves of a B2BUA call together.** Two Call-IDs
   produce two containers, and nothing in either one links them.
 - **It does not assemble a call across hops.** One container describes one
