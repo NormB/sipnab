@@ -47,6 +47,11 @@ Already written, and narrower:
   do without eBPF.
 - [TUI testing](tui-testing.md) — snapshot and state testing for the terminal
   UI.
+- [The vCon exporter](vcon.md) — writing one observed dialog as a vCon
+  container: which sipnab type feeds each section, the completeness caveat
+  carried in two surfaces from one value and the test that fails if they
+  diverge, the deterministic UUIDv8 and its collision window, and a credential
+  filter that removes nothing today on purpose.
 
 The one-screen map of the tree is [`../architecture.md`](../architecture.md).
 Contributor mechanics (setup, hooks, PR expectations) are in

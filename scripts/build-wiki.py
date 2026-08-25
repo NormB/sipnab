@@ -41,6 +41,7 @@ PAGES: dict[str, str] = {
     "tuning-capture.md": "Tuning-Capture",
     "encapsulations.md": "Encapsulations",
     "rtpengine.md": "Rtpengine-Relays",
+    "vcon.md": "vCon-Export",
     "tui-walkthrough.md": "TUI-Walkthrough",
     "backers.md": "Backers",
     "keybindings.md": "Keybindings",
@@ -83,6 +84,7 @@ PAGES: dict[str, str] = {
     "internals/zero-copy-payloads.md": "Internals-Zero-Copy-Payloads",
     "internals/uprobe-capture.md": "Internals-Uprobe-Capture",
     "internals/rtpengine-control-plane.md": "Internals-Rtpengine-Control-Plane",
+    "internals/vcon.md": "Internals-vCon-Exporter",
 }
 
 # Sidebar grouping: (section title, [source paths]), ordered by user journey —
@@ -104,7 +106,8 @@ GROUPS: list[tuple[str, list[str]]] = [
     ("Integrations (API & MCP)", ["rest-api.md", "prometheus-metrics.md", "auth.md", "mcp.md",
                                   "mcp-deploy.md", "mcp-estate.md", "mcp-tools.md",
                                   "mcp-protocol.md",
-                                  "uprobe-walkthrough.md", "tls-capture.md", "plugins.md"]),
+                                  "uprobe-walkthrough.md", "tls-capture.md", "plugins.md",
+                                  "vcon.md"]),
     ("Development & internals", ["internals/README.md",
                                  "internals/subsystem-guide.md",
                                  "internals/invariants.md",
@@ -118,7 +121,8 @@ GROUPS: list[tuple[str, list[str]]] = [
                                  "internals/threading.md", "internals/tui-testing.md",
                                  "internals/zero-copy-payloads.md",
                                  "internals/uprobe-capture.md",
-                                 "internals/rtpengine-control-plane.md"]),
+                                 "internals/rtpengine-control-plane.md",
+                                 "internals/vcon.md"]),
 ]
 
 LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")

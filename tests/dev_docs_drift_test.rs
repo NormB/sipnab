@@ -588,7 +588,13 @@ fn linked_code_targets_exist() {
     // man-page check and omitted 3b, the live privilege-drop gate. Dropping a
     // link to a file the prose no longer has a reason to mention is the
     // deletion working, not the extractor narrowing.
-    const EXPECTED_CODE_LINKS: usize = 377;
+    // 377 -> 397: `docs/internals/vcon.md`, the vCon exporter page. Attributed
+    // by measurement before the number moved: that page carries exactly 20
+    // links into `src/` and `tests/`, and no other developer page gained one.
+    // Fourteen of them point at `src/output/vcon.rs` itself -- the section
+    // table names the builder for every vCon object, and a reader following one
+    // row lands on the function rather than on the file's first line.
+    const EXPECTED_CODE_LINKS: usize = 397;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -640,7 +646,13 @@ fn linked_symbols_resolve_to_a_definition() {
     // `relay_reconciler::spawn()` and `orphan_channel()` -- the spawn site and
     // the bounded hand-off it reads from. Both resolve to a definition, which
     // is what the assertion below this one checks.
-    const EXPECTED_SYMBOL_CLAIMS: usize = 68;
+    // 68 -> 86: `docs/internals/vcon.md` again, and the same 20 links -- 18 of
+    // them carry a `()` symbol claim, because the page names the function that
+    // builds each vCon section rather than describing it. Attributed by
+    // measurement before the number moved: no other developer page gained a
+    // claim. The two links without one are the module itself and
+    // `tests/vcon_export_test.rs`.
+    const EXPECTED_SYMBOL_CLAIMS: usize = 86;
     // A definition boundary, not a substring. `source.contains("fn run_offline_paral")`
     // was satisfied by `fn run_offline_parallel`, so a doc could name a function
     // that has never existed and resolve against a real one whose name merely

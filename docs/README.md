@@ -75,6 +75,10 @@ you want.
   so sipnab reads rtpengine's own control plane to name the calls: what to
   configure, how to verify it, and why a relay's forwarding mode makes no
   difference to what you capture.
+- **[Export a call as a vCon](vcon.md)** — something downstream wants the call
+  rather than the packets. Write one observed dialog as a vCon container: what
+  the export carries, what it refuses to carry, and what an observer's record
+  lets a consumer conclude.
 - **[Write a WASM plugin](plugins.md)** — add your own detection to sipnab's
   diagnosis without forking it: what the sandbox does and does not bound,
   what trusting a `.wasm` costs you, and a worked example from crate to
