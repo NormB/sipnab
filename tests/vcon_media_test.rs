@@ -890,3 +890,27 @@ fn audio_never_rides_on_an_object_typed_incomplete() {
         }
     }
 }
+
+/// The same "absent, never null" contract, across the MEDIA shapes.
+///
+/// Kept beside the signaling-only case rather than folded into it, for the
+/// reason the schema gate above exists: the media objects carry a different set
+/// of optional fields, and the signaling-only container never populates them.
+#[test]
+fn no_media_container_emits_an_explicit_null() {
+    for (label, wrapped) in [("intact ring", false), ("wrapped ring", true)] {
+        let json = media_container(wrapped);
+        let nulls = support::schema::null_paths(&json);
+        assert!(
+            nulls.is_empty(),
+            "{label}: these fields serialized as an explicit `null` rather \
+             than being omitted: {nulls:?}"
+        );
+        let objects = json["dialog"].as_array().expect("dialog is an array");
+        assert!(
+            objects.iter().any(|o| o.get("body").is_some()),
+            "{label}: no object carried audio, so this walk never reached the \
+             media fields it exists to check: {json}"
+        );
+    }
+}

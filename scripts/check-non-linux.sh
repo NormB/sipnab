@@ -327,6 +327,24 @@ CARGO_TARGET_DIR="$SHIM/target" RUSTDOCFLAGS="-D warnings -A unexpected_cfgs" \
 LINUX_ONLY_CRATES="aya"
 MACOS_TARGET=x86_64-apple-darwin
 resolution_rc=0
+# Phase 2a is knowledge about THIS project's dependency graph, so it is only
+# meaningful over this project. Run against any other crate -- the throwaway
+# fixture scripts/test-pre-push.sh builds, for one -- `aya` is legitimately
+# absent, and the loop below reported it as a "stale entry" and FAILED. That is
+# a category error, and it kept the pre-push BDD suite red.
+#
+# The discriminator is the package identity, deliberately NOT "the list resolved
+# to nothing". Skipping whenever no listed crate is present would also skip a
+# genuinely stale entry here, which is the one thing this check exists to catch
+# -- the script's own warning about patterns that quietly match nothing.
+ROOT_PKG=$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' Cargo.toml 2>/dev/null | head -1)
+if [ "$ROOT_PKG" != "sipnab" ]; then
+	printf '  phase 2a: NOT CHECKED -- this is `%s`, not sipnab; the Linux-only
+' "${ROOT_PKG:-an unnamed crate}"
+	printf '           crate list describes sipnab'"'"'s graph and says nothing here
+'
+	LINUX_ONLY_CRATES=""
+fi
 for c in $LINUX_ONLY_CRATES; do
 	if ! cargo tree --target aarch64-unknown-linux-gnu --all-features -i "$c" >/dev/null 2>&1; then
 		printf '  phase 2a: %s is listed as Linux-only but is not in the Linux graph -- stale entry\n' "$c"

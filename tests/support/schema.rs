@@ -45,3 +45,47 @@ pub fn assert_valid(validator: &Validator, instance: &Value, ctx: &str) {
         panic!("{ctx}: instance failed schema:\n{}", errors.join("\n"));
     }
 }
+
+/// Every JSON path in `value` whose leaf is `null`, deepest-first.
+///
+/// The vCon container documents "an absent field, never a null"
+/// (`docs/internals/vcon.md`), and that contract is what a lost
+/// `#[serde(skip_serializing_if = "Option::is_none")]` breaks. The loss is
+/// otherwise silent: the struct still compiles, the field is still `None`, and
+/// only the wire changes — from an absent key to an explicit `null` that a
+/// consumer must now distinguish from a value.
+///
+/// Returns paths rather than a bool so a failure names the field.
+///
+/// `allow(dead_code)` because `tests/support/` is included by many test
+/// binaries and each one uses a different slice of it; only the vCon tests
+/// call this. Without it, every feature combo that does not build those tests
+/// fails under CI's `-Dwarnings` -- which is exactly how this helper was
+/// caught, by `scripts/check-feature-matrix.py`, before it left the machine.
+#[allow(dead_code)]
+pub fn null_paths(value: &Value) -> Vec<String> {
+    fn walk(v: &Value, path: &str, out: &mut Vec<String>) {
+        match v {
+            Value::Null => out.push(path.to_string()),
+            Value::Object(map) => {
+                for (k, child) in map {
+                    let next = if path.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{path}.{k}")
+                    };
+                    walk(child, &next, out);
+                }
+            }
+            Value::Array(items) => {
+                for (i, child) in items.iter().enumerate() {
+                    walk(child, &format!("{path}[{i}]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(value, "", &mut out);
+    out
+}
