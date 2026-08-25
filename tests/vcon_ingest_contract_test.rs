@@ -584,3 +584,127 @@ fn the_dialog_object_names_the_tags_that_distinguish_a_forked_leg() {
         "the container must carry the To tag the capture observed: {object}"
     );
 }
+
+/// Two dialogs opening in the same millisecond on one node get DIFFERENT uuids.
+///
+/// §4.1.2 makes the uuid globally unique, and a store keys on it: a collision
+/// does not error anywhere, it OVERWRITES the record already there and one
+/// capture is silently lost.
+///
+/// The two Call-IDs below are not arbitrary. They were found by brute force
+/// because they land in the same 12-bit bucket, which was the only entropy the
+/// identifier carried for a given node and millisecond — the other 62 bits
+/// were a digest of the node name alone, identical for every dialog on the
+/// box. Roughly one pair in 4096 collided.
+///
+/// The precondition is asserted rather than assumed: if the seed ever changes
+/// so these two stop sharing a bucket, this test would pass while testing
+/// nothing, so it fails loudly instead.
+#[test]
+fn two_dialogs_in_one_millisecond_on_one_node_get_different_uuids() {
+    const CAPTURE: &str = "collision.pcap";
+    const A: &str = "call-82@example.com";
+    const B: &str = "call-110@example.com";
+
+    assert_eq!(
+        legacy_bucket(A, CAPTURE),
+        legacy_bucket(B, CAPTURE),
+        "these Call-IDs were chosen because they SHARE the 12-bit bucket that \
+         used to be the identifier's only entropy. They no longer do, so this \
+         test proves nothing — find a fresh colliding pair rather than \
+         deleting the assertion."
+    );
+
+    let at = one_instant();
+    let a = uuid_of(A, CAPTURE, at);
+    let b = uuid_of(B, CAPTURE, at);
+    assert_ne!(
+        a, b,
+        "two dialogs, one node, one millisecond, one identifier: a store \
+         keyed on it keeps ONE of these captures and reports no error"
+    );
+}
+
+/// The identifier is still a function of the dialog, not of the moment.
+///
+/// The fix above must not be bought with randomness: re-exporting one dialog
+/// has to keep its identifier, or a store sees a second copy rather than the
+/// same record.
+#[test]
+fn one_dialog_exported_twice_keeps_one_uuid() {
+    let at = one_instant();
+    assert_eq!(
+        uuid_of("stable@example.com", "same.pcap", at),
+        uuid_of("stable@example.com", "same.pcap", at),
+        "the identifier must be derived, never minted"
+    );
+    assert_ne!(
+        uuid_of("stable@example.com", "same.pcap", at),
+        uuid_of("stable@example.com", "other.pcap", at),
+        "the capture the dialog came from is part of its identity"
+    );
+}
+
+/// The 12-bit bucket the identifier used to depend on, computed independently.
+///
+/// Deliberately NOT calling into the exporter: a helper that shared its code
+/// would agree with it however the exporter changed.
+fn legacy_bucket(call_id: &str, capture_id: &str) -> u16 {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(call_id.as_bytes());
+    h.update([0x1e]);
+    h.update(capture_id.as_bytes());
+    let d = h.finalize();
+    u16::from_be_bytes([d[0], d[1]]) >> 4
+}
+
+/// One fixed instant, so every dialog in these tests shares a millisecond.
+fn one_instant() -> chrono::DateTime<chrono::Utc> {
+    use chrono::TimeZone;
+    chrono::Utc
+        .timestamp_millis_opt(1_700_000_000_123)
+        .single()
+        .expect("a valid instant")
+}
+
+/// The uuid of a one-message dialog, through the public export.
+fn uuid_of(call_id: &str, capture_id: &str, at: chrono::DateTime<chrono::Utc>) -> String {
+    use sipnab::net::TransportProto;
+    use sipnab::sip::parser::parse_sip;
+
+    let raw = format!(
+        "INVITE sip:bob@example.net SIP/2.0\r\n\
+         From: <sip:alice@example.com>;tag=caller-tag\r\n\
+         To: <sip:bob@example.net>\r\n\
+         Call-ID: {call_id}\r\n\
+         CSeq: 1 INVITE\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    let mut store = DialogStore::new(8, true);
+    store.process_message(
+        parse_sip(
+            raw.as_bytes(),
+            at,
+            "10.0.0.1".parse().expect("a caller address"),
+            "10.0.0.2".parse().expect("a callee address"),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("the INVITE fixture parses"),
+    );
+    let dialog = store.iter().next().expect("the fixture produced a dialog");
+    let facts = CaptureFacts::default();
+    let vcon = export_dialog(
+        dialog,
+        &ExportContext {
+            capture_id,
+            facts: &facts,
+            analysis: None,
+        },
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+    json["uuid"].as_str().expect("a uuid").to_string()
+}

@@ -2181,7 +2181,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
   "vcon": "0.4.0",
   "uuid": "0158a120-0392-86a4-a667-78f1c5213800",
   "created_at": "2026-08-24T22:13:31.238368261+00:00",
-  "extensions": ["sip-signaling"],
+  "extensions": ["sip-signaling", "CC"],
   "parties": [
     {
       "sip": "sip:sipp@10.0.2.20:5060",

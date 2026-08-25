@@ -1880,13 +1880,34 @@ fn the_homepage_names_every_capability_a_reader_would_search_for() {
     );
 }
 
-/// Every `[features]` key in Cargo.toml must appear in the README feature
-/// table. `metrics` is a DEFAULT feature that was absent for several
-/// releases, so a reader could not discover it existed.
+/// Whether a markdown feature table has a ROW whose first cell is `name`.
+///
+/// Both tables spell the first cell the same way — a pipe, optional spaces, the
+/// name in backticks — so one reader serves both.
+fn has_feature_row(page: &str, name: &str) -> bool {
+    let cell = format!("`{name}`");
+    page.lines().any(|line| {
+        line.trim_start()
+            .strip_prefix('|')
+            .is_some_and(|rest| rest.trim_start().starts_with(&cell))
+    })
+}
+
+/// Every `[features]` key in Cargo.toml must appear in BOTH feature tables —
+/// the README's and the install page's.
+///
+/// `metrics` is a DEFAULT feature that was absent from the README for several
+/// releases, so a reader could not discover it existed. The install page then
+/// repeated the failure with `vcon`: the gate covered README.md alone, so the
+/// page a reader is SENT to for feature questions — `docs/library.md` answers
+/// every one of them by pointing at `install.md#feature-flags` — was the one
+/// place that denied the feature existed. A table a reader is routed to has to
+/// be under the same gate as the one they might stumble on.
 #[test]
-fn readme_feature_table_covers_every_cargo_feature() {
+fn feature_tables_cover_every_cargo_feature() {
     let manifest = include_str!("../Cargo.toml");
     let readme = include_str!("../README.md");
+    let install = include_str!("../docs/install.md");
 
     let features_block = manifest
         .split("[features]")
@@ -1911,8 +1932,15 @@ fn readme_feature_table_covers_every_cargo_feature() {
             continue;
         }
         seen += 1;
-        if !readme.contains(&format!("`{name}`")) {
-            missing.push(name.to_string());
+        // A ROW, not a mention. `contains("`vcon`")` passes on the `full`
+        // row's "+ `vcon`" alone, so deleting the feature's own row leaves the
+        // gate green while the reader loses the entry describing it. Verified
+        // by mutation: the substring form survived that deletion.
+        if !has_feature_row(readme, name) {
+            missing.push(format!("README.md: {name}"));
+        }
+        if !has_feature_row(install, name) {
+            missing.push(format!("docs/install.md: {name}"));
         }
     }
 
@@ -1924,7 +1952,7 @@ fn readme_feature_table_covers_every_cargo_feature() {
     );
     assert!(
         missing.is_empty(),
-        "README feature table is missing: {}",
+        "a feature table is missing an entry: {}",
         missing.join(", ")
     );
 }

@@ -133,9 +133,9 @@ COPY & PASTE:
 VCON EXPORT (one call, for handing to somebody else):
 This program exports one call as a vCon container, the IETF interchange
 format for a conversation record. It holds what sipnab observed: the ladder
-on screen, and nothing else. It carries no audio and no link to audio held
-somewhere else, and sipnab signs nothing \u{2014} it watched this call rather than
-taking part in it. Each party shows what the From and To headers claimed,
+on screen, and the audio too when the run kept the RTP payload, carried
+inline. sipnab signs nothing \u{2014} it watched this call rather than taking
+part in it. Each party shows what the From and To headers claimed,
 never an identity anyone checked. Every container also states what it lost:
 messages idle compaction discarded, SIP a port gate dropped, blind spots the
 capture analysis ranked. Read that note before you treat one as a record of
@@ -430,7 +430,12 @@ mod tests {
     const REQUIRED_VCON_CLAUSES: &[&str] = &[
         "vCon",
         "sipnab observed",
-        "no audio",
+        // NOT "no audio". This gate required that clause while the container
+        // was signaling-only and went on requiring it after media landed \u{2014} so
+        // it enforced a sentence that had become false on an operator-facing
+        // screen, and correcting the screen would have failed the test. A gate
+        // and the text it guards have to derive from one rule.
+        "audio",
         "sipnab signs nothing",
         "what it lost",
         "/vcon",

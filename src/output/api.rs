@@ -818,40 +818,6 @@ async fn get_dialog_report(
     Ok(Json(parsed))
 }
 
-/// The capture identifier this door mixes into every vCon `uuid`.
-///
-/// A constant, and deliberately so.
-/// [`ExportContext::capture_id`](crate::output::vcon::ExportContext::capture_id)
-/// exists to do two jobs: keep one dialog's `uuid` stable across repeated
-/// exports of one capture, and separate the same Call-ID observed in two
-/// different captures. A REST server holds exactly one capture for its whole
-/// life and has no name for it — the source may be a live interface, a merged
-/// set of files, or a HEP feed, and none of those reaches
-/// [`ApiState`]. Anything invented here per request would rotate, and a
-/// rotating value mints a fresh `uuid` on every GET: a consumer that
-/// deduplicates on `uuid`, which is what the field is for, then accumulates
-/// one copy of the conversation per poll.
-///
-/// So this keeps the first job and leans on the rest of the derivation for the
-/// second. `dialog_uuid` is a function of the dialog's OWN first-message
-/// timestamp as well as the Call-ID, so two captures that saw different parts
-/// of one call already differ in the timestamp and land on different `uuid`s
-/// without help from here. What a constant gives up is narrower than it looks:
-/// two captures on ONE node that both saw the same first packet of one call
-/// and then diverged — one behind a port gate, one not — collide, and
-/// `the_uuid_identifies_the_dialog_and_not_the_moment_of_export` in
-/// `tests/vcon_ingest_contract_test.rs` records what a collision costs at a
-/// store, which is that one record is lost.
-///
-/// That residue is left rather than patched here on purpose. A per-door
-/// capture-id policy is how three doors end up with three answers, and the
-/// choice a live capture needs (each run IS a new capture) is the opposite of
-/// the one a file needs (reopening is not). That belongs beside
-/// [`crate::output::vcon::ExportContext`], where every door reads it, not in
-/// one handler.
-#[cfg(feature = "vcon")]
-const REST_CAPTURE_ID: &str = "sipnab-rest";
-
 /// `GET /v1/dialogs/:call_id/vcon` — one observed dialog as a vCon container.
 ///
 /// Registered only in a build with the `vcon` feature. See the gate in
@@ -916,13 +882,34 @@ async fn get_dialog_vcon(
     let facts =
         crate::analysis::CaptureFacts::observed(&ds, &ss, crate::capture::captured_packets());
     let analysis = crate::analysis::analyze_with(&ds, &ss, None, &facts);
-    let container = output::vcon::export_dialog(
+    // The SAME builder the CLI and MCP doors call, with the SAME per-dialog
+    // capture id. This door called the signaling-only entry point with a
+    // constant id until 0.5.125, so one run answered two ways: an agent asking
+    // over MCP got a container with the audio inline, a program asking over
+    // REST got one without it, and the two carried DIFFERENT uuids for one
+    // dialog — which a store reads as two observations of two calls.
+    //
+    // Media is attempted always. When the run retained no payload the decode
+    // fails and its message travels in the container, which reports what was
+    // MEASURED rather than claiming the call was silent.
+    let dialog_streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&call_id).collect();
+    let decoded = crate::rtp::audio_export::decode_dialog_audio(&dialog_streams);
+    let reason = decoded
+        .as_ref()
+        .err()
+        .map_or_else(String::new, |e| e.to_string());
+    let audio = match decoded.as_ref() {
+        Ok(audio) => output::vcon::ObservedAudio::Decoded(audio),
+        Err(_) => output::vcon::ObservedAudio::NothingToDecode(&reason),
+    };
+    let container = output::vcon::export_dialog_with_audio(
         dialog,
         &output::vcon::ExportContext {
-            capture_id: REST_CAPTURE_ID,
+            capture_id: output::vcon::dialog_capture_id(dialog),
             facts: &facts,
             analysis: Some(&analysis),
         },
+        audio,
     );
     drop(ss);
     drop(ds);
@@ -2546,10 +2533,24 @@ mod tests {
             "two caveats that disagree read as authoritative while \
              contradicting each other, which is worse than carrying none"
         );
+        // NOT "SIGNALING ONLY" any more. This door attempts media like the
+        // other two since 0.5.125, so the caveat states what the run actually
+        // MEASURED about media rather than a fixed claim that it carries none.
+        // What must never soften is the observer clause: it is the sentence
+        // that stops a reader taking an observation for a recording.
         assert!(
-            from_attachment.contains("SIGNALING ONLY"),
-            "the caveat must say this container carries no media: \
-             {from_attachment}"
+            from_attachment.contains("OBSERVED"),
+            "the caveat must say sipnab watched this call rather than took \
+             part in it: {from_attachment}"
+        );
+        assert!(
+            from_attachment.contains("nothing here is signed"),
+            "the caveat must say sipnab signed nothing: {from_attachment}"
+        );
+        assert!(
+            analysis_body["capture_completeness"]["media"].is_string(),
+            "the container must SAY what happened to media rather than leave \
+             a reader to infer it from an absence: {analysis_body}"
         );
         assert!(
             analysis_body["capture_completeness"]["blind_spots"].is_array(),

@@ -235,7 +235,7 @@ run:
 |---|---|---|
 | 48-bit timestamp | the **dialog's** `created_at` | the export clock here would mint a new identifier on every re-export |
 | `rand_a`, 12 bits | SHA-256 of `Call-ID`, a `0x1e` separator, then `capture_id` | ties the value to the dialog and the capture it came from |
-| `rand_b`, 62 bits | the high 62 bits of SHA-256 over the node name | the draft asks for a host-derived value here |
+| `rand_b`, 62 bits | the high 62 bits of SHA-256 over the node name, a `0x1e` separator, the `Call-ID`, another separator, then `capture_id` | host-derived, as the draft asks, and dialog-derived as well — see the collision window below |
 
 The separator byte matters: a bare concatenation collides `("ab", "c")` with
 `("a", "bc")`.
@@ -249,13 +249,26 @@ for.
 of one dialog days apart therefore share a uuid and differ in `created_at`, and
 `the_uuid_separates_dialogs_captures_and_clocks` asserts exactly that pair.
 
-**The collision window.** A host-derived `rand_b` spends the entropy a v7 would
-have used, so two dialogs that opened in the same millisecond on the same node
-have 12 bits between them. That is inherent in the layout the draft asks for.
-The module documents it rather than leaving a consumer to assume otherwise, and
-the operator page repeats it. Deduplication on `uuid` is safe for the case it
-exists for — the same dialog exported twice — and is not a uniqueness guarantee
-across a busy node.
+**The collision window, and how it closed.** Until 0.5.125 this keyed `rand_b`
+on the node ALONE, spending 62 of the 74 available bits on a value identical
+for every dialog on the box. Two dialogs opening in the same
+millisecond on one node had 12 bits between them, so roughly one pair in 4096
+collided — and §4.1.2 makes the uuid globally unique because a store KEYS on
+it. A collision raises nothing. It overwrites the record already there, losing
+one capture with no error anywhere.
+
+An earlier version of this page called that "inherent in the layout the draft
+asks for". It is not. The draft asks for a host-derived value in `rand_b`. It
+never asks for a value derived from the host and NOTHING ELSE. Folding the dialog and the
+capture into the same digest keeps every property the layout wanted and takes
+the discriminating bits from 12 to 74.
+
+Determinism is the property that had to survive, and it did: the digest is over
+stable inputs, so re-exporting one dialog from one capture still yields one
+identifier. `two_dialogs_in_one_millisecond_on_one_node_get_different_uuids`
+holds a real colliding pair found by brute force and asserts the precondition
+that they still share the old 12-bit bucket, so it fails loudly rather than
+passing vacuously if the seed ever changes.
 
 One more substitution to know about: the draft names SHA-1, and this tree has
 none. Adding a broken hash as a dependency to fill 62 bits of a non-security
@@ -277,21 +290,38 @@ only three. It is the proxy-side twin of `WWW-Authenticate`, carries the same
 realm and nonce, and leaving it off would hold the rule for one hop and not the
 other.
 
-**It removes nothing today, and the module docs say so.** It guards a
-projection: `message_to_json_value()` carries no raw header map, so no message
-sipnab parses now reaches the filter with a banned key on it. The filter is a
-**regression gate at the publication boundary**, and the boundary is where the
-rule has to live. Giving that projection a `headers` field is an ordinary,
-sensible change to a debugging surface, and it would start putting digest
-credentials into a container that leaves this machine.
+**It is load-bearing as of 0.5.125.** It was not before, and the honest
+history matters more than the current state, because the shape of the mistake
+recurs.
 
-Do not describe this filter as protecting the current export, and do not delete
-it because a coverage run shows it removing nothing. Two tests keep the
-distinction visible:
+The filter used to guard a projection that could not carry a credential:
+`message_to_json_value()` had no raw header map, so no message reached it with
+a banned key. `no_credential_survives_an_export` planted a real `Authorization`
+and a real `Proxy-Authorization` in its fixture and passed — not because the
+filter worked, but because the field did not exist. A regression gate for
+something that could not regress reads exactly like a working control, in a
+coverage report and to a reviewer.
 
-- `the_credential_filter_removes_banned_headers_at_every_depth` is the half that
-  discriminates today. It runs against a hand-built value, because an end-to-end
-  export cannot reach the filter with anything to remove. Mutation-proven:
+The old text here predicted its own resolution: "giving that projection a
+`headers` field is an ordinary, sensible change to a debugging surface, and it
+would start putting digest credentials into a container that leaves this
+machine." That is what 0.5.125 did — and the two halves landed in ONE change,
+deliberately. The `sip-signaling` extension names `headers` in its message
+structure and a SIP trace without them is a summary of a trace, so the field
+was going to arrive. A field that publishes credentials must never land in a
+release ahead of the filter that removes them.
+
+The filter is now mutation-proven end to end. Empty `CREDENTIAL_HEADERS` and
+`no_credential_survives_an_export` fails, which is the thing it always claimed
+to check. Three tests keep the distinction visible:
+
+- `the_trace_carries_the_headers_the_filter_exists_to_clean` is the half that
+  keeps the other two honest: drop `headers` from the trace and the filter has
+  nothing to remove again, so it fails rather than letting the pair go quietly
+  back to proving nothing.
+- `the_credential_filter_removes_banned_headers_at_every_depth` runs against a
+  hand-built value, so it covers nesting depths an ordinary export never
+  produces. Mutation-proven:
   deleting the `retain` fails it, and its anti-vacuity assertions fail a filter
   that emptied the object instead.
 - `no_credential_survives_an_export` is the end-to-end half. It passes on the

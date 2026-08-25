@@ -766,7 +766,7 @@ per SIP message and grows with the call):
   "vcon": "0.4.0",
   "uuid": "018bcfe5-6800-8795-a667-78f1c5213800",
   "created_at": "2026-08-24T22:03:38.989752721+00:00",
-  "extensions": ["sip-signaling"],
+  "extensions": ["sip-signaling", "CC"],
   "parties": [
     {
       "sip": "sip:1001@10.0.0.1",
@@ -809,7 +809,7 @@ per SIP message and grows with the call):
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.124 (passive observer; signaling only)",
+      "product": "sipnab 0.5.124 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",

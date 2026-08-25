@@ -175,7 +175,7 @@ sipnab honors every sngrep keybinding. Press `F1` for the full shortcut referenc
 | `wasm`     | WebAssembly target for in-browser pcap analysis                      | no      |
 | `plugins`  | WASM plugin host (`--plugin`): sandboxed third-party dialog detections  | no      |
 | `bpf`      | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run | no      |
-| `vcon`     | vCon export: one observed dialog as an unsigned, signaling-only conversation container. sipnab writes it as an OBSERVER — no signature, no media, and no party name | no      |
+| `vcon`     | vCon export: one observed dialog as an unsigned conversation container, with the audio inline when the run retained it. sipnab writes it as an OBSERVER — no signature and no party name | no      |
 | `full`     | `native` + `tui` + `tls` + `hep` + `api` + `audio` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` | no      |
 
 Build with specific features. Adding TLS decryption and HEP to the default set:
