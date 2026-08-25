@@ -63,6 +63,30 @@ entry that carries them.
   `get_capture_report`; a REST client wanting it had to reimplement the analysis
   it came to sipnab for.
 
+- **`GET /v1/stats` says which capture its counts came from.**
+  `capture_identity` pairs the capture's instance with both store generations,
+  and `source` / `capture_name` / `uptime_sec` / `source_exhausted` /
+  `writing_to` / `unsaved` describe what the server is attached to — the same
+  fields, under the same names, that MCP `capture_status` has had. It is the
+  same identity from the same object, not a copy: `CaptureState` moved out of
+  the MCP module so one instance serves both doors, because the identity
+  rotates when `open_capture` swaps the file and two copies would disagree from
+  that moment on. `get_stats` also now holds the capture, dialog and stream
+  locks across the read, in the order `CaptureState` documents; it released the
+  dialog guard before taking the stream guard, which was survivable until one
+  etag claimed the counts belong to each other.
+
+- **Several rtpengine instances behind one proxy, documented and pinned.** Run
+  one sipnab per host and a call's media lands on exactly one relay. Finding it
+  is a routed lookup rather than a broadcast: the proxy's own SDP names the
+  relay, because the `c=` address it negotiated IS the rtpengine it steered the
+  call to. Ask the proxy which relay has the call, then ask that one and no
+  others. A relay that never carried it answers 404 rather than an empty
+  success, because "I do not have this call" and "this call had no media" are
+  different findings. `tests/multi_node_relay_fanout_test.rs` pins all three
+  properties. sipnab still aggregates nothing across nodes, which is a limit
+  `docs/design/positioning.md` sets rather than one nobody got to.
+
 ### Fixed
 
 - **`get_capture_report` returned TEXT under its `json` default.**

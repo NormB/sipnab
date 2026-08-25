@@ -75,6 +75,27 @@ pub struct ApiState {
     /// `--api-max-rows` / `[limits] api_max_rows` by the caller that starts
     /// the server (config is in scope there and not here).
     pub max_rows: usize,
+    /// Which capture this process holds — the SAME object the MCP server
+    /// stamps its answers with, when both are running.
+    ///
+    /// Shared rather than copied because the identity rotates: `open_capture`
+    /// swaps the file underneath, and two copies would disagree from that
+    /// moment on. A client comparing an MCP answer against `GET /v1/stats`
+    /// would then be told the capture changed when it had not, or that it had
+    /// not when it did.
+    ///
+    /// `None` when nobody supplied one — a REST server started without capture
+    /// context, which every test in this module builds. The response then says
+    /// `source: "unknown"` and omits the identity, which is the same answer
+    /// `capture_status` gives and for the same reason: a wrong `"live"` would
+    /// be worse than an admission of ignorance.
+    pub capture: Option<Arc<RwLock<crate::capture::session::CaptureState>>>,
+    /// Set once a file source has been read to the end.
+    ///
+    /// The same `Arc` the capture owner and the MCP server hold, so all three
+    /// flip together. A copy would let one door report a finished file as
+    /// still running.
+    pub source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Rows a list-style response returns when the caller names no `limit`.
@@ -1162,7 +1183,22 @@ async fn get_stats(
 ) -> Result<impl IntoResponse, StatusCode> {
     guard(&state, &headers, addr.ip())?;
 
+    // Capture lock first, then dialogs, then streams -- the order
+    // `CaptureState` documents and MCP's `capture_status` takes. Two doors
+    // taking one set of locks in two orders is a deadlock waiting for load,
+    // and `open_capture` clears both stores while holding the capture lock.
+    //
+    // Held ACROSS both stores, which this handler did not do: it released the
+    // dialog guard before taking the stream guard, so its dialog counts and
+    // stream counts described two different instants. That was survivable
+    // while nothing tied them together. It stops being survivable the moment
+    // the response carries an identity, because the etag pairs the instance
+    // with BOTH generations and would assert a consistency the code did not
+    // provide.
+    let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
+
     let total_dialogs = ds.len();
     let active_dialogs = ds.active_dialog_count();
     let active_calls = ds.active_call_count();
@@ -1183,12 +1219,40 @@ async fn get_stats(
             _ => {}
         }
     }
-    drop(ds);
-
-    let ss = state.stream_store.read();
     let total_streams = ss.len();
     let orphaned_count = ss.orphaned_count();
+
+    // Stamped while all three guards are held, so the instance and the two
+    // generations name one moment. `None` when nobody supplied a capture --
+    // the same admission `capture_status` makes, rather than an identity for a
+    // capture this server cannot describe.
+    let capture_identity = capture
+        .as_ref()
+        .map(|c| c.identity.etag(ds.generation(), ss.generation()));
+    let source = crate::capture::session::CaptureContext::source_label(
+        capture.as_ref().and_then(|c| c.context.as_ref()),
+    );
+    let (capture_name, uptime_sec, writing_to) = capture
+        .as_ref()
+        .and_then(|c| c.context.as_ref())
+        .map_or((None, None, None), |c| {
+            (
+                Some(c.name.clone()),
+                Some(c.started.elapsed().as_secs()),
+                c.writing_to.clone(),
+            )
+        });
+    let unsaved = crate::capture::session::CaptureContext::unsaved(
+        capture.as_ref().and_then(|c| c.context.as_ref()),
+    );
+    let source_exhausted = state
+        .source_exhausted
+        .as_ref()
+        .is_some_and(|f| f.load(std::sync::atomic::Ordering::Acquire));
+
     drop(ss);
+    drop(ds);
+    drop(capture);
 
     let pdd_p50 = percentile(&pdd_values, 50);
     let pdd_p95 = percentile(&pdd_values, 95);
@@ -1258,6 +1322,28 @@ async fn get_stats(
         // Always present, always complete, and zero is a real answer. A key
         // that shows up only on a bad run is a key no client learns exists.
         "caveats": caveats.to_json(),
+        // WHICH capture these counts came from, and which revision of its
+        // stores. Compare it across calls: a higher generation on the same
+        // instance means the capture grew; a different instance means the file
+        // was swapped and every count you were holding describes something
+        // else. `null` when nobody told this server what it is attached to.
+        //
+        // The SAME identity MCP `capture_status` stamps its answers with, from
+        // the same object, so an agent and an HTTP client polling one process
+        // can tell they are describing one capture.
+        "capture_identity": capture_identity,
+        // What this server is attached to. `unknown` is a real answer and not
+        // a default: it is the field consulted before deciding whether
+        // stopping is destructive, and a wrong `live` would be worse than an
+        // admission of ignorance.
+        "source": source,
+        "capture_name": capture_name,
+        "uptime_sec": uptime_sec,
+        "source_exhausted": source_exhausted,
+        "writing_to": writing_to,
+        // True only for a LIVE capture with no output file: packets held in
+        // memory and nowhere else. A file replay is already on disk.
+        "unsaved": unsaved,
         // Kept at the top level rather than folded into `caveats`, because MCP
         // publishes them at the top level and the whole point is that the two
         // doors name one fact the same way.
@@ -1479,6 +1565,12 @@ mod tests {
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
+            // No capture context: these fixtures build a server around bare
+            // stores, which is exactly the state `source: "unknown"` and a
+            // null identity exist to describe. A fixture that invented one
+            // would test a shape production never produces.
+            capture: None,
+            source_exhausted: None,
         }
     }
 
@@ -1495,6 +1587,12 @@ mod tests {
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
+            // No capture context: these fixtures build a server around bare
+            // stores, which is exactly the state `source: "unknown"` and a
+            // null identity exist to describe. A fixture that invented one
+            // would test a shape production never produces.
+            capture: None,
+            source_exhausted: None,
         }
     }
 
@@ -1941,6 +2039,12 @@ mod tests {
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
+            // No capture context: these fixtures build a server around bare
+            // stores, which is exactly the state `source: "unknown"` and a
+            // null identity exist to describe. A fixture that invented one
+            // would test a shape production never produces.
+            capture: None,
+            source_exhausted: None,
         }
     }
 
@@ -2124,6 +2228,157 @@ mod tests {
         }
         // 6th should fail
         assert!(!limiter.check(ip));
+    }
+
+    /// `/v1/stats` names WHICH capture its counts came from, and says
+    /// `unknown` when nobody told it.
+    ///
+    /// The identity pairs the instance with BOTH store generations, so it is
+    /// only honest if the instance and the two generations describe one
+    /// moment. This handler used to release the dialog guard before taking the
+    /// stream guard -- survivable while nothing tied the counts together, and
+    /// not survivable once a single etag claims they belong to each other. The
+    /// three guards are now held across the read, in the order `CaptureState`
+    /// documents and MCP takes them.
+    ///
+    /// The `None` arm is asserted first because it is the one a REST-only
+    /// deployment actually hits, and because `unknown` is a real answer rather
+    /// than a default: it is what a reader consults before deciding whether
+    /// stopping a capture is destructive, and a wrong `"live"` would be worse
+    /// than an admission of ignorance.
+    #[tokio::test]
+    async fn stats_names_the_capture_or_admits_it_does_not_know() {
+        let app = build_router(make_state());
+        let v: Value = serde_json::from_str(
+            &body_to_string(
+                app.oneshot(test_request("/v1/stats"))
+                    .await
+                    .expect("oneshot")
+                    .into_body(),
+            )
+            .await,
+        )
+        .expect("valid JSON");
+
+        assert_eq!(
+            v["source"], "unknown",
+            "a server nobody described must say so rather than guess: {v}"
+        );
+        assert!(
+            v["capture_identity"].is_null(),
+            "there is no capture to identify, and an identity here would name \
+             one that does not exist: {v}"
+        );
+        assert_eq!(
+            v["unsaved"], false,
+            "an unknown source holds nothing, and reporting it as unsaved would \
+             make every shutdown look destructive: {v}"
+        );
+        // Present at null rather than omitted, for the reason every optional
+        // key on this endpoint is: a field that appears only sometimes is a
+        // field no client learns exists.
+        for key in [
+            "capture_name",
+            "uptime_sec",
+            "writing_to",
+            "source_exhausted",
+        ] {
+            assert!(v.get(key).is_some(), "`{key}` missing from /v1/stats: {v}");
+        }
+    }
+
+    /// With a capture, `/v1/stats` reports the identity from the SHARED object
+    /// -- the same one MCP stamps its answers with.
+    ///
+    /// This is what the whole change is for. A copy would have been simpler
+    /// and wrong: the identity ROTATES when `open_capture` swaps the file
+    /// underneath, and two copies disagree from that moment on. A client
+    /// comparing an MCP answer against this one would be told the capture
+    /// changed when it had not, or that it had not when it did.
+    ///
+    /// So the test rotates the shared state and requires the endpoint to
+    /// follow. Reading the identity once proves only that a field exists.
+    #[tokio::test]
+    async fn stats_follows_a_rotation_of_the_shared_capture() {
+        use crate::capture::session::{CaptureContext, CaptureState};
+
+        let capture = Arc::new(RwLock::new(CaptureState::describing(CaptureContext {
+            live: true,
+            name: "eth0".into(),
+            started: std::time::Instant::now(),
+            writing_to: None,
+        })));
+        let mut state = make_state();
+        state.capture = Some(Arc::clone(&capture));
+        let app = build_router(state);
+
+        let read = |app: axum::Router| async move {
+            let body = body_to_string(
+                app.oneshot(test_request("/v1/stats"))
+                    .await
+                    .expect("oneshot")
+                    .into_body(),
+            )
+            .await;
+            serde_json::from_str::<Value>(&body).expect("valid JSON")
+        };
+
+        let before = read(app.clone()).await;
+        assert_eq!(before["source"], "live");
+        assert_eq!(before["capture_name"], "eth0");
+        assert_eq!(
+            before["unsaved"], true,
+            "a live capture with no output file holds packets that exist \
+             nowhere else: {before}"
+        );
+        // An OBJECT, not a string: node, instance and both store generations,
+        // the same four fields MCP `capture_status` publishes under this key.
+        // The instance is the half a swap changes.
+        for key in ["node", "instance", "dialog_generation", "stream_generation"] {
+            assert!(
+                before["capture_identity"].get(key).is_some(),
+                "`capture_identity.{key}` missing -- the etag must pair the \
+                 instance with BOTH generations, or a client cannot tell a \
+                 capture that grew from one that was swapped: {before}"
+            );
+        }
+        let first = before["capture_identity"]["instance"]
+            .as_str()
+            .expect("a described capture has an instance")
+            .to_string();
+
+        // STABILITY FIRST, and this is the assertion that does the work.
+        //
+        // "the identity changed after a rotation" is satisfied by any handler
+        // that mints a fresh identity per request -- exactly the private-copy
+        // design this change exists to avoid. Only the unchanged case
+        // distinguishes reading the shared object from inventing one: two
+        // reads with nothing in between must be identical.
+        //
+        // Found by mutation. The rotation assertion alone passed against a
+        // handler calling `CaptureIdentity::new()` on every request.
+        let again = read(app.clone()).await;
+        assert_eq!(
+            again["capture_identity"]["instance"], first,
+            "two reads with no swap between them returned different instances, \
+             so this endpoint is minting an identity rather than reading the \
+             one the capture holds: {again}"
+        );
+
+        // What `open_capture` does: a different capture is now loaded.
+        capture.write().identity.rotate();
+
+        let after = read(app).await;
+        let second = after["capture_identity"]["instance"]
+            .as_str()
+            .expect("still identified")
+            .to_string();
+        assert_ne!(
+            first, second,
+            "the endpoint is reading its own copy of the identity, so a swap \
+             MCP performed would be invisible here and the two doors would \
+             disagree about which capture they describe"
+        );
     }
 
     /// `GET /v1/report` answers for the whole capture, and says what it could
@@ -2521,6 +2776,12 @@ mod tests {
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(1))),
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
+            // No capture context: these fixtures build a server around bare
+            // stores, which is exactly the state `source: "unknown"` and a
+            // null identity exist to describe. A fixture that invented one
+            // would test a shape production never produces.
+            capture: None,
+            source_exhausted: None,
         };
         populate_dialogs(&state);
 
