@@ -782,6 +782,153 @@ fi
 HOOK_CORPUS_DIR=
 HOOK_CORPUS_SKIP=
 
+# -- SCENARIO: the feature-matrix gate ----------------------------------------
+#
+# The gate this pair covers exists because `--features full` (pre-commit) and
+# `--all-features` (the clippy gate) both turn features ON, and the break is
+# one that only appears with a feature OFF. Both cases are exercised: an
+# ungated item that every combo without the feature reports as dead code, and
+# the same item once it carries the gate.
+#
+# The fixture gets its own minimal workflow. check-feature-matrix.py reads the
+# combos and RUSTFLAGS from the crate being pushed, so without one it exits 2
+# and reports NOT CHECKED -- correct, and the reason this scenario has to
+# write one rather than rely on the real repo's.
+matrix_gate_verdict() {
+	if ! grep -q 'feature matrix' "$TMP/out.log" 2>/dev/null; then
+		printf 'not-reached'
+	elif grep -q 'feature matrix.*NOT CHECKED' "$TMP/out.log" 2>/dev/null; then
+		printf 'not-checked'
+	else
+		printf 'decided'
+	fi
+}
+
+write_matrix_workflow() {
+	mkdir -p "$CRATE/.github/workflows"
+	cat >"$CRATE/.github/workflows/ci.yml" <<'EOF'
+name: CI
+env:
+  RUSTFLAGS: -Dwarnings
+jobs:
+  features:
+    strategy:
+      matrix:
+        features:
+          - plain
+          - extra
+EOF
+	# Keeps every feature the EARLIER gates build (the reduced-combo gate
+	# checks tls/api/wasm) and adds two of its own. A scenario that narrowed
+	# this list would make the reduced-combo gate fail on a missing feature
+	# and the hook would exit before ever reaching the matrix gate.
+	cat >"$CRATE/Cargo.toml" <<'EOF'
+[package]
+name = "throwaway"
+version = "0.0.0"
+edition = "2021"
+
+[features]
+default = ["native"]
+native = []
+tls = []
+api = []
+wasm = []
+plain = []
+extra = []
+
+[[bin]]
+name = "throwaway"
+path = "src/main.rs"
+EOF
+}
+
+# $1 = "" for an ungated helper, or the cfg attribute that gates it.
+write_matrix_lib() {
+	# `uses_helper` is CALLED from main, not merely defined: an uncalled
+	# function is dead under `--all-features` too, so the clippy gate would
+	# block first and the hook would never reach the matrix gate -- the
+	# scenario would then report "not-reached" and prove nothing.
+	# The break is reachable ONLY under `--no-default-features --features
+	# plain`, a combo the matrix lists and no earlier gate builds.
+	# `any(not(plain), extra)` is false for exactly that one case:
+	#   --all-features        plain AND extra on -> the `extra` arm is true
+	#   --features tls|api|.. plain off          -> `not(plain)` is true
+	#   --features plain      plain on, extra off -> FALSE, `helper` is dead
+	# So clippy (`--all-features`) and the reduced-combo gate (tls/api/wasm)
+	# both see `helper` used and pass, and a scenario that blocks therefore
+	# credits THIS gate rather than an earlier one catching the same thing.
+	# A first attempt used `not(feature = "plain")`, which `--all-features`
+	# also makes false -- clippy blocked first and the scenario proved
+	# nothing.
+	cat >"$CRATE/src/main.rs" <<EOF
+fn main() {
+    #[cfg(any(not(feature = "plain"), feature = "extra"))]
+    println!("{}", uses_helper());
+    println!("ok");
+}
+
+$1
+fn helper() -> u32 {
+    1
+}
+
+#[cfg(any(not(feature = "plain"), feature = "extra"))]
+fn uses_helper() -> u32 {
+    helper()
+}
+EOF
+	( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+}
+
+MATRIX_BLOCKED='Push blocked: a feature combo CI builds does not compile'
+
+write_matrix_workflow
+write_matrix_lib ''
+MX_RC=0
+run_hook "" || MX_RC=$?
+MX_V=$(matrix_gate_verdict)
+if [ "$MX_V" != decided ]; then
+	skip "feature-matrix gate blocks an item that is dead without its feature -- gate $MX_V on $(uname -s)"
+elif [ "$MX_RC" -ne 0 ] && grep -qF "$MATRIX_BLOCKED" "$TMP/out.log"; then
+	ok "feature-matrix gate blocks an item that is dead without its feature"
+else
+	bad "feature-matrix gate did NOT block an item that is dead without its feature"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# ...and passes once the item carries the same gate its only caller has.
+write_matrix_lib '#[cfg(any(not(feature = "plain"), feature = "extra"))]'
+MX_RC=0
+run_hook "" || MX_RC=$?
+MX_V=$(matrix_gate_verdict)
+if [ "$MX_V" != decided ]; then
+	skip "feature-matrix gate passes once the item is gated -- gate $MX_V on $(uname -s), so a green hook proves nothing about it"
+elif [ "$MX_RC" -eq 0 ] || ! grep -qF "$MATRIX_BLOCKED" "$TMP/out.log"; then
+	ok "feature-matrix gate passes once the item is gated"
+else
+	bad "feature-matrix gate blocked a correctly gated item"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# Put the fixture back exactly as it was found: the workflow, the feature list
+# and the source. A scenario that leaves its own Cargo.toml behind changes what
+# every later scenario compiles.
+rm -rf "$CRATE/.github"
+cat >"$CRATE/Cargo.toml" <<'EOF'
+[package]
+name = "throwaway"
+version = "0.0.0"
+edition = "2021"
+
+[[bin]]
+name = "throwaway"
+path = "src/main.rs"
+EOF
+rm -f "$CRATE/src/lib.rs"
+write_unformatted
+( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+
 # -- Summary ------------------------------------------------------------------
 printf '\n--- test-pre-push summary: %d passed, %d failed, %d skipped (host: %s) ---\n' \
 	"$PASS" "$FAIL" "$SKIP" "$(uname -s)"

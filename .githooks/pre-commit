@@ -108,7 +108,18 @@ echo -e "${GREEN}OK${NC}"
 # Skipping is the same answer the script gives for a missing tool: the gate did
 # not run, and it says so, rather than blocking work it cannot check. pre-push
 # and CI still enforce the rule wherever the script exists.
-PROSE_LIB="$(git rev-parse --show-toplevel 2>/dev/null)/scripts/prose-gates.sh"
+# `|| true` is load-bearing: `set -e` is on, and the exit status of an
+# assignment IS the exit status of its command substitution. Outside a
+# repository `git rev-parse` exits 128, so the bare form killed the hook
+# HERE -- before the `if` below, before vale, before codespell, and before
+# the final "checks passed" line. Nothing printed, and the push was refused
+# with no message. The NOT CHECKED branch this guard exists to reach was
+# unreachable: the script died one line above it.
+#
+# Exactly the shape that killed both hooks once before, at `prose_vale_run`.
+# `2>/dev/null` hides the message, not the status.
+PROSE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+PROSE_LIB="${PROSE_ROOT:-.}/scripts/prose-gates.sh"
 prose_commit_fail=0
 if [ ! -r "$PROSE_LIB" ]; then
     echo -e "  Vale/Codespell... ${YELLOW}NOT CHECKED -- scripts/prose-gates.sh is not on this branch${NC}"

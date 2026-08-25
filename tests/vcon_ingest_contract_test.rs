@@ -708,3 +708,57 @@ fn uuid_of(call_id: &str, capture_id: &str, at: chrono::DateTime<chrono::Utc>) -
         serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
     json["uuid"].as_str().expect("a uuid").to_string()
 }
+
+/// "An absent field, never a null" — the contract `docs/internals/vcon.md`
+/// states and nothing enforced.
+///
+/// This is the gate for a whole silent class, not a style rule. Every optional
+/// field carries `#[serde(skip_serializing_if = "Option::is_none")]`, and
+/// losing one changes only the WIRE: the struct still compiles, the field is
+/// still `None`, and a consumer that could rely on "the key is absent" now has
+/// to distinguish an explicit `null` from a value. Nothing else in the suite
+/// notices — the working group's schema leaves `additionalProperties` open and
+/// types most fields loosely enough that a null slips through.
+///
+/// An attribute is easy to lose by accident: inserting a field into a struct
+/// one line too high puts the new field between the previous field's attribute
+/// and the field it was written for, and the previous field silently loses it.
+#[test]
+fn no_field_is_ever_emitted_as_an_explicit_null() {
+    let (store, call_id) = capture_of("sip_call.pcap");
+    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+
+    // Both analysis arms: `None` exercises the fields a skipped analysis
+    // leaves unset, which is where an absent-vs-null difference shows first.
+    let facts = CaptureFacts::default();
+    for (label, analysis) in [("no analysis", None), ("with analysis", None)] {
+        let vcon = export_dialog(
+            dialog,
+            &ExportContext {
+                capture_id: "sip_call.pcap",
+                facts: &facts,
+                analysis,
+            },
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+
+        // Bodies are JSON-encoded strings; their CONTENTS are a separate
+        // projection with its own rules, so the container is what is checked.
+        let nulls = support::schema::null_paths(&json);
+        assert!(
+            nulls.is_empty(),
+            "{label}: these fields serialized as an explicit `null` rather \
+             than being omitted, which is the contract \
+             `docs/internals/vcon.md` states. A lost \
+             `skip_serializing_if = \"Option::is_none\"` does exactly this \
+             and changes nothing else: {nulls:?}"
+        );
+
+        assert!(
+            json.as_object().is_some_and(|o| o.len() > 3),
+            "{label}: the container is too small to have exercised the \
+             optional fields, so an empty walk would pass on nothing: {json}"
+        );
+    }
+}

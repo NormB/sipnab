@@ -216,6 +216,62 @@ fi
 fi
 fi
 
+# -- Hard gate: CI's feature matrix -------------------------------------------
+#
+# The class this closes is invisible to every other gate in this repo. The
+# pre-commit hook builds `--features full`; the clippy gate above builds
+# `--all-features`. Both turn features ON, and the break here is one that only
+# appears when a feature is OFF -- a test helper used solely from a
+# `#[cfg(feature = "vcon")]` module, say, which every combo without `vcon`
+# reports as dead code. Until now that surfaced only in CI, so the loop for it
+# was push-and-wait.
+#
+# Combos AND flags are read from .github/workflows/ci.yml, never restated. A
+# local gate that checks a stale combo set, or checks it without CI's
+# `-Dwarnings`, reports a pass CI contradicts -- which is worse than no gate.
+# That is not hypothetical: the first version of this script had the combos
+# right and the flags missing, and passed the very break it was written for.
+MATRIX_GATE="$(dirname "$0")/../scripts/check-feature-matrix.py"
+if [ ! -f "$MATRIX_GATE" ]; then
+	printf '%b  feature matrix: NOT CHECKED -- scripts/check-feature-matrix.py is missing%b\n' \
+		"$YELLOW" "$NC"
+else
+	printf '  feature matrix (every combo CI builds, with CI'"'"'s flags) ... '
+	set +e
+	MATRIX_OUTPUT=$(python3 "$MATRIX_GATE" 2>&1)
+	MATRIX_RC=$?
+	set -e
+	case "$MATRIX_RC" in
+	0)
+		printf '%bOK%b\n' "$GREEN" "$NC"
+		;;
+	2)
+		# Could not run: no cargo, no workflow, or no RUSTFLAGS to match. It
+		# says which on its first line. NOT CHECKED and never silence.
+		printf '%b%s%b\n' "$YELLOW" "$(printf '%s\n' "$MATRIX_OUTPUT" | head -1)" "$NC"
+		;;
+	*)
+		printf '%bFAIL%b\n' "$RED" "$NC"
+		MATRIX_LOG="$(git rev-parse --git-dir 2>/dev/null || echo .)/sipnab-pre-push-matrix.log"
+		printf '%s\n' "$MATRIX_OUTPUT" >"$MATRIX_LOG"
+		printf '%s\n' "$MATRIX_OUTPUT" | head -24 | sed 's/^/  /'
+		printf '  Full output: %s\n' "$MATRIX_LOG"
+		printf '\n'
+		printf '%bPush blocked: a feature combo CI builds does not compile.%b\n' "$RED" "$NC"
+		printf 'Reproduce one combo with:\n'
+		printf '    RUSTFLAGS=-Dwarnings cargo check --no-default-features --features <combo> --tests\n'
+		printf '`--tests` is not optional: without it no test file is built, so the\n'
+		printf 'break compiles nowhere and the check passes while CI goes red.\n'
+		printf '\n'
+		printf 'Usually an item used only under a `#[cfg(feature = ...)]` gate but not\n'
+		printf 'carrying one itself -- dead code in every build without that feature.\n'
+		printf 'Gate the ITEM, or mark it `#[allow(dead_code)]` if it is shared test\n'
+		printf 'support that different binaries use different slices of.\n'
+		exit 1
+		;;
+	esac
+fi
+
 # -- Hard gate: the non-Linux arm of every platform cfg -----------------------
 # Sibling of the feature-combination gates above, for the same reason and one
 # axis over: those cover `#[cfg(feature = ...)]` rot, and this covers
@@ -739,7 +795,18 @@ prose_fail=0
 # Guarded for the reason .githooks/pre-commit records at length: hooksPath is
 # absolute, so every branch runs this file while the script it sources is
 # branch content, and a branch that predates the script could not push at all.
-PROSE_LIB="$(git rev-parse --show-toplevel 2>/dev/null)/scripts/prose-gates.sh"
+# `|| true` is load-bearing: `set -e` is on, and the exit status of an
+# assignment IS the exit status of its command substitution. Outside a
+# repository `git rev-parse` exits 128, so the bare form killed the hook
+# HERE -- before the `if` below, before vale, before codespell, and before
+# the final "checks passed" line. Nothing printed, and the push was refused
+# with no message. The NOT CHECKED branch this guard exists to reach was
+# unreachable: the script died one line above it.
+#
+# Exactly the shape that killed both hooks once before, at `prose_vale_run`.
+# `2>/dev/null` hides the message, not the status.
+PROSE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+PROSE_LIB="${PROSE_ROOT:-.}/scripts/prose-gates.sh"
 if [ ! -r "$PROSE_LIB" ]; then
 	printf '  vale + codespell ... %bNOT CHECKED -- scripts/prose-gates.sh is not on this branch%b\n' "$YELLOW" "$NC"
 	printf '    CI still runs both and they block there.\n'

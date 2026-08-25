@@ -609,7 +609,17 @@ fn linked_code_targets_exist() {
     // decoded nothing until 0.5.125, and the repo-path fixer linked it.
     // Attributed per file: `internals/rtpengine-control-plane.md` +1, every
     // other developer page unchanged.
-    const EXPECTED_CODE_LINKS: usize = 402;
+    //
+    // Then 402 -> 404 on the rebase: `internals/build-ci-release.md` now names
+    // the feature-matrix gate and the workflow it reads its combos and flags
+    // from. Both were bare code spans until `scripts/link-repo-paths.py
+    // --apply` linked them, which is the fixer `repo_paths_in_docs_are_clickable`
+    // names — one rule, one fixer. Two links, one page.
+    //
+    // Both branches bumped this and the values conflicted, so NEITHER side was
+    // right: the merged tree carries both sets of links. The number below came
+    // from re-running the gate on the merged tree, not from adding the two.
+    const EXPECTED_CODE_LINKS: usize = 404;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

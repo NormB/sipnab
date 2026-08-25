@@ -334,19 +334,24 @@ That means **every commit runs clippy and the whole test suite** and takes
 minutes. It is not optional theatre: the homepage-count gate alone means adding
 a test obliges you to update [`website/templates/index.html`](../../website/templates/index.html) in the same commit.
 
-Three checks stay out of the hook on purpose: the thirteen-combination feature
-matrix, Vale prose linting, and rustdoc. The hook already costs minutes and
-each of those adds more. [`pre-push`](../../.githooks/pre-push) picks up
-rustdoc and three of the thirteen combinations before anything leaves the
-machine, and CI runs the rest. Moving them into the pre-commit hook buys
+Three checks stay out of the PRE-COMMIT hook on purpose: the feature matrix,
+Vale prose linting, and rustdoc. That hook already costs minutes and each of
+those adds more. [`pre-push`](../../.githooks/pre-push) picks all three up
+before anything leaves the machine. Moving them into the pre-commit hook buys
 nothing — it is the same wait, on every commit instead of every push.
 
-[`pre-push`](../../.githooks/pre-push) adds eight hard gates that `cargo test`
+The matrix used to be the exception: pre-push checked three of the thirteen
+combinations and CI ran the rest, which left a class of break with a
+push-and-wait feedback loop. [`scripts/check-feature-matrix.py`](../../scripts/check-feature-matrix.py) now runs all
+thirteen locally, reading both the combo list and `RUSTFLAGS` out of
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) so the two cannot drift.
+
+[`pre-push`](../../.githooks/pre-push) adds nine hard gates that `cargo test`
 does not cover: `cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
 cargo check`, a check of the reduced feature combinations `tls`, `api` and
-`wasm`, a non-Linux compile of the whole tree, and the two prose linters — Vale
-and codespell. Rustdoc lints and the
+`wasm`, the full thirteen-combination matrix with CI's flags, a non-Linux
+compile of the whole tree, and the two prose linters — Vale and codespell. Rustdoc lints and the
 separate fuzz workspace compile independently of the test build, and no cargo
 command reads prose at all, so these are exactly the failures that otherwise
 appear ten minutes later in CI. The prose pair arrived last and for cause: on
@@ -440,7 +445,7 @@ because a hand-kept list cannot catch a *new* corpus binary, which is the one
 thing this gate exists for. The first draft did hand-keep the list, and it went
 stale inside an hour, when a twelfth binary landed mid-review.
 
-**When it runs.** Last, after the eight hard gates. Each of those fails in
+**When it runs.** Last, after the nine hard gates. Each of those fails in
 seconds, and spending a minute on the corpus only to hear that the tree does not
 compile wastes the minute. The gate then reaches one of five states — a run, or
 one of the four reasons not to run — and each prints its own line:
