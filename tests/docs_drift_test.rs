@@ -4581,3 +4581,62 @@ fn the_prose_gate_logic_has_one_source() {
         }
     }
 }
+
+/// `llms.txt` and `llms-full.txt` are current with the pages they aggregate.
+///
+/// These two files had no gate at all. `site_internals_mirror_is_current`
+/// compares `website/content/docs/internals` against `docs/internals` and stops
+/// there, so the aggregate could drift from its own sources with every check
+/// green — and did, through a full local hook and a green CI run.
+///
+/// The trap is which generator owns them. `build-site-pages.py` writes them
+/// from ALL the published pages, `docs/internals/` included;
+/// `build-site-internals.py` does not touch them. So editing an internals page
+/// and running only the internals generator refreshes the mirror a gate DOES
+/// check and leaves these two behind.
+#[test]
+fn llms_aggregates_are_current() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // pid and line, never a fixed path: two tests sharing one would race, and a
+    // leftover from a killed run would be read as this run's output.
+    let tmp = std::env::temp_dir().join(format!("sipnab-llms-{}-{}", std::process::id(), line!()));
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    // argv[2] keeps the generator off the committed files. Without it this
+    // gate would OVERWRITE the very thing it is checking and always pass.
+    let out = std::process::Command::new("python3")
+        .arg(repo.join("scripts/build-site-pages.py"))
+        .arg(tmp.join("pages"))
+        .arg(tmp.join("static"))
+        .current_dir(repo)
+        .output()
+        .expect("run scripts/build-site-pages.py — python3 must be on PATH");
+    assert!(
+        out.status.success(),
+        "build-site-pages.py failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let mut stale = Vec::new();
+    for name in ["llms.txt", "llms-full.txt"] {
+        let fresh = std::fs::read_to_string(tmp.join("static").join(name))
+            .unwrap_or_else(|e| panic!("the generator wrote no {name}: {e}"));
+        let have =
+            std::fs::read_to_string(repo.join("website/static").join(name)).unwrap_or_default();
+        assert!(
+            !fresh.is_empty(),
+            "{name} generated EMPTY — an empty file would match an empty \
+             committed one and this gate would pass on nothing"
+        );
+        if fresh != have {
+            stale.push(name);
+        }
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    assert!(
+        stale.is_empty(),
+        "website/static is stale — regenerate with \
+         `python3 scripts/build-site-pages.py` and commit: {stale:?}"
+    );
+}
