@@ -53,6 +53,7 @@ fuzz_target!(|data: &[u8]| {
             ip_protocol: 6,
             dscp: None,
             input_origin: sipnab::capture::parse::InputOrigin::Wire,
+            hep: None,
         };
         for flushed in reassembler.insert(&pkt) {
             let _ = flushed.len();

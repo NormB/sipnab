@@ -126,8 +126,10 @@ fn main() {
     // capture missed in two places, and both read from here — an export that
     // passed `CaptureFacts::default()` would claim a clean capture it never
     // measured.
-    let mut facts = CaptureFacts::default();
-    facts.frames_read = frames;
+    let facts = CaptureFacts {
+        frames_read: frames,
+        ..CaptureFacts::default()
+    };
 
     let vcon = export_dialog(
         dialog,
