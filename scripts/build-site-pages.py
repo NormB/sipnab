@@ -566,6 +566,16 @@ def main() -> int:
         if len(sys.argv) > 1
         else root / "website" / "content" / "docs"
     )
+    # argv[2] redirects the llms files the same way argv[1] redirects the
+    # pages. Without it a caller that passes a temp dir still overwrites the
+    # committed `llms-full.txt`, so a freshness gate could not diff the two
+    # without mutating the tree it is checking.
+    static_dir = (
+        Path(sys.argv[2])
+        if len(sys.argv) > 2
+        else root / "website" / "static"
+    )
+    static_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
     _load_anchors(root)
     for src, site_name, want_h1, title, weight, description in PAGES:
@@ -577,7 +587,7 @@ def main() -> int:
         print(f"  {src:22s} -> {site_name}")
     # Written into static/ so Zola copies them to the site root verbatim,
     # where the llms.txt convention expects them.
-    write_llms_txt(root, root / "website" / "static")
+    write_llms_txt(root, static_dir)
     return 0
 
 

@@ -210,7 +210,13 @@ process, so the floor is not optional.
   output is stale. The same arrangement covers the operator
   pages: [`build-site-pages.py`](../../scripts/build-site-pages.py) renders
   each entry in its `PAGES` registry from `docs/` into [`website/content/docs/`](../../website/content/docs/),
-  gated by `site_pages_mirror_is_current`. Every page in that registry got
+  gated by `site_pages_mirror_is_current`. That same script also writes
+  `llms.txt` and `llms-full.txt` into `website/static/`, from ALL the published
+  pages — `docs/internals/` included — and `llms_aggregates_are_current` gates
+  them. Which script owns them is the trap: `build-site-internals.py` does not
+  touch the aggregates, so editing an internals page and regenerating only the
+  internals mirror satisfies the gate that checks the mirror and leaves the
+  aggregates stale. Run both generators, or run `build-site-pages.py` last. Every page in that registry got
   there the same way — hand-maintained on both sides until they diverged. Read
   the registry for what it holds today, not this sentence. The cookbook shared
   2 of its 36 commands with the site copy; the REST API page was 430 lines
