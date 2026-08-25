@@ -1198,6 +1198,7 @@ mod tests {
             ip_protocol: 17,
             dscp: None,
             input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
         };
         app.stream_store
             .write()

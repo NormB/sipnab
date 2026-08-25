@@ -246,6 +246,7 @@ fn push_rtp(store: &mut sipnab::rtp::stream_store::StreamStore, seq: u16, dscp: 
         ip_protocol: 17,
         dscp: Some(dscp),
         input_origin: sipnab::capture::parse::InputOrigin::Wire,
+        hep: None,
     };
     let rtp = sipnab::rtp::parser::RtpHeader {
         version: 2,
@@ -344,6 +345,7 @@ fn an_unobserved_marking_is_not_reported_as_a_wrong_one() {
         ip_protocol: 17,
         dscp: None,
         input_origin: sipnab::capture::parse::InputOrigin::Hep,
+        hep: None,
     };
     let rtp = sipnab::rtp::parser::RtpHeader {
         version: 2,

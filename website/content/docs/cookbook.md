@@ -355,9 +355,15 @@ Reload with `opensipsctl restart` (or `systemctl reload opensips` for graceful r
 homer = capture.example.com:9060
 homer-protocol = udp
 homer-id = 1
+# Without this, rtpengine mirrors RTCP statistics only -- which carry no
+# Call-ID and no SDP, so nothing sipnab reads can name a call or find a media
+# endpoint. It is the first thing to check when a relay looks silent.
+homer-enable-ng = true
 ```
 
-Restart with `systemctl restart rtpengine`.
+Restart with `systemctl restart rtpengine`. See
+[the rtpengine page](@/docs/rtpengine.md) for what sipnab does with the result, and
+for the two ways to read it that do not cost you your collector.
 
 **Kamailio:**
 
@@ -1310,6 +1316,35 @@ WAV header and every player reads the file normally.
 - A CLI batch audio-export flag does **not** exist today. The library functions (`rtp::audio_export::export_stream_to_wav`, `export_dialog_to_wav`) are available if you want to build it; until then, scripted batch export means driving the TUI under `expect`/`tmux` or writing a small Rust binary that links the library.
 
 ---
+
+## 13b. Export one call to a conversation archive as a vCon
+
+`--export-vcon` writes one observed dialog as a vCon container — the IETF
+interchange format a conversation archive, a compliance store or an
+agent-facing pipeline already reads. Handing one of those a pcap makes the
+decoding their problem. Handing them a vCon does not.
+
+```sh
+sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20' --vcon-out call.vcon
+```
+
+Straight into a conserver, without a file in between:
+
+```sh
+sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20'   | curl -fsS -X POST "$CONSERVER/vcon"       -H 'Content-Type: application/json'       -H "Authorization: Bearer $CONSERVER_TOKEN" --data-binary @-
+```
+
+Read the caveat before you trust the contents. Every `body` is a JSON-encoded
+string, which means `jq` needs a parse on the way in:
+
+```sh
+sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20'   | jq -r '.analysis[0].body | fromjson | .capture_completeness.note'
+```
+
+Needs a build carrying the non-default `vcon` feature. `sipnab --version` lists
+what yours has. As a library, [`examples/export_vcon.rs`](https://github.com/NormB/sipnab/blob/main/examples/export_vcon.rs)
+is the same thing as a program you can run. The [vCon page](@/docs/vcon.md) covers what
+a consumer may and may not conclude from a container sipnab wrote.
 
 ## 14. Analyze a pcap without installing anything
 

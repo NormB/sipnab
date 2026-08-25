@@ -136,6 +136,7 @@ fn packet(payload: Vec<u8>, src_port: u16, dst: Ipv4Addr, dst_port: u16) -> Pars
         ip_protocol: 17,
         dscp: None,
         input_origin: InputOrigin::Wire,
+        hep: None,
     }
 }
 

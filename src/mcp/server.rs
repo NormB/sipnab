@@ -8953,6 +8953,7 @@ mod tests {
             ip_protocol: 17,
             dscp: None,
             input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
         };
         {
             let mut s = ss.write();
@@ -10417,6 +10418,7 @@ mod tests {
             ip_protocol: 6,
             dscp: None,
             input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
         };
         let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
         let mut decrypt = crate::pipeline::MediaDecrypt::default();

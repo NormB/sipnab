@@ -752,3 +752,50 @@ cooked v1 and cooked v2 alike.
 Build custom queries with the [Filter DSL](@/docs/filter-dsl.md) -- 33 fields, regex support, boolean logic. See the [CLI Reference](@/docs/cli.md) for every flag and more recipes.
 
 If the capture itself is the problem -- drops on a busy link, a full kernel ring buffer, or loss that appears on every call at once -- see [Tuning capture on a busy server](@/docs/tuning-capture.md).
+
+### sipnab refuses `--export-vcon`
+
+```text
+--export-vcon needs a build with the `vcon` feature
+```
+
+The exporter is behind a non-default Cargo feature, so a stock build does not
+carry it. Check what you have:
+
+```sh
+sipnab --version        # the feature list is on the version line
+```
+
+If `vcon` is absent, build one that has it:
+
+```sh
+cargo build --release --features vcon
+```
+
+The feature is non-default on purpose. A container that leaves the machine is a
+publication surface, and a capture tool should not grow one unless an operator
+asks for it.
+
+### `--export-vcon` says the Call-ID is not there
+
+```text
+Call-ID 'x@y' not found in tracked dialogs, so there is no dialog to export.
+```
+
+The run holds no dialog under that Call-ID. `--report` lists the ones it does
+hold — the usual cause is a Call-ID copied with surrounding quotes or a
+truncated one, and the second is a capture that never saw the dialog open.
+
+Quote the Call-ID in the shell. Most contain `@`, and many contain characters
+your shell would otherwise interpret.
+
+### The container came out with no audio in it
+
+The dialog object carries no `body` and the caveat says media was not decoded.
+That is a statement about what the RUN kept, never a finding that the call was
+silent — the container is careful to say so, and a consumer should read the
+`media_note` beside it.
+
+The usual cause is that the run did not retain the RTP payload. Audio also has
+an inline budget. A recording over it draws an out-loud refusal rather than a
+silent truncation, and the caveat names the size it turned down.

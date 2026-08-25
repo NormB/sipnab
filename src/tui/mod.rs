@@ -1519,6 +1519,7 @@ mod tests {
             ip_protocol: 17,
             dscp: None,
             input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
         };
         let rtp = crate::rtp::parser::RtpHeader {
             version: 2,
@@ -1575,6 +1576,7 @@ mod tests {
                     ip_protocol: 17,
                     dscp: None,
                     input_origin: crate::capture::parse::InputOrigin::Wire,
+                    hep: None,
                 },
                 &crate::rtp::parser::RtpHeader {
                     version: 2,
@@ -2164,6 +2166,7 @@ mod tests {
                     ip_protocol: 17,
                     dscp: None,
                     input_origin: crate::capture::parse::InputOrigin::Wire,
+                    hep: None,
                 };
                 let rtp = crate::rtp::parser::RtpHeader {
                     version: 2,

@@ -4298,6 +4298,7 @@ mod tui_state {
                     ip_protocol: 17,
                     dscp: None,
                     input_origin: sipnab::capture::parse::InputOrigin::Wire,
+                    hep: None,
                 };
                 let rtp = parse_rtp_header(&parsed.payload).unwrap();
                 store.process_rtp(&parsed, &rtp, parsed.timestamp);

@@ -142,6 +142,13 @@ fn hep_to_packet(hep: HepPacket, source: &str) -> Packet {
             src_port: hep.src_port,
             dst_port: hep.dst_port,
             ip_protocol: hep.ip_protocol,
+            // Carried, not dropped. `protocol` is how rtpengine's mirrored
+            // control plane announces itself, and `correlation_id` is the only
+            // thing that names the call on an `ng` reply.
+            hep: Some(crate::capture::packet::HepOrigin {
+                protocol: hep.protocol.to_byte(),
+                correlation_id: hep.correlation_id.clone(),
+            }),
         },
     )
 }
@@ -3482,6 +3489,59 @@ mod tests {
     /// addressing as `pre_parsed` metadata so the parser can short-circuit.
     /// Previously the listener tagged DLT_RAW with payload-only data,
     /// causing the parser to mis-read the SIP body as an IP header.
+    /// The wrapper's own claims survive the unwrap.
+    ///
+    /// The listener strips HEP before the parser runs, so a chunk that does
+    /// not travel in `PreParsed` is gone. Two were dropped on the floor for as
+    /// long as `--hep-listen` existed, and the documentation offered the method
+    /// anyway: the capture protocol, which is how rtpengine announces a
+    /// mirrored `ng` datagram, and the correlation id, which is the only thing
+    /// naming the call on an `ng` reply.
+    ///
+    /// The integration tests in `tests/hep_listen_ng_test.rs` build `PreParsed`
+    /// by hand, so they prove the PIPELINE reads these and cannot prove the
+    /// LISTENER writes them. Mutation showed exactly that gap: forcing the
+    /// protocol to SIP here left every one of them green. This is the test that
+    /// dies.
+    #[test]
+    fn hep_to_packet_carries_the_capture_protocol_and_correlation_id() {
+        let hep = HepPacket {
+            version: 3,
+            src_addr: "192.0.2.10".parse().unwrap(),
+            dst_addr: "192.0.2.20".parse().unwrap(),
+            src_port: 22222,
+            dst_port: 2223,
+            timestamp: Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+            // rtpengine's own capture protocol for a mirrored `ng` datagram.
+            protocol: HepProtocol::Unknown(0x3d),
+            payload: b"cookie1 d7:command5:offere".to_vec(),
+            correlation_id: Some("km-670bd208@sipnab".to_string()),
+            capture_id: None,
+            auth_key: None,
+            ip_protocol: 17,
+        };
+        let packet = hep_to_packet(hep, "0.0.0.0:9060");
+        let origin = packet
+            .pre_parsed
+            .as_ref()
+            .expect("pre_parsed must be set")
+            .hep
+            .as_ref()
+            .expect("a packet from a HEP source must say what the wrapper said");
+
+        assert_eq!(
+            origin.protocol, 0x3d,
+            "the capture protocol is how the relay declares its control plane; \
+             without it a body this build cannot parse reads as media"
+        );
+        assert_eq!(
+            origin.correlation_id.as_deref(),
+            Some("km-670bd208@sipnab"),
+            "an ng reply carries no call-id of its own, so dropping this \
+             leaves the relay's allocated port belonging to no call"
+        );
+    }
+
     #[test]
     fn hep_to_packet_attaches_pre_parsed_metadata() {
         let payload = b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n";

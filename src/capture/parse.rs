@@ -190,6 +190,16 @@ pub struct ParsedPacket {
     /// bare `from_hep: bool`, which could describe only two of the three real
     /// cases and would have had to call a uprobe read "HEP" to make it safe.
     pub input_origin: InputOrigin,
+    /// What the HEP wrapper claimed, for packets a HEP source delivered.
+    ///
+    /// The listener strips the wrapper before the parser sees the bytes, so a
+    /// claim that does not travel here is gone. `is_ng_over_hep` needs the
+    /// capture protocol, and an `ng` REPLY names its call in the correlation
+    /// id and nowhere else.
+    ///
+    /// `None` on the wire path, where nothing wrapped the packet and the ng
+    /// detector reads the datagram itself.
+    pub hep: Option<crate::capture::packet::HepOrigin>,
 }
 
 // ── ICMP error quotes ─────────────────────────────────────────────────
@@ -2334,6 +2344,7 @@ fn parse_packet_unstamped(packet: &Packet) -> Result<ParsedPacket, CaptureError>
                 Some(crate::capture::packet::FrameSource::Uprobe { .. }) => InputOrigin::Uprobe,
                 _ => InputOrigin::Hep,
             },
+            hep: meta.hep.clone(),
         });
     }
 
@@ -3026,6 +3037,7 @@ fn extract_parsed_packet(
             ip_protocol,
             dscp,
             input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
         });
     }
 
@@ -3057,6 +3069,7 @@ fn extract_parsed_packet(
             ip_protocol,
             dscp,
             input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
         });
     }
 
@@ -3106,6 +3119,7 @@ fn extract_parsed_packet(
             ip_protocol,
             dscp,
             input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
         }),
         TransportSlice::Tcp(tcp) => Ok(ParsedPacket {
             frame: None,
@@ -3130,6 +3144,7 @@ fn extract_parsed_packet(
             ip_protocol,
             dscp,
             input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
         }),
         // ICMP is still not a `ParsedPacket` — it carries no message, and
         // making one would put a header prefix into message counts and dialog
@@ -4738,6 +4753,7 @@ mod tests {
                 src_port: 5060,
                 dst_port: 5060,
                 ip_protocol: 17, // UDP
+                hep: None,
             },
         );
         let parsed = parse_packet(&pkt).expect("should parse via pre-parsed path");
@@ -4771,6 +4787,7 @@ mod tests {
                 src_port: 0,
                 dst_port: 0,
                 ip_protocol: 6,
+                hep: None,
             },
         );
         assert_eq!(
@@ -4796,6 +4813,7 @@ mod tests {
                 src_port: 5060,
                 dst_port: 5060,
                 ip_protocol: 17,
+                hep: None,
             },
         );
         assert_eq!(
@@ -4838,6 +4856,7 @@ mod tests {
                 src_port: 5060,
                 dst_port: 5061,
                 ip_protocol: 6, // TCP
+                hep: None,
             },
         );
         let parsed = parse_packet(&pkt).expect("should parse via pre-parsed path");
@@ -4926,6 +4945,7 @@ mod tests {
                 src_port: 5060,
                 dst_port: 5060,
                 ip_protocol: 50, // ESP — not a SIP transport
+                hep: None,
             },
         );
         let result = parse_packet(&pkt);

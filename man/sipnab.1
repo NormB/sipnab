@@ -109,6 +109,31 @@ Skip loading any configuration file.
 .TP
 .B \-D, \-\-dump\-config
 Print the effective configuration and exit.
+.TP
+.BI \-\-rtpengine\-control " addr"
+Ask an rtpengine at
+.I addr
+which calls it is carrying, so media captured on a relay host can be attributed
+to a call the relay set up before this capture opened. Read-only commands only.
+Refused when the run is offline.
+.TP
+.BI \-\-hep\-listen " addr"
+Receive HEP on
+.IR addr .
+Carries SIP, and carries rtpengine's mirrored
+.B ng
+control plane when a relay is pointed here. Note that rtpengine has exactly one
+Homer destination, so aiming it at sipnab takes it away from the collector it
+already feeds; reading the same datagrams off the wire costs nothing and is the
+default sipnab is built for.
+.TP
+.BI \-\-export\-vcon " call-id"
+Export one observed dialog as a vCon container, the IETF conversation
+interchange format, on stdout. Requires a build with the
+.B vcon
+feature. Pair with
+.B \-\-vcon\-out
+to write it to a file instead.
 .SH TUI KEYBINDINGS
 The interactive TUI supports sngrep-compatible navigation:
 .SS Call List

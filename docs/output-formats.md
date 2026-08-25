@@ -458,6 +458,26 @@ sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.complete'
 sipnab already computes and the capture-level evidence it already holds. It
 ranks and counts them, and adds no judgement of its own.
 
+## vCon (`--export-vcon`)
+
+A different kind of output from everything above. The formats on this page are
+sipnab's own shapes, read by sipnab and by whatever you write around it. A vCon
+is an interchange container other people's systems already parse — a
+conversation archive, a compliance store, an agent that reasons over calls.
+
+```sh
+sipnab -N -I call.pcap --export-vcon 'CALL-ID' --vcon-out out.json
+```
+
+One dialog per container, never a whole capture. sipnab writes it as an
+OBSERVER: it names itself as a party that took no part in the call, carries the
+audio inline when the run retained the RTP payload, and states in two places
+what the capture missed. It signs nothing.
+
+Behind the non-default `vcon` feature, so a stock build refuses the flag and
+says so. The [vCon page](vcon.md) covers what a consumer may and may not
+conclude from one, which matters more here than the field list.
+
 ## pcap / pcapng
 
 `-O <file>` writes captured packets, and `--pcapng` selects PCAP-NG. With TLS
