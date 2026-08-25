@@ -433,10 +433,16 @@ fn a_build_without_the_vcon_feature_refuses_the_flag() {
 
 /// A `json`-encoded body, parsed.
 ///
+/// Gated on the ITEM rather than left bare: its only callers live in the
+/// `#[cfg(feature = "vcon")]` module above, so a build without the feature
+/// warns `never used`, and CI's feature matrix runs with warnings denied. The
+/// local hook builds `--features full` and cannot see this.
+///
 /// §2.3.2 makes `body` a STRING, so every read of one goes through here rather
 /// than indexing a `Value` that is not an object. The conserver's own model
 /// says the same in a comment: a caller handing it a dict gets it JSON-encoded
 /// before anything else touches the attachment.
+#[cfg(feature = "vcon")]
 fn body_of(node: &serde_json::Value) -> serde_json::Value {
     let text = node["body"]
         .as_str()

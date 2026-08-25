@@ -600,7 +600,11 @@ fn linked_code_targets_exist() {
     // (`tests/vcon_ingest_contract_test.rs`). Attributed by measurement before
     // the number moved: that page gained exactly three links into `src/` and
     // `tests/`, and no other developer page gained one.
-    const EXPECTED_CODE_LINKS: usize = 400;
+    // 400 -> 401 by one link: the section table in `internals/vcon.md` now has
+    // a `parties[].tel` row, and it names `tel_uri()` as the builder rather
+    // than restating the narrow rule the function documents. One row, one link,
+    // one page.
+    const EXPECTED_CODE_LINKS: usize = 401;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -665,7 +669,10 @@ fn linked_symbols_resolve_to_a_definition() {
     // names, `dialog_object()` and `export_dialog_at()`, the page already
     // cited. Attributed per file: `internals/vcon.md` +1, every other developer
     // page unchanged.
-    const EXPECTED_SYMBOL_CLAIMS: usize = 87;
+    // Raised 87 -> 88 by that same `tel_uri()` citation — the only symbol the
+    // developer docs gained. Attributed per file: `internals/vcon.md` +1, every
+    // other developer page unchanged.
+    const EXPECTED_SYMBOL_CLAIMS: usize = 88;
     // A definition boundary, not a substring. `source.contains("fn run_offline_paral")`
     // was satisfied by `fn run_offline_parallel`, so a doc could name a function
     // that has never existed and resolve against a real one whose name merely

@@ -251,6 +251,13 @@ pub struct Party {
     /// host. Absent on the observer, which sent no SIP.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sip: Option<String>,
+    /// RFC 3966 `tel:` URI, when the SIP user part is a global number.
+    ///
+    /// A core-03 §4.2 Party parameter, and one of the three the conserver
+    /// indexes on. It is absent far more often than it is present: only an
+    /// RFC 3966 global number qualifies, so a SIP extension yields nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tel: Option<String>,
     /// Always `"none"`.
     ///
     /// Not a placeholder for a value that arrives later. sipnab has no
@@ -311,6 +318,22 @@ pub struct Dialog {
     /// The `Call-ID` this dialog was tracked under — the one identifier that
     /// ties the container back to a capture an operator still holds.
     pub sip_call_id: String,
+    /// The dialog's `From` tag, when the capture observed one.
+    ///
+    /// With the `To` tag below this is what distinguishes one leg of a forked
+    /// INVITE from another. A Call-ID alone does not: every fork shares it, so
+    /// a consumer correlating legs across nodes cannot tell them apart. Both
+    /// are parameters the `sip-signaling` extension defines, and sipnab has
+    /// held them all along: message attribution already reads them to decide
+    /// which party sent each message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sip_from_tag: Option<String>,
+    /// The dialog's `To` tag, when the capture observed one.
+    ///
+    /// Absent until the callee answers, which is itself the signal that no
+    /// dialog was established.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sip_to_tag: Option<String>,
     /// RFC 3339 start of what this object describes.
     ///
     /// On a `recording` this is the first frame the FILE holds, which is later
@@ -395,6 +418,8 @@ impl Dialog {
             kind: None,
             disposition: None,
             sip_call_id,
+            sip_from_tag: None,
+            sip_to_tag: None,
             start: None,
             duration: None,
             parties: None,
@@ -1123,6 +1148,7 @@ fn observed_parties(dialog: &SipDialog) -> Vec<Party> {
     vec![
         Party {
             sip: sip_uri(dialog.from_user.as_deref(), dialog.from_host.as_deref()),
+            tel: tel_uri(dialog.from_user.as_deref()),
             validation: "none",
             role: None,
             sip_display_name: dialog.from_display.clone(),
@@ -1134,6 +1160,7 @@ fn observed_parties(dialog: &SipDialog) -> Vec<Party> {
         },
         Party {
             sip: sip_uri(dialog.to_user.as_deref(), dialog.to_host.as_deref()),
+            tel: tel_uri(dialog.to_user.as_deref()),
             validation: "none",
             role: None,
             sip_display_name: dialog.to_display.clone(),
@@ -1161,6 +1188,9 @@ fn first_response(dialog: &SipDialog) -> Option<&crate::sip::SipMessage> {
 fn observer_party() -> Party {
     Party {
         sip: None,
+        // The observer is not reachable at a number. Supplying one would put
+        // sipnab in the conserver's party index as a participant.
+        tel: None,
         validation: "none",
         role: Some(OBSERVER_ROLE),
         sip_display_name: None,
@@ -1171,6 +1201,29 @@ fn observer_party() -> Party {
             node_name()
         )),
     }
+}
+
+/// A `tel:` URI, but only when the SIP user part is unambiguously one.
+///
+/// The conserver indexes parties by `tel`, `mailto` and `name` and by nothing
+/// else, so a container with none of the three is fetchable by UUID and
+/// invisible to its party search. `tel` is the only one of the three sipnab
+/// can supply from evidence: `name` is a deliberate refusal, and no capture
+/// carries an email address.
+///
+/// The rule is narrow on purpose. RFC 3966 global numbers start with `+` and
+/// are unambiguous; a bare digit run is a LOCAL number that needs a
+/// `phone-context` to mean anything, and most SIP user parts that look like
+/// digits are extensions — `1001` is not a telephone number, and indexing it
+/// as one would put a wrong answer in a search index rather than no answer.
+/// So: `+` followed by digits, or nothing.
+fn tel_uri(user: Option<&str>) -> Option<String> {
+    let user = user?;
+    let digits = user.strip_prefix('+')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!("tel:+{digits}"))
 }
 
 /// Rebuild a `sip:` URI from an observed user and host.
@@ -1223,6 +1276,8 @@ fn dialog_object(dialog: &SipDialog, start: String) -> Dialog {
         // typed `recording` carrying neither `url` nor `body` raises inside
         // the link — and the conserver dead-letters the WHOLE container on
         // that, not just the step that raised.
+        sip_from_tag: dialog.from_tag.clone(),
+        sip_to_tag: dialog.to_tag.clone(),
         kind: Some(INCOMPLETE_TYPE),
         // Only an OBSERVED final failure names a reason. Its absence says
         // nothing failed that sipnab saw, which is not the same as success.

@@ -437,3 +437,150 @@ fn nothing_is_typed_a_recording_without_content_to_reach() {
         }
     }
 }
+
+/// The caller party's `sip` and `tel`, for one synthetic `From` user part.
+///
+/// Goes through the public export rather than calling the URI helper, so a
+/// helper that is right while nothing wires it up cannot pass.
+fn party_sip_and_tel(from_user: &str) -> (Option<String>, Option<String>) {
+    use sipnab::net::TransportProto;
+    use sipnab::sip::parser::parse_sip;
+
+    let raw = format!(
+        "INVITE sip:bob@example.net SIP/2.0\r\n\
+         From: <sip:{from_user}@example.com>;tag=caller-tag\r\n\
+         To: <sip:bob@example.net>\r\n\
+         Call-ID: tel-fixture@example.com\r\n\
+         CSeq: 1 INVITE\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    let mut store = DialogStore::new(8, true);
+    store.process_message(
+        parse_sip(
+            raw.as_bytes(),
+            chrono::Utc::now(),
+            "10.0.0.1".parse().expect("a caller address"),
+            "10.0.0.2".parse().expect("a callee address"),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("the INVITE fixture parses"),
+    );
+    let dialog = store.iter().next().expect("the fixture produced a dialog");
+    let facts = CaptureFacts::default();
+    let vcon = export_dialog(
+        dialog,
+        &ExportContext {
+            capture_id: "tel-fixture",
+            facts: &facts,
+            analysis: None,
+        },
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+    let caller = &json["parties"][0];
+    (
+        caller["sip"].as_str().map(str::to_string),
+        caller
+            .get("tel")
+            .and_then(|t| t.as_str())
+            .map(str::to_string),
+    )
+}
+
+/// A global number reaches the conserver's party index; an extension does not.
+///
+/// Both directions matter and the failure case is the important one. The
+/// conserver indexes parties by `tel`, `mailto` and `name` only, so a `tel`
+/// makes a container findable — but a SIP user part of `1001` is an extension,
+/// not a telephone number, and indexing it as one puts a WRONG answer in a
+/// search index rather than no answer.
+#[test]
+fn a_tel_is_emitted_for_a_global_number_and_never_invented_from_an_extension() {
+    // Success: a global number, and the container becomes findable.
+    let global = party_sip_and_tel("+14155550123");
+    assert_eq!(
+        global.1,
+        Some("tel:+14155550123".to_string()),
+        "an RFC 3966 global number must reach the conserver's party index"
+    );
+
+    // Failure: everything that is not unambiguously a telephone number.
+    for not_a_number in ["1001", "alice", "+", "+1415call", "+1-415-555-0123"] {
+        let (sip, tel) = party_sip_and_tel(not_a_number);
+        assert_eq!(
+            tel, None,
+            "`{not_a_number}` is not an RFC 3966 global number; emitting a \
+             `tel` for it indexes a wrong answer. sip was {sip:?}"
+        );
+    }
+}
+
+/// The observer is never indexable as a party to the call.
+#[test]
+fn the_observer_carries_no_tel() {
+    let (store, call_id) = capture_of("sip_call.pcap");
+    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+    let facts = CaptureFacts::default();
+    let vcon = export_dialog(
+        dialog,
+        &ExportContext {
+            capture_id: "sip_call.pcap",
+            facts: &facts,
+            analysis: None,
+        },
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+    let parties = json["parties"].as_array().expect("parties is an array");
+    let observer = parties
+        .iter()
+        .find(|p| p.get("role").is_some())
+        .expect("the observer party is present");
+    assert!(
+        observer.get("tel").is_none(),
+        "the observer is not reachable at a number, and supplying one enters \
+         sipnab in the conserver's party index as a participant: {observer}"
+    );
+}
+
+/// The dialog object names the tags that tell forked legs apart.
+///
+/// A Call-ID does not: every fork of one INVITE shares it. sipnab has held
+/// both tags all along.
+#[test]
+fn the_dialog_object_names_the_tags_that_distinguish_a_forked_leg() {
+    let (store, call_id) = capture_of("sip_call.pcap");
+    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+    let expected_from = dialog.from_tag.clone();
+    let expected_to = dialog.to_tag.clone();
+    let facts = CaptureFacts::default();
+    let vcon = export_dialog(
+        dialog,
+        &ExportContext {
+            capture_id: "sip_call.pcap",
+            facts: &facts,
+            analysis: None,
+        },
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+    let object = &json["dialog"][0];
+
+    assert!(
+        expected_from.is_some(),
+        "this fixture must carry a From tag, or the assertion below passes \
+         vacuously and the field could be dropped without a test noticing"
+    );
+    assert_eq!(
+        object["sip_from_tag"].as_str().map(str::to_string),
+        expected_from,
+        "the container must carry the From tag the capture observed: {object}"
+    );
+    assert_eq!(
+        object["sip_to_tag"].as_str().map(str::to_string),
+        expected_to,
+        "the container must carry the To tag the capture observed: {object}"
+    );
+}

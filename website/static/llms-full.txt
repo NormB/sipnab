@@ -17680,6 +17680,28 @@ Each refusal has an argument behind it in
 The party `name` refusal has a structural form worth knowing about: the Rust
 type has no `name` field at all, so no later edit can populate one by accident.
 
+### One thing sipnab does supply, narrowly: `tel`
+
+A conserver indexes parties by `tel`, `mailto` and `name` and by nothing else,
+so a consumer can retrieve a container carrying none of the three by its UUID
+and by nothing else — a party search never surfaces it. An operator who knows only the phone number cannot
+find the capture.
+
+`tel` is the only one of the three sipnab can supply from evidence, and it
+supplies it only when the SIP user part is unambiguously a telephone number:
+`+` followed by digits, an RFC 3966 global number. Everything else gets
+nothing, including bare digit runs — `1001` is an extension, and indexing it as
+a telephone number would put a wrong answer in a search index rather than no
+answer. The observer party never carries one at all.
+
+### The tags that tell forked legs apart
+
+The dialog object carries `sip_from_tag` and `sip_to_tag` when the capture
+observed them. A Call-ID alone cannot distinguish one leg of a forked INVITE
+from another — every fork shares it — so a consumer correlating legs across
+nodes needs the tags. `sip_to_tag` is absent until the callee answers, which is
+itself a signal: nothing established a dialog.
+
 ## What this does not do
 
 Stated here rather than discovered later.

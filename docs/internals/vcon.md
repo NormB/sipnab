@@ -38,13 +38,21 @@ not observe this" — an absent field, never a null.
 | `uuid` | the dialog's `Call-ID` and clock, the capture id, the node name | [`dialog_uuid()`](../../src/output/vcon.rs) |
 | `created_at` | the caller's clock, not the dialog's | the `exported_at` argument |
 | `parties[0]`, `parties[1]` | `SipDialog`'s `from_*`/`to_*` fields, the opening message, the first response | [`observed_parties()`](../../src/output/vcon.rs) |
+| `parties[].tel` | the SIP user part, only when it is an RFC 3966 global number | [`tel_uri()`](../../src/output/vcon.rs) |
 | `parties[last]` | [`node_name()`](../../src/provenance.rs) and the crate version | [`observer_party()`](../../src/output/vcon.rs) |
-| `dialog[0]` | the `Call-ID` and [`final_status_code()`](../../src/sip/dialog.rs) | [`dialog_object()`](../../src/output/vcon.rs) |
+| `dialog[0]` | the `Call-ID`, the observed tags, and [`final_status_code()`](../../src/sip/dialog.rs) | [`dialog_object()`](../../src/output/vcon.rs) |
 | `attachments[0]` | the message ladder, through [`message_to_json_value()`](../../src/output/json.rs) | [`message_trace_attachment()`](../../src/output/vcon.rs) |
 | `attachments[1]` | `CaptureFacts` and the ranked `CaptureAnalysis` | [`completeness_attachment()`](../../src/output/vcon.rs) |
 | `analysis[0]` | [`diagnose_signaling()`](../../src/sip/diagnosis.rs) and the same completeness value | [`report()`](../../src/output/vcon.rs) |
 
-Two of those rows carry a decision rather than a mapping.
+Three of those rows carry a decision rather than a mapping.
+
+**`tel` is narrow because a wrong index entry beats no index entry only in
+appearance.** A conserver indexes parties by `tel`, `mailto` and `name` and by
+nothing else, so a container with none of the three answers only to its UUID.
+`tel_uri()` supplies one for `+` followed by digits and for nothing else — a
+bare digit run is an RFC 3966 LOCAL number needing a `phone-context`, and in
+SIP captures it is usually an extension. `1001` is not a telephone number.
 
 **The message trace reuses `--json`'s projection.** One serializer produces both,
 so a vCon and an NDJSON line describing one message cannot disagree about it. The
