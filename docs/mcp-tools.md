@@ -2211,7 +2211,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "mediatype": "application/json",
       "encoding": "json",
       "body": {
-        "note": "Produced by sipnab 0.5.124 on node thor-02. sipnab OBSERVED this dialog and took no part in it: ... sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "note": "Produced by sipnab 0.5.125 on node thor-02. sipnab OBSERVED this dialog and took no part in it: ... sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
         "node": "thor-02",
         "sipnab_version": "0.5.124",
         "frames_read": 852,
@@ -2232,7 +2232,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.124 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.125 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -2586,7 +2586,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.124",
+  "version": "0.5.125",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
