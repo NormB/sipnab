@@ -221,7 +221,8 @@ mod exporting {
         );
 
         assert_ne!(
-            a["attachments"][0]["body"]["sip_call_id"], b["attachments"][0]["body"]["sip_call_id"],
+            super::body_of(&a["attachments"][0])["sip_call_id"],
+            super::body_of(&b["attachments"][0])["sip_call_id"],
             "the message trace describes the same call for both dialogs"
         );
     }
@@ -428,4 +429,17 @@ fn a_build_without_the_vcon_feature_refuses_the_flag() {
         "a build with no exporter wrote {} bytes to stdout",
         out.stdout.len()
     );
+}
+
+/// A `json`-encoded body, parsed.
+///
+/// §2.3.2 makes `body` a STRING, so every read of one goes through here rather
+/// than indexing a `Value` that is not an object. The conserver's own model
+/// says the same in a comment: a caller handing it a dict gets it JSON-encoded
+/// before anything else touches the attachment.
+fn body_of(node: &serde_json::Value) -> serde_json::Value {
+    let text = node["body"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a json body must be a string: {node}"));
+    serde_json::from_str(text).unwrap_or_else(|e| panic!("body must parse: {e}: {text}"))
 }

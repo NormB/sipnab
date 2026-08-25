@@ -594,7 +594,13 @@ fn linked_code_targets_exist() {
     // Fourteen of them point at `src/output/vcon.rs` itself -- the section
     // table names the builder for every vCon object, and a reader following one
     // row lands on the function rather than on the file's first line.
-    const EXPECTED_CODE_LINKS: usize = 397;
+    // 397 -> 400: the conformance section of `docs/internals/vcon.md`, which
+    // cites `json_text()`, the vendored working-group schema
+    // (`tests/schemas/vcon.schema.json`) and the gate that validates against it
+    // (`tests/vcon_ingest_contract_test.rs`). Attributed by measurement before
+    // the number moved: that page gained exactly three links into `src/` and
+    // `tests/`, and no other developer page gained one.
+    const EXPECTED_CODE_LINKS: usize = 400;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -652,7 +658,14 @@ fn linked_symbols_resolve_to_a_definition() {
     // measurement before the number moved: no other developer page gained a
     // claim. The two links without one are the module itself and
     // `tests/vcon_export_test.rs`.
-    const EXPECTED_SYMBOL_CLAIMS: usize = 86;
+    // Raised 86 -> 87 by the conformance section of `internals/vcon.md` naming
+    // `json_text()` as the function that encodes every structured body to text,
+    // so the paragraph states who enforces the spec's String rule rather than
+    // leaving it to the reader to find. The other two functions that section
+    // names, `dialog_object()` and `export_dialog_at()`, the page already
+    // cited. Attributed per file: `internals/vcon.md` +1, every other developer
+    // page unchanged.
+    const EXPECTED_SYMBOL_CLAIMS: usize = 87;
     // A definition boundary, not a substring. `source.contains("fn run_offline_paral")`
     // was satisfied by `fn run_offline_parallel`, so a doc could name a function
     // that has never existed and resolve against a real one whose name merely

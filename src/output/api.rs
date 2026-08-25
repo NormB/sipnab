@@ -2520,10 +2520,24 @@ mod tests {
             .iter()
             .find(|a| a["purpose"] == crate::output::vcon::COMPLETENESS_PURPOSE)
             .unwrap_or_else(|| panic!("no completeness attachment: {parsed}"));
-        let from_attachment = attachment["body"]["note"]
+        // §2.3.2 makes `body` a String, so both reads parse it rather than
+        // indexing a `Value` that is not an object.
+        let attachment_body: serde_json::Value = serde_json::from_str(
+            attachment["body"]
+                .as_str()
+                .expect("a json body is a string"),
+        )
+        .expect("the attachment body parses");
+        let from_attachment = attachment_body["note"]
             .as_str()
             .unwrap_or_else(|| panic!("attachment note is not a string: {parsed}"));
-        let from_analysis = parsed["analysis"][0]["body"]["capture_completeness"]["note"]
+        let analysis_body: serde_json::Value = serde_json::from_str(
+            parsed["analysis"][0]["body"]
+                .as_str()
+                .expect("a json body is a string"),
+        )
+        .expect("the analysis body parses");
+        let from_analysis = analysis_body["capture_completeness"]["note"]
             .as_str()
             .unwrap_or_else(|| panic!("analysis note is not a string: {parsed}"));
 
@@ -2538,7 +2552,7 @@ mod tests {
              {from_attachment}"
         );
         assert!(
-            parsed["analysis"][0]["body"]["capture_completeness"]["blind_spots"].is_array(),
+            analysis_body["capture_completeness"]["blind_spots"].is_array(),
             "this door runs the capture analysis, so `blind_spots` must be a \
              list and not absent — absent means NOBODY LOOKED, and an export \
              that skipped the analysis would then read as a clean one: {parsed}"

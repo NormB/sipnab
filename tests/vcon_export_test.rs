@@ -101,7 +101,10 @@ fn a_real_capture_exports_a_complete_signaling_only_container() {
     let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
 
     assert_eq!(v["vcon"], VCON_SYNTAX_VERSION);
-    assert_eq!(v["extensions"], serde_json::json!(["sip-signaling"]));
+    // `CC` rides beside `sip-signaling` because `Party.role` is a CC-extension
+    // parameter, not one of the thirteen core-03 §4.2 defines. A container that
+    // uses the field must declare what defines it.
+    assert_eq!(v["extensions"], serde_json::json!(["sip-signaling", "CC"]));
     assert!(v["uuid"].as_str().is_some_and(|u| u.len() == 36));
     assert!(v["created_at"].as_str().is_some());
 
@@ -130,7 +133,7 @@ fn a_real_capture_exports_a_complete_signaling_only_container() {
     assert_eq!(attachments[0]["purpose"], MESSAGE_TRACE_PURPOSE);
     assert_eq!(attachments[1]["purpose"], COMPLETENESS_PURPOSE);
     assert_eq!(
-        attachments[0]["body"]["messages"]
+        body_of(&attachments[0])["messages"]
             .as_array()
             .map(Vec::len)
             .unwrap_or_default(),
@@ -141,7 +144,8 @@ fn a_real_capture_exports_a_complete_signaling_only_container() {
     // One report, carrying the caveat the attachment carries.
     assert_eq!(v["analysis"].as_array().map(Vec::len), Some(1));
     assert_eq!(
-        v["analysis"][0]["body"]["capture_completeness"], attachments[1]["body"],
+        body_of(&v["analysis"][0])["capture_completeness"],
+        body_of(&attachments[1]),
         "the two completeness surfaces describe one capture and must agree"
     );
 
@@ -190,4 +194,17 @@ fn re_exporting_one_dialog_from_one_capture_keeps_its_identifier() {
         export("a-different-capture.pcap"),
         "one dialog observed in two captures must not share an identifier"
     );
+}
+
+/// A `json`-encoded body, parsed.
+///
+/// §2.3.2 makes `body` a STRING, so every read of one goes through here rather
+/// than indexing a `Value` that is not an object. The conserver's own model
+/// says the same in a comment: a caller handing it a dict gets it JSON-encoded
+/// before anything else touches the attachment.
+fn body_of(node: &serde_json::Value) -> serde_json::Value {
+    let text = node["body"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a json body must be a string: {node}"));
+    serde_json::from_str(text).unwrap_or_else(|e| panic!("body must parse: {e}: {text}"))
 }

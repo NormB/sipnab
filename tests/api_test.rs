@@ -129,7 +129,16 @@ fn vcon_route_is_served_by_the_shipping_binary() {
         "the container must name the Call-ID it was built from: {body}"
     );
 
-    let note = body["analysis"][0]["body"]["capture_completeness"]["note"]
+    // draft-ietf-vcon-vcon-core §2.3.2 makes `body` a String, so the read goes
+    // through a parse. A `Value` index here would silently yield `null` against
+    // a spec-conforming container and pass against a non-conforming one.
+    let analysis_body: serde_json::Value = serde_json::from_str(
+        body["analysis"][0]["body"]
+            .as_str()
+            .unwrap_or_else(|| panic!("an analysis body must be a string: {body}")),
+    )
+    .unwrap_or_else(|e| panic!("the analysis body must parse: {e}: {body}"));
+    let note = analysis_body["capture_completeness"]["note"]
         .as_str()
         .unwrap_or_else(|| panic!("no completeness note: {body}"));
     for clause in ["OBSERVED", "SIGNALING ONLY", "nothing here is signed"] {

@@ -65,6 +65,12 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             // against this crate, so `--features native` is the one thing
             // between them and a compile error.
             "docs/library.md",
+            // `vcon` is NON-DEFAULT, so a reader following the walkthrough has
+            // no export at all without naming it. The whole point of the page
+            // is a runnable sequence, and a stock binary silently lacking the
+            // flag is the first thing that would stop them.
+            "docs/vcon.md",
+            "website/content/docs/vcon.md",
         ],
     ),
     // `--homer` and `--homer-enable-ng` are RTPENGINE's, named on the pages
@@ -154,7 +160,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // produces a loadable plugin, and a half-quoted command is not runnable.
     (
         "release",
-        &["docs/plugins.md", "website/content/docs/plugins.md"],
+        &[
+            "docs/plugins.md",
+            "website/content/docs/plugins.md",
+            // The vCon walkthrough builds a release binary because the export
+            // runs over a capture, and a debug build is slow enough on a real
+            // one to read as a hang.
+            "docs/vcon.md",
+            "website/content/docs/vcon.md",
+        ],
     ),
     (
         "target",
@@ -625,6 +639,11 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "docs/internals/tui-testing.md",
             "website/content/docs/internals/testing.md",
             "website/content/docs/internals/tui-testing.md",
+            // The vCon page names the test binary that proves the export, so a
+            // reader can run the same check the repository runs rather than
+            // taking the page's word for it.
+            "docs/vcon.md",
+            "website/content/docs/vcon.md",
         ],
     ),
     (
@@ -2559,7 +2578,12 @@ fn no_documentation_table_repeats_a_row() {
     // vCon containers. One file. A design doc has no website mirror, so it
     // costs this counter one and not two, and the pointer it gained in
     // `docs/design/backlog.md` is a row in a table that already existed.
-    const EXPECTED_MARKDOWN_FILES: usize = 165;
+    // 165 -> 169: the vCon pages. Attributed by measurement against `main`,
+    // which carries 164: this branch adds `docs/vcon.md`,
+    // `docs/internals/vcon.md`, `docs/design/vcon.md` and the two generated
+    // site mirrors of the first two. 164 + 5 = 169, and the 165 this replaces
+    // had accounted for one of them.
+    const EXPECTED_MARKDOWN_FILES: usize = 169;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -2648,7 +2672,18 @@ fn no_documentation_table_repeats_a_row() {
     // have to infer which one from a missing key. Attributed by measurement
     // before the number moved: those two files gained exactly one table
     // separator each (47 -> 48), and no other page gained any.
-    const EXPECTED_TABLES: usize = 650;
+    // 650 -> 664. Attributed per file by counting tables at `main` and here,
+    // not by arithmetic on the gate's own number. `main` carries 643 and this
+    // branch adds 21: the three new vCon pages (`docs/vcon.md` +4,
+    // `docs/design/vcon.md` +4, `docs/internals/vcon.md` +2) and their site
+    // mirrors (+4, +2), `docs/mcp-tools.md` +2 for the `export_vcon` rows and
+    // its mirror +2, and `docs/design/backlog.md` +1 for the VCON backlog
+    // table. 643 + 21 = 664; the 650 this replaces accounted for seven of them.
+    // Then 664 -> 666 for the type-rule table `docs/vcon.md` gained when the
+    // conserver interop audit changed how a Dialog Object is typed: one table
+    // saying which `type` and `disposition` each kind of object carries, plus
+    // its generated site mirror. Two files, one table each.
+    const EXPECTED_TABLES: usize = 666;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

@@ -58,10 +58,27 @@ container that leaves the machine is a publication surface, and a capture tool
 should not grow one unless an operator asks for it.
 
 sipnab builds a container from one dialog, and every surface that offers the
-export writes the same bytes. Look up the exact spelling on the reference page
-for the surface you drive — the [CLI reference](@/docs/cli.md), the
-[MCP tool reference](@/docs/mcp-tools.md) or the [REST API](@/docs/api.md) — and read
-this page for what the container means once you hold one.
+export writes the same bytes. Pick the door that suits you:
+
+| You are | Ask this way | Answers with |
+|---|---|---|
+| At a shell, reading a capture file | `sipnab -r call.pcap --export-vcon <call-id> --vcon-out out.json` | the container in `out.json` |
+| At a shell, wanting it on stdout | `sipnab -r call.pcap --export-vcon <call-id>` | the container on stdout |
+| An agent holding an MCP session | the `export_vcon` tool, with `call_id` | a structured content block |
+| A program over HTTP | `GET /v1/dialogs/{call_id}/vcon` | `200` and the container, or `404` |
+| Rust, in-process | `sipnab::output::vcon::export_dialog` | a `Vcon` value |
+
+Two notes on the CLI pair. `--vcon-out` requires `--export-vcon`, because a
+path with nothing to write to it is a mistake sipnab would rather name than
+ignore. And sipnab refuses a `--vcon-out` that names the capture it is reading,
+because an export that overwrites its own evidence is not an export.
+
+The TUI does not offer the export. It is a live view of a running capture, and
+it points at the doors above — its help screen names the REST route and the
+feature flag rather than growing a key binding that would do nothing in a build
+without the feature.
+
+Read on for what the container means once you hold one.
 
 ## Walk through one, end to end
 
@@ -122,7 +139,14 @@ println!("{}", vcon.to_json().expect("the container serializes"));
 ### Step 3 — read what came out
 
 Real output from that fixture, elided only where the message trace repeats
-itself. Every value below came off a run against the committed capture:
+itself. Every value below came off a run against the committed capture.
+
+**One reading convention, stated once.** Every `body` is a JSON-encoded
+*string* on the wire — §2.3.2 of the draft allows nothing else, and a store
+normalizes it to one anyway. The blocks below show each `body` **decoded**, as
+an object, because an escaped one-line string is unreadable on a page. What
+sipnab actually writes for the first one is `"body": "{\"messages\":[…]}"`,
+and a consumer parses it before indexing into it.
 
 ```json
 {
@@ -264,12 +288,30 @@ the wire held. Its ranked problem list puts incompleteness findings *in* the
 list at `Severity::Blind`, above every call fault, so a capture that failed to
 decode or hit a retention cap can never render as clean.
 
-**vCon has no field for that.** Not a weak one — none. `dialog.type:
-"incomplete"` looks close and means the opposite: the draft defines it as the
-call failing to set up, a fact about the traffic. Emitting it because sipnab
-missed the `200 OK` would convert a limit of the tap into an accusation against
-the call. So sipnab sets `type` only when it actually observed a final failure
-response, and never because it saw nothing.
+**vCon has no field for that.** Not a weak one — none. The `type` enum admits
+five values and no others: `recording`, `recording-set`, `text`, `transfer`,
+`incomplete`. Four of the five promise content the object holds, and every
+Dialog Object must carry one of them.
+
+So sipnab types the object by **what it carries**, never by what the call did:
+
+| The object holds | `type` | `disposition` |
+|---|---|---|
+| audio | `recording` | absent — it is an `incomplete` field |
+| no content | `incomplete` | present only when sipnab SAW a final failure |
+
+That leaves `incomplete` doing double duty, and the honest reading of it here
+is *an incompleted record*, which a signaling-only export is. The alternative
+is worse in a way that is not a matter of taste: an object typed `recording`
+carrying neither `url` nor `body` promises content that is not there, and a
+conserver chain link that selects `type == "recording"` reads `dialog["url"]`
+unguarded — it raises, and the conserver dead-letters the **whole** container
+rather than the one step. A label that is imprecise beats a label that destroys
+the record.
+
+What the object cannot say, `disposition` and the caveat do. `disposition`
+names a failure **only** when sipnab saw the final response that caused it, so
+its absence never means "the call succeeded".
 
 The extension mechanism offers no repair either. An extension is *ignorable*,
 in which case the consumer that most needs the caveat drops it, or *fatal*, in

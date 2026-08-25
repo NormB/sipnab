@@ -38,6 +38,8 @@
 //! measured rather than guessed.
 #![cfg(feature = "vcon")]
 
+mod support;
+
 use sipnab::analysis::CaptureFacts;
 use sipnab::output::vcon::{ExportContext, VCON_SYNTAX_VERSION, export_dialog};
 use sipnab::sip::dialog_store::DialogStore;
@@ -250,4 +252,188 @@ fn a_signaling_only_container_is_far_beneath_the_store_ceiling() {
          ceiling assertion above would pass for the wrong reason",
         encoded.len()
     );
+}
+
+/// An `encoding: "json"` body is a STRING, the way `base64url` bodies are.
+///
+/// Measured, not reasoned. A container exported from a committed fixture was
+/// posted to a live conserver-backed store and read back: every attachment and
+/// analysis body sipnab sent as a JSON OBJECT came back as a JSON STRING, with
+/// the content identical once parsed.
+///
+/// The store is right and sipnab was wrong. `draft-ietf-vcon-vcon-core-03`
+/// §2.3 pairs `body` with an `encoding` of `base64url`, `json` or `none`, and
+/// that pairing only means anything if the body is a string the encoding tells
+/// you how to read. sipnab already agreed with itself on half of it -- the
+/// recording object's `base64url` body has always been a string -- and
+/// disagreed on the other half.
+///
+/// The cost of the disagreement is not cosmetic. A consumer reaching for
+/// `body.blind_spots` on an object gets a field; on a string it gets nothing,
+/// with no error. The completeness caveat is the one thing §4 says a reader
+/// must not miss, so a shape that silently fails the obvious access is the
+/// worst possible field to be wrong about.
+#[test]
+fn a_json_body_is_a_string_a_consumer_parses() {
+    let (store, call_id) = capture_of("sip_call.pcap");
+    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+    let facts = CaptureFacts::default();
+    let vcon = export_dialog(
+        dialog,
+        &ExportContext {
+            capture_id: "sip_call.pcap",
+            facts: &facts,
+            analysis: None,
+        },
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+
+    // Every array that can carry a body, `dialog` included: §2.3.2 makes `body`
+    // a String whatever the encoding, so a media body must satisfy the rule
+    // even though the `json` filter below never reaches it.
+    let mut any_body = 0usize;
+    for node in [&json["attachments"], &json["analysis"], &json["dialog"]] {
+        for item in node.as_array().unwrap_or(&Vec::new()) {
+            let Some(body) = item.get("body") else {
+                continue;
+            };
+            any_body += 1;
+            assert!(
+                body.is_string(),
+                "§2.3.2 makes `body` a String whatever the encoding, and this                  one is a {}: {item}",
+                if body.is_object() {
+                    "object"
+                } else {
+                    "non-string"
+                }
+            );
+        }
+    }
+    assert!(
+        any_body > 0,
+        "no body was examined at all, so this test would pass against a          container that carried none: {json}"
+    );
+
+    let mut checked = 0usize;
+    for (label, node) in [
+        ("attachments", &json["attachments"]),
+        ("analysis", &json["analysis"]),
+    ] {
+        for item in node.as_array().unwrap_or(&Vec::new()) {
+            if item["encoding"] != "json" {
+                continue;
+            }
+            checked += 1;
+            let body = &item["body"];
+            let text = body.as_str().unwrap_or_else(|| {
+                panic!(
+                    "{label} body declares `encoding: \"json\"` and is a {}, not a string. \
+                     A store normalizes it to a string on the way in, so a consumer that \
+                     reads it back gets a shape sipnab never sent: {item}",
+                    if body.is_object() {
+                        "object"
+                    } else {
+                        "non-string"
+                    }
+                )
+            });
+            // A string that is not parseable JSON would satisfy the assertion
+            // above and be useless to the consumer it exists for.
+            serde_json::from_str::<serde_json::Value>(text).unwrap_or_else(|e| {
+                panic!("a `json`-encoded body must parse as JSON: {e}: {text}")
+            });
+        }
+    }
+    assert!(
+        checked >= 2,
+        "only {checked} json-encoded bodies were examined -- this container is \
+         expected to carry the message trace, the completeness caveat and the \
+         report, so the scan found less than it claims to check"
+    );
+}
+
+/// Every container sipnab emits validates against the WORKING GROUP's schema.
+///
+/// The 100%-conformance gate, and it is a gate rather than a claim because the
+/// schema is machine-checkable. `tests/schemas/vcon.schema.json` is
+/// `https://ietf.org/vcon/schemas/unsigned-vcon.json`, committed so this runs
+/// with no network and cannot silently start passing because a fetch failed.
+///
+/// It earns its place. Running it the first time found SIX violations in a
+/// container that every hand-written test in this repository already passed:
+/// both attachments were missing the required `start` and `dialog`, and the
+/// Dialog Object was missing the required `type` and `start`. None of it was
+/// reachable by reading the prose, because the prose blesses an empty Dialog
+/// Object (§4.3) that the schema rejects.
+///
+/// Where they disagree, this repository satisfies BOTH where it can and the
+/// SCHEMA where it cannot: a consumer validating a container is the reader who
+/// actually rejects it, and being right about the prose is no comfort when the
+/// container bounces.
+#[test]
+fn a_container_validates_against_the_working_group_schema() {
+    let (store, call_id) = capture_of("sip_call.pcap");
+    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+    let facts = CaptureFacts::default();
+    let vcon = export_dialog(
+        dialog,
+        &ExportContext {
+            capture_id: "sip_call.pcap",
+            facts: &facts,
+            analysis: None,
+        },
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+
+    let validator = support::schema::load_validator("vcon.schema.json");
+    support::schema::assert_valid(&validator, &json, "signaling-only vCon");
+}
+
+/// An object typed `recording` always carries content a consumer can reach.
+///
+/// This guards a SIGNALING-ONLY container, which is the case where the hazard
+/// lives: a container that carries audio has a body on every object by
+/// construction, so the same assertion over a media fixture passes vacuously.
+/// A mutation that types the signaling object `recording` survives there and
+/// dies here.
+///
+/// The failure is not cosmetic. A conserver chain link that selects
+/// `type == "recording"` reads `dialog["url"]` with a bracket rather than a
+/// `get`; an object typed `recording` with neither `url` nor `body` raises
+/// inside the link, and the conserver moves the WHOLE container to the
+/// dead-letter queue — not just the step that raised.
+#[test]
+fn nothing_is_typed_a_recording_without_content_to_reach() {
+    let (store, call_id) = capture_of("sip_call.pcap");
+    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+    let facts = CaptureFacts::default();
+    let vcon = export_dialog(
+        dialog,
+        &ExportContext {
+            capture_id: "sip_call.pcap",
+            facts: &facts,
+            analysis: None,
+        },
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+
+    let objects = json["dialog"].as_array().expect("dialog is an array");
+    assert!(
+        !objects.is_empty(),
+        "no dialog object at all, so this test would pass against a container \
+         that described nothing: {json}"
+    );
+    for object in objects {
+        if object["type"] == "recording" {
+            assert!(
+                object.get("body").is_some() || object.get("url").is_some(),
+                "typed `recording` with neither `body` nor `url`: a consumer \
+                 that reaches for the content finds none, and the conserver \
+                 dead-letters the container: {object}"
+            );
+        }
+    }
 }

@@ -83,7 +83,9 @@ sipnab has emitted something nobody can read.
 
 So the caveat goes into two surfaces a consumer walks past anyway:
 
-1. `analysis[0].body.capture_completeness`, beside the diagnosis.
+1. `capture_completeness` inside `analysis[0].body`, beside the diagnosis.
+   `body` is a JSON-encoded **string**, so that is a path through the decoded
+   text, not a path a reader can index directly — see below.
 2. An attachment with purpose `sipnab-capture-completeness`, whose `party`
    index names the sipnab observer.
 
@@ -118,6 +120,62 @@ Two more tests hold the ends of it:
   "looked and found nothing". `blind_spots` stays absent when no analysis
   reached the export and becomes `[]` when one ran and ranked nothing.
   Collapsing the two lets a run that skipped the analysis read as clean.
+
+## The spec is the gate, not our reading of it
+
+Two decisions in this module came from reading
+[the draft](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/) and
+the reference implementation rather than from what looked natural in Rust. Both
+were wrong in the first cut, and a hand-written test agreed with the wrong
+answer, because the same misreading produced both.
+
+**`body` is a String, never an object.** §2.3.2 says so, and
+`vcon-server`'s own model enforces it: hand its `Vcon` a `dict` and it
+JSON-encodes the value before anything else sees the attachment. So
+[`json_text()`](../../src/output/vcon.rs) serializes every structured body to
+text on the way out, and every test that reads one parses it back. A body typed
+as `serde_json::Value` round-trips fine through `serde_json` and fails against a
+real store, which is exactly the class of defect a local test cannot see.
+
+**The format demands some fields even when there is nothing to say.** The
+working group's schema makes `type` and `start` mandatory on every dialog
+object and `start`, `party` and `dialog` mandatory on every attachment. An
+empty dialog object reads as tidy and is invalid. `dialog_object()` therefore
+always names a `type` and always carries a `start`.
+
+**The `type` follows the CONTENT, not the call.** `dialog_object()` builds
+`incomplete`, because at construction the object carries nothing. The media
+path retypes it to `recording` when audio actually arrives, and clears
+`disposition` with it. Typing an object `recording` when it carries no
+content — which this module did until 0.5.125 — is an ingest hazard rather than
+an imprecise label. The conserver's transcription link selects
+`type == "recording"` and then reads `dialog["url"]` with a bracket, so the
+link raises, and the conserver dead-letters the entire container. The converse
+costs as much: every `type == "recording"` selector skips audio left on an
+`incomplete` object, so the WAV sits in the container unreachable. `audio_never_rides_on_an_object_typed_incomplete`
+and `nothing_is_typed_a_recording_without_content_to_reach` pin both directions,
+and the second lives in the SIGNALING-ONLY test file on purpose: over a media
+fixture every object has a body, so the assertion passes vacuously and the
+mutation survives.
+
+**The repository carries the schema, so the gate runs offline.**
+[`tests/schemas/vcon.schema.json`](../../tests/schemas/vcon.schema.json) is the
+working group's own schema, vendored.
+`a_container_validates_against_the_working_group_schema` in
+[`tests/vcon_ingest_contract_test.rs`](../../tests/vcon_ingest_contract_test.rs)
+validates a real export against it. That one test found six violations that the
+hand-written assertions around it had all missed, because those assertions
+encoded what we believed the format required. Add a field and this gate — not
+a reviewer — tells you whether the format agrees.
+
+**Media enriches the signaling object rather than appending a second one.** A
+dialog is one conversation, and a container that carries a `recording` object
+beside a separate signaling object describes it as two. When audio decodes,
+`export_dialog_at()` fills the existing object's `start`, `duration`,
+`parties`, `mediatype`, `encoding`, `content_hash` and `body` in place. The one
+exception is a wrapped ring buffer, where the retained audio genuinely is a
+subset of a longer call: there the object becomes a `recording-set` and the
+audio hangs beneath it, which is what that type is for.
 
 ## Adding a field without breaking the divergence gate
 

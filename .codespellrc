@@ -49,7 +49,22 @@ skip = */target/*,*/.git/*,*.lock,website/public/*,*/website/public/*,*/js/*,*.m
 #                describing the nesting depth a real reply reaches. Correcting
 #                it to "media" would misname a protocol field and make the
 #                sentence wrong about what is on the wire.
-ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor,Sourc,medias
+#   nam          a civic-address field name in tests/schemas/vcon.schema.json,
+#                the vCon working group's OWN schema, vendored verbatim so the
+#                conformance gate runs offline. The field comes from PIDF-LO
+#                (RFC 4119), where it names the occupant, and it sits beside
+#                `loc`, `flr` and `pc` in the same object. Renaming it would
+#                mean the file is no longer the schema the working group
+#                published, and the gate would then validate against our edit.
+#   sme          a role value the vCon CC extension defines
+#                (agent/customer/supervisor/sme/thirdparty), quoted verbatim in
+#                `CC_EXTENSION`'s doc comment while explaining why sipnab's own
+#                "observer" is permitted beside them. It is an acronym for
+#                subject-matter expert, not a misspelling of "same".
+#   thirdparty   the same enum, same quotation. codespell wants "third party";
+#                the extension writes it as one word and correcting a quoted
+#                enum value would misreport what the extension defines.
+ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor,Sourc,medias,nam,sme,thirdparty
 #
 # Deliberately NOT ignored: "cappable", which codespell wanted to make "capable".
 # It appeared in "both are small, and both are cappable", where the meaning is

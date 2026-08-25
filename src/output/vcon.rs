@@ -102,6 +102,22 @@ pub const VCON_SYNTAX_VERSION: &str = "0.4.0";
 /// the SIP-specific parameters are additive.
 pub const SIP_SIGNALING_EXTENSION: &str = "sip-signaling";
 
+/// The extension that defines `Party.role`, declared because sipnab uses it.
+///
+/// `role` is NOT one of the thirteen Party parameters core-03 §4.2 defines —
+/// the working group's own schema lists `tel`, `sip`, `stir`, `mailto`,
+/// `name`, `did`, `validation`, `gmlpos`, `civicaddress`, `uuid`, `type`,
+/// `org` and `dept`, and no `role`. `draft-ietf-vcon-cc-extension` defines it
+/// and says the `CC` token "SHOULD be included in the extensions array".
+///
+/// This matters more here than the SHOULD suggests. `role: "observer"` is the
+/// single most load-bearing fact in the container — it is how a consumer knows
+/// sipnab was not a party to the call — and declaring nothing left it riding
+/// in a field the container never admitted to using. The extension's own
+/// values are agent/customer/supervisor/sme/thirdparty, and it permits others:
+/// "Other values for the role parameter MAY also be used."
+pub const CC_EXTENSION: &str = "CC";
+
 /// `purpose` of the attachment carrying the per-message signaling trace.
 pub const MESSAGE_TRACE_PURPOSE: &str = "sip-message-trace";
 
@@ -188,6 +204,14 @@ pub const RECORDING_TYPE: &str = "recording";
 /// ONLY when a payload ring actually wrapped — a wrapper on every container
 /// would train readers to skip the one that means something.
 pub const RECORDING_SET_TYPE: &str = "recording-set";
+
+/// `type` for a Dialog Object that carries no content of its own.
+///
+/// §4.3 calls it "Metadata for failed or incompleted communications", and a
+/// signaling-only export is exactly an incompleted RECORD of the
+/// communication. The prose caveat says which of the two it is, in words, on
+/// two surfaces a consumer walks past anyway — the enum cannot.
+pub const INCOMPLETE_TYPE: &str = "incomplete";
 
 /// Hash algorithm prefix of [`Dialog::content_hash`], per §2.2 of the draft.
 pub const CONTENT_HASH_PREFIX: &str = "sha512-";
@@ -316,9 +340,23 @@ pub struct Dialog {
     pub parties: Option<Vec<usize>>,
     /// Indices into [`Vcon::dialog`] of the objects this set groups.
     ///
-    /// Present only on a [`RECORDING_SET_TYPE`] object.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Present only on a [`RECORDING_SET_TYPE`] object, and named `recordings`
+    /// on the wire because §4.3.6 makes that a MUST: "The recordings parameter
+    /// MUST be present in recording-set Dialog Objects." It serialized as
+    /// `dialogs` until 0.5.125, which validated cleanly only because the
+    /// working group's schema leaves `additionalProperties` open — an unknown
+    /// key is ignored, so a consumer read a set whose members it could not
+    /// resolve.
+    #[serde(rename = "recordings", skip_serializing_if = "Option::is_none")]
     pub dialogs: Option<Vec<usize>>,
+    /// Index of the [`RECORDING_SET_TYPE`] object this recording belongs to.
+    ///
+    /// §4.3.7: "The recording_set parameter SHOULD be present when a recording
+    /// Dialog Object is part of a recording-set Dialog Object." Without it the
+    /// link is one-way, and a consumer holding the audio cannot reach the
+    /// call's clock.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording_set: Option<usize>,
     /// IANA media type of [`Self::body`] — [`RECORDING_MEDIATYPE`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mediatype: Option<&'static str>,
@@ -361,6 +399,7 @@ impl Dialog {
             duration: None,
             parties: None,
             dialogs: None,
+            recording_set: None,
             mediatype: None,
             encoding: None,
             body: None,
@@ -382,12 +421,39 @@ pub struct Attachment {
     /// document of unknown origin inside a container about a conversation, and
     /// a reader will attribute it to a participant.
     pub party: usize,
+    /// Index into [`Vcon::dialog`] of the dialog this attachment is part of.
+    ///
+    /// REQUIRED by the working group's schema, and not nullable: it is an
+    /// `integer, minimum 0`. That is why the signaling Dialog Object is always
+    /// emitted -- an attachment with nowhere to point is a container that does
+    /// not validate, and the completeness caveat is an attachment.
+    pub dialog: usize,
+    /// When the attachment was exchanged, RFC 3339. REQUIRED by the schema.
+    ///
+    /// The dialog's observed start rather than the export time: the attachment
+    /// describes that dialog, and dating it to the moment of export would put
+    /// a document about a call at a timestamp the call never reached.
+    pub start: String,
     /// Always `application/json`.
     pub mediatype: &'static str,
-    /// Always `json` — the body is inline JSON, not base64url text.
+    /// Always `json` — the body is JSON TEXT, not base64url text.
     pub encoding: &'static str,
-    /// The attachment itself.
-    pub body: serde_json::Value,
+    /// The attachment itself, as a JSON string a consumer parses.
+    ///
+    /// A string rather than an object, and that is the format's rule rather
+    /// than a preference. §2.3 pairs `body` with an `encoding` of `base64url`,
+    /// `json` or `none`, and the pairing only means anything if the body is a
+    /// string the encoding says how to read. sipnab already agreed with itself
+    /// on half of it: [`Dialog::body`] has always carried base64url TEXT.
+    ///
+    /// Measured, not merely reasoned. A container exported from a fixture and
+    /// posted to a live conserver-backed store came back with every body
+    /// sipnab had sent as an object normalized to a string — identical once
+    /// parsed, and a different shape from the one it sent. A consumer reaching
+    /// for `body.blind_spots` on an object gets a field; on a string it gets
+    /// nothing, silently. The completeness caveat is the one thing §4 says a
+    /// reader must not miss, which makes it the worst field to be wrong about.
+    pub body: String,
 }
 
 /// What sipnab determined about this dialog.
@@ -408,8 +474,11 @@ pub struct Analysis {
     pub mediatype: &'static str,
     /// Always `json`.
     pub encoding: &'static str,
-    /// The report.
-    pub body: serde_json::Value,
+    /// The report, as a JSON string a consumer parses.
+    ///
+    /// A string for the reason [`Attachment::body`] is one, and measured the
+    /// same way.
+    pub body: String,
 }
 
 /// One blind spot, flattened out of a [`crate::analysis::Finding`].
@@ -769,21 +838,22 @@ pub fn export_dialog_with_audio_at(
     // The signaling object is always index 0, which is what `Analysis::dialog`
     // points at. Media objects are appended after it, never before, so adding
     // audio cannot move the object the analysis describes.
-    let mut dialog_objects = vec![dialog_object(dialog)];
+    let started = observed_start(dialog);
+    let mut dialog_objects = vec![dialog_object(dialog, started.clone())];
     let media = media_objects(dialog, audio, &mut dialog_objects);
 
     let completeness = completeness_of(context, &media);
 
     let attachments = vec![
-        message_trace_attachment(dialog, observer),
-        completeness_attachment(&completeness, observer),
+        message_trace_attachment(dialog, observer, started.clone()),
+        completeness_attachment(&completeness, observer, started),
     ];
 
     Vcon {
         vcon: VCON_SYNTAX_VERSION,
         uuid: dialog_uuid(dialog, context.capture_id),
         created_at: exported_at.to_rfc3339(),
-        extensions: vec![SIP_SIGNALING_EXTENSION],
+        extensions: vec![SIP_SIGNALING_EXTENSION, CC_EXTENSION],
         parties,
         dialog: dialog_objects,
         attachments,
@@ -851,16 +921,45 @@ fn media_objects(
         };
     }
 
-    // The set wraps the recording, so it is listed first: a reader walking
-    // `dialog[]` top to bottom meets the call's clock before the file's, which
-    // is the order the two numbers make sense in. Its member index is computed
-    // from the vector rather than written as a literal, so inserting anything
-    // ahead of it cannot leave the reference pointing at the wrong object.
+    // The media REPLACES the signaling object rather than sitting beside it,
+    // and that is forced by the schema rather than chosen for tidiness. Every
+    // Dialog Object needs a `type` from a closed enum, so appending a second
+    // object would put two of them in `dialog[]` for one exchange, one
+    // carrying audio and one carrying nothing. A consumer reading that sees
+    // two dialogs and has no field telling it which is real.
+    //
+    // One exchange, one Dialog Object. The audio is what that object was always
+    // describing.
     if decoded.ring_wrapped {
-        let member = objects.len() + 1;
-        objects.push(recording_set_object(dialog, decoded, member));
+        // §4.3.3's shape: the SET carries the call's clock and points at a
+        // member carrying the file's. The set takes index 0 because the
+        // attachments and the analysis already point there, and the call's
+        // window is the thing they describe. `kind` moves to the set; the
+        // disposition stays behind on nothing, because a wrapped ring means
+        // media flowed and the call did not fail to set up.
+        let member = objects.len();
+        objects[0] = recording_set_object(dialog, decoded, member);
+        // Index 0 is the set: §4.3.7's back-pointer, so the link is two-way.
+        objects.push(recording_object(dialog, decoded, &body, 0));
+    } else {
+        let signaling = &mut objects[0];
+        // Enriched in place, and RETYPED: it carries audio now, so it is a
+        // `recording`. Leaving it `incomplete` would park a WAV on an object
+        // every `type == "recording"` selector skips — the audio would be
+        // present in the container and unreachable by the consumers that want
+        // it. `disposition` goes with the retype, being an `incomplete` field.
+        // What the call DID is not lost: `final_status_code` rides in the
+        // analysis body, which is where an outcome belongs.
+        signaling.kind = Some(RECORDING_TYPE);
+        signaling.disposition = None;
+        signaling.start = Some(decoded.first_retained.to_rfc3339());
+        signaling.duration = Some(decoded.duration_secs);
+        signaling.parties = channel_parties(dialog, decoded);
+        signaling.mediatype = Some(RECORDING_MEDIATYPE);
+        signaling.encoding = Some("base64url");
+        signaling.content_hash = Some(content_hash(&decoded.wav));
+        signaling.body = Some(body);
     }
-    objects.push(recording_object(dialog, decoded, &body));
 
     MediaVerdict {
         outcome: MediaOutcome::Carried,
@@ -870,11 +969,19 @@ fn media_objects(
 }
 
 /// The `recording` Dialog Object — the FILE's clock, and the file.
-fn recording_object(dialog: &SipDialog, audio: &DialogAudio, body: &str) -> Dialog {
+fn recording_object(
+    dialog: &SipDialog,
+    audio: &DialogAudio,
+    body: &str,
+    recording_set: usize,
+) -> Dialog {
     Dialog {
         kind: Some(RECORDING_TYPE),
         start: Some(audio.first_retained.to_rfc3339()),
         duration: Some(audio.duration_secs),
+        // §4.3.7's SHOULD: the member names the set it belongs to, so a
+        // consumer holding the audio can reach the call's clock.
+        recording_set: Some(recording_set),
         parties: channel_parties(dialog, audio),
         mediatype: Some(RECORDING_MEDIATYPE),
         encoding: Some("base64url"),
@@ -1078,15 +1185,61 @@ fn sip_uri(user: Option<&str>, host: Option<&str>) -> Option<String> {
     })
 }
 
-/// The near-empty Dialog Object, plus a disposition when — and only when — the
-/// wire carried a final failure.
-fn dialog_object(dialog: &SipDialog) -> Dialog {
-    let disposition = dialog.final_status_code().and_then(failure_disposition);
+/// The signaling Dialog Object: always a `type` and a `start`, plus a
+/// disposition when — and only when — the wire carried a final failure.
+///
+/// Both fields are REQUIRED by the working group's own schema
+/// (`definitions/Dialog`), and that requirement is the §3 gap made
+/// machine-enforceable. §4.3's prose blesses an empty Dialog Object for a
+/// dialog known to have occurred with nothing else available, and that is the
+/// most honest shape the format offers sipnab — but the schema rejects it, and
+/// a validating consumer is the reader who actually bounces the container.
+/// Being right about the prose is no comfort when nothing arrives.
+///
+/// `type` is a closed enum — `recording`, `text`, `transfer`, `incomplete`,
+/// `recording-set` — and for a signaling-only observation NONE of them is
+/// true. `incomplete` is the trap: §4.3.1 makes it mean the CALL failed to set
+/// up, so emitting it because sipnab did not capture an answer would state a
+/// fact about the conversation from a limit of the capture. That is the exact
+/// collapse this project refuses everywhere else.
+///
+/// So `recording` is chosen as the least-wrong member: it is the only
+/// media-shaped value, the attachments need a dialog to index into, and the
+/// completeness carrier says in plain words when no media traveled. A field
+/// that is imprecise beside a caveat that is exact beats a caveat that cannot
+/// reach the reader at all.
+fn dialog_object(dialog: &SipDialog, start: String) -> Dialog {
     Dialog {
-        kind: disposition.map(|_| "incomplete"),
-        disposition,
+        // Typed by what this object CARRIES, not by what the call did. At
+        // construction it carries no content, and of the five values §4.3.1
+        // allows, `incomplete` is the only one that does not claim content
+        // this object does not hold. Media enrichment retypes it to
+        // `recording` when audio actually arrives.
+        //
+        // `recording` was the earlier choice for the no-failure case, and it
+        // is an ingest hazard rather than merely an imprecise label: a
+        // conserver chain link that selects `type == "recording"` reads
+        // `dialog["url"]` with a bracket rather than a `get`, so an object
+        // typed `recording` carrying neither `url` nor `body` raises inside
+        // the link — and the conserver dead-letters the WHOLE container on
+        // that, not just the step that raised.
+        kind: Some(INCOMPLETE_TYPE),
+        // Only an OBSERVED final failure names a reason. Its absence says
+        // nothing failed that sipnab saw, which is not the same as success.
+        disposition: dialog.final_status_code().and_then(failure_disposition),
+        start: Some(start),
         ..Dialog::bare(dialog.call_id.clone())
     }
+}
+
+/// When the dialog was first observed, RFC 3339, for `Dialog::start`.
+///
+/// The first message sipnab SAW, not the call's true beginning, which a
+/// mid-call tap never knows. The distinction is the completeness carrier's to
+/// state; this field only has to be a real observed instant rather than an
+/// invented one.
+fn observed_start(dialog: &SipDialog) -> String {
+    dialog.created_at.to_rfc3339()
 }
 
 /// Map an observed final status onto a vCon disposition.
@@ -1114,7 +1267,7 @@ fn failure_disposition(code: u16) -> Option<&'static str> {
 /// Bodies come from [`crate::output::json::message_to_json_value`], which is
 /// the same projection `--json` writes — one serializer, so a vCon and an
 /// NDJSON line describing one message cannot disagree about it.
-fn message_trace_attachment(dialog: &SipDialog, observer: usize) -> Attachment {
+fn message_trace_attachment(dialog: &SipDialog, observer: usize, start: String) -> Attachment {
     let messages: Vec<serde_json::Value> = dialog
         .messages
         .iter()
@@ -1128,13 +1281,24 @@ fn message_trace_attachment(dialog: &SipDialog, observer: usize) -> Attachment {
     Attachment {
         purpose: MESSAGE_TRACE_PURPOSE,
         party: observer,
+        dialog: 0,
+        start,
         mediatype: "application/json",
         encoding: "json",
-        body: serde_json::json!({
+        // Both spellings, deliberately. `sip-signaling` describes this body
+        // with the keys `version` and `call_id`, and sipnab DECLARES that
+        // extension — a reader who implements it and finds neither key reads
+        // an EMPTY trace and gets no error, which is the worst failure mode
+        // available. `schema_version` and `sip_call_id` are what existing
+        // sipnab consumers already read, and dropping them would break those
+        // for a draft that is still individual and at -00.
+        body: json_text(&serde_json::json!({
+            "version": DIAGNOSIS_SCHEMA_VERSION,
+            "call_id": dialog.call_id,
             "schema_version": DIAGNOSIS_SCHEMA_VERSION,
             "sip_call_id": dialog.call_id,
             "messages": messages,
-        }),
+        })),
     }
 }
 
@@ -1172,13 +1336,19 @@ fn strip_credentials(value: &mut serde_json::Value) {
 }
 
 /// The completeness attachment — surface two of two.
-fn completeness_attachment(completeness: &CaptureCompleteness, observer: usize) -> Attachment {
+fn completeness_attachment(
+    completeness: &CaptureCompleteness,
+    observer: usize,
+    start: String,
+) -> Attachment {
     Attachment {
         purpose: COMPLETENESS_PURPOSE,
         party: observer,
+        dialog: 0,
+        start,
         mediatype: "application/json",
         encoding: "json",
-        body: to_value_or_note(completeness),
+        body: json_text(&to_value_or_note(completeness)),
     }
 }
 
@@ -1214,7 +1384,7 @@ fn report(dialog: &SipDialog, completeness: &CaptureCompleteness) -> Analysis {
         schema: ANALYSIS_SCHEMA,
         mediatype: "application/json",
         encoding: "json",
-        body,
+        body: json_text(&body),
     }
 }
 
@@ -1232,6 +1402,17 @@ fn to_value_or_note<T: Serialize>(value: &T) -> serde_json::Value {
             "error": format!("sipnab could not serialize this field: {e}"),
         })
     })
+}
+
+/// A JSON value as the TEXT an `encoding: "json"` body carries.
+///
+/// Never fails in practice — the input is already a `serde_json::Value`, which
+/// serializes — but the fallback is a real message rather than an unwrap,
+/// because a body that vanished would leave an attachment whose purpose
+/// promises something the container does not hold.
+fn json_text(value: &serde_json::Value) -> String {
+    serde_json::to_string(value)
+        .unwrap_or_else(|e| format!("{{\"error\":\"sipnab could not serialize this body: {e}\"}}"))
 }
 
 /// Read the completeness of a capture off its facts, its analysis, and what
@@ -1509,6 +1690,19 @@ fn format_uuid(bytes: &[u8; 16]) -> String {
 /// credential filter, and the UUIDv8 derivation.
 #[cfg(test)]
 mod tests {
+    /// A `json`-encoded body, parsed.
+    ///
+    /// §2.3.2 makes `body` a STRING, so a read goes through here rather than
+    /// indexing a `Value` that is not an object. The conserver's own model says
+    /// the same in a comment: a caller handing it a dict gets it JSON-encoded
+    /// before anything else sees the attachment.
+    fn body_of(node: &serde_json::Value) -> serde_json::Value {
+        let text = node["body"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a json body must be a string: {node}"));
+        serde_json::from_str(text).unwrap_or_else(|e| panic!("body must parse: {e}: {text}"))
+    }
+
     use super::*;
     use crate::net::TransportProto;
     use crate::sip::parser::parse_sip;
@@ -1622,7 +1816,19 @@ mod tests {
         let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
 
         assert_eq!(v["vcon"], VCON_SYNTAX_VERSION);
-        assert_eq!(v["extensions"], serde_json::json!(["sip-signaling"]));
+        // Both, and CC is not optional decoration: `Party.role` is a CC
+        // parameter, not a core-03 §4.2 one, and the container that uses a
+        // field must name the extension that defines it.
+        assert_eq!(v["extensions"], serde_json::json!(["sip-signaling", "CC"]));
+        assert!(
+            v["parties"]
+                .as_array()
+                .expect("parties is an array")
+                .iter()
+                .any(|p| p.get("role").is_some()),
+            "the CC declaration above is only honest while some party \
+             actually carries a `role`: {v}"
+        );
         assert!(
             v.get("critical").is_none(),
             "a critical extension refuses the whole container to a generic \
@@ -1734,15 +1940,26 @@ mod tests {
     /// The anti-vacuity half matters more than the shape: `incomplete` must
     /// not appear merely because a signaling-only export has no media.
     #[test]
-    fn a_signaling_only_dialog_object_is_empty_and_never_incomplete() {
+    fn a_signaling_only_dialog_object_describes_no_media_and_claims_no_recording() {
         let dialog = dialog_with(&[response(200, "OK")]);
         let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
         let object = &v["dialog"][0];
 
         assert_eq!(object["sip_call_id"], "vcon-fixture@example.com");
+        assert_ne!(
+            object["type"], RECORDING_TYPE,
+            "this object carries no audio, and `recording` is the one value \
+             that promises a consumer content it can reach: {object}"
+        );
+        assert_eq!(
+            object["type"], INCOMPLETE_TYPE,
+            "of the five values §4.3.1 allows, only `incomplete` claims no \
+             content: {object}"
+        );
         assert!(
-            object.get("type").is_none() && object.get("disposition").is_none(),
-            "an answered call must not be reported incomplete: {object}"
+            object.get("disposition").is_none(),
+            "the call was answered, so no failure reason exists to name: \
+             {object}"
         );
         for invented in ["mediatype", "url", "body", "filename"] {
             assert!(
@@ -1762,10 +1979,14 @@ mod tests {
     fn an_unanswered_dialog_is_not_reported_as_a_failed_call() {
         let dialog = dialog_with(&[response(100, "Trying")]);
         let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        // `type` is `incomplete` on every signaling-only object, so it carries
+        // no claim about the CALL either way. `disposition` is where a claim
+        // about the outcome would live, and this is the case that must not
+        // make one.
         assert!(
-            v["dialog"][0].get("type").is_none(),
+            v["dialog"][0].get("disposition").is_none(),
             "no final response was observed, so nothing is known about the \
-             outcome; `incomplete` would invent one: {}",
+             outcome; naming a disposition would invent one: {}",
             v["dialog"][0]
         );
     }
@@ -1834,9 +2055,8 @@ mod tests {
     fn the_trace_carries_every_message_through_the_shared_projection() {
         let dialog = dialog_with(&[response(180, "Ringing"), response(200, "OK")]);
         let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
-        let messages = v["attachments"][0]["body"]["messages"]
-            .as_array()
-            .expect("messages");
+        let trace = body_of(&v["attachments"][0]);
+        let messages = trace["messages"].as_array().expect("messages");
 
         assert_eq!(messages.len(), dialog.messages.len());
         assert_eq!(messages[0]["method"], "INVITE");
@@ -1973,9 +2193,9 @@ mod tests {
             "an analysis attached to a conversation reads as coming from a \
              participant unless the product says otherwise: {product}"
         );
-        assert_eq!(analysis["body"]["final_status_code"], 486);
+        assert_eq!(body_of(analysis)["final_status_code"], 486);
         assert!(
-            analysis["body"]["signaling_diagnosis"].is_object(),
+            body_of(analysis)["signaling_diagnosis"].is_object(),
             "a 486 is a final failure the signaling diagnosis already \
              detects; the report must reuse it: {analysis}"
         );
@@ -2022,7 +2242,7 @@ mod tests {
         let lossy_vcon = serde_json::to_value(export_with(&dialog, &lossy)).expect("serializes");
 
         let note = |v: &serde_json::Value| -> String {
-            v["attachments"][1]["body"]["note"]
+            body_of(&v["attachments"][1])["note"]
                 .as_str()
                 .expect("the caveat is a string")
                 .to_string()
@@ -2046,8 +2266,14 @@ mod tests {
 
         // The STRUCTURED half has to discriminate too — a consumer that reads
         // fields rather than prose must reach the same verdict.
-        assert_eq!(lossy_vcon["attachments"][1]["body"]["messages_evicted"], 7);
-        assert_eq!(clean_vcon["attachments"][1]["body"]["messages_evicted"], 0);
+        assert_eq!(
+            body_of(&lossy_vcon["attachments"][1])["messages_evicted"],
+            7
+        );
+        assert_eq!(
+            body_of(&clean_vcon["attachments"][1])["messages_evicted"],
+            0
+        );
     }
 
     /// Both surfaces carry the SAME caveat, byte for byte.
@@ -2064,11 +2290,12 @@ mod tests {
         facts.undecodable.frames = 11;
 
         let v = serde_json::to_value(export_with(&dialog, &facts)).expect("serializes");
-        let from_attachment = &v["attachments"][1]["body"];
-        let from_report = &v["analysis"][0]["body"]["capture_completeness"];
+        let from_attachment = body_of(&v["attachments"][1]);
+        let report = body_of(&v["analysis"][0]);
+        let from_report = &report["capture_completeness"];
 
         assert_eq!(
-            from_attachment, from_report,
+            &from_attachment, from_report,
             "the report and the attachment describe one capture and must say \
              one thing about it"
         );
@@ -2102,7 +2329,7 @@ mod tests {
         );
 
         let note = |v: &Vcon| -> String {
-            serde_json::to_value(v).expect("serializes")["attachments"][1]["body"]["note"]
+            body_of(&serde_json::to_value(v).expect("serializes")["attachments"][1])["note"]
                 .as_str()
                 .expect("a caveat")
                 .to_string()
@@ -2115,14 +2342,14 @@ mod tests {
         );
 
         let unchecked_body =
-            serde_json::to_value(&unchecked).expect("serializes")["attachments"][1]["body"].clone();
+            body_of(&serde_json::to_value(&unchecked).expect("serializes")["attachments"][1]);
         assert!(
             unchecked_body.get("blind_spots").is_none(),
             "no analysis was supplied, so an empty list would claim one ran: \
              {unchecked_body}"
         );
         let checked_body =
-            serde_json::to_value(&checked).expect("serializes")["attachments"][1]["body"].clone();
+            body_of(&serde_json::to_value(&checked).expect("serializes")["attachments"][1]);
         assert_eq!(
             checked_body["blind_spots"],
             serde_json::json!([]),
@@ -2162,7 +2389,7 @@ mod tests {
         ))
         .expect("serializes");
 
-        let body = &v["attachments"][1]["body"];
+        let body = body_of(&v["attachments"][1]);
         assert_eq!(body["blind_spots"][0]["occurrences"], 49);
         assert_eq!(
             body["blind_spots"][0]["kind"],

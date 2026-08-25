@@ -201,6 +201,23 @@ fn json_of(vcon: &Vcon) -> serde_json::Value {
         .expect("the container is valid JSON")
 }
 
+/// Is any audio actually inlined in this container?
+///
+/// The question the absence tests are asking, and it stopped being answerable
+/// by looking for a Dialog Object of type `recording`. The schema requires
+/// every Dialog Object to carry a `type` from a closed enum, none of which
+/// means "signaling only" -- so the signaling object spends `recording` on
+/// itself and a type check can no longer distinguish "audio traveled" from
+/// "a call was observed". What distinguishes them is the BODY: media inlined,
+/// or no media at all.
+fn carries_audio(json: &serde_json::Value) -> bool {
+    json["dialog"]
+        .as_array()
+        .expect("dialog is an array")
+        .iter()
+        .any(|d| d.get("body").is_some() && d.get("content_hash").is_some())
+}
+
 /// The one Dialog Object of the given `type`, or `None`.
 fn dialog_of<'a>(json: &'a serde_json::Value, kind: &str) -> Option<&'a serde_json::Value> {
     json["dialog"]
@@ -212,8 +229,10 @@ fn dialog_of<'a>(json: &'a serde_json::Value, kind: &str) -> Option<&'a serde_js
 
 /// The completeness caveat, which is embedded identically in the analysis body
 /// and in the attachment.
-fn completeness(json: &serde_json::Value) -> &serde_json::Value {
-    &json["analysis"][0]["body"]["capture_completeness"]
+fn completeness(json: &serde_json::Value) -> serde_json::Value {
+    // Owned, not borrowed: §2.3.2 makes `body` a STRING, so reading it means
+    // parsing it, and the parsed value is a temporary this function creates.
+    body_of(&json["analysis"][0])["capture_completeness"].clone()
 }
 
 // ── The media travels, and the hash proves it is the media ───────────
@@ -420,7 +439,7 @@ fn audio_over_the_budget_is_refused_and_the_container_says_so() {
     );
 
     assert!(
-        dialog_of(&json, RECORDING_TYPE).is_none(),
+        !carries_audio(&json),
         "audio over the budget must not be inlined: {json}"
     );
     assert_eq!(
@@ -430,9 +449,8 @@ fn audio_over_the_budget_is_refused_and_the_container_says_so() {
         completeness(&json)
     );
 
-    let note = completeness(&json)["note"]
-        .as_str()
-        .expect("the caveat is a string");
+    let c = completeness(&json);
+    let note = c["note"].as_str().expect("the caveat is a string");
     assert!(
         note.contains("REFUSED"),
         "the prose caveat must name the refusal, not only the token: {note}"
@@ -500,7 +518,7 @@ fn a_dialog_with_no_exportable_audio_carries_no_recording_and_explains_itself() 
     let json = json_of(&vcon);
 
     assert!(
-        dialog_of(&json, RECORDING_TYPE).is_none(),
+        !carries_audio(&json),
         "nothing was decoded, so nothing may be inlined: {json}"
     );
     assert_eq!(
@@ -509,7 +527,8 @@ fn a_dialog_with_no_exportable_audio_carries_no_recording_and_explains_itself() 
         "the container must distinguish 'kept none' from 'nobody looked': {}",
         completeness(&json)
     );
-    let media_note = completeness(&json)["media_note"]
+    let c = completeness(&json);
+    let media_note = c["media_note"]
         .as_str()
         .expect("the reason travels with the container");
     assert!(
@@ -594,7 +613,7 @@ fn a_wrapped_ring_wraps_the_recording_in_a_set_carrying_the_calls_clock() {
     );
 
     // The set points at the recording, and the index must resolve.
-    let member = set["dialogs"][0]
+    let member = set["recordings"][0]
         .as_u64()
         .expect("the set names its member by index");
     let objects = json["dialog"].as_array().expect("dialog is an array");
@@ -641,7 +660,7 @@ fn an_intact_ring_adds_no_recording_set() {
     let json = json_of(&vcon);
 
     assert!(
-        dialog_of(&json, RECORDING_TYPE).is_some(),
+        carries_audio(&json),
         "the audio must still be carried: {json}"
     );
     assert!(
@@ -651,9 +670,11 @@ fn an_intact_ring_adds_no_recording_set() {
     );
     assert_eq!(
         json["dialog"].as_array().map(Vec::len),
-        Some(2),
-        "an intact export is the signaling object and the recording, nothing \
-         else: {json}"
+        Some(1),
+        "one exchange is ONE Dialog Object. The audio enriches the object the \
+         container already had rather than adding a second `recording` beside \
+         it, because two objects of that type for one call give a consumer no \
+         field saying which is real: {json}"
     );
 }
 
@@ -752,4 +773,120 @@ fn media_from_an_unadvertised_socket_names_no_party_at_all() {
         recording["body"].as_str().is_some_and(|b| !b.is_empty()),
         "the media must still be carried: {recording}"
     );
+}
+
+/// A `json`-encoded body, parsed.
+///
+/// §2.3.2 makes `body` a STRING, so every read of one goes through here rather
+/// than indexing a `Value` that is not an object. The conserver's own model
+/// says the same in a comment: a caller handing it a dict gets it JSON-encoded
+/// before anything else touches the attachment.
+fn body_of(node: &serde_json::Value) -> serde_json::Value {
+    let text = node["body"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a json body must be a string: {node}"));
+    serde_json::from_str(text).unwrap_or_else(|e| panic!("body must parse: {e}: {text}"))
+}
+
+// ── Conformance: the schema gate, on the containers that carry media ────────
+//
+// The signaling-only container was the only one ever validated against the
+// working group's schema, which is how `dialogs` survived: §4.3.6 names the
+// field `recordings`, and the schema leaves `additionalProperties` open, so a
+// wrong name is not a validation error anywhere. These four run the validator
+// over the MEDIA paths and assert, by hand, the two rules the open schema
+// cannot enforce.
+
+mod support;
+
+/// One media container, built the way the tests above build theirs.
+///
+/// `wrapped` chooses the ring case: an intact ring retains everything sipnab
+/// saw, a wrapped one retains only the tail of a five-minute window, which is
+/// what produces the `recording-set`.
+fn media_container(wrapped: bool) -> serde_json::Value {
+    let call_id = if wrapped {
+        "wrapped@example.com"
+    } else {
+        "intact@example.com"
+    };
+    let store = dialog_store(call_id, sock(10, 0, 0, 1, 20000), sock(10, 0, 0, 2, 30000));
+    let (dropped, span) = if wrapped {
+        (4200, TimeDelta::seconds(300))
+    } else {
+        (0, TimeDelta::seconds(0))
+    };
+    let s = stream(
+        sock(10, 0, 0, 1, 20000),
+        sock(10, 0, 0, 2, 30000),
+        1,
+        2,
+        0xFF,
+        dropped,
+        span,
+    );
+    let (vcon, _audio) = export(&store, call_id, &[&s]);
+    json_of(&vcon)
+}
+
+/// Every media container validates against the working group's own schema.
+#[test]
+fn a_media_container_validates_against_the_working_group_schema() {
+    let validator = support::schema::load_validator("vcon.schema.json");
+    for (label, wrapped) in [("intact ring", false), ("wrapped ring", true)] {
+        let json = media_container(wrapped);
+        if let Err(e) = validator.validate(&json) {
+            panic!("the {label} container does not validate: {e}\n{json:#}");
+        }
+    }
+}
+
+/// §4.3.6: "The recordings parameter MUST be present in recording-set Dialog
+/// Objects."
+///
+/// The schema cannot check this — `recordings` is defined but not conditionally
+/// required, and unknown keys are permitted — so the MUST is asserted here.
+/// A set that named its members anything else validated cleanly and left a
+/// consumer unable to resolve them.
+#[test]
+fn a_recording_set_names_its_members_with_the_field_the_spec_requires() {
+    let json = media_container(true);
+    let set = &json["dialog"][0];
+    assert_eq!(set["type"], RECORDING_SET_TYPE, "index 0 must be the set");
+    assert!(
+        set.get("recordings").is_some(),
+        "§4.3.6 makes `recordings` a MUST on a recording-set: {set}"
+    );
+    assert!(
+        set.get("dialogs").is_none(),
+        "`dialogs` is not a vCon field; a consumer ignores it and the set's \
+         members become unresolvable: {set}"
+    );
+}
+
+/// Audio never rides on an object typed `incomplete`.
+///
+/// Every consumer that selects media by `type == "recording"` — which is what
+/// the conserver's own transcription link does — would skip a Dialog Object
+/// carrying a WAV. The audio would be in the container and unreachable.
+#[test]
+fn audio_never_rides_on_an_object_typed_incomplete() {
+    for wrapped in [false, true] {
+        let json = media_container(wrapped);
+        for object in json["dialog"].as_array().expect("dialog is an array") {
+            if object.get("body").is_some() {
+                assert_eq!(
+                    object["type"], RECORDING_TYPE,
+                    "this object carries audio and is typed {}, which every \
+                     `type == \"recording\"` selector skips: {object}",
+                    object["type"]
+                );
+                assert!(
+                    object.get("disposition").is_none(),
+                    "`disposition` is an `incomplete` field and this object \
+                     carries audio: {object}"
+                );
+            }
+        }
+    }
 }
