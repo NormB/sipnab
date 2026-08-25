@@ -10,8 +10,31 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.125] - 2026-08-25
+
 ### Added
 
+- **`sipnab --hep-listen` decodes rtpengine's `ng` control plane.** It never
+  did, while three documents offered the method: the listener strips the HEP
+  wrapper before the parser runs, so nothing downstream could find an `ng`
+  message, and the correlation id -- the only thing naming the call on an `ng`
+  REPLY -- went with it. The cost fell on the operator rather than the tool,
+  because rtpengine takes exactly one `--homer` destination: anybody following
+  the page gave up their collector and received no relay visibility for it.
+- **A runnable vCon example.** `examples/export_vcon.rs` reads a capture and
+  prints a container, and compiles with the tree so it cannot drift from the
+  API the way a page can. The walkthrough's Rust fragment never compiled --
+  `store`, `call_id` and `facts` were all undefined in it.
+- **The message trace carries the SIP headers**, keyed by name with array
+  values so a repeated `Via` or `Record-Route` keeps the path. `Authorization`,
+  `Proxy-Authorization`, `WWW-Authenticate` and `Proxy-Authenticate` never
+  travel. Headers and the filter that makes them safe to publish landed in one
+  change, deliberately.
+- **A vCon party carries `tel`** when the SIP user part is an RFC 3966 global
+  number, and the dialog object carries `sip_from_tag` and `sip_to_tag`. A
+  conserver indexes parties by `tel`, `mailto` and `name` and by nothing else,
+  so a container with none of the three answered only to its UUID; a Call-ID
+  alone cannot tell one leg of a forked INVITE from another.
 - **A vCon can now carry the audio, as an OBSERVER's `recording` and never as a
   recording.** `dialog.type: "recording"` is a FORMAT term for a Dialog Object
   holding media; a consumer's `recordings` table is a PROVENANCE term for
@@ -89,6 +112,37 @@ entry that carries them.
 
 ### Fixed
 
+- **A vCon `uuid` could collide, and a collision destroys a capture.** The
+  identifier keyed its 62-bit `rand_b` on the NODE alone, a value identical for
+  every dialog on the box, leaving 12 bits to separate two dialogs opening in
+  the same millisecond -- so roughly one pair in 4096 collided. A store keys on
+  that field: a collision raises nothing, it OVERWRITES the record already
+  there. The developer page called this inherent in the layout the draft asks
+  for; it is not. The draft asks for a host-derived value, not one derived from
+  the host and nothing else. Now 74 discriminating bits, determinism intact.
+  **This changes the identifier of every container**, which no deployment can
+  notice because no release ever carried the exporter.
+- **The vCon credential filter removed nothing.** Its test planted a real
+  `Authorization` and passed because the trace carried no headers for it to
+  find -- a regression gate for something that could not regress. Now
+  load-bearing, and mutation-proven.
+- **The REST vCon door answered differently from the CLI and MCP doors.** It
+  called the signaling-only exporter with a constant capture id while the other
+  two called the audio-capable one with a per-dialog id, so one run gave an
+  agent the audio inline and a program none -- and the two carried DIFFERENT
+  uuids for one dialog, which a store reads as two observations of two calls.
+- **`--export-vcon` examples on the vCon page could never have worked.** They
+  used `-r`, a hidden sngrep compatibility no-op that swallows everything after
+  it into the BPF filter.
+- **Four places said a vCon carries no audio**, after media landed -- and a
+  test REQUIRED that sentence on the TUI help screen, so correcting the screen
+  would have failed the suite. Every published sample container also omitted
+  `CC` from `extensions`, the declaration for the `role: "observer"` field
+  those pages exist to explain.
+- **`docs/install.md` documented no `vcon` feature** and omitted it from
+  `full`, while `docs/library.md` answers every feature question by pointing
+  there. The gate covered `README.md` alone; widening it exposed two further
+  missing rows, `plugins` and `bpf`.
 - **`get_capture_report` returned TEXT under its `json` default.**
   `print_analysis_report_as` looks like it has a JSON arm and does not — its
   `format` argument only chooses between markdown headings and plain text — so
