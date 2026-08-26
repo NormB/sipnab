@@ -972,6 +972,33 @@ pub struct OutputArgs {
     )]
     pub export_vcon_dir: Option<std::path::PathBuf>,
 
+    /// Suppress content for any dialog carrying this header.
+    ///
+    /// No default. sipnab ships no opinion about which header your switches
+    /// emit, and a built-in guess would either miss yours or silently match
+    /// one you did not mean. Without this flag the feature is inert.
+    ///
+    /// PRESENCE suppresses and the value plays no part. A rule keyed on a
+    /// value raises the question of what an unrecognized value means, and the
+    /// only safe answer to "I do not understand this deny flag" is to deny.
+    ///
+    /// Matched case-insensitively, because SIP header names are
+    /// case-insensitive on the wire (RFC 3261 section 7.3.1) and a filter
+    /// keyed on exact case is one an ordinary peer walks through.
+    ///
+    /// DENY ONLY. A header asking sipnab to RECORD is an assertion by whoever
+    /// sent the request, and this tool already refuses that class of claim --
+    /// every vCon party it emits carries `validation: "none"`. Acting on such
+    /// an assertion to be more conservative costs at worst a container nobody
+    /// kept. Acting on one to retain content would hand the retention decision
+    /// to anyone who can set a header.
+    #[arg(
+        help_heading = "Output",
+        long = "content-deny-header",
+        value_name = "NAME"
+    )]
+    pub content_deny_header: Option<String>,
+
     /// Write the `--export-vcon` container to this path instead of stdout.
     ///
     /// A flag of its own rather than a second value packed onto `--export-vcon`:
@@ -4782,6 +4809,51 @@ mod tests {
             both.is_err(),
             "one Call-ID to stdout and a predicate to a directory are two \
              different runs, and picking one silently is the failure"
+        );
+    }
+
+    /// `--content-deny-header` parses, and stands alone.
+    ///
+    /// Every other test of this feature sets the field directly, which proves
+    /// the filter works and nothing about the flag reaching it. A rename, a
+    /// typo in `long =`, or a stray `requires` would leave all of them green
+    /// while the documented command failed on paste.
+    ///
+    /// It deliberately does NOT require `--export-vcon-when`: the deny header
+    /// is about content generally, and phase 1's audio export will consult the
+    /// same flag.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn content_deny_header_parses_and_needs_no_companion_flag() {
+        let cli = Cli::try_parse_from([
+            "sipnab",
+            "-I",
+            "x.pcap",
+            "--content-deny-header",
+            "X-No-Record",
+        ])
+        .expect("the flag stands alone");
+        assert_eq!(
+            cli.output_args.content_deny_header.as_deref(),
+            Some("X-No-Record"),
+            "the value reaches the field the filter reads"
+        );
+
+        let with_export = Cli::try_parse_from([
+            "sipnab",
+            "-I",
+            "x.pcap",
+            "--export-vcon-when",
+            "state == 'Failed'",
+            "--export-vcon-dir",
+            "/tmp/out",
+            "--content-deny-header",
+            "Privacy",
+        ])
+        .expect("and pairs with the export flags");
+        assert_eq!(
+            with_export.output_args.content_deny_header.as_deref(),
+            Some("Privacy")
         );
     }
 

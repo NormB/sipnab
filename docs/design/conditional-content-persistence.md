@@ -233,7 +233,7 @@ Every task's requirements implicitly include the design above, plus:
 
 - **Feature gate:** every item lives behind `#[cfg(feature = "vcon")]`.
   `export_vcon` already has a paired `#[cfg(not(feature = "vcon"))]` stub at
-  [`src/app/batch.rs:5004`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5004), and a new entry point needs the same pairing or the
+  [`src/app/batch.rs:5066`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5066), and a new entry point needs the same pairing or the
   crate stops building without the feature.
 - **Toolchain:** Rust 1.97.1 exactly. No new dependencies.
 - **Tests:** failing test first. Every gate mutation-proven against a named
@@ -274,7 +274,7 @@ Every task's requirements implicitly include the design above, plus:
 
 **Files:**
 - Modify: [`src/cli.rs`](../../src/cli.rs) (new fields beside `export_vcon` at line 944)
-- Modify: [`src/app/batch.rs:4923`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4923) (`export_vcon`)
+- Modify: [`src/app/batch.rs:4985`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4985) (`export_vcon`)
 - Test: [`src/app/batch.rs`](../../src/app/batch.rs) tests module
 
 **Interfaces:**
@@ -428,7 +428,7 @@ Expected: 2 passed.
 
 - [ ] **Step 9: Write the containers**
 
-Extend `export_vcon` at [`src/app/batch.rs:4923`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4923): when `export_vcon_when` is set, loop the selected Call-IDs, build each container with the existing single-call path, and write it to `<dir>/<sanitized-call-id>.vcon.json`. Sanitize by replacing every character outside `[A-Za-z0-9._-]` with `_`, because a Call-ID is attacker-influenced text and reaches a filesystem path here.
+Extend `export_vcon` at [`src/app/batch.rs:4985`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4985): when `export_vcon_when` is set, loop the selected Call-IDs, build each container with the existing single-call path, and write it to `<dir>/<sanitized-call-id>.vcon.json`. Sanitize by replacing every character outside `[A-Za-z0-9._-]` with `_`, because a Call-ID is attacker-influenced text and reaches a filesystem path here.
 
 - [ ] **Step 10: Test the path sanitizer**
 

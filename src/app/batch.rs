@@ -4902,13 +4902,63 @@ fn vcon_selection<'a>(
             stream_store,
         ));
     };
+    let deny = cli.output_args.content_deny_header.as_deref();
     let parsed = crate::sip::dsl::FilterExpr::parse(expr)
         .map_err(|e| anyhow::anyhow!("--export-vcon-when is not a valid filter expression: {e}"))?;
-    Ok(crate::sip::dsl::select_dialogs(
-        Some(&parsed),
-        dialog_store,
-        stream_store,
-    ))
+    let selection = crate::sip::dsl::select_dialogs(Some(&parsed), dialog_store, stream_store);
+    // Deny is applied AFTER the predicate and can only remove. Every input
+    // other than the command line narrows: nothing read off the network can
+    // add a dialog the invocation did not already permit, which is why there
+    // is no matching permit branch anywhere in this function.
+    Ok(apply_deny_filter(selection, deny))
+}
+
+/// Remove every dialog carrying the deny header, and its media with it.
+///
+/// Extracted so the filter has an argument and a return value instead of only
+/// a side effect on a value built three calls away. Reached through
+/// `vcon_selection` it could only be exercised with a populated stream store,
+/// and the test that tried compared zero streams to zero dialogs and passed
+/// without touching the behavior.
+///
+/// `streams` is filtered alongside `dialogs` because [`crate::sip::dsl::DialogSelection`]
+/// documents it as the streams linked to a SELECTED dialog, "so the media on
+/// screen belongs to the calls on screen". Retaining only `dialogs` left a
+/// denied dialog's media in the struct -- suppression that stops halfway, on
+/// the one feature whose whole job is to suppress completely.
+///
+/// Deny only. Nothing here adds a dialog, because every input other than the
+/// command line may only narrow.
+#[cfg(feature = "vcon")]
+fn apply_deny_filter<'a>(
+    mut selection: crate::sip::dsl::DialogSelection<'a>,
+    deny: Option<&str>,
+) -> crate::sip::dsl::DialogSelection<'a> {
+    let Some(header) = deny else {
+        return selection;
+    };
+    selection
+        .dialogs
+        .retain(|(dialog, _)| !dialog_carries_header(dialog, header));
+    let kept: Vec<&crate::rtp::stream::RtpStream> = selection
+        .dialogs
+        .iter()
+        .flat_map(|(_, streams)| streams.iter().copied())
+        .collect();
+    selection
+        .streams
+        .retain(|s| kept.iter().any(|k| std::ptr::eq(*k, *s)));
+    selection
+}
+
+/// Whether any message in this dialog carries the named header.
+///
+/// Delegates to [`crate::sip::message::SipMessage::header`], which already
+/// compares case-insensitively. A second comparison here would be a second
+/// case rule in the tree, and the two would drift.
+#[cfg(feature = "vcon")]
+fn dialog_carries_header(dialog: &crate::sip::dialog::SipDialog, header: &str) -> bool {
+    dialog.messages.iter().any(|m| m.header(header).is_some())
 }
 
 /// Write the `--export-vcon` container, or say why it did not.
@@ -6112,6 +6162,431 @@ mod tests {
             !text.contains(":null"),
             "an absent field is absent, never null: {text}"
         );
+    }
+
+    /// An INVITE carrying one extra header, for the deny/permit fixtures.
+    #[cfg(feature = "vcon")]
+    fn invite_with_header(call_id: &str, name: &str, value: &str) -> sip::message::SipMessage {
+        let headers = [
+            "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-abc".to_string(),
+            "From: Alice <sip:alice@example.com>;tag=a1b2".to_string(),
+            "To: Bob <sip:bob@example.com>".to_string(),
+            format!("Call-ID: {call_id}"),
+            "CSeq: 1 INVITE".to_string(),
+            "Max-Forwards: 70".to_string(),
+            format!("{name}: {value}"),
+            "Content-Length: 0".to_string(),
+        ];
+        let mut msg = String::from("INVITE sip:bob@example.com SIP/2.0\r\n");
+        for h in headers {
+            msg.push_str(&h);
+            msg.push_str("\r\n");
+        }
+        msg.push_str("\r\n");
+        let data = bytes::Bytes::from(msg.into_bytes());
+        sip::parser::parse_sip_bytes(
+            &data,
+            chrono::Utc::now(),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("fixture parses")
+    }
+
+    /// Two dialogs, both answered, the first carrying `name: value`.
+    #[cfg(feature = "vcon")]
+    fn two_dialogs_first_flagged(name: &str, value: &str) -> DialogStore {
+        let mut store = DialogStore::new(16, true);
+        store.process_message(invite_with_header("flagged@example.com", name, value));
+        store.process_message(response_msg("flagged@example.com", 200, "OK"));
+        store.process_message(invite_msg("plain@example.com"));
+        store.process_message(response_msg("plain@example.com", 200, "OK"));
+        store
+    }
+
+    /// A deny header suppresses a dialog the predicate selected.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_deny_header_suppresses_a_dialog_the_predicate_selected() {
+        let dialogs = two_dialogs_first_flagged("X-No-Record", "1");
+        let streams = StreamStore::new(16);
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
+        cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
+
+        let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
+            .expect("valid")
+            .dialogs
+            .iter()
+            .map(|(d, _)| d.call_id.clone())
+            .collect();
+
+        assert!(
+            !ids.iter().any(|c| c == "flagged@example.com"),
+            "the predicate selected it and the deny flag overrides that: {ids:?}"
+        );
+        assert!(
+            ids.iter().any(|c| c == "plain@example.com"),
+            "the unflagged dialog is untouched: {ids:?}"
+        );
+    }
+
+    /// A permit header NEVER causes a container to exist.
+    ///
+    /// The one test here guarding a security property rather than a
+    /// correctness one. A header asking to be recorded is an assertion by
+    /// whoever sent the request, and this module already refuses that class of
+    /// claim -- every party carries `validation: "none"`. Acting on one to be
+    /// MORE conservative costs a container nobody kept. Acting on one to
+    /// RETAIN content hands the retention decision to anyone who can set a
+    /// header.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_permit_header_never_causes_a_container_to_exist() {
+        // The predicate selects NOTHING. The permit header sits on a dialog
+        // it rejected.
+        let dialogs = two_dialogs_first_flagged("X-Record-Session", "yes");
+        let streams = StreamStore::new(16);
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon_when = Some("response_code >= 599".to_owned());
+        cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
+
+        let picked = vcon_selection(&cli, &dialogs, &streams).expect("valid");
+
+        assert!(
+            picked.dialogs.is_empty(),
+            "a header asking to be recorded must never add a dialog the \
+             predicate rejected -- that hands retention to anyone who can set \
+             a header: {:?}",
+            picked
+                .dialogs
+                .iter()
+                .map(|(d, _)| &d.call_id)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// The deny match is case-insensitive, as SIP header names are.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_deny_header_matches_regardless_of_case() {
+        let dialogs = two_dialogs_first_flagged("x-no-record", "1");
+        let streams = StreamStore::new(16);
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
+        cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
+
+        let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
+            .expect("valid")
+            .dialogs
+            .iter()
+            .map(|(d, _)| d.call_id.clone())
+            .collect();
+
+        assert!(
+            !ids.iter().any(|c| c == "flagged@example.com"),
+            "RFC 3261 7.3.1 makes header names case-insensitive, so a filter \
+             keyed on exact case is one an ordinary peer walks through: {ids:?}"
+        );
+    }
+
+    /// Presence suppresses, whatever the value says.
+    ///
+    /// A rule keyed on a value raises the question of what an unrecognized
+    /// value means, and the only safe answer to "I do not understand this deny
+    /// flag" is to deny.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_deny_header_suppresses_on_presence_not_value() {
+        for value in ["", "0", "false", "no", "anything at all"] {
+            let dialogs = two_dialogs_first_flagged("X-No-Record", value);
+            let streams = StreamStore::new(16);
+            let mut cli = Cli::parse_from_args(["sipnab"]);
+            cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
+            cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
+
+            let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
+                .expect("valid")
+                .dialogs
+                .iter()
+                .map(|(d, _)| d.call_id.clone())
+                .collect();
+
+            assert!(
+                !ids.iter().any(|c| c == "flagged@example.com"),
+                "value {value:?} must not re-enable the dialog: {ids:?}"
+            );
+        }
+    }
+
+    /// With no header named, the feature is inert.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn no_deny_header_named_means_nothing_is_suppressed() {
+        let dialogs = two_dialogs_first_flagged("X-No-Record", "1");
+        let streams = StreamStore::new(16);
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
+        // no content_deny_header
+
+        let n = vcon_selection(&cli, &dialogs, &streams)
+            .expect("valid")
+            .dialogs
+            .len();
+        assert_eq!(n, 2, "sipnab ships no opinion about which header you use");
+    }
+
+    /// An RtpStream fixture, so the deny filter can be given media to drop.
+    #[cfg(feature = "vcon")]
+    fn rtp_stream_fixture(port: u16) -> crate::rtp::stream::RtpStream {
+        use crate::rtp::stream::{RtpStream, StreamKey};
+        let key = StreamKey {
+            src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port),
+            dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), port + 1),
+            ssrc: u32::from(port),
+        };
+        let hdr = crate::rtp::parser::RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 100,
+            timestamp: 0,
+            ssrc: u32::from(port),
+            payload_offset: 12,
+        };
+        RtpStream::new(key, &hdr, chrono::Utc::now())
+    }
+
+    /// Suppressing a dialog suppresses its media too.
+    ///
+    /// `DialogSelection::streams` is documented as the streams linked to a
+    /// SELECTED dialog, "so the media on screen belongs to the calls on
+    /// screen". Retaining only `dialogs` left a denied dialog's media in the
+    /// struct -- suppression that stops halfway, on the one feature whose
+    /// whole job is to suppress completely.
+    ///
+    /// The first version of this test ran through `vcon_selection` with an
+    /// EMPTY stream store, so it compared zero to zero and passed without
+    /// touching the behavior. This one hands the filter real media.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn suppressing_a_dialog_suppresses_its_media_too() {
+        let store = two_dialogs_first_flagged("X-No-Record", "1");
+        let dialogs: Vec<&crate::sip::dialog::SipDialog> = store.iter().collect();
+        let flagged_media = rtp_stream_fixture(20000);
+        let plain_media = rtp_stream_fixture(20010);
+
+        let selection = crate::sip::dsl::DialogSelection {
+            dialogs: dialogs
+                .iter()
+                .map(|d| {
+                    let media = if d.call_id == "flagged@example.com" {
+                        vec![&flagged_media]
+                    } else {
+                        vec![&plain_media]
+                    };
+                    (*d, media)
+                })
+                .collect(),
+            streams: vec![&flagged_media, &plain_media],
+        };
+        assert_eq!(selection.streams.len(), 2, "the fixture carries media");
+
+        let filtered = apply_deny_filter(selection, Some("X-No-Record"));
+
+        assert_eq!(filtered.dialogs.len(), 1, "the flagged dialog is gone");
+        assert_eq!(
+            filtered.streams.len(),
+            1,
+            "and its media went with it -- suppression is not partial"
+        );
+        assert!(
+            std::ptr::eq(filtered.streams[0], &plain_media),
+            "the surviving stream belongs to the surviving dialog"
+        );
+    }
+
+    /// With no header named the filter returns the selection untouched.
+    ///
+    /// The `None` branch of `apply_deny_filter`, which nothing reached
+    /// directly. A branch that quietly dropped media when the feature is OFF
+    /// would break every run that does not use it.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_deny_filter_with_no_header_changes_nothing() {
+        let store = two_dialogs_first_flagged("X-No-Record", "1");
+        let dialogs: Vec<&crate::sip::dialog::SipDialog> = store.iter().collect();
+        let media = rtp_stream_fixture(20000);
+        let selection = crate::sip::dsl::DialogSelection {
+            dialogs: dialogs.iter().map(|d| (*d, vec![&media])).collect(),
+            streams: vec![&media],
+        };
+
+        let out = apply_deny_filter(selection, None);
+
+        assert_eq!(out.dialogs.len(), 2, "no header named, nothing suppressed");
+        assert_eq!(out.streams.len(), 1, "and no media dropped");
+    }
+
+    /// The filter never grows the selection, whatever the header.
+    ///
+    /// The narrowing rule as a property rather than a case: every input other
+    /// than the command line may only subtract. A future edit that added a
+    /// dialog here -- for a permit header, for a special value, for anything
+    /// read off the wire -- breaks this without needing that specific case
+    /// to be imagined first.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_deny_filter_never_grows_the_selection() {
+        let store = two_dialogs_first_flagged("X-Record-Session", "yes");
+        let dialogs: Vec<&crate::sip::dialog::SipDialog> = store.iter().collect();
+        let media = rtp_stream_fixture(20000);
+        for header in [
+            "X-No-Record",
+            "X-Record-Session",
+            "Privacy",
+            "Absent-Header",
+        ] {
+            let selection = crate::sip::dsl::DialogSelection {
+                dialogs: dialogs.iter().map(|d| (*d, vec![&media])).collect(),
+                streams: vec![&media],
+            };
+            let before = selection.dialogs.len();
+            let after = apply_deny_filter(selection, Some(header)).dialogs.len();
+            assert!(
+                after <= before,
+                "{header} grew the selection from {before} to {after}"
+            );
+        }
+    }
+
+    /// A deny header on a later message suppresses the dialog.
+    ///
+    /// The flag can arrive on the 200, not only the INVITE -- a B2BUA that
+    /// decides on answer marks it there. Checking only the first message
+    /// would miss every one of those.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_deny_header_on_a_later_message_still_suppresses() {
+        let mut store = DialogStore::new(16, true);
+        store.process_message(invite_msg("late@example.com"));
+        store.process_message(response_msg_with_header(
+            "late@example.com",
+            200,
+            "OK",
+            "X-No-Record",
+            "1",
+        ));
+        let streams = StreamStore::new(16);
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
+        cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
+
+        let n = vcon_selection(&cli, &store, &streams)
+            .expect("valid")
+            .dialogs
+            .len();
+        assert_eq!(
+            n, 0,
+            "a flag on the answer counts as much as one on the INVITE"
+        );
+    }
+
+    /// The FLAG's case does not have to match the header's.
+    ///
+    /// The earlier case test varied the header on the wire. This varies what
+    /// the operator typed, which is the half a `to_lowercase` on only one side
+    /// would break.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_deny_flag_name_may_differ_in_case_from_the_header() {
+        let dialogs = two_dialogs_first_flagged("X-No-Record", "1");
+        let streams = StreamStore::new(16);
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
+        cli.output_args.content_deny_header = Some("x-NO-record".to_owned());
+
+        let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
+            .expect("valid")
+            .dialogs
+            .iter()
+            .map(|(d, _)| d.call_id.clone())
+            .collect();
+        assert!(
+            !ids.iter().any(|c| c == "flagged@example.com"),
+            "what the operator typed is case-insensitive too: {ids:?}"
+        );
+    }
+
+    /// Both deny headers this project documents are usable as written.
+    ///
+    /// `docs/cli-reference.md` prints `X-No-Record` and `Privacy`. A name the
+    /// flag cannot accept would fail on the command the page tells an operator
+    /// to run.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn every_documented_deny_header_is_usable() {
+        for header in ["X-No-Record", "Privacy"] {
+            let dialogs = two_dialogs_first_flagged(header, "id");
+            let streams = StreamStore::new(16);
+            let mut cli = Cli::parse_from_args(["sipnab"]);
+            cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
+            cli.output_args.content_deny_header = Some(header.to_owned());
+
+            let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
+                .expect("valid")
+                .dialogs
+                .iter()
+                .map(|(d, _)| d.call_id.clone())
+                .collect();
+            assert!(
+                !ids.iter().any(|c| c == "flagged@example.com"),
+                "{header} is documented, so it has to work: {ids:?}"
+            );
+        }
+    }
+
+    /// A response carrying one extra header.
+    #[cfg(feature = "vcon")]
+    fn response_msg_with_header(
+        call_id: &str,
+        code: u16,
+        reason: &str,
+        name: &str,
+        value: &str,
+    ) -> sip::message::SipMessage {
+        let headers = [
+            "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-abc".to_string(),
+            "From: Alice <sip:alice@example.com>;tag=a1b2".to_string(),
+            "To: Bob <sip:bob@example.com>;tag=c3d4".to_string(),
+            format!("Call-ID: {call_id}"),
+            "CSeq: 1 INVITE".to_string(),
+            format!("{name}: {value}"),
+            "Content-Length: 0".to_string(),
+        ];
+        let mut msg = format!("SIP/2.0 {code} {reason}\r\n");
+        for h in headers {
+            msg.push_str(&h);
+            msg.push_str("\r\n");
+        }
+        msg.push_str("\r\n");
+        let data = bytes::Bytes::from(msg.into_bytes());
+        sip::parser::parse_sip_bytes(
+            &data,
+            chrono::Utc::now(),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("fixture parses")
     }
 
     // ── Capture-quality reporting (CT1/G1) ───────────────────────────────

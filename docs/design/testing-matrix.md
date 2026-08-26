@@ -49,11 +49,11 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 234 | 114 | 39 | 80 | 1 |
+| CLI flags | 235 | 114 | 39 | 80 | 2 |
 | HTTP routes | 10 | 10 | -- | 0 | 0 |
 | MCP tools | 38 | 38 | -- | 0 | 0 |
 
-**Flags with no occurrence at all:** `--syslog`
+**Flags with no occurrence at all:** `--content-deny-header`, `--syslog`
 
 ## What a person found that the detector could not
 
@@ -151,6 +151,7 @@ behind them.
 | `--export-vcon` |  |  | Output | e2e | `tests/vcon_cli_test.rs` |  |  |
 | `--export-vcon-when` |  | `EXPR` | Output | parsed | `src/cli.rs` |  |  |
 | `--export-vcon-dir` |  | `DIR` | Output | parsed | `src/cli.rs` |  |  |
+| `--content-deny-header` |  | `NAME` | Output | none | -- |  |  |
 | `--vcon-out` |  | `PATH` | Output | e2e | `tests/vcon_cli_test.rs` |  |  |
 | `--markdown` |  |  | Output | e2e | `tests/analyze_test.rs` |  |  |
 | `--hexdump` |  |  | Output | e2e | `tests/integration_test.rs` |  |  |
