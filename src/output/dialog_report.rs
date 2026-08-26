@@ -1263,6 +1263,48 @@ mod tests {
         );
     }
 
+    /// Evidence the PARSER filed reaches the report, not just a published set.
+    ///
+    /// Every other test of this section hands the surface a set built by
+    /// `publish_icmp_media_for_test`, which proves the renderer and nothing
+    /// about the path a real capture takes: an ICMP error is filed by
+    /// `record_icmp_error` while the parser walks the packet, resolved against
+    /// the stream store by `select_dialogs`, and only then read here. Nothing
+    /// joined those three, so an evidence store that stopped being written --
+    /// or a resolve that stopped publishing -- would have left every test in
+    /// this file green.
+    ///
+    /// It is also the mechanism behind a flake: one filed quote is enough to
+    /// raise the section, so any test that files one poisons any concurrent
+    /// test asserting the section is absent. That is why the parser-side
+    /// writer is serialized on `icmp_evidence` with the tests that read it.
+    #[test]
+    #[serial_test::serial(icmp_evidence)]
+    fn media_icmp_the_parser_filed_reaches_the_whole_report() {
+        let dialog = make_completed_dialog();
+        crate::pipeline::reset_icmp_evidence();
+
+        crate::pipeline::test_support::file_one_media_icmp_error();
+        crate::pipeline::resolve_icmp_media(&crate::rtp::stream_store::StreamStore::new(4));
+
+        let report = print_dialog_report(&[&dialog], &[]);
+        crate::pipeline::reset_icmp_evidence();
+
+        assert!(
+            report.contains("ICMP (media, capture-wide):"),
+            "a quote the parser filed never reached the report:\n{report}"
+        );
+        assert!(
+            report.contains("1 error(s) quoting non-SIP traffic, 1 of them media"),
+            "the report must count the filed quote as media, not merely as \
+             an error:\n{report}"
+        );
+        assert!(
+            report.contains("198.51.100.20:20000"),
+            "the report must name the endpoint that did not answer:\n{report}"
+        );
+    }
+
     /// A run that saw a recording or forking command has to SAY so. The
     /// counter existed for exactly this and no surface read it, which made
     /// the promise in its own doc comment -- "a run can say what it did not

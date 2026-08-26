@@ -2466,8 +2466,18 @@ mod tests {
         /// evidence and then declines to emit a `ParsedPacket`. Counting it
         /// as undecodable would make every capture carrying an ICMP error
         /// look partly unread.
+        ///
+        /// Holds `icmp_evidence` as well, and the second key is not about this
+        /// assertion at all. The quote below carries no payload past the UDP
+        /// header, so it is not a SIP request, so `record_icmp_error` files it
+        /// in the process-global MEDIA store -- and one filed quote is all it
+        /// takes to raise the capture-wide ICMP section on every surface. This
+        /// was the only lib test writing that store, measured by instrumenting
+        /// `record_media_icmp_error` on 2026-08-26, and it held a different key
+        /// from the tests that read it, so it could and did poison one of them
+        /// mid-assertion. Two keys over one global is no mutual exclusion.
         #[test]
-        #[serial_test::serial(undecodable_tally)]
+        #[serial_test::serial(undecodable_tally, icmp_evidence)]
         fn icmp_is_understood_and_not_counted() {
             // Ethernet + IPv4 + ICMP port-unreachable quoting a UDP datagram.
             let quoted = {
@@ -2493,6 +2503,13 @@ mod tests {
 
             let r = tally(&[(eth(0x0800, &ip), 1)]);
             assert_eq!(r.frames, 0, "ICMP is decoded, not undecodable");
+
+            // Leave the global as it was found. The quote above is now sitting
+            // in the media evidence store, and one quote is enough to raise the
+            // capture-wide ICMP section on every surface that renders it. The
+            // key overlapping above keeps the readers out while this runs; this
+            // keeps them from finding it afterwards.
+            crate::pipeline::reset_icmp_evidence();
         }
 
         /// More distinct numbers than the slot table holds: the TOTAL stays

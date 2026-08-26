@@ -818,6 +818,11 @@ pub fn reset_icmp_evidence() {
     *MEDIA_ICMP.lock() = None;
     *MEDIA_ICMP_RESOLVED.lock() = None;
     MEDIA_ICMP_RESOLVED_SEEN.store(false, std::sync::atomic::Ordering::Release);
+    // Whatever a test pinned is gone with the set it pinned, so the release is
+    // the same call the test already makes rather than a second one it has to
+    // remember.
+    #[cfg(test)]
+    MEDIA_ICMP_PINNED.store(false, std::sync::atomic::Ordering::Release);
 }
 
 // ── What ICMP said about media ───────────────────────────────────────
@@ -1496,6 +1501,19 @@ impl ResolvedIcmpMedia {
     }
 }
 
+/// Set while a test has published a KNOWN resolved set and is asserting on it.
+///
+/// [`resolve_icmp_media`] publishes unconditionally, and `select_dialogs`
+/// calls it on the way to every post-capture surface -- so any other test
+/// rendering any surface replaces the set this one is in the middle of
+/// reading. The two tests need not be related in any way: sharing a process
+/// and a global is the whole of it. While this is set the resolver still
+/// ANSWERS its caller with the honest resolution of the store it was handed;
+/// it just does not publish, so the published set stays the one the test put
+/// there. Cleared by [`reset_icmp_evidence`], which every such test calls.
+#[cfg(test)]
+static MEDIA_ICMP_PINNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Resolved media findings for the current run, or an empty set.
 static MEDIA_ICMP_RESOLVED: parking_lot::Mutex<Option<std::sync::Arc<ResolvedIcmpMedia>>> =
     parking_lot::Mutex::new(None);
@@ -1535,6 +1553,13 @@ static NO_ICMP_MEDIA: std::sync::OnceLock<std::sync::Arc<ResolvedIcmpMedia>> =
 /// never weaker.
 pub fn resolve_icmp_media(streams: &StreamStore) -> std::sync::Arc<ResolvedIcmpMedia> {
     let resolved = std::sync::Arc::new(ResolvedIcmpMedia::new(icmp_media_report(streams)));
+    // Answer, but do not publish, while a test owns the published set. See
+    // `MEDIA_ICMP_PINNED`: without this a surface test asserting on findings it
+    // published loses them to any concurrent test that renders any surface.
+    #[cfg(test)]
+    if MEDIA_ICMP_PINNED.load(std::sync::atomic::Ordering::Acquire) {
+        return resolved;
+    }
     *MEDIA_ICMP_RESOLVED.lock() = Some(std::sync::Arc::clone(&resolved));
     MEDIA_ICMP_RESOLVED_SEEN.store(true, std::sync::atomic::Ordering::Release);
     resolved
@@ -1569,6 +1594,7 @@ pub fn icmp_media_findings() -> std::sync::Arc<ResolvedIcmpMedia> {
 pub fn publish_icmp_media_for_test(resolved: ResolvedIcmpMedia) {
     *MEDIA_ICMP_RESOLVED.lock() = Some(std::sync::Arc::new(resolved));
     MEDIA_ICMP_RESOLVED_SEEN.store(true, std::sync::atomic::Ordering::Release);
+    MEDIA_ICMP_PINNED.store(true, std::sync::atomic::Ordering::Release);
 }
 
 /// Render one media finding in plain language.
@@ -3127,6 +3153,92 @@ mod quoted_media_tests {
 /// it meant the other is more misleading than a surface that prints neither.
 /// So the token each tier renders to is pinned here rather than left to
 /// whichever surface writes it out.
+/// Test-only fixtures shared with the surface test modules.
+///
+/// The media ICMP store is written by the PARSER, never by a constructor: a
+/// quote is filed by [`record_icmp_error`] as it walks the packet. A test that
+/// wants REAL evidence in the store therefore has to hand the parser a real
+/// ICMP error, and more than one module wants the same one -- so it is built
+/// here rather than copied into each of them, where the copies would drift.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use chrono::{TimeZone, Utc};
+
+    /// Ethernet (DLT_EN10MB), the link type the fixture is framed for.
+    const DLT_EN10MB: i32 = 1;
+
+    /// One ICMPv4 port-unreachable quoting an RTP datagram.
+    ///
+    /// Quoting RTP rather than SIP is what routes it to the MEDIA store:
+    /// [`super::record_icmp_error`] branches on whether the quoted payload
+    /// parses as a SIP request, not on the port it was sent to.
+    pub(crate) fn icmp_error_quoting_rtp() -> crate::capture::Packet {
+        // V=2, PT=0 (PCMU), one sequence, one timestamp, an SSRC and audio.
+        let mut rtp = vec![0x80u8, 0x00];
+        rtp.extend_from_slice(&1u16.to_be_bytes());
+        rtp.extend_from_slice(&160u32.to_be_bytes());
+        rtp.extend_from_slice(&0x0BAD_F00Du32.to_be_bytes());
+        rtp.extend_from_slice(&[0xAB; 160]);
+
+        // The datagram that failed: 192.0.2.10:40000 -> 198.51.100.20:20000.
+        let udp_len = (8 + rtp.len()) as u16;
+        let quoted_len = 20 + udp_len;
+        let mut quoted = Vec::with_capacity(quoted_len as usize);
+        quoted.extend_from_slice(&[0x45, 0x00]);
+        quoted.extend_from_slice(&quoted_len.to_be_bytes());
+        quoted.extend_from_slice(&[0x00, 0x07, 0x40, 0x00, 64, 17, 0x00, 0x00]);
+        quoted.extend_from_slice(&[192, 0, 2, 10]);
+        quoted.extend_from_slice(&[198, 51, 100, 20]);
+        quoted.extend_from_slice(&40000u16.to_be_bytes());
+        quoted.extend_from_slice(&20000u16.to_be_bytes());
+        quoted.extend_from_slice(&udp_len.to_be_bytes());
+        quoted.extend_from_slice(&[0x00, 0x00]);
+        quoted.extend_from_slice(&rtp);
+
+        // The ICMP error carrying the news: type 3 code 3, port unreachable.
+        let mut icmp = vec![3u8, 3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        icmp.extend_from_slice(&quoted);
+
+        // Reported BY the router at 203.0.113.1, TO the sender.
+        let total_len = (20 + icmp.len()) as u16;
+        let mut pkt = Vec::with_capacity(14 + total_len as usize);
+        pkt.extend_from_slice(&[0xAA; 6]);
+        pkt.extend_from_slice(&[0xBB; 6]);
+        pkt.extend_from_slice(&[0x08, 0x00]);
+        pkt.extend_from_slice(&[0x45, 0x00]);
+        pkt.extend_from_slice(&total_len.to_be_bytes());
+        pkt.extend_from_slice(&[0x00, 0x09, 0x00, 0x00, 64, 1, 0x00, 0x00]);
+        pkt.extend_from_slice(&[203, 0, 113, 1]);
+        pkt.extend_from_slice(&[192, 0, 2, 10]);
+        pkt.extend_from_slice(&icmp);
+
+        let len = pkt.len();
+        crate::capture::Packet::new(
+            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+                .single()
+                .expect("fixture timestamp"),
+            pkt,
+            len,
+            len,
+            None,
+            DLT_EN10MB,
+        )
+    }
+
+    /// File the fixture as evidence, through the parser every capture uses.
+    ///
+    /// The assertion is part of the fixture: an ICMP error that became a
+    /// `ParsedPacket` would mean the packet was built wrong, and the tests
+    /// downstream would then be asserting about an empty store.
+    pub(crate) fn file_one_media_icmp_error() {
+        let pkt = icmp_error_quoting_rtp();
+        assert!(
+            crate::capture::parse::parse_packet(&pkt).is_err(),
+            "an ICMP error is evidence, never a ParsedPacket"
+        );
+    }
+}
+
 #[cfg(test)]
 mod resolved_media_tests {
     use super::{
@@ -3270,5 +3382,80 @@ mod resolved_media_tests {
             "a reset that leaves the resolved set armed serves stale findings"
         );
         assert_eq!(super::icmp_media_findings().report().errors, 0);
+    }
+
+    /// A reset drops the recorded EVIDENCE, not only the answer about it.
+    ///
+    /// These are two stores and the reset clears both, which is what makes
+    /// serializing the writers sufficient. If it cleared only the resolved
+    /// set, the next `resolve_icmp_media` -- which every post-capture surface
+    /// reaches through `select_dialogs` -- would rebuild the same findings out
+    /// of the evidence that survived, and a run that asked for a clean slate
+    /// would report the previous capture's flows anyway.
+    ///
+    /// Drop `*MEDIA_ICMP.lock() = None;` from `reset_icmp_evidence` and the
+    /// second resolve below answers `1` again.
+    #[test]
+    #[serial_test::serial(icmp_evidence)]
+    fn resetting_drops_the_recorded_media_evidence_not_just_the_answer() {
+        let store = crate::rtp::stream_store::StreamStore::new(4);
+        super::reset_icmp_evidence();
+
+        super::test_support::file_one_media_icmp_error();
+        let filed = super::resolve_icmp_media(&store);
+        assert_eq!(
+            filed.report().errors,
+            1,
+            "the parser must file a non-SIP quote as media evidence"
+        );
+
+        super::reset_icmp_evidence();
+
+        assert_eq!(
+            super::resolve_icmp_media(&store).report().errors,
+            0,
+            "a resolve after a reset rebuilt findings from evidence the reset \
+             was supposed to have discarded"
+        );
+        super::reset_icmp_evidence();
+    }
+
+    /// A resolve from somewhere else must not wipe a published set.
+    ///
+    /// `publish_icmp_media_for_test` is how every surface test puts a KNOWN
+    /// set where the surface will read it. `resolve_icmp_media` is what
+    /// `select_dialogs` calls, and `select_dialogs` is on the way to every
+    /// post-capture surface -- so before the pin, an unrelated test rendering
+    /// an unrelated surface replaced the findings this one was still asserting
+    /// on, and the surface test failed claiming the surface had dropped them.
+    ///
+    /// Delete the `MEDIA_ICMP_PINNED` check in `resolve_icmp_media` and the
+    /// published set is gone by the time it is read.
+    #[test]
+    #[serial_test::serial(icmp_evidence)]
+    fn a_resolve_elsewhere_does_not_wipe_a_published_set() {
+        super::reset_icmp_evidence();
+        super::publish_icmp_media_for_test(ResolvedIcmpMedia::new(IcmpMediaReport {
+            errors: 7,
+            unattributed: 7,
+            flows: vec![finding(MediaMatch::None, &[])],
+            ..IcmpMediaReport::default()
+        }));
+
+        // What another test does on its way to rendering any surface.
+        let elsewhere = super::resolve_icmp_media(&crate::rtp::stream_store::StreamStore::new(4));
+        assert_eq!(
+            elsewhere.report().errors,
+            0,
+            "the resolver still answers its own caller honestly about the \
+             store it was handed"
+        );
+
+        assert_eq!(
+            super::icmp_media_findings().report().errors,
+            7,
+            "a foreign resolve replaced the set this test published"
+        );
+        super::reset_icmp_evidence();
     }
 }
