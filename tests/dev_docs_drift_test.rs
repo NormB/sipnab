@@ -2143,7 +2143,14 @@ fn line_citations_point_at_the_code_they_name() {
     // citing its definition is what makes the claim checkable from here on: the
     // corpus grew by one because a citation stopped being invisible, not
     // because a page did.
-    let expected = 193;
+    // 193 -> 197: the conditional-content-persistence design. Attributed by
+    // measurement rather than by counting links: with that file moved aside
+    // this gate passes at 193 and with it present it examines 197, so the
+    // document accounts for the whole delta. It carries six line citations,
+    // four of which name a symbol this checker can resolve -- the other two
+    // cite a line without naming anything at it, which is exactly the shape
+    // the comment above says gets SKIPPED rather than reported.
+    let expected = 197;
     assert_eq!(
         checked, expected,
         "the drift checker examined {checked} citations, not the {expected} \

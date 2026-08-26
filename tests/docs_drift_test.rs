@@ -2645,7 +2645,11 @@ fn no_documentation_table_repeats_a_row() {
     // `docs/internals/vcon.md`, `docs/design/vcon.md` and the two generated
     // site mirrors of the first two. 164 + 5 = 169, and the 165 this replaces
     // had accounted for one of them.
-    const EXPECTED_MARKDOWN_FILES: usize = 169;
+    // 169 -> 170: the conditional-content-persistence design, which carries
+    // its own implementation plan rather than splitting into a second file.
+    // One file, and one is the whole delta: `docs/design/` is not a published
+    // page, so it gains no site mirror and costs this counter no second entry.
+    const EXPECTED_MARKDOWN_FILES: usize = 170;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -2750,7 +2754,12 @@ fn no_documentation_table_repeats_a_row() {
     // before the number moved -- that file carried three table separators at
     // HEAD and carries four here, and no other page gained any. CONTRIBUTING.md
     // has no site mirror, so it costs one rather than two.
-    const EXPECTED_TABLES: usize = 667;
+    // 667 -> 669: two tables in the conditional-content-persistence design --
+    // the precedence ladder, and the mutants Task 2 must die to. Attributed by
+    // measurement: that file carries exactly two table separators and no other
+    // page gained one. It is not a published page, so it costs no second entry
+    // for a site mirror.
+    const EXPECTED_TABLES: usize = 669;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
