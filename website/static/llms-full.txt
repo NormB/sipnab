@@ -2814,7 +2814,7 @@ per SIP message and grows with the call):
       "mediatype": "application/json",
       "encoding": "json",
       "body": {
-        "note": "Produced by sipnab 0.5.125 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "note": "Produced by sipnab 0.5.126 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
         "node": "capture-01",
         "sipnab_version": "0.5.124",
         "frames_read": 7,
@@ -2833,7 +2833,7 @@ per SIP message and grows with the call):
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.125 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.126 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -4217,7 +4217,7 @@ sipnab -D
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```text
-sipnab 0.5.125 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+sipnab 0.5.126 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
 ```
 
 This is the fastest way to confirm a build carries the feature set
@@ -11008,7 +11008,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.125 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.126 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -12087,7 +12087,7 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
-  "version": "0.5.125",
+  "version": "0.5.126",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -12537,7 +12537,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.125"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.126"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -15511,7 +15511,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "mediatype": "application/json",
       "encoding": "json",
       "body": {
-        "note": "Produced by sipnab 0.5.125 on node capture-01. sipnab OBSERVED this dialog and took no part in it: ... sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "note": "Produced by sipnab 0.5.126 on node capture-01. sipnab OBSERVED this dialog and took no part in it: ... sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
         "node": "capture-01",
         "sipnab_version": "0.5.124",
         "frames_read": 852,
@@ -15532,7 +15532,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.125 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.126 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -15886,7 +15886,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.125",
+  "version": "0.5.126",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -17630,7 +17630,7 @@ and a consumer parses it before indexing into it.
         "frames_read": 22,
         "messages_evicted": 0,
         "node": "capture-01",
-        "note": "Produced by sipnab 0.5.125 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 22 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. No capture-level analysis was supplied for this export, so nothing here rules out a blind spot.",
+        "note": "Produced by sipnab 0.5.126 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 22 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. No capture-level analysis was supplied for this export, so nothing here rules out a blind spot.",
         "sip_discarded_by_port_gate": 0,
         "sip_discarded_by_websocket_gate": 0,
         "sipnab_version": "0.5.124",
@@ -17643,7 +17643,7 @@ and a consumer parses it before indexing into it.
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.125 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.126 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -17752,7 +17752,7 @@ idle compaction discarded four messages it had already captured:
     "frames_read": 22,
     "messages_evicted": 4,
     "node": "capture-01",
-    "note": "Produced by sipnab 0.5.125 on node capture-01. … sipnab read 22 frame(s) for this capture. — INCOMPLETE: 3 frame(s) reached the parser and produced nothing, so any count in this container is a floor. — INCOMPLETE: idle compaction discarded 4 message(s) sipnab had already captured, so the trace in this container may be shorter than the call was. Raise [limits] keep_messages_per_idle_dialog to hold more. No capture-level analysis was supplied for this export, so nothing here rules out a blind spot.",
+    "note": "Produced by sipnab 0.5.126 on node capture-01. … sipnab read 22 frame(s) for this capture. — INCOMPLETE: 3 frame(s) reached the parser and produced nothing, so any count in this container is a floor. — INCOMPLETE: idle compaction discarded 4 message(s) sipnab had already captured, so the trace in this container may be shorter than the call was. Raise [limits] keep_messages_per_idle_dialog to hold more. No capture-level analysis was supplied for this export, so nothing here rules out a blind spot.",
     "sip_discarded_by_port_gate": 0,
     "sip_discarded_by_websocket_gate": 0,
     "sipnab_version": "0.5.124",

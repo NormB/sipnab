@@ -10,6 +10,8 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.126] - 2026-08-26
+
 ### Fixed
 
 - **A relay port handed to a new call no longer credits its media to the
