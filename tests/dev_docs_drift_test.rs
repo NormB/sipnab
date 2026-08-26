@@ -2131,7 +2131,19 @@ fn line_citations_point_at_the_code_they_name() {
     // pinned count in the assert and a stale 141 in the message under it, so the
     // gate's own explanation named a count that had not been true for two
     // moves -- the reader most in need of it is the one who just made it wrong.
-    let expected = 192;
+    //
+    // 192 -> 193 on 2026-08-26, attributed by measurement before the number
+    // moved: 192 with the edit stashed and 193 with it, and the edit is ONE
+    // sentence in docs/design/simultaneous-capture-sources.md. That sentence
+    // cited src/pipeline.rs:2165 -- unrelated code, ~200 lines from the truth
+    // and stale long before the move that exposed it -- and named no symbol the
+    // checker could resolve, so it was SKIPPED rather than reported. The
+    // nearest identifier before it was `media`, out of `(ip, port, call_id,
+    // media)`, which pipeline.rs does not define. Naming `process_packet` and
+    // citing its definition is what makes the claim checkable from here on: the
+    // corpus grew by one because a citation stopped being invisible, not
+    // because a page did.
+    let expected = 193;
     assert_eq!(
         checked, expected,
         "the drift checker examined {checked} citations, not the {expected} \
@@ -2147,5 +2159,114 @@ fn line_citations_point_at_the_code_they_name() {
          Run `python3 scripts/check-line-drift.py --apply` to re-point the ones \
          with a single unambiguous definition; the rest name a symbol that has \
          moved, been deleted, or has two definitions, and need a person."
+    );
+}
+
+/// One page of citations, written where `--apply` may rewrite it.
+///
+/// A fixture, never a repo page: `--apply` EDITS what it is given, and a test
+/// that hands it `docs/` would repair the tree as a side effect of running --
+/// leaving the gate green because the test fixed it, which is the shape of a
+/// gate proving nothing. The cited source resolves against the repository, so
+/// the fixture still names real code at a real line.
+fn citation_fixture(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+    let page = dir.join(name);
+    std::fs::write(&page, body).expect("write the citation fixture");
+    page
+}
+
+/// Run the checker over named pages and return (exit ok, stdout).
+fn drift_check(pages: &[&std::path::Path], apply: bool) -> (bool, String) {
+    let mut cmd = std::process::Command::new("python3");
+    cmd.arg("scripts/check-line-drift.py").current_dir(repo());
+    if apply {
+        cmd.arg("--apply");
+    }
+    for p in pages {
+        cmd.arg(p);
+    }
+    let out = cmd.output().expect("run scripts/check-line-drift.py");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+    )
+}
+
+/// What `--apply` writes, the gate accepts.
+///
+/// The gate half of this script is exercised on every commit; the FIXER half
+/// was exercised by nobody. That is the arrangement this repo has already been
+/// bitten by -- `repo_paths_in_docs_are_clickable` against
+/// `scripts/link-repo-paths.py`, where the fixer produced 33 links the gate
+/// never asked for -- and "one implementation" is an argument that they cannot
+/// diverge, not evidence that the fixer works at all. A fixer whose output the
+/// gate rejects is unfixable by design, and the only way to know is to run the
+/// repair and then re-run the check over the same page.
+///
+/// Break the `_repoint` rewrite of either the label or the `#L` fragment and
+/// the second check below fails: the two must move together or the link and
+/// the text it labels disagree.
+#[test]
+fn what_the_fixer_writes_the_gate_accepts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let page = citation_fixture(
+        dir.path(),
+        "drifted.md",
+        "`process_packet` ([`src/pipeline.rs:1`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1)) applies one packet.\n",
+    );
+
+    let (ok, report) = drift_check(&[&page], false);
+    assert!(
+        !ok,
+        "a citation 2000 lines from its symbol must be reported, not passed:\n{report}"
+    );
+    assert!(
+        report.contains("process_packet"),
+        "the report must name the symbol whose citation drifted:\n{report}"
+    );
+
+    let (_, applied) = drift_check(&[&page], true);
+    assert!(
+        applied.contains("re-pointed 1 citation(s)"),
+        "the fixer must repair a citation with one unambiguous definition:\n{applied}"
+    );
+
+    let repaired = std::fs::read_to_string(&page).expect("read the repaired page");
+    let (ok, report) = drift_check(&[&page], false);
+    assert!(
+        ok,
+        "the gate rejected what its own fixer wrote:\n{report}\n{repaired}"
+    );
+    assert!(
+        !repaired.contains("src/pipeline.rs:1`") && !repaired.contains("#L1)"),
+        "the label and the link fragment must BOTH move, or they disagree \
+         about the same citation:\n{repaired}"
+    );
+}
+
+/// A citation past the end of its file is reported as that, not as drift.
+///
+/// The out-of-range branch answers a different question from the drift one --
+/// "this file is not that long" rather than "the symbol is elsewhere" -- and it
+/// is the branch that catches a citation into a file that SHRANK, which is what
+/// `maintainability-perf-spec.md` did when it cited `src/main.rs:1996` in a
+/// file of 172 lines. Nothing exercised it: every citation in the tree happens
+/// to be in range, so the branch could have been deleted and the suite would
+/// not have noticed.
+#[test]
+fn a_citation_past_the_end_of_the_file_says_so() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let page = citation_fixture(
+        dir.path(),
+        "beyond-eof.md",
+        "`process_packet` ([`src/pipeline.rs:999999`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L999999)) applies one packet.\n",
+    );
+
+    let (ok, report) = drift_check(&[&page], false);
+    assert!(!ok, "a citation past EOF must fail the gate:\n{report}");
+    assert!(
+        report.contains("but that file has") && report.contains("lines"),
+        "the report must say the file is not that long, rather than reporting \
+         it as ordinary drift -- they send the reader to different places:\n{report}"
     );
 }

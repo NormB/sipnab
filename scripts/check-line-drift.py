@@ -193,14 +193,29 @@ def source_for(page: pathlib.Path, path: str, target: str):
     return cand if cand.is_file() else None
 
 
-def check(apply: bool) -> int:
+def check(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
+    """Check `pages`, or every page under `docs/` when none are named.
+
+    Naming pages is what makes the FIXER testable. The gate half is proven by
+    the tree itself -- it runs on every commit -- but nothing proved `--apply`
+    emits what the gate accepts, and a fixer whose output the gate rejects is
+    the unfixable-by-design shape this repo has hit before. A test can now hand
+    it one page in a temporary directory, and the source files still resolve
+    against this repository, so the fixture cites real code.
+    """
     problems, fixed, checked = [], 0, 0
 
-    for md in sorted(REPO.glob("docs/**/*.md")):
+    for md in sorted(REPO.glob("docs/**/*.md")) if pages is None else pages:
         if "superpowers" in str(md):
             continue
         text = md.read_text()
-        rel = md.relative_to(REPO)
+        # A page outside the repository -- a test fixture -- has no path
+        # relative to it, and reporting an absolute path is better than
+        # refusing to report at all.
+        try:
+            rel = md.relative_to(REPO)
+        except ValueError:
+            rel = md
         # Collected as (start, end, replacement) against the ORIGINAL text and
         # applied right-to-left below, never with `str.replace`.
         #
@@ -291,4 +306,5 @@ def _repoint(cite: str, line: int) -> str:
 
 
 if __name__ == "__main__":
-    sys.exit(check(apply="--apply" in sys.argv))
+    named = [pathlib.Path(a) for a in sys.argv[1:] if not a.startswith("-")]
+    sys.exit(check(apply="--apply" in sys.argv, pages=named or None))
