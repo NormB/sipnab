@@ -18,7 +18,11 @@
 //! - **Once per question.** Startup latches. Each relay-side port is asked
 //!   about at most once for the life of the run, so a stream that stays
 //!   unexplained -- which is the normal case for traffic the relay is not
-//!   handling at all -- does not re-ask on every packet.
+//!   handling at all -- does not re-ask on every packet. A port is REMEMBERED
+//!   as asked about only while the ceiling below has room: past that nothing
+//!   is remembered, because nothing will be asked. That is what keeps this
+//!   guarantee from being paid for with a set that grows per socket forever,
+//!   which is a bound on the traffic wearing the shape of a bound on us.
 //! - **A ceiling that does not depend on the traffic.** [`DEFAULT_BUDGET`],
 //!   or whatever [`Reconciler::with_budget`] was given, bounds transactions
 //!   for the whole run. A capture full of orphans cannot
@@ -300,6 +304,18 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
         self.index.len()
     }
 
+    /// Sockets this run is remembering it has already asked about.
+    ///
+    /// Exposed for the reason [`Self::transactions`] is: "does this grow with
+    /// the traffic?" is a question about a NUMBER, and a test that cannot read
+    /// the number cannot answer it. Bounded by [`Self::budget`], since a
+    /// socket is recorded only when there is still a transaction to spend on
+    /// asking about it.
+    #[must_use]
+    pub fn tracked_sockets(&self) -> usize {
+        self.asked_ports.len()
+    }
+
     /// Whether the relay's last enumeration was capped.
     #[must_use]
     pub fn enumeration_was_partial(&self) -> bool {
@@ -412,6 +428,18 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
         let socket = (local_address, local_port);
         if let Some(found) = self.index.get(&socket) {
             return Ok(found.clone());
+        }
+        // The ceiling is consulted BEFORE the socket is recorded. `asked_ports`
+        // exists to stop a SECOND ask, and once the ceiling is spent there is
+        // no second ask to stop -- so recording one costs an entry that buys
+        // nothing and is never released. Recorded after the check, the set grew
+        // by one per distinct socket for the life of the run, which is a bound
+        // that depends on how much traffic the capture carries: the one thing
+        // the bounds at the top of this module say they do not do. Checked
+        // first, the set cannot outgrow the ceiling, because every entry in it
+        // cost a transaction.
+        if self.spent >= self.budget {
+            return Err(self.why_not(socket));
         }
         if !self.asked_ports.insert(socket) {
             // Already asked about this port and the refresh did not find it.
@@ -563,22 +591,36 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
                     self.unkeyable_streams += 1;
                     continue;
                 };
-                if self
-                    .index
-                    .insert(
-                        (addr, stream.local_port),
-                        Attribution {
-                            local_address: addr,
-                            call_id: view.call_id.clone(),
-                            tag: tag.tag.clone(),
-                            peer_tags: tag.in_dialogue_with.clone(),
-                            is_rtcp: stream.is_rtcp,
-                            codec: tag.codec.clone(),
-                        },
-                    )
-                    .is_none()
+                let socket = (addr, stream.local_port);
+                let previous = self.index.insert(
+                    socket,
+                    Attribution {
+                        local_address: addr,
+                        call_id: view.call_id.clone(),
+                        tag: tag.tag.clone(),
+                        peer_tags: tag.in_dialogue_with.clone(),
+                        is_rtcp: stream.is_rtcp,
+                        codec: tag.codec.clone(),
+                    },
+                );
+                // Reported when the socket is new OR when the relay has handed
+                // it to a DIFFERENT call. A port pool recycles: call A ends,
+                // its port is freed, and call B is given it. Reporting only
+                // the first insert left the store holding A's endpoint while
+                // this index held B's, so media on that port was credited to
+                // a call that had ended -- attributed to the WRONG call, not
+                // merely unattributed.
+                //
+                // Keyed on the call and nothing else, because the call is all
+                // a [`RelayLink`] carries. A socket whose call is unchanged is
+                // not news, and re-reporting one would re-date the endpoint:
+                // the store expires an endpoint 300 s after the relay SAID it,
+                // so a socket re-stamped on every refresh never goes stale and
+                // that bound quietly stops existing.
+                if previous.is_none_or(|p| p.call_id != view.call_id)
+                    && !self.new_since_take.contains(&socket)
                 {
-                    self.new_since_take.push((addr, stream.local_port));
+                    self.new_since_take.push(socket);
                 }
             }
         }
@@ -1150,6 +1192,344 @@ mod tests {
         assert!(
             !matches!(why, Unattributed::RelayDoesNotHoldIt),
             "a refused enumeration establishes nothing about this port -- got {why:?}"
+        );
+    }
+
+    /// A relay whose enumeration CHANGES between refreshes.
+    ///
+    /// This is what a port pool does: a call ends, its port is freed, and a
+    /// later call is handed the same one. `ScriptedRelay` answers every `list`
+    /// identically and so cannot express it.
+    struct ReassigningRelay {
+        /// One enumeration per `list`; the last entry repeats.
+        script: Vec<Vec<&'static str>>,
+        /// The relay-side port(s) every call in the script holds.
+        ports: Vec<u16>,
+        /// When set, each call reports the port TWICE -- once as RTP and once
+        /// as RTCP, which is what RFC 5761 multiplexing looks like from a
+        /// relay that reports both on one socket.
+        muxed: bool,
+        lists: RefCell<usize>,
+    }
+
+    impl ReassigningRelay {
+        fn new(script: Vec<Vec<&'static str>>, ports: Vec<u16>) -> Self {
+            Self {
+                script,
+                ports,
+                muxed: false,
+                lists: RefCell::new(0),
+            }
+        }
+
+        fn muxed(mut self) -> Self {
+            self.muxed = true;
+            self
+        }
+    }
+
+    impl ReadOnlyRelay for ReassigningRelay {
+        fn list(&self, _permit: &TransmitPermit, _limit: u32) -> anyhow::Result<ControlReply> {
+            let mut n = self.lists.borrow_mut();
+            let ids = &self.script[(*n).min(self.script.len() - 1)];
+            *n += 1;
+            Ok(ControlReply::Calls(Enumeration {
+                call_ids: ids.iter().map(|s| (*s).to_owned()).collect(),
+                truncated: false,
+            }))
+        }
+
+        fn query(&self, _permit: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply> {
+            let mut streams: Vec<RelayStream> = self
+                .ports
+                .iter()
+                .map(|port| RelayStream {
+                    local_address: RELAY_IP.to_owned(),
+                    local_port: *port,
+                    endpoint: None,
+                    advertised_endpoint: None,
+                    is_rtcp: false,
+                    ssrcs: Vec::new(),
+                })
+                .collect();
+            if self.muxed {
+                streams.push(RelayStream {
+                    local_address: RELAY_IP.to_owned(),
+                    local_port: self.ports[0],
+                    endpoint: None,
+                    advertised_endpoint: None,
+                    is_rtcp: true,
+                    ssrcs: Vec::new(),
+                });
+            }
+            Ok(ControlReply::Call(CallView {
+                call_id: call_id.to_owned(),
+                tags: vec![RelayTag {
+                    tag: format!("tag-of-{call_id}"),
+                    in_dialogue_with: Vec::new(),
+                    codec: Some("PCMU".to_owned()),
+                    streams,
+                }],
+            }))
+        }
+
+        fn describe(&self) -> String {
+            format!("{RELAY_IP}:2223")
+        }
+    }
+
+    /// A relay port handed to a NEW call is handed on to the store again.
+    ///
+    /// [`Reconciler::absorb`] used to record a socket as new only when the
+    /// index insert was the FIRST for that socket, so a reassignment updated
+    /// the index and was never reported. The store kept the previous call's
+    /// endpoint, and media on that port was credited to a call that had ended
+    /// -- not left unattributed, but attributed to the WRONG call, for the
+    /// 300 s the endpoint stays live.
+    #[test]
+    fn a_reused_relay_port_is_reported_again_with_its_new_call() {
+        let p = permit();
+        let mut r = Reconciler::new(ReassigningRelay::new(
+            vec![vec!["call-A"], vec!["call-B"]],
+            vec![30000],
+        ));
+
+        r.at_startup(&p);
+        let first = r.take_new_links(chrono::Utc::now());
+        assert_eq!(
+            first
+                .links
+                .iter()
+                .map(|l| l.call_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["call-A"],
+            "startup registers the port against the call that held it"
+        );
+
+        // Any unexplained socket refreshes the snapshot, and the relay now
+        // reports call-B holding the port call-A had.
+        let _ = r.on_unexplained_stream(&p, "198.51.100.9".parse().expect("valid"), 41234);
+
+        let reported: Vec<String> = r
+            .take_new_links(chrono::Utc::now())
+            .links
+            .iter()
+            .filter(|l| l.port == 30000)
+            .map(|l| l.call_id.clone())
+            .collect();
+        assert_eq!(
+            reported,
+            vec!["call-B".to_owned()],
+            "the index learned the reassignment; the store has to learn it too, \
+             or media on this port stays credited to call-A"
+        );
+    }
+
+    /// ...and a socket the relay reports twice for ONE call is reported once.
+    ///
+    /// The bound on the fix above. Re-reporting a socket whose call has not
+    /// changed would re-date the endpoint every time the relay repeats itself,
+    /// and the store's 300 s staleness clock measures from when the relay SAID
+    /// it -- so a socket that keeps being re-stamped never goes stale and the
+    /// bound quietly stops existing. A relay multiplexing RTP and RTCP on one
+    /// port (RFC 5761) reports exactly this shape.
+    #[test]
+    fn a_socket_repeated_within_one_call_is_reported_only_once() {
+        let p = permit();
+        let mut r =
+            Reconciler::new(ReassigningRelay::new(vec![vec!["call-A"]], vec![30000]).muxed());
+
+        r.at_startup(&p);
+        let links = r.take_new_links(chrono::Utc::now());
+        let for_port: Vec<&RelayLink> = links.links.iter().filter(|l| l.port == 30000).collect();
+        assert_eq!(
+            for_port.len(),
+            1,
+            "one socket, one call, one link -- got {for_port:?}"
+        );
+    }
+
+    /// Drain the hand-over and name the call(s) reported for one port.
+    fn named<R: ReadOnlyRelay>(r: &mut Reconciler<R>, port: u16) -> Vec<String> {
+        r.take_new_links(chrono::Utc::now())
+            .links
+            .iter()
+            .filter(|l| l.port == port)
+            .map(|l| l.call_id.clone())
+            .collect()
+    }
+
+    /// A port reassigned TWICE is handed over both times.
+    ///
+    /// One reassignment is the case above. This is the one that fails on a
+    /// plausible half-fix -- firing the hand-over only on the FIRST change
+    /// repairs the reported symptom and leaves every later recycle silent.
+    #[test]
+    fn a_port_reassigned_twice_is_handed_over_each_time() {
+        let p = permit();
+        let mut r = Reconciler::new(ReassigningRelay::new(
+            vec![vec!["call-A"], vec!["call-B"], vec!["call-C"]],
+            vec![30000],
+        ));
+        let other: IpAddr = "198.51.100.9".parse().expect("valid");
+
+        r.at_startup(&p);
+        assert_eq!(named(&mut r, 30000), vec!["call-A".to_owned()], "startup");
+
+        let _ = r.on_unexplained_stream(&p, other, 41234);
+        assert_eq!(
+            named(&mut r, 30000),
+            vec!["call-B".to_owned()],
+            "first reassignment"
+        );
+
+        let _ = r.on_unexplained_stream(&p, other, 41235);
+        assert_eq!(
+            named(&mut r, 30000),
+            vec!["call-C".to_owned()],
+            "second reassignment -- a port recycled again is news again"
+        );
+    }
+
+    /// Two ports reassigned in ONE refresh are both handed over.
+    ///
+    /// The hand-over skips a socket already queued, and this proves the skip
+    /// is per-socket rather than per-refresh: a guard written as "something
+    /// changed, so push once" reports one of these and drops the other,
+    /// leaving half the call's media on the ended call.
+    #[test]
+    fn two_ports_reassigned_in_one_refresh_are_both_handed_over() {
+        let p = permit();
+        let mut r = Reconciler::new(ReassigningRelay::new(
+            vec![vec!["call-A"], vec!["call-B"]],
+            vec![30000, 30002],
+        ));
+
+        r.at_startup(&p);
+        let _ = r.take_new_links(chrono::Utc::now());
+
+        let _ = r.on_unexplained_stream(&p, "198.51.100.9".parse().expect("valid"), 41234);
+
+        let mut got: Vec<(u16, String)> = r
+            .take_new_links(chrono::Utc::now())
+            .links
+            .iter()
+            .map(|l| (l.port, l.call_id.clone()))
+            .collect();
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            vec![(30000, "call-B".to_owned()), (30002, "call-B".to_owned())],
+            "both recycled ports have to reach the store"
+        );
+    }
+
+    /// Offer `n` distinct unexplained sockets to a relay that holds nothing.
+    fn flood<R: ReadOnlyRelay>(r: &mut Reconciler<R>, p: &TransmitPermit, n: u16) {
+        let ip: IpAddr = "198.51.100.9".parse().expect("valid");
+        for i in 0..n {
+            let _ = r.on_unexplained_stream(p, ip, 40000 + i);
+        }
+    }
+
+    /// The set of sockets already asked about cannot outgrow the ceiling.
+    ///
+    /// It was recorded BEFORE the ceiling was consulted, so it kept growing by
+    /// one entry per distinct socket long after the reconciler had stopped
+    /// asking anyone anything -- a per-socket allocation, never released, for
+    /// the life of the run. Every entry now costs a transaction, so the
+    /// ceiling bounds the memory as well as the traffic.
+    #[test]
+    fn the_tracked_socket_set_cannot_outgrow_the_transaction_ceiling() {
+        let p = permit();
+        let mut r =
+            Reconciler::new(ScriptedRelay::new(Answer::Calls(vec![], false))).with_budget(3);
+        r.at_startup(&p);
+        flood(&mut r, &p, 200);
+
+        assert!(
+            r.tracked_sockets() <= r.budget() as usize,
+            "tracking {} socket(s) against a ceiling of {} -- the set is \
+             growing with the traffic",
+            r.tracked_sockets(),
+            r.budget()
+        );
+    }
+
+    /// ...and the size does not depend on how much traffic arrives.
+    ///
+    /// Two runs, the same relay and ceiling, an order of magnitude apart in
+    /// offered sockets. A bound that is real answers the same both times; a
+    /// bound that merely looks generous does not.
+    #[test]
+    fn the_tracked_set_is_the_same_size_however_many_sockets_arrive() {
+        let p = permit();
+        let mut small =
+            Reconciler::new(ScriptedRelay::new(Answer::Calls(vec![], false))).with_budget(3);
+        small.at_startup(&p);
+        flood(&mut small, &p, 50);
+
+        let mut large =
+            Reconciler::new(ScriptedRelay::new(Answer::Calls(vec![], false))).with_budget(3);
+        large.at_startup(&p);
+        flood(&mut large, &p, 500);
+
+        assert_eq!(
+            small.tracked_sockets(),
+            large.tracked_sockets(),
+            "10x the sockets must not mean more state"
+        );
+    }
+
+    /// While the ceiling has room, a repeated socket is still asked about once.
+    ///
+    /// The bound on the two above. Dropping the record entirely also keeps the
+    /// set small -- and turns every packet from one unexplained stream back
+    /// into a control transaction, which is the poller this module exists to
+    /// prevent.
+    #[test]
+    fn a_repeated_socket_still_costs_one_transaction_while_the_ceiling_has_room() {
+        let p = permit();
+        let mut r =
+            Reconciler::new(ScriptedRelay::new(Answer::Calls(vec![], false))).with_budget(20);
+        r.at_startup(&p);
+        let before = r.transactions();
+
+        let ip: IpAddr = "198.51.100.9".parse().expect("valid");
+        for _ in 0..10 {
+            let _ = r.on_unexplained_stream(&p, ip, 41234);
+        }
+
+        assert_eq!(
+            r.transactions() - before,
+            1,
+            "ten offers of one socket must cost one ask, not ten"
+        );
+        assert_eq!(r.tracked_sockets(), 1, "and it is remembered exactly once");
+    }
+
+    /// A socket refused for want of budget SAYS that, and does not claim the
+    /// relay disowned it.
+    ///
+    /// The early return added for the bound sits in front of the answer, so it
+    /// is the return most likely to start reporting the wrong reason -- and
+    /// `RelayDoesNotHoldIt` is the one answer here that asserts something
+    /// about the traffic rather than about sipnab.
+    #[test]
+    fn a_socket_never_asked_about_is_not_reported_as_disowned() {
+        let p = permit();
+        let mut r =
+            Reconciler::new(ScriptedRelay::new(Answer::Calls(vec![], false))).with_budget(2);
+        r.at_startup(&p);
+        flood(&mut r, &p, 20);
+
+        let why = r
+            .on_unexplained_stream(&p, "203.0.113.9".parse().expect("valid"), 45000)
+            .expect_err("the ceiling is spent, so nothing was asked");
+        assert_eq!(
+            why,
+            Unattributed::BudgetSpent,
+            "a port nobody asked about is not a port the relay disowned"
         );
     }
 }

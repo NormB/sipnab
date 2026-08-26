@@ -21476,6 +21476,16 @@ Every gate here was mutation-tested and none survived:
 | Depth limit removed | `rtpengine::bencode` tests |
 | Trailing-byte check removed | `rtpengine::bencode` tests |
 | Decoder made to require sorted keys | `rtpengine::bencode` tests |
+| Reassigned relay port not re-reported | `rtpengine::reconcile` tests |
+| Unchanged socket re-reported on every refresh | `rtpengine::reconcile` tests |
+| Duplicate-key check returned to a linear scan | `rtpengine::bencode` tests |
+| Duplicate keys compared as lossy text rather than bytes | `rtpengine::bencode` tests |
+| Decoder made to return its entries sorted | `rtpengine::bencode` tests |
+| Hand-over fired only on a port's FIRST reassignment | `rtpengine::reconcile` tests |
+| Integer digits left to `from_str`, which takes a leading `+` | `rtpengine::bencode` tests |
+| Byte-string length left to `from_str`, same leading `+` | `rtpengine::bencode` tests |
+| Socket recorded ahead of the ceiling check | `rtpengine::reconcile` tests |
+| Socket record dropped entirely, making every packet an ask | `rtpengine::reconcile` tests |
 
 ## Kernel forwarding, measured
 

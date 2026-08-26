@@ -10,6 +10,67 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A relay port handed to a new call no longer credits its media to the
+  previous one.** rtpengine allocates media ports from a pool, so a port freed
+  when one call ends is handed to another. The reconciler recorded a socket as
+  something to tell the stream store only when its index insert was the FIRST
+  for that socket, so a reassignment updated the index and was never passed on.
+  The store went on holding the old call's endpoint, and media arriving on that
+  port was attributed to a call that had already ended -- not left
+  unattributed, but named as the WRONG call, for the 300 s an endpoint stays
+  live. A socket whose call has NOT changed is still reported once and only
+  once: re-reporting one would re-date the endpoint, and the staleness clock
+  that measures from when the relay said it would never expire.
+
+- **A hostile `ng` datagram can no longer cost a core.** The bencode decoder
+  rejects duplicate dictionary keys, and did it by comparing each key against
+  every key already accepted -- O(n^2) in the key count, on a parser that faces
+  another host's bytes over HEP. One well-formed 65535-byte datagram carrying
+  ~8200 distinct keys took 97.8 ms of release build to parse, and nothing
+  rejected it, because nothing about it is malformed. The listener's defaults
+  do not stand in the way either: the `--hep-allow` allowlist is empty,
+  `--hep-rate-limit-per-peer` is `off`, and the global ceiling is 50 000/s --
+  roughly ten such datagrams a second is one saturated core. The check now
+  tracks keys in a set. Measured over a 4x key count, the cost went from 15.2x
+  to 4.0x -- quadratic to linear -- and 4096 keys from 90.6 ms to 6.1 ms.
+
+- **The `unwrap()`/`expect()` gate no longer loses track of what it is
+  scanning.** It exempts `#[cfg(test)]` items by remembering the brace depth to
+  return to, and remembered exactly one -- so a `#[cfg(test)]` item nested in a
+  `#[cfg(test)] mod` overwrote the module's depth and the inner item's closing
+  brace ended the module's exemption too, reporting plain test code as a
+  production violation. The depths are a stack now. The same change closes the
+  quiet half: a one-line `#[cfg(test)]` item that closed more braces than it
+  opened took a shortcut past the end-of-exemption check, leaving the exemption
+  live over the production code that followed, whose `unwrap()` was then never
+  reported -- the gate answering OK while checking nothing, which is the exact
+  failure its own header warns about.
+
+- **`i+5e` no longer decodes as `5`, and `d+5:helloi0ee` no longer decodes at
+  all.** The decoder forbids non-canonical numbers because two spellings of one
+  value cannot be compared, and the rule enumerated the spellings someone
+  thought of -- `i03e`, `i-0e`, `01:a` -- rather than stating what a canonical
+  number is. `i64::from_str` and `usize::from_str` both accept a leading `+`,
+  so it walked through. The reachable half is the length prefix: `decode_dict`
+  calls `decode_bytes` directly for a KEY, so a key's length never passes the
+  `b'0'..=b'9'` dispatch that refuses `+` where a value may begin, and a length
+  decides how many bytes of the buffer that key claims. Both sites now require
+  digits, and a negative sign only where one belongs.
+
+- **The relay reconciler stops accumulating sockets once it has stopped asking
+  about them.** It records each unexplained socket so the same one is not asked
+  about twice, and recorded it BEFORE consulting the transaction ceiling -- so
+  the set kept growing by one entry per distinct socket long after the ceiling
+  was spent and no further question would be asked. On a long live capture with
+  `--rtpengine`, that is a per-socket allocation, never released, driven purely
+  by traffic: the one thing the module's stated bounds say they are not. The
+  ceiling is consulted first now, so every entry has cost a transaction and the
+  set cannot outgrow `DEFAULT_BUDGET`. Nothing an operator is shown changes: a
+  port that was never asked about still reports the ceiling as the reason, not
+  a relay that disowned it.
+
 ## [0.5.125] - 2026-08-25
 
 ### Added

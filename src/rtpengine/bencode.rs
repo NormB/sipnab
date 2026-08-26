@@ -12,8 +12,10 @@
 //! `call-id`, `from-tag`, `sdp`, which is not sorted. A decoder that rejected
 //! unsorted keys, or that binary-searched them, would fail on every real
 //! message. Keys are therefore kept in arrival order and looked up by scan;
-//! the dictionaries here are a handful of entries, so the scan is not worth
-//! replacing with a map.
+//! a real message holds a handful of entries, so that LOOKUP is not worth
+//! replacing with a map. Rejecting duplicate keys is a different question with
+//! a different answer: it compares every key against every earlier one, and a
+//! hostile datagram chooses the key count. See [`decode_dict`].
 //!
 //! Values borrow from the input. An `sdp` value is the largest thing in a
 //! message and it is handed straight to the SDP parser, so copying it would be
@@ -24,6 +26,8 @@
 //! the wire. Every length is bounds-checked before use, recursion is depth-
 //! limited, and anything malformed is an error rather than a partial value.
 //! A truncated dictionary is not a dictionary with fewer keys.
+
+use std::collections::HashSet;
 
 use anyhow::{Result, bail, ensure};
 
@@ -203,6 +207,17 @@ fn decode_int(input: &[u8]) -> Result<(Value<'_>, &[u8])> {
     // Canonical form only. `i03e` and `i-0e` are forbidden by the format, and
     // accepting them would mean two spellings of one number -- which matters
     // here because these values are compared, not just displayed.
+    //
+    // The digits are checked here rather than left to `i64::from_str`, which
+    // accepts a leading `+`. `i+5e` is a second spelling of 5 and walked
+    // straight through the rule written to forbid exactly that, because the
+    // rule enumerated the spellings someone thought of instead of stating
+    // what a canonical integer IS.
+    let digits_only = text.strip_prefix('-').unwrap_or(text);
+    ensure!(
+        !digits_only.is_empty() && digits_only.bytes().all(|b| b.is_ascii_digit()),
+        "bencode: non-canonical integer {text:?}"
+    );
     ensure!(
         text == "0" || !text.starts_with('0') && !text.starts_with("-0"),
         "bencode: non-canonical integer {text:?}"
@@ -221,6 +236,17 @@ fn decode_bytes(input: &[u8]) -> Result<(Value<'_>, &[u8])> {
     let digits = &input[..colon];
     let text = std::str::from_utf8(digits)
         .map_err(|_| anyhow::anyhow!("bencode: byte-string length is not ASCII"))?;
+    // Digits and nothing else, for the reason `decode_int` states -- and this
+    // is the REACHABLE half of it. `decode_dict` calls this function directly
+    // for a key, so a key's length never passes the `b'0'..=b'9'` dispatch in
+    // `decode_value` that refuses `+` where a value may begin, and
+    // `usize::from_str` accepts it. A length prefix decides how many bytes of
+    // the buffer the key claims, which is a worse thing to be lax about than
+    // an integer nobody indexes with.
+    ensure!(
+        !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()),
+        "bencode: non-canonical byte-string length {text:?}"
+    );
     ensure!(
         text == "0" || !text.starts_with('0'),
         "bencode: non-canonical byte-string length {text:?}"
@@ -264,6 +290,7 @@ fn decode_list(input: &[u8], depth: usize) -> Result<(Value<'_>, &[u8])> {
 fn decode_dict(input: &[u8], depth: usize) -> Result<(Value<'_>, &[u8])> {
     let mut rest = &input[1..];
     let mut entries: Vec<(&[u8], Value<'_>)> = Vec::new();
+    let mut seen: HashSet<&[u8]> = HashSet::new();
     loop {
         match rest.first() {
             None => bail!("bencode: dictionary has no terminating 'e'"),
@@ -276,8 +303,17 @@ fn decode_dict(input: &[u8], depth: usize) -> Result<(Value<'_>, &[u8])> {
                 // Duplicates are rejected rather than resolved. Last-wins and
                 // first-wins are both silent, and a message with two `call-id`
                 // keys is one whose call cannot be named with confidence.
+                //
+                // Tracked in a set rather than by scanning `entries`, which is
+                // what this was. The scan is O(n^2) in the key count, and this
+                // parser is hostile-input facing: a single well-formed 65535-
+                // byte datagram of ~8200 distinct keys cost 97.8 ms of release
+                // build to parse, with no malformed-input path to reject it.
+                // `HashSet` does not allocate until the first insert, so a
+                // five-key `ng` message pays one small allocation, the same
+                // order as the `entries` vector beside it.
                 ensure!(
-                    !entries.iter().any(|(k, _)| *k == key),
+                    seen.insert(key),
                     "bencode: duplicate dictionary key {:?}",
                     String::from_utf8_lossy(key)
                 );
@@ -466,5 +502,195 @@ mod tests {
         assert_eq!(v.get_int(b"one"), None, "a list is not an int");
         assert_eq!(v.get(b"absent"), None);
         assert_eq!(Value::Int(1).get(b"any"), None, "a non-dict has no keys");
+    }
+
+    /// A dictionary of `n` distinct keys, each `i0e`, as one bencode buffer.
+    fn dict_of(n: usize) -> Vec<u8> {
+        let mut out = vec![b'd'];
+        for i in 0..n {
+            let key = format!("{i:08}");
+            out.extend_from_slice(format!("{}:{key}", key.len()).as_bytes());
+            out.extend_from_slice(b"i0e");
+        }
+        out.push(b'e');
+        out
+    }
+
+    /// Rejecting duplicate keys must not cost the square of the key count.
+    ///
+    /// The check compares each key against the ones already accepted. Written
+    /// as a linear scan that is O(n^2), one 65535-byte HEP datagram carrying
+    /// ~8200 distinct keys cost 97.8 ms to parse in release on the reference
+    /// host -- a well-formed message, so no malformed-input path rejects it,
+    /// and roughly ten a second is a saturated core. The listener's defaults
+    /// do not stand in the way: the allowlist is empty, per-peer rate limiting
+    /// is `off`, and the global ceiling is 50 000/s.
+    ///
+    /// Asserted as a RATIO rather than a wall-clock bound, deliberately. An
+    /// absolute threshold on a shared runner is the throughput gate
+    /// `docs/internals/build-ci-release.md` refuses to have -- it fails
+    /// randomly, gets muted, and then reports a safety it is not providing.
+    /// A ratio normalizes the machine out: quadratic growth over a 4x key
+    /// count is ~16x, linear is ~4x, and the bound sits between them with a
+    /// factor of two either side.
+    #[test]
+    fn rejecting_duplicate_keys_does_not_cost_the_square_of_the_key_count() {
+        use std::time::Instant;
+
+        /// Best of several runs: the minimum is the sample least polluted by
+        /// scheduling, which is what makes this survivable on a busy runner.
+        fn best(buf: &[u8]) -> std::time::Duration {
+            (0..5)
+                .map(|_| {
+                    let start = Instant::now();
+                    let v = decode(buf).expect("a well-formed dictionary");
+                    debug_assert!(matches!(v, Value::Dict(_)));
+                    start.elapsed()
+                })
+                .min()
+                .expect("five samples")
+        }
+
+        let small = dict_of(1024);
+        let large = dict_of(4096);
+        // Warm the allocator and the branch predictors before timing either.
+        let _ = best(&small);
+
+        let t_small = best(&small).as_secs_f64();
+        let t_large = best(&large).as_secs_f64();
+        let ratio = t_large / t_small;
+
+        assert!(
+            ratio < 8.0,
+            "4x the keys cost {ratio:.1}x the time ({t_small:.6}s -> \
+             {t_large:.6}s). Linear is ~4x and quadratic is ~16x, so this is \
+             the duplicate-key check having become a scan again"
+        );
+    }
+
+    /// ...and it still rejects duplicates at that scale.
+    ///
+    /// The bound on the test above. A check made cheap by being deleted also
+    /// scales linearly, and this is what refuses that reading.
+    #[test]
+    fn a_duplicate_is_still_caught_among_thousands_of_keys() {
+        let mut buf = dict_of(4096);
+        // Replace the closing `e` with one more copy of an early key.
+        buf.pop();
+        buf.extend_from_slice(b"8:00000007i0e");
+        buf.push(b'e');
+        let err = decode(&buf).expect_err("a repeated key is a malformed message");
+        assert!(
+            format!("{err:#}").contains("duplicate"),
+            "the duplicate was not what was rejected: {err:#}"
+        );
+    }
+
+    /// Keys are compared as BYTES, not as lossy text.
+    ///
+    /// The duplicate message renders the key with `String::from_utf8_lossy`,
+    /// and reaching for that same conversion as the set's key is the natural
+    /// mistake this fix invites: every invalid byte becomes U+FFFD, so two
+    /// keys that differ only there collapse to one string and a legitimate
+    /// message is refused as malformed. bencode keys are byte strings and the
+    /// format does not require them to be text at all.
+    #[test]
+    fn two_keys_differing_only_in_an_invalid_utf8_byte_are_not_duplicates() {
+        // `1:\xff` and `1:\xfe` are distinct keys; both lossy-decode to U+FFFD.
+        let mut buf = Vec::from(*b"d");
+        buf.extend_from_slice(b"1:\xffi1e");
+        buf.extend_from_slice(b"1:\xfei2e");
+        buf.push(b'e');
+        let v = decode(&buf).expect("two distinct byte keys are a valid dictionary");
+        assert_eq!(v.get_int(b"\xff"), Some(1));
+        assert_eq!(v.get_int(b"\xfe"), Some(2), "the second key was not kept");
+    }
+
+    /// Arrival order survives the duplicate check, at scale.
+    ///
+    /// The module keeps keys in arrival order because rtpengine does not sort
+    /// them, and tracking duplicates in a set is exactly the change that
+    /// tempts someone to sort `entries` and binary-search it instead. A small
+    /// dictionary can be in order by luck; a thousand keys cannot.
+    #[test]
+    fn a_large_dictionary_keeps_its_keys_in_arrival_order() {
+        // Descending keys: sorted order is the exact REVERSE of arrival order,
+        // so a decoder that sorted would fail every position but the middle.
+        let mut buf = vec![b'd'];
+        let mut expected = Vec::new();
+        for i in (0..1000).rev() {
+            let key = format!("{i:04}");
+            buf.extend_from_slice(format!("4:{key}i0e").as_bytes());
+            expected.push(key.into_bytes());
+        }
+        buf.push(b'e');
+        let Value::Dict(entries) = decode(&buf).expect("a valid dictionary") else {
+            panic!("not a dictionary");
+        };
+        let got: Vec<Vec<u8>> = entries.iter().map(|(k, _)| k.to_vec()).collect();
+        assert_eq!(got, expected, "keys must stay in the order they arrived");
+    }
+
+    /// A leading `+` is a second spelling of a number, and the canonical rule
+    /// exists to forbid exactly that.
+    ///
+    /// `rejects_non_canonical_numbers` enumerates the spellings someone
+    /// thought of -- `i03e`, `i-0e`, `01:a` -- and `i64::from_str` accepts a
+    /// leading `+`, so `i+5e` walked through the rule whose stated reason is
+    /// that "these values are compared, not just displayed".
+    #[test]
+    fn rejects_a_leading_plus_in_an_integer() {
+        assert!(decode(b"i+5e").is_err(), "i+5e is a second spelling of 5");
+        assert!(decode(b"i+0e").is_err(), "i+0e is a second spelling of 0");
+        assert!(
+            decode(b"li+5ee").is_err(),
+            "nested in a list is the same number, spelled the same wrong way"
+        );
+    }
+
+    /// ...and in a dictionary KEY's length, which is the reachable one.
+    ///
+    /// `decode_dict` calls `decode_bytes` directly, so a key's length never
+    /// passes the `b'0'..=b'9'` dispatch in `decode_value` that rejects `+` in
+    /// a value position. `usize::from_str` then accepts it, and a length
+    /// prefix is a worse thing to be lax about than an integer: it decides how
+    /// many bytes of the buffer the key claims.
+    #[test]
+    fn rejects_a_leading_plus_in_a_dictionary_key_length() {
+        let err = decode(b"d+5:helloi0ee").expect_err("a `+` length is not canonical");
+        assert!(
+            format!("{err:#}").contains("byte-string length"),
+            "rejected for the wrong reason: {err:#}"
+        );
+    }
+
+    /// The dispatch already refuses `+` where a VALUE may begin.
+    ///
+    /// Kept beside the two above so the asymmetry is on the record: this path
+    /// was never broken, which is why the fix had to go in `decode_bytes` and
+    /// not in `decode_value`.
+    #[test]
+    fn a_plus_never_begins_a_top_level_value() {
+        assert!(decode(b"+5:hello").is_err(), "not a value start");
+        assert!(decode(b"+5e").is_err(), "not a value start");
+    }
+
+    /// The canonical spellings still decode.
+    ///
+    /// The bound on the three above: a rule tightened until it rejects real
+    /// traffic is worse than the laxness it replaced, and rtpengine sends
+    /// plain lengths and plain integers all day.
+    #[test]
+    fn canonical_numbers_and_lengths_still_decode() {
+        assert_eq!(decode(b"i5e").expect("plain integer"), Value::Int(5));
+        assert_eq!(decode(b"i-5e").expect("negative"), Value::Int(-5));
+        assert_eq!(decode(b"i0e").expect("zero"), Value::Int(0));
+        assert_eq!(
+            decode(b"5:hello").expect("plain length"),
+            Value::Bytes(b"hello")
+        );
+        assert_eq!(decode(b"0:").expect("empty string"), Value::Bytes(b""));
+        let v = decode(b"d5:helloi1ee").expect("a plain dictionary");
+        assert_eq!(v.get_int(b"hello"), Some(1));
     }
 }

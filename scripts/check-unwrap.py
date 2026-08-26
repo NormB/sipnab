@@ -246,7 +246,7 @@ for src_root in ROOTS:
               continue
           scanned += 1
           depth = 0
-          exempt_until = None   # exempt while depth > this
+          exempt_depths = []   # exempt while depth > this
           pending = False       # saw #[cfg(test)], deciding what it annotates
           state = _START
           for i, line in enumerate(open(rel), 1):
@@ -255,24 +255,34 @@ for src_root in ROOTS:
               opens = code.count('{')
               closes = code.count('}')
 
+              # This line is the whole of a one-line `#[cfg(test)]` item.
+              one_line = False
               if pending and stripped and not stripped.startswith('#['):
-                  if stripped.startswith('mod ') or stripped.startswith('pub mod '):
-                      exempt_until = depth          # whole module
-                  elif opens > closes:
-                      exempt_until = depth          # item with a body
+                  if (
+                      stripped.startswith('mod ')
+                      or stripped.startswith('pub mod ')
+                      or opens > closes
+                  ):
+                      exempt_depths.append(depth)   # module, or item with a body
                   else:
-                      pending = False               # one-line item: this line only
-                      depth += opens - closes
-                      continue
+                      one_line = True               # one-line item: this line only
                   pending = False
 
               if _is_test_cfg(stripped):
                   pending = True
 
-              exempt = exempt_until is not None
+              exempt = one_line or bool(exempt_depths)
               depth += opens - closes
-              if exempt_until is not None and depth <= exempt_until:
-                  exempt_until = None
+              # Pop every exemption this line closed, innermost first. A STACK
+              # and not a scalar: a `#[cfg(test)]` item nested inside a
+              # `#[cfg(test)] mod` -- a helper carrying the attribute it does
+              # not need, which is ordinary enough -- used to OVERWRITE the
+              # module's depth, so the helper's closing brace ended the
+              # module's exemption too and every test line after it was scanned
+              # as production. Restoring the outer depth is what keeps the two
+              # independent.
+              while exempt_depths and depth <= exempt_depths[-1]:
+                  exempt_depths.pop()
 
               if exempt:
                   continue
