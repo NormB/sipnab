@@ -10,6 +10,20 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A relay port handed to a new call no longer credits its media to the
+  previous one.** rtpengine allocates media ports from a pool, so a port freed
+  when one call ends is handed to another. The reconciler recorded a socket as
+  something to tell the stream store only when its index insert was the FIRST
+  for that socket, so a reassignment updated the index and was never passed on.
+  The store went on holding the old call's endpoint, and media arriving on that
+  port was attributed to a call that had already ended -- not left
+  unattributed, but named as the WRONG call, for the 300 s an endpoint stays
+  live. A socket whose call has NOT changed is still reported once and only
+  once: re-reporting one would re-date the endpoint, and the staleness clock
+  that measures from when the relay said it would never expire.
+
 ## [0.5.125] - 2026-08-25
 
 ### Added

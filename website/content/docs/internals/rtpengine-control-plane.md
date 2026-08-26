@@ -263,6 +263,8 @@ Every gate here was mutation-tested and none survived:
 | Depth limit removed | `rtpengine::bencode` tests |
 | Trailing-byte check removed | `rtpengine::bencode` tests |
 | Decoder made to require sorted keys | `rtpengine::bencode` tests |
+| Reassigned relay port not re-reported | `rtpengine::reconcile` tests |
+| Unchanged socket re-reported on every refresh | `rtpengine::reconcile` tests |
 
 ## Kernel forwarding, measured
 

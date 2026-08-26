@@ -563,22 +563,36 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
                     self.unkeyable_streams += 1;
                     continue;
                 };
-                if self
-                    .index
-                    .insert(
-                        (addr, stream.local_port),
-                        Attribution {
-                            local_address: addr,
-                            call_id: view.call_id.clone(),
-                            tag: tag.tag.clone(),
-                            peer_tags: tag.in_dialogue_with.clone(),
-                            is_rtcp: stream.is_rtcp,
-                            codec: tag.codec.clone(),
-                        },
-                    )
-                    .is_none()
+                let socket = (addr, stream.local_port);
+                let previous = self.index.insert(
+                    socket,
+                    Attribution {
+                        local_address: addr,
+                        call_id: view.call_id.clone(),
+                        tag: tag.tag.clone(),
+                        peer_tags: tag.in_dialogue_with.clone(),
+                        is_rtcp: stream.is_rtcp,
+                        codec: tag.codec.clone(),
+                    },
+                );
+                // Reported when the socket is new OR when the relay has handed
+                // it to a DIFFERENT call. A port pool recycles: call A ends,
+                // its port is freed, and call B is given it. Reporting only
+                // the first insert left the store holding A's endpoint while
+                // this index held B's, so media on that port was credited to
+                // a call that had ended -- attributed to the WRONG call, not
+                // merely unattributed.
+                //
+                // Keyed on the call and nothing else, because the call is all
+                // a [`RelayLink`] carries. A socket whose call is unchanged is
+                // not news, and re-reporting one would re-date the endpoint:
+                // the store expires an endpoint 300 s after the relay SAID it,
+                // so a socket re-stamped on every refresh never goes stale and
+                // that bound quietly stops existing.
+                if previous.is_none_or(|p| p.call_id != view.call_id)
+                    && !self.new_since_take.contains(&socket)
                 {
-                    self.new_since_take.push((addr, stream.local_port));
+                    self.new_since_take.push(socket);
                 }
             }
         }
@@ -1150,6 +1164,155 @@ mod tests {
         assert!(
             !matches!(why, Unattributed::RelayDoesNotHoldIt),
             "a refused enumeration establishes nothing about this port -- got {why:?}"
+        );
+    }
+
+    /// A relay whose enumeration CHANGES between refreshes.
+    ///
+    /// This is what a port pool does: a call ends, its port is freed, and a
+    /// later call is handed the same one. `ScriptedRelay` answers every `list`
+    /// identically and so cannot express it.
+    struct ReassigningRelay {
+        /// One enumeration per `list`; the last entry repeats.
+        script: Vec<Vec<&'static str>>,
+        /// The relay-side port every call in the script holds.
+        port: u16,
+        /// When set, each call reports the port TWICE -- once as RTP and once
+        /// as RTCP, which is what RFC 5761 multiplexing looks like from a
+        /// relay that reports both on one socket.
+        muxed: bool,
+        lists: RefCell<usize>,
+    }
+
+    impl ReassigningRelay {
+        fn new(script: Vec<Vec<&'static str>>, port: u16) -> Self {
+            Self {
+                script,
+                port,
+                muxed: false,
+                lists: RefCell::new(0),
+            }
+        }
+
+        fn muxed(mut self) -> Self {
+            self.muxed = true;
+            self
+        }
+    }
+
+    impl ReadOnlyRelay for ReassigningRelay {
+        fn list(&self, _permit: &TransmitPermit, _limit: u32) -> anyhow::Result<ControlReply> {
+            let mut n = self.lists.borrow_mut();
+            let ids = &self.script[(*n).min(self.script.len() - 1)];
+            *n += 1;
+            Ok(ControlReply::Calls(Enumeration {
+                call_ids: ids.iter().map(|s| (*s).to_owned()).collect(),
+                truncated: false,
+            }))
+        }
+
+        fn query(&self, _permit: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply> {
+            let mut streams = vec![RelayStream {
+                local_address: RELAY_IP.to_owned(),
+                local_port: self.port,
+                endpoint: None,
+                advertised_endpoint: None,
+                is_rtcp: false,
+                ssrcs: Vec::new(),
+            }];
+            if self.muxed {
+                streams.push(RelayStream {
+                    local_address: RELAY_IP.to_owned(),
+                    local_port: self.port,
+                    endpoint: None,
+                    advertised_endpoint: None,
+                    is_rtcp: true,
+                    ssrcs: Vec::new(),
+                });
+            }
+            Ok(ControlReply::Call(CallView {
+                call_id: call_id.to_owned(),
+                tags: vec![RelayTag {
+                    tag: format!("tag-of-{call_id}"),
+                    in_dialogue_with: Vec::new(),
+                    codec: Some("PCMU".to_owned()),
+                    streams,
+                }],
+            }))
+        }
+
+        fn describe(&self) -> String {
+            format!("{RELAY_IP}:2223")
+        }
+    }
+
+    /// A relay port handed to a NEW call is handed on to the store again.
+    ///
+    /// [`Reconciler::absorb`] used to record a socket as new only when the
+    /// index insert was the FIRST for that socket, so a reassignment updated
+    /// the index and was never reported. The store kept the previous call's
+    /// endpoint, and media on that port was credited to a call that had ended
+    /// -- not left unattributed, but attributed to the WRONG call, for the
+    /// 300 s the endpoint stays live.
+    #[test]
+    fn a_reused_relay_port_is_reported_again_with_its_new_call() {
+        let p = permit();
+        let mut r = Reconciler::new(ReassigningRelay::new(
+            vec![vec!["call-A"], vec!["call-B"]],
+            30000,
+        ));
+
+        r.at_startup(&p);
+        let first = r.take_new_links(chrono::Utc::now());
+        assert_eq!(
+            first
+                .links
+                .iter()
+                .map(|l| l.call_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["call-A"],
+            "startup registers the port against the call that held it"
+        );
+
+        // Any unexplained socket refreshes the snapshot, and the relay now
+        // reports call-B holding the port call-A had.
+        let _ = r.on_unexplained_stream(&p, "198.51.100.9".parse().expect("valid"), 41234);
+
+        let reported: Vec<String> = r
+            .take_new_links(chrono::Utc::now())
+            .links
+            .iter()
+            .filter(|l| l.port == 30000)
+            .map(|l| l.call_id.clone())
+            .collect();
+        assert_eq!(
+            reported,
+            vec!["call-B".to_owned()],
+            "the index learned the reassignment; the store has to learn it too, \
+             or media on this port stays credited to call-A"
+        );
+    }
+
+    /// ...and a socket the relay reports twice for ONE call is reported once.
+    ///
+    /// The bound on the fix above. Re-reporting a socket whose call has not
+    /// changed would re-date the endpoint every time the relay repeats itself,
+    /// and the store's 300 s staleness clock measures from when the relay SAID
+    /// it -- so a socket that keeps being re-stamped never goes stale and the
+    /// bound quietly stops existing. A relay multiplexing RTP and RTCP on one
+    /// port (RFC 5761) reports exactly this shape.
+    #[test]
+    fn a_socket_repeated_within_one_call_is_reported_only_once() {
+        let p = permit();
+        let mut r = Reconciler::new(ReassigningRelay::new(vec![vec!["call-A"]], 30000).muxed());
+
+        r.at_startup(&p);
+        let links = r.take_new_links(chrono::Utc::now());
+        let for_port: Vec<&RelayLink> = links.links.iter().filter(|l| l.port == 30000).collect();
+        assert_eq!(
+            for_port.len(),
+            1,
+            "one socket, one call, one link -- got {for_port:?}"
         );
     }
 }
