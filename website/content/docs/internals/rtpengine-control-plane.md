@@ -271,6 +271,8 @@ Every gate here was mutation-tested and none survived:
 | Hand-over fired only on a port's FIRST reassignment | `rtpengine::reconcile` tests |
 | Integer digits left to `from_str`, which takes a leading `+` | `rtpengine::bencode` tests |
 | Byte-string length left to `from_str`, same leading `+` | `rtpengine::bencode` tests |
+| Socket recorded ahead of the ceiling check | `rtpengine::reconcile` tests |
+| Socket record dropped entirely, making every packet an ask | `rtpengine::reconcile` tests |
 
 ## Kernel forwarding, measured
 

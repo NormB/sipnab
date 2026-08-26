@@ -18,7 +18,11 @@
 //! - **Once per question.** Startup latches. Each relay-side port is asked
 //!   about at most once for the life of the run, so a stream that stays
 //!   unexplained -- which is the normal case for traffic the relay is not
-//!   handling at all -- does not re-ask on every packet.
+//!   handling at all -- does not re-ask on every packet. A port is REMEMBERED
+//!   as asked about only while the ceiling below has room: past that nothing
+//!   is remembered, because nothing will be asked. That is what keeps this
+//!   guarantee from being paid for with a set that grows per socket forever,
+//!   which is a bound on the traffic wearing the shape of a bound on us.
 //! - **A ceiling that does not depend on the traffic.** [`DEFAULT_BUDGET`],
 //!   or whatever [`Reconciler::with_budget`] was given, bounds transactions
 //!   for the whole run. A capture full of orphans cannot
@@ -300,6 +304,18 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
         self.index.len()
     }
 
+    /// Sockets this run is remembering it has already asked about.
+    ///
+    /// Exposed for the reason [`Self::transactions`] is: "does this grow with
+    /// the traffic?" is a question about a NUMBER, and a test that cannot read
+    /// the number cannot answer it. Bounded by [`Self::budget`], since a
+    /// socket is recorded only when there is still a transaction to spend on
+    /// asking about it.
+    #[must_use]
+    pub fn tracked_sockets(&self) -> usize {
+        self.asked_ports.len()
+    }
+
     /// Whether the relay's last enumeration was capped.
     #[must_use]
     pub fn enumeration_was_partial(&self) -> bool {
@@ -412,6 +428,18 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
         let socket = (local_address, local_port);
         if let Some(found) = self.index.get(&socket) {
             return Ok(found.clone());
+        }
+        // The ceiling is consulted BEFORE the socket is recorded. `asked_ports`
+        // exists to stop a SECOND ask, and once the ceiling is spent there is
+        // no second ask to stop -- so recording one costs an entry that buys
+        // nothing and is never released. Recorded after the check, the set grew
+        // by one per distinct socket for the life of the run, which is a bound
+        // that depends on how much traffic the capture carries: the one thing
+        // the bounds at the top of this module say they do not do. Checked
+        // first, the set cannot outgrow the ceiling, because every entry in it
+        // cost a transaction.
+        if self.spent >= self.budget {
+            return Err(self.why_not(socket));
         }
         if !self.asked_ports.insert(socket) {
             // Already asked about this port and the refresh did not find it.
@@ -1393,6 +1421,115 @@ mod tests {
             got,
             vec![(30000, "call-B".to_owned()), (30002, "call-B".to_owned())],
             "both recycled ports have to reach the store"
+        );
+    }
+
+    /// Offer `n` distinct unexplained sockets to a relay that holds nothing.
+    fn flood<R: ReadOnlyRelay>(r: &mut Reconciler<R>, p: &TransmitPermit, n: u16) {
+        let ip: IpAddr = "198.51.100.9".parse().expect("valid");
+        for i in 0..n {
+            let _ = r.on_unexplained_stream(p, ip, 40000 + i);
+        }
+    }
+
+    /// The set of sockets already asked about cannot outgrow the ceiling.
+    ///
+    /// It was recorded BEFORE the ceiling was consulted, so it kept growing by
+    /// one entry per distinct socket long after the reconciler had stopped
+    /// asking anyone anything -- a per-socket allocation, never released, for
+    /// the life of the run. Every entry now costs a transaction, so the
+    /// ceiling bounds the memory as well as the traffic.
+    #[test]
+    fn the_tracked_socket_set_cannot_outgrow_the_transaction_ceiling() {
+        let p = permit();
+        let mut r =
+            Reconciler::new(ScriptedRelay::new(Answer::Calls(vec![], false))).with_budget(3);
+        r.at_startup(&p);
+        flood(&mut r, &p, 200);
+
+        assert!(
+            r.tracked_sockets() <= r.budget() as usize,
+            "tracking {} socket(s) against a ceiling of {} -- the set is \
+             growing with the traffic",
+            r.tracked_sockets(),
+            r.budget()
+        );
+    }
+
+    /// ...and the size does not depend on how much traffic arrives.
+    ///
+    /// Two runs, the same relay and ceiling, an order of magnitude apart in
+    /// offered sockets. A bound that is real answers the same both times; a
+    /// bound that merely looks generous does not.
+    #[test]
+    fn the_tracked_set_is_the_same_size_however_many_sockets_arrive() {
+        let p = permit();
+        let mut small =
+            Reconciler::new(ScriptedRelay::new(Answer::Calls(vec![], false))).with_budget(3);
+        small.at_startup(&p);
+        flood(&mut small, &p, 50);
+
+        let mut large =
+            Reconciler::new(ScriptedRelay::new(Answer::Calls(vec![], false))).with_budget(3);
+        large.at_startup(&p);
+        flood(&mut large, &p, 500);
+
+        assert_eq!(
+            small.tracked_sockets(),
+            large.tracked_sockets(),
+            "10x the sockets must not mean more state"
+        );
+    }
+
+    /// While the ceiling has room, a repeated socket is still asked about once.
+    ///
+    /// The bound on the two above. Dropping the record entirely also keeps the
+    /// set small -- and turns every packet from one unexplained stream back
+    /// into a control transaction, which is the poller this module exists to
+    /// prevent.
+    #[test]
+    fn a_repeated_socket_still_costs_one_transaction_while_the_ceiling_has_room() {
+        let p = permit();
+        let mut r =
+            Reconciler::new(ScriptedRelay::new(Answer::Calls(vec![], false))).with_budget(20);
+        r.at_startup(&p);
+        let before = r.transactions();
+
+        let ip: IpAddr = "198.51.100.9".parse().expect("valid");
+        for _ in 0..10 {
+            let _ = r.on_unexplained_stream(&p, ip, 41234);
+        }
+
+        assert_eq!(
+            r.transactions() - before,
+            1,
+            "ten offers of one socket must cost one ask, not ten"
+        );
+        assert_eq!(r.tracked_sockets(), 1, "and it is remembered exactly once");
+    }
+
+    /// A socket refused for want of budget SAYS that, and does not claim the
+    /// relay disowned it.
+    ///
+    /// The early return added for the bound sits in front of the answer, so it
+    /// is the return most likely to start reporting the wrong reason -- and
+    /// `RelayDoesNotHoldIt` is the one answer here that asserts something
+    /// about the traffic rather than about sipnab.
+    #[test]
+    fn a_socket_never_asked_about_is_not_reported_as_disowned() {
+        let p = permit();
+        let mut r =
+            Reconciler::new(ScriptedRelay::new(Answer::Calls(vec![], false))).with_budget(2);
+        r.at_startup(&p);
+        flood(&mut r, &p, 20);
+
+        let why = r
+            .on_unexplained_stream(&p, "203.0.113.9".parse().expect("valid"), 45000)
+            .expect_err("the ceiling is spent, so nothing was asked");
+        assert_eq!(
+            why,
+            Unattributed::BudgetSpent,
+            "a port nobody asked about is not a port the relay disowned"
         );
     }
 }

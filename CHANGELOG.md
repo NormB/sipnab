@@ -59,6 +59,18 @@ entry that carries them.
   decides how many bytes of the buffer that key claims. Both sites now require
   digits, and a negative sign only where one belongs.
 
+- **The relay reconciler stops accumulating sockets once it has stopped asking
+  about them.** It records each unexplained socket so the same one is not asked
+  about twice, and recorded it BEFORE consulting the transaction ceiling -- so
+  the set kept growing by one entry per distinct socket long after the ceiling
+  was spent and no further question would be asked. On a long live capture with
+  `--rtpengine`, that is a per-socket allocation, never released, driven purely
+  by traffic: the one thing the module's stated bounds say they are not. The
+  ceiling is consulted first now, so every entry has cost a transaction and the
+  set cannot outgrow `DEFAULT_BUDGET`. Nothing an operator is shown changes: a
+  port that was never asked about still reports the ceiling as the reason, not
+  a relay that disowned it.
+
 ## [0.5.125] - 2026-08-25
 
 ### Added
