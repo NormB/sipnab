@@ -332,6 +332,12 @@ pub fn start_servers(
     // command line ONCE. Its ceiling is what the operator asked for, and no
     // later reader recomputes it: two readings of `persists_content` could
     // disagree after a flag was added to one of them.
+    //
+    // Gated like `source_exhausted` above, and for the same reason: it is
+    // carried out on `ServerHandles`, which does not exist in a build with
+    // neither door. CI compiles those builds with `-Dwarnings`, so an ungated
+    // binding is a hard error there and merely an unused value here.
+    #[cfg(any(feature = "api", feature = "mcp"))]
     let persistence_gate = Arc::new(crate::output::persistence::PersistenceGate::new(
         cli.persists_content(),
     ));
