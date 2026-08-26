@@ -36,6 +36,18 @@ entry that carries them.
   tracks keys in a set. Measured over a 4x key count, the cost went from 15.2x
   to 4.0x -- quadratic to linear -- and 4096 keys from 90.6 ms to 6.1 ms.
 
+- **The `unwrap()`/`expect()` gate no longer loses track of what it is
+  scanning.** It exempts `#[cfg(test)]` items by remembering the brace depth to
+  return to, and remembered exactly one -- so a `#[cfg(test)]` item nested in a
+  `#[cfg(test)] mod` overwrote the module's depth and the inner item's closing
+  brace ended the module's exemption too, reporting plain test code as a
+  production violation. The depths are a stack now. The same change closes the
+  quiet half: a one-line `#[cfg(test)]` item that closed more braces than it
+  opened took a shortcut past the end-of-exemption check, leaving the exemption
+  live over the production code that followed, whose `unwrap()` was then never
+  reported -- the gate answering OK while checking nothing, which is the exact
+  failure its own header warns about.
+
 ## [0.5.125] - 2026-08-25
 
 ### Added

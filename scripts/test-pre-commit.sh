@@ -521,6 +521,71 @@ scan 'pub fn prod() -> u8 { 1 }' 'pub fn a() -> u8 { Some(1u8).unwrap() }' \
 	&& bad "an unwrap in crates/sipnab-audio/src must be reported (the walk is not covering workspace members)" \
 	|| ok "an unwrap in a second workspace member is reported"
 
+# A `#[cfg(test)]` item NESTED in a `#[cfg(test)] mod` must not end the
+# module's exemption when it closes. The exemption depth was a single scalar,
+# so the inner item OVERWROTE the module's and its closing brace cleared both
+# -- every test line after the helper was then scanned as production. Found by
+# adding a `dict_of` helper to `rtpengine::bencode`'s tests, which reported two
+# `.expect()` calls that were plainly test code.
+scan_v 'fn prod() -> Result<u8, std::num::ParseIntError> { "7".parse::<u8>() }
+#[cfg(test)]
+mod tests {
+    #[cfg(test)]
+    fn helper() -> u8 {
+        1
+    }
+
+    #[test]
+    fn t() { let _ = "7".parse::<u8>().unwrap(); }
+}'
+quiet "a nested #[cfg(test)] item does not end the module's exemption"
+
+# ...and the exemptions still POP. A stack that never unwinds would exempt the
+# rest of the file, which is the same silent hole from the other direction.
+scan_v '#[cfg(test)]
+mod tests {
+    #[cfg(test)]
+    fn helper() -> u8 {
+        1
+    }
+}
+
+fn prod() -> u8 { "7".parse::<u8>().unwrap() }'
+reports 9 "production code after a nested test item is scanned again"
+
+# Several sibling `#[cfg(test)]` items: the module's exemption survives all of
+# them, not just the last.
+scan_v 'fn prod() -> Result<u8, std::num::ParseIntError> { "7".parse::<u8>() }
+#[cfg(test)]
+mod tests {
+    #[cfg(test)]
+    fn a() -> u8 {
+        1
+    }
+
+    #[cfg(test)]
+    fn b() -> u8 {
+        2
+    }
+
+    #[test]
+    fn t() { let _ = "7".parse::<u8>().unwrap(); }
+}'
+quiet "sibling #[cfg(test)] items each restore the module's exemption"
+
+# The SILENT direction, and the reason this is worth fixing rather than working
+# around. A one-line `#[cfg(test)]` item that closes more braces than it opens
+# took a `continue` that skipped the end-of-exemption check entirely, so the
+# exemption stayed live over the production code that followed and its
+# `unwrap()` was never reported -- the gate answering OK while checking
+# nothing, which is the failure mode this scanner's own header warns about.
+scan_v '#[cfg(test)]
+mod tests {
+    #[cfg(test)]
+    fn helper() { } }
+fn prod() -> u8 { "7".parse::<u8>().unwrap() }'
+reports 5 "an exemption does not leak past a one-line test item that closes its block"
+
 # ── Scenario 6: braces written inside strings, chars and comments ──────────
 # The exemption above is scoped by counting `{` and `}`. Counting the raw
 # characters made every brace in a string literal move the depth, and the two
