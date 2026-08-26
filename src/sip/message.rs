@@ -684,13 +684,13 @@ mod tests {
     #[test]
     fn extract_user_ignores_spoofed_display_name() {
         assert_eq!(
-            extract_uri_user(r#""sip:evil@attacker.com" <tel:+15551234>"#),
+            extract_uri_user(r#""sip:evil@attacker.test" <tel:+15551234>"#),
             None
         );
         // With a real sip URI present, the angle-bracket URI wins over a
         // spoofed display-name URI.
         assert_eq!(
-            extract_uri_user(r#""sip:evil@attacker.com" <sip:real@example.com>"#),
+            extract_uri_user(r#""sip:evil@attacker.test" <sip:real@example.com>"#),
             Some("real".to_string())
         );
     }

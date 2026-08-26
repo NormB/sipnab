@@ -231,7 +231,7 @@ feature's documentation has to name the scope, not merely the topology.
 **F2 — Endpoint collision across nodes.** `sdp_endpoints` is keyed on
 `(IpAddr, u16)` with no node dimension. A single sipnab receiving HEP from
 several nodes — the multi-node fan-in `hep_source_label` exists to make
-distinguishable — can be told by two nodes that `10.0.0.1:20000` belongs to two
+distinguishable — can be told by two nodes that `192.0.2.1:20000` belongs to two
 different calls. `remember_sdp_endpoint` overwrites `existing.call_id`
 ([`src/rtp/stream_store.rs:995`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L995) onward), so the last offer wins, and
 `resolve_from_sdp` hands that winner to a stream. [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) space repeats across

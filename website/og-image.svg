@@ -80,12 +80,12 @@
         fill="#1f2430" stroke="#2d3640" stroke-width="1"/>
   <text x="778" y="152" text-anchor="middle"
         font-family="JetBrains Mono" font-weight="500" font-size="18"
-        fill="#73d0ff">10.0.0.1</text>
+        fill="#73d0ff">192.0.2.1</text>
   <rect x="1030" y="128" width="124" height="36" rx="7" ry="7"
         fill="#1f2430" stroke="#2d3640" stroke-width="1"/>
   <text x="1092" y="152" text-anchor="middle"
         font-family="JetBrains Mono" font-weight="500" font-size="18"
-        fill="#73d0ff">10.0.0.2</text>
+        fill="#73d0ff">192.0.2.2</text>
 
   <!-- lifelines (dashed, like a real sequence diagram) -->
   <line x1="778"  y1="164" x2="778"  y2="544" stroke="#2d3640" stroke-width="2"

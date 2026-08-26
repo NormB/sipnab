@@ -1078,7 +1078,7 @@ entry that carries them.
 ### Fixed
 
 - **`scripts/rfc-links.py` did nothing anywhere but one machine.** It
-  hardcoded `root = /home/gator/Development/sipnab`, so everywhere else the
+  hardcoded `root = /srv/sipnab`, so everywhere else the
   glob matched no files and it reported "0 section citations across 0 files"
   and exited 0. A no-op that reports success is worse than a crash, because the
   gate that points contributors at this script kept pointing them at one that
@@ -1720,12 +1720,12 @@ entry that carries them.
 ### Added
 
 - **`--hep-allow` accepts a bare address.** It demanded CIDR, so
-  `--hep-allow 10.0.0.40` exited with `missing /prefix` and the listener never
+  `--hep-allow 192.0.2.40` exited with `missing /prefix` and the listener never
   bound — which reads as a HEP problem and is a spelling problem, in exactly the
   situation the flag exists for. A bare address now means that host alone: `/32`
   for IPv4, `/128` for IPv6. Which way that defaults is the point: a host route
   is the NARROWEST reading, so a missing prefix can only ever admit less.
-  Inferring a classful network from `10.0.0.0` would silently admit sixteen
+  Inferring a classful network from `192.0.2.0` would silently admit sixteen
   million addresses nobody named, which is the opposite of what an allowlist is
   for.
 
@@ -2753,7 +2753,7 @@ MOS stops guessing, and the browser analyzer stops being eleven releases old.
   the committed copy is no longer what ships.
 
 - **A dialog with one endpoint drew no ladder.** Where a PBX talks to itself —
-  every message `10.0.0.1:5060 -> 10.0.0.1:5060`, as any hairpinned leg looks
+  every message `192.0.2.1:5060 -> 192.0.2.1:5060`, as any hairpinned leg looks
   when captured at a single tap — the participants collapsed to one column and
   the arrow was skipped, leaving a sized, empty pane beside a detail view
   showing the whole message. Self-messages now draw the way a sequence diagram
@@ -2836,7 +2836,7 @@ Remote capture becomes usable on more than one box, and on RHEL.
   is the only part they needed. It now gives the `setcap` command.
 
 - **The call list rendered distinct hosts identically.** Source and destination
-  truncated to 11 cells, so `10.0.0.41` and `10.0.0.412` — different endpoints
+  truncated to 11 cells, so `192.0.2.41` and `192.0.2.412` — different endpoints
   — displayed as the same string, and the header set a background color
   without ever setting a foreground, leaving it unreadable on light terminals.
   Addresses now elide in the middle, keeping both ends, and the header derives
@@ -8317,7 +8317,7 @@ build provenance and the reworked website/download experience.
 - Dependencies: clap 4.6.2, regex 1.13.1, serde 1.0.229, anyhow 1.0.104,
   thiserror 2.0.19, rustls 0.23.42, tokio 1.53.0, http-body-util 0.1.4,
   jsonschema 0.48.1, and friends (minor/patch group).
-- Benchmarks re-measured on 0.5.16/thor-02: multi-core scaling +13–30%,
+- Benchmarks re-measured on 0.5.16/aarch64: multi-core scaling +13–30%,
   carrier sweep +31–107% vs the 0.4.16 session; two regressions tracked as
   WS8.1/WS8.2. The ruby CodeQL job (matched only the Homebrew formula) is
   gone from CI.
@@ -8478,7 +8478,7 @@ build provenance and the reworked website/download experience.
 - **Security**: `-K` / `--kill-target <ADDR[:PORT-RANGE]>` — targeted scanner
   kill (sipgrep `-K`). Sends the kill response to any SIP request whose source
   matches the given address and an optional port range (e.g.
-  `10.0.0.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection.
+  `192.0.2.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection.
   Repeatable; spawns the kill worker on its own, so `--kill-scanner` is not
   required. Malformed targets are rejected at startup.
 
@@ -8915,7 +8915,7 @@ the shared shape. **Wire changes:**
   Every send bounced a cache line across cores, and that coherency traffic scaled
   with worker count. The reader now batches ~128 packets per shard into one
   channel send (channel depth measured in batches, so the in-flight packet cap is
-  unchanged), amortizing the cross-core hop ~128×. On thor-02 (Jetson Thor, 14
+  unchanged), amortizing the cross-core hop ~128×. On the aarch64 runner (Jetson Thor, 14
   cores, 535k-packet carrier corpus, median-of-5) the cliff is gone — throughput
   holds **flat at ~2.2–2.5M pkts/s from cores 2 through 8** instead of collapsing
   1.9M → 842k → 500k:
@@ -8944,7 +8944,7 @@ the shared shape. **Wire changes:**
   and shards in one thread (`run_offline_parallel_file` + `peek_host_pair`),
   eliminating the separate capture-reader thread and the semaphore-capped channel
   between read and shard. This lifts the `--cores 2` peak (carrier 40k corpus,
-  thor-02: ~1.81M pkts/s — **2.4× sngrep** while fully reconstructing calls + RTP
+  aarch64: ~1.81M pkts/s — **2.4× sngrep** while fully reconstructing calls + RTP
   streams). `--cores 2` is the sweet spot; past 2–3 the single sequential pcap
   reader (and SoC memory bandwidth) is the ceiling — not CPU count.
 
@@ -8978,7 +8978,7 @@ the shared shape. **Wire changes:**
 - **`profiling` build profile** (`cargo build --profile profiling`) — release
   codegen with full symbols for perf/valgrind.
 
-  Combined result (40k-call carrier corpus, thor-02): **`sipnab --cores 2` runs at
+  Combined result (40k-call carrier corpus, aarch64): **`sipnab --cores 2` runs at
   ~1.57M pkts/s — 1.87× faster than sngrep** (840k) while reconstructing all calls
   and full RTP-stream stats (which sngrep does not). The sweet spot is 2–3 cores;
   higher core counts regress (the single dispatcher + store merge is the next

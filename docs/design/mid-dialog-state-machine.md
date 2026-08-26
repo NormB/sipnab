@@ -448,7 +448,7 @@ observed to fail, and the edit reversed.
 ### O4. Corpus differential — the acceptance gate
 
 The fix changes state for real captures, so the acceptance evidence is a
-before/after over the reference corpus at `/home/gator/pcaps`: every dialog's
+before/after over the reference corpus at `/srv/pcaps`: every dialog's
 state before, every dialog's state after, and **every change attributable to a
 declared cell**. A state change nobody can point at a cell for is a failure of
 this spec, not a surprise.

@@ -12,7 +12,7 @@ which it is, and each superseded finding is kept with the outcome rather than
 deleted — the reasoning is why the fix has the shape it has.
 
 **Measured against:** `sipnab 0.5.71 (f9ae16ff-dirty)`, release build, on
-`/home/gator/pcaps` — 15 files, 1,383 MB, 4,532,272 packets. Every number below
+`/srv/pcaps` — 15 files, 1,383 MB, 4,532,272 packets. Every number below
 was produced by a command reproduced in the appendix.
 
 **Re-verified against:** 0.5.81, 2026-08-05, behavior only. The memory
@@ -549,8 +549,8 @@ the record is kept, with the outcome, rather than deleted.
 
 **`--cores N > 1` did not read a multi-file set. Fixed in 0.5.72.** With the
 0.5.71 binary that produced the measurements above,
-`-I /home/gator/pcaps --cores 4` failed with `multi-core reconstruction failed:
-Failed to open pcap file '/home/gator/pcaps': … Is a directory` (exit 1, so at
+`-I /srv/pcaps --cores 4` failed with `multi-core reconstruction failed:
+Failed to open pcap file '/srv/pcaps': … Is a directory` (exit 1, so at
 least it was loud). Given two files explicitly, `-I tg.pcap7 -I tg.pcap8
 --cores 4` reported 2,269 dialogs and 9,041 SIP messages — byte-identical to
 reading `tg.pcap7` alone — where `--cores 1` reported 4,399 and 18,009. That
@@ -919,7 +919,7 @@ it is what turns a dialog rate into a dialog count. It also detects the case
 this corpus is: two runs two hours apart in one directory. `warn_on_overlap`
 already warns when consecutive files start at the same instant; the inverse — a
 gap far larger than any file's span — is the same class of "this is not one
-sequence" warning and would have flagged `/home/gator/pcaps` correctly. Section
+sequence" warning and would have flagged `/srv/pcaps` correctly. Section
 3.5 gives it a second reason to exist: that gap is also what makes idle
 compaction fire on this corpus, so an operator who is not told about the gap is
 not told why 314 messages went either.
@@ -1029,31 +1029,31 @@ export SIPNAB_PERF_STATS=1
 BIN=./target/release/sipnab
 
 # Corpus shape.
-capinfos -a -e -u -c -T -M /home/gator/pcaps/*.pcap*
+capinfos -a -e -u -c -T -M /srv/pcaps/*.pcap*
 
 # Baseline run (303,108-303,932 KB, 3.97-4.09 s, 18,948 dialogs).
-/usr/bin/time -v $BIN -N -I /home/gator/pcaps --cores 1 --no-cli-print
+/usr/bin/time -v $BIN -N -I /srv/pcaps --cores 1 --no-cli-print
 
 # Sweep A: dialog cap against RSS.
 for L in 500 1000 2500 5000 10000 15000 18948 30000 100000; do
-  /usr/bin/time -f "$L %M %e" $BIN -N -I /home/gator/pcaps \
+  /usr/bin/time -f "$L %M %e" $BIN -N -I /srv/pcaps \
     --limit $L --cores 1 --no-cli-print >/dev/null
 done
 
 # Sweep B: message cap against RSS (one config file per cap).
 printf '[limits]\nmax_messages_per_dialog = 4\n' > cfg_4.toml
-/usr/bin/time -f "%M" $BIN -N -I /home/gator/pcaps --config cfg_4.toml \
+/usr/bin/time -f "%M" $BIN -N -I /srv/pcaps --config cfg_4.toml \
   --limit 100000 --cores 1 --no-cli-print >/dev/null
 
 # Term decomposition.
-$BIN -N -I /home/gator/pcaps --cores 1 --no-dialog --no-rtp --no-cli-print   # 91,360 KB
-$BIN -N -I /home/gator/pcaps --cores 1 --no-dialog          --no-cli-print   # 92,888 KB
-$BIN -N -I /home/gator/pcaps --cores 1 --no-cli-print 'port 5060'            # 221,056 KB
-$BIN -N -I /home/gator/pcaps --cores 1 --no-dialog --no-rtp \
+$BIN -N -I /srv/pcaps --cores 1 --no-dialog --no-rtp --no-cli-print   # 91,360 KB
+$BIN -N -I /srv/pcaps --cores 1 --no-dialog          --no-cli-print   # 92,888 KB
+$BIN -N -I /srv/pcaps --cores 1 --no-cli-print 'port 5060'            # 221,056 KB
+$BIN -N -I /srv/pcaps --cores 1 --no-dialog --no-rtp \
      --no-cli-print 'port 5060'                                             #   9,088 KB
 
 # Message distribution (Msgs column of the report table, rows 3..18950).
-$BIN -N -I /home/gator/pcaps --report --no-cli-print 2>/dev/null > full_report.txt
+$BIN -N -I /srv/pcaps --report --no-cli-print 2>/dev/null > full_report.txt
 awk 'NR>=3 && NR<=18950 {v=substr($0,95,6)+0; s+=v; n++; if(v>m)m=v}
      END{printf "dialogs=%d msgs=%d mean=%.2f max=%d\n", n, s, s/n, m}' full_report.txt
 
@@ -1061,17 +1061,17 @@ awk 'NR>=3 && NR<=18950 {v=substr($0,95,6)+0; s+=v; n++; if(v>m)m=v}
 # 0.5.71: loads, then ignores both -> dialogs=18948 streams=1460.
 # 0.5.72+: both keys apply -> dialogs capped at 100, streams at 10.
 printf '[limits]\ndialog_limit = 100\nmax_streams = 10\n' > cfg_dead.toml
-$BIN -N -I /home/gator/pcaps --config cfg_dead.toml --cores 1 --no-cli-print
+$BIN -N -I /srv/pcaps --config cfg_dead.toml --cores 1 --no-cli-print
 
 # UNCHANGED. The DSL filter does not bound memory; BPF does.
-$BIN -N -I /home/gator/pcaps --cores 1 --filter "method == 'INVITE'" --no-cli-print
-$BIN -N -I /home/gator/pcaps --cores 1 --no-cli-print 'port 5060'
+$BIN -N -I /srv/pcaps --cores 1 --filter "method == 'INVITE'" --no-cli-print
+$BIN -N -I /srv/pcaps --cores 1 --no-cli-print 'port 5060'
 
 # CHANGED at 0.5.72. Truncation, exit 0 -- and now a warning.
 # 0.5.71: the grep counted 0.
 # 0.5.78, re-measured: one "retention: ..." line naming 15000 evicted
 # dialogs and 2 compacted messages. Still exit 0, by design.
-$BIN -N -I /home/gator/pcaps --limit 5000 --cores 1 --report --no-cli-print \
+$BIN -N -I /srv/pcaps --limit 5000 --cores 1 --report --no-cli-print \
   > lim5000.txt 2> lim5000.err; echo "exit=$?"
 grep -c 'retention:' lim5000.err
 
@@ -1079,12 +1079,12 @@ grep -c 'retention:' lim5000.err
 # 0.5.71: 44 max messages in release, 24 in debug, 314 messages apart.
 # 0.5.72+: the capture clock drives the sweep, so both builds agree, and
 # the release build reports the same 314 messages the debug build lost.
-./target/debug/sipnab -N -I /home/gator/pcaps --limit 100000 --cores 1 \
+./target/debug/sipnab -N -I /srv/pcaps --limit 100000 --cores 1 \
   --report --no-cli-print > dbg_report.txt
 
 # Pre-flight sampling cost.
 for N in 1 30000 300000; do
-  /usr/bin/time -f "$N %e %M" $BIN -N -I /home/gator/pcaps -n $N \
+  /usr/bin/time -f "$N %e %M" $BIN -N -I /srv/pcaps -n $N \
     --no-cli-print --quiet >/dev/null
 done
 ```

@@ -214,7 +214,7 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
   "truncated": true,
   "next_cursor": "2016-11-17T21:52:35.403349+00:00|call-2-synth@192.0.2.10",
   "capture_identity": {
-    "node": "thor-02",
+    "node": "capture-01",
     "instance": "1ae7318cb5c11b1a306dd-1",
     "dialog_generation": 9015,
     "stream_generation": 0
@@ -485,7 +485,7 @@ invalid_params (-32602) naming the offending value.
   "truncated": true,
   "next_cursor": "2016-11-17T21:54:34.903349+00:00|call-1197-synth@192.0.2.10",
   "capture_identity": {
-    "node": "thor-02",
+    "node": "capture-01",
     "instance": "1ae7318cb5c11b1a306dd-1",
     "dialog_generation": 9015,
     "stream_generation": 0
@@ -871,7 +871,7 @@ carries four streams — two PCMU, two G722 — and no dialogs at all:
   "truncated": true,
   "next_cursor": "2026-07-08T18:35:27.407583+00:00|0x0e330af3@127.0.0.1:5094>127.0.0.1:5084",
   "capture_identity": {
-    "node": "thor-02",
+    "node": "capture-01",
     "instance": "22fa418cb5c799c57abef-1",
     "dialog_generation": 1,
     "stream_generation": 4
@@ -1039,7 +1039,7 @@ The example runs against [`tests/pcap-samples/sipp-branch-scenario.pcapng`](http
   "truncated": true,
   "next_cursor": "2016-11-17T21:52:35.303349+00:00|call-1-synth@192.0.2.10#0000000000",
   "capture_identity": {
-    "node": "thor-02",
+    "node": "capture-01",
     "instance": "12100b18cb6971cf461cff-1",
     "dialog_generation": 9015,
     "stream_generation": 0
@@ -1113,7 +1113,7 @@ has finished: stop when it turns `true` instead of polling forever.
   "next_cursor": "2016-11-26T14:53:08.170676+00:00|1-1966@10.0.2.20",
   "source_exhausted": true,
   "capture_identity": {
-    "node": "thor-02",
+    "node": "capture-01",
     "instance": "1d1a718cb5c33b7c52754-1",
     "dialog_generation": 13,
     "stream_generation": 2
@@ -1740,7 +1740,7 @@ whose two calls share an SDP origin:
   "total_matched": 1,
   "heuristic_only": false,
   "capture_identity": {
-    "node": "thor-02",
+    "node": "capture-01",
     "instance": "1d1a718cb5c33b7c52754-1",
     "dialog_generation": 13,
     "stream_generation": 2
@@ -1929,7 +1929,7 @@ same window without a filter answers `total_matched: 247`:
   "truncated": true,
   "next_cursor": "2016-11-17T21:52:37.703349+00:00|call-25-synth@192.0.2.10",
   "capture_identity": {
-    "node": "thor-02",
+    "node": "capture-01",
     "instance": "12100b18cb6971cf461cff-1",
     "dialog_generation": 9015,
     "stream_generation": 0
@@ -2197,7 +2197,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
     },
     {
       "role": "observer",
-      "sip_user_agent": "sipnab/0.5.124 (observer; node thor-02)",
+      "sip_user_agent": "sipnab/0.5.124 (observer; node capture-01)",
       "validation": "none"
     }
   ],
@@ -2216,8 +2216,8 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "mediatype": "application/json",
       "encoding": "json",
       "body": {
-        "note": "Produced by sipnab 0.5.125 on node thor-02. sipnab OBSERVED this dialog and took no part in it: ... sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
-        "node": "thor-02",
+        "note": "Produced by sipnab 0.5.125 on node capture-01. sipnab OBSERVED this dialog and took no part in it: ... sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "node": "capture-01",
         "sipnab_version": "0.5.124",
         "frames_read": 852,
         "undecodable_frames": 0,
@@ -2404,7 +2404,7 @@ holds.
   "readable_over_mcp": false,
   "delivered_to": "sipnab log (tracing/journald/stderr)",
   "capture_identity": {
-    "node": "thor-02",
+    "node": "capture-01",
     "instance": "1d1a718cb5c33b7c52754-1",
     "dialog_generation": 13,
     "stream_generation": 2

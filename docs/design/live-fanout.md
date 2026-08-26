@@ -371,7 +371,7 @@ rather than argued.
 
 ### How it was measured
 
-`thor-02`, Linux 6.8.12-rt-tegra aarch64. A private network namespace holding
+the aarch64 runner, Linux 6.8.12-rt-tegra. A private network namespace holding
 one veth pair, both ends inside it and neither carrying an address, so the only
 traffic is the corpus. The corpus is 200 calls from
 [`bench/carrier.py`](../../bench/carrier.py) with a unique Call-ID and a unique

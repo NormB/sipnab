@@ -720,7 +720,7 @@ land once, after the structure settles.
   scanner, crossbeam, parking_lot): confirmed present and correct; not
   revisited.
 
-## WS8 — 0.5.16 benchmark re-validation follow-ups (2026-07-20, thor-02)
+## WS8 — 0.5.16 benchmark re-validation follow-ups (2026-07-20, aarch64)
 
 The 0.5.16 re-run (see docs/benchmarks page) improved every multi-core and
 sweep throughput number but appeared to surface two regressions vs the
@@ -741,11 +741,11 @@ sweep throughput number but appeared to surface two regressions vs the
   (writer.rs): classic-pcap records through a 512 KiB `BufWriter`, LE
   headers written directly, errors surfaced. Measured (535k corpus,
   cores=1, median-of-5) — CORRECTED 2026-07-20 after a provenance error:
-  the initial "+8.3% on thor" compared a thor-native build against a CI
+  the initial "+8.3% on aarch64" compared a native build against a CI
   cross-built artifact and was mostly toolchain delta. The clean numbers:
   same-toolchain A/B (writer commit vs parent, identical local rustc) puts
   the per-packet write cost at −43% (overhead 115ms → 65ms over 535k pkts)
-  and x86 e2e at +8–16%; artifact-vs-artifact on thor-02 shows e2e
+  and x86 e2e at +8–16%; artifact-vs-artifact on aarch64 shows e2e
   UNCHANGED (831k → 827k) because there the re-emit is bound by page-cache
   data volume, not per-packet overhead. The unconditional win is error
   surfacing. Lesson: A/B only same-provenance binaries.

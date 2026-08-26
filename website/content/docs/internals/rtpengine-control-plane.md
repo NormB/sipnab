@@ -275,8 +275,8 @@ Against rtpengine 12.5.1 with the module confirmed active and accounting the
 packets itself:
 
 ```text
-/proc/rtpengine/0/list   local 10.0.0.40:34232   250 packets  [kernel-forwarded]
-                         output → 10.0.0.60:40001             250 packets
+/proc/rtpengine/0/list   local 192.0.2.40:34232  250 packets  [kernel-forwarded]
+                         output → 192.0.2.60:40001            250 packets
 capture on the relay     ingress 500/500          egress 500/500
 ```
 

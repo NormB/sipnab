@@ -769,7 +769,7 @@ Tiers:
   This entry proposed the advertised-versus-actual PORT pair as the column.
   That was tried first and reverted: the table already filled its width
   exactly, so 22 columns of advertised endpoint truncated the address columns —
-  `10.0.0.2:30000` rendered as `10.0.0.2:3000`, a wrong port that reads as a
+  `192.0.2.2:30000` rendered as `192.0.2.2:3000`, a wrong port that reads as a
   real one. Corrupting the addresses to make room for evidence *about* the
   addresses is a bad trade. The list carries a five-column verdict
   (`ok` / `NAT` / `-`, taken from the Dialog column's width) and the endpoint
@@ -2617,7 +2617,7 @@ treats as critical.
   that recipe, for operators who would rather the secrets never reached a file.
 
   **A correction, recorded because it was asserted here first and was wrong.**
-  This entry previously claimed ecapture could not run on thor-02, reasoning
+  This entry previously claimed ecapture could not run on the aarch64 host, reasoning
   from `/sys/kernel/btf/` being absent on `6.8.12-rt-tegra` with
   `CONFIG_DEBUG_INFO_BTF` unset. The kernel facts are right — and the conclusion
   did not follow: **eCapture falls back to its own non-CO-RE bytecode when BTF
@@ -2635,7 +2635,7 @@ treats as critical.
 ### Measured 2026-08-14: this needs no BPF program at all
 
 Before choosing a loader, the cheapest mechanism was tested on
-`opensips-1.goes.com` (Debian 13, kernel 6.12.101, x86\_64, BTF present,
+`opensips.example.com` (Debian 13, kernel 6.12.101, x86\_64, BTF present,
 OpenSSL 3.5.6). A **tracefs uprobe with array fetch arguments**, and no BPF
 bytecode anywhere:
 
@@ -2657,7 +2657,7 @@ That is the plaintext `INVITE` out of `SSL_write` with **no `aya`, no
 sipnab pins Rust 1.97.1 stable in CI and the BPF program side of `aya` needs
 nightly plus `bpf-linker`, so this removes the entire build-system argument
 against `TK6`/`TK7`. It works on kernels with **no BTF**, which includes
-thor-02, so development and testing are not confined to one host. And the only
+the aarch64 host, so development and testing are not confined to one host. And the only
 offsets required are **ELF function symbols** — resolvable from the library
 file with the `object` crate — rather than the struct layouts that force
 ecapture to carry a table per OpenSSL release.
@@ -2673,7 +2673,7 @@ around it**.
 
 **Confirmed against a real SIP daemon, not just `openssl s_client`.** The same
 probe, pointed at a live OpenSIPS speaking SIP over TLS on
-`opensips-1.goes.com:5063`, returned both directions of a real transaction out
+`opensips.example.com:5063`, returned both directions of a real transaction out
 of the daemon's own `libssl`:
 
 ```
@@ -2689,7 +2689,7 @@ curiosity.
 
 ### The fetch ceiling, measured — and the over-read it exposes
 
-Measured on `opensips-1.goes.com` 2026-08-14, because the earlier note said the
+Measured on `opensips.example.com` 2026-08-14, because the earlier note said the
 ceiling was unverified and that designing around an unmeasured limit is how this
 goes wrong.
 
@@ -2710,8 +2710,8 @@ goes wrong.
 would have been portable and the kernel refuses them (`EIO` on the write), so
 the registers are named per calling convention — and each was then driven with
 real traffic using the exact line sipnab generates. On x86\_64
-(`opensips-1`, 6.12) `%si`/`%dx` returned a SIP `INVITE` out of OpenSIPS. On
-aarch64 (thor-02, 6.8-rt) `%x1`/`%x2` returned `50 52 49 20 2a 20 48 54 54 50`
+(x86\_64, 6.12) `%si`/`%dx` returned a SIP `INVITE` out of OpenSIPS. On
+aarch64 (6.8-rt) `%x1`/`%x2` returned `50 52 49 20 2a 20 48 54 54 50`
 — `PRI * HTTP`, curl's HTTP/2 preface — out of `libssl.so.3`. An architecture
 without a written-down convention refuses to build a probe rather than guessing
 at a register, because a guessed register reads whatever happens to be in it and
@@ -2735,14 +2735,14 @@ Unchanged by this result: plaintext still arrives with no 5-tuple, which is
 `TK7`'s hard half and the reason `MessageOrigin` exists.
 
 **The test listener that made this possible, and why it is a second instance.**
-`opensips-1.goes.com` runs a packaged OpenSIPS on `10.0.0.40:5060` whose
+`opensips.example.com` runs a packaged OpenSIPS on `192.0.2.40:5060` whose
 installed core corresponds to **neither** source tree on the box, so TLS modules
 built from either are rejected with a version-control type mismatch. Replacing
 the core to fix that rejects every other module too and needs config changes —
 `proto_udp` is inside the core in 4.1.0-dev rather than a module — so it is an
 OpenSIPS upgrade, not a listener. The TLS listener therefore runs as a
 self-contained second instance from the source tree's own binary and modules on
-`127.0.0.1:5063`, documented in `/home/gator/sipnab-tls-test/README` on that
+`127.0.0.1:5063`, documented in `/srv/sipnab-tls-test/README` on that
 host. The packaged instance is untouched.
 
 - [ ] **TK6 — APPROVED 2026-08-15, reversing the 2026-08-14 decline.** Full verdict:
@@ -2827,10 +2827,10 @@ host. The packaged instance is untouched.
   be blocked from building sipnab.
 
   **Reading `struct sock` needs kernel struct offsets**, which is what BTF
-  provides. thor-02 has none, so this backend is unavailable there and the
+  provides. The aarch64 host has none, so this backend is unavailable there and the
   tracefs one must remain the default rather than a fallback nobody tested.
 
-  **DONE, and verified live on `opensips-1` (carbon VM 140).** A real SIP-over-TLS
+  **DONE, and verified live on the x86\_64 OpenSIPS VM.** A real SIP-over-TLS
   exchange produced six messages with **real 5-tuples**, no key and no
   certificate:
 
@@ -2864,16 +2864,16 @@ host. The packaged instance is untouched.
   **UNBLOCKED, 2026-08-15 — on a different machine, and the version pin is
   the whole trick.** `bpf-linker` 0.11.0 wants `llvm-sys 231` (**LLVM 23.1**)
   and refuses with `could not find llvm-config in directories specified by
-  environment`; thor-02 carries LLVM 18, and `--no-default-features` does not
+  environment`; the aarch64 host carries LLVM 18, and `--no-default-features` does not
   redirect it to the one `rustc` bundles. Installing LLVM 23.1 system-wide was
   never the answer: **`bpf-linker` 0.9.13 pins `llvm-sys ^191.0.0-rc1`, which
   is LLVM 19**, so an older linker against an already-installed LLVM needs no
   third-party apt repository at all.
 
-  Both halves resolve on **`opensips-1` (carbon VM 140)** and neither resolves
-  on thor-02:
+  Both halves resolve on **the x86\_64 OpenSIPS VM** and neither resolves
+  on the aarch64 host:
 
-  | Requirement | thor-02 | opensips-1 (carbon 140) |
+  | Requirement | aarch64 host | x86\_64 VM |
   |---|---|---|
   | BTF (`/sys/kernel/btf/vmlinux`) | absent | **present**, 4.9 MB, `CONFIG_DEBUG_INFO_BTF=y` |
   | Kernel | 6.8.12-rt-tegra aarch64 | 6.12.101+deb13 x86_64 |
@@ -2885,14 +2885,14 @@ host. The packaged instance is untouched.
   produced `ELF 64-bit LSB relocatable, eBPF` carrying a `kprobe` section.
   Only Rust was added, user-local under `~gator`; no system package changed.
 
-  Note the docker container **also** called `opensips-1`, on thor-02, is a
-  different machine and shares thor's kernel — so it has no BTF either. The
+  Note the docker container of the same name, on the aarch64 host, is a
+  different machine and shares that host's kernel — so it has no BTF either. The
   carbon VM is the one that matters here, and it runs a real OpenSIPS, which
   makes it the end-to-end target as well as the build host.
 
   Two constraints stand regardless: the BPF build stays **optional**, so a
   contributor without nightly is never blocked and CI's pinned 1.97.1 jobs are
-  unaffected; and because thor-02 has no BTF, the tracefs reader stays the
+  unaffected; and because the aarch64 host has no BTF, the tracefs reader stays the
   **default** rather than becoming a fallback nobody tested.
 
 - [ ] **TK7 — Plaintext-from-uprobe has no honest provenance.** `SSL_read`/
@@ -3126,7 +3126,7 @@ are exactly the cases a signaling-only view gets wrong.
 
 - [x] **RE-T — prove the pair, not just the relay.** RE1/RE2 prove one hop
   against a recorded capture. The deployment is two machines: OpenSIPS
-  handling signaling, rtpengine handling media, on `opensips-1`. The next
+  handling signaling, rtpengine handling media, on the x86\_64 VM. The next
   proof is a two-unit test where sipnab correlates the proxy's SIP dialog
   with the relay's media into ONE call. Everything above depends on that
   join working, and nothing currently tests it.

@@ -1178,13 +1178,13 @@ st_no_capture_path_accepted() {
   st_eq "S30 the accepted option surface is pinned" \
     "--self-test|--bin|--runs|--rungs|--ladder-seconds|--headline-only|--ladder-only|-h|--help" \
     "$ACCEPTED_OPTIONS"
-  st_try parse_args --bin /home/gator/pcaps/x.pcap
+  st_try parse_args --bin /srv/pcaps/x.pcap
   st_true "S30 --bin refuses a capture file" test "$ST_RC" -ne 0
   st_has "S30 --bin says it takes no capture path" \
     "this script takes no capture path" "$ST_OUT"
-  for a in "--input /home/gator/pcaps/x.pcap" "-I /home/gator/pcaps" "--pcap x.pcap" \
-           "--corpus x.pcap" "--corpus-file x.pcap" "/home/gator/pcaps/x.pcap" \
-           "--capture x.pcap" "-r x.pcap" "--from x.pcap" "--pcap-dir /home/gator/pcaps" \
+  for a in "--input /srv/pcaps/x.pcap" "-I /srv/pcaps" "--pcap x.pcap" \
+           "--corpus x.pcap" "--corpus-file x.pcap" "/srv/pcaps/x.pcap" \
+           "--capture x.pcap" "-r x.pcap" "--from x.pcap" "--pcap-dir /srv/pcaps" \
            "--input-name x" "--bpf-file /tmp/f"; do
     # shellcheck disable=SC2086
     st_try parse_args $a
@@ -1206,12 +1206,12 @@ st_sipnab_argv_carries_no_input() {
 
 st_corpus_path_is_run_scoped() {
   local argv
-  export OUT=/home/gator/pcaps CORPUS=/home/gator/pcaps/x.pcap SIPNAB_CORPUS=/home/gator/pcaps/x.pcap
+  export OUT=/srv/pcaps CORPUS=/srv/pcaps/x.pcap SIPNAB_CORPUS=/srv/pcaps/x.pcap
   argv=$(argv_carrier /tmp/sipnab-live.XXXX 100 6000 0 0 100)
   unset OUT CORPUS SIPNAB_CORPUS
   st_has "S32 --out is inside the run-scoped dir" "/tmp/sipnab-live.XXXX/corpus.pcap" "$argv"
-  st_hasnt "S32 no environment path leaks in" "/home/gator/pcaps" "$argv"
-  st_try argv_carrier /home/gator/pcaps 100 6000 0 0 100
+  st_hasnt "S32 no environment path leaks in" "/srv/pcaps" "$argv"
+  st_try argv_carrier /srv/pcaps 100 6000 0 0 100
   st_true "S32 a non-temporary output base is refused" test "$ST_RC" -ne 0
   st_has "S32 the refusal says run-scoped" "run-scoped" "$ST_OUT"
 }

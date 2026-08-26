@@ -58,7 +58,7 @@ them. Render a stylized, simplified ladder as the right-hand third or as
 a subtle background panel, for example:
 
 ```text
- 10.0.0.1                 10.0.0.2
+ 192.0.2.1                 192.0.2.2
     │      INVITE ──────────▶ │
     │ ◀────────── 180 Ringing │
     │ ◀────────── 200 OK      │

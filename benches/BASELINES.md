@@ -19,10 +19,10 @@ CONTRIBUTING.md "Running Benchmarks").
 > Do not edit an old one: the value of a baseline is that it records what was
 > actually measured, and rewriting it destroys exactly that.
 
-## 2026-08-15 — thor-02 (aarch64, Linux 6.8.12-rt-tegra, 14 cores), rustc 1.97.1, at 0.5.101
+## 2026-08-15 — aarch64 (Jetson AGX Thor, Linux 6.8.12-rt-tegra, 14 cores), rustc 1.97.1, at 0.5.101
 
 **Not comparable to the entries below.** Every earlier baseline in this file was
-taken on opensips-1 — x86\_64 Debian, rustc 1.94. This is a different
+taken on the x86\_64 Debian VM, rustc 1.94. This is a different
 architecture *and* a different compiler, so a smaller or larger number here is
 not a regression or an improvement against them; it is a measurement of a
 different machine. Recorded as a first aarch64 baseline, to be compared against
@@ -107,7 +107,7 @@ every one of ten thousand rows. At 2 ms it is still under a frame, but it is the
 row to watch if the retention cap ever rises.
 
 
-## 2026-07-06 — opensips-1, rustc 1.96, WS5f + WS4.3c result
+## 2026-07-06 — x86\_64 VM, rustc 1.96, WS5f + WS4.3c result
 
 The layout/style split (WS5f) plus the cross-tick ladder cache (WS4.3c):
 `App::sync_caches` lays out the ladder at most once, keyed on the dialog
@@ -121,7 +121,7 @@ recomputed only when the stream store structurally changes.
 | ladder_frame_200 (new: full frame via App::render) | 313 µs | 134 µs | **−57% (2.3×)** — repeated frames run style+paint only |
 | prepare_ladder_200 (one-shot layout+style) | 183 µs | 211 µs | +14% — the split's extra row-materialization pass, paid once per change instead of every frame |
 
-## 2026-07-06 — opensips-1, rustc 1.94, WS4.3b result
+## 2026-07-06 — x86\_64 VM, rustc 1.94, WS4.3b result
 
 After the derived-data work (displayed list computed at most once per tick,
 cached across ticks keyed on the store generation + view inputs;
@@ -136,7 +136,7 @@ allocation-free ASCII-case-insensitive search):
 
 Acceptance (≥ 5× on the search frame) exceeded by ~50×.
 
-## 2026-07-06 — opensips-1, rustc 1.94, WS4.3 baseline (pre-optimization)
+## 2026-07-06 — x86\_64 VM, rustc 1.94, WS4.3 baseline (pre-optimization)
 
 New `tui_derived` bench, recorded BEFORE the WS4.3 derived-data work so the
 acceptance delta (≥ 5× on the search frame) is measurable. 10k-dialog store.
@@ -148,7 +148,7 @@ acceptance delta (≥ 5× on the search frame) is measurable. 10k-dialog store.
 | search_frame_10k | 33.2 ms | one REAL App::render frame with active search — ≈ 3 × the search pass, confirming the triple recompute; eats the whole 30 fps budget |
 | prepare_ladder_200 | 183 µs | CallFlow prepare_messages, 200-message dialog |
 
-## 2026-07-03 — opensips-1 (Debian 13, x86_64), rustc 1.94, WS0 baseline
+## 2026-07-03 — x86\_64 VM (Debian 13), rustc 1.94, WS0 baseline
 
 Recorded immediately after the WS0 quick wins (post `parallel.rs` clone
 removal, pre WS4.1 parser-allocation work). Mean point estimates.

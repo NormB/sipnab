@@ -757,7 +757,7 @@ has no route at that path, so the server answers `404` for every Call-ID. Check
 
 ```bash
 curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
-  "http://127.0.0.1:8080/v1/dialogs/test-call-1%4010.0.0.1/vcon" | jq .
+  "http://127.0.0.1:8080/v1/dialogs/test-call-1%40192.0.2.1/vcon" | jq .
 ```
 
 Percent-encode the `@`. A raw `@` in the path works in most clients, and the
@@ -774,19 +774,19 @@ per SIP message and grows with the call):
   "extensions": ["sip-signaling", "CC"],
   "parties": [
     {
-      "sip": "sip:1001@10.0.0.1",
+      "sip": "sip:1001@192.0.2.1",
       "validation": "none",
-      "sip_contact": "<sip:1001@10.0.0.1:5060>",
+      "sip_contact": "<sip:1001@192.0.2.1:5060>",
       "sip_user_agent": "sipnab-test/1.0"
     },
-    { "sip": "sip:1002@10.0.0.2", "validation": "none" },
+    { "sip": "sip:1002@192.0.2.2", "validation": "none" },
     {
       "validation": "none",
       "role": "observer",
-      "sip_user_agent": "sipnab/0.5.124 (observer; node thor-02)"
+      "sip_user_agent": "sipnab/0.5.124 (observer; node capture-01)"
     }
   ],
-  "dialog": [{ "sip_call_id": "test-call-1@10.0.0.1" }],
+  "dialog": [{ "sip_call_id": "test-call-1@192.0.2.1" }],
   "attachments": [
     { "purpose": "sip-message-trace", "party": 2, "mediatype": "application/json", "encoding": "json", "body": { "schema_version": 1, "messages": ["..."] } },
     {
@@ -795,8 +795,8 @@ per SIP message and grows with the call):
       "mediatype": "application/json",
       "encoding": "json",
       "body": {
-        "note": "Produced by sipnab 0.5.125 on node thor-02. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
-        "node": "thor-02",
+        "note": "Produced by sipnab 0.5.125 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "node": "capture-01",
         "sipnab_version": "0.5.124",
         "frames_read": 7,
         "undecodable_frames": 0,
@@ -818,7 +818,7 @@ per SIP message and grows with the call):
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
-      "body": { "schema_version": 1, "sip_call_id": "test-call-1@10.0.0.1", "final_status_code": 200, "capture_completeness": { "...": "the same object as the attachment above" } }
+      "body": { "schema_version": 1, "sip_call_id": "test-call-1@192.0.2.1", "final_status_code": 200, "capture_completeness": { "...": "the same object as the attachment above" } }
     }
   ]
 }
@@ -1022,7 +1022,7 @@ stream to its Call-ID:
 
 A relay's answer is authoritative about the port — rtpengine cannot be wrong
 about which socket it opened — and at the same time it is not an endpoint. An
-operator tracing one-way audio to `10.0.0.40:38664` needs to know whether that
+operator tracing one-way audio to `192.0.2.40:38664` needs to know whether that
 address is the far end or the box in the middle, and the two lead to opposite
 next steps.
 

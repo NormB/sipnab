@@ -2776,7 +2776,7 @@ has no route at that path, so the server answers `404` for every Call-ID. Check
 
 ```bash
 curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
-  "http://127.0.0.1:8080/v1/dialogs/test-call-1%4010.0.0.1/vcon" | jq .
+  "http://127.0.0.1:8080/v1/dialogs/test-call-1%40192.0.2.1/vcon" | jq .
 ```
 
 Percent-encode the `@`. A raw `@` in the path works in most clients, and the
@@ -2793,19 +2793,19 @@ per SIP message and grows with the call):
   "extensions": ["sip-signaling", "CC"],
   "parties": [
     {
-      "sip": "sip:1001@10.0.0.1",
+      "sip": "sip:1001@192.0.2.1",
       "validation": "none",
-      "sip_contact": "<sip:1001@10.0.0.1:5060>",
+      "sip_contact": "<sip:1001@192.0.2.1:5060>",
       "sip_user_agent": "sipnab-test/1.0"
     },
-    { "sip": "sip:1002@10.0.0.2", "validation": "none" },
+    { "sip": "sip:1002@192.0.2.2", "validation": "none" },
     {
       "validation": "none",
       "role": "observer",
-      "sip_user_agent": "sipnab/0.5.124 (observer; node thor-02)"
+      "sip_user_agent": "sipnab/0.5.124 (observer; node capture-01)"
     }
   ],
-  "dialog": [{ "sip_call_id": "test-call-1@10.0.0.1" }],
+  "dialog": [{ "sip_call_id": "test-call-1@192.0.2.1" }],
   "attachments": [
     { "purpose": "sip-message-trace", "party": 2, "mediatype": "application/json", "encoding": "json", "body": { "schema_version": 1, "messages": ["..."] } },
     {
@@ -2814,8 +2814,8 @@ per SIP message and grows with the call):
       "mediatype": "application/json",
       "encoding": "json",
       "body": {
-        "note": "Produced by sipnab 0.5.125 on node thor-02. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
-        "node": "thor-02",
+        "note": "Produced by sipnab 0.5.125 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "node": "capture-01",
         "sipnab_version": "0.5.124",
         "frames_read": 7,
         "undecodable_frames": 0,
@@ -2837,7 +2837,7 @@ per SIP message and grows with the call):
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
-      "body": { "schema_version": 1, "sip_call_id": "test-call-1@10.0.0.1", "final_status_code": 200, "capture_completeness": { "...": "the same object as the attachment above" } }
+      "body": { "schema_version": 1, "sip_call_id": "test-call-1@192.0.2.1", "final_status_code": 200, "capture_completeness": { "...": "the same object as the attachment above" } }
     }
   ]
 }
@@ -3041,7 +3041,7 @@ stream to its Call-ID:
 
 A relay's answer is authoritative about the port — rtpengine cannot be wrong
 about which socket it opened — and at the same time it is not an endpoint. An
-operator tracing one-way audio to `10.0.0.40:38664` needs to know whether that
+operator tracing one-way audio to `192.0.2.40:38664` needs to know whether that
 address is the far end or the box in the middle, and the two lead to opposite
 next steps.
 
@@ -3658,7 +3658,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.124 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.125 sh
 ```
 
 To install somewhere other than `/usr/local/bin` — a directory you already own,
@@ -3756,7 +3756,7 @@ canonical triples deliberately: they match `rustc -vV`, they are what
 script constructs them.
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
-Alpine included. Replace `<version>` with the latest, e.g. 0.5.124:
+Alpine included. Replace `<version>` with the latest, e.g. 0.5.125:
 
 ```bash
 # Run all of these, in order.
@@ -3775,7 +3775,7 @@ sudo install -m 755 sipnab-<version>-aarch64-unknown-linux-musl/sipnab /usr/loca
 ```
 
 Manual download with checksum verification (replace `<version>` with the
-latest, e.g. 0.5.124):
+latest, e.g. 0.5.125):
 
 ```bash
 # Run all of these, in order.
@@ -3817,7 +3817,7 @@ cargo install sipnab --features full
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.36, i.e. Debian 12+ / Ubuntu 23.04+ -- on older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package — replace `<version>` with the
-latest, e.g. 0.5.124:
+latest, e.g. 0.5.125:
 
 ```bash
 # Run all of these, in order.
@@ -3876,26 +3876,26 @@ dependency — for headless servers, mirroring the `.deb` variants).
 The standard package on an x86_64 host:
 
 ```bash
-sudo rpm -i sipnab-0.5.124-1.x86_64.rpm
+sudo rpm -i sipnab-0.5.125-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo rpm -i sipnab-0.5.124-1.x86_64-noaudio.rpm
+sudo rpm -i sipnab-0.5.125-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host — pick the variant matching
 `uname -m`:
 
 ```bash
-sudo rpm -i sipnab-0.5.124-1.aarch64.rpm
+sudo rpm -i sipnab-0.5.125-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo rpm -i sipnab-0.5.124-1.aarch64-noaudio.rpm
+sudo rpm -i sipnab-0.5.125-1.aarch64-noaudio.rpm
 ```
 
 ### Homebrew (macOS)
@@ -4354,10 +4354,10 @@ Without the control plane, everything orphans:
 Orphaned Streams:
 SSRC         Source                   Destination              Pkts     Duration
 --------------------------------------------------------------------------------
-0x0a0a0a0a   10.0.0.60:40001          10.0.0.40:38156          10       0s
-0x0b0b0b0b   10.0.0.60:40002          10.0.0.40:38664          10       0s
-0x0a0a0a0a   10.0.0.40:38664          10.0.0.60:40002          10       0s
-0x0b0b0b0b   10.0.0.40:38156          10.0.0.60:40001          10       0s
+0x0a0a0a0a   192.0.2.60:40001         192.0.2.40:38156         10       0s
+0x0b0b0b0b   192.0.2.60:40002         192.0.2.40:38664         10       0s
+0x0a0a0a0a   192.0.2.40:38664         192.0.2.60:40002         10       0s
+0x0b0b0b0b   192.0.2.40:38156         192.0.2.60:40001         10       0s
 ```
 
 With it, the same media resolves to one call — and gains a codec, because the
@@ -4367,10 +4367,10 @@ control plane carries the SDP too:
 RTP Streams:
 SSRC         PT   Codec    Clock  Source                Destination           Pkts
 ----------------------------------------------------------------------------------
-0x0a0a0a0a   0    PCMU     8000   10.0.0.60:40001       10.0.0.40:38156       10
-0x0b0b0b0b   0    PCMU     8000   10.0.0.60:40002       10.0.0.40:38664       10
-0x0a0a0a0a   0    PCMU     8000   10.0.0.40:38664       10.0.0.60:40002       10
-0x0b0b0b0b   0    PCMU     8000   10.0.0.40:38156       10.0.0.60:40001       10
+0x0a0a0a0a   0    PCMU     8000   192.0.2.60:40001      192.0.2.40:38156      10
+0x0b0b0b0b   0    PCMU     8000   192.0.2.60:40002      192.0.2.40:38664      10
+0x0a0a0a0a   0    PCMU     8000   192.0.2.40:38664      192.0.2.60:40002      10
+0x0b0b0b0b   0    PCMU     8000   192.0.2.40:38156      192.0.2.60:40001      10
 
 Calls named by a media relay (no SIP for them in this capture):
 Call-ID                                                      Streams
@@ -4482,13 +4482,13 @@ address the proxy negotiated IS the rtpengine it steered the call to.
 ```bash
 curl -fsS "http://proxy:8080/v1/dialogs/$CALL_ID" $H \
   | jq -r '.sdp_timeline[0] | "\(.media_addr):\(.media_port)"'
-# 10.0.0.40:38664
+# 192.0.2.40:38664
 ```
 
 **Step 2 — ask that one relay, and no others.**
 
 ```bash
-curl -fsS "http://10.0.0.40:8080/v1/dialogs/$CALL_ID" $H | jq '.streams'
+curl -fsS "http://192.0.2.40:8080/v1/dialogs/$CALL_ID" $H | jq '.streams'
 ```
 
 A relay that never carried the call answers **404**, not an empty success.
@@ -4502,7 +4502,7 @@ Every node stamps its answers with its own `capture_identity`, which carries
 the host name:
 
 ```bash
-curl -fsS "http://10.0.0.40:8080/v1/stats" $H | jq '.capture_identity'
+curl -fsS "http://192.0.2.40:8080/v1/stats" $H | jq '.capture_identity'
 # { "node": "relay-a", "instance": "1f4a…", "dialog_generation": 412, … }
 ```
 
@@ -4548,7 +4548,7 @@ RTCP statistics only, which carry no Call-ID and no SDP.
 Add these to the `[rtpengine]` section of `/etc/rtpengine/rtpengine.conf`:
 
 ```ini
-homer = 10.0.0.60:9060
+homer = 192.0.2.60:9060
 homer-protocol = udp
 homer-id = 2001
 homer-enable-ng = true
@@ -4588,7 +4588,7 @@ rtpengine CONNECTS its Homer socket, so a destination that answers with ICMP
 port-unreachable makes it give up and log this:
 
 ```text
-ERR: [core] Connection error from Homer at 10.0.0.1:9060: Connection refused
+ERR: [core] Connection error from Homer at 192.0.2.1:9060: Connection refused
 ```
 
 After that it sends nothing, which looks exactly like the feature not working.
@@ -4620,7 +4620,7 @@ sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --report
 A relay on its own host answers the same question over the network:
 
 ```sh
-sudo sipnab -N -d eth0 --rtpengine-control 10.0.0.40:22222 --report
+sudo sipnab -N -d eth0 --rtpengine-control 192.0.2.40:22222 --report
 ```
 
 `-N` earns its place in both. sipnab writes these summaries as log lines on
@@ -4669,7 +4669,7 @@ The distinction changes what the address means, which is why it is not folded
 away. A relay's answer is **authoritative about the port** — rtpengine cannot
 be wrong about which socket it opened — and at the same time it is **not an
 endpoint**: it names the box the media passed through, not where either party
-sits. An operator tracing a one-way-audio fault to `10.0.0.40:38664` needs to
+sits. An operator tracing a one-way-audio fault to `192.0.2.40:38664` needs to
 know whether that is the far end or the box in the middle, and those lead to
 opposite next steps.
 
@@ -4767,8 +4767,8 @@ checked it against rtpengine 12.5.1, with the module confirmed active and
 accounting the packets itself:
 
 ```text
-/proc/rtpengine/0/list   local 10.0.0.40:34232   250 packets   [kernel-forwarded]
-                         output → 10.0.0.60:40001              250 packets
+/proc/rtpengine/0/list   local 192.0.2.40:34232  250 packets   [kernel-forwarded]
+                         output → 192.0.2.60:40001             250 packets
 capture on the relay     ingress 500/500         egress 500/500
 ```
 
@@ -7603,7 +7603,7 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--hep-auth-mode` | `<plain\|hmac>` | `plain` | HEP auth mode. `plain` sends/expects the shared secret verbatim in the 0x000e chunk (Homer-compatible, but replayable by an on-path sniffer). `hmac` sends/expects a per-message token (timestamp + nonce + HMAC-SHA256 over the payload) that resists replay — **sipnab-to-sipnab only**; a stock Homer/Kamailio peer does not understand it. Feature: `hep` |
 | `--hep-hmac-window` | `<SECS>` | `30` | Seconds either side of now within which sipnab still honors a `--hep-auth-mode hmac` token's timestamp. On an agent/collector pair with poor NTP sipnab turns every packet away as out-of-window, and what the operator sees is a collector receiving NOTHING -- a symptom they attribute to routing, a firewall, or a dead agent long before a clock. Widening it is a security trade rather than a convenience: the window is exactly how long a packet an on-path attacker captured stays acceptable, and how far back the receiver's nonce cache must remember. Range 1-300. Config: `[security] hep_hmac_window_secs` Feature: `hep` |
 | `-E`, `--hep-parse` | -- | off | Parse incoming HEP packets (enable HEP decoding). Feature: `hep` |
-| `--hep-allow` | `<ADDR>` | -- | Allowed source addresses for HEP input (repeatable). Takes CIDR (`10.0.0.0/8`, `2001:db8::/32`) or a **bare address** (`10.0.0.40`), which means that host alone — `/32` for IPv4, `/128` for IPv6. A missing prefix always narrows, never widens: `10.0.0.0` is one host, not `10.0.0.0/8`. sipnab **refuses** a non-loopback `--hep-listen` bind unless you pass either this or `--hep-auth`/`--hep-auth-file`. Feature: `hep` |
+| `--hep-allow` | `<ADDR>` | -- | Allowed source addresses for HEP input (repeatable). Takes CIDR (`192.0.2.0/8`, `2001:db8::/32`) or a **bare address** (`192.0.2.40`), which means that host alone — `/32` for IPv4, `/128` for IPv6. A missing prefix always narrows, never widens: `192.0.2.0` is one host, not `192.0.2.0/8`. sipnab **refuses** a non-loopback `--hep-listen` bind unless you pass either this or `--hep-auth`/`--hep-auth-file`. Feature: `hep` |
 | `--hep-rate-limit` | `<N>` | `50000` | Maximum HEP packets per second (global ceiling across all senders); `0` disables the global ceiling, consistent with `off` on the per-peer knob Feature: `hep` |
 | `--hep-rate-limit-per-peer` | `<N\|auto\|off>` | `off` | Maximum HEP packets/second from any single source IP: a number, `off` (the default), or `auto`. Adds fairness so one flooding peer cannot exhaust the global `--hep-rate-limit`. `auto` divides the global ceiling evenly across the `--hep-allow` sources (stays off without an allowlist). The listener logs its active limiters at startup. Feature: `hep` |
 | `--hep-allow-kill` | -- | off | Allow scanner-kill to send active responses for packets received via HEP. **Off by default**: a HEP sender asserts the inner src/dst, so absent `--hep-auth` an attacker could aim the kill at a victim of their choosing. Only enable with authenticated, trusted HEP input. Feature: `hep` |
@@ -13509,7 +13509,7 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
   "truncated": true,
   "next_cursor": "2016-11-17T21:52:35.403349+00:00|call-2-synth@192.0.2.10",
   "capture_identity": {
-    "node": "thor-02",
+    "node": "capture-01",
     "instance": "1ae7318cb5c11b1a306dd-1",
     "dialog_generation": 9015,
     "stream_generation": 0
@@ -13780,7 +13780,7 @@ invalid_params (-32602) naming the offending value.
   "truncated": true,
   "next_cursor": "2016-11-17T21:54:34.903349+00:00|call-1197-synth@192.0.2.10",
   "capture_identity": {
-    "node": "thor-02",
+    "node": "capture-01",
     "instance": "1ae7318cb5c11b1a306dd-1",
     "dialog_generation": 9015,
     "stream_generation": 0
@@ -14166,7 +14166,7 @@ carries four streams — two PCMU, two G722 — and no dialogs at all:
   "truncated": true,
   "next_cursor": "2026-07-08T18:35:27.407583+00:00|0x0e330af3@127.0.0.1:5094>127.0.0.1:5084",
   "capture_identity": {
-    "node": "thor-02",
+    "node": "capture-01",
     "instance": "22fa418cb5c799c57abef-1",
     "dialog_generation": 1,
     "stream_generation": 4
@@ -14334,7 +14334,7 @@ The example runs against [`tests/pcap-samples/sipp-branch-scenario.pcapng`](http
   "truncated": true,
   "next_cursor": "2016-11-17T21:52:35.303349+00:00|call-1-synth@192.0.2.10#0000000000",
   "capture_identity": {
-    "node": "thor-02",
+    "node": "capture-01",
     "instance": "12100b18cb6971cf461cff-1",
     "dialog_generation": 9015,
     "stream_generation": 0
@@ -14408,7 +14408,7 @@ has finished: stop when it turns `true` instead of polling forever.
   "next_cursor": "2016-11-26T14:53:08.170676+00:00|1-1966@10.0.2.20",
   "source_exhausted": true,
   "capture_identity": {
-    "node": "thor-02",
+    "node": "capture-01",
     "instance": "1d1a718cb5c33b7c52754-1",
     "dialog_generation": 13,
     "stream_generation": 2
@@ -15035,7 +15035,7 @@ whose two calls share an SDP origin:
   "total_matched": 1,
   "heuristic_only": false,
   "capture_identity": {
-    "node": "thor-02",
+    "node": "capture-01",
     "instance": "1d1a718cb5c33b7c52754-1",
     "dialog_generation": 13,
     "stream_generation": 2
@@ -15224,7 +15224,7 @@ same window without a filter answers `total_matched: 247`:
   "truncated": true,
   "next_cursor": "2016-11-17T21:52:37.703349+00:00|call-25-synth@192.0.2.10",
   "capture_identity": {
-    "node": "thor-02",
+    "node": "capture-01",
     "instance": "12100b18cb6971cf461cff-1",
     "dialog_generation": 9015,
     "stream_generation": 0
@@ -15492,7 +15492,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
     },
     {
       "role": "observer",
-      "sip_user_agent": "sipnab/0.5.124 (observer; node thor-02)",
+      "sip_user_agent": "sipnab/0.5.124 (observer; node capture-01)",
       "validation": "none"
     }
   ],
@@ -15511,8 +15511,8 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "mediatype": "application/json",
       "encoding": "json",
       "body": {
-        "note": "Produced by sipnab 0.5.125 on node thor-02. sipnab OBSERVED this dialog and took no part in it: ... sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
-        "node": "thor-02",
+        "note": "Produced by sipnab 0.5.125 on node capture-01. sipnab OBSERVED this dialog and took no part in it: ... sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "node": "capture-01",
         "sipnab_version": "0.5.124",
         "frames_read": 852,
         "undecodable_frames": 0,
@@ -15699,7 +15699,7 @@ holds.
   "readable_over_mcp": false,
   "delivered_to": "sipnab log (tracing/journald/stderr)",
   "capture_identity": {
-    "node": "thor-02",
+    "node": "capture-01",
     "instance": "1d1a718cb5c33b7c52754-1",
     "dialog_generation": 13,
     "stream_generation": 2
@@ -16374,7 +16374,7 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
   address, and the socket alone does not tell them apart.
 
   ```text
-  tool=list_dialogs id=7 caller="10.0.0.9:51544 bearer-verified scope=read token=ci-runner-1" outcome=ok elapsed_ms=3 args={"limit":50}
+  tool=list_dialogs id=7 caller="192.0.2.9:51544 bearer-verified scope=read token=ci-runner-1" outcome=ok elapsed_ms=3 args={"limit":50}
   ```
 
   **A caller with no token carries no `token=` field at all** — not a blank
@@ -17561,24 +17561,24 @@ and a consumer parses it before indexing into it.
   ],
   "parties": [
     {
-      "sip": "sip:1001@10.0.0.1",
+      "sip": "sip:1001@192.0.2.1",
       "validation": "none",
-      "sip_contact": "<sip:1001@10.0.0.1:5060>",
+      "sip_contact": "<sip:1001@192.0.2.1:5060>",
       "sip_user_agent": "sipnab-test/1.0"
     },
     {
-      "sip": "sip:1002@10.0.0.2",
+      "sip": "sip:1002@192.0.2.2",
       "validation": "none"
     },
     {
       "validation": "none",
       "role": "observer",
-      "sip_user_agent": "sipnab/0.5.124 (observer; node thor-02)"
+      "sip_user_agent": "sipnab/0.5.124 (observer; node capture-01)"
     }
   ],
   "dialog": [
     {
-      "sip_call_id": "test-call-1@10.0.0.1"
+      "sip_call_id": "test-call-1@192.0.2.1"
     }
   ],
   "attachments": [
@@ -17590,25 +17590,25 @@ and a consumer parses it before indexing into it.
       "body": {
         "messages": [
           {
-            "call_id": "test-call-1@10.0.0.1",
-            "contact": "<sip:1001@10.0.0.1:5060>",
+            "call_id": "test-call-1@192.0.2.1",
+            "contact": "<sip:1001@192.0.2.1:5060>",
             "cseq": {
               "method": "INVITE",
               "number": 1
             },
             "dscp": 0,
-            "dst": "10.0.0.2",
+            "dst": "192.0.2.2",
             "dst_port": 5060,
             "frame": "…/tests/fixtures/sip_call.pcap#0@bdb6cdb98013efe4",
-            "from": "<sip:1001@10.0.0.1>;tag=1928301774",
+            "from": "<sip:1001@192.0.2.1>;tag=1928301774",
             "is_request": true,
             "method": "INVITE",
             "schema_version": 1,
             "sdp": "",
-            "src": "10.0.0.1",
+            "src": "192.0.2.1",
             "src_port": 5060,
             "timestamp": "2023-11-14T22:13:20+00:00",
-            "to": "<sip:1002@10.0.0.2>",
+            "to": "<sip:1002@192.0.2.2>",
             "transport": "UDP",
             "ua": "sipnab-test/1.0"
           }
@@ -17616,7 +17616,7 @@ and a consumer parses it before indexing into it.
           six more objects of the same shape …
         ],
         "schema_version": 1,
-        "sip_call_id": "test-call-1@10.0.0.1"
+        "sip_call_id": "test-call-1@192.0.2.1"
       }
     },
     {
@@ -17629,8 +17629,8 @@ and a consumer parses it before indexing into it.
         "dialogs_rotated": 0,
         "frames_read": 22,
         "messages_evicted": 0,
-        "node": "thor-02",
-        "note": "Produced by sipnab 0.5.125 on node thor-02. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 22 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. No capture-level analysis was supplied for this export, so nothing here rules out a blind spot.",
+        "node": "capture-01",
+        "note": "Produced by sipnab 0.5.125 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 22 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. No capture-level analysis was supplied for this export, so nothing here rules out a blind spot.",
         "sip_discarded_by_port_gate": 0,
         "sip_discarded_by_websocket_gate": 0,
         "sipnab_version": "0.5.124",
@@ -17653,7 +17653,7 @@ and a consumer parses it before indexing into it.
         },
         "final_status_code": 200,
         "schema_version": 1,
-        "sip_call_id": "test-call-1@10.0.0.1"
+        "sip_call_id": "test-call-1@192.0.2.1"
       }
     }
   ]
@@ -17751,8 +17751,8 @@ idle compaction discarded four messages it had already captured:
     "dialogs_rotated": 0,
     "frames_read": 22,
     "messages_evicted": 4,
-    "node": "thor-02",
-    "note": "Produced by sipnab 0.5.125 on node thor-02. … sipnab read 22 frame(s) for this capture. — INCOMPLETE: 3 frame(s) reached the parser and produced nothing, so any count in this container is a floor. — INCOMPLETE: idle compaction discarded 4 message(s) sipnab had already captured, so the trace in this container may be shorter than the call was. Raise [limits] keep_messages_per_idle_dialog to hold more. No capture-level analysis was supplied for this export, so nothing here rules out a blind spot.",
+    "node": "capture-01",
+    "note": "Produced by sipnab 0.5.125 on node capture-01. … sipnab read 22 frame(s) for this capture. — INCOMPLETE: 3 frame(s) reached the parser and produced nothing, so any count in this container is a floor. — INCOMPLETE: idle compaction discarded 4 message(s) sipnab had already captured, so the trace in this container may be shorter than the call was. Raise [limits] keep_messages_per_idle_dialog to hold more. No capture-level analysis was supplied for this export, so nothing here rules out a blind spot.",
     "sip_discarded_by_port_gate": 0,
     "sip_discarded_by_websocket_gate": 0,
     "sipnab_version": "0.5.124",
@@ -19857,7 +19857,7 @@ compiles, which is exactly why CI has a feature matrix.
 | `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via [`scripts/build-wiki.py`](../../scripts/build-wiki.py). |
 | `release.yml` | `v*` tags | The release. See below. |
 | `sanitizers.yml` | weekly cron (Tuesdays 06:11 UTC) + manual + on its own path | ThreadSanitizer over the threaded integration suites. Nightly as a tool, not as the toolchain. |
-| `self-hosted-smoke.yml` | manual (`workflow_dispatch`) | Proves the thor-02 self-hosted runner can build sipnab before any production job runs on it. Fires on no automatic event, so no PR can execute on the box. |
+| `self-hosted-smoke.yml` | manual (`workflow_dispatch`) | Proves the self-hosted runner can build sipnab before any production job runs on it. Fires on no automatic event, so no PR can execute on the box. |
 | `osv-scanner.yml` | push to main, PR, weekly cron (Wednesdays 05:41 UTC) + manual | Vulnerability matching against osv.dev for EVERY lockfile, not just the crate graph. Not redundant with `cargo audit`: that reads Cargo.lock and RustSec only, so advisories against the Actions pins, the Dockerfiles or the fuzz workspace are invisible to it. It also queries a service rather than keeping a local advisory clone, so it does not share the stale-cache failure that broke every `cargo audit` for a day on 2026-08-09. |
 | `bench.yml` | daily cron (03:29 UTC) + manual | 4-core offline reconstruction against the baseline in [`bench/baseline.json`](../../bench/baseline.json), failing below 80% of it. Exists because a 40% regression shipped in four releases with every test green. Nightly and wide-banded on purpose: the reference host also serves CI, so a per-push wall-clock gate would measure contention. |
 
@@ -21488,8 +21488,8 @@ Against rtpengine 12.5.1 with the module confirmed active and accounting the
 packets itself:
 
 ```text
-/proc/rtpengine/0/list   local 10.0.0.40:34232   250 packets  [kernel-forwarded]
-                         output → 10.0.0.60:40001             250 packets
+/proc/rtpengine/0/list   local 192.0.2.40:34232  250 packets  [kernel-forwarded]
+                         output → 192.0.2.60:40001            250 packets
 capture on the relay     ingress 500/500          egress 500/500
 ```
 

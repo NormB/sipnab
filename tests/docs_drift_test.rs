@@ -2745,7 +2745,12 @@ fn no_documentation_table_repeats_a_row() {
     // conserver interop audit changed how a Dialog Object is typed: one table
     // saying which `type` and `disposition` each kind of object carries, plus
     // its generated site mirror. Two files, one table each.
-    const EXPECTED_TABLES: usize = 666;
+    // 666 -> 667: one table, in CONTRIBUTING.md, mapping each private-identity
+    // class to what a writer should put instead. Attributed by measurement
+    // before the number moved -- that file carried three table separators at
+    // HEAD and carries four here, and no other page gained any. CONTRIBUTING.md
+    // has no site mirror, so it costs one rather than two.
+    const EXPECTED_TABLES: usize = 667;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -3975,6 +3980,61 @@ fn the_tree_spells_in_us_english() {
          already swept it once; without this gate it drifted back:\n  {}",
         hits.len(),
         hits.join("\n  ")
+    );
+}
+
+/// The British-spelling list is not empty.
+///
+/// The gate above counts the files it scanned, which catches a walk that
+/// stopped early -- and says nothing about a word list that emptied. With no
+/// words in it the scan reads every file and reports every one of them clean,
+/// which is indistinguishable from a tree that is clean. The file count and
+/// the list are two different ways for the same gate to prove nothing.
+#[test]
+fn the_british_spelling_list_is_not_empty() {
+    let src = include_str!("docs_drift_test.rs");
+    let list = src
+        .split("const BRITISH: &[&str] = &[")
+        .nth(1)
+        .expect("the spelling gate declares its list")
+        .split("];")
+        .next()
+        .expect("the list is terminated");
+    let words = list.matches('"').count() / 2;
+    assert!(
+        words > 20,
+        "the British-spelling list holds {words} word(s), which is too few to \
+         be the list this gate was written with -- and an empty one passes on \
+         every file in the tree"
+    );
+    for must in ["behaviour", "normalise", "recognised"] {
+        assert!(
+            list.contains(must),
+            "`{must}` is a spelling this tree has actually drifted into and \
+             must stay in the list"
+        );
+    }
+}
+
+/// The contributing guide states the spelling rule.
+///
+/// Written after the gate caught `recognised` in a test file added the same
+/// day. Nothing had told the writer, so the rule was met for the first time as
+/// a rejected commit -- and the fix is a sentence, not a stricter gate.
+#[test]
+fn the_guide_states_the_us_english_rule() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let guide = std::fs::read_to_string(repo.join("CONTRIBUTING.md"))
+        .expect("CONTRIBUTING.md")
+        .to_ascii_lowercase();
+    assert!(
+        guide.contains("us english"),
+        "CONTRIBUTING.md does not state that prose is US English, so a \
+         contributor learns it from a failed commit"
+    );
+    assert!(
+        guide.contains("the_tree_spells_in_us_english"),
+        "and it must name the gate, so the reader can see what checks it"
     );
 }
 

@@ -83,7 +83,7 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
   address, and the socket alone does not tell them apart.
 
   ```text
-  tool=list_dialogs id=7 caller="10.0.0.9:51544 bearer-verified scope=read token=ci-runner-1" outcome=ok elapsed_ms=3 args={"limit":50}
+  tool=list_dialogs id=7 caller="192.0.2.9:51544 bearer-verified scope=read token=ci-runner-1" outcome=ok elapsed_ms=3 args={"limit":50}
   ```
 
   **A caller with no token carries no `token=` field at all** — not a blank

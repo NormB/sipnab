@@ -165,24 +165,24 @@ and a consumer parses it before indexing into it.
   ],
   "parties": [
     {
-      "sip": "sip:1001@10.0.0.1",
+      "sip": "sip:1001@192.0.2.1",
       "validation": "none",
-      "sip_contact": "<sip:1001@10.0.0.1:5060>",
+      "sip_contact": "<sip:1001@192.0.2.1:5060>",
       "sip_user_agent": "sipnab-test/1.0"
     },
     {
-      "sip": "sip:1002@10.0.0.2",
+      "sip": "sip:1002@192.0.2.2",
       "validation": "none"
     },
     {
       "validation": "none",
       "role": "observer",
-      "sip_user_agent": "sipnab/0.5.124 (observer; node thor-02)"
+      "sip_user_agent": "sipnab/0.5.124 (observer; node capture-01)"
     }
   ],
   "dialog": [
     {
-      "sip_call_id": "test-call-1@10.0.0.1"
+      "sip_call_id": "test-call-1@192.0.2.1"
     }
   ],
   "attachments": [
@@ -194,25 +194,25 @@ and a consumer parses it before indexing into it.
       "body": {
         "messages": [
           {
-            "call_id": "test-call-1@10.0.0.1",
-            "contact": "<sip:1001@10.0.0.1:5060>",
+            "call_id": "test-call-1@192.0.2.1",
+            "contact": "<sip:1001@192.0.2.1:5060>",
             "cseq": {
               "method": "INVITE",
               "number": 1
             },
             "dscp": 0,
-            "dst": "10.0.0.2",
+            "dst": "192.0.2.2",
             "dst_port": 5060,
             "frame": "…/tests/fixtures/sip_call.pcap#0@bdb6cdb98013efe4",
-            "from": "<sip:1001@10.0.0.1>;tag=1928301774",
+            "from": "<sip:1001@192.0.2.1>;tag=1928301774",
             "is_request": true,
             "method": "INVITE",
             "schema_version": 1,
             "sdp": "",
-            "src": "10.0.0.1",
+            "src": "192.0.2.1",
             "src_port": 5060,
             "timestamp": "2023-11-14T22:13:20+00:00",
-            "to": "<sip:1002@10.0.0.2>",
+            "to": "<sip:1002@192.0.2.2>",
             "transport": "UDP",
             "ua": "sipnab-test/1.0"
           }
@@ -220,7 +220,7 @@ and a consumer parses it before indexing into it.
           six more objects of the same shape …
         ],
         "schema_version": 1,
-        "sip_call_id": "test-call-1@10.0.0.1"
+        "sip_call_id": "test-call-1@192.0.2.1"
       }
     },
     {
@@ -233,8 +233,8 @@ and a consumer parses it before indexing into it.
         "dialogs_rotated": 0,
         "frames_read": 22,
         "messages_evicted": 0,
-        "node": "thor-02",
-        "note": "Produced by sipnab 0.5.125 on node thor-02. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 22 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. No capture-level analysis was supplied for this export, so nothing here rules out a blind spot.",
+        "node": "capture-01",
+        "note": "Produced by sipnab 0.5.125 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 22 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. No capture-level analysis was supplied for this export, so nothing here rules out a blind spot.",
         "sip_discarded_by_port_gate": 0,
         "sip_discarded_by_websocket_gate": 0,
         "sipnab_version": "0.5.124",
@@ -257,7 +257,7 @@ and a consumer parses it before indexing into it.
         },
         "final_status_code": 200,
         "schema_version": 1,
-        "sip_call_id": "test-call-1@10.0.0.1"
+        "sip_call_id": "test-call-1@192.0.2.1"
       }
     }
   ]
@@ -355,8 +355,8 @@ idle compaction discarded four messages it had already captured:
     "dialogs_rotated": 0,
     "frames_read": 22,
     "messages_evicted": 4,
-    "node": "thor-02",
-    "note": "Produced by sipnab 0.5.125 on node thor-02. … sipnab read 22 frame(s) for this capture. — INCOMPLETE: 3 frame(s) reached the parser and produced nothing, so any count in this container is a floor. — INCOMPLETE: idle compaction discarded 4 message(s) sipnab had already captured, so the trace in this container may be shorter than the call was. Raise [limits] keep_messages_per_idle_dialog to hold more. No capture-level analysis was supplied for this export, so nothing here rules out a blind spot.",
+    "node": "capture-01",
+    "note": "Produced by sipnab 0.5.125 on node capture-01. … sipnab read 22 frame(s) for this capture. — INCOMPLETE: 3 frame(s) reached the parser and produced nothing, so any count in this container is a floor. — INCOMPLETE: idle compaction discarded 4 message(s) sipnab had already captured, so the trace in this container may be shorter than the call was. Raise [limits] keep_messages_per_idle_dialog to hold more. No capture-level analysis was supplied for this export, so nothing here rules out a blind spot.",
     "sip_discarded_by_port_gate": 0,
     "sip_discarded_by_websocket_gate": 0,
     "sipnab_version": "0.5.124",

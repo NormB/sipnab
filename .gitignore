@@ -39,7 +39,7 @@ build/
 *.profdata
 
 # Agent/debug scratch written into the repo root. `orph.json` appeared during a
-# validation run holding real capture IPs — the corpus at /home/gator/pcaps
+# validation run holding real capture IPs — the corpus at /srv/pcaps
 # carries PII and nothing derived from it may reach the repository. This is the
 # same shape as the 45 .profraw files that reached GitHub: a stray artefact plus
 # an indiscriminate `git add -A`. Scratch belongs outside the tree; this is the
@@ -67,3 +67,7 @@ build/
 # the OpenSSF Scorecard Binary-Artifacts check, which is right: a binary in a
 # repository cannot be audited from source.
 website/static/wasm/sipnab_bg.wasm
+
+# Gate transcripts: one run on one machine, absolute paths and all.
+.git-docsgate.log
+*.log

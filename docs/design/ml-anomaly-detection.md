@@ -96,7 +96,7 @@ prefix — over a rolling window:
 Report a *shift*, with both sides shown:
 
 ```
-gateway 10.0.0.7: ASR 64% over the last 200 calls, against 71% over the
+gateway 192.0.2.7: ASR 64% over the last 200 calls, against 71% over the
 previous 2000 (p < 0.01, chi-square). Failure mix moved: 503 12% -> 31%.
 ```
 

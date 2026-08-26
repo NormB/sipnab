@@ -193,7 +193,40 @@ This project enforces consistent style through tooling and convention:
 - **Rustdoc on public types.** Every `pub fn`, `pub struct`, and `pub enum` must have a `///` doc comment.
 - **No `unsafe` without justification.** If `unsafe` is required, add a `// SAFETY:` comment explaining the invariant.
 
+## Never publish a machine, an account, or a network
+
+This repository is public, and a private name that reaches `main` is disclosed
+the moment it is pushed -- removing it later leaves it in the history. It is
+also, every time, worse documentation: a reader cannot resolve your hostname or
+reach your LAN, so the example fails for them in a way that looks like the tool
+is broken.
+
+Write what a reader can act on:
+
+| Instead of | Write | Why |
+|---|---|---|
+| a hostname (`thor-02`, `opensips-1`) | what the machine IS -- `the aarch64 self-hosted runner`, `Jetson AGX Thor, 14 cores` | A benchmark needs the hardware; it never needs the box's name. |
+| your LAN (`10.0.0.40`) | RFC 5737 -- `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` | Reserved for documentation, and a reader can tell at a glance it is an example. |
+| a global IPv6 address | RFC 3849 -- `2001:db8::/32` | Same reason. |
+| a real domain (`corp.example-isp.com`) | RFC 2606 -- `example.com`, or a `.test` / `.invalid` name | An address at a real domain reaches a real person. |
+| `/home/you/pcaps` | `$HOME`, `/srv/pcaps`, or a path relative to the repo | An absolute home path names your account and runs on one machine. |
+| a gate log or a scratch file | nothing -- do not commit it, and add the pattern to `.gitignore` | A transcript carries the paths of the machine that produced it. |
+
+`tests/private_identity_test.rs` enforces all of it and will tell you exactly
+which line to change. One exception is allowlisted, and it is functional:
+`runs-on: [self-hosted, thor-02]` in `.github/workflows/` is how a workflow
+reaches the one machine that can run it, and renaming it here would not rename
+it on the box.
+
+Capture corpora are the same rule one layer down. The captures this project is
+proven against carry real signaling; they live outside the tree, they are never
+committed, and pages do not say where they are.
+
 ## Documentation
+**Prose is US English.** `behavior`, `normalize`, `recognize`, `analyze`.
+`the_tree_spells_in_us_english` checks whole words across every tracked file --
+including test files, which is where it usually catches one.
+
 
 **`docs/` is the source of truth. Edit there.** Every operator page on
 [sipnab.com](https://sipnab.com) is generated from it:

@@ -112,7 +112,7 @@ different questions, and adding them together would hide which one moved.
 second argument, this script has no such argument — no flag, no environment
 variable, no config key. It invokes `carrier.py` itself and writes the corpus
 into a run-scoped temporary directory. That is deliberate: the real corpus at
-`/home/gator/pcaps` carries PII, and deleting the capability to point at it
+`/srv/pcaps` carries PII, and deleting the capability to point at it
 beats blocklisting a path that a copy or a symlink defeats. `carrier.py` is
 wholly synthetic and byte-identical for identical arguments.
 

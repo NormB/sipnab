@@ -23,10 +23,10 @@ Without the control plane, everything orphans:
 Orphaned Streams:
 SSRC         Source                   Destination              Pkts     Duration
 --------------------------------------------------------------------------------
-0x0a0a0a0a   10.0.0.60:40001          10.0.0.40:38156          10       0s
-0x0b0b0b0b   10.0.0.60:40002          10.0.0.40:38664          10       0s
-0x0a0a0a0a   10.0.0.40:38664          10.0.0.60:40002          10       0s
-0x0b0b0b0b   10.0.0.40:38156          10.0.0.60:40001          10       0s
+0x0a0a0a0a   192.0.2.60:40001         192.0.2.40:38156         10       0s
+0x0b0b0b0b   192.0.2.60:40002         192.0.2.40:38664         10       0s
+0x0a0a0a0a   192.0.2.40:38664         192.0.2.60:40002         10       0s
+0x0b0b0b0b   192.0.2.40:38156         192.0.2.60:40001         10       0s
 ```
 
 With it, the same media resolves to one call — and gains a codec, because the
@@ -36,10 +36,10 @@ control plane carries the SDP too:
 RTP Streams:
 SSRC         PT   Codec    Clock  Source                Destination           Pkts
 ----------------------------------------------------------------------------------
-0x0a0a0a0a   0    PCMU     8000   10.0.0.60:40001       10.0.0.40:38156       10
-0x0b0b0b0b   0    PCMU     8000   10.0.0.60:40002       10.0.0.40:38664       10
-0x0a0a0a0a   0    PCMU     8000   10.0.0.40:38664       10.0.0.60:40002       10
-0x0b0b0b0b   0    PCMU     8000   10.0.0.40:38156       10.0.0.60:40001       10
+0x0a0a0a0a   0    PCMU     8000   192.0.2.60:40001      192.0.2.40:38156      10
+0x0b0b0b0b   0    PCMU     8000   192.0.2.60:40002      192.0.2.40:38664      10
+0x0a0a0a0a   0    PCMU     8000   192.0.2.40:38664      192.0.2.60:40002      10
+0x0b0b0b0b   0    PCMU     8000   192.0.2.40:38156      192.0.2.60:40001      10
 
 Calls named by a media relay (no SIP for them in this capture):
 Call-ID                                                      Streams
@@ -151,13 +151,13 @@ address the proxy negotiated IS the rtpengine it steered the call to.
 ```bash
 curl -fsS "http://proxy:8080/v1/dialogs/$CALL_ID" $H \
   | jq -r '.sdp_timeline[0] | "\(.media_addr):\(.media_port)"'
-# 10.0.0.40:38664
+# 192.0.2.40:38664
 ```
 
 **Step 2 — ask that one relay, and no others.**
 
 ```bash
-curl -fsS "http://10.0.0.40:8080/v1/dialogs/$CALL_ID" $H | jq '.streams'
+curl -fsS "http://192.0.2.40:8080/v1/dialogs/$CALL_ID" $H | jq '.streams'
 ```
 
 A relay that never carried the call answers **404**, not an empty success.
@@ -171,7 +171,7 @@ Every node stamps its answers with its own `capture_identity`, which carries
 the host name:
 
 ```bash
-curl -fsS "http://10.0.0.40:8080/v1/stats" $H | jq '.capture_identity'
+curl -fsS "http://192.0.2.40:8080/v1/stats" $H | jq '.capture_identity'
 # { "node": "relay-a", "instance": "1f4a…", "dialog_generation": 412, … }
 ```
 
@@ -217,7 +217,7 @@ RTCP statistics only, which carry no Call-ID and no SDP.
 Add these to the `[rtpengine]` section of `/etc/rtpengine/rtpengine.conf`:
 
 ```ini
-homer = 10.0.0.60:9060
+homer = 192.0.2.60:9060
 homer-protocol = udp
 homer-id = 2001
 homer-enable-ng = true
@@ -257,7 +257,7 @@ rtpengine CONNECTS its Homer socket, so a destination that answers with ICMP
 port-unreachable makes it give up and log this:
 
 ```text
-ERR: [core] Connection error from Homer at 10.0.0.1:9060: Connection refused
+ERR: [core] Connection error from Homer at 192.0.2.1:9060: Connection refused
 ```
 
 After that it sends nothing, which looks exactly like the feature not working.
@@ -289,7 +289,7 @@ sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --report
 A relay on its own host answers the same question over the network:
 
 ```sh
-sudo sipnab -N -d eth0 --rtpengine-control 10.0.0.40:22222 --report
+sudo sipnab -N -d eth0 --rtpengine-control 192.0.2.40:22222 --report
 ```
 
 `-N` earns its place in both. sipnab writes these summaries as log lines on
@@ -338,7 +338,7 @@ The distinction changes what the address means, which is why it is not folded
 away. A relay's answer is **authoritative about the port** — rtpengine cannot
 be wrong about which socket it opened — and at the same time it is **not an
 endpoint**: it names the box the media passed through, not where either party
-sits. An operator tracing a one-way-audio fault to `10.0.0.40:38664` needs to
+sits. An operator tracing a one-way-audio fault to `192.0.2.40:38664` needs to
 know whether that is the far end or the box in the middle, and those lead to
 opposite next steps.
 
@@ -436,8 +436,8 @@ checked it against rtpengine 12.5.1, with the module confirmed active and
 accounting the packets itself:
 
 ```text
-/proc/rtpengine/0/list   local 10.0.0.40:34232   250 packets   [kernel-forwarded]
-                         output → 10.0.0.60:40001              250 packets
+/proc/rtpengine/0/list   local 192.0.2.40:34232  250 packets   [kernel-forwarded]
+                         output → 192.0.2.60:40001             250 packets
 capture on the relay     ingress 500/500         egress 500/500
 ```
 

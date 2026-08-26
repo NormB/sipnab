@@ -692,10 +692,10 @@ mod tests {
         let t2 = t0 + TimeDelta::milliseconds(5790);
 
         let raw_invite = build_sip(
-            "INVITE sip:1002@carrier.net SIP/2.0",
+            "INVITE sip:1002@carrier.example SIP/2.0",
             &[
                 "From: \"Alice\" <sip:1001@example.com>;tag=t1",
-                "To: <sip:1002@carrier.net>",
+                "To: <sip:1002@carrier.example>",
                 "Call-ID: call-report-test@example.com",
                 "CSeq: 1 INVITE",
                 "Content-Length: 0",
@@ -717,7 +717,7 @@ mod tests {
             "SIP/2.0 180 Ringing",
             &[
                 "From: \"Alice\" <sip:1001@example.com>;tag=t1",
-                "To: <sip:1002@carrier.net>;tag=t2",
+                "To: <sip:1002@carrier.example>;tag=t2",
                 "Call-ID: call-report-test@example.com",
                 "CSeq: 1 INVITE",
                 "Content-Length: 0",
@@ -739,7 +739,7 @@ mod tests {
             "SIP/2.0 200 OK",
             &[
                 "From: \"Alice\" <sip:1001@example.com>;tag=t1",
-                "To: <sip:1002@carrier.net>;tag=t2",
+                "To: <sip:1002@carrier.example>;tag=t2",
                 "Call-ID: call-report-test@example.com",
                 "CSeq: 1 INVITE",
                 "Content-Length: 0",
@@ -925,11 +925,11 @@ mod tests {
     fn make_failed_dialog() -> SipDialog {
         let t0 = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp");
         let raw_invite = build_sip(
-            "INVITE sip:1002@carrier.net SIP/2.0",
+            "INVITE sip:1002@carrier.example SIP/2.0",
             &[
                 "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKfail",
                 "From: \"Alice\" <sip:1001@example.com>;tag=t1",
-                "To: <sip:1002@carrier.net>",
+                "To: <sip:1002@carrier.example>",
                 "Call-ID: failed-call@example.com",
                 "CSeq: 1 INVITE",
                 "Content-Length: 0",
@@ -952,7 +952,7 @@ mod tests {
             &[
                 "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKfail",
                 "From: \"Alice\" <sip:1001@example.com>;tag=t1",
-                "To: <sip:1002@carrier.net>;tag=t2",
+                "To: <sip:1002@carrier.example>;tag=t2",
                 "Call-ID: failed-call@example.com",
                 "CSeq: 1 INVITE",
                 "Reason: Q.850;cause=34;text=\"no circuit available\"",
@@ -1058,11 +1058,11 @@ mod tests {
     fn make_unanswered_dialog() -> SipDialog {
         let t0 = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp");
         let raw_invite = build_sip(
-            "INVITE sip:1002@carrier.net SIP/2.0",
+            "INVITE sip:1002@carrier.example SIP/2.0",
             &[
                 "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKring",
                 "From: \"Alice\" <sip:1001@example.com>;tag=t1",
-                "To: <sip:1002@carrier.net>",
+                "To: <sip:1002@carrier.example>",
                 "Call-ID: ringing-call@example.com",
                 "CSeq: 1 INVITE",
                 "Content-Length: 0",
@@ -1085,7 +1085,7 @@ mod tests {
             &[
                 "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKring",
                 "From: \"Alice\" <sip:1001@example.com>;tag=t1",
-                "To: <sip:1002@carrier.net>;tag=t2",
+                "To: <sip:1002@carrier.example>;tag=t2",
                 "Call-ID: ringing-call@example.com",
                 "CSeq: 1 INVITE",
                 "Content-Length: 0",
