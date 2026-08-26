@@ -15,7 +15,8 @@
 //! a real message holds a handful of entries, so that LOOKUP is not worth
 //! replacing with a map. Rejecting duplicate keys is a different question with
 //! a different answer: it compares every key against every earlier one, and a
-//! hostile datagram chooses the key count. See [`decode_dict`].
+//! hostile datagram chooses the key count, so `decode_dict` tracks the keys
+//! it has accepted in a set rather than rescanning them.
 //!
 //! Values borrow from the input. An `sdp` value is the largest thing in a
 //! message and it is handed straight to the SDP parser, so copying it would be
