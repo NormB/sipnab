@@ -24,6 +24,18 @@ entry that carries them.
   once: re-reporting one would re-date the endpoint, and the staleness clock
   that measures from when the relay said it would never expire.
 
+- **A hostile `ng` datagram can no longer cost a core.** The bencode decoder
+  rejects duplicate dictionary keys, and did it by comparing each key against
+  every key already accepted -- O(n^2) in the key count, on a parser that faces
+  another host's bytes over HEP. One well-formed 65535-byte datagram carrying
+  ~8200 distinct keys took 97.8 ms of release build to parse, and nothing
+  rejected it, because nothing about it is malformed. The listener's defaults
+  do not stand in the way either: the `--hep-allow` allowlist is empty,
+  `--hep-rate-limit-per-peer` is `off`, and the global ceiling is 50 000/s --
+  roughly ten such datagrams a second is one saturated core. The check now
+  tracks keys in a set. Measured over a 4x key count, the cost went from 15.2x
+  to 4.0x -- quadratic to linear -- and 4096 keys from 90.6 ms to 6.1 ms.
+
 ## [0.5.125] - 2026-08-25
 
 ### Added

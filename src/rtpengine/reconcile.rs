@@ -1175,8 +1175,8 @@ mod tests {
     struct ReassigningRelay {
         /// One enumeration per `list`; the last entry repeats.
         script: Vec<Vec<&'static str>>,
-        /// The relay-side port every call in the script holds.
-        port: u16,
+        /// The relay-side port(s) every call in the script holds.
+        ports: Vec<u16>,
         /// When set, each call reports the port TWICE -- once as RTP and once
         /// as RTCP, which is what RFC 5761 multiplexing looks like from a
         /// relay that reports both on one socket.
@@ -1185,10 +1185,10 @@ mod tests {
     }
 
     impl ReassigningRelay {
-        fn new(script: Vec<Vec<&'static str>>, port: u16) -> Self {
+        fn new(script: Vec<Vec<&'static str>>, ports: Vec<u16>) -> Self {
             Self {
                 script,
-                port,
+                ports,
                 muxed: false,
                 lists: RefCell::new(0),
             }
@@ -1212,18 +1212,22 @@ mod tests {
         }
 
         fn query(&self, _permit: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply> {
-            let mut streams = vec![RelayStream {
-                local_address: RELAY_IP.to_owned(),
-                local_port: self.port,
-                endpoint: None,
-                advertised_endpoint: None,
-                is_rtcp: false,
-                ssrcs: Vec::new(),
-            }];
+            let mut streams: Vec<RelayStream> = self
+                .ports
+                .iter()
+                .map(|port| RelayStream {
+                    local_address: RELAY_IP.to_owned(),
+                    local_port: *port,
+                    endpoint: None,
+                    advertised_endpoint: None,
+                    is_rtcp: false,
+                    ssrcs: Vec::new(),
+                })
+                .collect();
             if self.muxed {
                 streams.push(RelayStream {
                     local_address: RELAY_IP.to_owned(),
-                    local_port: self.port,
+                    local_port: self.ports[0],
                     endpoint: None,
                     advertised_endpoint: None,
                     is_rtcp: true,
@@ -1259,7 +1263,7 @@ mod tests {
         let p = permit();
         let mut r = Reconciler::new(ReassigningRelay::new(
             vec![vec!["call-A"], vec!["call-B"]],
-            30000,
+            vec![30000],
         ));
 
         r.at_startup(&p);
@@ -1304,7 +1308,8 @@ mod tests {
     #[test]
     fn a_socket_repeated_within_one_call_is_reported_only_once() {
         let p = permit();
-        let mut r = Reconciler::new(ReassigningRelay::new(vec![vec!["call-A"]], 30000).muxed());
+        let mut r =
+            Reconciler::new(ReassigningRelay::new(vec![vec!["call-A"]], vec![30000]).muxed());
 
         r.at_startup(&p);
         let links = r.take_new_links(chrono::Utc::now());
@@ -1313,6 +1318,81 @@ mod tests {
             for_port.len(),
             1,
             "one socket, one call, one link -- got {for_port:?}"
+        );
+    }
+
+    /// Drain the hand-over and name the call(s) reported for one port.
+    fn named<R: ReadOnlyRelay>(r: &mut Reconciler<R>, port: u16) -> Vec<String> {
+        r.take_new_links(chrono::Utc::now())
+            .links
+            .iter()
+            .filter(|l| l.port == port)
+            .map(|l| l.call_id.clone())
+            .collect()
+    }
+
+    /// A port reassigned TWICE is handed over both times.
+    ///
+    /// One reassignment is the case above. This is the one that fails on a
+    /// plausible half-fix -- firing the hand-over only on the FIRST change
+    /// repairs the reported symptom and leaves every later recycle silent.
+    #[test]
+    fn a_port_reassigned_twice_is_handed_over_each_time() {
+        let p = permit();
+        let mut r = Reconciler::new(ReassigningRelay::new(
+            vec![vec!["call-A"], vec!["call-B"], vec!["call-C"]],
+            vec![30000],
+        ));
+        let other: IpAddr = "198.51.100.9".parse().expect("valid");
+
+        r.at_startup(&p);
+        assert_eq!(named(&mut r, 30000), vec!["call-A".to_owned()], "startup");
+
+        let _ = r.on_unexplained_stream(&p, other, 41234);
+        assert_eq!(
+            named(&mut r, 30000),
+            vec!["call-B".to_owned()],
+            "first reassignment"
+        );
+
+        let _ = r.on_unexplained_stream(&p, other, 41235);
+        assert_eq!(
+            named(&mut r, 30000),
+            vec!["call-C".to_owned()],
+            "second reassignment -- a port recycled again is news again"
+        );
+    }
+
+    /// Two ports reassigned in ONE refresh are both handed over.
+    ///
+    /// The hand-over skips a socket already queued, and this proves the skip
+    /// is per-socket rather than per-refresh: a guard written as "something
+    /// changed, so push once" reports one of these and drops the other,
+    /// leaving half the call's media on the ended call.
+    #[test]
+    fn two_ports_reassigned_in_one_refresh_are_both_handed_over() {
+        let p = permit();
+        let mut r = Reconciler::new(ReassigningRelay::new(
+            vec![vec!["call-A"], vec!["call-B"]],
+            vec![30000, 30002],
+        ));
+
+        r.at_startup(&p);
+        let _ = r.take_new_links(chrono::Utc::now());
+
+        let _ = r.on_unexplained_stream(&p, "198.51.100.9".parse().expect("valid"), 41234);
+
+        let mut got: Vec<(u16, String)> = r
+            .take_new_links(chrono::Utc::now())
+            .links
+            .iter()
+            .map(|l| (l.port, l.call_id.clone()))
+            .collect();
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            vec![(30000, "call-B".to_owned()), (30002, "call-B".to_owned())],
+            "both recycled ports have to reach the store"
         );
     }
 }

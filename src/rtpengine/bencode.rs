@@ -12,8 +12,10 @@
 //! `call-id`, `from-tag`, `sdp`, which is not sorted. A decoder that rejected
 //! unsorted keys, or that binary-searched them, would fail on every real
 //! message. Keys are therefore kept in arrival order and looked up by scan;
-//! the dictionaries here are a handful of entries, so the scan is not worth
-//! replacing with a map.
+//! a real message holds a handful of entries, so that LOOKUP is not worth
+//! replacing with a map. Rejecting duplicate keys is a different question with
+//! a different answer: it compares every key against every earlier one, and a
+//! hostile datagram chooses the key count. See [`decode_dict`].
 //!
 //! Values borrow from the input. An `sdp` value is the largest thing in a
 //! message and it is handed straight to the SDP parser, so copying it would be
@@ -24,6 +26,8 @@
 //! the wire. Every length is bounds-checked before use, recursion is depth-
 //! limited, and anything malformed is an error rather than a partial value.
 //! A truncated dictionary is not a dictionary with fewer keys.
+
+use std::collections::HashSet;
 
 use anyhow::{Result, bail, ensure};
 
@@ -264,6 +268,7 @@ fn decode_list(input: &[u8], depth: usize) -> Result<(Value<'_>, &[u8])> {
 fn decode_dict(input: &[u8], depth: usize) -> Result<(Value<'_>, &[u8])> {
     let mut rest = &input[1..];
     let mut entries: Vec<(&[u8], Value<'_>)> = Vec::new();
+    let mut seen: HashSet<&[u8]> = HashSet::new();
     loop {
         match rest.first() {
             None => bail!("bencode: dictionary has no terminating 'e'"),
@@ -276,8 +281,17 @@ fn decode_dict(input: &[u8], depth: usize) -> Result<(Value<'_>, &[u8])> {
                 // Duplicates are rejected rather than resolved. Last-wins and
                 // first-wins are both silent, and a message with two `call-id`
                 // keys is one whose call cannot be named with confidence.
+                //
+                // Tracked in a set rather than by scanning `entries`, which is
+                // what this was. The scan is O(n^2) in the key count, and this
+                // parser is hostile-input facing: a single well-formed 65535-
+                // byte datagram of ~8200 distinct keys cost 97.8 ms of release
+                // build to parse, with no malformed-input path to reject it.
+                // `HashSet` does not allocate until the first insert, so a
+                // five-key `ng` message pays one small allocation, the same
+                // order as the `entries` vector beside it.
                 ensure!(
-                    !entries.iter().any(|(k, _)| *k == key),
+                    seen.insert(key),
                     "bencode: duplicate dictionary key {:?}",
                     String::from_utf8_lossy(key)
                 );
@@ -466,5 +480,132 @@ mod tests {
         assert_eq!(v.get_int(b"one"), None, "a list is not an int");
         assert_eq!(v.get(b"absent"), None);
         assert_eq!(Value::Int(1).get(b"any"), None, "a non-dict has no keys");
+    }
+
+    /// A dictionary of `n` distinct keys, each `i0e`, as one bencode buffer.
+    fn dict_of(n: usize) -> Vec<u8> {
+        let mut out = vec![b'd'];
+        for i in 0..n {
+            let key = format!("{i:08}");
+            out.extend_from_slice(format!("{}:{key}", key.len()).as_bytes());
+            out.extend_from_slice(b"i0e");
+        }
+        out.push(b'e');
+        out
+    }
+
+    /// Rejecting duplicate keys must not cost the square of the key count.
+    ///
+    /// The check compares each key against the ones already accepted. Written
+    /// as a linear scan that is O(n^2), one 65535-byte HEP datagram carrying
+    /// ~8200 distinct keys cost 97.8 ms to parse in release on the reference
+    /// host -- a well-formed message, so no malformed-input path rejects it,
+    /// and roughly ten a second is a saturated core. The listener's defaults
+    /// do not stand in the way: the allowlist is empty, per-peer rate limiting
+    /// is `off`, and the global ceiling is 50 000/s.
+    ///
+    /// Asserted as a RATIO rather than a wall-clock bound, deliberately. An
+    /// absolute threshold on a shared runner is the throughput gate
+    /// `docs/internals/build-ci-release.md` refuses to have -- it fails
+    /// randomly, gets muted, and then reports a safety it is not providing.
+    /// A ratio normalizes the machine out: quadratic growth over a 4x key
+    /// count is ~16x, linear is ~4x, and the bound sits between them with a
+    /// factor of two either side.
+    #[test]
+    fn rejecting_duplicate_keys_does_not_cost_the_square_of_the_key_count() {
+        use std::time::Instant;
+
+        /// Best of several runs: the minimum is the sample least polluted by
+        /// scheduling, which is what makes this survivable on a busy runner.
+        fn best(buf: &[u8]) -> std::time::Duration {
+            (0..5)
+                .map(|_| {
+                    let start = Instant::now();
+                    let v = decode(buf).expect("a well-formed dictionary");
+                    debug_assert!(matches!(v, Value::Dict(_)));
+                    start.elapsed()
+                })
+                .min()
+                .expect("five samples")
+        }
+
+        let small = dict_of(1024);
+        let large = dict_of(4096);
+        // Warm the allocator and the branch predictors before timing either.
+        let _ = best(&small);
+
+        let t_small = best(&small).as_secs_f64();
+        let t_large = best(&large).as_secs_f64();
+        let ratio = t_large / t_small;
+
+        assert!(
+            ratio < 8.0,
+            "4x the keys cost {ratio:.1}x the time ({t_small:.6}s -> \
+             {t_large:.6}s). Linear is ~4x and quadratic is ~16x, so this is \
+             the duplicate-key check having become a scan again"
+        );
+    }
+
+    /// ...and it still rejects duplicates at that scale.
+    ///
+    /// The bound on the test above. A check made cheap by being deleted also
+    /// scales linearly, and this is what refuses that reading.
+    #[test]
+    fn a_duplicate_is_still_caught_among_thousands_of_keys() {
+        let mut buf = dict_of(4096);
+        // Replace the closing `e` with one more copy of an early key.
+        buf.pop();
+        buf.extend_from_slice(b"8:00000007i0e");
+        buf.push(b'e');
+        let err = decode(&buf).expect_err("a repeated key is a malformed message");
+        assert!(
+            format!("{err:#}").contains("duplicate"),
+            "the duplicate was not what was rejected: {err:#}"
+        );
+    }
+
+    /// Keys are compared as BYTES, not as lossy text.
+    ///
+    /// The duplicate message renders the key with `String::from_utf8_lossy`,
+    /// and reaching for that same conversion as the set's key is the natural
+    /// mistake this fix invites: every invalid byte becomes U+FFFD, so two
+    /// keys that differ only there collapse to one string and a legitimate
+    /// message is refused as malformed. bencode keys are byte strings and the
+    /// format does not require them to be text at all.
+    #[test]
+    fn two_keys_differing_only_in_an_invalid_utf8_byte_are_not_duplicates() {
+        // `1:\xff` and `1:\xfe` are distinct keys; both lossy-decode to U+FFFD.
+        let mut buf = Vec::from(*b"d");
+        buf.extend_from_slice(b"1:\xffi1e");
+        buf.extend_from_slice(b"1:\xfei2e");
+        buf.push(b'e');
+        let v = decode(&buf).expect("two distinct byte keys are a valid dictionary");
+        assert_eq!(v.get_int(b"\xff"), Some(1));
+        assert_eq!(v.get_int(b"\xfe"), Some(2), "the second key was not kept");
+    }
+
+    /// Arrival order survives the duplicate check, at scale.
+    ///
+    /// The module keeps keys in arrival order because rtpengine does not sort
+    /// them, and tracking duplicates in a set is exactly the change that
+    /// tempts someone to sort `entries` and binary-search it instead. A small
+    /// dictionary can be in order by luck; a thousand keys cannot.
+    #[test]
+    fn a_large_dictionary_keeps_its_keys_in_arrival_order() {
+        // Descending keys: sorted order is the exact REVERSE of arrival order,
+        // so a decoder that sorted would fail every position but the middle.
+        let mut buf = vec![b'd'];
+        let mut expected = Vec::new();
+        for i in (0..1000).rev() {
+            let key = format!("{i:04}");
+            buf.extend_from_slice(format!("4:{key}i0e").as_bytes());
+            expected.push(key.into_bytes());
+        }
+        buf.push(b'e');
+        let Value::Dict(entries) = decode(&buf).expect("a valid dictionary") else {
+            panic!("not a dictionary");
+        };
+        let got: Vec<Vec<u8>> = entries.iter().map(|(k, _)| k.to_vec()).collect();
+        assert_eq!(got, expected, "keys must stay in the order they arrived");
     }
 }
