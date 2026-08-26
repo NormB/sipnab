@@ -1347,6 +1347,12 @@ fn constant_time_eq_different_lengths_still_compares() {
         // null identity exist to describe.
         capture: None,
         source_exhausted: None,
+        // A run the command line never authorized to persist, which is
+        // what these fixtures are: bare stores behind a router. A route
+        // that forgot to consult the gate cannot pass by defaulting open.
+        persistence_gate: std::sync::Arc::new(sipnab::output::persistence::PersistenceGate::new(
+            false,
+        )),
     };
 
     // Build a request with wrong-length key
@@ -1392,6 +1398,12 @@ fn constant_time_eq_matching_strings() {
         // null identity exist to describe.
         capture: None,
         source_exhausted: None,
+        // A run the command line never authorized to persist, which is
+        // what these fixtures are: bare stores behind a router. A route
+        // that forgot to consult the gate cannot pass by defaulting open.
+        persistence_gate: std::sync::Arc::new(sipnab::output::persistence::PersistenceGate::new(
+            false,
+        )),
     };
 
     let app = build_router(state);
@@ -1447,6 +1459,12 @@ fn constant_time_eq_different_strings_same_length() {
         // null identity exist to describe.
         capture: None,
         source_exhausted: None,
+        // A run the command line never authorized to persist, which is
+        // what these fixtures are: bare stores behind a router. A route
+        // that forgot to consult the gate cannot pass by defaulting open.
+        persistence_gate: std::sync::Arc::new(sipnab::output::persistence::PersistenceGate::new(
+            false,
+        )),
     };
 
     let app = build_router(state);

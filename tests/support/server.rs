@@ -218,6 +218,16 @@ impl ApiServer {
     pub fn get_with_auth(&self, path: &str, auth_value: &str) -> Resp {
         http_get(&self.addr, path, Some(auth_value))
     }
+
+    /// `POST path` with a JSON body and no auth header.
+    pub fn post_json(&self, path: &str, body: &str) -> Resp {
+        http_post(&self.addr, path, body, None)
+    }
+
+    /// `POST path` with a JSON body and a bearer token.
+    pub fn post_json_bearer(&self, path: &str, body: &str, token: &str) -> Resp {
+        http_post(&self.addr, path, body, Some(&format!("Bearer {token}")))
+    }
 }
 
 impl Drop for ApiServer {
@@ -252,6 +262,47 @@ fn http_get(addr: &str, path: &str, auth: Option<&str>) -> Resp {
         .unwrap_or_else(|| panic!("no status line in response:\n{text}"));
 
     // Body is everything after the first blank line.
+    let body = text
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_string())
+        .unwrap_or_default();
+
+    Resp { status, body }
+}
+
+/// Minimal blocking HTTP/1.1 POST over a fresh `Connection: close` socket.
+///
+/// `Content-Length` is computed from the body's BYTE length, not its character
+/// count: a body carrying a multi-byte character would otherwise be truncated
+/// by the server mid-character, and the request would fail for a reason that
+/// has nothing to do with what the test is asking.
+fn http_post(addr: &str, path: &str, body: &str, auth: Option<&str>) -> Resp {
+    let mut stream = TcpStream::connect(addr).unwrap_or_else(|e| panic!("connect {addr}: {e}"));
+    stream.set_read_timeout(Some(test_timeout(10))).ok();
+
+    let mut req = format!(
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\n",
+        body.len()
+    );
+    if let Some(a) = auth {
+        req.push_str(&format!("Authorization: {a}\r\n"));
+    }
+    req.push_str("\r\n");
+    req.push_str(body);
+    stream.write_all(req.as_bytes()).expect("write request");
+
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).expect("read response");
+    let text = String::from_utf8_lossy(&raw);
+
+    let status = text
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|c| c.parse::<u16>().ok())
+        .unwrap_or_else(|| panic!("no status line in response:\n{text}"));
+
     let body = text
         .split_once("\r\n\r\n")
         .map(|(_, b)| b.to_string())

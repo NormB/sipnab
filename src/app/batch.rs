@@ -842,8 +842,16 @@ pub fn run_cores_file(
             // The return value is the "report could not be produced" signal and
             // was dropped here, so an unknown --call-report id or an unwritable
             // stdout exited 0 on the --cores path while exiting 1 elsewhere.
-            let reports_ok =
-                generate_reports(cli, &r.dialog_store, &r.stream_store, filter, r.total_count);
+            // No companion server runs on the --cores path, so there is no
+            // gate anyone could have moved and the command line governs.
+            let reports_ok = generate_reports(
+                cli,
+                &r.dialog_store,
+                &r.stream_store,
+                filter,
+                r.total_count,
+                None,
+            );
             if !cli.mode_args.quiet {
                 tracing::info!(
                     "sipnab: {} packets, {} SIP messages, {} RTP packets across {} streams ({} cores)",
@@ -1990,12 +1998,14 @@ pub fn run(
         let pcfg = parallel_config(&cli, config, portrange, no_rtp);
         let result = crate::parallel::run_offline_parallel(rx, pcfg);
         let _ = handle.thread.join();
+        // As above: no companion server on this path, so no gate to consult.
         let reports_ok = generate_reports(
             &cli,
             &result.dialog_store,
             &result.stream_store,
             batch.filter_expr.as_ref(),
             result.total_count,
+            None,
         );
         if !cli.mode_args.quiet {
             tracing::info!(
@@ -3362,12 +3372,17 @@ impl BatchRunner {
         {
             let ds_guard = dialog_store.read();
             let ss_guard = stream_store.read();
+            // The gate the REST door has been moving all run. `None` only
+            // when no companion server started, which is the same run in
+            // which nothing could have moved it.
+            let gate = servers.as_ref().map(|s| s.persistence_gate.as_ref());
             if !generate_reports(
                 &cli,
                 &ds_guard,
                 &ss_guard,
                 filter_expr.as_ref(),
                 total_count,
+                gate,
             ) {
                 std::process::exit(1);
             }
@@ -4540,6 +4555,7 @@ pub fn generate_reports(
     stream_store: &StreamStore,
     filter: Option<&FilterExpr>,
     frames_read: u64,
+    gate: Option<&crate::output::persistence::PersistenceGate>,
 ) -> bool {
     // SNB-0015 probe: set SIPNAB_PERF_STATS=1 to surface the per-run work that
     // scales with call count. `endpoint_link_scan_visits` is the cost that was
@@ -4740,7 +4756,7 @@ pub fn generate_reports(
     }
 
     // --export-vcon <call-id>: one observed dialog as a vCon container.
-    if !export_vcon(cli, dialog_store, stream_store, frames_read) {
+    if !export_vcon(cli, dialog_store, stream_store, frames_read, gate) {
         return false;
     }
     true
@@ -4987,7 +5003,16 @@ fn export_vcon(
     dialog_store: &DialogStore,
     stream_store: &StreamStore,
     frames_read: u64,
+    gate: Option<&crate::output::persistence::PersistenceGate>,
 ) -> bool {
+    // The gate is consulted here, above both export forms, because both write
+    // content and a check on one of them would leave the other writing through
+    // a close. It answers `true`: an operator who switched persistence off got
+    // what they asked for, and turning that into a non-zero exit would make
+    // every scripted run treat a deliberate act as a failure.
+    if gate.is_some_and(|g| !g.writes_permitted()) {
+        return true;
+    }
     if cli.output_args.export_vcon_when.is_some() {
         return export_vcon_selection(cli, dialog_store, stream_store, frames_read);
     }
@@ -5068,7 +5093,13 @@ fn export_vcon(
     _dialog_store: &DialogStore,
     _stream_store: &StreamStore,
     _frames_read: u64,
+    _gate: Option<&crate::output::persistence::PersistenceGate>,
 ) -> bool {
+    // The gate is ignored here rather than consulted, and the difference is
+    // only apparent: a build without the feature writes no container by any
+    // route, so there is nothing for a closed gate to stop. It is accepted so
+    // both doors keep one signature -- a stub that dropped the parameter would
+    // break the caller in exactly the build nobody runs the tests on.
     if cli.output_args.export_vcon.is_none() {
         return true;
     }
@@ -5435,6 +5466,223 @@ mod tests {
         cli.output_args.export_vcon_when = Some(expr.to_owned());
         cli.output_args.export_vcon_dir = Some(dir.to_path_buf());
         cli
+    }
+
+    // ── The runtime persistence gate ────────────────────────────
+
+    /// The gate's whole purpose: an operator closes it and content stops.
+    ///
+    /// The predicate still matches, the directory still exists, the flags are
+    /// unchanged. Nothing but the gate stands between this run and a container
+    /// on disk, so a file appearing here means the exporter never asked.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_closed_gate_writes_no_container() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        let gate = crate::output::persistence::PersistenceGate::new(true);
+        gate.set(false);
+
+        let ok = export_vcon(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            Some(&gate),
+        );
+
+        assert!(
+            ok,
+            "an operator who closed the gate got what they asked for; that is              not a failure and must not become a non-zero exit code"
+        );
+        let written: Vec<_> = std::fs::read_dir(tmp.path())
+            .expect("readable")
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            written.is_empty(),
+            "the gate was closed and {} container(s) were written anyway",
+            written.len()
+        );
+    }
+
+    /// The single-call form is gated too.
+    ///
+    /// Two entry points reach the exporter, and a check on only the predicate
+    /// form would leave `--export-vcon <call-id>` writing through a closed
+    /// gate -- the failure being harder to notice for affecting the older,
+    /// more-used flag.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_closed_gate_stops_the_single_call_form_too() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let out = tmp.path().join("one.vcon.json");
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon = Some("failed@test".to_owned());
+        cli.output_args.vcon_out = Some(out.clone());
+        let gate = crate::output::persistence::PersistenceGate::new(true);
+        gate.set(false);
+
+        assert!(export_vcon(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            Some(&gate),
+        ));
+        assert!(
+            !out.exists(),
+            "--export-vcon wrote through a closed gate: {}",
+            out.display()
+        );
+    }
+
+    /// A gate the command line never authorized writes nothing, whatever the
+    /// flags say.
+    ///
+    /// In production the ceiling is derived from these same flags, so this
+    /// pairing cannot arise. It is tested because the gate is the authority:
+    /// if a later edit ever builds one from a different source, this run
+    /// writes nothing rather than falling back to the flags.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn an_unauthorized_gate_overrides_the_flags() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        let gate = crate::output::persistence::PersistenceGate::new(false);
+        gate.set(true);
+
+        assert!(export_vcon(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            Some(&gate),
+        ));
+        assert_eq!(
+            std::fs::read_dir(tmp.path())
+                .expect("readable")
+                .filter_map(Result::ok)
+                .count(),
+            0,
+            "the gate is the authority, not the flags it was built from"
+        );
+    }
+
+    /// An open gate exports exactly what no gate does.
+    ///
+    /// The direction this catches is a gate that quietly narrows a run nobody
+    /// touched -- a check inverted, or a ceiling read from the wrong flag.
+    /// Comparing the two file sets says so without pinning a count that a
+    /// later fixture change would have to chase.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn an_open_gate_exports_exactly_what_no_gate_does() {
+        let names = |dir: &std::path::Path| {
+            let mut v: Vec<_> = std::fs::read_dir(dir)
+                .expect("readable")
+                .filter_map(Result::ok)
+                .map(|e| e.file_name())
+                .collect();
+            v.sort_unstable();
+            v
+        };
+
+        let ungated = tempfile::tempdir().expect("temp dir");
+        assert!(export_vcon(
+            &cli_exporting_to(ungated.path(), "response_code >= 200"),
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            None,
+        ));
+
+        let gated = tempfile::tempdir().expect("temp dir");
+        assert!(export_vcon(
+            &cli_exporting_to(gated.path(), "response_code >= 200"),
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            Some(&crate::output::persistence::PersistenceGate::new(true)),
+        ));
+
+        let ungated_names = names(ungated.path());
+        assert!(
+            !ungated_names.is_empty(),
+            "the fixture must write something, or this test compares two              empty directories and proves nothing"
+        );
+        assert_eq!(
+            ungated_names,
+            names(gated.path()),
+            "an open gate changed what a run wrote"
+        );
+    }
+
+    /// Closing and reopening restores the export.
+    ///
+    /// The operator who switched recording off at three in the morning has to
+    /// be able to switch it back on without restarting capture. A gate that
+    /// latched shut would be safe and useless.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn reopening_the_gate_restores_the_export() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        let gate = crate::output::persistence::PersistenceGate::new(true);
+
+        gate.set(false);
+        assert!(export_vcon(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            Some(&gate),
+        ));
+        assert_eq!(
+            std::fs::read_dir(tmp.path())
+                .expect("readable")
+                .filter_map(Result::ok)
+                .count(),
+            0,
+            "closed"
+        );
+
+        gate.set(true);
+        assert!(export_vcon(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            Some(&gate),
+        ));
+        assert!(
+            std::fs::read_dir(tmp.path())
+                .expect("readable")
+                .filter_map(Result::ok)
+                .count()
+                > 0,
+            "reopening the gate must let the next export through"
+        );
+    }
+
+    /// A run with no persistence flags is not stopped by the gate check.
+    ///
+    /// `export_vcon` returns early when neither flag is set, and that path
+    /// must stay reachable with a closed gate: a run that writes nothing has
+    /// nothing to suppress, and a `false` here would turn every ordinary
+    /// capture into a non-zero exit.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_run_that_exports_nothing_is_unaffected_by_a_closed_gate() {
+        let cli = Cli::parse_from_args(["sipnab"]);
+        let gate = crate::output::persistence::PersistenceGate::new(false);
+        assert!(export_vcon(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            Some(&gate),
+        ));
     }
 
     /// The export directory is created when it does not exist.
@@ -7798,12 +8046,12 @@ mod tests {
         // Empty --report summary path.
         let mut cli = base_cli();
         cli.output_args.report = true;
-        generate_reports(&cli, &dialog_store, &stream_store, None, 0);
+        generate_reports(&cli, &dialog_store, &stream_store, None, 0, None);
 
         // --call-report for an unknown Call-ID hits the "not found" warn arm.
         let mut cli = base_cli();
         cli.output_args.call_report = Some("does-not-exist".to_string());
-        generate_reports(&cli, &dialog_store, &stream_store, None, 0);
+        generate_reports(&cli, &dialog_store, &stream_store, None, 0, None);
 
         // Insert a dialog, then --call-report finds it across all formats.
         let call_id = "report-1@example.com";
@@ -7830,7 +8078,7 @@ mod tests {
             let mut cli = base_cli();
             cli.output_args.call_report = Some(call_id.to_string());
             setup(&mut cli);
-            generate_reports(&cli, &dialog_store, &stream_store, None, 0);
+            generate_reports(&cli, &dialog_store, &stream_store, None, 0, None);
         }
     }
 

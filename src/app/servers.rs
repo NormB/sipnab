@@ -99,6 +99,11 @@ pub struct ServerHandles {
     /// The capture owner stores `true` once the packet source drains (pcap
     /// EOF). `None` when MCP is not running.
     pub source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// The gate the REST door moves, handed back so the exporter reads the
+    /// SAME one. Present whether or not the API is running: a gate that
+    /// appeared only alongside a listener would mean the exporter consulted
+    /// nothing on the runs that have no listener, and those are most of them.
+    pub persistence_gate: Arc<crate::output::persistence::PersistenceGate>,
 }
 
 /// A server prepared on the caller's thread (address parsing and auth
@@ -323,6 +328,13 @@ pub fn start_servers(
     // there is no state in which it is absent.
     #[cfg(any(feature = "api", feature = "mcp"))]
     let source_exhausted = Some(Arc::clone(&exhausted));
+    // The gate the REST door moves and the exporter reads, built from the
+    // command line ONCE. Its ceiling is what the operator asked for, and no
+    // later reader recomputes it: two readings of `persists_content` could
+    // disagree after a flag was added to one of them.
+    let persistence_gate = Arc::new(crate::output::persistence::PersistenceGate::new(
+        cli.persists_content(),
+    ));
 
     #[cfg(feature = "api")]
     if selection.api
@@ -346,6 +358,7 @@ pub fn start_servers(
             // one capture and see one rotation.
             capture: Some(Arc::clone(&capture_state)),
             source_exhausted: Some(Arc::clone(&exhausted)),
+            persistence_gate: Arc::clone(&persistence_gate),
         };
         let config = ApiServerConfig {
             max_conn: cli.listener_args.api_max_conn,
@@ -490,6 +503,7 @@ pub fn start_servers(
             thread: handle,
             mcp_stdio_done,
             source_exhausted,
+            persistence_gate,
         }))
     }
     #[cfg(not(any(feature = "api", feature = "mcp")))]

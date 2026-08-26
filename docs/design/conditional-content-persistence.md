@@ -233,7 +233,7 @@ Every task's requirements implicitly include the design above, plus:
 
 - **Feature gate:** every item lives behind `#[cfg(feature = "vcon")]`.
   `export_vcon` already has a paired `#[cfg(not(feature = "vcon"))]` stub at
-  [`src/app/batch.rs:5066`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5066), and a new entry point needs the same pairing or the
+  [`src/app/batch.rs:5091`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5091), and a new entry point needs the same pairing or the
   crate stops building without the feature.
 - **Toolchain:** Rust 1.97.1 exactly. No new dependencies.
 - **Tests:** failing test first. Every gate mutation-proven against a named
@@ -274,7 +274,7 @@ Every task's requirements implicitly include the design above, plus:
 
 **Files:**
 - Modify: [`src/cli.rs`](../../src/cli.rs) (new fields beside `export_vcon` at line 944)
-- Modify: [`src/app/batch.rs:4985`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4985) (`export_vcon`)
+- Modify: [`src/app/batch.rs:5001`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5001) (`export_vcon`)
 - Test: [`src/app/batch.rs`](../../src/app/batch.rs) tests module
 
 **Interfaces:**
@@ -428,7 +428,7 @@ Expected: 2 passed.
 
 - [ ] **Step 9: Write the containers**
 
-Extend `export_vcon` at [`src/app/batch.rs:4985`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4985): when `export_vcon_when` is set, loop the selected Call-IDs, build each container with the existing single-call path, and write it to `<dir>/<sanitized-call-id>.vcon.json`. Sanitize by replacing every character outside `[A-Za-z0-9._-]` with `_`, because a Call-ID is attacker-influenced text and reaches a filesystem path here.
+Extend `export_vcon` at [`src/app/batch.rs:5001`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5001): when `export_vcon_when` is set, loop the selected Call-IDs, build each container with the existing single-call path, and write it to `<dir>/<sanitized-call-id>.vcon.json`. Sanitize by replacing every character outside `[A-Za-z0-9._-]` with `_`, because a Call-ID is attacker-influenced text and reaches a filesystem path here.
 
 - [ ] **Step 10: Test the path sanitizer**
 
@@ -593,9 +593,18 @@ rm -f /tmp/pc.txt
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
+- The gate landed in [`src/output/persistence.rs`](https://github.com/NormB/sipnab/blob/main/src/output/persistence.rs) rather than inside
+  [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) as planned. The exporter has to consult it, and the
+  exporter exists in builds without the `api` feature; a type declared
+  behind that feature would have made the check conditional on a REST
+  server nobody started.
+- The plan stopped at the routes, which would have shipped a control that
+  reported a closed gate while `export_vcon` went on writing. The gate is
+  threaded through `generate_reports` to `export_vcon`, above both export
+  forms.
 - Produces: `pub struct PersistenceGate { enabled: std::sync::atomic::AtomicBool, authorized: bool }` with `fn new(authorized: bool) -> Self`, `fn writes_permitted(&self) -> bool`, `fn set(&self, want: bool) -> bool` returning what the gate now reports.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -617,12 +626,12 @@ fn the_gate_cannot_open_what_the_command_line_never_authorized() {
 }
 ```
 
-- [ ] **Step 2: Run and watch it fail**
+- [x] **Step 2: Run and watch it fail**
 
 Run: `cargo test --features api,vcon --lib persistence_gate`
 Expected: FAIL — `cannot find type PersistenceGate`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```rust
 /// Whether content may still reach disk on this run.
@@ -658,12 +667,12 @@ impl PersistenceGate {
 }
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test --features api,vcon --lib persistence_gate`
 Expected: 2 passed.
 
-- [ ] **Step 5: Wire the routes**
+- [x] **Step 5: Wire the routes**
 
 At [`src/output/api.rs:262`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L262), beside the existing feature-gated vCon route:
 
@@ -674,7 +683,7 @@ At [`src/output/api.rs:262`](https://github.com/NormB/sipnab/blob/main/src/outpu
 
 `get_persistence` returns `{"enabled": <writes_permitted>, "authorized": <authorized>}`. `set_persistence` reads `{"enabled": bool}` and answers with the same shape, so a caller who tried to enable an unauthorized run sees `enabled: false, authorized: false` rather than a bare 200.
 
-- [ ] **Step 6: Test the route behind auth**
+- [x] **Step 6: Test the route behind auth**
 
 ```rust
 #[tokio::test]
@@ -694,7 +703,7 @@ async fn the_persistence_route_requires_the_api_key() {
 }
 ```
 
-- [ ] **Step 7: Run the gate and commit**
+- [x] **Step 7: Run the gate and commit**
 
 ```bash
 cargo fmt --all

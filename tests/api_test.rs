@@ -167,6 +167,131 @@ fn vcon_route_is_served_by_the_shipping_binary() {
     );
 }
 
+/// The persistence gate is reachable on the shipping binary, and a run with no
+/// persistence flags reports no authority.
+///
+/// The unit tests build a router in-process. This drives the real binary,
+/// because a handler can be correct and still not be wired into what ships --
+/// and this route is the one an operator reaches for when they want recording
+/// to stop, so "the route exists" is part of the promise.
+#[test]
+fn the_persistence_gate_answers_on_the_shipping_binary() {
+    let srv = ApiServer::spawn(&[]);
+
+    let resp = srv.get("/v1/persistence");
+    assert_eq!(resp.status, 200, "/v1/persistence status");
+    let body = resp.json();
+    assert_eq!(
+        body["authorized"], false,
+        "this run carries no persistence flags: {body}"
+    );
+    assert_eq!(
+        body["enabled"], false,
+        "so nothing is being written: {body}"
+    );
+}
+
+/// Enabling persistence over REST on a run the command line never authorized
+/// changes nothing, through the real binary.
+///
+/// The narrow-only property is the one an operator has to be able to trust
+/// without reading the source: starting sipnab without a persistence flag
+/// means no API key can turn recording on. Proved end to end rather than
+/// against an in-process gate, because the ceiling is computed in one place
+/// during startup and this is the only test that runs that code.
+#[test]
+fn rest_cannot_enable_persistence_the_command_line_never_authorized() {
+    let srv = ApiServer::spawn(&[]);
+
+    let resp = srv.post_json("/v1/persistence", r#"{"enabled":true}"#);
+    assert_eq!(resp.status, 200, "/v1/persistence POST status");
+    let body = resp.json();
+    assert_eq!(
+        body["enabled"], false,
+        "a REST caller enabled content on a run started without the flags: {body}"
+    );
+    assert_eq!(
+        body["authorized"], false,
+        "and the reason is visible: {body}"
+    );
+
+    assert_eq!(
+        srv.get("/v1/persistence").json(),
+        body,
+        "the next read must agree with what the POST reported"
+    );
+}
+
+/// A run started WITH a persistence flag reports authority, and can be closed.
+///
+/// The mirror of the test above, and the one that proves the ceiling is read
+/// from the flags rather than hardcoded: a `persists_content` that always
+/// answered `false` would pass every other test in this file.
+#[test]
+fn a_run_started_with_export_flags_reports_authority_and_can_be_closed() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let srv = ApiServer::spawn(&[
+        "--export-vcon-when",
+        "response_code >= 200",
+        "--export-vcon-dir",
+        dir.path().to_str().expect("utf-8 temp path"),
+    ]);
+
+    let body = srv.get("/v1/persistence").json();
+    assert_eq!(
+        body["authorized"], true,
+        "--export-vcon-when authorizes content: {body}"
+    );
+    assert_eq!(body["enabled"], true, "and it starts open: {body}");
+
+    let closed = srv
+        .post_json("/v1/persistence", r#"{"enabled":false}"#)
+        .json();
+    assert_eq!(closed["enabled"], false, "the close landed: {closed}");
+    assert_eq!(
+        closed["authorized"], true,
+        "closing does not erase the authority it was closed against: {closed}"
+    );
+}
+
+/// A body the server cannot read is refused, and moves nothing.
+///
+/// Driven over a real socket so the refusal is the SERVER's and not axum's
+/// extractor answering before the route was reached. `[true]` is the shape
+/// that got through in development: a derived `Deserialize` reads a struct
+/// from a sequence as happily as from a map.
+#[test]
+fn a_malformed_persistence_body_is_refused_by_the_shipping_binary() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let srv = ApiServer::spawn(&[
+        "--export-vcon-when",
+        "response_code >= 200",
+        "--export-vcon-dir",
+        dir.path().to_str().expect("utf-8 temp path"),
+    ]);
+
+    assert_eq!(
+        srv.post_json("/v1/persistence", r#"{"enabled":false}"#)
+            .json()["enabled"],
+        false,
+        "the fixture starts from a closed gate"
+    );
+
+    for body in ["[true]", "{}", "not json", r#"{"enabled":"true"}"#] {
+        let resp = srv.post_json("/v1/persistence", body);
+        assert_eq!(
+            resp.status, 400,
+            "body {body:?} was accepted: {}",
+            resp.body
+        );
+        assert_eq!(
+            srv.get("/v1/persistence").json()["enabled"],
+            false,
+            "body {body:?} reopened a closed gate"
+        );
+    }
+}
+
 /// `GET /v1/stats` returns 200 with schema_version 2, correct dialog counts
 /// for the fixture, and a `timing` object.
 ///

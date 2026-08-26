@@ -7,6 +7,8 @@
 //! - `hexdump` — Raw hex+ASCII packet dump
 //! - `json` — JSON/NDJSON structured output
 //! - `model` — canonical compact dialog/stream projections (all surfaces)
+//! - `persistence` — the runtime gate deciding whether content may still
+//!   reach disk on this run
 //! - `dialog_report` — Tabular dialog summary report
 //! - `call_report` — Comprehensive single-call diagnosis report
 //! - `fail2ban` — Fail2ban-compatible log format
@@ -38,6 +40,7 @@ pub mod group;
 pub mod hexdump;
 pub mod json;
 pub mod model;
+pub mod persistence;
 pub mod prometheus;
 #[cfg(feature = "metrics")]
 pub mod prometheus_server;

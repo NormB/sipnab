@@ -96,6 +96,17 @@ pub struct ApiState {
     /// flip together. A copy would let one door report a finished file as
     /// still running.
     pub source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Whether content may still reach disk on this run.
+    ///
+    /// Not an `Option`, unlike the two flags above. Those describe a subsystem
+    /// that may not be running; this one answers a question every run has an
+    /// answer to, and `None` would be a third state meaning "ask somebody
+    /// else". A run the command line never authorized carries a gate whose
+    /// ceiling is `false`, which is the same answer said out loud.
+    ///
+    /// The same `Arc` the exporter holds, so the socket and the writer cannot
+    /// disagree about whether this capture is writing.
+    pub persistence_gate: Arc<crate::output::persistence::PersistenceGate>,
 }
 
 /// Rows a list-style response returns when the caller names no `limit`.
@@ -261,6 +272,10 @@ pub fn build_router(state: ApiState) -> Router {
     #[cfg(feature = "vcon")]
     let router = router.route("/v1/dialogs/{call_id}/vcon", get(get_dialog_vcon));
     router
+        .route(
+            "/v1/persistence",
+            get(get_persistence).post(set_persistence),
+        )
         .route("/v1/streams", get(list_streams))
         .route("/v1/streams/{id}", get(get_stream))
         .route("/v1/report", get(get_capture_report))
@@ -918,6 +933,79 @@ async fn get_dialog_vcon(
     Ok(Json(parsed))
 }
 
+/// The body `POST /v1/persistence` accepts.
+///
+/// `deny_unknown_fields` so a caller who misspells the key is told, rather
+/// than getting a 200 that moved nothing. The field is required and typed:
+/// serde refuses a string, a number, and a missing key alike, and every one of
+/// those refusals leaves the gate where it was.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistenceRequest {
+    /// What the caller wants the gate to be, narrowed by the command line.
+    enabled: bool,
+}
+
+/// The shape both doors of `/v1/persistence` answer with.
+fn persistence_body(gate: &crate::output::persistence::PersistenceGate) -> Json<Value> {
+    Json(json!({
+        "enabled": gate.writes_permitted(),
+        "authorized": gate.authorized(),
+    }))
+}
+
+/// `GET /v1/persistence` — whether this capture is writing content.
+///
+/// Behind the same guard as every other route. It reports what a capture is
+/// keeping, which is not a public fact, and a reader who can see the answer is
+/// one step from a writer who can change it.
+async fn get_persistence(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, StatusCode> {
+    guard(&state, &headers, addr.ip())?;
+    Ok(persistence_body(&state.persistence_gate))
+}
+
+/// `POST /v1/persistence` — close the gate, or open it as far as allowed.
+///
+/// Answers with the same shape `GET` does, carrying both the gate's state and
+/// the command line's ceiling. A caller that asked to enable an unauthorized
+/// run therefore reads `enabled: false, authorized: false` rather than a bare
+/// 200 it would take for success.
+async fn set_persistence(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Result<impl IntoResponse, StatusCode> {
+    guard(&state, &headers, addr.ip())?;
+    // The body is extracted fallibly and AFTER the guard, in that order and
+    // for two reasons. Taken infallibly, axum would answer a malformed body
+    // itself, before the guard ran, telling an unauthenticated caller whether
+    // its JSON parsed. And a rejection has to stay a rejection: the dangerous
+    // reading of "I could not understand this request" is `enabled: true`.
+    let Ok(Json(raw)) = body else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    // A JSON object, and nothing else. Extracting straight into the struct
+    // looks equivalent and is not: a derived `Deserialize` also accepts a
+    // SEQUENCE, filling the fields in declaration order, so the body `[true]`
+    // parsed as `enabled: true` and reopened a closed gate. `deny_unknown_
+    // fields` does not catch it -- a sequence has no field names to be
+    // unknown. Nothing but this check stands between a stray array and an
+    // operator's close being undone.
+    if !raw.is_object() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let Ok(req) = serde_json::from_value::<PersistenceRequest>(raw) else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    state.persistence_gate.set(req.enabled);
+    Ok(persistence_body(&state.persistence_gate))
+}
+
 /// `GET /v1/streams` — list RTP streams with optional filtering and pagination.
 ///
 /// # Arguments
@@ -1558,6 +1646,11 @@ mod tests {
             // would test a shape production never produces.
             capture: None,
             source_exhausted: None,
+            // Fixtures build a run the command line never authorized, which
+            // is the state a test has to opt OUT of rather than into: a
+            // fixture defaulting to an open gate would let a route that
+            // forgot to consult it pass.
+            persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
         }
     }
 
@@ -1580,6 +1673,11 @@ mod tests {
             // would test a shape production never produces.
             capture: None,
             source_exhausted: None,
+            // Fixtures build a run the command line never authorized, which
+            // is the state a test has to opt OUT of rather than into: a
+            // fixture defaulting to an open gate would let a route that
+            // forgot to consult it pass.
+            persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
         }
     }
 
@@ -2033,6 +2131,11 @@ mod tests {
             // would test a shape production never produces.
             capture: None,
             source_exhausted: None,
+            // Fixtures build a run the command line never authorized, which
+            // is the state a test has to opt OUT of rather than into: a
+            // fixture defaulting to an open gate would let a route that
+            // forgot to consult it pass.
+            persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
         }
     }
 
@@ -2798,6 +2901,11 @@ mod tests {
             // would test a shape production never produces.
             capture: None,
             source_exhausted: None,
+            // Fixtures build a run the command line never authorized, which
+            // is the state a test has to opt OUT of rather than into: a
+            // fixture defaulting to an open gate would let a route that
+            // forgot to consult it pass.
+            persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
         };
         populate_dialogs(&state);
 
@@ -3715,5 +3823,374 @@ mod tests {
         assert!(limiter.check(ip_b));
         // ip_a is now over its limit.
         assert!(!limiter.check(ip_a));
+    }
+
+    // ── The persistence runtime gate ────────────────────────────────
+
+    /// A gate-carrying state with a static bearer key.
+    fn make_state_with_gate(gate: &Arc<crate::output::persistence::PersistenceGate>) -> ApiState {
+        ApiState {
+            persistence_gate: Arc::clone(gate),
+            ..make_state_with_key(GATE_KEY)
+        }
+    }
+
+    /// The bearer key every persistence test authenticates with.
+    const GATE_KEY: &str = "gate-test-key";
+
+    fn test_post(uri: &str, body: &str) -> Request<Body> {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_owned()))
+            .expect("build request");
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+            IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            12345,
+        )));
+        req
+    }
+
+    fn test_post_with_key(uri: &str, body: &str, key: &str) -> Request<Body> {
+        let mut req = test_post(uri, body);
+        req.headers_mut().insert(
+            "authorization",
+            format!("Bearer {key}").parse().expect("header value"),
+        );
+        req
+    }
+
+    fn test_get_with_key(uri: &str, key: &str) -> Request<Body> {
+        test_request_with_header(uri, "authorization", &format!("Bearer {key}"))
+    }
+
+    async fn json_of(resp: axum::response::Response) -> Value {
+        serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON")
+    }
+
+    /// A control that stops call content reaching disk is not public.
+    ///
+    /// It is on the same guard as every other route, and this pins that: the
+    /// route was added by hand and a forgotten `guard(...)` would leave an
+    /// unauthenticated caller able to switch recording off on a production
+    /// capture.
+    #[tokio::test]
+    async fn the_persistence_route_requires_the_api_key() {
+        let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+        let app = build_router(make_state_with_gate(&gate));
+
+        let resp = app
+            .clone()
+            .oneshot(test_post("/v1/persistence", r#"{"enabled":false}"#))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            gate.writes_permitted(),
+            "a refused request must not have moved the gate"
+        );
+
+        let resp = app
+            .oneshot(test_request("/v1/persistence"))
+            .await
+            .expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "reading the gate is as guarded as moving it: it reports whether \
+             this capture is writing content"
+        );
+    }
+
+    /// Closing over REST is visible to the next read, and to the exporter.
+    ///
+    /// The second assertion is the one that matters. The handler and the
+    /// exporter hold `Arc` clones of one gate; a state that had copied it
+    /// would pass the round-trip and still write containers.
+    #[tokio::test]
+    async fn closing_the_gate_over_rest_reaches_the_exporter() {
+        let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+        let app = build_router(make_state_with_gate(&gate));
+
+        let resp = app
+            .clone()
+            .oneshot(test_post_with_key(
+                "/v1/persistence",
+                r#"{"enabled":false}"#,
+                GATE_KEY,
+            ))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_of(resp).await;
+        assert_eq!(body["enabled"], false);
+        assert_eq!(body["authorized"], true);
+
+        assert!(
+            !gate.writes_permitted(),
+            "the exporter holds the same gate the socket moved"
+        );
+
+        let resp = app
+            .oneshot(test_get_with_key("/v1/persistence", GATE_KEY))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_of(resp).await;
+        assert_eq!(body["enabled"], false, "the next read agrees");
+        assert_eq!(body["authorized"], true);
+    }
+
+    /// Enabling on a run the command line never authorized says so.
+    ///
+    /// A bare 200 would read as success to a client that asked to enable, and
+    /// the client would go on believing content was being written.
+    #[tokio::test]
+    async fn enabling_persistence_on_an_unauthorized_run_reports_that_it_did_nothing() {
+        let gate = Arc::new(crate::output::persistence::PersistenceGate::new(false));
+        let app = build_router(make_state_with_gate(&gate));
+
+        let resp = app
+            .oneshot(test_post_with_key(
+                "/v1/persistence",
+                r#"{"enabled":true}"#,
+                GATE_KEY,
+            ))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_of(resp).await;
+        assert_eq!(body["enabled"], false, "nothing was enabled");
+        assert_eq!(
+            body["authorized"], false,
+            "and the reason is visible: this run was never authorized, which \
+             is a different answer from an operator having closed the gate"
+        );
+        assert!(!gate.writes_permitted());
+    }
+
+    /// A body the handler cannot read never opens the gate.
+    ///
+    /// The dangerous direction for a parse failure is a default of `true`.
+    /// Each of these is rejected with the gate left where it was.
+    #[tokio::test]
+    async fn a_body_the_handler_cannot_read_never_opens_the_gate() {
+        for body in [
+            "",
+            "not json",
+            "{}",
+            r#"{"enable":true}"#,
+            r#"{"enabled":"true"}"#,
+            r#"{"enabled":1}"#,
+            r#"{"enabled":null}"#,
+            "[true]",
+        ] {
+            let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+            gate.set(false);
+            let app = build_router(make_state_with_gate(&gate));
+
+            let resp = app
+                .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY))
+                .await
+                .expect("oneshot");
+            assert!(
+                resp.status().is_client_error(),
+                "body {body:?} was accepted; a body the handler cannot read \
+                 must be refused, not guessed at"
+            );
+            assert!(
+                !gate.writes_permitted(),
+                "body {body:?} reopened a closed gate"
+            );
+        }
+    }
+
+    /// A JSON sequence never reaches the gate.
+    ///
+    /// Its own test rather than a row in the table above, because it is the
+    /// one shape that got through. A derived `Deserialize` accepts a sequence
+    /// as well as a map, filling fields in declaration order, so `[true]`
+    /// arrived as `enabled: true` and reopened a gate an operator had closed.
+    /// A one-field struct makes the array that does it a single token long.
+    #[tokio::test]
+    async fn a_json_sequence_never_reaches_the_gate() {
+        for body in ["[true]", "[false]", "[]", r#"[true,"ignored"]"#, "[[true]]"] {
+            let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+            gate.set(false);
+            let app = build_router(make_state_with_gate(&gate));
+
+            let resp = app
+                .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY))
+                .await
+                .expect("oneshot");
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "sequence body {body:?} was accepted"
+            );
+            assert!(
+                !gate.writes_permitted(),
+                "sequence body {body:?} reopened a closed gate"
+            );
+        }
+    }
+
+    /// A sequence cannot close the gate either.
+    ///
+    /// The fix has to reject the SHAPE, not the value. A handler that refused
+    /// only sequences carrying `true` would still be reading fields out of an
+    /// array, and the next field added to the request struct would decide
+    /// which array position meant what.
+    #[tokio::test]
+    async fn a_sequence_cannot_move_the_gate_in_either_direction() {
+        let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+        let app = build_router(make_state_with_gate(&gate));
+
+        let resp = app
+            .oneshot(test_post_with_key("/v1/persistence", "[false]", GATE_KEY))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            gate.writes_permitted(),
+            "a sequence closed the gate; the shape is refused, not the value"
+        );
+    }
+
+    /// An object with an unknown key is refused rather than half-read.
+    ///
+    /// `deny_unknown_fields` is what does it, and this is where that attribute
+    /// is held: a caller who typed `enable` alongside `enabled` has said two
+    /// things and meant one, and guessing which is the reading that ends with
+    /// content on disk nobody asked for.
+    #[tokio::test]
+    async fn an_object_with_an_unknown_key_is_refused() {
+        for body in [
+            r#"{"enabled":true,"enable":false}"#,
+            r#"{"enabled":true,"forever":true}"#,
+        ] {
+            let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+            gate.set(false);
+            let app = build_router(make_state_with_gate(&gate));
+
+            let resp = app
+                .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY))
+                .await
+                .expect("oneshot");
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "body {body:?} was accepted"
+            );
+            assert!(!gate.writes_permitted(), "body {body:?} moved the gate");
+        }
+    }
+
+    /// Exactly one body shape moves the gate.
+    ///
+    /// Stated as a sweep rather than as cases so a body shape nobody thought
+    /// of has to be added to the accepted list deliberately. The two accepted
+    /// rows are the whole documented surface of this route.
+    #[tokio::test]
+    async fn exactly_one_body_shape_moves_the_gate() {
+        let accepted = [
+            (r#"{"enabled":true}"#, true),
+            (r#"{"enabled":false}"#, false),
+        ];
+        let refused = [
+            "",
+            "null",
+            "true",
+            "0",
+            r#""enabled""#,
+            "{}",
+            "[true]",
+            r#"{"enabled":[true]}"#,
+            r#"{"enabled":{"value":true}}"#,
+        ];
+
+        for (body, want) in accepted {
+            let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+            gate.set(!want);
+            let app = build_router(make_state_with_gate(&gate));
+            let resp = app
+                .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY))
+                .await
+                .expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::OK, "body {body:?} was refused");
+            assert_eq!(gate.writes_permitted(), want, "body {body:?} did not land");
+        }
+
+        for body in refused {
+            for start in [true, false] {
+                let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+                gate.set(start);
+                let app = build_router(make_state_with_gate(&gate));
+                let resp = app
+                    .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY))
+                    .await
+                    .expect("oneshot");
+                assert!(
+                    resp.status().is_client_error(),
+                    "body {body:?} was accepted"
+                );
+                assert_eq!(
+                    gate.writes_permitted(),
+                    start,
+                    "body {body:?} moved a gate it should not have touched"
+                );
+            }
+        }
+    }
+
+    /// Reading the gate does not move it.
+    #[tokio::test]
+    async fn reading_the_gate_leaves_it_where_it_was() {
+        for start_open in [true, false] {
+            let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+            gate.set(start_open);
+            let app = build_router(make_state_with_gate(&gate));
+
+            for _ in 0..3 {
+                let resp = app
+                    .clone()
+                    .oneshot(test_get_with_key("/v1/persistence", GATE_KEY))
+                    .await
+                    .expect("oneshot");
+                assert_eq!(resp.status(), StatusCode::OK);
+                assert_eq!(json_of(resp).await["enabled"], start_open);
+            }
+            assert_eq!(gate.writes_permitted(), start_open, "reads are reads");
+        }
+    }
+
+    /// Both doors of the route report the same shape.
+    ///
+    /// A client polls `GET` and acts on `POST`; two shapes would make it parse
+    /// twice and eventually parse one of them wrong.
+    #[tokio::test]
+    async fn both_doors_report_the_same_shape() {
+        let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+        let app = build_router(make_state_with_gate(&gate));
+
+        let posted = json_of(
+            app.clone()
+                .oneshot(test_post_with_key(
+                    "/v1/persistence",
+                    r#"{"enabled":true}"#,
+                    GATE_KEY,
+                ))
+                .await
+                .expect("oneshot"),
+        )
+        .await;
+        let got = json_of(
+            app.oneshot(test_get_with_key("/v1/persistence", GATE_KEY))
+                .await
+                .expect("oneshot"),
+        )
+        .await;
+        assert_eq!(posted, got, "POST and GET answer with one shape");
     }
 }

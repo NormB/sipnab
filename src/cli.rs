@@ -3021,6 +3021,22 @@ impl Cli {
     /// which is compiled whether or not the server behind it is.
     pub const DEFAULT_METRICS_MAX_CONN: usize = 16;
 
+    /// Whether this run's flags authorize writing call content to disk.
+    ///
+    /// The ceiling the REST gate can never rise above. It reads the flags
+    /// rather than a resolved config because the question is what the OPERATOR
+    /// asked for: a default that turned persistence on would make the ceiling
+    /// something nobody chose.
+    ///
+    /// A flag added later that writes content belongs here, and
+    /// `persists_content_names_every_flag_that_writes_content` is where that
+    /// is stated, so the omission breaks a test rather than shipping a gate
+    /// that reports no authority over a run that is writing.
+    #[must_use]
+    pub const fn persists_content(&self) -> bool {
+        self.output_args.export_vcon.is_some() || self.output_args.export_vcon_when.is_some()
+    }
+
     /// Dialog cap: `--limit`, else `[limits] dialog_limit`, else the default.
     ///
     /// The explicit flag wins because it is the more specific instruction —
@@ -4810,6 +4826,66 @@ mod tests {
             "one Call-ID to stdout and a predicate to a directory are two \
              different runs, and picking one silently is the failure"
         );
+    }
+
+    /// `persists_content` is true for exactly the flags that write content.
+    ///
+    /// The REST gate's ceiling is read off this, so a flag added later that
+    /// writes content and is not named here would ship a control that reports
+    /// `authorized: false` while the exporter went on writing -- the gate
+    /// lying in the one direction that matters.
+    #[test]
+    fn persists_content_names_every_flag_that_writes_content() {
+        let bare = Cli::try_parse_from(["sipnab", "-I", "x.pcap"]).expect("parses");
+        assert!(
+            !bare.persists_content(),
+            "a run with no persistence flags writes no content"
+        );
+
+        let single = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--export-vcon", "abc@1"])
+            .expect("parses");
+        assert!(
+            single.persists_content(),
+            "--export-vcon writes a container"
+        );
+
+        let predicate = Cli::try_parse_from([
+            "sipnab",
+            "-I",
+            "x.pcap",
+            "--export-vcon-when",
+            "state == 'Failed'",
+            "--export-vcon-dir",
+            "/tmp/out",
+        ])
+        .expect("parses");
+        assert!(
+            predicate.persists_content(),
+            "--export-vcon-when writes containers"
+        );
+    }
+
+    /// Flags that read, filter, or report do not authorize persistence.
+    ///
+    /// The ceiling has to be tight in both directions. Too loose and the gate
+    /// reports authority over a run that never writes, so an operator closing
+    /// it is told it worked when there was nothing to close.
+    #[test]
+    fn reading_and_reporting_flags_do_not_authorize_persistence() {
+        for extra in [
+            vec!["--report"],
+            vec!["--json"],
+            vec!["--content-deny-header", "X-No-Record"],
+            vec!["--filter", "state == 'Failed'"],
+        ] {
+            let mut argv = vec!["sipnab", "-I", "x.pcap"];
+            argv.extend(extra.iter().copied());
+            let cli = Cli::try_parse_from(&argv).expect("parses");
+            assert!(
+                !cli.persists_content(),
+                "{extra:?} does not write content and must not authorize it"
+            );
+        }
     }
 
     /// `--content-deny-header` parses, and stands alone.

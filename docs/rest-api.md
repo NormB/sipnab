@@ -867,6 +867,73 @@ build without the `vcon` feature.
 
 ---
 
+### GET /v1/persistence
+
+Report whether this capture is still writing call content to disk.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:8080/v1/persistence | jq .
+```
+
+```json
+{
+  "enabled": true,
+  "authorized": true
+}
+```
+
+Two fields, because "not writing" has two causes an operator needs to tell
+apart:
+
+- `authorized` — whether the command line asked this run to write content at
+  all. Fixed when sipnab starts, and nothing over the network changes it.
+- `enabled` — whether content is reaching disk right now.
+
+`authorized: false` means this run was never going to write anything.
+`authorized: true, enabled: false` means somebody switched it off.
+
+---
+
+### POST /v1/persistence
+
+Stop writing content, or start again up to what the command line allowed.
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":false}' \
+  http://127.0.0.1:8080/v1/persistence | jq .
+```
+
+```json
+{
+  "enabled": false,
+  "authorized": true
+}
+```
+
+The answer carries the same two fields `GET` does, and it reports the gate
+rather than the request. A caller that asked to enable content on a run started
+without persistence flags reads back `enabled: false, authorized: false`, which
+says the request landed and changed nothing.
+
+**This control only narrows.** `{"enabled": true}` restores writing as far as
+the command line allowed and no further. Starting sipnab without a persistence
+flag is the way to guarantee a run writes no content, and no API key changes
+that. Anyone holding a token can switch recording off. Nobody can switch it on.
+
+**Body shape:** a JSON object with exactly the key `enabled`, carrying `true`
+or `false`. Anything else — a missing key, an extra key, a string, an array —
+answers `400` and leaves the gate where it was. A body the server cannot read
+never counts as permission to write.
+
+Both routes sit behind the same authentication as every other `/v1/` route. A
+control that stops call content reaching disk is not public, and neither is the
+answer to whether a capture is recording.
+
+---
+
 ### GET /v1/streams
 
 List all tracked RTP streams with quality metrics.
