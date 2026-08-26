@@ -725,9 +725,19 @@ rm -f /tmp/pc.txt
 
 **Interfaces:**
 - Consumes: `PersistenceGate` from Task 3.
+- The plan added two fields and a clause and stopped there, which left the
+  values with no source. `PersistenceGate` gained a sticky
+  `closed_during_run` -- the container is written at the end of a run, by
+  which time the gate may be open again -- and `apply_deny_filter` now
+  returns what it removed, a count that cannot be recovered later.
+- Step 5 cited `no_container_emits_an_explicit_null` by name. No test of
+  that name exists in the repo: the filter matched zero tests and reported
+  success, which is what a filter matching nothing always does. Replaced by
+  `the_new_completeness_fields_are_present_and_never_null`, which reads a
+  written container.
 - Produces: two new `CaptureCompleteness` fields: `pub gate_closed_during_run: bool`, `pub dialogs_suppressed_by_deny: u64`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -753,12 +763,12 @@ fn a_deny_flag_is_recorded_rather_than_leaving_a_silent_absence() {
 }
 ```
 
-- [ ] **Step 2: Run and watch both fail**
+- [x] **Step 2: Run and watch both fail**
 
 Run: `cargo test --features vcon --lib completeness_caveat`
 Expected: FAIL — unknown fields.
 
-- [ ] **Step 3: Add the fields and the prose**
+- [x] **Step 3: Add the fields and the prose**
 
 Add both fields to `CaptureCompleteness`. In the note builder near line 1618, append:
 
@@ -779,12 +789,12 @@ Add both fields to `CaptureCompleteness`. In the note builder near line 1618, ap
     }
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test --features vcon --lib completeness_caveat`
 Expected: 2 passed.
 
-- [ ] **Step 5: Confirm no explicit nulls appeared**
+- [x] **Step 5: Confirm no explicit nulls appeared**
 
 The module's standing contract is "absent, never null". Adding fields to a
 serialized struct is exactly how a null arrives.
@@ -792,7 +802,7 @@ serialized struct is exactly how a null arrives.
 Run: `cargo test --features vcon --lib no_container_emits_an_explicit_null`
 Expected: PASS. If it fails, the new fields need `#[serde(skip_serializing_if)]`.
 
-- [ ] **Step 6: Run the gate and commit**
+- [x] **Step 6: Run the gate and commit**
 
 ```bash
 cargo fmt --all
@@ -813,32 +823,32 @@ rm -f /tmp/pc.txt
 - Modify: [`website/templates/index.html`](../../website/templates/index.html)
 - Modify: [`CHANGELOG.md`](../../CHANGELOG.md)
 
-- [ ] **Step 1: Document the three flags**
+- [x] **Step 1: Document the three flags**
 
 Add `--export-vcon-when`, `--export-vcon-dir` and `--content-deny-header` to
 the [`docs/cli-reference.md`](../../docs/cli-reference.md) table, matching the existing row style. State on
 `--content-deny-header` that it denies only and never permits, because a reader
 who assumes symmetry will look for the permit flag.
 
-- [ ] **Step 2: Document the REST route**
+- [x] **Step 2: Document the REST route**
 
 Add `/v1/persistence` to [`docs/rest-api.md`](../../docs/rest-api.md), both verbs, with the
 `{"enabled", "authorized"}` shape and the note that enabling cannot exceed what
 the command line authorized.
 
-- [ ] **Step 3: Add the changelog entry**
+- [x] **Step 3: Add the changelog entry**
 
 Under `## [Unreleased]`, a `### Added` section describing conditional creation
 and the narrowing rule.
 
-- [ ] **Step 4: Regenerate both mirrors**
+- [x] **Step 4: Regenerate both mirrors**
 
 ```bash
 python3 scripts/build-site-internals.py
 python3 scripts/build-site-pages.py
 ```
 
-- [ ] **Step 5: Move the homepage ratchet with attribution**
+- [x] **Step 5: Move the homepage ratchet with attribution**
 
 ```bash
 git diff --cached | grep -c "^+.*#\[test\]"
@@ -849,7 +859,7 @@ Add that number to the current count and update BOTH places in
 the delta does not match the number of tests you added, stop: a count moving
 the wrong way is the alarm the gate exists for.
 
-- [ ] **Step 6: Run the prose gates directly**
+- [x] **Step 6: Run the prose gates directly**
 
 ```bash
 vale $(sed 's/#.*//' .config/vale-paths.txt | tr '\n' ' ')
@@ -858,7 +868,7 @@ codespell docs/ README.md
 
 Expected: 0 errors. Vale rejects passive voice and semicolons.
 
-- [ ] **Step 7: Run the gate and commit**
+- [x] **Step 7: Run the gate and commit**
 
 ```bash
 git add docs/cli-reference.md docs/vcon.md docs/rest-api.md CHANGELOG.md \

@@ -10,6 +10,31 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **Conditional vCon creation, and a runtime gate that only ever narrows.**
+  `--export-vcon-when <EXPR>` writes one container per matching dialog into
+  `--export-vcon-dir`, using the filter language `--filter` already speaks, so
+  the same conditions that narrow a report choose a container set.
+  `--content-deny-header <NAME>` suppresses content for any dialog carrying
+  that header, and `GET`/`POST /v1/persistence` lets an operator stop content
+  reaching disk mid-run with `curl` and start it again afterwards.
+
+  Every input other than the command line may only NARROW. `{"enabled": true}`
+  restores writing as far as the invocation allowed and no further, so a run
+  started without a persistence flag writes nothing whatever anyone does to the
+  socket: anyone holding an API token can switch recording off, nobody can
+  switch it on. There is no permit header for the same reason — a header asking
+  sipnab to RECORD is an assertion by whoever sent the request, and acting on
+  one would hand the retention decision to anyone who can set a header.
+
+  A container records the two ways it deliberately does not exist.
+  `gate_closed_during_run` and `dialogs_suppressed_by_deny` report a DECISION
+  rather than a capture fault, and the note says so in words: read against a
+  switch's records, a run that stopped recording partway looks exactly like one
+  that missed the calls.
+
+
 ## [0.5.126] - 2026-08-26
 
 ### Fixed

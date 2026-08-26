@@ -378,6 +378,36 @@ different answers, and the container keeps them apart — an analysis that ranke
 nothing emits `blind_spots: []`, while an export that skipped the analysis
 omits the field entirely.
 
+### When a container is missing on purpose
+
+Two of the fields in that block report a **decision** rather than a capture
+fault, and the note says so in words. Every other clause describes something
+the run failed to see. These two describe something an operator chose, and a
+reader who cannot tell them apart goes looking for a fault that does not exist.
+
+| Field | What it means |
+|---|---|
+| `gate_closed_during_run` | An operator stopped this run writing content partway through, over `POST /v1/persistence`. Containers are absent on one side of a hole this capture does not otherwise record. |
+| `dialogs_suppressed_by_deny` | How many dialogs carried the `--content-deny-header` name and produced no container. |
+
+Both are always present, including as `false` and `0`. A missing key and
+"nothing happened" are the same fact here, and there is no reason to make a
+consumer distinguish them.
+
+The absence is what makes them necessary. A container written after recording
+stopped looks exactly like one from a run where those calls never happened, so
+a reader comparing the set against a switch's records concludes sipnab missed
+them. The same goes for a deny flag: the containers that DID get written read
+as the complete set for their predicate. Neither fact survives in the capture
+itself, so the container carries it.
+
+Suppression narrows and never widens. A header asking sipnab to RECORD is an
+assertion by whoever sent the request, and this tool refuses that class of
+claim — there is no permit flag, and no REST call can enable persistence a
+command line did not authorize. See
+[`docs/rest-api.md`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md)
+for the runtime gate.
+
 ## Someone handed you a sipnab vCon — what may you conclude?
 
 Read the container as evidence from an instrument, not as a record from a

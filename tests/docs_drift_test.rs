@@ -2754,12 +2754,16 @@ fn no_documentation_table_repeats_a_row() {
     // before the number moved -- that file carried three table separators at
     // HEAD and carries four here, and no other page gained any. CONTRIBUTING.md
     // has no site mirror, so it costs one rather than two.
+    // 669 -> 671: one new table in docs/vcon.md naming the two fields that
+    // report a deliberate absence, and its copy in the site mirror. Attributed
+    // per file before this number was touched, because "fewer" is the alarm
+    // this gate exists to raise.
     // 667 -> 669: two tables in the conditional-content-persistence design --
     // the precedence ladder, and the mutants Task 2 must die to. Attributed by
     // measurement: that file carries exactly two table separators and no other
     // page gained one. It is not a published page, so it costs no second entry
     // for a site mirror.
-    const EXPECTED_TABLES: usize = 669;
+    const EXPECTED_TABLES: usize = 671;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
