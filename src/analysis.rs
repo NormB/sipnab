@@ -783,6 +783,17 @@ pub struct CaptureFacts {
     pub icmp_media: crate::pipeline::IcmpMediaReport,
     /// What the stores shed at a cap.
     pub retention: RetentionCounts,
+    /// Whether an operator stopped this run writing content partway through.
+    ///
+    /// Not a capture fault, unlike every other field here, and the container's
+    /// wording keeps them apart: a reader who cannot tell a deliberate stop
+    /// from a missed packet goes looking for a fault that does not exist.
+    pub gate_closed_during_run: bool,
+    /// Dialogs a deny flag in the signaling removed from this export.
+    ///
+    /// A decision recorded rather than a gap. Absent, the containers that DID
+    /// get written read as the complete set for their predicate.
+    pub dialogs_suppressed_by_deny: u64,
 }
 
 impl CaptureFacts {
@@ -806,6 +817,10 @@ impl CaptureFacts {
             icmp: crate::pipeline::icmp_evidence_report(),
             icmp_media: crate::pipeline::icmp_media_report(stream_store),
             retention: RetentionCounts::of_store(dialog_store),
+            // Neither is observable from the stores: both are decisions this
+            // process made, and the caller that made them sets them.
+            gate_closed_during_run: false,
+            dialogs_suppressed_by_deny: 0,
         }
     }
 }

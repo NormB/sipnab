@@ -561,6 +561,15 @@ pub struct CaptureCompleteness {
     pub dialogs_refused: u64,
     /// Oldest dialogs discarded at capacity by rotation.
     pub dialogs_rotated: u64,
+    /// Whether an operator stopped this run writing content partway through.
+    ///
+    /// Serialized always, including as `false`. Unlike `blind_spots`, absence
+    /// here has no second meaning to protect: `false` IS the answer, and a
+    /// consumer branching on the key should not have to treat "missing" and
+    /// "nothing happened" as the same thing.
+    pub gate_closed_during_run: bool,
+    /// Dialogs a deny flag removed from this export.
+    pub dialogs_suppressed_by_deny: u64,
     /// Blind spots the capture analysis ranked, or `None` when no analysis was
     /// supplied.
     ///
@@ -1544,6 +1553,8 @@ fn completeness_of(context: &ExportContext<'_>, media: &MediaVerdict) -> Capture
         messages_evicted: facts.retention.messages_evicted,
         dialogs_refused: facts.retention.dialogs_refused,
         dialogs_rotated: facts.retention.dialogs_rotated,
+        gate_closed_during_run: facts.gate_closed_during_run,
+        dialogs_suppressed_by_deny: facts.dialogs_suppressed_by_deny,
         blind_spots,
     }
 }
@@ -1611,6 +1622,26 @@ fn completeness_note(
         partial.push_str(&format!(
             " — INCOMPLETE: {} dialog(s) were discarded at capacity by rotation.",
             facts.retention.dialogs_rotated
+        ));
+    }
+
+    // The two clauses below report DECISIONS, not capture faults, and they say
+    // so. Every clause above describes something this run failed to see; a
+    // reader who cannot tell the two apart goes hunting for a fault that does
+    // not exist. They are separate `if`s rather than a chain because a run can
+    // have both, and that run is the one whose container explains itself least.
+    if facts.gate_closed_during_run {
+        partial.push_str(
+            " — INCOMPLETE: an operator closed the persistence gate during this run, so \
+             containers are absent for a reason this capture does not otherwise record. That \
+             is a decision, not a gap in what sipnab saw.",
+        );
+    }
+    if facts.dialogs_suppressed_by_deny > 0 {
+        partial.push_str(&format!(
+            " — INCOMPLETE: {} dialog(s) carried a deny flag in their signaling and produced no \
+             content. That is a decision recorded here, not a gap in what sipnab saw.",
+            facts.dialogs_suppressed_by_deny
         ));
     }
 
@@ -1923,6 +1954,150 @@ mod tests {
             },
             exported_at(),
         )
+    }
+
+    // ── What the container says it does not contain ─────────────
+
+    /// A run whose gate closed mid-capture says so.
+    ///
+    /// The container that survives is evidence about a capture that stopped
+    /// recording partway. Without the clause it reads as a complete run that
+    /// simply had fewer calls, and a reader comparing it against a switch's
+    /// CDRs would conclude sipnab missed them.
+    #[test]
+    fn a_run_whose_gate_closed_says_so_in_the_completeness_caveat() {
+        let mut facts = clean_facts();
+        facts.gate_closed_during_run = true;
+        let v = export_with(&dialog_with(&[response(200, "OK")]), &facts);
+        let json = serde_json::to_string(&v).expect("serializes");
+        assert!(
+            json.contains("closed the persistence gate"),
+            "a run that stopped writing mid-capture does not reproduce from              the capture alone, and the container has to say so: {json}"
+        );
+    }
+
+    /// A deny flag is recorded rather than leaving a silent absence.
+    #[test]
+    fn a_deny_flag_is_recorded_rather_than_leaving_a_silent_absence() {
+        let mut facts = clean_facts();
+        facts.dialogs_suppressed_by_deny = 3;
+        let v = export_with(&dialog_with(&[response(200, "OK")]), &facts);
+        let json = serde_json::to_string(&v).expect("serializes");
+        assert!(
+            json.contains("3 dialog(s) carried a deny flag"),
+            "absence reading as 'nothing happened' is the failure this module              exists to refuse: {json}"
+        );
+    }
+
+    /// A run with neither still earns the clean verdict.
+    ///
+    /// The clause has to be absent, not merely quiet. A note that always
+    /// mentioned the gate would make every container read as suspect, and a
+    /// caveat that fires on every run is one nobody reads.
+    #[test]
+    fn a_run_with_no_suppression_says_nothing_about_it() {
+        let v = export_with(&dialog_with(&[response(200, "OK")]), &clean_facts());
+        let json = serde_json::to_string(&v).expect("serializes");
+        assert!(
+            !json.contains("persistence gate"),
+            "an untouched gate must not be mentioned: {json}"
+        );
+        assert!(
+            !json.contains("deny flag"),
+            "a run with no deny flag must not mention one: {json}"
+        );
+        assert!(
+            json.contains("No omissions recorded"),
+            "and the run still earns the clean verdict: {json}"
+        );
+    }
+
+    /// Zero suppressed dialogs is not "some".
+    ///
+    /// The counter is a `u64`, and the clause is gated on `> 0`. A `!= 0`
+    /// written as `is_some`-style truthiness, or a clause built
+    /// unconditionally, would put "0 dialog(s) carried a deny flag" into every
+    /// container -- which reads as a measurement of something.
+    #[test]
+    fn zero_suppressed_dialogs_produces_no_clause() {
+        let mut facts = clean_facts();
+        facts.dialogs_suppressed_by_deny = 0;
+        let json =
+            serde_json::to_string(&export_with(&dialog_with(&[response(200, "OK")]), &facts))
+                .expect("serializes");
+        assert!(!json.contains("deny flag"), "zero is not some: {json}");
+    }
+
+    /// Both causes are reported when both happened.
+    ///
+    /// They are independent, and an `else if` between them would hide whichever
+    /// came second. The run that has both is the one whose container is least
+    /// self-explanatory.
+    #[test]
+    fn both_suppression_causes_appear_together() {
+        let mut facts = clean_facts();
+        facts.gate_closed_during_run = true;
+        facts.dialogs_suppressed_by_deny = 2;
+        let json =
+            serde_json::to_string(&export_with(&dialog_with(&[response(200, "OK")]), &facts))
+                .expect("serializes");
+        assert!(
+            json.contains("closed the persistence gate"),
+            "the gate clause is missing: {json}"
+        );
+        assert!(
+            json.contains("2 dialog(s) carried a deny flag"),
+            "the deny clause is missing: {json}"
+        );
+    }
+
+    /// The counts reach the container as fields, not only as prose.
+    ///
+    /// A consumer branching on this should not have to parse an English
+    /// sentence. The note explains; the fields are what a program reads.
+    #[test]
+    fn suppression_is_carried_as_fields_a_program_can_read() {
+        let mut facts = clean_facts();
+        facts.gate_closed_during_run = true;
+        facts.dialogs_suppressed_by_deny = 5;
+        let v = export_with(&dialog_with(&[response(200, "OK")]), &facts);
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&v).expect("serializes"))
+                .expect("valid JSON");
+        let c = &json["analysis"][0]["body"];
+        let body: serde_json::Value = serde_json::from_str(
+            c.as_str()
+                .unwrap_or_else(|| panic!("an analysis body is a string: {json}")),
+        )
+        .expect("the analysis body parses");
+        let completeness = &body["capture_completeness"];
+        assert_eq!(
+            completeness["gate_closed_during_run"], true,
+            "the gate fact must be a field: {body}"
+        );
+        assert_eq!(
+            completeness["dialogs_suppressed_by_deny"], 5,
+            "the deny count must be a field: {body}"
+        );
+    }
+
+    /// A suppressed dialog is a decision, not a gap in what sipnab saw.
+    ///
+    /// The wording matters as much as the presence. Every other INCOMPLETE
+    /// clause in this note reports something the capture MISSED; these two
+    /// report something an operator CHOSE. A reader who cannot tell them apart
+    /// will go looking for a capture fault that does not exist.
+    #[test]
+    fn a_deliberate_suppression_does_not_read_as_a_capture_fault() {
+        let mut facts = clean_facts();
+        facts.dialogs_suppressed_by_deny = 1;
+        let json =
+            serde_json::to_string(&export_with(&dialog_with(&[response(200, "OK")]), &facts))
+                .expect("serializes");
+        assert!(
+            json.contains("not a gap in what sipnab saw"),
+            "the clause must say the absence was chosen: {json}"
+        );
     }
 
     /// The container's own fields: version, extensions, and the two things

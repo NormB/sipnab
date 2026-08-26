@@ -4799,8 +4799,9 @@ fn export_vcon_selection(
     dialog_store: &DialogStore,
     stream_store: &StreamStore,
     frames_read: u64,
+    gate: Option<&crate::output::persistence::PersistenceGate>,
 ) -> bool {
-    let selection = match vcon_selection(cli, dialog_store, stream_store) {
+    let (selection, suppressed_by_deny) = match vcon_selection(cli, dialog_store, stream_store) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("{e:#}");
@@ -4815,7 +4816,15 @@ fn export_vcon_selection(
         }
     };
 
-    let facts = crate::analysis::CaptureFacts::observed(dialog_store, stream_store, frames_read);
+    let mut facts =
+        crate::analysis::CaptureFacts::observed(dialog_store, stream_store, frames_read);
+    // What this run deliberately did not write. Recorded on the facts BEFORE
+    // the analysis runs, so every container built from them carries the same
+    // account -- a container that named a different number from its siblings
+    // would read as two runs.
+    facts.dialogs_suppressed_by_deny = suppressed_by_deny;
+    facts.gate_closed_during_run =
+        gate.is_some_and(crate::output::persistence::PersistenceGate::closed_during_run);
     let analysis = crate::analysis::analyze_with(dialog_store, stream_store, None, &facts);
     let mut written = 0_usize;
     for (dialog, _) in &selection.dialogs {
@@ -4910,12 +4919,11 @@ fn vcon_selection<'a>(
     cli: &Cli,
     dialog_store: &'a DialogStore,
     stream_store: &'a StreamStore,
-) -> anyhow::Result<crate::sip::dsl::DialogSelection<'a>> {
+) -> anyhow::Result<(crate::sip::dsl::DialogSelection<'a>, u64)> {
     let Some(expr) = cli.output_args.export_vcon_when.as_deref() else {
-        return Ok(crate::sip::dsl::select_dialogs(
-            None,
-            dialog_store,
-            stream_store,
+        return Ok((
+            crate::sip::dsl::select_dialogs(None, dialog_store, stream_store),
+            0,
         ));
     };
     let deny = cli.output_args.content_deny_header.as_deref();
@@ -4945,17 +4953,24 @@ fn vcon_selection<'a>(
 ///
 /// Deny only. Nothing here adds a dialog, because every input other than the
 /// command line may only narrow.
+///
+/// Returns the narrowed selection and HOW MANY dialogs it removed. The count
+/// is what the container quotes, and it cannot be recovered later: by then the
+/// denied dialogs are gone, and a difference against the unfiltered store would
+/// also count everything the predicate rejected for unrelated reasons.
 #[cfg(feature = "vcon")]
 fn apply_deny_filter<'a>(
     mut selection: crate::sip::dsl::DialogSelection<'a>,
     deny: Option<&str>,
-) -> crate::sip::dsl::DialogSelection<'a> {
+) -> (crate::sip::dsl::DialogSelection<'a>, u64) {
     let Some(header) = deny else {
-        return selection;
+        return (selection, 0);
     };
+    let before = selection.dialogs.len();
     selection
         .dialogs
         .retain(|(dialog, _)| !dialog_carries_header(dialog, header));
+    let suppressed = (before - selection.dialogs.len()) as u64;
     let kept: Vec<&crate::rtp::stream::RtpStream> = selection
         .dialogs
         .iter()
@@ -4964,7 +4979,7 @@ fn apply_deny_filter<'a>(
     selection
         .streams
         .retain(|s| kept.iter().any(|k| std::ptr::eq(*k, *s)));
-    selection
+    (selection, suppressed)
 }
 
 /// Whether any message in this dialog carries the named header.
@@ -5014,7 +5029,7 @@ fn export_vcon(
         return true;
     }
     if cli.output_args.export_vcon_when.is_some() {
-        return export_vcon_selection(cli, dialog_store, stream_store, frames_read);
+        return export_vcon_selection(cli, dialog_store, stream_store, frames_read, gate);
     }
     let Some(call_id) = cli.output_args.export_vcon.as_deref() else {
         return true;
@@ -5238,7 +5253,7 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 400".to_owned());
 
-        let picked = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
+        let (picked, _) = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
         let ids: Vec<&str> = picked
             .dialogs
             .iter()
@@ -5390,7 +5405,7 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 599".to_owned());
 
-        let picked = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
+        let (picked, _) = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
 
         assert!(
             picked.dialogs.is_empty(),
@@ -5416,8 +5431,9 @@ mod tests {
         let streams = StreamStore::new(16);
         let cli = Cli::parse_from_args(["sipnab"]);
 
-        let picked =
-            vcon_selection(&cli, &dialogs, &streams).expect("no predicate is not an error");
+        let picked = vcon_selection(&cli, &dialogs, &streams)
+            .expect("no predicate is not an error")
+            .0;
 
         assert_eq!(
             picked.dialogs.len(),
@@ -5444,7 +5460,7 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
 
-        let picked = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
+        let (picked, _) = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
         let names: std::collections::HashSet<String> = picked
             .dialogs
             .iter()
@@ -5466,6 +5482,256 @@ mod tests {
         cli.output_args.export_vcon_when = Some(expr.to_owned());
         cli.output_args.export_vcon_dir = Some(dir.to_path_buf());
         cli
+    }
+
+    // ── What the run records about its own suppression ──────────
+
+    /// Read the `capture_completeness` block out of the first container in a
+    /// directory. The containers are what a consumer actually gets.
+    #[cfg(feature = "vcon")]
+    fn first_completeness(dir: &std::path::Path) -> serde_json::Value {
+        let f = std::fs::read_dir(dir)
+            .expect("readable")
+            .flatten()
+            .next()
+            .expect("at least one container was written");
+        let text = std::fs::read_to_string(f.path()).expect("readable");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        let body = v["analysis"][0]["body"]
+            .as_str()
+            .unwrap_or_else(|| panic!("an analysis body is a string: {v}"));
+        let parsed: serde_json::Value =
+            serde_json::from_str(body).expect("the analysis body parses");
+        parsed["capture_completeness"].clone()
+    }
+
+    /// The suppressed count reaches the container a consumer reads.
+    ///
+    /// Owed to a surviving mutant: deleting the line that copies the count
+    /// onto the facts passed every test here, because each one stopped at the
+    /// filter. The number was computed correctly and thrown away, which is the
+    /// same container a reader would get if the deny flag had never fired.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_suppressed_count_reaches_the_written_container() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let mut cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
+
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_first_flagged("X-No-Record", "1"),
+            &StreamStore::new(16),
+            7,
+            None,
+        ));
+
+        let completeness = first_completeness(tmp.path());
+        assert_eq!(
+            completeness["dialogs_suppressed_by_deny"], 1,
+            "the container must carry what the run suppressed: {completeness}"
+        );
+        assert!(
+            completeness["note"]
+                .as_str()
+                .is_some_and(|n| n.contains("1 dialog(s) carried a deny flag")),
+            "and say it in the note: {completeness}"
+        );
+    }
+
+    /// A run with no deny flag writes containers that claim no suppression.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_run_with_no_deny_flag_writes_a_zero() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_first_flagged("X-No-Record", "1"),
+            &StreamStore::new(16),
+            7,
+            None,
+        ));
+
+        let completeness = first_completeness(tmp.path());
+        assert_eq!(
+            completeness["dialogs_suppressed_by_deny"], 0,
+            "no header was named, so nothing was suppressed: {completeness}"
+        );
+        assert_eq!(
+            completeness["gate_closed_during_run"], false,
+            "and no gate was moved: {completeness}"
+        );
+    }
+
+    /// A gate closed and reopened mid-run reaches the container too.
+    ///
+    /// The scenario the field exists for, and the only one in which a
+    /// container is written AND the gate moved: an operator stops recording,
+    /// then starts it again. The containers that survive are from either side
+    /// of a hole, and nothing else in them says the hole is there.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_gate_closed_and_reopened_is_recorded_in_the_container() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        let gate = crate::output::persistence::PersistenceGate::new(true);
+        gate.set(false);
+        gate.set(true);
+
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            Some(&gate),
+        ));
+
+        let completeness = first_completeness(tmp.path());
+        assert_eq!(
+            completeness["gate_closed_during_run"], true,
+            "recording stopped partway and the container must say so: {completeness}"
+        );
+        assert!(
+            completeness["note"]
+                .as_str()
+                .is_some_and(|n| n.contains("closed the persistence gate")),
+            "and say it in the note: {completeness}"
+        );
+    }
+
+    /// An untouched gate leaves the container claiming a clean run.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn an_untouched_gate_writes_a_container_that_claims_nothing() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        let gate = crate::output::persistence::PersistenceGate::new(true);
+
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            Some(&gate),
+        ));
+
+        let completeness = first_completeness(tmp.path());
+        assert_eq!(completeness["gate_closed_during_run"], false);
+        assert!(
+            completeness["note"]
+                .as_str()
+                .is_some_and(|n| !n.contains("persistence gate")),
+            "a gate nobody touched must not be mentioned: {completeness}"
+        );
+    }
+
+    /// Both new fields are always present, and never null.
+    ///
+    /// The module's standing contract is "absent, never null", and adding
+    /// fields to a serialized struct is how a null arrives. These two are
+    /// always present instead: `false` and `0` are answers, and a consumer
+    /// branching on the key should not have to treat a missing key and
+    /// "nothing happened" as the same thing.
+    ///
+    /// The plan cited an existing test by name for this step. No such test
+    /// exists in the repo -- the filter matched zero tests and reported
+    /// success, which is what a filter matching nothing always does.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_new_completeness_fields_are_present_and_never_null() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            None,
+        ));
+
+        let completeness = first_completeness(tmp.path());
+        for key in ["gate_closed_during_run", "dialogs_suppressed_by_deny"] {
+            assert!(
+                completeness.get(key).is_some(),
+                "{key} must be present on every container: {completeness}"
+            );
+            assert!(
+                !completeness[key].is_null(),
+                "{key} must never serialize as null: {completeness}"
+            );
+        }
+    }
+
+    /// The deny filter reports how many dialogs it removed.
+    ///
+    /// The count is what the container quotes. Recomputing it later from the
+    /// selection is impossible: by then the denied dialogs are gone, and a
+    /// difference against the unfiltered store would also count dialogs the
+    /// predicate rejected for entirely different reasons.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_deny_filter_reports_what_it_removed() {
+        let dialogs = two_dialogs_first_flagged("X-No-Record", "1");
+        let streams = StreamStore::new(16);
+        let selection = crate::sip::dsl::select_dialogs(
+            Some(&crate::sip::dsl::FilterExpr::parse("response_code >= 100").expect("parses")),
+            &dialogs,
+            &streams,
+        );
+        let before = selection.dialogs.len();
+
+        let (kept, suppressed) = apply_deny_filter(selection, Some("X-No-Record"));
+
+        assert_eq!(suppressed, 1, "one dialog carried the header");
+        assert_eq!(
+            kept.dialogs.len() as u64 + suppressed,
+            before as u64,
+            "every dialog is either kept or counted; none may vanish unrecorded"
+        );
+    }
+
+    /// With no deny flag configured, nothing is reported as suppressed.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn no_deny_flag_suppresses_nothing_and_reports_nothing() {
+        let dialogs = two_dialogs_first_flagged("X-No-Record", "1");
+        let streams = StreamStore::new(16);
+        let selection = crate::sip::dsl::select_dialogs(
+            Some(&crate::sip::dsl::FilterExpr::parse("response_code >= 100").expect("parses")),
+            &dialogs,
+            &streams,
+        );
+        let before = selection.dialogs.len();
+
+        let (kept, suppressed) = apply_deny_filter(selection, None);
+
+        assert_eq!(suppressed, 0, "no header was named, so none was honored");
+        assert_eq!(kept.dialogs.len(), before, "and nothing was removed");
+    }
+
+    /// A header nobody sent suppresses nothing.
+    ///
+    /// Distinguishes "the filter ran and matched none" from "the filter never
+    /// ran": both keep every dialog, and only the count tells them apart.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_deny_header_nobody_sent_reports_zero() {
+        let dialogs = two_dialogs_first_flagged("X-No-Record", "1");
+        let streams = StreamStore::new(16);
+        let selection = crate::sip::dsl::select_dialogs(
+            Some(&crate::sip::dsl::FilterExpr::parse("response_code >= 100").expect("parses")),
+            &dialogs,
+            &streams,
+        );
+        let before = selection.dialogs.len();
+
+        let (kept, suppressed) = apply_deny_filter(selection, Some("X-Nobody-Sends-This"));
+
+        assert_eq!(suppressed, 0);
+        assert_eq!(kept.dialogs.len(), before);
     }
 
     // ── The runtime persistence gate ────────────────────────────
@@ -5699,7 +5965,13 @@ mod tests {
         assert!(!dir.exists(), "the fixture starts with no directory");
 
         let cli = cli_exporting_to(&dir, "response_code >= 200");
-        let ok = export_vcon_selection(&cli, &two_dialogs_one_failed(), &StreamStore::new(16), 7);
+        let ok = export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            None,
+        );
 
         assert!(ok, "creating the directory is part of the job");
         assert!(dir.is_dir(), "the run must create what it was pointed at");
@@ -5720,11 +5992,12 @@ mod tests {
 
         let expected = vcon_selection(&cli, &dialogs, &streams)
             .expect("a valid predicate")
+            .0
             .dialogs
             .len();
         assert!(expected >= 2, "the fixture holds two calls");
 
-        assert!(export_vcon_selection(&cli, &dialogs, &streams, 7));
+        assert!(export_vcon_selection(&cli, &dialogs, &streams, 7, None));
 
         let written: Vec<_> = std::fs::read_dir(tmp.path())
             .expect("readable")
@@ -5752,7 +6025,8 @@ mod tests {
             &cli,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
-            7
+            7,
+            None
         ));
 
         let first = std::fs::read_dir(tmp.path())
@@ -5789,7 +6063,13 @@ mod tests {
         std::fs::write(&blocked, b"not a directory").expect("write the blocker");
 
         let cli = cli_exporting_to(&blocked, "response_code >= 200");
-        let ok = export_vcon_selection(&cli, &two_dialogs_one_failed(), &StreamStore::new(16), 7);
+        let ok = export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            None,
+        );
 
         assert!(!ok, "a directory that cannot exist must fail the run");
     }
@@ -5806,7 +6086,13 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
         // deliberately no export_vcon_dir
-        let ok = export_vcon_selection(&cli, &two_dialogs_one_failed(), &StreamStore::new(16), 7);
+        let ok = export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            None,
+        );
         assert!(!ok, "a destination nobody named is not a destination");
     }
 
@@ -5825,7 +6111,8 @@ mod tests {
             &cli,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
-            7
+            7,
+            None
         ));
 
         for entry in std::fs::read_dir(tmp.path()).expect("readable").flatten() {
@@ -5854,7 +6141,13 @@ mod tests {
     fn a_capture_with_no_match_writes_nothing_and_still_succeeds() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let cli = cli_exporting_to(tmp.path(), "response_code >= 599");
-        let ok = export_vcon_selection(&cli, &two_dialogs_one_failed(), &StreamStore::new(16), 7);
+        let ok = export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            None,
+        );
 
         assert!(ok, "an empty answer is an answer, not an error");
         let n = std::fs::read_dir(tmp.path()).expect("readable").count();
@@ -5874,9 +6167,9 @@ mod tests {
         let dialogs = two_dialogs_one_failed();
         let streams = StreamStore::new(16);
 
-        assert!(export_vcon_selection(&cli, &dialogs, &streams, 7));
+        assert!(export_vcon_selection(&cli, &dialogs, &streams, 7, None));
         let first = std::fs::read_dir(tmp.path()).expect("readable").count();
-        assert!(export_vcon_selection(&cli, &dialogs, &streams, 7));
+        assert!(export_vcon_selection(&cli, &dialogs, &streams, 7, None));
         let second = std::fs::read_dir(tmp.path()).expect("readable").count();
 
         assert_eq!(
@@ -5901,7 +6194,8 @@ mod tests {
             &cli,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
-            4242
+            4242,
+            None,
         ));
 
         let first = std::fs::read_dir(tmp.path())
@@ -6097,6 +6391,7 @@ mod tests {
 
         let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
             .expect("a valid predicate")
+            .0
             .dialogs
             .iter()
             .map(|(d, _)| d.call_id.clone())
@@ -6165,14 +6460,16 @@ mod tests {
             &cli_exporting_to(a.path(), "response_code >= 486"),
             &dialogs,
             &streams,
-            7
+            7,
+            None,
         ));
         let b = tempfile::tempdir().expect("temp dir");
         assert!(export_vcon_selection(
             &cli_exporting_to(b.path(), "response_code >= 486"),
             &dialogs,
             &streams,
-            7
+            7,
+            None,
         ));
 
         assert_eq!(
@@ -6196,7 +6493,8 @@ mod tests {
             &cli,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
-            4242
+            4242,
+            None,
         ));
 
         let counts: std::collections::HashSet<String> = std::fs::read_dir(tmp.path())
@@ -6236,7 +6534,7 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("rtp.codec == 'PCMU'".to_owned());
 
-        let picked = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
+        let (picked, _) = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
         assert!(
             picked.dialogs.is_empty(),
             "no streams means no dialog carries PCMU"
@@ -6258,7 +6556,7 @@ mod tests {
 
         match vcon_selection(&cli, &dialogs, &streams) {
             Err(_) => {}
-            Ok(sel) => assert!(
+            Ok((sel, _)) => assert!(
                 sel.dialogs.is_empty(),
                 "an empty expression must not select every dialog: {} selected",
                 sel.dialogs.len()
@@ -6277,7 +6575,8 @@ mod tests {
             &cli,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
-            7
+            7,
+            None
         ));
 
         let inside = std::fs::read_dir(&target).expect("readable").count();
@@ -6301,10 +6600,11 @@ mod tests {
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         let dialogs = two_dialogs_one_failed();
         let streams = StreamStore::new(16);
-        assert!(export_vcon_selection(&cli, &dialogs, &streams, 7));
+        assert!(export_vcon_selection(&cli, &dialogs, &streams, 7, None));
 
         let expected: std::collections::HashSet<String> = vcon_selection(&cli, &dialogs, &streams)
             .expect("valid")
+            .0
             .dialogs
             .iter()
             .map(|(d, _)| vcon_file_name(&d.call_id))
@@ -6335,7 +6635,8 @@ mod tests {
             &cli,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
-            7
+            7,
+            None
         ));
 
         let f = std::fs::read_dir(tmp.path())
@@ -6367,7 +6668,8 @@ mod tests {
             &cli,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
-            7
+            7,
+            None
         ));
 
         let f = std::fs::read_dir(tmp.path())
@@ -6397,7 +6699,8 @@ mod tests {
             &cli,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
-            7
+            7,
+            None
         ));
 
         let f = std::fs::read_dir(tmp.path())
@@ -6467,6 +6770,7 @@ mod tests {
 
         let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
             .expect("valid")
+            .0
             .dialogs
             .iter()
             .map(|(d, _)| d.call_id.clone())
@@ -6502,7 +6806,7 @@ mod tests {
         cli.output_args.export_vcon_when = Some("response_code >= 599".to_owned());
         cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
 
-        let picked = vcon_selection(&cli, &dialogs, &streams).expect("valid");
+        let (picked, _) = vcon_selection(&cli, &dialogs, &streams).expect("valid");
 
         assert!(
             picked.dialogs.is_empty(),
@@ -6529,6 +6833,7 @@ mod tests {
 
         let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
             .expect("valid")
+            .0
             .dialogs
             .iter()
             .map(|(d, _)| d.call_id.clone())
@@ -6558,6 +6863,7 @@ mod tests {
 
             let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
                 .expect("valid")
+                .0
                 .dialogs
                 .iter()
                 .map(|(d, _)| d.call_id.clone())
@@ -6582,6 +6888,7 @@ mod tests {
 
         let n = vcon_selection(&cli, &dialogs, &streams)
             .expect("valid")
+            .0
             .dialogs
             .len();
         assert_eq!(n, 2, "sipnab ships no opinion about which header you use");
@@ -6646,7 +6953,7 @@ mod tests {
         };
         assert_eq!(selection.streams.len(), 2, "the fixture carries media");
 
-        let filtered = apply_deny_filter(selection, Some("X-No-Record"));
+        let (filtered, _) = apply_deny_filter(selection, Some("X-No-Record"));
 
         assert_eq!(filtered.dialogs.len(), 1, "the flagged dialog is gone");
         assert_eq!(
@@ -6676,7 +6983,7 @@ mod tests {
             streams: vec![&media],
         };
 
-        let out = apply_deny_filter(selection, None);
+        let (out, _) = apply_deny_filter(selection, None);
 
         assert_eq!(out.dialogs.len(), 2, "no header named, nothing suppressed");
         assert_eq!(out.streams.len(), 1, "and no media dropped");
@@ -6706,7 +7013,7 @@ mod tests {
                 streams: vec![&media],
             };
             let before = selection.dialogs.len();
-            let after = apply_deny_filter(selection, Some(header)).dialogs.len();
+            let after = apply_deny_filter(selection, Some(header)).0.dialogs.len();
             assert!(
                 after <= before,
                 "{header} grew the selection from {before} to {after}"
@@ -6738,6 +7045,7 @@ mod tests {
 
         let n = vcon_selection(&cli, &store, &streams)
             .expect("valid")
+            .0
             .dialogs
             .len();
         assert_eq!(
@@ -6762,6 +7070,7 @@ mod tests {
 
         let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
             .expect("valid")
+            .0
             .dialogs
             .iter()
             .map(|(d, _)| d.call_id.clone())
@@ -6789,6 +7098,7 @@ mod tests {
 
             let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
                 .expect("valid")
+                .0
                 .dialogs
                 .iter()
                 .map(|(d, _)| d.call_id.clone())

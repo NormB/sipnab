@@ -38,6 +38,15 @@ pub struct PersistenceGate {
     enabled: AtomicBool,
     /// The ceiling the command line set. Fixed at construction.
     authorized: bool,
+    /// Set the first time a gate that WAS writing stopped, and never cleared.
+    ///
+    /// Sticky because the container is written at the end of a run, by which
+    /// time the gate may be open again. A live read of `writes_permitted`
+    /// would report the final state and lose the fact that recording stopped
+    /// partway -- which is the fact a reader comparing this capture against a
+    /// switch's records needs, and the only one they cannot recover from the
+    /// capture itself.
+    closed_during_run: AtomicBool,
 }
 
 impl PersistenceGate {
@@ -61,6 +70,7 @@ impl PersistenceGate {
             // later reader to chase, the honest default is written down.
             enabled: AtomicBool::new(true),
             authorized,
+            closed_during_run: AtomicBool::new(false),
         }
     }
 
@@ -92,8 +102,28 @@ impl PersistenceGate {
     /// the ceiling in one place. It also means an unauthorized gate remembers
     /// having been asked to open, and reports `false` regardless.
     pub fn set(&self, want: bool) -> bool {
+        // Read BEFORE the store, so the record is of an observed transition
+        // rather than of a request. Asking an open gate to open closes
+        // nothing, and asking an unauthorized gate to close stops nothing that
+        // was running -- neither belongs in a container's caveat, which is
+        // read as "an operator stopped this capture recording".
+        let was_permitted = self.writes_permitted();
         self.enabled.store(want, Ordering::Relaxed);
-        self.writes_permitted()
+        let now = self.writes_permitted();
+        if was_permitted && !now {
+            self.closed_during_run.store(true, Ordering::Relaxed);
+        }
+        now
+    }
+
+    /// Whether content stopped reaching disk at some point during this run.
+    ///
+    /// Sticky: it stays true after the gate reopens. `false` on a run nobody
+    /// touched and on a run the command line never authorized, because neither
+    /// had anything stopped.
+    #[must_use]
+    pub fn closed_during_run(&self) -> bool {
+        self.closed_during_run.load(Ordering::Relaxed)
     }
 }
 
@@ -228,6 +258,86 @@ mod tests {
             closed.authorized(),
             "a run that was authorized still reports it after closing, so a \
              client can tell its close took effect"
+        );
+    }
+
+    /// A close is remembered after the gate reopens.
+    ///
+    /// The container written at the end of a run has to say that recording
+    /// stopped partway, and by then the gate may be open again. A live read of
+    /// `writes_permitted` would report the final state and lose the fact.
+    #[test]
+    fn a_close_is_remembered_after_the_gate_reopens() {
+        let gate = PersistenceGate::new(true);
+        assert!(!gate.closed_during_run(), "nothing has happened yet");
+
+        gate.set(false);
+        assert!(gate.closed_during_run());
+        gate.set(true);
+        assert!(
+            gate.closed_during_run(),
+            "reopening does not un-happen the close the container has to report"
+        );
+    }
+
+    /// A run nobody touched reports no close.
+    ///
+    /// The clause it drives makes every container read as suspect, so it must
+    /// fire on a real event and not on the mere existence of a gate.
+    #[test]
+    fn an_untouched_gate_reports_no_close() {
+        let gate = PersistenceGate::new(true);
+        for _ in 0..3 {
+            gate.set(true);
+        }
+        assert!(
+            !gate.closed_during_run(),
+            "asking an open gate to open did not close anything"
+        );
+    }
+
+    /// A run the command line never authorized reports no close either.
+    ///
+    /// `set(false)` on such a gate changes nothing, because there was nothing
+    /// to change. Latching there would put "the operator closed the
+    /// persistence gate" into a container from a run where no operator did.
+    #[test]
+    fn an_unauthorized_gate_reports_no_close() {
+        let gate = PersistenceGate::new(false);
+        gate.set(false);
+        gate.set(true);
+        gate.set(false);
+        assert!(
+            !gate.closed_during_run(),
+            "nothing was writing, so nothing was stopped"
+        );
+    }
+
+    /// The record survives every later request.
+    #[test]
+    fn no_sequence_of_calls_erases_a_close() {
+        let gate = PersistenceGate::new(true);
+        gate.set(false);
+        for bits in 0u32..32 {
+            for step in 0..5 {
+                gate.set(bits & (1 << step) != 0);
+                assert!(
+                    gate.closed_during_run(),
+                    "sequence {bits:#07b} erased the record at step {step}"
+                );
+            }
+        }
+    }
+
+    /// Every holder sees the record, not just the one that closed the gate.
+    #[test]
+    fn the_record_is_shared_like_the_gate() {
+        let gate = Arc::new(PersistenceGate::new(true));
+        let rest_door = Arc::clone(&gate);
+        rest_door.set(false);
+        assert!(
+            gate.closed_during_run(),
+            "the exporter reads the record the socket wrote"
         );
     }
 
