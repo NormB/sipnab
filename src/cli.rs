@@ -944,6 +944,34 @@ pub struct OutputArgs {
     #[arg(help_heading = "Output", long = "export-vcon", value_name = "CALL-ID")]
     pub export_vcon: Option<String>,
 
+    /// Emit a vCon for every dialog matching this filter expression.
+    ///
+    /// The expression is the language `--filter` already speaks, unchanged:
+    /// see `docs/filter-dsl.md`. Reusing it rather than growing a flag per
+    /// policy is deliberate. `--export-vcon-failed` and its successors would
+    /// enumerate the cases somebody thought of, and the case nobody thought of
+    /// is the one an operator needs at three in the morning.
+    ///
+    /// Conditional emission produces one container per matching dialog, which
+    /// is why this pairs with `--export-vcon-dir` rather than `--vcon-out`.
+    #[arg(
+        help_heading = "Output",
+        long = "export-vcon-when",
+        value_name = "EXPR",
+        conflicts_with = "export_vcon",
+        requires = "export_vcon_dir"
+    )]
+    pub export_vcon_when: Option<String>,
+
+    /// Directory for the containers `--export-vcon-when` produces.
+    #[arg(
+        help_heading = "Output",
+        long = "export-vcon-dir",
+        value_name = "DIR",
+        requires = "export_vcon_when"
+    )]
+    pub export_vcon_dir: Option<std::path::PathBuf>,
+
     /// Write the `--export-vcon` container to this path instead of stdout.
     ///
     /// A flag of its own rather than a second value packed onto `--export-vcon`:
@@ -3813,7 +3841,10 @@ impl Cli {
     /// `--vcon-out` the container is elsewhere and suppressing `--json` beside
     /// it would discard output the operator asked for.
     fn normalize(&mut self) {
-        if self.output_args.call_report.is_some() || self.output_args.export_vcon.is_some() {
+        if self.output_args.call_report.is_some()
+            || self.output_args.export_vcon.is_some()
+            || self.output_args.export_vcon_when.is_some()
+        {
             self.mode_args.no_tui = true;
         }
         if self.output_args.export_vcon.is_some() && self.output_args.vcon_out.is_none() {
@@ -4697,6 +4728,94 @@ mod tests {
     /// call.vcon` is the invocation an operator reaches for first. With
     /// `--vcon-out` the container is elsewhere, so suppressing `--json` there
     /// would silently discard output the operator asked for.
+    /// The two flags need each other, and clap refuses either alone.
+    ///
+    /// Owed for the `-N` miss: that defect existed because the flag was wired
+    /// by hand from the shape of `--export-vcon` rather than checked, and the
+    /// `requires` relationships were written the same way. Asserting them is
+    /// what turns "I typed the attribute" into "the parser enforces it".
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn export_vcon_when_and_its_directory_require_each_other() {
+        let alone = Cli::try_parse_from([
+            "sipnab",
+            "-I",
+            "x.pcap",
+            "--export-vcon-when",
+            "state == 'Failed'",
+        ]);
+        assert!(
+            alone.is_err(),
+            "--export-vcon-when without --export-vcon-dir would write N \
+             containers to a path nobody named"
+        );
+
+        let dir_alone =
+            Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--export-vcon-dir", "/tmp/out"]);
+        assert!(
+            dir_alone.is_err(),
+            "--export-vcon-dir alone names a destination for containers no \
+             predicate selects"
+        );
+    }
+
+    /// Naming one call and a predicate at once is refused.
+    ///
+    /// Also owed for the `-N` miss. The two flags answer the same question
+    /// differently -- one container to stdout against N to a directory -- and
+    /// a run that accepted both would have to pick one silently.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn export_vcon_and_export_vcon_when_cannot_both_be_given() {
+        let both = Cli::try_parse_from([
+            "sipnab",
+            "-I",
+            "x.pcap",
+            "--export-vcon",
+            "a@b",
+            "--export-vcon-when",
+            "state == 'Failed'",
+            "--export-vcon-dir",
+            "/tmp/out",
+        ]);
+        assert!(
+            both.is_err(),
+            "one Call-ID to stdout and a predicate to a directory are two \
+             different runs, and picking one silently is the failure"
+        );
+    }
+
+    /// `--export-vcon-when` implies `-N` too.
+    ///
+    /// Found by running the flag rather than by unit test: the first
+    /// end-to-end invocation launched the TUI, wrote its containers into an
+    /// alternate screen's lifetime and exited 0. `--export-vcon` had carried
+    /// this implication since it was added, and the new flag inherited the
+    /// documentation without the behavior.
+    ///
+    /// It does NOT take stdout the way `--export-vcon` does: these containers
+    /// go to a directory, so a per-message stream on stdout spoils nothing.
+    #[test]
+    fn export_vcon_when_normalizes_to_non_interactive_without_taking_stdout() {
+        let cli = Cli::parse_from_args([
+            "sipnab",
+            "-I",
+            "x.pcap",
+            "--export-vcon-when",
+            "response_code >= 400",
+            "--export-vcon-dir",
+            "/tmp/out",
+        ]);
+        assert!(
+            cli.mode_args.no_tui,
+            "--export-vcon-when must imply -N, or the containers are written              during a TUI session and the run still exits 0"
+        );
+        assert!(
+            !cli.output_args.no_cli_print,
+            "the containers go to a directory, so stdout is still the              operator's -- suppressing it would discard output they asked for"
+        );
+    }
+
     #[test]
     fn export_vcon_normalizes_to_non_interactive_and_owns_stdout() {
         let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--export-vcon", "a@b"]);

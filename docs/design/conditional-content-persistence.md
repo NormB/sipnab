@@ -111,7 +111,7 @@ callee right, and mono when only one leg survives. Both shapes exist in
 already documents `state`, `response_code`, `response_class`, `duration`,
 `msg_count`, `pdd`, `setup_time`, `retransmits` and `rtp.codec`, which is the
 vocabulary a "should this call become a container?" question is made of.
-`state == failed`, `duration > 30`, `response_code >= 400 and rtp.codec == PCMU`
+`state == 'Failed'`, `duration > 30`, `response_code >= 400 and rtp.codec == 'PCMU'`
 all work the day this lands.
 
 Reusing the language rather than adding a flag per policy is deliberate.
@@ -233,7 +233,7 @@ Every task's requirements implicitly include the design above, plus:
 
 - **Feature gate:** every item lives behind `#[cfg(feature = "vcon")]`.
   `export_vcon` already has a paired `#[cfg(not(feature = "vcon"))]` stub at
-  [`src/app/batch.rs:4848`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4848), and a new entry point needs the same pairing or the
+  [`src/app/batch.rs:5004`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5004), and a new entry point needs the same pairing or the
   crate stops building without the feature.
 - **Toolchain:** Rust 1.97.1 exactly. No new dependencies.
 - **Tests:** failing test first. Every gate mutation-proven against a named
@@ -246,13 +246,35 @@ Every task's requirements implicitly include the design above, plus:
   [`website/templates/index.html`](../../website/templates/index.html), both the stat card and the prose. Attribute
   the delta before moving it. This tree also counts tracked markdown files and
   markdown tables in [`tests/docs_drift_test.rs`](../../tests/docs_drift_test.rs).
-- **US English.** A gate enforces it, and Vale does not catch it.
+- **US English.** A gate enforces it over `src/` as well as `docs/`, so a doc
+  comment counts. Vale does not catch it.
+- **Every flag needs two runnable examples** in [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md), and a
+  row in the generated testing matrix. Regenerate the matrix with
+  `cargo build --features full && python3 scripts/coverage-matrix.py`. Task 1
+  learned this the hard way: the gate fires the moment a flag parses, so
+  documentation cannot trail the code by four tasks.
+- **A documented command has to RUN.** The example gate proves an example
+  exists, not that it works. Both commands Task 1 first shipped were invalid --
+  the filter DSL needs quoted, case-sensitive values (`state == 'Failed'`, not
+  `state == failed`). Assert every documented predicate parses.
+- **Doc gates beyond Vale**, each with its own fixer named in the failure:
+  tracked-markdown-file and table counts, symbol-naming citation counts,
+  `scripts/fix-line-anchors.py --apply` for `#L` fragments,
+  `scripts/check-line-drift.py --apply` when moving code shifts a cited line,
+  absolute GitHub hrefs for line citations, no bare code spans naming tracked
+  files, and no bracketed character classes inside a table cell.
+- **A design doc claiming something is unbuilt needs a `grep` a reader can
+  run**, and the gate re-runs it. Cite something that stays true for several
+  tasks, or the line becomes a lie at the next commit.
+- **Clippy demands a doc comment on every function.** Insert new code ABOVE the
+  doc block of the function that follows, never between a doc block and its
+  `fn` -- that steals the comment and leaves the original undocumented.
 
 ### Task 1: The predicate and the output directory
 
 **Files:**
 - Modify: [`src/cli.rs`](../../src/cli.rs) (new fields beside `export_vcon` at line 944)
-- Modify: [`src/app/batch.rs:4770`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4770) (`export_vcon`)
+- Modify: [`src/app/batch.rs:4923`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4923) (`export_vcon`)
 - Test: [`src/app/batch.rs`](../../src/app/batch.rs) tests module
 
 **Interfaces:**
@@ -406,7 +428,7 @@ Expected: 2 passed.
 
 - [ ] **Step 9: Write the containers**
 
-Extend `export_vcon` at [`src/app/batch.rs:4770`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4770): when `export_vcon_when` is set, loop the selected Call-IDs, build each container with the existing single-call path, and write it to `<dir>/<sanitized-call-id>.vcon.json`. Sanitize by replacing every character outside `[A-Za-z0-9._-]` with `_`, because a Call-ID is attacker-influenced text and reaches a filesystem path here.
+Extend `export_vcon` at [`src/app/batch.rs:4923`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4923): when `export_vcon_when` is set, loop the selected Call-IDs, build each container with the existing single-call path, and write it to `<dir>/<sanitized-call-id>.vcon.json`. Sanitize by replacing every character outside `[A-Za-z0-9._-]` with `_`, because a Call-ID is attacker-influenced text and reaches a filesystem path here.
 
 - [ ] **Step 10: Test the path sanitizer**
 

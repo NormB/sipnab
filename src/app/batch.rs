@@ -4746,6 +4746,159 @@ pub fn generate_reports(
     true
 }
 
+/// The export directory, created if absent.
+///
+/// Extracted so the failure has a RESULT rather than only a side effect. As an
+/// early return inside the writer its removal was invisible: the writes that
+/// followed failed too, so the run reported failure either way and no test
+/// could tell the two apart. A branch nothing can distinguish is a branch
+/// nothing guards.
+///
+/// # Errors
+///
+/// When `--export-vcon-dir` is absent, or the path cannot be made a directory.
+#[cfg(feature = "vcon")]
+fn prepare_export_dir(cli: &Cli) -> Result<&std::path::Path, String> {
+    let Some(dir) = cli.output_args.export_vcon_dir.as_deref() else {
+        return Err("--export-vcon-when needs --export-vcon-dir. Nothing was exported.".to_owned());
+    };
+    std::fs::create_dir_all(dir).map_err(|e| {
+        format!(
+            "Could not create the vCon directory '{}': {e}. Nothing was exported.",
+            dir.display()
+        )
+    })?;
+    Ok(dir)
+}
+
+/// Write one container per dialog the predicate selected.
+///
+/// Reports the count on stderr rather than staying silent. A run that matched
+/// nothing and a run that wrote forty containers look identical from the shell
+/// otherwise, and the first is the one an operator needs to know about --
+/// `--export-vcon` already refuses silence for the same reason.
+#[cfg(feature = "vcon")]
+fn export_vcon_selection(
+    cli: &Cli,
+    dialog_store: &DialogStore,
+    stream_store: &StreamStore,
+    frames_read: u64,
+) -> bool {
+    let selection = match vcon_selection(cli, dialog_store, stream_store) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e:#}");
+            return false;
+        }
+    };
+    let dir = match prepare_export_dir(cli) {
+        Ok(dir) => dir,
+        Err(message) => {
+            eprintln!("{message}");
+            return false;
+        }
+    };
+
+    let facts = crate::analysis::CaptureFacts::observed(dialog_store, stream_store, frames_read);
+    let analysis = crate::analysis::analyze_with(dialog_store, stream_store, None, &facts);
+    let mut written = 0_usize;
+    for (dialog, _) in &selection.dialogs {
+        let container = crate::output::vcon::export_dialog(
+            dialog,
+            &crate::output::vcon::ExportContext {
+                capture_id: crate::output::vcon::dialog_capture_id(dialog),
+                facts: &facts,
+                analysis: Some(&analysis),
+            },
+        );
+        let json = match container.to_json() {
+            Ok(j) => j,
+            Err(e) => {
+                eprintln!(
+                    "The vCon for Call-ID '{}' would not serialize: {e}",
+                    dialog.call_id
+                );
+                return false;
+            }
+        };
+        let path = dir.join(vcon_file_name(&dialog.call_id));
+        if let Err(e) = std::fs::write(&path, json.as_bytes()) {
+            eprintln!(
+                "Could not write '{}': {e}. {written} container(s) were written before this.",
+                path.display()
+            );
+            return false;
+        }
+        written += 1;
+    }
+    eprintln!("Wrote {written} vCon container(s) to '{}'.", dir.display());
+    true
+}
+
+/// A Call-ID rendered as one safe filename.
+///
+/// Every character outside `[A-Za-z0-9._-]` becomes `_`, and a name that
+/// would still read as a traversal is prefixed. A Call-ID is text whoever
+/// placed the call chose, and `--export-vcon-dir` is the first path in this
+/// program built from one -- `--export-vcon` wrote to the single path an
+/// operator typed and never had this exposure.
+#[cfg(feature = "vcon")]
+fn vcon_file_name(call_id: &str) -> String {
+    let mut safe: String = call_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    // No guard for an all-dots Call-ID. `.` and `..` are the two names every
+    // directory already owns, and the extension below is what makes them
+    // unreachable: `..` becomes `...vcon.json`. A defensive prefix here read
+    // as the thing holding that property and held nothing -- removing it left
+    // every test green, which is how it was found.
+    safe.truncate(200);
+    format!("{safe}.vcon.json")
+}
+
+/// The dialogs `--export-vcon-when` selects, with their streams.
+///
+/// Delegates to [`crate::sip::dsl::select_dialogs`] rather than walking the
+/// store here. That function resolves this run's ICMP media evidence against
+/// the whole stream store, and `--report` and `--json-dialogs` both pass
+/// through it, so a second selection path would hand containers a different
+/// view of one capture from the one the report shows.
+///
+/// # Errors
+///
+/// When the expression does not parse. `--export-vcon-when` is validated
+/// before the capture opens as well, so reaching this is a defect rather than
+/// an operator's typo -- but returning the error costs nothing and a silent
+/// empty selection would look exactly like a capture that matched nothing.
+#[cfg(feature = "vcon")]
+fn vcon_selection<'a>(
+    cli: &Cli,
+    dialog_store: &'a DialogStore,
+    stream_store: &'a StreamStore,
+) -> anyhow::Result<crate::sip::dsl::DialogSelection<'a>> {
+    let Some(expr) = cli.output_args.export_vcon_when.as_deref() else {
+        return Ok(crate::sip::dsl::select_dialogs(
+            None,
+            dialog_store,
+            stream_store,
+        ));
+    };
+    let parsed = crate::sip::dsl::FilterExpr::parse(expr)
+        .map_err(|e| anyhow::anyhow!("--export-vcon-when is not a valid filter expression: {e}"))?;
+    Ok(crate::sip::dsl::select_dialogs(
+        Some(&parsed),
+        dialog_store,
+        stream_store,
+    ))
+}
+
 /// Write the `--export-vcon` container, or say why it did not.
 ///
 /// Returns `true` when the flag was absent, so the caller reads one answer —
@@ -4773,6 +4926,9 @@ fn export_vcon(
     stream_store: &StreamStore,
     frames_read: u64,
 ) -> bool {
+    if cli.output_args.export_vcon_when.is_some() {
+        return export_vcon_selection(cli, dialog_store, stream_store, frames_read);
+    }
     let Some(call_id) = cli.output_args.export_vcon.as_deref() else {
         return true;
     };
@@ -4932,6 +5088,568 @@ mod tests {
             TransportProto::Udp,
         )
         .expect("fixture parses")
+    }
+
+    /// A final response, so a fixture dialog can carry a status code the
+    /// filter language can read.
+    #[cfg(feature = "vcon")]
+    fn response_msg(call_id: &str, code: u16, reason: &str) -> sip::message::SipMessage {
+        let headers = [
+            "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-abc".to_string(),
+            "From: Alice <sip:alice@example.com>;tag=a1b2".to_string(),
+            "To: Bob <sip:bob@example.com>;tag=c3d4".to_string(),
+            format!("Call-ID: {call_id}"),
+            "CSeq: 1 INVITE".to_string(),
+            "Content-Length: 0".to_string(),
+        ];
+        let mut msg = format!("SIP/2.0 {code} {reason}\r\n");
+        for h in headers {
+            msg.push_str(&h);
+            msg.push_str("\r\n");
+        }
+        msg.push_str("\r\n");
+        let data = bytes::Bytes::from(msg.into_bytes());
+        sip::parser::parse_sip_bytes(
+            &data,
+            chrono::Utc::now(),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("fixture parses")
+    }
+
+    /// Two dialogs, one of which failed.
+    #[cfg(feature = "vcon")]
+    fn two_dialogs_one_failed() -> DialogStore {
+        let mut store = DialogStore::new(16, true);
+        store.process_message(invite_msg("ok-call@example.com"));
+        store.process_message(response_msg("ok-call@example.com", 200, "OK"));
+        store.process_message(invite_msg("failed-call@example.com"));
+        store.process_message(response_msg("failed-call@example.com", 486, "Busy Here"));
+        store
+    }
+
+    /// `--export-vcon-when` selects the dialogs its expression matches.
+    ///
+    /// The predicate is the language `--filter` already speaks, so this test
+    /// is also what pins that choice: a flag per policy would not answer
+    /// `response_code >= 400` without new code.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_predicate_selects_only_the_dialogs_that_match() {
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon_when = Some("response_code >= 400".to_owned());
+
+        let picked = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
+        let ids: Vec<&str> = picked
+            .dialogs
+            .iter()
+            .map(|(d, _)| d.call_id.as_str())
+            .collect();
+
+        assert_eq!(
+            ids,
+            vec!["failed-call@example.com"],
+            "only the failed dialog matches the predicate"
+        );
+    }
+
+    /// A malformed predicate fails the run and names the flag.
+    ///
+    /// The failure this refuses is the quiet one: an expression that parses
+    /// nowhere, a capture that finishes, an empty directory, and no error to
+    /// explain it. An operator reads that as "nothing matched".
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_malformed_predicate_fails_the_run_rather_than_selecting_nothing() {
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon_when = Some("response_code >>> 400".to_owned());
+
+        // `let Err(..) else` rather than `expect_err`: that would need `Debug`
+        // on `DialogSelection`, and widening a shared type's derives to suit
+        // one test's ergonomics is a cost the type pays forever.
+        let Err(err) = vcon_selection(&cli, &dialogs, &streams) else {
+            panic!("an unparseable expression is an error, not an empty result");
+        };
+
+        assert!(
+            format!("{err:#}").contains("--export-vcon-when"),
+            "the message has to name the flag the operator typed: {err:#}"
+        );
+    }
+
+    /// A Call-ID cannot escape the export directory.
+    ///
+    /// `--export-vcon-dir` is the first path in this program built from a
+    /// Call-ID, and a Call-ID is text an attacker chooses. `--export-vcon`
+    /// never had this exposure: it wrote to the one path an operator typed.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_call_id_cannot_escape_the_export_directory() {
+        for hostile in [
+            "../../etc/passwd@evil.example",
+            "/absolute@evil.example",
+            "a/b/c@evil.example",
+            "..@evil.example",
+        ] {
+            let name = vcon_file_name(hostile);
+            assert!(
+                !name.contains('/') && !name.contains('\\'),
+                "no separator survives {hostile:?}: {name}"
+            );
+            // NOT `!name.contains("..")`. `.._.._etc_passwd_...` is a single
+            // legal filename that escapes nothing, and asserting on the
+            // substring tests a proxy for the property rather than the
+            // property. What matters is that the name stays one component and
+            // is never `.` or `..` themselves.
+            assert!(
+                name != "." && name != "..",
+                "{hostile:?} produced a directory's own name: {name}"
+            );
+            assert!(
+                std::path::Path::new(&name).components().count() == 1,
+                "{hostile:?} produced more than one path component: {name}"
+            );
+        }
+    }
+
+    /// A Call-ID of nothing but dots still yields a usable filename.
+    ///
+    /// Owed for the assertion I got wrong: the first version of the escape
+    /// test asserted `!name.contains("..")`, which rejects a perfectly safe
+    /// single filename and says nothing about the property that matters. This
+    /// one names the property directly. The extension is what enforces it:
+    /// `..` becomes `...vcon.json`. A defensive all-dots branch used to sit in
+    /// `vcon_file_name` and removing it changed nothing, so it went.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_call_id_of_only_dots_cannot_become_a_directory_entry() {
+        for dots in ["..", ".", "..."] {
+            let name = vcon_file_name(dots);
+            assert!(
+                name != "." && name != "..",
+                "{dots:?} produced a name a directory already owns: {name}"
+            );
+            assert!(
+                name.ends_with(".vcon.json"),
+                "{dots:?} lost its extension: {name}"
+            );
+        }
+    }
+
+    /// A Call-ID longer than the filesystem allows is truncated.
+    ///
+    /// Also owed for the assertion miss, and it covers a branch nothing
+    /// reached: `vcon_file_name` truncates at 200 characters, and no test
+    /// exercised that. Most filesystems refuse a name past 255 bytes, so an
+    /// untruncated Call-ID would fail the write rather than the sanitizer --
+    /// an error naming the path instead of the rule that should have caught it.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_very_long_call_id_is_truncated_to_a_writable_name() {
+        let long = "x".repeat(500);
+        let name = vcon_file_name(&long);
+        assert!(
+            name.len() < 255,
+            "a {} character name will not survive the write: {}",
+            name.len(),
+            name.len()
+        );
+        assert!(
+            name.ends_with(".vcon.json"),
+            "truncation must not eat the extension: {name}"
+        );
+    }
+
+    /// Both predicates this project documents actually parse.
+    ///
+    /// Owed for `every_flag_has_at_least_two_examples`. That gate proves an
+    /// example EXISTS. Nothing proved the command in it runs, and a
+    /// documented invocation that fails on paste is worse than none -- the
+    /// reader concludes the feature is broken rather than the page.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn every_documented_predicate_parses() {
+        for expr in ["state == 'Failed'", "duration > 30 and rtp.codec == 'PCMU'"] {
+            assert!(
+                crate::sip::dsl::FilterExpr::parse(expr).is_ok(),
+                "docs/cli-reference.md tells an operator to run {expr:?}"
+            );
+        }
+    }
+
+    /// A predicate matching nothing selects nothing, without erroring.
+    ///
+    /// The empty case has to stay distinguishable from the failure case: one
+    /// is an answer about the capture, the other is an answer about the run.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_predicate_that_matches_nothing_selects_nothing() {
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon_when = Some("response_code >= 599".to_owned());
+
+        let picked = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
+
+        assert!(
+            picked.dialogs.is_empty(),
+            "nothing in the fixture answers 599 or above: {:?}",
+            picked
+                .dialogs
+                .iter()
+                .map(|(d, _)| &d.call_id)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// With no predicate the selection is every dialog.
+    ///
+    /// The `None` branch, which no test reached. It matters because
+    /// `vcon_selection` is also the path a future caller takes when it wants
+    /// the whole store, and a `None` that quietly returned nothing would look
+    /// like a capture with no calls in it.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn no_predicate_selects_every_dialog() {
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+        let cli = Cli::parse_from_args(["sipnab"]);
+
+        let picked =
+            vcon_selection(&cli, &dialogs, &streams).expect("no predicate is not an error");
+
+        assert_eq!(
+            picked.dialogs.len(),
+            2,
+            "an absent predicate narrows nothing"
+        );
+    }
+
+    /// Two matching dialogs produce two distinct files.
+    ///
+    /// The multi-container path is the whole point of this task and nothing
+    /// exercised it: the end-to-end run that proved the feature used a fixture
+    /// holding ONE call, so a loop that wrote the first dialog and stopped, or
+    /// that collided both onto one name, would have passed everything.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn two_matching_dialogs_produce_two_distinct_files() {
+        let a = vcon_file_name("first@example.com");
+        let b = vcon_file_name("second@example.com");
+        assert_ne!(a, b, "two Call-IDs must not collide onto one filename");
+
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
+
+        let picked = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
+        let names: std::collections::HashSet<String> = picked
+            .dialogs
+            .iter()
+            .map(|(d, _)| vcon_file_name(&d.call_id))
+            .collect();
+
+        assert_eq!(
+            names.len(),
+            picked.dialogs.len(),
+            "every selected dialog needs its own file: {names:?}"
+        );
+        assert!(picked.dialogs.len() >= 2, "the fixture holds two calls");
+    }
+
+    /// A `Cli` wired for a predicate export into `dir`.
+    #[cfg(feature = "vcon")]
+    fn cli_exporting_to(dir: &std::path::Path, expr: &str) -> Cli {
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon_when = Some(expr.to_owned());
+        cli.output_args.export_vcon_dir = Some(dir.to_path_buf());
+        cli
+    }
+
+    /// The export directory is created when it does not exist.
+    ///
+    /// Owed for `every_flag_has_at_least_two_examples`. The documented
+    /// invocation points at `./failed/`, a directory an operator will not have
+    /// made first, so a run that refused a missing path would fail on the very
+    /// command the page tells them to run.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_missing_export_directory_is_created() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let dir = tmp.path().join("does/not/exist/yet");
+        assert!(!dir.exists(), "the fixture starts with no directory");
+
+        let cli = cli_exporting_to(&dir, "response_code >= 200");
+        let ok = export_vcon_selection(&cli, &two_dialogs_one_failed(), &StreamStore::new(16), 7);
+
+        assert!(ok, "creating the directory is part of the job");
+        assert!(dir.is_dir(), "the run must create what it was pointed at");
+    }
+
+    /// Every selected dialog gets its own file on disk.
+    ///
+    /// The multi-container write, end to end. `two_matching_dialogs_produce_two_distinct_files`
+    /// proves the NAMES differ; this proves both files arrive. A loop that
+    /// wrote the first dialog and returned would pass that one and fail this.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn every_selected_dialog_is_written_to_its_own_file() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+
+        let expected = vcon_selection(&cli, &dialogs, &streams)
+            .expect("a valid predicate")
+            .dialogs
+            .len();
+        assert!(expected >= 2, "the fixture holds two calls");
+
+        assert!(export_vcon_selection(&cli, &dialogs, &streams, 7));
+
+        let written: Vec<_> = std::fs::read_dir(tmp.path())
+            .expect("readable")
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            written.len(),
+            expected,
+            "{expected} dialog(s) selected, {} file(s) written: {written:?}",
+            written.len()
+        );
+    }
+
+    /// What lands on disk is a vCon a consumer can read.
+    ///
+    /// A run that wrote the right NUMBER of unparseable files would satisfy
+    /// every other test here. This reads one back.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_written_container_is_valid_vcon_json() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7
+        ));
+
+        let first = std::fs::read_dir(tmp.path())
+            .expect("readable")
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .next()
+            .expect("at least one container");
+        let text = std::fs::read_to_string(&first).expect("readable file");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+
+        assert_eq!(v["vcon"], "0.4.0", "syntax version: {text}");
+        assert!(v["uuid"].is_string(), "a container needs a uuid: {text}");
+        assert!(
+            v["parties"].as_array().is_some_and(|p| !p.is_empty()),
+            "a container names its parties: {text}"
+        );
+    }
+
+    /// A directory that cannot be written fails the run out loud.
+    ///
+    /// The refusal has to be a non-zero answer rather than a silent partial
+    /// write: an operator scripting this reads the exit code, and a run that
+    /// wrote three of forty containers and returned success is the worst
+    /// outcome available.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn an_unwritable_export_directory_fails_the_run() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        // A FILE where the directory should be: `create_dir_all` cannot make a
+        // directory over it, and this works without depending on running as a
+        // non-root user, which a permission-bit fixture would.
+        let blocked = tmp.path().join("blocked");
+        std::fs::write(&blocked, b"not a directory").expect("write the blocker");
+
+        let cli = cli_exporting_to(&blocked, "response_code >= 200");
+        let ok = export_vcon_selection(&cli, &two_dialogs_one_failed(), &StreamStore::new(16), 7);
+
+        assert!(!ok, "a directory that cannot exist must fail the run");
+    }
+
+    /// A predicate with no directory is refused before anything is written.
+    ///
+    /// clap enforces the pairing, but `export_vcon_selection` is reachable
+    /// without going through argument validation -- the same reason the
+    /// no-feature `export_vcon` stub exists. An unguarded `None` here would
+    /// panic or, worse, pick a default directory nobody asked for.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_predicate_without_a_directory_is_refused() {
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
+        // deliberately no export_vcon_dir
+        let ok = export_vcon_selection(&cli, &two_dialogs_one_failed(), &StreamStore::new(16), 7);
+        assert!(!ok, "a destination nobody named is not a destination");
+    }
+
+    /// Each file holds the dialog it is named for.
+    ///
+    /// Everything else here counts files or validates one in isolation. A loop
+    /// that wrote the RIGHT number of containers with the WRONG dialog in each
+    /// would pass all of it -- and misattributing a conversation is the exact
+    /// failure this whole feature exists to avoid.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn each_file_holds_the_dialog_it_is_named_for() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7
+        ));
+
+        for entry in std::fs::read_dir(tmp.path()).expect("readable").flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let text = std::fs::read_to_string(entry.path()).expect("readable");
+            let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+            let call_id = v["dialog"][0]["sip_call_id"]
+                .as_str()
+                .expect("the dialog names its call")
+                .to_owned();
+            assert_eq!(
+                name,
+                vcon_file_name(&call_id),
+                "{name} holds {call_id}, which belongs in a differently named file"
+            );
+        }
+    }
+
+    /// A capture where nothing matches writes no files and still succeeds.
+    ///
+    /// "Nothing matched" is an answer about the capture, not a failure of the
+    /// run. Exiting non-zero there would make a shell script treat a quiet
+    /// morning as a broken tool.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_capture_with_no_match_writes_nothing_and_still_succeeds() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 599");
+        let ok = export_vcon_selection(&cli, &two_dialogs_one_failed(), &StreamStore::new(16), 7);
+
+        assert!(ok, "an empty answer is an answer, not an error");
+        let n = std::fs::read_dir(tmp.path()).expect("readable").count();
+        assert_eq!(n, 0, "nothing matched, so nothing should be on disk");
+    }
+
+    /// Re-running over the same directory overwrites rather than accumulating.
+    ///
+    /// The filename is derived from the Call-ID, so a second run over the same
+    /// capture must land on the same names. Accumulating `foo (1).vcon.json`
+    /// would turn a re-run into a directory nobody can reason about.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_second_run_over_one_directory_overwrites_rather_than_accumulating() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+
+        assert!(export_vcon_selection(&cli, &dialogs, &streams, 7));
+        let first = std::fs::read_dir(tmp.path()).expect("readable").count();
+        assert!(export_vcon_selection(&cli, &dialogs, &streams, 7));
+        let second = std::fs::read_dir(tmp.path()).expect("readable").count();
+
+        assert_eq!(
+            first, second,
+            "a second run produced {second} files where the first produced {first}"
+        );
+    }
+
+    /// The containers carry this capture's completeness facts, not defaults.
+    ///
+    /// `export_vcon_selection` builds `CaptureFacts` once and hands the same
+    /// value to every container. A path that built a default instead would
+    /// emit containers claiming a clean capture regardless of what the run saw,
+    /// which is the "absence reads as nothing happened" failure the vCon module
+    /// is built against.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_written_container_carries_this_captures_frame_count() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            4242
+        ));
+
+        let first = std::fs::read_dir(tmp.path())
+            .expect("readable")
+            .flatten()
+            .next()
+            .expect("a container");
+        let text = std::fs::read_to_string(first.path()).expect("readable");
+        assert!(
+            text.contains("4242"),
+            "the container must carry this run's frame count, not a default: {text}"
+        );
+    }
+
+    /// The directory preparation creates what is missing, and says so.
+    ///
+    /// Owed because the branch this covers was previously unguardable. As an
+    /// early return inside the writer, deleting it changed nothing observable:
+    /// the writes that followed failed too. With a `Result` the two outcomes
+    /// are distinguishable, so a test can hold them apart.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn preparing_the_export_directory_creates_a_missing_one() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let dir = tmp.path().join("a/b/c");
+        let cli = cli_exporting_to(&dir, "response_code >= 200");
+
+        let got = prepare_export_dir(&cli).expect("a creatable path is not an error");
+
+        assert_eq!(got, dir.as_path(), "it returns the directory it prepared");
+        assert!(dir.is_dir(), "and the directory now exists");
+    }
+
+    /// ...and refuses a path it cannot make a directory, naming it.
+    ///
+    /// The message is the whole product of the failure: an operator reads it
+    /// and fixes the path. A refusal that did not name the path would send
+    /// them to the flag they typed rather than the thing in the way.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn preparing_the_export_directory_refuses_a_path_that_is_a_file() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let blocked = tmp.path().join("blocked");
+        std::fs::write(&blocked, b"not a directory").expect("write the blocker");
+        let cli = cli_exporting_to(&blocked, "response_code >= 200");
+
+        let Err(message) = prepare_export_dir(&cli) else {
+            panic!("a file where a directory belongs is an error");
+        };
+
+        assert!(
+            message.contains("blocked"),
+            "the refusal must name the path in the way: {message}"
+        );
+        assert!(
+            message.contains("Nothing was exported"),
+            "and say that nothing was written: {message}"
+        );
     }
 
     // ── Capture-quality reporting (CT1/G1) ───────────────────────────────
