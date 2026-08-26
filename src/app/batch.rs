@@ -4859,8 +4859,20 @@ fn vcon_file_name(call_id: &str) -> String {
     // unreachable: `..` becomes `...vcon.json`. A defensive prefix here read
     // as the thing holding that property and held nothing -- removing it left
     // every test green, which is how it was found.
-    safe.truncate(200);
-    format!("{safe}.vcon.json")
+    safe.truncate(180);
+    // A digest of the ORIGINAL Call-ID, because the stem above is lossy twice
+    // over: every character outside the allowed set collapses to `_`, so `a@b`
+    // and `a_b` rendered identically, and the truncation hides any difference
+    // past the cut. Either collision overwrote one container with another and
+    // reported nothing -- a dialog gone from an export that still looks
+    // complete. The stem stays first so the directory is readable; the suffix
+    // carries the distinction the stem loses.
+    //
+    // Sixteen hex characters of SHA-256. Short enough to leave the Call-ID
+    // legible, and far past what a capture's worth of dialogs could collide on.
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(call_id.as_bytes());
+    let short: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    format!("{safe}-{short}.vcon.json")
 }
 
 /// The dialogs `--export-vcon-when` selects, with their streams.
@@ -5649,6 +5661,456 @@ mod tests {
         assert!(
             message.contains("Nothing was exported"),
             "and say that nothing was written: {message}"
+        );
+    }
+
+    /// Two Call-IDs that sanitize to the same stem get different filenames.
+    ///
+    /// `@` becomes `_`, so `a@b` and `a_b` rendered identically and the second
+    /// container silently overwrote the first. A dialog vanished from the
+    /// export with no error anywhere -- the worst shape of failure this
+    /// feature can have, because the directory looks complete.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn call_ids_that_sanitize_alike_do_not_collide() {
+        assert_ne!(
+            vcon_file_name("a@b"),
+            vcon_file_name("a_b"),
+            "`@` sanitizes to `_`, so these two must not share a filename"
+        );
+        assert_ne!(
+            vcon_file_name("1-1966@10.0.2.20"),
+            vcon_file_name("1-1966_10.0.2.20"),
+            "a realistic Call-ID and its sanitized twin must stay distinct"
+        );
+    }
+
+    /// Two Call-IDs sharing a long prefix get different filenames.
+    ///
+    /// The stem is truncated, so anything past the cut used to be invisible.
+    /// A proxy that numbers its Call-IDs with a long constant prefix would
+    /// have every call in a capture land on one file.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn call_ids_sharing_a_long_prefix_do_not_collide() {
+        let prefix = "x".repeat(250);
+        assert_ne!(
+            vcon_file_name(&format!("{prefix}-one")),
+            vcon_file_name(&format!("{prefix}-two")),
+            "a shared 250-character prefix must not erase the difference"
+        );
+    }
+
+    /// One Call-ID renders to one exact filename, pinned.
+    ///
+    /// Comparing two calls in the same process proves nothing: anything that
+    /// varies per RUN rather than per call -- a pid, a timestamp, a counter --
+    /// is constant within one process and slips straight through. The first
+    /// version of this test did exactly that and survived a mutant appending
+    /// `std::process::id()`.
+    ///
+    /// So the value is pinned. A frozen constant is usually the defect this
+    /// repository hunts, but here the constant IS the contract: a re-run over
+    /// one capture must overwrite its own output rather than pile up beside
+    /// it, and only an exact expected name can hold that.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn one_call_id_renders_to_one_pinned_filename() {
+        assert_eq!(
+            vcon_file_name("1-1966@10.0.2.20"),
+            "1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json",
+            "the name is a stable function of the Call-ID and nothing else"
+        );
+        assert_eq!(
+            vcon_file_name(""),
+            "-e3b0c44298fc1c14.vcon.json",
+            "an empty Call-ID still renders to a usable, stable name"
+        );
+    }
+
+    /// The readable stem survives the disambiguation.
+    ///
+    /// A filename that is only a digest is safe and useless: an operator
+    /// scanning the directory has to open every file to find the call. The
+    /// stem is what makes the directory readable, the suffix is what makes it
+    /// correct.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_filename_still_carries_the_readable_call_id() {
+        let name = vcon_file_name("1-1966@10.0.2.20");
+        assert!(
+            name.starts_with("1-1966_10.0.2.20"),
+            "the sanitized Call-ID must lead the name: {name}"
+        );
+        assert!(
+            name.ends_with(".vcon.json"),
+            "and keep its extension: {name}"
+        );
+    }
+
+    /// A Call-ID of only unsafe characters still yields a usable name.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_call_id_of_only_separators_still_yields_a_usable_name() {
+        for id in ["///", "@@@", "\\\\", "::::"] {
+            let name = vcon_file_name(id);
+            assert_eq!(
+                std::path::Path::new(&name).components().count(),
+                1,
+                "{id:?} produced more than one path component: {name}"
+            );
+            assert!(
+                name.ends_with(".vcon.json"),
+                "{id:?} lost its extension: {name}"
+            );
+        }
+    }
+
+    /// A Unicode Call-ID renders to an ASCII-safe name.
+    ///
+    /// SIP carries UTF-8 in practice, and a filename that reached the
+    /// filesystem with raw multi-byte characters would behave differently on
+    /// every platform this ships to.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_unicode_call_id_renders_to_an_ascii_name() {
+        let name = vcon_file_name("café-ñoño@例え.jp");
+        assert!(name.is_ascii(), "the name must be ASCII: {name}");
+        assert_ne!(
+            vcon_file_name("café@x"),
+            vcon_file_name("cafe@x"),
+            "two different Call-IDs must not collapse onto one name"
+        );
+    }
+
+    /// The selection walks dialogs in capture order.
+    ///
+    /// A directory an operator reads alongside the capture should follow the
+    /// call order, and `select_dialogs` documents store order. Asserting it
+    /// here stops a future reorder from silently changing what an operator
+    /// sees without changing any count.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_selection_follows_capture_order() {
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
+
+        let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
+            .expect("a valid predicate")
+            .dialogs
+            .iter()
+            .map(|(d, _)| d.call_id.clone())
+            .collect();
+        let store_ids: Vec<String> = dialogs.iter().map(|d| d.call_id.clone()).collect();
+        let expected: Vec<String> = store_ids.into_iter().filter(|c| ids.contains(c)).collect();
+
+        assert_eq!(ids, expected, "the selection must not reorder the capture");
+    }
+
+    /// A predicate naming a field the language does not have is refused.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_predicate_naming_an_unknown_field_is_refused() {
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon_when = Some("nonexistent_field == 'x'".to_owned());
+
+        let Err(err) = vcon_selection(&cli, &dialogs, &streams) else {
+            panic!("a field the DSL does not define is not a valid expression");
+        };
+        assert!(
+            format!("{err:#}").contains("--export-vcon-when"),
+            "the refusal names the flag the operator typed: {err:#}"
+        );
+    }
+
+    /// A relative export directory works.
+    ///
+    /// The documented examples use `./failed/`, so a path resolved against the
+    /// wrong base would fail on the very command the page prints.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_relative_export_directory_is_prepared() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let nested = tmp.path().join("rel");
+        let cli = cli_exporting_to(&nested, "response_code >= 200");
+        let got = prepare_export_dir(&cli).expect("a relative-style path is usable");
+        assert!(got.is_dir(), "the directory exists after preparation");
+    }
+
+    /// One dialog keeps one uuid across two runs of the same capture.
+    ///
+    /// The container's uuid is derived, not random. If it rotated per run, a
+    /// consumer holding yesterday's container and today's would see two
+    /// conversations where there is one.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn one_dialog_keeps_one_uuid_across_runs() {
+        let read_uuid = |dir: &std::path::Path| -> String {
+            let f = std::fs::read_dir(dir)
+                .expect("readable")
+                .flatten()
+                .next()
+                .expect("a file");
+            let text = std::fs::read_to_string(f.path()).expect("readable");
+            let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+            v["uuid"].as_str().expect("a uuid").to_owned()
+        };
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+
+        let a = tempfile::tempdir().expect("temp dir");
+        assert!(export_vcon_selection(
+            &cli_exporting_to(a.path(), "response_code >= 486"),
+            &dialogs,
+            &streams,
+            7
+        ));
+        let b = tempfile::tempdir().expect("temp dir");
+        assert!(export_vcon_selection(
+            &cli_exporting_to(b.path(), "response_code >= 486"),
+            &dialogs,
+            &streams,
+            7
+        ));
+
+        assert_eq!(
+            read_uuid(a.path()),
+            read_uuid(b.path()),
+            "one dialog from one capture is one conversation, run twice"
+        );
+    }
+
+    /// Every container in one run carries the same capture-level facts.
+    ///
+    /// `export_vcon_selection` builds `CaptureFacts` once and shares it. Built
+    /// per dialog it would still work, and two containers from one capture
+    /// could then disagree about how many frames that capture held.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn every_container_in_a_run_agrees_about_the_capture() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            4242
+        ));
+
+        let counts: std::collections::HashSet<String> = std::fs::read_dir(tmp.path())
+            .expect("readable")
+            .flatten()
+            .map(|e| {
+                let text = std::fs::read_to_string(e.path()).expect("readable");
+                let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+                v["analysis"][0]["body"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .map(|b| {
+                b.split("frames_read")
+                    .nth(1)
+                    .unwrap_or_default()
+                    .chars()
+                    .filter(char::is_ascii_digit)
+                    .take(6)
+                    .collect::<String>()
+            })
+            .collect();
+        assert_eq!(counts.len(), 1, "one capture, one frame count: {counts:?}");
+    }
+
+    /// A predicate reading a media field selects without a stream store.
+    ///
+    /// `matches_dialog` builds a media diagnosis only when the expression
+    /// needs one, and an empty store is the ordinary signaling-only case. A
+    /// panic here would take out every `-I` run over a capture with no RTP.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_media_predicate_survives_an_empty_stream_store() {
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon_when = Some("rtp.codec == 'PCMU'".to_owned());
+
+        let picked = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
+        assert!(
+            picked.dialogs.is_empty(),
+            "no streams means no dialog carries PCMU"
+        );
+    }
+
+    /// An empty predicate string is refused rather than matching everything.
+    ///
+    /// `--export-vcon-when ''` is a plausible scripting accident, and the
+    /// dangerous reading is "match everything" -- that writes a container for
+    /// every call in the capture when the operator meant to write none.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn an_empty_predicate_is_refused_rather_than_matching_everything() {
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon_when = Some(String::new());
+
+        match vcon_selection(&cli, &dialogs, &streams) {
+            Err(_) => {}
+            Ok(sel) => assert!(
+                sel.dialogs.is_empty(),
+                "an empty expression must not select every dialog: {} selected",
+                sel.dialogs.len()
+            ),
+        }
+    }
+
+    /// Containers land in the directory given, not the working directory.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn containers_land_only_in_the_directory_given() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let target = tmp.path().join("target");
+        let cli = cli_exporting_to(&target, "response_code >= 200");
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7
+        ));
+
+        let inside = std::fs::read_dir(&target).expect("readable").count();
+        let stray = std::fs::read_dir(tmp.path())
+            .expect("readable")
+            .flatten()
+            .filter(|e| e.path() != target)
+            .count();
+        assert!(inside > 0, "the containers went somewhere");
+        assert_eq!(stray, 0, "and nothing landed beside the directory");
+    }
+
+    /// The written file is named exactly as `vcon_file_name` renders it.
+    ///
+    /// The writer and the namer could drift: a writer that built its own path
+    /// would pass every content test while making the sanitizer decorative.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_writer_uses_the_sanitizer_for_every_name() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        let dialogs = two_dialogs_one_failed();
+        let streams = StreamStore::new(16);
+        assert!(export_vcon_selection(&cli, &dialogs, &streams, 7));
+
+        let expected: std::collections::HashSet<String> = vcon_selection(&cli, &dialogs, &streams)
+            .expect("valid")
+            .dialogs
+            .iter()
+            .map(|(d, _)| vcon_file_name(&d.call_id))
+            .collect();
+        let actual: std::collections::HashSet<String> = std::fs::read_dir(tmp.path())
+            .expect("readable")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(
+            actual, expected,
+            "the writer must name files the way the sanitizer does"
+        );
+    }
+
+    /// A container carries the observer party, never a display name.
+    ///
+    /// The vCon module has no `Party.name` field so the rule cannot be broken
+    /// by an edit, and this asserts the property end to end through the new
+    /// path rather than trusting the type alone.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_written_container_names_no_party() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7
+        ));
+
+        let f = std::fs::read_dir(tmp.path())
+            .expect("readable")
+            .flatten()
+            .next()
+            .expect("a file");
+        let text = std::fs::read_to_string(f.path()).expect("readable");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        for party in v["parties"].as_array().expect("parties") {
+            assert!(
+                party.get("name").is_none(),
+                "a From header is what somebody wrote, not an identity: {party}"
+            );
+            assert_eq!(
+                party["validation"], "none",
+                "every party says it is unverified: {party}"
+            );
+        }
+    }
+
+    /// A container from the predicate path carries no by-reference url.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_written_container_carries_no_url() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7
+        ));
+
+        let f = std::fs::read_dir(tmp.path())
+            .expect("readable")
+            .flatten()
+            .next()
+            .expect("a file");
+        let text = std::fs::read_to_string(f.path()).expect("readable");
+        assert!(
+            !text.contains("\"url\""),
+            "sipnab hosts nothing, so a container never points elsewhere: {text}"
+        );
+    }
+
+    /// No container emits an explicit null.
+    ///
+    /// "Absent, never null" is the module's standing contract, and the
+    /// container stored on thor-02 by an earlier release violates it -- with
+    /// `url`, `mediatype` and `duration` all null. This asserts the property
+    /// on the path this task added.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_written_container_emits_no_explicit_null() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7
+        ));
+
+        let f = std::fs::read_dir(tmp.path())
+            .expect("readable")
+            .flatten()
+            .next()
+            .expect("a file");
+        let text = std::fs::read_to_string(f.path()).expect("readable");
+        assert!(
+            !text.contains(":null"),
+            "an absent field is absent, never null: {text}"
         );
     }
 
