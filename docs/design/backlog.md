@@ -4030,9 +4030,11 @@ reason it was introduced.
 
 ## VCON — vCon export (added 2026-08-24)
 
-The decision is taken and the library exists. What is missing is everything a
-user touches: no door opens the exporter, nobody has been told it is there, and
-no page shows a worked example.
+The programme is one item from closed. Ten of its eleven items landed between
+2026-08-24 and 0.5.125 on 2026-08-25 -- the library, all four doors, both sets
+of documentation, the credential strip that had been guarding a field which did
+not exist, and Phase 2 media. What remains is publishing: sipnab can build a
+container and cannot hand one to a consumer.
 
 Tagged `VCON` so the whole programme can be found with one grep. Ticked items
 name the commit that closed them.
@@ -4041,15 +4043,25 @@ name the commit that closed them.
 |---|---|---|
 | `VCON0` | **DONE** | Phase 0 decision — observer vCons only. [`docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md) |
 | `VCON1` | **DONE** | Phase 1 library — [`src/output/vcon.rs`](https://github.com/NormB/sipnab/blob/main/src/output/vcon.rs), one dialog, signaling only, behind the non-default `vcon` feature |
-| `VCON2` | TODO | **CLI surface.** A flag that exports one dialog, and refuses honestly when the build lacks the feature or the Call-ID is unknown |
-| `VCON3` | TODO | **MCP tool.** `export_vcon`, returning the container as structured JSON rather than a stringified blob |
-| `VCON4` | TODO | **REST endpoint.** `GET /v1/dialogs/{call_id}/vcon`, 404 on an unknown Call-ID, and absent entirely without the feature |
-| `VCON5` | TODO | **TUI reachability.** An operator looking at a call must be able to see that export exists and what it would leave out |
-| `VCON6` | TODO | **User documentation + walkthrough.** Task-first: what a vCon is, why sipnab's is an observer's, how to produce one, and what a consumer must not read into it |
-| `VCON7` | TODO | **Developer documentation.** The shape of the module, where the caveat is duplicated from, and how to add a field without breaking the divergence gate |
-| `VCON8` | TODO | **Make the credential strip load-bearing.** Today it guards a projection that carries no raw headers, so it removes nothing. Either the trace gains a header list and the filter starts working, or the docs stop implying it does |
-| `VCON9` | **ACTIVE** | Phase 2 media. `recording` Dialog Objects, inline base64url only, with a `recording-set` object carrying the call's `start`/`duration` when the ring wrapped — the one in-spec way to say "the file is shorter than the call". Routed to the OBSERVER subject, never a consumer's `recordings` table: see [`docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md) §4b for why the two vocabularies collide on that word |
-| `VCON10` | TODO | Ingress wiring. A consumer now exists, so §6's falsification clock has started. Publishing is unbuilt. Addresses and the scoped token live in an operator's environment and must never enter this repository |
+| `VCON2` | **DONE** `d3af9f9c` | **CLI surface.** `--export-vcon <CALL-ID>` to stdout, or `--vcon-out <PATH>` beside the per-message stream. An unknown Call-ID exits non-zero, and a build without the feature is refused in `Cli::validate` -- before any capture device opens, so nobody pays for a whole read to be told the binary could never have written the file |
+| `VCON3` | **DONE** `d3af9f9c` | **MCP tool.** `export_vcon`, answering with `ContentBlock::json` of the container rather than a rendered string handed back to be parsed, and `invalid_params` (-32602) on a Call-ID the store does not hold |
+| `VCON4` | **DONE** `2359b9be` | **REST endpoint.** `GET /v1/dialogs/{call_id}/vcon` in [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs), registered under `#[cfg(feature = "vcon")]` -- so without the exporter the route is absent from the router rather than answering for it |
+| `VCON5` | **DONE** `2359b9be` | **TUI reachability.** The help text names the export, the doors that serve it and what a container leaves out; `help_text_names_vcon_export_and_what_it_leaves_out` checks each clause one at a time, so losing one is not rounded off |
+| `VCON6` | **DONE** `31df228e` | **User documentation + walkthrough.** [`docs/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/vcon.md), three steps against a real capture. Its Rust fragment named `store`, `call_id` and `facts` and compiled nowhere; 0.5.125 replaced it with [`examples/export_vcon.rs`](https://github.com/NormB/sipnab/blob/main/examples/export_vcon.rs), which builds with the tree and therefore cannot drift from the API |
+| `VCON7` | **DONE** `31df228e` | **Developer documentation.** [`docs/internals/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/vcon.md) -- the shape of the module, where the caveat is duplicated from, and what the divergence gate wants from a new field |
+| `VCON8` | **DONE** `a4286cfb` | **The credential strip is load-bearing.** The message trace carries the headers now, so the filter has something to remove. See below |
+| `VCON9` | **DONE** `3416d835` | Phase 2 media. `recording` Dialog Objects, inline base64url only, with a `recording-set` object carrying the call's `start`/`duration` when the ring wrapped -- the one in-spec way to say "the file is shorter than the call". Routed to the OBSERVER subject, never a consumer's `recordings` table: see [`docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md) §4b for why the two vocabularies collide on that word. Above a 5 MiB encoded budget the media is refused in the container, because a probed store answers `204` and drops the payload without telling the producer |
+| `VCON10` | TODO | **Ingress wiring**, and the only item left. A consumer now exists, so §6's falsification clock has started. Publishing is unbuilt: nothing under `src/` speaks NATS, or HTTP to a conserver. Addresses and the scoped token live in an operator's environment and must never enter this repository |
+
+Two changes landed beside the numbered items and belong with them. `45f4d70e`
+made the container conform to the working group's spec and pinned it to
+[`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json),
+so a claim about its shape is machine-checked rather than asserted in prose.
+`020421be` made a container findable: a party carries `tel` where the SIP user
+part is an RFC 3966 global number, and the dialog carries `sip_from_tag` and
+`sip_to_tag` -- a conserver indexes parties by `tel`, `mailto` and `name` and by
+nothing else, and a Call-ID alone cannot tell one leg of a forked INVITE from
+another.
 
 ### The bar these are held to
 
@@ -4069,18 +4081,28 @@ all four hold:
   left out silently is the drift [`tests/surface_parity_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/surface_parity_test.rs) exists to
   catch.
 
-### VCON8 in more detail, because it is the one that misleads
+### VCON8 in more detail, because it is the one that misled
 
-`no_credential_survives_an_export` passes today, and it passes for the wrong
-reason. `build_message_json` emits a projection — timestamps, addresses,
-method, From/To/Contact/User-Agent, SDP — and carries no raw header map, so an
-`Authorization` value cannot reach the trace to be stripped. The filter is a
-regression gate for a field that does not exist yet.
+Until 0.5.125 `no_credential_survives_an_export` passed for the wrong reason.
+`build_message_json` emitted a projection -- timestamps, addresses, method,
+From/To/Contact/User-Agent, SDP -- and carried no raw header map, so an
+`Authorization` value could not reach the trace to be stripped. The filter was a
+regression gate for a field that did not exist, which looks exactly like a
+working filter for as long as nobody checks.
 
-That is recorded rather than hidden, in the module docs and in the commit that
-introduced it. The resolution is a decision, not a fix: a real SIP trace
-arguably SHOULD carry raw headers, and the moment it does the filter becomes
-load-bearing and the test starts proving what it claims.
+`a4286cfb` closed it the way this entry said it had to be closed: by taking the
+decision, not by patching the test. The trace gained a `headers` map keyed by
+name with array values, so a repeated `Via` or `Record-Route` keeps its path,
+and the filter that makes it safe to publish landed in the same change --
+`Authorization`, `Proxy-Authorization`, `WWW-Authenticate` and
+`Proxy-Authenticate` never travel. The field and the filter must never arrive
+apart.
+
+The pair now proves what it always claimed. `no_credential_survives_an_export`
+plants a digest response in a REGISTER and fails when `CREDENTIAL_HEADERS` is
+emptied; `the_trace_carries_the_headers_the_filter_exists_to_clean` fails when
+the `headers` map is dropped again, because a green credential test means
+nothing about a container that carries no headers at all.
 
 ## SP — surface parity (added 2026-08-24)
 
