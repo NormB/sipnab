@@ -1320,8 +1320,11 @@ holds anything to it.
   because `contains` proves a string is present, never that it is used. Both
   now require the string on a line that greps or sources.
 
-- [x] **GATE2 — branch protection on `main` is bypassed on every push, so
-  neither rule it declares is enforced.** Every push to `main` reports:
+- [ ] **GATE2 — branch protection on `main` is bypassed on every push, so
+  neither rule it declares is enforced.** REOPENED 2026-08-26: closed on
+  2026-08-23 by turning `enforce_admins` on, and the API now returns
+  `enforce_admins.enabled: false` again, so the condition below holds once more.
+  A push to `main` on 2026-08-26 reported both rule violations and succeeded. Every push to `main` reports:
 
   - `Required status check "CI success" is expected` — the rule wants CI green
     *before* the push, and admin bypass waves it through. So the check that is

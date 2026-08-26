@@ -609,22 +609,37 @@ attestation, a GHCR image, and a Homebrew formula — twenty-three release asset
 all. The order is therefore: land the release commit, wait for CI, then tag the
 commit that passed.
 
-**`main` takes pull requests, and admins are not exempt.** Branch protection
-requires a PR and a green `CI success` before anything reaches `main`, with
-`enforce_admins` on, so the release commit lands the same way every other
-commit does. It asks for zero approvals — the point is that the commit exists
-and CI has run on it BEFORE it reaches `main`, not that a second person signs
-it off on a repository with one maintainer.
+**`main` declares a pull-request rule and a required check, and an owner push
+bypasses both.** Branch protection on `refs/heads/main` asks for a pull request
+and a green `CI success`, and `enforce_admins` is OFF. Measured against the API
+on 2026-08-26: `required_pull_request_reviews` present, `required_status_checks
+.contexts` `["CI success"]`, `enforce_admins.enabled` **false**. A direct push
+by the owner therefore reports
 
-That setting was off until 2026-08-23, and the rules it left in place were
-worse than none: every push reported `Bypassed rule violations` for a required
-check that could never run in time, because a status check gates a commit
-before it lands and a direct push creates the commit and the status together.
-A rule that every push bypasses reads as protection to anyone auditing the
-settings while providing exactly none. The `required_linear_history` rule
-went at the same time and for the same reason — `main` carries 128 merge
-commits and merging feature branches is how this repository works, so that
-rule had never described it.
+```text
+remote: - Changes must be made through a pull request.
+remote: - Required status check "CI success" is expected.
+```
+
+and lands anyway. The rules describe an intended workflow rather than an
+enforced one.
+
+This page previously recorded `enforce_admins` as turned on from 2026-08-23,
+and that is no longer what the API returns. While it is off, the state is the
+one the backlog named in GATE2 and is worth restating rather than rediscovering:
+a status check gates a commit BEFORE it lands, and a direct push creates the
+commit and its status together, so the check cannot run in time and bypass is
+the only outcome available. A rule that every push bypasses reads as protection
+to anyone auditing the settings while providing exactly none.
+
+`required_linear_history` is off, and that one is correct: `main` carries 176
+merge commits and merging feature branches is how this repository works, so the
+rule never described it.
+
+None of this is what protects a release. The `pre-push` gate below is — it
+refuses a `v*` tag whose commit has a failed run, has runs still in flight, or
+has no runs at all, and it runs on the machine doing the pushing rather than on
+a setting somebody can switch off.
 
 None of this touches tags: branch protection targets `refs/heads/main`, and a
 release is a pushed `refs/tags/v*`. The `pre-push` gate below is still what stands
