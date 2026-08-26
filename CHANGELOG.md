@@ -48,6 +48,17 @@ entry that carries them.
   reported -- the gate answering OK while checking nothing, which is the exact
   failure its own header warns about.
 
+- **`i+5e` no longer decodes as `5`, and `d+5:helloi0ee` no longer decodes at
+  all.** The decoder forbids non-canonical numbers because two spellings of one
+  value cannot be compared, and the rule enumerated the spellings someone
+  thought of -- `i03e`, `i-0e`, `01:a` -- rather than stating what a canonical
+  number is. `i64::from_str` and `usize::from_str` both accept a leading `+`,
+  so it walked through. The reachable half is the length prefix: `decode_dict`
+  calls `decode_bytes` directly for a KEY, so a key's length never passes the
+  `b'0'..=b'9'` dispatch that refuses `+` where a value may begin, and a length
+  decides how many bytes of the buffer that key claims. Both sites now require
+  digits, and a negative sign only where one belongs.
+
 ## [0.5.125] - 2026-08-25
 
 ### Added

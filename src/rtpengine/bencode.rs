@@ -207,6 +207,17 @@ fn decode_int(input: &[u8]) -> Result<(Value<'_>, &[u8])> {
     // Canonical form only. `i03e` and `i-0e` are forbidden by the format, and
     // accepting them would mean two spellings of one number -- which matters
     // here because these values are compared, not just displayed.
+    //
+    // The digits are checked here rather than left to `i64::from_str`, which
+    // accepts a leading `+`. `i+5e` is a second spelling of 5 and walked
+    // straight through the rule written to forbid exactly that, because the
+    // rule enumerated the spellings someone thought of instead of stating
+    // what a canonical integer IS.
+    let digits_only = text.strip_prefix('-').unwrap_or(text);
+    ensure!(
+        !digits_only.is_empty() && digits_only.bytes().all(|b| b.is_ascii_digit()),
+        "bencode: non-canonical integer {text:?}"
+    );
     ensure!(
         text == "0" || !text.starts_with('0') && !text.starts_with("-0"),
         "bencode: non-canonical integer {text:?}"
@@ -225,6 +236,17 @@ fn decode_bytes(input: &[u8]) -> Result<(Value<'_>, &[u8])> {
     let digits = &input[..colon];
     let text = std::str::from_utf8(digits)
         .map_err(|_| anyhow::anyhow!("bencode: byte-string length is not ASCII"))?;
+    // Digits and nothing else, for the reason `decode_int` states -- and this
+    // is the REACHABLE half of it. `decode_dict` calls this function directly
+    // for a key, so a key's length never passes the `b'0'..=b'9'` dispatch in
+    // `decode_value` that refuses `+` where a value may begin, and
+    // `usize::from_str` accepts it. A length prefix decides how many bytes of
+    // the buffer the key claims, which is a worse thing to be lax about than
+    // an integer nobody indexes with.
+    ensure!(
+        !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()),
+        "bencode: non-canonical byte-string length {text:?}"
+    );
     ensure!(
         text == "0" || !text.starts_with('0'),
         "bencode: non-canonical byte-string length {text:?}"
@@ -607,5 +629,68 @@ mod tests {
         };
         let got: Vec<Vec<u8>> = entries.iter().map(|(k, _)| k.to_vec()).collect();
         assert_eq!(got, expected, "keys must stay in the order they arrived");
+    }
+
+    /// A leading `+` is a second spelling of a number, and the canonical rule
+    /// exists to forbid exactly that.
+    ///
+    /// `rejects_non_canonical_numbers` enumerates the spellings someone
+    /// thought of -- `i03e`, `i-0e`, `01:a` -- and `i64::from_str` accepts a
+    /// leading `+`, so `i+5e` walked through the rule whose stated reason is
+    /// that "these values are compared, not just displayed".
+    #[test]
+    fn rejects_a_leading_plus_in_an_integer() {
+        assert!(decode(b"i+5e").is_err(), "i+5e is a second spelling of 5");
+        assert!(decode(b"i+0e").is_err(), "i+0e is a second spelling of 0");
+        assert!(
+            decode(b"li+5ee").is_err(),
+            "nested in a list is the same number, spelled the same wrong way"
+        );
+    }
+
+    /// ...and in a dictionary KEY's length, which is the reachable one.
+    ///
+    /// `decode_dict` calls `decode_bytes` directly, so a key's length never
+    /// passes the `b'0'..=b'9'` dispatch in `decode_value` that rejects `+` in
+    /// a value position. `usize::from_str` then accepts it, and a length
+    /// prefix is a worse thing to be lax about than an integer: it decides how
+    /// many bytes of the buffer the key claims.
+    #[test]
+    fn rejects_a_leading_plus_in_a_dictionary_key_length() {
+        let err = decode(b"d+5:helloi0ee").expect_err("a `+` length is not canonical");
+        assert!(
+            format!("{err:#}").contains("byte-string length"),
+            "rejected for the wrong reason: {err:#}"
+        );
+    }
+
+    /// The dispatch already refuses `+` where a VALUE may begin.
+    ///
+    /// Kept beside the two above so the asymmetry is on the record: this path
+    /// was never broken, which is why the fix had to go in `decode_bytes` and
+    /// not in `decode_value`.
+    #[test]
+    fn a_plus_never_begins_a_top_level_value() {
+        assert!(decode(b"+5:hello").is_err(), "not a value start");
+        assert!(decode(b"+5e").is_err(), "not a value start");
+    }
+
+    /// The canonical spellings still decode.
+    ///
+    /// The bound on the three above: a rule tightened until it rejects real
+    /// traffic is worse than the laxness it replaced, and rtpengine sends
+    /// plain lengths and plain integers all day.
+    #[test]
+    fn canonical_numbers_and_lengths_still_decode() {
+        assert_eq!(decode(b"i5e").expect("plain integer"), Value::Int(5));
+        assert_eq!(decode(b"i-5e").expect("negative"), Value::Int(-5));
+        assert_eq!(decode(b"i0e").expect("zero"), Value::Int(0));
+        assert_eq!(
+            decode(b"5:hello").expect("plain length"),
+            Value::Bytes(b"hello")
+        );
+        assert_eq!(decode(b"0:").expect("empty string"), Value::Bytes(b""));
+        let v = decode(b"d5:helloi1ee").expect("a plain dictionary");
+        assert_eq!(v.get_int(b"hello"), Some(1));
     }
 }

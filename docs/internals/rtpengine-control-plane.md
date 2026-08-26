@@ -264,6 +264,8 @@ Every gate here was mutation-tested and none survived:
 | Duplicate keys compared as lossy text rather than bytes | `rtpengine::bencode` tests |
 | Decoder made to return its entries sorted | `rtpengine::bencode` tests |
 | Hand-over fired only on a port's FIRST reassignment | `rtpengine::reconcile` tests |
+| Integer digits left to `from_str`, which takes a leading `+` | `rtpengine::bencode` tests |
+| Byte-string length left to `from_str`, same leading `+` | `rtpengine::bencode` tests |
 
 ## Kernel forwarding, measured
 
