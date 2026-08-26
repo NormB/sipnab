@@ -6703,15 +6703,225 @@ mod tests {
             None
         ));
 
-        let f = std::fs::read_dir(tmp.path())
-            .expect("readable")
-            .flatten()
-            .next()
-            .expect("a file");
-        let text = std::fs::read_to_string(f.path()).expect("readable");
+        // EVERY container, not whichever one `read_dir` happened to yield
+        // first. This test read one arbitrary file and passed for two
+        // releases because that file was the answered dialog; the moment
+        // container filenames changed, CI drew the FAILED one instead and the
+        // assertion fired. A test whose verdict depends on directory order
+        // is not testing what it claims to.
+        let mut checked = 0;
+        for entry in std::fs::read_dir(tmp.path()).expect("readable").flatten() {
+            let text = std::fs::read_to_string(entry.path()).expect("readable");
+            let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+            assert_no_null_in_container(&v, &text);
+            checked += 1;
+        }
+        assert_eq!(
+            checked, 2,
+            "the fixture writes two containers and both must be checked"
+        );
+    }
+
+    /// Assert the vCon container's OWN fields carry no explicit null.
+    ///
+    /// The nested `analysis[].body` is deliberately excluded, and that is not
+    /// a loophole. It carries a `SignalingDiagnosis`, whose seven always-run
+    /// detections document `null` as meaning "checked, not found" -- the exact
+    /// opposite convention, adopted for the exact same reason this one was.
+    /// The eighth detection is omitted when absent precisely BECAUSE a null
+    /// there would read as "checked" on a capture that held no ICMP.
+    ///
+    /// A raw `text.contains(":null")` cannot tell the two apart, so it was
+    /// asserting the vCon module's contract over another module's output.
+    /// `capture_completeness` lives inside that same body and IS checked,
+    /// because it belongs to this module.
+    #[cfg(feature = "vcon")]
+    fn assert_no_null_in_container(v: &serde_json::Value, text: &str) {
+        fn walk(v: &serde_json::Value, path: &str, out: &mut Vec<String>) {
+            match v {
+                serde_json::Value::Null => out.push(path.to_owned()),
+                serde_json::Value::Object(m) => {
+                    for (k, child) in m {
+                        walk(child, &format!("{path}.{k}"), out);
+                    }
+                }
+                serde_json::Value::Array(a) => {
+                    for (i, child) in a.iter().enumerate() {
+                        walk(child, &format!("{path}[{i}]"), out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut nulls = Vec::new();
+        let mut container = v.clone();
+        // Lift `capture_completeness` out of each analysis body and drop the
+        // body itself: this module owns the first and not the second.
+        if let Some(items) = container
+            .get_mut("analysis")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for item in items.iter_mut() {
+                let completeness = item
+                    .get("body")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+                    .and_then(|b| b.get("capture_completeness").cloned());
+                if let Some(obj) = item.as_object_mut() {
+                    obj.remove("body");
+                    if let Some(c) = completeness {
+                        obj.insert("capture_completeness".to_owned(), c);
+                    }
+                }
+            }
+        }
+        walk(&container, "", &mut nulls);
         assert!(
-            !text.contains(":null"),
-            "an absent field is absent, never null: {text}"
+            nulls.is_empty(),
+            "an absent field is absent, never null -- found at {nulls:?} in: {text}"
+        );
+    }
+
+    /// A real FAILED dialog's container carries the diagnosis nulls, and
+    /// passes.
+    ///
+    /// The synthetic fixtures above prove the exclusion is drawn correctly.
+    /// This proves it is drawn around something that actually happens: the
+    /// 486 container is the exact file CI drew and this test drew nothing
+    /// about until now. Without it the exclusion is calibrated only against
+    /// JSON a test author wrote.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_failed_dialogs_container_really_does_carry_the_deliberate_nulls() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            None,
+        ));
+
+        let mut saw_deliberate_nulls = false;
+        for entry in std::fs::read_dir(tmp.path()).expect("readable").flatten() {
+            let text = std::fs::read_to_string(entry.path()).expect("readable");
+            let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+            let body: serde_json::Value = serde_json::from_str(
+                v["analysis"][0]["body"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("an analysis body is a string: {v}")),
+            )
+            .expect("the analysis body parses");
+            if body["signaling_diagnosis"]["abandoned"].is_null()
+                && !body["signaling_diagnosis"]["final_failure"].is_null()
+            {
+                saw_deliberate_nulls = true;
+            }
+        }
+        assert!(
+            saw_deliberate_nulls,
+            "the fixture must write a container whose diagnosis carries the \
+             deliberate nulls, or the exclusion is calibrated against nothing"
+        );
+    }
+
+    /// Both containers carry the completeness block, whatever the read order.
+    ///
+    /// The property the broken test needed and did not have: the verdict is
+    /// the same for every file in the directory, so which one `read_dir`
+    /// yields first cannot change the answer.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn every_container_carries_the_completeness_block_not_just_the_first() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            None,
+        ));
+
+        let mut seen = 0;
+        for entry in std::fs::read_dir(tmp.path()).expect("readable").flatten() {
+            let text = std::fs::read_to_string(entry.path()).expect("readable");
+            let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+            let body: serde_json::Value =
+                serde_json::from_str(v["analysis"][0]["body"].as_str().expect("a string body"))
+                    .expect("parses");
+            let c = &body["capture_completeness"];
+            for key in ["gate_closed_during_run", "dialogs_suppressed_by_deny"] {
+                assert!(
+                    c.get(key).is_some_and(|x| !x.is_null()),
+                    "{key} missing from a container: {c}"
+                );
+            }
+            seen += 1;
+        }
+        assert_eq!(seen, 2, "both containers were read");
+    }
+
+    /// The exclusion above is narrow: a null the vCon module itself emits is
+    /// still caught.
+    ///
+    /// Owed for the failure. Without this, the fix could be over-broad --
+    /// excluding the whole analysis entry rather than only the foreign body
+    /// would silence the contract everywhere it matters and no test would say
+    /// so.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_null_check_still_catches_a_null_the_container_itself_emits() {
+        let mut v: serde_json::Value = serde_json::json!({
+            "vcon": "0.4.0",
+            "parties": [{"tel": null}],
+            "analysis": [{
+                "type": "sipnab-analysis",
+                "body": "{\"signaling_diagnosis\":{\"abandoned\":null}}"
+            }]
+        });
+        let text = v.to_string();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_no_null_in_container(&v, &text);
+        }));
+        assert!(
+            caught.is_err(),
+            "a null on a container field must still fail the check"
+        );
+
+        // ...and the foreign body's deliberate nulls alone do NOT fail it.
+        v["parties"] = serde_json::json!([{"tel": "+15551234"}]);
+        let text = v.to_string();
+        assert_no_null_in_container(&v, &text);
+    }
+
+    /// A null inside `capture_completeness` fails, even though it rides in the
+    /// analysis body.
+    ///
+    /// The second half of the exclusion: this module's own block is lifted OUT
+    /// of the foreign body and checked. An exclusion drawn one level too high
+    /// would drop it, which is where the two new fields live.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_null_in_capture_completeness_is_caught_despite_riding_in_the_body() {
+        let body = serde_json::json!({
+            "capture_completeness": {"frames_read": 7, "media_note": null},
+            "signaling_diagnosis": {"abandoned": null}
+        })
+        .to_string();
+        let v = serde_json::json!({
+            "vcon": "0.4.0",
+            "analysis": [{"type": "sipnab-analysis", "body": body}]
+        });
+        let text = v.to_string();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_no_null_in_container(&v, &text);
+        }));
+        assert!(
+            caught.is_err(),
+            "capture_completeness belongs to this module and its nulls must be caught"
         );
     }
 

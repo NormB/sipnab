@@ -730,11 +730,21 @@ rm -f /tmp/pc.txt
   `closed_during_run` -- the container is written at the end of a run, by
   which time the gate may be open again -- and `apply_deny_filter` now
   returns what it removed, a count that cannot be recovered later.
-- Step 5 cited `no_container_emits_an_explicit_null` by name. No test of
-  that name exists in the repo: the filter matched zero tests and reported
-  success, which is what a filter matching nothing always does. Replaced by
-  `the_new_completeness_fields_are_present_and_never_null`, which reads a
-  written container.
+- Step 5 cited `no_container_emits_an_explicit_null` by name. That filter
+  matched zero tests and reported success, which is what a filter matching
+  nothing always does -- but the conclusion drawn from it, that no such test
+  existed, was WRONG. The test is `a_written_container_emits_no_explicit_null`
+  in [`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs),
+  and the search that missed it looked only in [`src/output/vcon.rs`](https://github.com/NormB/sipnab/blob/main/src/output/vcon.rs) and
+  `tests/`. CI found it by failing.
+- That test read one arbitrary file out of the export directory, so its verdict
+  depended on `read_dir` order. It passed for two releases because the file it
+  drew was the ANSWERED dialog; Task 1's filename change moved the failed one
+  first and the assertion fired. It now checks every container, and it checks
+  the vCon module's own fields rather than raw-substring-matching a file that
+  also carries a `SignalingDiagnosis` -- a model whose seven always-run
+  detections document `null` as "checked, not found", the opposite convention
+  for the same reason.
 - Produces: two new `CaptureCompleteness` fields: `pub gate_closed_during_run: bool`, `pub dialogs_suppressed_by_deny: u64`.
 
 - [x] **Step 1: Write the failing test**
