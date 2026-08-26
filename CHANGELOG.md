@@ -10,6 +10,8 @@ entry that carries them.
 
 ## [Unreleased]
 
+## [0.5.127] - 2026-08-26
+
 ### Added
 
 - **Conditional vCon creation, and a runtime gate that only ever narrows.**
