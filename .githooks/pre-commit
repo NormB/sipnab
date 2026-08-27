@@ -481,6 +481,44 @@ fi
 # (data-count, anchored here to its "Automated tests" label rather than to
 # position so adding another stat can't silently mis-target it) and the prose
 # "N automated tests" in the feature table. Both must equal the real count.
+# ── Backlog status summary is current ──────────────────────────────
+# The file carries several hundred checkbox items. The per-item convention is
+# readable and the aggregate is not, so a generated table answers "what is left
+# in this section" without scrolling. Generated, because a hand-kept count is
+# wrong the first time somebody ticks a box.
+if git diff --cached --name-only | grep -q "^docs/design/backlog.md$"; then
+    echo -n "  Backlog status... "
+    if python3 scripts/backlog-status.py >/dev/null 2>&1; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "  The status table no longer matches the items below it."
+        echo "  Fix: python3 scripts/backlog-status.py --apply"
+        exit 1
+    fi
+fi
+
+# ── Harness client tests ───────────────────────────────────────────
+# Python, and outside the cargo suite, so nothing else runs them. They pin
+# defects that already shipped once -- a correlation join against fields that
+# do not exist, an SSE reader that took the keepalive, a guard that compared
+# nothing. Untested-by-default code rots.
+if git diff --cached --name-only | grep -q "^harness/clients/"; then
+    echo -n "  Harness clients... "
+    if command -v python3 >/dev/null 2>&1 && python3 -c "import pytest" 2>/dev/null; then
+        if PYTEST_OUT=$(cd harness && python3 -m pytest clients/tests/ -q 2>&1); then
+            echo -e "${GREEN}OK${NC} ($(echo "$PYTEST_OUT" | tail -1))"
+        else
+            echo -e "${RED}FAIL${NC}"
+            echo "$PYTEST_OUT" | tail -12 | sed 's/^/    /'
+            echo "  Reproduce: cd harness && python3 -m pytest clients/tests/"
+            exit 1
+        fi
+    else
+        echo -e "${YELLOW}SKIP (pytest absent)${NC}"
+    fi
+fi
+
 echo -n "  Homepage test count... "
 if [ -f "website/templates/index.html" ]; then
     # Reuse the validated step-2 run (TEST_RC==0 guarantees every binary
