@@ -423,8 +423,8 @@ pub struct Dialog {
     /// Skipped when EMPTY, which is not a defaulted value but the one case
     /// that has no Call-ID to give: the empty Dialog Object of §4.3, standing
     /// for a call known to have occurred with nothing available about it.
-    /// Every other object sets it, and [`Dialog::empty`] is the only
-    /// constructor that leaves it blank.
+    /// Every other object sets it, and the empty-object constructor is the only
+    /// one that leaves it blank.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub sip_call_id: String,
     /// The dialog's `From` tag, when the capture observed one.
@@ -813,7 +813,13 @@ pub struct Vcon {
     /// own clock is reachable through the message trace, which carries a
     /// timestamp per message.
     pub created_at: String,
-    /// §4.1 `subject` — descriptive, and descriptive only. See [`subject_of`].
+    /// §4.1 `subject` — descriptive, and descriptive only.
+    ///
+    /// It names the DIALOG so a store whose search matches subject or UUID can
+    /// find this container by an identifier an operator has. It never carries
+    /// a verdict about the call: an observer is in no position to say what a
+    /// conversation was about, and the completeness caveat has its own two
+    /// surfaces for what this run did and did not read.
     pub subject: String,
     /// §4.1 `redacted` — present ONLY on a container whose content a deny
     /// header suppressed. See [`Redacted`].
