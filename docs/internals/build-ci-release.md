@@ -346,21 +346,30 @@ push-and-wait feedback loop. [`scripts/check-feature-matrix.py`](../../scripts/c
 thirteen locally, reading both the combo list and `RUSTFLAGS` out of
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) so the two cannot drift.
 
-[`pre-push`](../../.githooks/pre-push) adds nine hard gates that `cargo test`
+[`pre-push`](../../.githooks/pre-push) adds ten hard gates that `cargo test`
 does not cover: `cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
 cargo check`, a check of the reduced feature combinations `tls`, `api` and
 `wasm`, the full thirteen-combination matrix with CI's flags, a non-Linux
-compile of the whole tree, and the two prose linters — Vale and codespell. Rustdoc lints and the
+compile of the whole tree, a `zola build` of the website, and the two prose
+linters — Vale and codespell. Rustdoc lints and the
 separate fuzz workspace compile independently of the test build, and no cargo
 command reads prose at all, so these are exactly the failures that otherwise
-appear ten minutes later in CI. The prose pair arrived last and for cause: on
+appear ten minutes later in CI.
+
+The site build arrived on 2026-08-27 and for the same kind of cause the prose
+pair did. A Zola template is neither Rust nor prose, so a malformed macro in
+`website/templates/` passed every other gate in this hook and failed in the
+Pages deploy — twice in one afternoon, because the second error only appears at
+render and the first one masked it. Zola publishes no aarch64 Linux binary, so
+on some machines here the gate reports `NOT CHECKED` and names the
+`cargo install --git` line that fixes it. The prose pair arrived last and for cause: on
 2026-08-03 Vale turned main red with 12 passive-voice errors and codespell
 followed with two spelling hits in `src/` doc comments, each found only after
 a push. A missing Vale or codespell binary reports `NOT CHECKED` rather than
 passing, because a gate that goes quiet when its tool is absent is worse than
 no gate. `SKIP_FMT_HOOK=1` bypasses all of them. If you use it, expect CI to
-notice. After those eight comes one gate that is not hard — the corpus gate
+notice. After those ten comes one gate that is not hard — the corpus gate
 below, which runs only when the machine holds the capture corpus.
 
 Those gates let their tool write straight to the terminal instead of capturing

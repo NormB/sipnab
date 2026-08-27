@@ -859,6 +859,43 @@ rm -f "$PROSE_OUTPUT"
 
 fi
 
+# The site build. Every other gate here compiles Rust or reads prose, and a
+# Zola template passes all of them: a malformed macro in `website/templates/`
+# is not Rust, carries no prose, and reaches the Pages deploy unexamined. One
+# did, and the deploy failed on `macros.html` -- then a SECOND error behind it,
+# a macro namespace used without importing it, which only a real build finds
+# because it happens at render rather than at parse.
+#
+# NOT CHECKED rather than skipped silently when zola is absent: Zola publishes
+# no aarch64 Linux binary, so on some machines here this cannot run, and a gate
+# that stays quiet about that reports a safety it is not providing.
+ZOLA_BIN="${ZOLA_BIN:-zola}"
+if [ -d website ] && command -v "$ZOLA_BIN" >/dev/null 2>&1; then
+	printf '  zola (site build) ... '
+	ZOLA_OUT="$(mktemp)"
+	ZOLA_DIR="$(mktemp -d)"
+	if (cd website && "$ZOLA_BIN" build --output-dir "$ZOLA_DIR" --force) >"$ZOLA_OUT" 2>&1; then
+		printf '%bOK%b\n' "$GREEN" "$NC"
+	else
+		printf '%bFAIL%b\n' "$RED" "$NC"
+		tail -20 "$ZOLA_OUT"
+		printf '\n'
+		printf '%bPush blocked: the site does not build.%b\n' "$RED" "$NC"
+		printf 'A template error passes every other gate in this hook and fails in the\n'
+		printf 'Pages deploy instead, where the round trip costs ten minutes.\n'
+		printf 'Reproduce with:\n'
+		printf '    cd website && zola build\n'
+		rm -rf "$ZOLA_OUT" "$ZOLA_DIR"
+		exit 1
+	fi
+	rm -rf "$ZOLA_OUT" "$ZOLA_DIR"
+elif [ -d website ]; then
+	printf '  zola (site build) ... %bNOT CHECKED -- zola is not installed%b\n' "$YELLOW" "$NC"
+	printf '    The Pages deploy builds it and a template error blocks there.\n'
+	printf '    `cargo install --git https://github.com/getzola/zola --tag v0.19.2`\n'
+	printf '    (there is no aarch64 Linux release binary), or set ZOLA_BIN.\n'
+fi
+
 if [ "$prose_fail" -ne 0 ]; then
 	printf '\n'
 	printf '%bPush blocked: a prose gate CI enforces is failing.%b\n' "$RED" "$NC"
