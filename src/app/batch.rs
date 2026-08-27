@@ -3069,17 +3069,8 @@ impl BatchRunner {
             for pp in &parsed_packets {
                 // --hep-parse: try to unwrap HEP-encapsulated packets
                 #[cfg(feature = "hep")]
-                let hep_unwrapped = if cli.hep_args.hep_parse && pp.transport == TransportProto::Udp
-                {
-                    crate::capture::hep::parse_hep(&pp.payload).ok().map(|hep| {
-                        let mut unwrapped = pp.clone();
-                        unwrapped.payload = hep.payload.into();
-                        unwrapped.src_addr = hep.src_addr;
-                        unwrapped.dst_addr = hep.dst_addr;
-                        unwrapped.src_port = hep.src_port;
-                        unwrapped.dst_port = hep.dst_port;
-                        unwrapped
-                    })
+                let hep_unwrapped = if cli.hep_args.hep_parse {
+                    unwrap_hep(pp)
                 } else {
                     None
                 };
@@ -4529,6 +4520,41 @@ fn write_stdout(text: &str) -> bool {
     }
 }
 
+/// Unwrap a HEP datagram read off the wire, keeping what the wrapper said.
+///
+/// The inner payload replaces the outer one, which is the point of
+/// `--hep-parse`: HEP-encapsulated SIP becomes SIP the parser can read.
+///
+/// The wrapper's metadata is carried onto the result, and that is not a
+/// nicety. rtpengine mirrors its `ng` control plane as HEP, and the pipeline
+/// recognizes it two ways -- by `pp.hep` when a listener already stripped the
+/// wrapper, or by parsing the wrapper off an intact sniffed datagram. Dropping
+/// the metadata here left neither arm able to fire: the wrapper was gone and
+/// nothing had recorded what it said, so every mirrored control message was
+/// silently discarded and every relay stream stayed unnamed. `--hep-parse` and
+/// relay media-naming were mutually exclusive, and nothing said so.
+///
+/// `correlation_id` matters most: an `ng` REPLY carries no `call-id` at all,
+/// and the correlation id is the only thing naming the call it belongs to.
+#[cfg(feature = "hep")]
+fn unwrap_hep(pp: &ParsedPacket) -> Option<ParsedPacket> {
+    if pp.transport != TransportProto::Udp {
+        return None;
+    }
+    let hep = crate::capture::hep::parse_hep(&pp.payload).ok()?;
+    let mut unwrapped = pp.clone();
+    unwrapped.payload = hep.payload.into();
+    unwrapped.src_addr = hep.src_addr;
+    unwrapped.dst_addr = hep.dst_addr;
+    unwrapped.src_port = hep.src_port;
+    unwrapped.dst_port = hep.dst_port;
+    unwrapped.hep = Some(crate::capture::packet::HepOrigin {
+        protocol: hep.protocol.to_byte(),
+        correlation_id: hep.correlation_id.clone(),
+    });
+    Some(unwrapped)
+}
+
 /// Generate post-capture reports (`--report`, `--call-report`,
 /// `--export-vcon`) from the final store contents. Returns `false` when a
 /// requested report could not be produced — an unknown Call-ID at either
@@ -5482,6 +5508,167 @@ mod tests {
         cli.output_args.export_vcon_when = Some(expr.to_owned());
         cli.output_args.export_vcon_dir = Some(dir.to_path_buf());
         cli
+    }
+
+    // ── HEP unwrapping and the rtpengine control plane ──────────
+
+    /// A HEP datagram carrying `payload`, announced as `proto`.
+    #[cfg(feature = "hep")]
+    fn hep_datagram(proto: u8, payload: &[u8], correlation: Option<&str>) -> ParsedPacket {
+        use std::net::{IpAddr, Ipv4Addr};
+        let endpoint = crate::capture::hep::HepEndpoint {
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)),
+            src_port: 40000,
+            dst_port: 5060,
+            transport: TransportProto::Udp,
+        };
+        // `build_hep_v3` writes no correlation chunk, so a test that needs one
+        // appends it: chunk 0x0011 in vendor 0, and the total-length field at
+        // offset 4 has to grow with it or the parser stops at the old end.
+        let mut bytes = crate::capture::hep::build_hep_v3(
+            &endpoint,
+            chrono::Utc::now(),
+            crate::capture::hep::HepProtocol::Unknown(proto),
+            2001,
+            None,
+            payload,
+        );
+        if let Some(cid) = correlation {
+            let body = cid.as_bytes();
+            let len = (6 + body.len()) as u16;
+            let mut chunk = Vec::with_capacity(len as usize);
+            chunk.extend_from_slice(&0u16.to_be_bytes());
+            chunk.extend_from_slice(&0x0011u16.to_be_bytes());
+            chunk.extend_from_slice(&len.to_be_bytes());
+            chunk.extend_from_slice(body);
+            bytes.extend_from_slice(&chunk);
+            let total = u16::try_from(bytes.len()).expect("test datagram fits");
+            bytes[4..6].copy_from_slice(&total.to_be_bytes());
+        }
+        ParsedPacket {
+            frame: None,
+            timestamp: chrono::Utc::now(),
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 30)),
+            src_port: 57661,
+            dst_port: 9060,
+            transport: TransportProto::Udp,
+            payload: bytes.into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            dscp: None,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
+        }
+    }
+
+    /// Unwrapping keeps what the wrapper said.
+    ///
+    /// It did not, and the two halves of HEP support were mutually exclusive
+    /// because of it: `--hep-parse` removed the wrapper, nothing recorded what
+    /// it announced, and the pipeline arm that decodes rtpengine's mirrored
+    /// control plane matches on exactly that. Every mirrored `ng` message was
+    /// discarded in silence and every relay stream stayed unnamed.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn unwrapping_hep_carries_the_wrappers_protocol_onto_the_packet() {
+        let pp = hep_datagram(
+            crate::rtpengine::NG_HEP_CAPTURE_PROTO,
+            b"d3:foo3:bare",
+            None,
+        );
+        let out = unwrap_hep(&pp).expect("a HEP datagram unwraps");
+        let origin = out.hep.expect(
+            "the wrapper's metadata must survive: without it nothing downstream \
+             can tell mirrored ng from any other UDP payload",
+        );
+        assert_eq!(origin.protocol, crate::rtpengine::NG_HEP_CAPTURE_PROTO);
+    }
+
+    /// The correlation id survives, because a reply has nothing else.
+    ///
+    /// An `ng` REPLY carries no `call-id` at all. The correlation id is the
+    /// only thing naming the call it belongs to, so losing it turns every
+    /// reply into control traffic about an unknown call.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn unwrapping_hep_keeps_the_correlation_id() {
+        let pp = hep_datagram(
+            crate::rtpengine::NG_HEP_CAPTURE_PROTO,
+            b"d3:foo3:bare",
+            Some("corr-42"),
+        );
+        let out = unwrap_hep(&pp).expect("unwraps");
+        assert_eq!(
+            out.hep.and_then(|h| h.correlation_id).as_deref(),
+            Some("corr-42")
+        );
+    }
+
+    /// The inner payload replaces the outer one, which is the point.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn unwrapping_hep_yields_the_inner_payload_and_its_addresses() {
+        let inner = b"OPTIONS sip:a@b SIP/2.0\r\n\r\n";
+        let pp = hep_datagram(1, inner, None);
+        let out = unwrap_hep(&pp).expect("unwraps");
+        assert_eq!(out.payload.as_ref(), inner, "the SIP inside is what parses");
+        assert_eq!(out.dst_port, 5060, "and the addressing is the inner call's");
+    }
+
+    /// A datagram that is not HEP is left alone.
+    ///
+    /// `--hep-parse` runs over every UDP packet on the capture, media
+    /// included. Treating a failed parse as anything but "not HEP" would drop
+    /// ordinary traffic.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn a_packet_that_is_not_hep_is_not_unwrapped() {
+        let mut pp = hep_datagram(1, b"x", None);
+        pp.payload = bytes::Bytes::from_static(b"not a hep datagram at all");
+        assert!(unwrap_hep(&pp).is_none());
+    }
+
+    /// Only UDP is considered.
+    ///
+    /// HEP over TCP is a different framing, and running the datagram parser
+    /// over a TCP segment would either fail or, worse, half-succeed on a
+    /// segment boundary.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn hep_unwrapping_ignores_non_udp() {
+        let mut pp = hep_datagram(1, b"OPTIONS sip:a@b SIP/2.0\r\n\r\n", None);
+        pp.transport = TransportProto::Tcp;
+        assert!(unwrap_hep(&pp).is_none());
+    }
+
+    /// Unwrapped mirrored ng is still recognizable as control traffic.
+    ///
+    /// The end-to-end property the other tests support: after `--hep-parse`
+    /// has done its work, the pipeline can still tell this was rtpengine's
+    /// control plane. This is what was broken -- the harness ran for hours
+    /// with correct capture, correct filters and correct features, naming
+    /// nothing, because this one fact did not survive the unwrap.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn mirrored_ng_survives_unwrapping_as_control_traffic() {
+        let pp = hep_datagram(
+            crate::rtpengine::NG_HEP_CAPTURE_PROTO,
+            b"d7:command5:offere",
+            Some("c1"),
+        );
+        let out = unwrap_hep(&pp).expect("unwraps");
+        let origin = out.hep.as_ref().expect("metadata survives");
+        assert!(
+            crate::rtpengine::is_ng_over_hep(origin.protocol, &out.payload),
+            "an unwrapped mirrored ng message must still identify as ng, or \
+             the relay names no media at all"
+        );
     }
 
     // ── What the run records about its own suppression ──────────

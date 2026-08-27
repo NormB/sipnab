@@ -24,7 +24,11 @@ services:
       network: host          # RUN steps need the host resolver (daemon DNS is blocked)
       args:
         OPENSIPS_GIT_URL: ${OPENSIPS_GIT_URL:-https://github.com/OpenSIPS/opensips.git}
-        OPENSIPS_GIT_REF: ${OPENSIPS_GIT_REF:-3.6.7}
+        # The 4.0 BRANCH head, not a tag: this tracks the current 4.x line.
+        # Compose args override the Dockerfile's ARG default entirely, so
+        # editing the Dockerfile alone changes nothing and the build reports
+        # "Built" off a full cache hit.
+        OPENSIPS_GIT_REF: ${OPENSIPS_GIT_REF:-4.0}
     image: sipnab-harness/opensips:local
     container_name: opensips-1
     hostname: opensips-1
@@ -191,8 +195,10 @@ services:
       # no audio, which reads as a silent call rather than as a run that never
       # kept the bytes.
       RETAIN_AUDIO: "1"
-      # Decode the ng control plane rtpengine mirrors. Capturing it is not
-      # enough: without this the packets are read off the wire and discarded.
+      # Safe to leave ON since the unwrap carries the wrapper's metadata
+      # forward. It did not, and the two halves of HEP support were mutually
+      # exclusive: unwrapping removed the wrapper that identifies mirrored ng,
+      # so the relay named nothing while every setting looked correct.
       HEP_PARSE: "1"
       MCP_TOKEN_FILE: /run/secrets/mcp.token.relay
       MCP_TOKEN_TTL: ${SIPNAB_MCP_TOKEN_TTL:-600}

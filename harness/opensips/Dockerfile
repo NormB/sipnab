@@ -7,7 +7,7 @@
 FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd
 
 ARG OPENSIPS_GIT_URL=https://github.com/OpenSIPS/opensips.git
-ARG OPENSIPS_GIT_REF=3.6.7
+ARG OPENSIPS_GIT_REF=4.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git ca-certificates \

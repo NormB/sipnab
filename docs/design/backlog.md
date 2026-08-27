@@ -667,6 +667,100 @@ Tiers:
 - [x] src/crash.rs:407 — [missed-edge-case] `hook_body` claims nothing may panic, but `eprintln!` panics on closed stderr; use `writeln!(io::stderr()).ok()`. **Done:** all five `eprintln!` sites in the hook path route through `hook_write_line` (`writeln!(...).ok()`), so a closed stderr can no longer abort the process from inside the panic hook.
 - [x] src/capture/hep.rs:1566 — [missed-edge-case] `HepSender::new` binds `0.0.0.0:0` (IPv4-only); IPv6 dest fails — bind family should follow destination. **Done:** the destination is resolved first and the bind follows its family (`[::]:0` for IPv6, `0.0.0.0:0` for IPv4).
 
+## PV — vCon conformance and interop (added 2026-08-27)
+
+<!-- From a review of vcon.store (hosted conserver, Everycast Labs) against
+     draft-ietf-vcon-vcon-core. Their OpenAPI is at api.vcon.store/openapi.json;
+     /docs is a client-side Scalar shell and fetches empty. Section numbers
+     below are as cited by that review and have NOT been checked against the
+     draft text -- confirm each before acting. The CODE behavior in PV1 was
+     confirmed directly. -->
+
+- [ ] **PV1 — a successful call exports as `incomplete` with no `disposition`.**
+  `kind: Some(INCOMPLETE_TYPE)` is unconditional at
+  [`src/output/vcon.rs:1290`](https://github.com/NormB/sipnab/blob/main/src/output/vcon.rs#L1290),
+  while `disposition` is `final_status_code().and_then(failure_disposition)`,
+  and `failure_disposition` answers `None` for anything outside `400..=699`.
+  A 200 OK signaling-only export therefore carries `type: "incomplete"` and no
+  disposition. Two problems are claimed: the draft makes `disposition` required
+  on an incomplete dialog, and it defines `incomplete` as a call that failed to
+  set up -- a positive claim of failure that sipnab did not observe. The code
+  comment beside it reasons carefully about WHEN a reason may be named and
+  never confronts either point. No value in the closed disposition set means
+  "not observed", so this needs a decision rather than a patch. VERIFY THE
+  DRAFT TEXT FIRST; if it holds, raise it with the vCon working group.
+
+- [ ] **PV2 — say a deny header fired using `redacted`, not only a custom
+  attachment.** `--content-deny-header` suppression is reported only as
+  `dialogs_suppressed_by_deny` inside the completeness attachment, which a
+  consumer may ignore. `grep -c 'redacted\|amended' src/output/vcon.rs` is 0.
+  A `redacted` object with no `uuid` is claimed to be the registered way to say
+  content was withheld and no unredacted original exists.
+
+- [ ] **PV3 — validate against a second consumer's schema in CI.** Vendor
+  `api.vcon.store/openapi.json` beside [`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json). Their
+  `Dialog` uses `mimetype`, sipnab emits `mediatype` 13 times and `mimetype`
+  never, and their schema marks `type`/`start`/`parties` required. Their
+  `additionalProperties: nullable` means a sipnab container may validate and
+  still be unreadable, so confirm which way it fails.
+
+- [ ] **PV4 — emit `subject`.** The `Vcon` struct has none. That consumer's
+  search matches subject or UUID substring only, so a sipnab container is
+  findable by a UUID nobody memorized. A purely descriptive subject asserts
+  nothing. Check first whether the store synthesizes one on ingest.
+
+- [ ] **PV5 — emit `party.name` from the SIP display name.** Already carried as
+  the non-standard `sip_display_name`. The unconditional `validation: "none"`
+  is what MAKES this legitimate rather than what forbids it: it says this is a
+  name the wire carried, not a person sipnab identified.
+
+- [ ] **PV6 — emit `party.stir` from an observed RFC 8224 `Identity` header.**
+  A passive tap sees the PASSporT verbatim and can transcribe it without
+  validating it. The highest-value provenance field a non-verifying observer
+  can legitimately fill. Copy verbatim, never assert it verified.
+
+- [ ] **PV7 — parse the RFC 7989 `Session-ID` header into `session_id`.**
+  The draft's own leg-correlation mechanism, and it survives B2BUAs where
+  Call-ID does not -- directly serving multi-node leg correlation, which
+  sipnab approximates with custom `sip_from_tag`/`sip_to_tag`. NOT the same
+  field as the SIPREC `session_id` in [`src/sip/siprec.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/siprec.rs).
+
+- [ ] **PV8 — emit `transfer` dialog objects for observed REFER/Replaces.**
+  `Method::Refer` exists, `Refer-To`/`Replaces` parsing does not. A transfer
+  dialog carries no content by design, so it is structurally an observer's
+  object, and transfers are where a tap adds most over a recorder on one leg.
+
+- [ ] **PV9 — make the 10 MB container ceiling configurable.** It is a constant
+  measured against one consumer and enforced as a property of the format. That
+  consumer publishes no per-container cap. Keep the measured default, let an
+  operator raise it.
+
+- [ ] **PV10 — media by reference is DEFERRED pending a decision.** Writing the
+  WAV to a path and emitting `url` + the existing SHA-512 `content_hash` is the
+  same data relocated, and it sidesteps the size ceiling. It also shifts the
+  optics toward "recorder" and makes sipnab emit a `url` it cannot guarantee
+  resolves. If ever adopted: opt-in, and never emit `url` for a file sipnab did
+  not itself write.
+
+- [ ] **PV11 — RFC 9457 problem+json for sipnab's REST errors.** That consumer
+  returns `{type,title,status,detail,instance}` live while its own OpenAPI
+  documents `{"error":...}` -- so any sipnab-side client must not trust the
+  documented shape either.
+
+- [ ] **PV12 — do NOT add signing or SCITT. Do consider emitting a digest of
+  the container as written.** A signature over emitted bytes cannot verify
+  against the stored object, because a conserver adds fields on ingest -- the
+  same reason recorded in [`docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md) §4a.2. A digest is a fact about
+  sipnab's output rather than a claim about the conversation, and it lets an
+  operator bind an emission to a store's ledger entry out of band.
+
+- [ ] **PV13 — state "sipnab makes no outbound connections" deliberately.**
+  Confirmed: no `reqwest`/`ureq`/`hyper` direct dependency, and the only POST
+  handling in `src/` is sipnab's own REST server. The export path writes files.
+  That is a security property currently held by accident. Document the
+  `--export-vcon-dir` spool contract instead -- atomic rename, stable naming --
+  so an external bridge can consume it safely.
+
 ## P2 — robustness, observability & efficiency
 
 - [x] **TLSHOLD — two of the three late-decrypt counters never reach the
