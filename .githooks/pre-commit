@@ -503,6 +503,26 @@ fi
 # defects that already shipped once -- a correlation join against fields that
 # do not exist, an SSE reader that took the keepalive, a guard that compared
 # nothing. Untested-by-default code rots.
+# ── Script tests ───────────────────────────────────────────────────
+# Twenty Python scripts had no tests at all, and several of them are the
+# fixers the gates below depend on. A fixer that stops producing what its gate
+# demands turns every commit into a manual repair.
+if git diff --cached --name-only | grep -qE "^scripts/"; then
+    echo -n "  Script tests... "
+    if command -v python3 >/dev/null 2>&1 && python3 -c "import pytest" 2>/dev/null; then
+        if SCRIPT_OUT=$(cd scripts && python3 -m pytest tests/ -q 2>&1); then
+            echo -e "${GREEN}OK${NC} ($(echo "$SCRIPT_OUT" | tail -1))"
+        else
+            echo -e "${RED}FAIL${NC}"
+            echo "$SCRIPT_OUT" | tail -12 | sed 's/^/    /'
+            echo "  Reproduce: cd scripts && python3 -m pytest tests/"
+            exit 1
+        fi
+    else
+        echo -e "${YELLOW}SKIP (pytest absent)${NC}"
+    fi
+fi
+
 if git diff --cached --name-only | grep -q "^harness/clients/"; then
     echo -n "  Harness clients... "
     if command -v python3 >/dev/null 2>&1 && python3 -c "import pytest" 2>/dev/null; then

@@ -149,6 +149,38 @@ def definition_lines(lines: list[str], sym: str) -> list[int]:
     return real if real else [n for n, _ in hits]
 
 
+def choose_definition(where: list[int], cited: int) -> int | None:
+    """Which definition a drifted citation meant, or `None` when it cannot tell.
+
+    One candidate is the easy case. Several arise from the cfg-gated pairs this
+    codebase uses for optional features -- `#[cfg(feature = "x")] fn f` beside
+    `#[cfg(not(feature = "x"))] fn f` -- and the fixer used to refuse them all,
+    printing "needs a human" and leaving somebody to guess which half was meant.
+
+    A citation drifts by however far the code around it moved. It does not
+    migrate from one definition to another, so the NEAREST candidate is the one
+    the author was pointing at.
+
+    Ambiguity is a question of MARGIN, not of distance. Two definitions eighty
+    lines apart with the citation beside one of them is not ambiguous however
+    stale the number is, while two definitions eight lines apart is, because
+    the citation could have been pointing at either and drifted the other way.
+    """
+    if not where:
+        return None
+    if len(where) == 1:
+        return where[0]
+    ranked = sorted(where, key=lambda n: (abs(n - cited), n))
+    nearest, runner_up = ranked[0], ranked[1]
+    margin = abs(runner_up - cited) - abs(nearest - cited)
+    # Twice the tolerance: inside that the citation could have drifted from
+    # either candidate, and a confident wrong answer silently re-points a
+    # reader at the wrong half of a pair.
+    if margin <= TOLERANCE * 2:
+        return None
+    return nearest
+
+
 def source_for(page: pathlib.Path, path: str, target: str):
     """The file a citation is actually about, or `None` if it cannot be told.
 
@@ -273,8 +305,9 @@ def check(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
             if re.search(rf"\b{re.escape(sym)}\b", "\n".join(lines[lo:hi])):
                 continue
 
-            if apply and len(where) == 1:
-                edits.append((m.start(), m.end(), _repoint(m.group(0), where[0])))
+            chosen = choose_definition(where, line)
+            if apply and chosen is not None:
+                edits.append((m.start(), m.end(), _repoint(m.group(0), chosen)))
                 fixed += 1
             else:
                 problems.append(
