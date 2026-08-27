@@ -8,24 +8,18 @@
 {% block content %}
 <div class="doc-layout">
   <aside class="doc-sidebar" aria-label="Notes navigation">
-    <nav class="doc-nav" aria-label="All notes">
-      <div class="doc-nav-group">
-        <p class="doc-nav-group-title">Notes</p>
-        <ul class="doc-nav-list">
-          {% set notes = get_section(path="notes/_index.md") %}
-          {% for p in notes.pages %}
-          <li><a class="doc-nav-link{% if p.permalink == page.permalink %} active{% endif %}" href="{{ p.permalink }}">{{ p.title }}</a></li>
-          {% endfor %}
-        </ul>
-      </div>
-    </nav>
+    {% set notes = get_section(path="notes/_index.md") %}
+    {{ macros::notes_nav(section=notes, current=page.permalink) }}
   </aside>
 
   <article class="doc-content">
     <header class="doc-header">
       <p class="doc-kicker"><a href="{{ get_url(path='@/notes/_index.md') }}">Engineering notes</a></p>
       <h1>{{ page.title }}</h1>
-      {% if page.date %}<p class="note-date"><time datetime="{{ page.date }}">{{ page.date | date(format="%e %B %Y") }}</time></p>{% endif %}
+      <p class="note-meta">
+        {% if page.extra.kind %}<span class="note-kind note-kind-{{ page.extra.kind }}">{{ page.extra.kind }}</span>{% endif %}
+        {% if page.date %}<time class="note-date" datetime="{{ page.date }}">{{ page.date | date(format="%e %B %Y") }}</time>{% endif %}
+      </p>
       {% if page.description %}
       <p class="doc-lead">{{ page.description }}</p>
       {% endif %}

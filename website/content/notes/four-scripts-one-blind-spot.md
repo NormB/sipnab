@@ -2,6 +2,9 @@
 title = "Four scripts, one blind spot, and a fence that was never closed"
 date = 2026-08-27
 description = "A markdown fence is three or more backticks, and only a run at least as long closes it. Four scripts in this repository did not know that, and one of them was a gate quietly checking less than it claimed."
+
+[extra]
+kind = "postmortem"
 +++
 
 A fenced code block in Markdown opens with three or more backticks and closes

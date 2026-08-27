@@ -1256,6 +1256,40 @@ input:focus-visible,
     .note-date { margin: 0.2rem 0 0; }
   }
 
+  // The kind chip and dateline that sit above a note's title, on the index and
+  // at the top of the note itself. A reader scanning the list needs to know
+  // whether something is a walkthrough or an incident writeup before deciding
+  // to open it, and the title alone does not always say.
+  .note-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin: 0 0 0.4rem;
+    font-size: 0.8rem;
+    color: $text-dim;
+
+    .note-date { margin: 0; font-size: inherit; }
+  }
+
+  .note-kind {
+    font-family: $font-mono;
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 0.15rem 0.5rem;
+    border-radius: 99px;
+    border: 1px solid $border;
+    color: $text-dim;
+    white-space: nowrap;
+
+    // Color carries the same distinction the label does, so the kind is
+    // legible at a glance in a long list rather than only on reading it.
+    &.note-kind-howto { color: $link; border-color: rgba($link, 0.45); }
+    &.note-kind-feature { color: $good; border-color: rgba($good, 0.45); }
+    &.note-kind-postmortem { color: $ayu-orange; border-color: rgba($ayu-orange, 0.45); }
+    &.note-kind-reference { color: $text-dim; }
+  }
+
   // -- Body measure --
   //
   // 70ch is a reading measure: ~70 characters is the line length prose is
@@ -1588,6 +1622,60 @@ input:focus-visible,
     border-left-color: $accent;
     background: $accent-glow;
   }
+}
+
+// -- Notes sidebar --
+//
+// The docs sidebar carries short nouns and a plain list reads fine there. A
+// note's title is a full sentence, so five of them stack into an undivided
+// block of text where the only thing telling you where one entry ends is the
+// hover highlight -- which a reader who is not currently pointing at it cannot
+// see. Each entry gets a marker, a rule, and its own date.
+.notes-nav-list {
+  li + li { border-top: 1px solid rgba($border, 0.6); }
+}
+
+.notes-nav-link {
+  position: relative;
+  padding: 0.6rem 0.6rem 0.6rem 1.6rem;
+  border-radius: 0 6px 6px 0;
+
+  // The marker. A real bullet rather than a list-style dot so it can sit at a
+  // fixed offset beside a title that wraps to three lines, and so the active
+  // entry can fill it in.
+  &::before {
+    content: "";
+    position: absolute;
+    left: 0.85rem;
+    top: 0.95rem;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    border: 1px solid $text-dim;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+
+  &:hover::before { border-color: $text; }
+
+  &.active {
+    // The docs sidebar marks the active page with a left border; that reads as
+    // a second bullet here, so the filled marker carries it instead.
+    border-left-color: transparent;
+    &::before { background: $accent; border-color: $accent; }
+  }
+}
+
+.notes-nav-title {
+  display: block;
+  line-height: 1.35;
+}
+
+.notes-nav-date {
+  display: block;
+  margin-top: 0.2rem;
+  font-family: $font-mono;
+  font-size: 0.72rem;
+  color: $text-dim;
 }
 
 // On-page section anchors, shown only under the active page.

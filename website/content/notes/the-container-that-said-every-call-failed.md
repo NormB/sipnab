@@ -2,6 +2,9 @@
 title = "sipnab recorded every successful call as a failure"
 date = 2026-08-27
 description = "sipnab typed its vCon dialog objects `incomplete`, a value the draft reserves for calls that never reached conversation. The reasoning behind it was local, careful, and wrong in a way no test could see."
+
+[extra]
+kind = "postmortem"
 +++
 
 Until 0.5.128, every vCon container sipnab produced for a call that answered

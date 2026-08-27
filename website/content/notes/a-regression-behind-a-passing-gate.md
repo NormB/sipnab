@@ -2,6 +2,9 @@
 title = "A 27% regression hid behind a gate built to catch it"
 date = 2026-08-21
 description = "sipnab shipped a quarter of its offline throughput away for ten releases. The benchmark gate ran on every one of them and passed. Here is why, and what the fix says about ratchets."
+
+[extra]
+kind = "postmortem"
 +++
 
 sipnab's benchmarks page said 3.25M packets per second at four cores. On

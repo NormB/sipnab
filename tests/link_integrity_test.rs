@@ -717,6 +717,11 @@ fn wiki_intra_docs_links_resolve() {
 #[test]
 fn root_community_file_links_resolve() {
     /// Root community links the extractor is expected to find.
+    ///
+    /// 46 across the root community files listed below. Raise it only after
+    /// attributing the delta per file: the count exists so a link that stops
+    /// being extracted -- a heading renamed, a list reformatted -- shows up as
+    /// a shortfall rather than as fewer links quietly going unchecked.
     const EXPECTED_COMMUNITY_LINKS: usize = 46;
     const ROOT_FILES: &[&str] = &[
         "README.md",

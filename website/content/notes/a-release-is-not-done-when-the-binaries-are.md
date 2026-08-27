@@ -2,6 +2,9 @@
 title = "A release is not done when the binaries are"
 date = 2026-08-27
 description = "0.5.128 published twenty-three assets, every workflow went green, and the website went on offering 0.5.127 to everyone who visited. A gate permitted the gap, and it was working exactly as designed."
+
+[extra]
+kind = "postmortem"
 +++
 
 On 2026-08-27 sipnab 0.5.128 got its tag. The release workflow built

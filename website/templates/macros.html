@@ -50,3 +50,40 @@
   </ul>
 </div>
 {% endmacro %}
+
+{# Notes sidebar, grouped by kind.
+
+   The docs sidebar carries short nouns -- "Install", "Filter DSL" -- and a
+   plain list reads fine. A note's title is a sentence, so several of them stack
+   into a wall of text where only the hover highlight tells you where one ends
+   and the next begins. Each entry therefore gets a marker, a date, and a rule
+   between it and the next, and the list is grouped under the kind of note it
+   is so a reader looking for a howto is not reading postmortems to find one. #}
+{% macro notes_nav(section, current) %}
+<nav class="doc-nav notes-nav" aria-label="All notes">
+  {% for group in [
+      ["howto", "How-to"],
+      ["feature", "Features"],
+      ["postmortem", "Postmortems"],
+      ["reference", "Reference"]
+  ] %}
+    {% set matching = section.pages | filter(attribute="extra.kind", value=group.0) %}
+    {% if matching | length > 0 %}
+    <div class="doc-nav-group">
+      <p class="doc-nav-group-title">{{ group.1 }}</p>
+      <ul class="doc-nav-list notes-nav-list">
+        {% for p in matching %}
+        <li class="notes-nav-item">
+          <a class="doc-nav-link notes-nav-link{% if p.permalink == current %} active{% endif %}"
+             href="{{ p.permalink }}">
+            <span class="notes-nav-title">{{ p.title }}</span>
+            {% if p.date %}<span class="notes-nav-date">{{ p.date | date(format="%e %b %Y") }}</span>{% endif %}
+          </a>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  {% endfor %}
+</nav>
+{% endmacro %}

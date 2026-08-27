@@ -2730,7 +2730,11 @@ fn no_documentation_table_repeats_a_row() {
     // they gain no generated mirror -- the same shape the 154 -> 157 entry
     // above records. Attributed with
     // `git diff --diff-filter=A ddb05f3a fa870e30` before the number moved.
-    const EXPECTED_MARKDOWN_FILES: usize = 175;
+    // 175 -> 177 by two more engineering notes, a how-to and a feature
+    // writeup. Two files, and two is the whole delta for the reason the
+    // 172 -> 175 entry gives: notes are written for the website directly
+    // and have no `docs/` source to mirror.
+    const EXPECTED_MARKDOWN_FILES: usize = 177;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -3620,6 +3624,11 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() {
 #[test]
 fn the_published_amr_wb_tables_match_the_model() {
     /// AMR-WB rows the codec table is expected to carry.
+    ///
+    /// 15: the nine AMR-WB modes plus the six bandwidth-extension rows the
+    /// model derives. It has never moved, and if it does, name what changed --
+    /// a codec table that shrinks silently is a table that stopped covering
+    /// modes the model still scores.
     const EXPECTED_AMR_WB_ROWS: usize = 15;
     use sipnab::rtp::emodel_wb::{ListeningContext, amr_wb_ie, amr_wb_mos};
 
@@ -4890,7 +4899,7 @@ fn every_function_in_the_vcon_modules_has_its_own_doc_comment() {
                 || t.starts_with("pub fn ")
                 || t.starts_with("pub(crate) fn ")
                 || t.starts_with("async fn "))
-                && line.starts_with(|c: char| c == 'f' || c == 'p' || c == 'a');
+                && line.starts_with(['f', 'p', 'a']);
             if !is_fn {
                 continue;
             }
@@ -4981,5 +4990,124 @@ fn no_doc_comment_block_is_orphaned_from_its_item() {
          nothing. The usual cause is removing the function that sat beneath \
          it:\n  {}",
         orphaned.join("\n  ")
+    );
+}
+
+/// Every ratchet constant records why it moved, naming the value it moved to.
+///
+/// Four ratchets moved in one day's work -- markdown files 170 -> 172 -> 175,
+/// tables 672 -> 692, the docs-page walk 49 -> 50, wiki links 501 -> 502. Each
+/// one is a number somebody will raise again, and a raise with no attribution
+/// is indistinguishable from a raise that papered over a real regression: the
+/// gate's own message says "FEWER means the sweep stopped reading part of the
+/// tree", and the only thing separating a legitimate bump from hiding that is
+/// a sentence saying which files account for the difference.
+///
+/// The existing constants all carry that sentence. This makes it a rule rather
+/// than a habit.
+#[test]
+fn every_ratchet_constant_records_the_value_it_moved_to() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let re = regex::Regex::new(r"(?m)^\s*const (EXPECTED_[A-Z_]+): usize = (\d+);").unwrap();
+
+    let mut checked = 0usize;
+    let mut unattributed: Vec<String> = Vec::new();
+
+    for file in ["tests/docs_drift_test.rs", "tests/link_integrity_test.rs"] {
+        let text =
+            std::fs::read_to_string(root.join(file)).unwrap_or_else(|e| panic!("read {file}: {e}"));
+        let lines: Vec<&str> = text.lines().collect();
+
+        for (n, line) in lines.iter().enumerate() {
+            let Some(cap) = re.captures(line) else {
+                continue;
+            };
+            let (name, value) = (&cap[1], &cap[2]);
+            checked += 1;
+
+            // The comment block immediately above must mention the new value.
+            // Walking up rather than looking at one line: these constants
+            // carry several releases of history, newest last.
+            let mut mentions = false;
+            let mut i = n;
+            while i > 0 {
+                i -= 1;
+                let above = lines[i].trim_start();
+                if !above.starts_with("//") {
+                    break;
+                }
+                if above.contains(value) {
+                    mentions = true;
+                    break;
+                }
+            }
+            if !mentions {
+                unattributed.push(format!("{file}:{}: {name} = {value}", n + 1));
+            }
+        }
+    }
+
+    assert!(
+        checked >= 4,
+        "matched only {checked} ratchet constants; the naming convention \
+         changed and this gate is reading almost nothing"
+    );
+    assert!(
+        unattributed.is_empty(),
+        "these ratchets moved without a comment naming the value they moved \
+         to. Attribute the delta per file before raising one -- a number that \
+         moved for reasons nobody wrote down cannot be told apart from one \
+         that hid a regression:\n  {}",
+        unattributed.join("\n  ")
+    );
+}
+
+/// No gate in this tree treats an empty scan as a pass.
+///
+/// The defect class behind more of one day's mistakes than any single bug: a
+/// check whose FAILURE and whose INABILITY TO RUN look identical. A spelling
+/// probe placed in an untracked file, which the gate reads from `git ls-files`
+/// and therefore never saw. A mutation that did not compile, so the test binary
+/// never built and the survivor looked like a passing test. A site monitor
+/// grepping for `href="/notes/"` against HTML that escapes every slash, which
+/// reported zero notes whatever was published.
+///
+/// Every scanning gate here already answers it the same way: count what you
+/// looked at, and refuse to pass on zero. This asserts the convention holds, so
+/// the next scanning gate cannot quietly skip it.
+#[test]
+fn every_scanning_gate_refuses_to_pass_on_an_empty_scan() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // Gates that walk a corpus: each must assert a floor on what it examined.
+    const SCANNERS: &[(&str, &str)] = &[
+        ("tests/docs_drift_test.rs", "checked"),
+        ("tests/docs_drift_test.rs", "scanned"),
+        ("tests/docs_drift_test.rs", "blocks"),
+        ("tests/link_integrity_test.rs", "checked"),
+    ];
+
+    let mut proven = 0usize;
+    for (file, counter) in SCANNERS {
+        let text =
+            std::fs::read_to_string(root.join(file)).unwrap_or_else(|e| panic!("read {file}: {e}"));
+        // A counter is only meaningful if something bounds it below. Two
+        // spellings qualify, and the second is the stronger one: an exact
+        // `assert_eq!(counter, EXPECTED_N)` pins the corpus size rather than
+        // merely refusing zero. The first draft of this gate recognized only
+        // the floor form and reported a gate using the stricter one as
+        // unguarded -- a check that is wrong about what counts as a check.
+        let floor = regex::Regex::new(&format!(r"assert!\(\s*{counter}\s*>=?\s*\d+")).unwrap();
+        let exact = regex::Regex::new(&format!(r"assert_eq!\(\s*\n?\s*{counter},")).unwrap();
+        if floor.is_match(&text) || exact.is_match(&text) {
+            proven += 1;
+        }
+    }
+
+    assert_eq!(
+        proven,
+        SCANNERS.len(),
+        "a scanning gate counts what it examined but never asserts a floor on \
+         that count, so an empty corpus reads as a clean pass. Every entry in \
+         SCANNERS must have an `assert!(<counter> > N, ...)` beside its loop."
     );
 }

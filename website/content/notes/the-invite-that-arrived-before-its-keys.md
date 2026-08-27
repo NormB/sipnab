@@ -2,6 +2,9 @@
 title = "The INVITE that arrived before its keys"
 date = 2026-08-20
 description = "A TLS capture that decrypted everything except the one message that mattered, and reported a NAT problem instead. Three bugs, none of them the race everyone assumed."
+
+[extra]
+kind = "postmortem"
 +++
 
 Dan Jenkins ([@danjenkins](https://github.com/danjenkins)) reported that sipnab
