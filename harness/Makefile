@@ -33,6 +33,11 @@ $(SIGNING_KEY_FILE):
 	@chmod 644 $(SIGNING_KEY_FILE)
 	@echo "generated MCP HMAC signing key -> $(SIGNING_KEY_FILE)"
 
+.PHONY: answer-audio
+answer-audio: sipp/scenarios/g711a_answer.pcap ## Generate the callee's audio (distinct tone + SSRC)
+sipp/scenarios/g711a_answer.pcap:
+	@python3 scripts/make-pcma-pcap.py $@ --hz 660 --seconds 90 --ssrc 0x5AFE1234
+
 .PHONY: api-key
 api-key: secrets/api.key ## Generate the REST API key (idempotent)
 secrets/api.key:

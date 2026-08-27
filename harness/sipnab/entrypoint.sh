@@ -100,10 +100,33 @@ if [ -n "$API_BIND" ]; then
     echo "sipnab${NODE_NAME:+ [$NODE_NAME]}: REST API on $API_BIND (authenticated)"
 fi
 
-# shellcheck disable=SC2086 # API_ARGS is a deliberate word-split flag pair.
+# RTP payloads are dropped by default, so a container built without this
+# carries `dialog: [{type: "incomplete"}]` and zero bytes of audio -- there is
+# nothing to decode, not a call that was silent. `--retain-audio` requires
+# --mcp, which is always on here.
+# Capturing HEP and DECODING it are two switches, not one. With the ng control
+# plane on the wire and in the capture filter, sipnab still reported
+# `media_creating_commands: 0` and left every relay stream orphaned, because
+# HEP decoding is off by default. On a relay this is what turns "media nobody
+# claimed" into a Call-ID.
+HEP_ARGS=""
+if [ "${HEP_PARSE:-0}" = "1" ]; then
+    HEP_ARGS="--hep-parse"
+    echo "sipnab${NODE_NAME:+ [$NODE_NAME]}: decoding HEP (rtpengine ng control plane)"
+fi
+
+AUDIO_ARGS=""
+if [ "${RETAIN_AUDIO:-0}" = "1" ]; then
+    AUDIO_ARGS="--retain-audio"
+    echo "sipnab${NODE_NAME:+ [$NODE_NAME]}: retaining RTP payloads for audio export"
+fi
+
+# shellcheck disable=SC2086 # These are deliberate word-split flag pairs.
 exec sipnab \
     -N \
     $API_ARGS \
+    $AUDIO_ARGS \
+    $HEP_ARGS \
     --mcp --mcp-transport http \
     --mcp-bind "$BIND" \
     --mcp-signing-key-file "$SIGNING_KEY_FILE" \

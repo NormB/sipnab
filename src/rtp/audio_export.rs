@@ -219,8 +219,48 @@ pub fn decode_dialog_audio(streams: &[&RtpStream]) -> Result<DialogAudio> {
         bail!("{}", nothing_to_decode(streams));
     }
 
-    // A WAV carries two channels. `omitted_clause` below names the rest.
-    let carried: Vec<&RtpStream> = exportable.iter().take(2).copied().collect();
+    // A WAV carries two channels, and they must come from two SOURCES.
+    //
+    // Taking the first two exportable streams looks equivalent and is not. A
+    // media relay sees each direction TWICE -- arriving and leaving -- so a
+    // two-party call reaches here as four records carrying two SSRCs, and the
+    // two records of one leg can both sort ahead of the other leg. The export
+    // was then a stereo file whose channels were byte-identical: it claims a
+    // conversation and carries one side of it, and nothing in the file says so.
+    //
+    // One stream per SSRC, in first-seen order. Where only one source is
+    // present the result is mono, which is the honest answer -- duplicating a
+    // single leg across two channels would read as a two-party recording.
+    // Sources, not records. A relay hands over two records per source, so a
+    // count of `streams.len()` reports two of four omitted on a call where both
+    // parties were carried -- a caveat describing loss that did not happen,
+    // which is as misleading as one that hides loss. Counted over EVERY stream,
+    // including ones dropped for their codec, because the clause speaks about
+    // the call rather than about what survived the filter.
+    let distinct_sources = {
+        let mut seen: Vec<u32> = Vec::new();
+        for s in streams {
+            if !seen.contains(&s.key.ssrc) {
+                seen.push(s.key.ssrc);
+            }
+        }
+        seen.len()
+    };
+
+    let mut seen_ssrc: Vec<u32> = Vec::with_capacity(2);
+    let carried: Vec<&RtpStream> = exportable
+        .iter()
+        .filter(|s| {
+            let ssrc = s.key.ssrc;
+            if seen_ssrc.contains(&ssrc) {
+                return false;
+            }
+            seen_ssrc.push(ssrc);
+            true
+        })
+        .take(2)
+        .copied()
+        .collect();
     let mut decoded: Vec<(Vec<i16>, u32, &'static str, u64)> = Vec::with_capacity(carried.len());
     for stream in &carried {
         decoded.push(decode_stream_pcm(stream)?);
@@ -244,7 +284,7 @@ pub fn decode_dialog_audio(streams: &[&RtpStream]) -> Result<DialogAudio> {
     let partial = format!(
         "{}{}{}{}",
         wrap_clause(dropped),
-        omitted_clause(streams.len(), carried.len(), &skipped_codecs),
+        omitted_clause(distinct_sources, carried.len(), &skipped_codecs),
         decode_failure_clause(failures),
         direction_clause(streams)
     );
@@ -507,17 +547,31 @@ fn decode_failure_clause(failures: u64) -> String {
 /// different places.
 fn omitted_clause(total: usize, written: usize, skipped_codecs: &[&str]) -> String {
     let dropped = total.saturating_sub(written);
-    if dropped == 0 {
-        return String::new();
-    }
     let mut codecs: Vec<&str> = skipped_codecs.to_vec();
     codecs.sort_unstable();
     codecs.dedup();
+
+    // A codec drop is an omission even when the COUNT shows none. The two were
+    // one condition, so an undecodable stream sharing a source with a carried
+    // one was filtered out in silence -- which is the exact failure the rest of
+    // this doc comment says must not happen. It surfaced once omissions were
+    // counted over sources rather than records, but the coupling was always
+    // there and any call whose numbers happened to line up hit it.
+    if dropped == 0 && codecs.is_empty() {
+        return String::new();
+    }
+
     let detail = if codecs.is_empty() {
         String::new()
     } else {
         format!(" ({})", codecs.join(", "))
     };
+    if dropped == 0 {
+        return format!(
+            " — PARTIAL: stream(s) on this call are NOT in this file{detail}. \
+             sipnab could not decode them."
+        );
+    }
     format!(
         " — PARTIAL: {dropped} of {total} stream(s) on this call are NOT in this \
          file{detail}. A WAV carries two channels, and streams sipnab cannot decode \
@@ -929,9 +983,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("three.wav");
 
-        let a = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
-        let b = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
-        let c = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        // Three distinct SOURCES. Sharing one SSRC made this a three-record
+        // view of one source, which now exports mono and omits two -- the
+        // summary would say "2 of 3" and the test would be measuring the
+        // fixture rather than the two-channel limit it exists for.
+        let a = make_stream_ssrc(Some("PCMU"), vec![(0, vec![0xFF; 160])], 0x0A0A_0A0A);
+        let b = make_stream_ssrc(Some("PCMU"), vec![(0, vec![0xFF; 160])], 0x0B0B_0B0B);
+        let c = make_stream_ssrc(Some("PCMU"), vec![(0, vec![0xFF; 160])], 0x0C0C_0C0C);
 
         let summary = export_dialog_to_wav(&[&a, &b, &c], &path).expect("export");
         assert!(
@@ -1210,8 +1268,22 @@ mod tests {
 
     /// Build a stream with the given codec label and captured payload frames.
     fn make_stream(codec: Option<&str>, payloads: Vec<(u32, Vec<u8>)>) -> RtpStream {
+        make_stream_ssrc(codec, payloads, 0x1234_5678)
+    }
+
+    /// A stream from a named source.
+    ///
+    /// `make_stream` hardcoded one SSRC, so every multi-stream test built two
+    /// RECORDS OF ONE SOURCE and called it two parties. That is exactly the
+    /// shape a relay produces -- each direction seen arriving and leaving --
+    /// and it is why stereo export selecting "the first two" went unnoticed.
+    fn make_stream_ssrc(
+        codec: Option<&str>,
+        payloads: Vec<(u32, Vec<u8>)>,
+        ssrc: u32,
+    ) -> RtpStream {
         let key = StreamKey {
-            ssrc: 0x12345678,
+            ssrc,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
@@ -1224,7 +1296,7 @@ mod tests {
             payload_type: if codec == Some("PCMA") { 8 } else { 0 },
             sequence: 1,
             timestamp: 0,
-            ssrc: 0x12345678,
+            ssrc,
             payload_offset: 12,
         };
         let ts = DateTime::from_timestamp(1_700_000_000, 0).expect("valid");
@@ -1300,8 +1372,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("stereo.wav");
 
-        let s1 = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
-        let s2 = make_stream(Some("PCMA"), vec![(0, vec![0xD5; 160])]);
+        // Two SOURCES, not two records of one. This test passed with a single
+        // SSRC used twice, which is the shape a relay emits and the reason
+        // "first two exportable streams" looked correct for so long.
+        let s1 = make_stream_ssrc(Some("PCMU"), vec![(0, vec![0xFF; 160])], 0x1111_1111);
+        let s2 = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0x2222_2222);
         let result = export_dialog_to_wav(&[&s1, &s2], &path).unwrap();
 
         assert!(result.contains("stereo"));
@@ -1311,6 +1386,220 @@ mod tests {
         let data = std::fs::read(&path).unwrap();
         let channels = u16::from_le_bytes(data[22..24].try_into().unwrap());
         assert_eq!(channels, 2);
+    }
+
+    /// Two records of ONE source export mono, never fake stereo.
+    ///
+    /// A media relay sees each direction twice -- arriving and leaving -- so a
+    /// two-party call yields four stream records carrying two SSRCs. Taking
+    /// "the first two" therefore picks two copies of one leg, and the result
+    /// is a stereo file whose channels are byte-identical: it claims a
+    /// conversation and carries one side of it, which is worse than mono
+    /// because a reader has no way to tell.
+    #[test]
+    fn two_records_of_one_source_export_mono_not_fake_stereo() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dup.wav");
+
+        // Same SSRC: the same audio seen twice at a relay.
+        let ingress = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
+        let egress = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
+        export_dialog_to_wav(&[&ingress, &egress], &path).unwrap();
+
+        let data = std::fs::read(&path).unwrap();
+        let channels = u16::from_le_bytes(data[22..24].try_into().unwrap());
+        assert_eq!(
+            channels, 1,
+            "one source must export mono; a stereo file here would carry the \
+             same leg on both channels and read as a two-party recording"
+        );
+    }
+
+    /// Stereo selects two DISTINCT sources, not the first two records.
+    ///
+    /// The relay ordering that caused this: both records of one leg arrive
+    /// before either record of the other. A selector that takes the first two
+    /// picks the duplicate pair and never sees the second party at all.
+    #[test]
+    fn stereo_selects_two_distinct_sources_not_the_first_two() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pair.wav");
+
+        let a_in = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
+        let a_out = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
+        let b_in = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB);
+        let b_out = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB);
+
+        let audio = decode_dialog_audio(&[&a_in, &a_out, &b_in, &b_out]).unwrap();
+        assert_eq!(
+            audio.channels, 2,
+            "two distinct sources are present, so the export is stereo"
+        );
+
+        export_dialog_to_wav(&[&a_in, &a_out, &b_in, &b_out], &path).unwrap();
+        let data = std::fs::read(&path).unwrap();
+        // Find the `data` chunk. Reading from a fixed offset 44 is what the
+        // first draft did, and these files carry a provenance note chunk
+        // before the samples -- so it compared NOTE TEXT, found it varied, and
+        // passed while the audio on both channels was identical.
+        let tag = data
+            .windows(4)
+            .position(|w| w == b"data")
+            .expect("a WAV has a data chunk");
+        // The chunk's DECLARED size, not everything to EOF. These files carry
+        // the provenance note in a chunk AFTER the samples, so a slice running
+        // to the end compares note text as if it were audio -- it varies, the
+        // test passes, and the two identical channels it exists to catch go
+        // straight through.
+        let size = u32::from_le_bytes(data[tag + 4..tag + 8].try_into().unwrap()) as usize;
+        let start = tag + 8;
+        let body = &data[start..start + size];
+        let mut differs = false;
+        for i in (0..body.len().saturating_sub(3)).step_by(4) {
+            let l = i16::from_le_bytes([body[i], body[i + 1]]);
+            let r = i16::from_le_bytes([body[i + 2], body[i + 3]]);
+            if l != r {
+                differs = true;
+                break;
+            }
+        }
+        assert!(
+            differs,
+            "the two channels are identical, so the same leg was selected \
+             twice and the far end is absent from the recording"
+        );
+    }
+
+    /// A codec drop is named even when the COUNT shows nothing missing.
+    ///
+    /// The clause used to fire only when `total > written`, so an undecodable
+    /// stream that shared a source with a carried one vanished in silence --
+    /// the file then read as complete. `omitted_clause(1, 1, &["G729"])` is the
+    /// shape: nothing missing by the numbers, a whole codec dropped in fact.
+    #[test]
+    fn a_codec_drop_is_named_even_when_the_count_balances() {
+        let clause = omitted_clause(1, 1, &["G729"]);
+        assert!(
+            !clause.is_empty(),
+            "a stream dropped for its codec must be named even when the counts \
+             agree, or the file reads as complete"
+        );
+        assert!(
+            clause.contains("G729"),
+            "and the codec must be named: {clause}"
+        );
+    }
+
+    /// A clean export still says nothing.
+    ///
+    /// The other half: loosening the guard above must not make every complete
+    /// file carry a PARTIAL caveat, which would train a reader to ignore it.
+    #[test]
+    fn a_complete_export_carries_no_partial_clause() {
+        assert!(
+            omitted_clause(2, 2, &[]).is_empty(),
+            "nothing was dropped and no codec was skipped, so there is no caveat"
+        );
+    }
+
+    /// The omitted count is of SOURCES, not of stream records.
+    ///
+    /// A relay hands the exporter two records per source. Counting records
+    /// would tell an operator that four streams existed and two were dropped,
+    /// when two sources existed and both were carried -- a caveat describing
+    /// loss that did not happen is as misleading as one that hides loss.
+    #[test]
+    fn the_omitted_count_is_of_sources_not_records() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("relay.wav");
+
+        let a_in = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
+        let a_out = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
+        let b_in = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB);
+        let b_out = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB);
+
+        let summary = export_dialog_to_wav(&[&a_in, &a_out, &b_in, &b_out], &path).expect("export");
+        assert!(
+            !summary.contains(" of 4"),
+            "both sources were carried, so nothing was omitted; a count over \
+             the four RECORDS invents a loss that did not happen:\n{summary}"
+        );
+    }
+
+    /// Selection keeps the FIRST record of each source, in arrival order.
+    ///
+    /// Which record of a source is kept is not arbitrary at a relay: the two
+    /// differ in their endpoints, and a caller reading `src`/`dst` off the
+    /// carried stream to say where the audio came from gets a different answer
+    /// depending on the choice. First-seen is the one the rest of the pipeline
+    /// already assumes.
+    #[test]
+    fn selection_keeps_the_first_record_of_each_source() {
+        let first = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
+        let second = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xAAAA_AAAA);
+        let other = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x55; 160])], 0xBBBB_BBBB);
+
+        let audio = decode_dialog_audio(&[&first, &second, &other]).expect("decode");
+        assert_eq!(
+            audio.channels, 2,
+            "two sources are present regardless of how many records each has"
+        );
+        // The duplicate of source A must not displace source B.
+        assert!(
+            audio.summary_head.contains("stereo"),
+            "the second source must reach a channel: {}",
+            audio.summary_head
+        );
+    }
+
+    /// A source whose records are interleaved with another's still yields two
+    /// channels.
+    ///
+    /// Relay ordering is not grouped: records arrive as they are seen, so a
+    /// selector that stopped at the first duplicate, or that assumed records of
+    /// one source are adjacent, would drop the second party on real traffic
+    /// while passing every grouped fixture.
+    #[test]
+    fn interleaved_records_still_find_both_sources() {
+        let a1 = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
+        let b1 = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB);
+        let a2 = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
+        let b2 = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB);
+
+        for order in [
+            [&a1, &b1, &a2, &b2],
+            [&b1, &a1, &b2, &a2],
+            [&a1, &a2, &b1, &b2],
+        ] {
+            let audio = decode_dialog_audio(&order).expect("decode");
+            assert_eq!(
+                audio.channels, 2,
+                "two sources are present in every ordering; this one lost one"
+            );
+        }
+    }
+
+    /// Three sources still carry two and report the third.
+    ///
+    /// Guards the interaction between deduplication and the two-channel limit:
+    /// deduplicating first and then truncating are different from truncating
+    /// first, and only the first order can see a third source at all.
+    #[test]
+    fn three_sources_carry_two_and_name_the_third() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("three_src.wav");
+
+        let a = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0x0101_0101);
+        let a_dup = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0x0101_0101);
+        let b = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0x0202_0202);
+        let c = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x55; 160])], 0x0303_0303);
+
+        let summary = export_dialog_to_wav(&[&a, &a_dup, &b, &c], &path).expect("export");
+        assert!(
+            summary.contains("1 of 3"),
+            "three sources, two channels: exactly one source is omitted and \
+             the summary must say so:\n{summary}"
+        );
     }
 
     /// Unsupported-codec streams are filtered out before stereo/mono selection.
@@ -1363,8 +1652,8 @@ mod tests {
         // Opus payloads here are undecodable garbage (skipped frame-by-frame),
         // but the point is codec-name filtering, not audio content: the OpUs
         // stream must survive is_exportable_codec so stereo is selected.
-        let g711 = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
-        let opus = make_stream(Some("OpUs"), vec![(0, vec![0xFF; 8])]);
+        let g711 = make_stream_ssrc(Some("PCMU"), vec![(0, vec![0xFF; 160])], 0x0D0D_0D0D);
+        let opus = make_stream_ssrc(Some("OpUs"), vec![(0, vec![0xFF; 8])], 0x0E0E_0E0E);
         let result = export_dialog_to_wav(&[&g711, &opus], &path).unwrap();
 
         assert!(

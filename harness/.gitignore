@@ -19,3 +19,10 @@ secrets/mcp.signing-key*
 
 # Run artefacts: timestamped output of a local end-to-end run, not source.
 results/
+
+# Generated media fixtures. `make-pcma-pcap.py` produces these deterministically
+# and the setup docs tell you to run it, so committing the output would put a
+# megabyte of binary in the tree that can drift from the generator that claims
+# to produce it. The stock g711a.pcap/g722.pcap are third-party captures and
+# stay tracked.
+sipp/scenarios/g711a_answer.pcap

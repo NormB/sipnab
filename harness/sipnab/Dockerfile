@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 COPY . .
 RUN cargo build --release --locked \
-        --no-default-features --features "native,mcp-http,tls,api,audio,vcon" \
+        --no-default-features --features "native,mcp-http,tls,api,audio,vcon,hep" \
     && strip target/release/sipnab
 
 FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd

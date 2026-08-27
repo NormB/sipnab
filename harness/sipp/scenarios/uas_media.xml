@@ -87,16 +87,24 @@
 
   <!-- The call is up: play audio back to the UAC. Without this the UAS
        answers with an SDP media port and then never sends a packet, so the
-       stream is one-way and nothing proves the far end is reachable. -->
+       stream is one-way and nothing proves the far end is reachable.
+
+       A DIFFERENT file from the caller's, with a different tone and a different
+       SSRC. SIPp replays a pcap verbatim, SSRC included, so both ends playing
+       g711a.pcap put byte-identical audio on the two legs -- a stereo export of
+       them yields two identical channels, and nothing in the result can show
+       the far end was heard rather than the near end counted twice. -->
   <nop>
     <action>
-      <exec play_pcap_audio="g711a.pcap"/>
+      <exec play_pcap_audio="g711a_answer.pcap"/>
     </action>
   </nop>
 
-  <!-- Hold the leg open long enough for the pcap to finish playing. Without a
-       pause the scenario races to `recv BYE` and sipp tears the leg down
-       mid-playback, which looks exactly like a media failure. -->
+  <!-- Hold the leg open briefly so playback is under way before the scenario
+       blocks. The `recv BYE` below is what actually keeps the leg alive for the
+       length of the call, so this pause does not bound the audio -- the answer
+       pcap runs ~90s to match the caller's, and a pause sized to the audio
+       would tear the leg down early on any call that ran longer. -->
   <pause milliseconds="3000"/>
 
   <recv request="BYE">

@@ -186,6 +186,14 @@ services:
       # The ng control socket and the HEP mirror of it. The relay sees no
       # signaling, so these are what let it NAME the media it captures.
       CONTROL_PORTS: "22222 9060"
+      # The relay is the node that HAS the media, so it is the node that keeps
+      # the payloads. Without this its vCon carries an "incomplete" dialog and
+      # no audio, which reads as a silent call rather than as a run that never
+      # kept the bytes.
+      RETAIN_AUDIO: "1"
+      # Decode the ng control plane rtpengine mirrors. Capturing it is not
+      # enough: without this the packets are read off the wire and discarded.
+      HEP_PARSE: "1"
       MCP_TOKEN_FILE: /run/secrets/mcp.token.relay
       MCP_TOKEN_TTL: ${SIPNAB_MCP_TOKEN_TTL:-600}
       MCP_ROTATE_INTERVAL: ${SIPNAB_MCP_ROTATE_INTERVAL:-300}
