@@ -16,7 +16,6 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::Request;
-use http_body_util::BodyExt;
 use parking_lot::{Mutex, RwLock};
 use tower::ServiceExt;
 
