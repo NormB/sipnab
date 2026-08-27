@@ -26,3 +26,4 @@ results/
 # to produce it. The stock g711a.pcap/g722.pcap are third-party captures and
 # stay tracked.
 sipp/scenarios/g711a_answer.pcap
+sipp/scenarios/g711a_caller.pcap

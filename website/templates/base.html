@@ -58,8 +58,10 @@
 
   <!-- Favicon: classic .ico fallback for bookmarks / non-SVG clients, then inline SVG -->
   <link rel="icon" href="/favicon.ico" sizes="any">
-  <!-- Favicon (inline SVG — amber "s" in monospace) -->
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>">
+  <!-- Favicon (inline SVG — amber handset on ink). A telephone reads at 16px
+       where a letterform does not: a tab strip is the one place this is seen,
+       and a glyph that small resolves to a smudge. -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%230a0e14'/><path d='M9.6 5.5h4.1c.7 0 1.3.5 1.4 1.2l.7 3.4c.1.6-.1 1.2-.6 1.5l-2.1 1.4c1.3 2.9 3.6 5.2 6.5 6.5l1.4-2.1c.3-.5.9-.7 1.5-.6l3.4.7c.7.1 1.2.7 1.2 1.4v4.1c0 .9-.7 1.6-1.6 1.5C15.3 25.7 6.3 16.7 5.5 7.1c-.1-.9.6-1.6 1.5-1.6z' fill='%23ffcc66'/></svg>">
 
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.bunny.net">

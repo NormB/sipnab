@@ -1,0 +1,53 @@
+# Co-located overlay: OpenSIPS and rtpengine on one host, watched by ONE sipnab.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.single.yml up -d
+#
+# This is the common deployment and the simpler one. A single capture point
+# sees the signaling AND the media, so it learns which streams belong to which
+# call from the SDP -- the way sipnab does it everywhere else. Four
+# requirements of the split topology disappear with it: no `hep` feature, no
+# HOMER mirroring, no HEP sink, and no control-plane ports in the filter.
+#
+# The two-node arrangement in the base file exists for the case this cannot
+# cover: a relay that genuinely does not see signaling, because it runs on
+# separate hardware. Reach for it then, not before.
+services:
+  # Back into the proxy's namespace. Media and signaling meet on one interface,
+  # which is the whole point.
+  rtpengine:
+    network_mode: "service:opensips-1"
+    networks: !reset null
+    ports: !reset []
+    environment:
+      RTPENGINE_IF: ${OPENSIPS_IP:-172.28.0.10}
+      RTPENGINE_NG_BIND: 127.0.0.1:22222
+      # No mirroring. Nothing needs to read the control plane when the capture
+      # point can see the SDP that describes the same media.
+      HOMER: ""
+
+  opensips-1:
+    environment:
+      RTPENGINE_SOCK: udp:127.0.0.1:22222
+    ports:
+      - "${HARNESS_BIND:-127.0.0.1}:${SIP_HOST_PORT:-5060}:5060/udp"
+      - "${HARNESS_BIND:-127.0.0.1}:${MCP_PORT:-8731}:8731/tcp"
+      - "${HARNESS_BIND:-127.0.0.1}:${API_PORT:-8080}:8080/tcp"
+      - "${HARNESS_BIND:-127.0.0.1}:${RTP_MIN:-30000}-${RTP_MAX:-30050}:30000-30050/udp"
+
+  # One sipnab, watching everything.
+  sipnab-proxy:
+    environment:
+      NODE_NAME: single
+      RETAIN_AUDIO: "1"
+      # Deliberately absent: CONTROL_PORTS and HEP_PARSE. This node reads the
+      # SDP, so it needs neither the ng control plane nor a HEP decoder.
+
+  # The relay-side capture has nothing to watch here.
+  sipnab-relay:
+    deploy:
+      replicas: 0
+
+  # Nothing mirrors to it, so nothing needs to absorb the mirror.
+  hep-sink:
+    deploy:
+      replicas: 0
