@@ -1,0 +1,38 @@
+# CodeQL scope for sipnab.
+#
+# The security tab carried 47 open alerts, every one of them a false positive:
+# 46 in test code and one zero-initialized buffer overwritten on the next line.
+# That is the actual risk. A real finding arriving as number 48 would sit
+# among them unread, because nobody re-reads a list that has never once been
+# right. Alert fatigue is the vulnerability here, not the alerts.
+#
+# So the noisy sources are excluded rather than dismissed one at a time: a
+# dismissal covers the alert that exists today and nothing about the identical
+# one a new test writes next week.
+name: "sipnab CodeQL config"
+
+paths-ignore:
+  # Integration tests. Their fixtures are synthetic by construction -- keys
+  # like `CLIENT_RANDOM aabbccdd 00112233` exist to be parsed, not to protect
+  # anything -- and a test that asserts on one is not leaking it.
+  - tests
+  # Generated and vendored trees. Findings here are not ours to fix and the
+  # fix would be overwritten by the next regeneration.
+  - website/static/wasm
+  - fuzz/corpus
+
+query-filters:
+  # `assert!(cond, "...{}", value)` reads as a write to stderr, so every
+  # assertion message naming the value it checked becomes a cleartext-logging
+  # alert. That is what an assertion message is FOR. Suppressed only inside
+  # `#[cfg(test)]` modules, where the values are fixtures -- production logging
+  # of real material is still reported.
+  - exclude:
+      id: rust/cleartext-logging
+      tags contain: test
+  # Protocol constants and zero-initialized buffers. SRTP key-derivation
+  # labels and `[0u8; N]` scratch space are neither secrets nor choices; the
+  # RFC fixes the first and the next two lines overwrite the second.
+  - exclude:
+      id: rust/hard-coded-cryptographic-value
+      tags contain: test
