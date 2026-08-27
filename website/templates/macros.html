@@ -61,29 +61,50 @@
    is so a reader looking for a howto is not reading postmortems to find one. #}
 {% macro notes_nav(section, current) %}
 <nav class="doc-nav notes-nav" aria-label="All notes">
-  {% for group in [
-      ["howto", "How-to"],
-      ["feature", "Features"],
-      ["postmortem", "Postmortems"],
-      ["reference", "Reference"]
-  ] %}
-    {% set matching = section.pages | filter(attribute="extra.kind", value=group.0) %}
-    {% if matching | length > 0 %}
-    <div class="doc-nav-group">
-      <p class="doc-nav-group-title">{{ group.1 }}</p>
-      <ul class="doc-nav-list notes-nav-list">
-        {% for p in matching %}
-        <li class="notes-nav-item">
-          <a class="doc-nav-link notes-nav-link{% if p.permalink == current %} active{% endif %}"
-             href="{{ p.permalink }}">
-            <span class="notes-nav-title">{{ p.title }}</span>
-            {% if p.date %}<span class="notes-nav-date">{{ p.date | date(format="%e %b %Y") }}</span>{% endif %}
-          </a>
-        </li>
-        {% endfor %}
-      </ul>
-    </div>
-    {% endif %}
-  {% endfor %}
+  <div class="doc-nav-group">
+    <p class="doc-nav-group-title">How-to</p>
+    <ul class="doc-nav-list notes-nav-list">
+      {% for p in section.pages %}
+      {% if p.extra.kind | default(value="") == "howto" %}
+      <li class="notes-nav-item">
+        <a class="doc-nav-link notes-nav-link{% if p.permalink == current %} active{% endif %}" href="{{ p.permalink }}">
+          <span class="notes-nav-title">{{ p.title }}</span>
+          {% if p.date %}<span class="notes-nav-date">{{ p.date | date(format="%e %b %Y") }}</span>{% endif %}
+        </a>
+      </li>
+      {% endif %}
+      {% endfor %}
+    </ul>
+  </div>
+  <div class="doc-nav-group">
+    <p class="doc-nav-group-title">Features</p>
+    <ul class="doc-nav-list notes-nav-list">
+      {% for p in section.pages %}
+      {% if p.extra.kind | default(value="") == "feature" %}
+      <li class="notes-nav-item">
+        <a class="doc-nav-link notes-nav-link{% if p.permalink == current %} active{% endif %}" href="{{ p.permalink }}">
+          <span class="notes-nav-title">{{ p.title }}</span>
+          {% if p.date %}<span class="notes-nav-date">{{ p.date | date(format="%e %b %Y") }}</span>{% endif %}
+        </a>
+      </li>
+      {% endif %}
+      {% endfor %}
+    </ul>
+  </div>
+  <div class="doc-nav-group">
+    <p class="doc-nav-group-title">Postmortems</p>
+    <ul class="doc-nav-list notes-nav-list">
+      {% for p in section.pages %}
+      {% if p.extra.kind | default(value="") == "postmortem" %}
+      <li class="notes-nav-item">
+        <a class="doc-nav-link notes-nav-link{% if p.permalink == current %} active{% endif %}" href="{{ p.permalink }}">
+          <span class="notes-nav-title">{{ p.title }}</span>
+          {% if p.date %}<span class="notes-nav-date">{{ p.date | date(format="%e %b %Y") }}</span>{% endif %}
+        </a>
+      </li>
+      {% endif %}
+      {% endfor %}
+    </ul>
+  </div>
 </nav>
 {% endmacro %}
