@@ -79,6 +79,10 @@ you want.
   rather than the packets. Write one observed dialog as a vCon container: what
   the export carries, what it refuses to carry, and what an observer's record
   lets a consumer conclude.
+- **[Build a vCon capture stack](vcon-harness.md)** — OpenSIPS routes, rtpengine
+  carries the media, sipnab watches both, and a conserver keeps what comes out.
+  How to stand that up on one node or two, operate it, prove a stored call
+  carries its media, and recognize the failures that look like success.
 - **[Write a WASM plugin](plugins.md)** — add your own detection to sipnab's
   diagnosis without forking it: what the sandbox does and does not bound,
   what trusting a `.wasm` costs you, and a worked example from crate to

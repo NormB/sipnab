@@ -33,6 +33,71 @@ mod markdown;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `--audio` belongs to `harness/clients/vcon_view.py`, the small reader the
+    // capture-stack page uses to extract a stored container's WAV. It is a
+    // harness client rather than sipnab, and naming it here is what keeps this
+    // gate from reading every tool a page demonstrates as sipnab's own.
+    (
+        "audio",
+        &[
+            "docs/vcon-harness.md",
+            "website/content/docs/vcon-harness.md",
+        ],
+    ),
+    // rtpengine's own flags. The capture-stack page shows how to start the
+    // relay, and a media relay is not sipnab -- `--interface`, `--listen-ng`
+    // and the port range are its command line, and `--homer*` is how it
+    // mirrors the ng control plane where a separate sipnab can read it.
+    // Scoped to the one page that stands the relay up.
+    (
+        "interface",
+        &[
+            "docs/vcon-harness.md",
+            "website/content/docs/vcon-harness.md",
+        ],
+    ),
+    (
+        "listen-ng",
+        &[
+            "docs/vcon-harness.md",
+            "website/content/docs/vcon-harness.md",
+        ],
+    ),
+    (
+        "port-min",
+        &[
+            "docs/vcon-harness.md",
+            "website/content/docs/vcon-harness.md",
+        ],
+    ),
+    (
+        "port-max",
+        &[
+            "docs/vcon-harness.md",
+            "website/content/docs/vcon-harness.md",
+        ],
+    ),
+    (
+        "homer",
+        &[
+            "docs/vcon-harness.md",
+            "website/content/docs/vcon-harness.md",
+        ],
+    ),
+    (
+        "homer-protocol",
+        &[
+            "docs/vcon-harness.md",
+            "website/content/docs/vcon-harness.md",
+        ],
+    ),
+    (
+        "homer-enable-ng",
+        &[
+            "docs/vcon-harness.md",
+            "website/content/docs/vcon-harness.md",
+        ],
+    ),
     // `--data-binary` is curl's. The cookbook and the vCon page pipe a
     // container straight into a conserver, and `--data-binary @-` is what
     // makes that a single runnable line rather than a file dance. Scoped to
@@ -40,6 +105,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     (
         "data-binary",
         &[
+            "docs/vcon-harness.md",
+            "website/content/docs/vcon-harness.md",
             "docs/examples.md",
             "website/content/docs/cookbook.md",
             "docs/vcon.md",
@@ -73,6 +140,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     (
         "features",
         &[
+            "docs/vcon-harness.md",
+            "website/content/docs/vcon-harness.md",
             "docs/uprobe-walkthrough.md",
             "website/content/docs/uprobe-walkthrough.md",
             "docs/cli-reference.md",
@@ -191,6 +260,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     (
         "release",
         &[
+            "docs/vcon-harness.md",
+            "website/content/docs/vcon-harness.md",
             "docs/plugins.md",
             "website/content/docs/plugins.md",
             // The vCon walkthrough builds a release binary because the export
@@ -2649,7 +2720,17 @@ fn no_documentation_table_repeats_a_row() {
     // its own implementation plan rather than splitting into a second file.
     // One file, and one is the whole delta: `docs/design/` is not a published
     // page, so it gains no site mirror and costs this counter no second entry.
-    const EXPECTED_MARKDOWN_FILES: usize = 170;
+    // 170 -> 172: the vCon capture-stack page. `docs/vcon-harness.md` plus its
+    // generated `website/content/docs/vcon-harness.md` -- two files, and two
+    // is the whole delta, attributed by
+    // `git diff --diff-filter=A HEAD -- '*.md'` before the number moved. It is
+    // a published page, so unlike the entry above it does cost a second entry.
+    // 172 -> 175 by three engineering notes. Three files and not six: notes
+    // are written for the website directly and have no `docs/` source, so
+    // they gain no generated mirror -- the same shape the 154 -> 157 entry
+    // above records. Attributed with
+    // `git diff --diff-filter=A ddb05f3a fa870e30` before the number moved.
+    const EXPECTED_MARKDOWN_FILES: usize = 175;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -2765,7 +2846,11 @@ fn no_documentation_table_repeats_a_row() {
     // measurement: that file carries exactly two table separators and no other
     // page gained one. It is not a published page, so it costs no second entry
     // for a site mirror.
-    const EXPECTED_TABLES: usize = 672;
+    // 672 -> 692: the vCon capture-stack page. Ten tables in
+    // `docs/vcon-harness.md` and ten in its generated site mirror, counted
+    // with `grep -c '^|---'` on each before the number moved. Twenty is the
+    // whole delta, and a published page always costs this counter double.
+    const EXPECTED_TABLES: usize = 692;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -4754,5 +4839,147 @@ fn llms_aggregates_are_current() {
         stale.is_empty(),
         "website/static is stale — regenerate with \
          `python3 scripts/build-site-pages.py` and commit: {stale:?}"
+    );
+}
+
+/// Every function in the vCon modules carries its OWN doc comment.
+///
+/// Inserting a function immediately before an existing one splits that one's
+/// doc block: the new function inherits documentation describing something
+/// else, and the original is left with none. It happened four times in one
+/// day's work on this module -- `Dialog::empty` took `Dialog::bare`'s docs,
+/// `media_budget` took the first half of `export_vcon_selection`'s and left it
+/// a dangling fragment, and twice more besides.
+///
+/// Clippy catches only the PUBLIC half of that, through `missing_docs`. A
+/// private function that loses its documentation to a new neighbour is
+/// invisible to it, and the new function looks documented because it is
+/// wearing somebody else's comment.
+///
+/// The check is deliberately shallow: it asks whether a `fn` has any doc line
+/// above it, not whether the words are right. A shallow check that fires on
+/// the actual failure mode beats a clever one that cannot run.
+#[test]
+fn every_function_in_the_vcon_modules_has_its_own_doc_comment() {
+    // Modules where the vCon work concentrated, and where the splitting
+    // actually happened. Not the whole tree: a gate that reports two hundred
+    // pre-existing gaps is a gate somebody switches off.
+    const MODULES: &[&str] = &["src/output/vcon.rs", "src/app/batch.rs"];
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut undocumented: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+
+    for module in MODULES {
+        let text = std::fs::read_to_string(root.join(module))
+            .unwrap_or_else(|e| panic!("read {module}: {e}"));
+        let lines: Vec<&str> = text.lines().collect();
+        let mut in_tests = false;
+
+        for (n, line) in lines.iter().enumerate() {
+            // The test module's helpers are exempt: they are read beside their
+            // single call site, and requiring docs there would be noise.
+            if line.trim_start().starts_with("mod tests") {
+                in_tests = true;
+            }
+            if in_tests {
+                continue;
+            }
+            let t = line.trim_start();
+            let is_fn = (t.starts_with("fn ")
+                || t.starts_with("pub fn ")
+                || t.starts_with("pub(crate) fn ")
+                || t.starts_with("async fn "))
+                && line.starts_with(|c: char| c == 'f' || c == 'p' || c == 'a');
+            if !is_fn {
+                continue;
+            }
+            checked += 1;
+
+            // Walk upward past attributes to whatever documents this item.
+            let mut i = n;
+            let mut documented = false;
+            while i > 0 {
+                i -= 1;
+                let above = lines[i].trim_start();
+                if above.starts_with("#[") || above.starts_with("#!") {
+                    continue;
+                }
+                documented = above.starts_with("///") || above.starts_with("//!");
+                break;
+            }
+            if !documented {
+                let name = t.split('(').next().unwrap_or(t);
+                undocumented.push(format!("{module}:{}: {name}", n + 1));
+            }
+        }
+    }
+
+    assert!(
+        checked > 40,
+        "the fn scan matched only {checked} functions, so it is checking far \
+         less than these modules contain and would pass on an empty file"
+    );
+    assert!(
+        undocumented.is_empty(),
+        "these functions carry no doc comment of their own. The usual cause is \
+         an insertion between an existing doc block and the item it described, \
+         which leaves the newcomer wearing those docs and the original with \
+         none:\n  {}",
+        undocumented.join("\n  ")
+    );
+}
+
+/// A doc comment block is never separated from its item by a blank line.
+///
+/// The other half of the same defect. Removing a function that sat between a
+/// doc block and its neighbour leaves the block orphaned -- attached to
+/// nothing, describing something deleted. That happened when
+/// `apply_deny_filter` came out: its documentation stayed behind, explaining
+/// why `streams` is filtered alongside `dialogs`, with no function under it.
+///
+/// Clippy sees an orphaned block only as `empty_line_after_doc_comments`, and
+/// only sometimes. This is the shape stated directly.
+#[test]
+fn no_doc_comment_block_is_orphaned_from_its_item() {
+    const MODULES: &[&str] = &["src/output/vcon.rs", "src/app/batch.rs"];
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut orphaned: Vec<String> = Vec::new();
+    let mut blocks = 0usize;
+
+    for module in MODULES {
+        let text = std::fs::read_to_string(root.join(module))
+            .unwrap_or_else(|e| panic!("read {module}: {e}"));
+        let lines: Vec<&str> = text.lines().collect();
+
+        for (n, line) in lines.iter().enumerate() {
+            if !line.trim_start().starts_with("///") {
+                continue;
+            }
+            // Only the LAST line of a block matters: what follows it is what
+            // the block documents.
+            let next = lines.get(n + 1).map(|l| l.trim()).unwrap_or("");
+            if next.starts_with("///") {
+                continue;
+            }
+            blocks += 1;
+            if next.is_empty() {
+                orphaned.push(format!("{module}:{}", n + 1));
+            }
+        }
+    }
+
+    assert!(
+        blocks > 40,
+        "matched only {blocks} doc blocks, so this gate is reading almost \
+         nothing and would pass on a file with no comments at all"
+    );
+    assert!(
+        orphaned.is_empty(),
+        "a doc comment block is followed by a blank line, so it documents \
+         nothing. The usual cause is removing the function that sat beneath \
+         it:\n  {}",
+        orphaned.join("\n  ")
     );
 }

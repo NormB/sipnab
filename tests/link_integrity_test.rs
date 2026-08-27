@@ -635,7 +635,10 @@ fn wiki_intra_docs_links_resolve() {
     // the §6b relay config, which previously told a reader to set up a mirror
     // and never said what reads it. Attributed per file; every other page in
     // this walk held its count.
-    const EXPECTED_WIKI_LINKS: usize = 501;
+    // 501 -> 502 by the docs index entry for `vcon-harness.md`. One link, and
+    // one is the whole delta: the page's own body links only pages already
+    // counted here, so it adds a link TO itself and none that were missing.
+    const EXPECTED_WIKI_LINKS: usize = 502;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1099,7 +1102,13 @@ fn every_docs_page_is_linked_from_the_index() {
     // `wiki_source_files()` walks `docs/*.md` and `docs/internals/` only, so a
     // design note has never been in this walk. Attributed per file before the
     // number moved.
-    const EXPECTED_DOCS_PAGES: usize = 49;
+    // Raised 49 -> 50 by `docs/vcon-harness.md`, the capture-stack page. ONE
+    // and not two: this walk covers `docs/*.md` and `docs/internals/` only, so
+    // the generated `website/content/docs/vcon-harness.md` is outside it --
+    // the inverse of the markdown-file counter, which sees both. Attributed
+    // with `git diff --diff-filter=A HEAD -- 'docs/*.md'` before the number
+    // moved.
+    const EXPECTED_DOCS_PAGES: usize = 50;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

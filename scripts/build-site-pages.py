@@ -327,6 +327,22 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
     # links `docs/internals/vcon.md`, `docs/library.md` and the three surface
     # reference pages; unregistered here it would exist only on the wiki, and
     # every generated page pointing at it would rewrite to a GitHub blob URL.
+    # The harness page links `docs/vcon.md` and the three surface reference
+    # pages, so it is registered here for the reason that entry records:
+    # unregistered, every generated page pointing at it would rewrite to a
+    # GitHub blob URL instead of a site link.
+    (
+        "docs/vcon-harness.md",
+        "vcon-harness.md",
+        "The vCon capture stack",
+        "vCon Capture Stack",
+        # 38, the next free weight on the SITE side, which is where
+        # `docs_page_weights_are_unique_and_descriptions_present` reads.
+        38,
+        "Build a two-point vCon capture stack -- OpenSIPS, rtpengine, sipnab "
+        "and a conserver -- then operate it, verify a stored call carries its "
+        "media, and recognize the failures that look like success.",
+    ),
     (
         "docs/vcon.md",
         "vcon.md",

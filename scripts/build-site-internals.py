@@ -221,6 +221,7 @@ DOCS_TO_SITE = {
     # LINK to it rather than send the reader out to a GitHub blob URL, and both
     # the internals vCon page and docs/README.md point at it.
     "vcon.md": "vcon.md",
+    "vcon-harness.md": "vcon-harness.md",
 }
 
 LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")
