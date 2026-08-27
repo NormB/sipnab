@@ -6,8 +6,10 @@ zero relay streams for every call and looked merely empty rather than broken.
 """
 
 import importlib.util
+import io
 import pathlib
 import sys
+import urllib.error
 
 import pytest
 
@@ -134,3 +136,56 @@ def test_streams_are_not_attributed_to_the_wrong_call():
     by_id = {c["call_id"]: c for c in lc.correlate(proxy, relay)}
     assert by_id["f@h"]["relay_packets"] == 10
     assert by_id["g@h"]["relay_packets"] == 99
+
+
+# ── preflight: a dead sidecar must not read as "no calls matched" ────
+
+def test_a_dead_capture_point_stops_the_report(monkeypatch):
+    """A node that is not answering must fail loudly, not quietly.
+
+    A sipnab sidecar shares the network namespace of the service it watches, so
+    recreating that service kills the sidecar. The surviving node still answers
+    and still reports its own counts, and a join across one node yields an
+    empty correlation that reads as "no calls matched" rather than "half the
+    evidence is gone". That happened for three consecutive runs before this
+    check existed, and each was reported as a correlation failure.
+    """
+    class Ok(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    # Every node is probed, not just up to the first failure: a run with two
+    # dead nodes should name both rather than sending the reader back for a
+    # second attempt to discover the second one.
+    def refused(req, *a, **k):
+        if "8080" in req.full_url:
+            raise urllib.error.URLError("Connection refused")
+        return Ok(b"{}")
+
+    monkeypatch.setattr(lc.urllib.request, "urlopen", refused)
+    with pytest.raises(SystemExit) as e:
+        lc.preflight(["http://127.0.0.1:8080", "http://127.0.0.1:8081"], "k")
+    msg = str(e.value)
+    assert "8080" in msg, "the failing node must be named"
+    assert "half the evidence" in msg, "and why its absence matters"
+    assert "force-recreate" in msg, "and how to bring it back"
+
+
+def test_preflight_passes_when_every_node_answers(monkeypatch):
+    """The other half: a working stack must not be blocked by the guard.
+
+    A check that refused both ways would be indistinguishable from one that
+    always refused, and would be disabled within a day.
+    """
+    class Ok(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(lc.urllib.request, "urlopen", lambda *a, **k: Ok(b"{}"))
+    lc.preflight(["http://127.0.0.1:8080", "http://127.0.0.1:8081"], "k")

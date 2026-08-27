@@ -37,6 +37,42 @@ def get(base: str, path: str, key: str):
         raise SystemExit(f"{base}{path}: unreachable ({e.reason})") from e
 
 
+def preflight(bases: list[str], key: str) -> None:
+    """Refuse to report unless every node is answering.
+
+    A sipnab sidecar joins the network namespace of the service it watches, so
+    RECREATING that service tears the namespace out from under it and the
+    sidecar dies. Nothing about the surviving node looks wrong: it answers,
+    reports its own counts, and the join over one node produces an empty
+    correlation that reads as "no calls matched" rather than "half the evidence
+    is missing".
+
+    That is not a hypothetical. Recreating the proxy container left its sipnab
+    dead for three runs while the relay answered normally, and each run was
+    reported as a correlation failure.
+    """
+    dead = []
+    for base in bases:
+        req = urllib.request.Request(
+            f"{base}/v1/stats", headers={"Authorization": f"Bearer {key}"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10):
+                pass
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as e:
+            dead.append(f"{base} ({e})")
+    if dead:
+        raise SystemExit(
+            "  These capture points are not answering, so any correlation "
+            "below would be\n  drawn from half the evidence:\n    "
+            + "\n    ".join(dead)
+            + "\n\n  A sipnab sidecar shares the namespace of the service it "
+            "watches. Recreating\n  that service kills the sidecar. "
+            "`docker compose up -d --force-recreate <sidecar>`\n  brings it "
+            "back."
+        )
+
+
 def node_view(base: str, key: str) -> dict:
     """Everything one node knows, in one shape."""
     stats = get(base, "/v1/stats", key)
@@ -129,6 +165,10 @@ def main() -> int:
     if not args.key_file.is_file():
         raise SystemExit(f"no API key at {args.key_file}; run 'make api-key'")
     key = args.key_file.read_text().strip()
+
+    # Before anything is read, not after: a node that died takes its half of
+    # every call with it, and the result still looks like a well-formed answer.
+    preflight([args.proxy, args.relay], key)
 
     proxy = node_view(args.proxy, key)
     relay = node_view(args.relay, key)

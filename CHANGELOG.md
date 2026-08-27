@@ -10,6 +10,24 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--hep-parse` no longer switches off relay media naming.** Unwrapping a HEP
+  datagram replaced the packet with the payload inside it and dropped the
+  wrapper's metadata. rtpengine mirrors its `ng` control plane as HEP, and
+  sipnab recognizes it either by metadata a listener recorded or by the wrapper
+  on a sniffed datagram -- after the unwrap there was neither, so every
+  mirrored control message was discarded and every relay stream stayed
+  orphaned.
+
+  The two features were mutually exclusive and nothing said so. A capture could
+  have the `hep` feature built in, the control-plane ports in its filter, and
+  the datagrams visibly on the wire, and still name nothing. The unwrap now
+  carries the capture protocol and correlation id forward -- the correlation id
+  most of all, because an `ng` reply carries no `call-id` and it is the only
+  thing naming the call.
+
+
 ## [0.5.127] - 2026-08-26
 
 ### Added

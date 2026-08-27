@@ -4647,7 +4647,29 @@ does not, work down this list:
 | Nothing at all on the wire | rtpengine has no `homer` destination | Set one |
 | Configured, but still nothing on the wire | The destination refuses the datagrams | See below |
 | Control traffic visible, streams still orphaned | Capture missed the HEP, or a filter excluded it | Widen the filter; the default filter excludes media |
+| Control traffic visible and in the filter, still orphaned | `--hep-parse` on a build before 0.5.128 | Leave `--hep-parse` off, or upgrade. See below |
 | Relay-named calls appear but media does not | The media is on ports your filter drops | Include the `port-min`–`port-max` range |
+
+### `--hep-parse` is for HEP-encapsulated SIP, not for this
+
+`--hep-parse` unwraps a HEP datagram and hands the payload inside it to the
+parser. That is what you want when a collector feeds you SIP over HEP, and
+until 0.5.128 it quietly switched this feature off.
+
+sipnab spots mirrored `ng` two ways: by the metadata a HEP listener recorded
+before stripping the wrapper, or by parsing the wrapper off a sniffed datagram
+that still has one. Unwrapping used to discard the wrapper without recording
+what it said, so neither route had anything left to match on. The control plane
+reached the capture and went straight in the bin, no counter moved, and every
+relay stream stayed orphaned.
+
+Nothing reported it, and that is the part worth remembering: the build carried
+the feature, the filter carried the ports, and the datagrams sat plainly on the
+wire. Every setting was correct and the answer was still empty.
+
+From 0.5.128 the unwrap carries the wrapper's capture protocol and correlation
+id forward, so the two features coexist and the flag is safe to leave on. On an
+older build, turn it off for a relay capture.
 
 ### The destination has to accept the traffic
 
