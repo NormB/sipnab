@@ -16,11 +16,24 @@ TOKEN_TTL="${MCP_TOKEN_TTL:-600}"               # minted-token lifetime (seconds
 ROTATE_INTERVAL="${MCP_ROTATE_INTERVAL:-300}"   # re-mint cadence; keep <= TTL/2 for overlap
 ROTATE="${MCP_ROTATE_SCRIPT:-/usr/local/bin/rotate-token.sh}"
 PCAP_OUT="${CAPTURE_PCAP:-}"        # set to a path under /captures to persist a pcap
+API_BIND="${API_BIND:-}"            # set to expose the REST API alongside MCP
+NODE_NAME="${NODE_NAME:-}"          # which capture point this is, for the logs
 
 # Capture both SIP and the rtpengine media range. --portrange still identifies
 # which ports are SIP; this BPF widens the kernel capture so RTP packets (on the
 # media range) reach sipnab's RTP engine instead of being filtered out.
-BPF="udp and (portrange ${PORTRANGE} or portrange ${RTP_PORTRANGE})"
+# CONTROL_PORTS widens the filter to the rtpengine ng control plane and the
+# HEP mirror of it. On a relay this is not optional: signaling never transits
+# rtpengine, so the ONLY thing that can tell the relay which call a stream
+# belongs to is that control plane. Without these ports every relay stream
+# carries associated_dialog=null, which reads as "media nobody claimed" rather
+# than "the filter dropped the evidence".
+CONTROL_PORTS="${CONTROL_PORTS:-}"
+BPF="udp and (portrange ${PORTRANGE} or portrange ${RTP_PORTRANGE}"
+for _p in $CONTROL_PORTS; do
+    BPF="$BPF or port $_p"
+done
+BPF="$BPF)"
 
 # The harness authenticates with rotating, short-lived bearer tokens minted from
 # a long-lived HMAC signing key (never shared with clients). The static
@@ -67,8 +80,30 @@ if [ -n "$PCAP_OUT" ]; then
         "$BPF" >/captures/tcpdump.log 2>&1 &
 fi
 
+# The REST API is what a plain HTTP client reads; MCP is what an agent reads.
+# Both doors answer from ONE capture, so a script and an agent asking the same
+# question of the same node cannot get different answers.
+# sipnab refuses a non-loopback REST bind with no authentication configured,
+# which is the correct policy and not something to work around: the key is
+# supplied instead. It is read from the secrets dir rather than passed as an
+# environment variable so it does not show up in `docker inspect`.
+API_KEY_FILE="${API_KEY_FILE:-/run/secrets/api.key}"
+API_ARGS=""
+if [ -n "$API_BIND" ]; then
+    if [ ! -s "$API_KEY_FILE" ]; then
+        echo "FATAL: REST API requested on $API_BIND but $API_KEY_FILE is empty/missing; run 'make api-key'." >&2
+        exit 1
+    fi
+    SIPNAB_API_KEY="$(cat "$API_KEY_FILE")"
+    export SIPNAB_API_KEY
+    API_ARGS="--api $API_BIND"
+    echo "sipnab${NODE_NAME:+ [$NODE_NAME]}: REST API on $API_BIND (authenticated)"
+fi
+
+# shellcheck disable=SC2086 # API_ARGS is a deliberate word-split flag pair.
 exec sipnab \
     -N \
+    $API_ARGS \
     --mcp --mcp-transport http \
     --mcp-bind "$BIND" \
     --mcp-signing-key-file "$SIGNING_KEY_FILE" \

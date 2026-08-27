@@ -6,3 +6,16 @@ captures/*.pcap
 captures/*.pcapng
 captures/*.json
 *.log
+
+# Every credential in this directory, by pattern rather than by name. The list
+# used to name `mcp.token` exactly, and the moment a second node needed
+# `mcp.token.proxy` and `mcp.token.relay` those were untracked live secrets one
+# `git add -A` away from being published. A pattern covers the file nobody has
+# thought of yet.
+secrets/*.key
+secrets/*.token
+secrets/*.token.*
+secrets/mcp.signing-key*
+
+# Run artefacts: timestamped output of a local end-to-end run, not source.
+results/

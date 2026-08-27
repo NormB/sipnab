@@ -38,7 +38,7 @@ echo "rtpengine: interface=${RTPENGINE_IF} ng=127.0.0.1:22222 ports=${RTP_MIN}-$
 # shellcheck disable=SC2086
 exec rtpengine \
     --interface="${RTPENGINE_IF}" \
-    --listen-ng=127.0.0.1:22222 \
+    --listen-ng="${RTPENGINE_NG_BIND:-127.0.0.1:22222}" \
     --port-min="${RTP_MIN}" \
     --port-max="${RTP_MAX}" \
     --table=-1 \

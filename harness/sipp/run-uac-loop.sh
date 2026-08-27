@@ -8,6 +8,17 @@
 # malformed messages). A non-zero exit from those is normal.
 set -u
 
+# --- IDLE MODE ---
+# With UAC_IDLE=1 the container stays up but places no calls of its own, so a
+# test can drive it with `docker exec` and read a capture that holds ONLY the
+# calls that test placed. Without this the background loop keeps calling while
+# a measurement is being taken, and every count is the test's calls plus
+# however many the loop happened to fit in the same window.
+if [ "${UAC_IDLE:-0}" = "1" ]; then
+    echo "sipp-uac: idle (UAC_IDLE=1) -- place calls with docker exec"
+    exec tail -f /dev/null
+fi
+
 IFACE="${IFACE:-eth0}"
 IP="$(ip -4 -o addr show "$IFACE" | awk '{print $4}' | cut -d/ -f1 | head -1)"
 PROXY="${PROXY:-172.28.0.10:5060}"

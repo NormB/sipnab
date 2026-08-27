@@ -4882,6 +4882,86 @@ fn the_analyze_page_asks_for_a_bug_report_only_when_it_earned_one() {
     );
 }
 
+/// No test judges an export from whichever directory entry came first.
+///
+/// The shape is `read_dir(..).next().expect(..)`, and it is a test that reads
+/// ONE arbitrary file and draws a conclusion about all of them. It is not a
+/// hypothetical: `a_written_container_emits_no_explicit_null` did exactly this
+/// and passed for two releases because the entry it drew was the answered
+/// dialog. Container filenames gained a hash suffix, the order changed, CI drew
+/// the failed dialog instead, and a correct container failed the build.
+///
+/// A local `cargo test` cannot catch this -- the same test passed here under
+/// both `--features full` and `--all-features` while failing on the runner,
+/// because what differed was the filesystem, not the feature set. So the gate
+/// is static: it refuses the shape rather than trying to observe the flake.
+///
+/// Sorting first is the fix, and it is what `containers_in` in src/app/batch.rs
+/// does. "All of them" and "the same one every time" are different guarantees
+/// and a test usually wants both.
+#[test]
+fn no_test_judges_an_export_from_one_arbitrary_directory_entry() {
+    let mut offenders = Vec::new();
+    let mut scanned = 0usize;
+    for dir in ["src", "tests"] {
+        for path in walkdir(std::path::Path::new(dir)) {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            scanned += 1;
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if !line.contains("read_dir(") {
+                    continue;
+                }
+                // Code, not prose describing it. This gate's own doc comment
+                // names the shape it refuses, and without this it reported
+                // itself -- the same self-match a bare `pgrep -f` makes.
+                let code = line.trim_start();
+                if code.starts_with("//") || code.starts_with('*') {
+                    continue;
+                }
+                // A quoted mention inside an assertion message is prose too.
+                let before = line.split("read_dir(").next().unwrap_or("");
+                if before.matches('"').count() % 2 == 1 {
+                    continue;
+                }
+                // The statement, not the file: stop at the first `;` so an
+                // unrelated `.expect(` further down cannot be blamed on this.
+                let window: String = lines[i..lines.len().min(i + 7)]
+                    .iter()
+                    .map(|l| l.trim())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let stmt = window.split(';').next().unwrap_or("");
+                if !stmt.contains(".next()") || stmt.contains("sort") {
+                    continue;
+                }
+                let tail = stmt.rsplit(".next()").next().unwrap_or("");
+                if tail.contains(".expect(") || tail.contains(".unwrap(") {
+                    offenders.push(format!("{}:{}", path.display(), i + 1));
+                }
+            }
+        }
+    }
+
+    assert!(
+        scanned > 50,
+        "only {scanned} .rs files were scanned, so this gate is checking \
+         almost nothing -- the walk stopped matching"
+    );
+    assert!(
+        offenders.is_empty(),
+        "these tests judge an export from one arbitrary directory entry, so \
+         their verdict depends on filesystem order: {offenders:?}\n\
+         Collect and SORT the entries instead -- see `containers_in` in \
+         src/app/batch.rs."
+    );
+}
+
 /// No test may hide behind a feature that `--features full` does not enable.
 ///
 /// The homepage advertises one automated-test count, and TWO gates pin it to a

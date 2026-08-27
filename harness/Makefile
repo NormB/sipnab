@@ -33,6 +33,18 @@ $(SIGNING_KEY_FILE):
 	@chmod 644 $(SIGNING_KEY_FILE)
 	@echo "generated MCP HMAC signing key -> $(SIGNING_KEY_FILE)"
 
+.PHONY: api-key
+api-key: secrets/api.key ## Generate the REST API key (idempotent)
+secrets/api.key:
+# 0600, not 0644. `umask 077` already yields owner-only and an explicit chmod
+# widening it back was cargo-culted from the signing key beside it, leaving a
+# live credential world-readable on a multi-user host. Nothing needs the wider
+# mode: the entrypoint reads this as root before sipnab drops privileges to
+# `nobody`, and root is not subject to the permission bits.
+	@umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > $@
+	@chmod 0600 $@
+	@echo "wrote $@ (0600)"
+
 .PHONY: signing-key
 signing-key: $(SIGNING_KEY_FILE) ## Generate the long-lived MCP signing key (idempotent)
 

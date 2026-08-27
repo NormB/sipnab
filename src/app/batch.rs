@@ -5486,16 +5486,35 @@ mod tests {
 
     // ── What the run records about its own suppression ──────────
 
+    /// Every container in `dir`, sorted by filename.
+    ///
+    /// One function so no test picks whichever entry `read_dir` happened to
+    /// yield. That shape cost a CI cycle: `a_written_container_emits_no_
+    /// explicit_null` judged a whole export from one arbitrary file, passed
+    /// for two releases because that file was the ANSWERED dialog, and fired
+    /// the moment container names changed and the FAILED one came first.
+    ///
+    /// Sorted rather than merely collected, because "all of them" and "the
+    /// same one every time" are different guarantees and a test usually wants
+    /// both. `no_test_judges_an_export_from_one_arbitrary_directory_entry`
+    /// keeps the shape from coming back.
+    #[cfg(feature = "vcon")]
+    fn containers_in(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .expect("readable")
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        paths.sort();
+        assert!(!paths.is_empty(), "no container was written to {dir:?}");
+        paths
+    }
+
     /// Read the `capture_completeness` block out of the first container in a
     /// directory. The containers are what a consumer actually gets.
     #[cfg(feature = "vcon")]
     fn first_completeness(dir: &std::path::Path) -> serde_json::Value {
-        let f = std::fs::read_dir(dir)
-            .expect("readable")
-            .flatten()
-            .next()
-            .expect("at least one container was written");
-        let text = std::fs::read_to_string(f.path()).expect("readable");
+        let text = std::fs::read_to_string(&containers_in(dir)[0]).expect("readable");
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
         let body = v["analysis"][0]["body"]
             .as_str()
@@ -6029,12 +6048,7 @@ mod tests {
             None
         ));
 
-        let first = std::fs::read_dir(tmp.path())
-            .expect("readable")
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .next()
-            .expect("at least one container");
+        let first = containers_in(tmp.path())[0].clone();
         let text = std::fs::read_to_string(&first).expect("readable file");
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
 
@@ -6198,12 +6212,7 @@ mod tests {
             None,
         ));
 
-        let first = std::fs::read_dir(tmp.path())
-            .expect("readable")
-            .flatten()
-            .next()
-            .expect("a container");
-        let text = std::fs::read_to_string(first.path()).expect("readable");
+        let text = std::fs::read_to_string(&containers_in(tmp.path())[0]).expect("readable");
         assert!(
             text.contains("4242"),
             "the container must carry this run's frame count, not a default: {text}"
@@ -6443,12 +6452,7 @@ mod tests {
     #[test]
     fn one_dialog_keeps_one_uuid_across_runs() {
         let read_uuid = |dir: &std::path::Path| -> String {
-            let f = std::fs::read_dir(dir)
-                .expect("readable")
-                .flatten()
-                .next()
-                .expect("a file");
-            let text = std::fs::read_to_string(f.path()).expect("readable");
+            let text = std::fs::read_to_string(&containers_in(dir)[0]).expect("readable");
             let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
             v["uuid"].as_str().expect("a uuid").to_owned()
         };
@@ -6639,12 +6643,7 @@ mod tests {
             None
         ));
 
-        let f = std::fs::read_dir(tmp.path())
-            .expect("readable")
-            .flatten()
-            .next()
-            .expect("a file");
-        let text = std::fs::read_to_string(f.path()).expect("readable");
+        let text = std::fs::read_to_string(&containers_in(tmp.path())[0]).expect("readable");
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
         for party in v["parties"].as_array().expect("parties") {
             assert!(
@@ -6672,12 +6671,7 @@ mod tests {
             None
         ));
 
-        let f = std::fs::read_dir(tmp.path())
-            .expect("readable")
-            .flatten()
-            .next()
-            .expect("a file");
-        let text = std::fs::read_to_string(f.path()).expect("readable");
+        let text = std::fs::read_to_string(&containers_in(tmp.path())[0]).expect("readable");
         assert!(
             !text.contains("\"url\""),
             "sipnab hosts nothing, so a container never points elsewhere: {text}"
@@ -6862,6 +6856,45 @@ mod tests {
             seen += 1;
         }
         assert_eq!(seen, 2, "both containers were read");
+    }
+
+    /// The null verdict is the same whichever end of the directory you start.
+    ///
+    /// The property the broken test needed and could not have had while it
+    /// read one entry. Sorting makes the ORDER fixed; this makes the ANSWER
+    /// independent of it, which is the stronger claim and the one that was
+    /// actually violated: forwards the export looked clean, backwards it did
+    /// not, and both were the same correct export.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_null_verdict_is_the_same_in_either_direction() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_one_failed(),
+            &StreamStore::new(16),
+            7,
+            None,
+        ));
+
+        let paths = containers_in(tmp.path());
+        assert!(
+            paths.len() > 1,
+            "one container cannot have an order; the fixture must write two"
+        );
+
+        let verdict = |ps: &[std::path::PathBuf]| {
+            for path in ps {
+                let text = std::fs::read_to_string(path).expect("readable");
+                let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+                assert_no_null_in_container(&v, &text);
+            }
+        };
+        verdict(&paths);
+        let mut reversed = paths.clone();
+        reversed.reverse();
+        verdict(&reversed);
     }
 
     /// The exclusion above is narrow: a null the vCon module itself emits is

@@ -36,7 +36,10 @@ services:
     environment:
       OPENSIPS_IP: ${OPENSIPS_IP:-172.28.0.10}
       UAS_TARGET: ${UAS_IP:-172.28.0.20}:5060          # internal SIP port is fixed
-      RTPENGINE_SOCK: udp:127.0.0.1:22222
+      # rtpengine lives in its own namespace now, so loopback no longer
+      # reaches it. This address and RTPENGINE_NG_BIND below must agree, or
+      # opensips answers every INVITE with a 500 and the media never anchors.
+      RTPENGINE_SOCK: udp:${RTPENGINE_IP:-172.28.0.11}:22222
     ports:
       # bind_addr:host_port:container_port -- internal ports are fixed; only the
       # host side is configurable (to dodge conflicts with a host SIP service).
@@ -53,8 +56,8 @@ services:
       # to the LAN address of this host (not 0.0.0.0) in .env, so the exposure
       # is a decision someone made rather than the default they inherited.
       - "${HARNESS_BIND:-127.0.0.1}:${SIP_HOST_PORT:-5060}:5060/udp"         # SIP
-      - "${HARNESS_BIND:-127.0.0.1}:${MCP_PORT:-8731}:8731/tcp"              # sipnab MCP HTTP
-      - "${HARNESS_BIND:-127.0.0.1}:${RTP_MIN:-30000}-${RTP_MAX:-30050}:30000-30050/udp"  # rtpengine media
+      - "${HARNESS_BIND:-127.0.0.1}:${MCP_PORT:-8731}:8731/tcp"              # sipnab-proxy MCP HTTP
+      - "${HARNESS_BIND:-127.0.0.1}:${API_PORT:-8080}:8080/tcp"              # sipnab-proxy REST
     networks:
       sipnet:
         ipv4_address: ${OPENSIPS_IP:-172.28.0.10}
@@ -88,30 +91,57 @@ services:
     image: sipnab-harness/rtpengine:local
     container_name: rtpengine
     restart: unless-stopped
-    network_mode: "service:opensips-1"
+    # Its OWN namespace, not opensips-1's. Sharing one meant a sipnab on the
+    # "relay" and a sipnab on the "proxy" read the same eth0 and returned
+    # identical answers -- two copies of one capture point, which cannot show
+    # that a leg seen at the proxy is the leg seen at the relay.
+    ports:
+      # These moved here with rtpengine. They were published on opensips-1 while
+      # the two shared a namespace; a namespace split moves the ports with the
+      # process that binds them, and leaving them behind publishes nothing.
+      - "${HARNESS_BIND:-127.0.0.1}:${RELAY_MCP_PORT:-8732}:8732/tcp"        # sipnab-relay MCP HTTP
+      - "${HARNESS_BIND:-127.0.0.1}:${RELAY_API_PORT:-8081}:8081/tcp"        # sipnab-relay REST
+      - "${HARNESS_BIND:-127.0.0.1}:${RTP_MIN:-30000}-${RTP_MAX:-30050}:30000-30050/udp"  # media
+    networks:
+      sipnet:
+        ipv4_address: ${RTPENGINE_IP:-172.28.0.11}
     depends_on:
       - opensips-1
     cap_add:
       - NET_RAW
       - NET_ADMIN
     environment:
-      RTPENGINE_IF: ${OPENSIPS_IP:-172.28.0.10}
+      RTPENGINE_IF: ${RTPENGINE_IP:-172.28.0.11}
+      # Reachable from another namespace now, so the ng control socket cannot
+      # stay on loopback.
+      RTPENGINE_NG_BIND: ${RTPENGINE_IP:-172.28.0.11}:22222
       RTP_MIN: ${RTP_MIN:-30000}
       RTP_MAX: ${RTP_MAX:-30050}
       # Empty by default. Set it to mirror the ng control plane, which is what
       # lets sipnab name media captured on a relay -- see docs/rtpengine.md.
-      HOMER: ${HOMER:-}
+      # ON by default now, not empty. Mirroring the ng control plane is what
+      # lets the relay NAME the media it sees: signaling never transits
+      # rtpengine, so without this its streams carry associated_dialog=null and
+      # no amount of correlation downstream can recover the Call-ID.
+      #
+      # The destination does not have to listen -- sipnab reads these datagrams
+      # off the wire rather than receiving them, because rtpengine takes exactly
+      # ONE Homer destination and pointing it at a diagnostic tool would take it
+      # away from the collector it feeds.
+      HOMER: ${HOMER:-172.28.0.30:9060}
       HOMER_ID: ${HOMER_ID:-2001}
 
   # ---- sipnab: capture (shared netns) + MCP HTTP server --------------------
-  sipnab:
+  sipnab-proxy:
     build:
       context: ..
       dockerfile: harness/sipnab/Dockerfile
       network: host
     image: sipnab-harness/sipnab:local
-    container_name: sipnab
+    container_name: sipnab-proxy
     restart: unless-stopped
+    # The PROXY capture point: opensips-1's namespace. Sees signaling, and no
+    # media at all now that rtpengine anchors it elsewhere.
     network_mode: "service:opensips-1"
     depends_on:
       - opensips-1
@@ -120,18 +150,47 @@ services:
       - NET_ADMIN
     environment:
       MCP_BIND: 0.0.0.0:8731
+      API_BIND: 0.0.0.0:8080
       MCP_ALLOWED_HOST: ${SIPNAB_MCP_ALLOWED_HOST:-*}
       CAPTURE_IFACE: eth0
       SIP_PORTRANGE: ${SIP_PORT:-5060}-5061
-      # Rotating short-lived bearer tokens minted from the signing key. Keep
-      # MCP_ROTATE_INTERVAL <= MCP_TOKEN_TTL/2 so the published token always has
-      # comfortable remaining validity.
+      # Its own token file: the rotator renames within /run/secrets, and two
+      # instances writing one path would each publish a token the other just
+      # replaced.
+      MCP_TOKEN_FILE: /run/secrets/mcp.token.proxy
       MCP_TOKEN_TTL: ${SIPNAB_MCP_TOKEN_TTL:-600}
       MCP_ROTATE_INTERVAL: ${SIPNAB_MCP_ROTATE_INTERVAL:-300}
+      NODE_NAME: proxy
     volumes:
-      # Whole secrets dir mounted rw: the entrypoint reads mcp.signing-key and
-      # the rotator atomically renames mcp.token within this dir (a single-file
-      # bind mount would make the rename fail with EBUSY).
+      - ./secrets:/run/secrets
+      - ./captures:/captures
+
+  sipnab-relay:
+    image: sipnab-harness/sipnab:local
+    container_name: sipnab-relay
+    restart: unless-stopped
+    # The RELAY capture point: rtpengine's namespace. Sees media, and the ng
+    # control plane, and no signaling.
+    network_mode: "service:rtpengine"
+    depends_on:
+      - rtpengine
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      MCP_BIND: 0.0.0.0:8732
+      API_BIND: 0.0.0.0:8081
+      MCP_ALLOWED_HOST: ${SIPNAB_MCP_ALLOWED_HOST:-*}
+      CAPTURE_IFACE: eth0
+      SIP_PORTRANGE: ${SIP_PORT:-5060}-5061
+      # The ng control socket and the HEP mirror of it. The relay sees no
+      # signaling, so these are what let it NAME the media it captures.
+      CONTROL_PORTS: "22222 9060"
+      MCP_TOKEN_FILE: /run/secrets/mcp.token.relay
+      MCP_TOKEN_TTL: ${SIPNAB_MCP_TOKEN_TTL:-600}
+      MCP_ROTATE_INTERVAL: ${SIPNAB_MCP_ROTATE_INTERVAL:-300}
+      NODE_NAME: relay
+    volumes:
       - ./secrets:/run/secrets
       - ./captures:/captures
 
@@ -160,6 +219,10 @@ services:
       - sipp-uas
       - rtpengine
     environment:
+      # Idle by default: a background call loop running during a measurement
+      # makes every count "the calls under test, plus whatever the loop fit in
+      # the same window". Set UAC_IDLE=0 to restore the soak loop.
+      UAC_IDLE: ${UAC_IDLE:-1}
       PROXY: ${OPENSIPS_IP:-172.28.0.10}:5060          # internal SIP port is fixed
       UAS_AOR: ${UAS_IP:-172.28.0.20}
       LOOP_PAUSE: ${LOOP_PAUSE:-5}
