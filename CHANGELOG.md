@@ -10,7 +10,82 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **Seven fields the vCon vocabulary defines and sipnab was not emitting.**
+  `subject` names the dialog so a store whose search matches subject or UUID can
+  find a container by something an operator knows. `party.name` carries the
+  display name under the declared key, kept honest by the `validation: "none"`
+  that travels beside it. `party.stir` carries an observed RFC 8224 PASSporT --
+  the JWS alone, on the caller only, transcribed and never verified.
+  `session_id` carries the RFC 7989 pair, which survives a B2BUA where `Call-ID`
+  does not; a `nil` or malformed half is omitted rather than transcribed,
+  because a correlation key that matches nothing is worse than an absent field.
+- **`transfer` Dialog Objects for observed REFERs.** Naming `transferor`,
+  `transferee`, `transfer_target` and `original` as indices, with the `Refer-To`
+  party appended to the array so the target has an index to point at. An
+  attended transfer -- a `Replaces` parameter in the `Refer-To` URI -- points
+  `consultation` at an EMPTY Dialog Object, which is the shape the vCon working
+  group agreed on at IETF 124 for a dialog known to have occurred with nothing
+  available about it. A blind transfer names no `consultation` at all.
+- **`--vcon-max-inline-media MIB`.** The 5 MiB default is measured against one
+  store that answers HTTP 204 and then drops the payload, and it stays the
+  default for that reason -- but the number is a property of a CONSUMER rather
+  than of the format. `0` refuses every inline body without turning the exporter
+  off. Batch export, the REST server and the MCP server all read one value, so a
+  call exported two ways cannot come back with audio in one container and a
+  refusal in the other.
+- **`--content-deny-tombstone`.** Off by default. With it, a dialog a deny
+  header suppressed gets an identity-only container declaring
+  `redacted: {"type": "content-withheld"}` -- `type` alone, since sipnab never
+  wrote an unredacted instance to point at. No message trace, no media, no
+  bodies. It is opt-in because a tombstone reveals that the call EXISTED.
+- **`--vcon-digest`.** Prints `<sha256>  <filename>` per container to stdout in
+  `sha256sum` format, while the progress summary stays on stderr. Not a
+  signature: one cannot verify against a stored object, because a conserver adds
+  fields on ingest. A digest claims only what sipnab wrote, which is what binds
+  an emission to a store's ledger entry out of band.
+- **A second consumer's schema, gated in CI.** `api.vcon.store`'s live OpenAPI
+  document is vendored beside the working group's schema. A sipnab container
+  diverges from it in exactly two ways, both deliberate, and the test asserts
+  the SET -- a third divergence is news either way.
+
+### Changed
+
+- **A Dialog Object that carries nothing and failed at nothing now names NO
+  `type`.** It was `incomplete`, unconditionally. §4.3.1 of the core draft
+  defines that value as a call that "failed to be setup", so every
+  signaling-only container for a call that answered asserted a setup failure
+  that never happened -- and named no reason, which the same section makes a
+  MUST. The type and the disposition now come from one decision, because the
+  draft couples them. `incomplete` is reserved for a final response sipnab
+  OBSERVED to be a failure.
+  The draft's own schema contradicts its §4.3 prose here, and the vendored copy
+  carries that single deviation with the reasoning in a `$comment`. See the
+  vCon working group's issue #20.
+- **REST errors are RFC 9457 `application/problem+json`.** They were a bare
+  status code with no body, so a client got a number and had to guess which of a
+  handler's several 400s it had hit. The `type` slug derives from the status
+  rather than from free text at each call site.
+
 ### Fixed
+
+- **The vCon spool could hand a reader a partial container.** `--export-vcon-dir`
+  is a queue an external bridge polls, and it wrote with `std::fs::write` --
+  which truncates the destination and then fills it, so every byte of the write
+  was a window in which the file existed and was invalid, and a failure inside
+  that window destroyed the previous container too. `--vcon-out` printed
+  "Nothing was exported" on exactly that path, which the truncation made false
+  at the moment it printed. Both sites now stage under a dot-prefixed sibling in
+  the DESTINATION directory, `sync_all`, rename, and sync the directory so the
+  rename itself is durable.
+- **Four scripts detected markdown fences with a per-line toggle**, which cannot
+  see fence run length. A four-backtick block containing a three-backtick line
+  -- the ordinary way to document fenced markdown -- read as closed at the inner
+  line, so `rfc-links.py`, `link-repo-paths.py` and `fix-line-anchors.py`
+  rewrote code as prose, and `check-cookbook.py` silently stopped extracting the
+  commands it was gating. All four now use `lib_markdown`, and a test rejects
+  any new copy of the pattern.
 
 - **`--hep-parse` no longer switches off relay media naming.** Unwrapping a HEP
   datagram replaced the packet with the payload inside it and dropped the

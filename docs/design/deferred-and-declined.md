@@ -280,7 +280,7 @@ The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
 ([`server.rs:6207`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6207)) writes a pcap, `export_audio`
 ([`server.rs:6260`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6260)) writes a WAV, `list_captures`
-([`server.rs:6131`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6131)) reads a directory, and
+([`server.rs:6156`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6156)) reads a directory, and
 `shutdown_server` ([`server.rs:6725`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6725)) ends the process.
 
 **None of them mutates a store.** `shutdown_server` reads `dialog_store` and
@@ -390,7 +390,7 @@ agent reads it verbatim through any of the three tools above; and with a
 write-back tool present, the text it reads can reach a verb that changes what
 the operator sees. Today the worst that text can reach is a read, a file write
 confined to `--mcp-file-root` by `resolve_in_root`
-([`server.rs:458`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L458)), or — only if armed, only on a
+([`server.rs:482`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L482)), or — only if armed, only on a
 second call, only having named the discard — a process stop. That is a
 qualitative gap, not a matter of degree.
 
@@ -672,9 +672,9 @@ nothing.
 
 **The path-confinement problem is solved.** The roadmap's other Tier 3 entry,
 `list_captures`, was filed with *"needs a path allowlist or it is an
-arbitrary-file-read"*. It shipped ([`server.rs:458`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L458))
+arbitrary-file-read"*. It shipped ([`server.rs:482`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L482))
 with `--mcp-file-root` and `resolve_in_root`
-([`server.rs:458`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L458)), which accepts a bare filename and
+([`server.rs:482`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L482)), which accepts a bare filename and
 rejects anything with a separator, a `..`, a root prefix or a drive letter before
 touching the filesystem. So an agent can already *see* the corpus, safely, and
 `open_capture` would need no new security machinery.
@@ -810,7 +810,7 @@ The opt-in machinery and the path confinement are already solved and should be
 reused rather than redesigned: the `shutdown_server` flag, off-by-default field,
 builder and first-statement refusal
 ([`server.rs:6725`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6725)), and `--mcp-file-root` with
-`resolve_in_root` ([`server.rs:458`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L458)).
+`resolve_in_root` ([`server.rs:482`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L482)).
 
 **What shipped**, against those three:
 

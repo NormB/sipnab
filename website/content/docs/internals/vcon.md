@@ -150,15 +150,35 @@ text on the way out, and every test that reads one parses it back. A body typed
 as `serde_json::Value` round-trips fine through `serde_json` and fails against a
 real store, which is exactly the class of defect a local test cannot see.
 
-**The format demands some fields even when there is nothing to say.** The
-working group's schema makes `type` and `start` mandatory on every dialog
-object and `start`, `party` and `dialog` mandatory on every attachment. An
-empty dialog object reads as tidy and is invalid. `dialog_object()` therefore
-always names a `type` and always carries a `start`.
+**Two separate defects in the draft meet on this one field.** The first is a
+vocabulary gap: none of the five §4.3.1 type values describes a conversation
+known to have occurred whose content the container does not carry or
+reference, which is the ordinary result for an observer that retains no media.
+The second is a prose/schema inconsistency: §4.3 says "it is possible to have a
+Dialog Object with no parameters in it", and the schema published beside that
+sentence requires `type` AND `start`, so it forbids that shape twice over.
 
-**The `type` follows the CONTENT, not the call.** `dialog_object()` builds
-`incomplete`, because at construction the object carries nothing. The media
-path retypes it to `recording` when audio actually arrives, and clears
+sipnab needs only the first requirement relaxed — it knows the start time — so
+the vendored copy removes `type` from `required` and leaves `start`. Read that
+as a documented compatibility deviation rather than a fix: making a required
+field optional changes validation behavior and obliges consumers to handle a
+state the schema used to guarantee away. The cleaner long-term answer is an
+explicit sixth type for the content-unavailable state, which an absent `type`
+cannot distinguish from a producer that simply omitted it. `start`, `party`
+and `dialog` stay mandatory on every attachment.
+
+**The `type` follows the CONTENT, not the call — and an object carrying nothing
+names no type at all.** Of the five values §4.3.1 defines, none is true of a
+signaling-only object: four promise content it does not hold, and `incomplete`
+names a call that "failed to be setup", which is a claim about the
+CONVERSATION. sipnab emitted `incomplete` there until 0.5.128, so every
+signaling-only export of a successful call shipped a container reporting a
+setup failure — read months later beside a switch's CDR showing a connected
+ninety-second call, the container is the thing that looks wrong. sipnab now keeps `incomplete`
+for a dialog whose final response it OBSERVED to be a failure, and `dialog_object()` decides the type and the disposition in one
+expression because §4.3.1 couples them: an incomplete object MUST name a
+disposition, and a disposition is only nameable when sipnab saw a failure. The
+media path types the object `recording` when audio actually arrives, and clears
 `disposition` with it. Typing an object `recording` when it carries no
 content — which this module did until 0.5.125 — is an ingest hazard rather than
 an imprecise label. The conserver's transcription link selects
@@ -173,7 +193,12 @@ mutation survives.
 
 **The repository carries the schema, so the gate runs offline.**
 [`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json) is the
-working group's own schema, vendored.
+working group's own schema, vendored, with the one deviation described above
+recorded in a `$comment` beside the line it changes.
+`the_vendored_schema_deviates_from_the_draft_at_exactly_one_point` is the
+tripwire: re-vendoring the file from the draft is a correct-looking action that
+silently restores the contradiction, and whoever does it lands on that test and
+reads why before deciding.
 `a_container_validates_against_the_working_group_schema` in
 [`tests/vcon_ingest_contract_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/vcon_ingest_contract_test.rs)
 validates a real export against it. That one test found six violations that the

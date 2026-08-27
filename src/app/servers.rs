@@ -360,6 +360,11 @@ pub fn start_servers(
                 selection.api_rate_limit_per_peer,
             ))),
             max_rows: selection.api_row_cap,
+            // One number across both doors: see `ApiState::max_inline_media_bytes`.
+            max_inline_media_bytes: cli
+                .output_args
+                .vcon_max_inline_media
+                .map(|mib| mib.saturating_mul(1024 * 1024)),
             // The same object the MCP arm below is handed, so both doors name
             // one capture and see one rotation.
             capture: Some(Arc::clone(&capture_state)),
@@ -408,6 +413,13 @@ pub fn start_servers(
                     selection.max_tracked_peers,
                 )
                 .with_row_cap(selection.mcp_row_cap)
+                // One number across both doors: see
+                // `SipnabMcp::max_inline_media_bytes`.
+                .with_max_inline_media_bytes(
+                    cli.output_args
+                        .vcon_max_inline_media
+                        .map(|mib| mib.saturating_mul(1024 * 1024)),
+                )
                 .with_body_cap(selection.mcp_body_cap)
                 .with_findings_cap(selection.mcp_max_findings);
             let s = match cli.mcp_args.mcp_file_root.as_ref() {

@@ -44,14 +44,14 @@ Tiers:
 
 ## Status
 
-**63 open, 324 done** across 20 sections.
+**50 open, 337 done** across 20 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
 |---|---:|---:|---|
 | P0 | 0 | 18 | `##########` |
 | P1 | 2 | 53 | `##########` |
-| PV | 13 | 0 | `..........` |
+| PV | 0 | 13 | `##########` |
 | P2 | 1 | 108 | `##########` |
 | P3 | 1 | 63 | `##########` |
 | P4 | 0 | 39 | `##########` |
@@ -703,90 +703,205 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
      draft text -- confirm each before acting. The CODE behavior in PV1 was
      confirmed directly. -->
 
-- [ ] **PV1 — a successful call exports as `incomplete` with no `disposition`.**
-  `kind: Some(INCOMPLETE_TYPE)` is unconditional at
-  [`src/output/vcon.rs:1290`](https://github.com/NormB/sipnab/blob/main/src/output/vcon.rs#L1290),
-  while `disposition` is `final_status_code().and_then(failure_disposition)`,
-  and `failure_disposition` answers `None` for anything outside `400..=699`.
-  A 200 OK signaling-only export therefore carries `type: "incomplete"` and no
-  disposition. Two problems are claimed: the draft makes `disposition` required
-  on an incomplete dialog, and it defines `incomplete` as a call that failed to
-  set up -- a positive claim of failure that sipnab did not observe. The code
-  comment beside it reasons carefully about WHEN a reason may be named and
-  never confronts either point. No value in the closed disposition set means
-  "not observed", so this needs a decision rather than a patch. VERIFY THE
-  DRAFT TEXT FIRST; if it holds, raise it with the vCon working group.
+- [x] **PV1 — a successful call exported as `incomplete` with no
+  `disposition`. FIXED in 0.5.128.** Both claims held against
+  draft-ietf-vcon-vcon-core-03. §4.3.1 makes `disposition` a MUST on an
+  incomplete dialog and defines the type as a call that "failed to be setup",
+  so every signaling-only export of a call that connected asserted a setup
+  failure sipnab never observed, and named no reason for it. No value in the
+  closed disposition set of §4.3.11 means "not observed", and none of the five
+  types in §4.3.1 is true of an object that carries nothing -- so the fix was
+  not reachable by choosing a different value.
+  §4.3 resolves it: "it is possible to have a Dialog Object with no parameters
+  in it". An object carrying nothing now names NO type, and `dialog_object()`
+  decides the type and the disposition in ONE expression, because §4.3.1
+  couples them. `incomplete` is reserved for a final response sipnab observed
+  to be a failure.
+  The draft's own schema contradicts that prose with `"required": ["type",
+  "start"]`. The prose is treated as normative and the schema line as a defect;
+  [`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json)
+  carries that single deviation with the reason in a `$comment` beside it, and
+  `the_vendored_schema_deviates_from_the_draft_at_exactly_one_point` is the
+  tripwire against a silent re-vendor. Treat that removal as a documented
+  compatibility deviation rather than a fix: making a formerly required field
+  optional changes validation behavior and obliges every consumer to handle a
+  state the schema used to guarantee away.
+  Still to do: raise BOTH defects with the vCon working group -- they are
+  separate. The vocabulary gap is that no §4.3.1 value describes a conversation
+  known to have occurred whose content the container does not carry, and the
+  preferred remedy is an explicit sixth type for that state
+  (`content-unavailable` names the container's knowledge rather than
+  speculating that nothing captured the call). The prose/schema inconsistency
+  is that §4.3 permits an object with NO parameters while the schema requires
+  `type` and `start`, so relaxing `type` alone does not resolve it. Ask also
+  for §4.3.1 to say plainly that `incomplete` covers a failure to reach
+  conversational exchange and that absence of content alone does not make a
+  dialog incomplete -- that conflation is what sipnab shipped.
 
-- [ ] **PV2 — say a deny header fired using `redacted`, not only a custom
-  attachment.** `--content-deny-header` suppression is reported only as
-  `dialogs_suppressed_by_deny` inside the completeness attachment, which a
-  consumer may ignore. `grep -c 'redacted\|amended' src/output/vcon.rs` is 0.
-  A `redacted` object with no `uuid` is claimed to be the registered way to say
-  content was withheld and no unredacted original exists.
+- [x] **PV2 — a withheld dialog says so in registered vocabulary. DONE in
+  0.5.128.** The claim held: a `redacted` object carrying `type` alone is the
+  format's way to say content was withheld with no unredacted instance to point
+  at, and `uuid`/`url` are correctly absent because sipnab never wrote one and a
+  `url` would offer the withheld content for retrieval.
+  Implementing it exposed a contract mismatch first. `--content-deny-header`
+  documents itself as suppressing CONTENT and in fact suppressed the entire
+  dialog, so nothing was emitted to carry a `redacted` object at all. The
+  narrower reading is now available behind `--content-deny-tombstone`, OFF by
+  default: the conservative behavior stays the default because a tombstone
+  reveals that the call existed, which is a disclosure an operator must choose.
+  With it on, a denied dialog gets an identity-only container -- no message
+  trace, no media, no bodies, and no `type`, since a withheld dialog is not a
+  FAILED one.
 
-- [ ] **PV3 — validate against a second consumer's schema in CI.** Vendor
-  `api.vcon.store/openapi.json` beside [`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json). Their
-  `Dialog` uses `mimetype`, sipnab emits `mediatype` 13 times and `mimetype`
-  never, and their schema marks `type`/`start`/`parties` required. Their
-  `additionalProperties: nullable` means a sipnab container may validate and
-  still be unreadable, so confirm which way it fails.
+- [x] **PV3 — a second consumer's schema is vendored and gated. DONE in
+  0.5.128.** [`tests/schemas/vcon-store-openapi.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon-store-openapi.json), fetched from their live
+  OpenAPI document on 2026-08-27, with an `x-sipnab-provenance` note saying not
+  to edit it to make a test pass. Every claim checked out: their `Dialog`
+  requires `type`, `start` AND `parties`, and uses `mimetype` where sipnab
+  emits `mediatype`.
+  A sipnab container diverges in EXACTLY TWO ways, both deliberate, and
+  `a_container_meets_or_knowingly_diverges_from_the_second_consumer` asserts
+  the set rather than merely that validation fails -- a third divergence is
+  news either way. They require a dialog `type` (the PV1 decision, and the same
+  disagreement the draft has with its own prose) and a dialog-level `parties`
+  array, which sipnab names per channel only where evidence attributes it.
+  The `mimetype`/`mediatype` split cannot be caught by a schema at all: their
+  `additionalProperties` accepts anything, so a container carrying `mediatype`
+  validates cleanly and their consumer still finds no media -- passing AND
+  unreadable, which is the worst outcome. A separate test asserts it directly.
 
-- [ ] **PV4 — emit `subject`.** The `Vcon` struct has none. That consumer's
-  search matches subject or UUID substring only, so a sipnab container is
-  findable by a UUID nobody memorized. A purely descriptive subject asserts
-  nothing. Check first whether the store synthesizes one on ingest.
+- [x] **PV4 — `subject` is emitted. DONE in 0.5.128.** `SIP call <call-id>`,
+  which makes a container findable by the one identifier an operator actually
+  has. It is descriptive and nothing more: an observer is in no position to say
+  what a conversation was ABOUT, and a subject that tried would be the single
+  field in the container asserting something nothing measured. A test names the
+  caveat strings it must never contain -- `PARTIAL`, `SIGNALING ONLY`, `failed`
+  -- because the caveat has its own two surfaces and a verdict here would read
+  as authoritative. Reversed a prior decision that `subject` stay empty; that
+  test now carries the new reasoning instead of being deleted.
 
-- [ ] **PV5 — emit `party.name` from the SIP display name.** Already carried as
-  the non-standard `sip_display_name`. The unconditional `validation: "none"`
-  is what MAKES this legitimate rather than what forbids it: it says this is a
-  name the wire carried, not a person sipnab identified.
+- [x] **PV5 — `party.name` is emitted. DONE in 0.5.128.** Beside
+  `sip_display_name`, not instead of it: the SIP-specific key says "this is
+  what the header said", which the generic key cannot. The prior rule was that
+  promoting a display name asserts an identity -- true of the name alone, and
+  answered by `validation: "none"` beside it rather than by silence.
+  Withholding it only meant every generic consumer showed an unnamed party.
+  The invariant is now a PAIRING, checked across every export shape, because
+  "no name" had been asserted in three separate files and changing it found
+  them one at a time by breaking the build.
 
-- [ ] **PV6 — emit `party.stir` from an observed RFC 8224 `Identity` header.**
-  A passive tap sees the PASSporT verbatim and can transcribe it without
-  validating it. The highest-value provenance field a non-verifying observer
-  can legitimately fill. Copy verbatim, never assert it verified.
+- [x] **PV6 — `party.stir` carries an observed PASSporT. DONE in 0.5.128.**
+  The JWS ALONE: an `Identity` header is `<token>;info=...;alg=...;ppt=...`,
+  and §4.2 defines `stir` as the token in JWS Compact Serialization form, so a
+  consumer handed the whole header value cannot parse it. Shape-checked only --
+  three dot-separated non-empty segments -- because verifying is precisely what
+  sipnab must not claim to have done. It rides on the CALLER, since the
+  `Identity` header authenticates that side and attaching it to the callee
+  would invent an attestation. `validation: "none"` travels beside it, and a
+  test asserts that pairing: a signed token is the strongest-looking field a
+  passive observer can fill, and a reader may take its presence for
+  verification.
 
-- [ ] **PV7 — parse the RFC 7989 `Session-ID` header into `session_id`.**
-  The draft's own leg-correlation mechanism, and it survives B2BUAs where
-  Call-ID does not -- directly serving multi-node leg correlation, which
-  sipnab approximates with custom `sip_from_tag`/`sip_to_tag`. NOT the same
-  field as the SIPREC `session_id` in [`src/sip/siprec.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/siprec.rs).
+- [x] **PV7 — `session_id` carries the RFC 7989 pair. DONE in 0.5.128.**
+  Wiring, not new parsing: [`src/sip/session_id.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/session_id.rs)
+  already parsed the header and nothing had connected it to the exporter. Both
+  halves are optional and both are omitted when unusable -- `nil` is the RFC's
+  placeholder for "no UUID here" and a malformed half is not one at all, so
+  transcribing either would hand a consumer a correlation key that matches
+  nothing, which is worse than an absent field because absence is readable and
+  a dead key is not. Still NOT the SIPREC `session_id` in
+  [`src/sip/siprec.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/siprec.rs).
 
-- [ ] **PV8 — emit `transfer` dialog objects for observed REFER/Replaces.**
-  `Method::Refer` exists, `Refer-To`/`Replaces` parsing does not. A transfer
-  dialog carries no content by design, so it is structurally an observer's
-  object, and transfers are where a tap adds most over a recorder on one leg.
+- [x] **PV8 — observed REFERs become `transfer` objects. DONE in 0.5.128.**
+  The object names `transferor`, `transferee`, `transfer_target` and
+  `original`, all as indices, so the `Refer-To` party is APPENDED to the array
+  to have an index to point at -- before the observer, which must stay last
+  because every attachment resolves its `party` to that position.
+  An attended transfer is distinguished by a `Replaces` parameter in the
+  `Refer-To` URI, matched case-insensitively, and its `consultation` points at
+  an EMPTY Dialog Object. That is not an invention: issue #9 of the draft asks
+  what to do for a transfer whose consultative call was not captured, and issue
+  #20 answers it with `{}` after IETF 124. A blind transfer names no
+  `consultation` at all, and the presence of the member is what distinguishes
+  the two.
+  A `Refer-To` URI is what one party ASKED for, so the target party carries
+  `validation: "none"` like every other, and a REFER with no `Refer-To` still
+  produces a transfer object with no target -- the header was missing, which is
+  a fact about the traffic.
 
-- [ ] **PV9 — make the 10 MB container ceiling configurable.** It is a constant
-  measured against one consumer and enforced as a property of the format. That
-  consumer publishes no per-container cap. Keep the measured default, let an
-  operator raise it.
+- [x] **PV9 — the inline-media ceiling is configurable. DONE in 0.5.128.**
+  `--vcon-max-inline-media MIB` sets it, the measured 5 MiB default stands when
+  it is unset, and `0` refuses every inline body without turning the exporter
+  off. It reaches every door that builds a container -- batch export,
+  `ApiState` and `SipnabMcp` each carry the resolved number, following the
+  `max_rows` precedent -- so one call exported two ways cannot come back
+  carrying audio in one container and a refusal in the other. The refusal names
+  the budget it ENFORCED rather than the compiled-in default, which is what
+  lets an operator pick a working number.
 
-- [ ] **PV10 — media by reference is DEFERRED pending a decision.** Writing the
-  WAV to a path and emitting `url` + the existing SHA-512 `content_hash` is the
-  same data relocated, and it sidesteps the size ceiling. It also shifts the
-  optics toward "recorder" and makes sipnab emit a `url` it cannot guarantee
-  resolves. If ever adopted: opt-in, and never emit `url` for a file sipnab did
+- [x] **PV10 — media by reference stays DECLINED, and the decision is now
+  recorded rather than pending. Settled in 0.5.128.**
+  Writing the WAV to a path and emitting `url` plus the existing SHA-512
+  `content_hash` is the same data relocated, and it would sidestep the size
+  ceiling. Two objections stand, and PV9 removed the reason to accept them.
+  First, a `url` is a promise sipnab cannot keep: it names a file whose
+  continued existence, reachability and permissions belong to somebody else,
+  and a container that outlives the path resolves to nothing while still
+  looking like it carries media. Second, it shifts the optics from observer to
+  recorder -- sipnab publishing retrievable audio at a URL is a different tool
+  from one that reports what it saw.
+  PV9 is the reason this is now a decision instead of a deferral: an operator
+  who needs a bigger body can raise the ceiling with
+  `--vcon-max-inline-media`, so "the container is too small" no longer argues
+  for references. `--export-audio` already writes the WAV beside the container
+  for anyone who wants the file, without sipnab asserting a URL for it.
+  Revisit only if a consumer appears that cannot accept inline media at any
+  size. If it is ever adopted: opt-in, and never a `url` for a file sipnab did
   not itself write.
 
-- [ ] **PV11 — RFC 9457 problem+json for sipnab's REST errors.** That consumer
-  returns `{type,title,status,detail,instance}` live while its own OpenAPI
-  documents `{"error":...}` -- so any sipnab-side client must not trust the
-  documented shape either.
+- [x] **PV11 — REST errors are RFC 9457 problem+json. DONE in 0.5.128.**
+  sipnab returned a bare `StatusCode` with NO body, so a client got a number
+  and had to guess which of a handler's several 400s it hit. Errors now carry
+  `application/problem+json` with `type`, `title`, `status` and an optional
+  `detail`. The `type` slug derives from the status rather than from free text
+  at each call site: a client branching on `type` is the whole point, and two
+  handlers spelling one problem differently would defeat it. No `instance` --
+  it is optional in RFC 9457 and sipnab has no per-occurrence URI, so inventing
+  one that resolves to nothing would be worse than omitting it.
+  The other consumer's behavior is confirmed on the wire: a live 404 from
+  `api.vcon.store` returned `{type,title,status,detail,instance}` while the
+  `Error` schema in the OpenAPI document vendored for PV3 declares
+  `{"error": "..."}` with `error` required. A client must not trust a
+  documented error shape it has not seen, and a server should not document one
+  it does not send.
 
-- [ ] **PV12 — do NOT add signing or SCITT. Do consider emitting a digest of
-  the container as written.** A signature over emitted bytes cannot verify
-  against the stored object, because a conserver adds fields on ingest -- the
-  same reason recorded in [`docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md) §4a.2. A digest is a fact about
-  sipnab's output rather than a claim about the conversation, and it lets an
-  operator bind an emission to a store's ledger entry out of band.
+- [x] **PV12 — a digest, not a signature. DONE in 0.5.128.**
+  `--vcon-digest` prints `<sha256>  <filename>` per written container to
+  STDOUT, in the format `sha256sum -c` reads, while the progress summary stays
+  on stderr so a redirect produces a usable `SHA256SUMS` rather than one with a
+  progress line inside it. Two spaces, lowercase hex, bare file name -- a spool
+  that moved still verifies from inside its own directory.
+  No signing and no SCITT, for the reason recorded in
+  [`docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md)
+  §4a.2: a signature over emitted bytes cannot verify against the stored object
+  because a conserver adds fields on ingest, so it would fail for the ordinary
+  reason and tell an operator nothing. The digest claims only what sipnab
+  wrote, which is what binds an emission to a store's ledger entry out of band.
 
-- [ ] **PV13 — state "sipnab makes no outbound connections" deliberately.**
-  Confirmed: no `reqwest`/`ureq`/`hyper` direct dependency, and the only POST
-  handling in `src/` is sipnab's own REST server. The export path writes files.
-  That is a security property currently held by accident. Document the
-  `--export-vcon-dir` spool contract instead -- atomic rename, stable naming --
-  so an external bridge can consume it safely.
+- [x] **PV13 — the spool contract is documented AND now true. DONE in
+  0.5.128.** The documenting found a defect rather than describing one: the
+  spool wrote with `std::fs::write`, which truncates the destination and then
+  fills it, so every byte of the write was a window in which a polling bridge
+  could read a partial container -- and a failure inside that window destroyed
+  the previous one too. `--vcon-out` printed "Nothing was exported" on exactly
+  that path, which the truncation made false at the moment it was printed.
+  Both sites now stage under a dot-prefixed sibling, `sync_all`, and rename.
+  Staging sits in the DESTINATION directory: `rename` is atomic only within one
+  filesystem, and the system temp dir reintroduces the partial file. The
+  contract an external bridge may rely on is written up under "The spool
+  contract" in [`docs/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/vcon.md).
+  The no-outbound-connections property is stated there too, as the reason a
+  bridge exists at all.
 
 ## P2 — robustness, observability & efficiency
 
@@ -1670,12 +1785,12 @@ output path.
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1313`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1313)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1337`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1337)), which attaches `frame_ref`
     (`#[tool(` at [`src/mcp/server.rs:4528`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4528), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1313`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1313)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1337`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1337)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -1821,7 +1936,7 @@ output path.
     `SUPPRESSION_FILENAME` ([`src/sip/lint/mod.rs:70`](https://github.com/NormB/sipnab/blob/main/src/sip/lint/mod.rs#L70)),
     `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
     exist, and the MCP lint tools consume them through `resolve_suppressions`
-    ([`src/mcp/server.rs:590`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L590)), which takes an explicit filename or walks up from
+    ([`src/mcp/server.rs:614`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L614)), which takes an explicit filename or walks up from
     the capture's directory to a project root. **What is still missing is the
     suppression half of the CLI, and the evidence this line cited for that is
     now false too. Corrected 2026-08-06:** it read *"`grep -n lint src/cli.rs`

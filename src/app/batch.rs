@@ -4818,6 +4818,19 @@ fn prepare_export_dir(cli: &Cli) -> Result<&std::path::Path, String> {
 /// Reports the count on stderr rather than staying silent. A run that matched
 /// nothing and a run that wrote forty containers look identical from the shell
 /// otherwise, and the first is the one an operator needs to know about --
+/// The inline-media budget this run enforces, from `--vcon-max-inline-media`.
+///
+/// The flag is in MiB because an operator thinks in MiB; the exporter counts
+/// bytes of base64url. Converting here rather than at each call site keeps one
+/// definition of what the number means -- two sites doing their own arithmetic
+/// is how a flag comes to mean something different depending on which export
+/// path produced the container.
+fn media_budget(cli: &Cli) -> Option<usize> {
+    cli.output_args
+        .vcon_max_inline_media
+        .map(|mib| mib.saturating_mul(1024 * 1024))
+}
+
 /// `--export-vcon` already refuses silence for the same reason.
 #[cfg(feature = "vcon")]
 fn export_vcon_selection(
@@ -4827,13 +4840,14 @@ fn export_vcon_selection(
     frames_read: u64,
     gate: Option<&crate::output::persistence::PersistenceGate>,
 ) -> bool {
-    let (selection, suppressed_by_deny) = match vcon_selection(cli, dialog_store, stream_store) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("{e:#}");
-            return false;
-        }
-    };
+    let (selection, suppressed_by_deny, denied) =
+        match vcon_selection(cli, dialog_store, stream_store) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{e:#}");
+                return false;
+            }
+        };
     let dir = match prepare_export_dir(cli) {
         Ok(dir) => dir,
         Err(message) => {
@@ -4860,6 +4874,7 @@ fn export_vcon_selection(
                 capture_id: crate::output::vcon::dialog_capture_id(dialog),
                 facts: &facts,
                 analysis: Some(&analysis),
+                max_inline_media_bytes: media_budget(cli),
             },
         );
         let json = match container.to_json() {
@@ -4873,17 +4888,174 @@ fn export_vcon_selection(
             }
         };
         let path = dir.join(vcon_file_name(&dialog.call_id));
-        if let Err(e) = std::fs::write(&path, json.as_bytes()) {
+        if let Err(e) = write_container_atomically(&path, json.as_bytes()) {
             eprintln!(
                 "Could not write '{}': {e}. {written} container(s) were written before this.",
                 path.display()
             );
             return false;
         }
+        if cli.output_args.vcon_digest {
+            // stdout, while the summary below goes to stderr: the digests are
+            // data an operator redirects to a file, and mixing them with
+            // progress text would put a "Wrote N containers" line inside their
+            // SHA256SUMS.
+            println!("{}", digest_line(&path, json.as_bytes()));
+        }
         written += 1;
     }
+
+    // Tombstones last, and only on request. Writing them at all reveals that
+    // the calls EXISTED, which is a disclosure an operator has to choose --
+    // see `--content-deny-tombstone`. The default discards `denied` here.
+    if cli.output_args.content_deny_tombstone {
+        let header = cli
+            .output_args
+            .content_deny_header
+            .as_deref()
+            .unwrap_or("(unnamed)");
+        for dialog in &denied {
+            let container = crate::output::vcon::export_withheld_dialog(
+                dialog,
+                &crate::output::vcon::ExportContext {
+                    capture_id: crate::output::vcon::dialog_capture_id(dialog),
+                    facts: &facts,
+                    analysis: Some(&analysis),
+                    max_inline_media_bytes: media_budget(cli),
+                },
+                header,
+            );
+            let json = match container.to_json() {
+                Ok(j) => j,
+                Err(e) => {
+                    eprintln!(
+                        "The withheld-dialog vCon for Call-ID '{}' would not serialize: {e}",
+                        dialog.call_id
+                    );
+                    return false;
+                }
+            };
+            let path = dir.join(vcon_file_name(&dialog.call_id));
+            if let Err(e) = write_container_atomically(&path, json.as_bytes()) {
+                eprintln!(
+                    "Could not write '{}': {e}. {written} container(s) were written before this.",
+                    path.display()
+                );
+                return false;
+            }
+            if cli.output_args.vcon_digest {
+                println!("{}", digest_line(&path, json.as_bytes()));
+            }
+            written += 1;
+        }
+    }
+
     eprintln!("Wrote {written} vCon container(s) to '{}'.", dir.display());
     true
+}
+
+/// A container's SHA-256, in the format `sha256sum` reads and writes.
+///
+/// Two spaces between the digest and the name is not cosmetic: it is the
+/// separator `sha256sum -c` expects for a binary-mode entry, and one space
+/// makes the line unparseable to the tool this exists to interoperate with.
+///
+/// The NAME is the file name alone rather than the full path, so a spool
+/// moved or mounted elsewhere still verifies from inside its own directory.
+#[cfg(feature = "vcon")]
+fn digest_line(path: &std::path::Path, bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+
+    let digest = sha2::Sha256::digest(bytes);
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    let name = path
+        .file_name()
+        .map_or_else(|| std::borrow::Cow::Borrowed("-"), |n| n.to_string_lossy());
+    format!("{hex}  {name}")
+}
+
+/// Where a container is staged before it takes its final name.
+///
+/// Beside the destination, never in the system temp directory: `rename` is
+/// atomic only within one filesystem, and across a mount boundary it either
+/// fails outright or degrades into a copy, which reintroduces the partial file
+/// this exists to prevent.
+///
+/// Dot-prefixed so an ordinary directory listing does not show it. A bridge
+/// polling the spool reads what it sees, and a staging file it can see is a
+/// container it will eventually try to parse.
+#[cfg(feature = "vcon")]
+fn spool_staging_path(destination: &std::path::Path) -> PathBuf {
+    let name = destination.file_name().map_or_else(
+        || std::borrow::Cow::Borrowed("vcon"),
+        |n| n.to_string_lossy(),
+    );
+    destination.with_file_name(format!(".{name}.partial"))
+}
+
+/// Write one container so a reader sees it whole or not at all.
+///
+/// `--export-vcon-dir` is a queue an external bridge polls, and the contract
+/// it needs is that a name resolves to a complete container. `std::fs::write`
+/// cannot offer that: it truncates the destination and then fills it, so every
+/// byte of the write is a window in which the file exists and is invalid, and
+/// a failure inside that window destroys the previous container too.
+///
+/// Staging plus rename removes the window. The data is flushed to the
+/// filesystem before the rename so a crash cannot leave the name pointing at a
+/// file whose contents have not landed.
+#[cfg(feature = "vcon")]
+fn write_container_atomically(destination: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let staged = spool_staging_path(destination);
+
+    // Every failure below removes the staging file, including the ones that
+    // happen before the rename is reached. Cleaning up on the rename's error
+    // arm alone left a `.partial` behind whenever the WRITE failed -- a full
+    // disk, which is the most likely way any of this fails, is exactly the
+    // case that leaves litter and then keeps leaving it.
+    let result = stage_container(&staged, bytes)
+        .and_then(|()| std::fs::rename(&staged, destination))
+        .and_then(|()| sync_directory_of(destination));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    result
+}
+
+/// Write the bytes to the staging path and put them on the disk.
+#[cfg(feature = "vcon")]
+fn stage_container(staged: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let mut file = std::fs::File::create(staged)?;
+    file.write_all(bytes)?;
+    // Durability before visibility: a rename that beats its own data to disk
+    // leaves the spool naming a container that is not there yet.
+    file.sync_all()
+}
+
+/// Put the RENAME on the disk, not just the bytes it made visible.
+///
+/// `sync_all` on the file covers its contents. The directory entry the rename
+/// created is separate metadata, and until the directory itself is synced a
+/// crash can lose the entry while keeping the data — the spool then has no
+/// container under a name it briefly had, which is the same defect one level
+/// up from the truncation this function exists to prevent.
+///
+/// A filesystem that refuses `fsync` on a directory is not an error to report:
+/// some network and virtual filesystems answer `EINVAL`, and the write itself
+/// succeeded. Refusing the container over it would turn a durability nicety
+/// into a hard failure on those mounts.
+#[cfg(feature = "vcon")]
+fn sync_directory_of(destination: &std::path::Path) -> std::io::Result<()> {
+    let Some(parent) = destination.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return Ok(());
+    };
+    let dir = std::fs::File::open(parent)?;
+    match dir.sync_all() {
+        Err(e) if matches!(e.kind(), std::io::ErrorKind::InvalidInput) => Ok(()),
+        other => other,
+    }
 }
 
 /// A Call-ID rendered as one safe filename.
@@ -4945,11 +5117,16 @@ fn vcon_selection<'a>(
     cli: &Cli,
     dialog_store: &'a DialogStore,
     stream_store: &'a StreamStore,
-) -> anyhow::Result<(crate::sip::dsl::DialogSelection<'a>, u64)> {
+) -> anyhow::Result<(
+    crate::sip::dsl::DialogSelection<'a>,
+    u64,
+    Vec<&'a crate::sip::dialog::SipDialog>,
+)> {
     let Some(expr) = cli.output_args.export_vcon_when.as_deref() else {
         return Ok((
             crate::sip::dsl::select_dialogs(None, dialog_store, stream_store),
             0,
+            Vec::new(),
         ));
     };
     let deny = cli.output_args.content_deny_header.as_deref();
@@ -4960,10 +5137,11 @@ fn vcon_selection<'a>(
     // other than the command line narrows: nothing read off the network can
     // add a dialog the invocation did not already permit, which is why there
     // is no matching permit branch anywhere in this function.
-    Ok(apply_deny_filter(selection, deny))
+    Ok(split_denied(selection, deny))
 }
 
-/// Remove every dialog carrying the deny header, and its media with it.
+/// Partition a selection into what is exported, how many were denied, and the
+/// denied dialogs themselves.
 ///
 /// Extracted so the filter has an argument and a return value instead of only
 /// a side effect on a value built three calls away. Reached through
@@ -4980,18 +5158,34 @@ fn vcon_selection<'a>(
 /// Deny only. Nothing here adds a dialog, because every input other than the
 /// command line may only narrow.
 ///
-/// Returns the narrowed selection and HOW MANY dialogs it removed. The count
-/// is what the container quotes, and it cannot be recovered later: by then the
-/// denied dialogs are gone, and a difference against the unfiltered store would
-/// also count everything the predicate rejected for unrelated reasons.
+/// Returns the narrowed selection, HOW MANY dialogs it removed, and the denied
+/// dialogs. The count is what the container quotes and it cannot be recovered
+/// later: by then the denied dialogs are gone, and a difference against the
+/// unfiltered store would attribute every other reason for absence to the deny
+/// rule.
+///
+/// The denied dialogs come back rather than being dropped on the floor so
+/// `--content-deny-tombstone` can write an identity-only container for each.
+/// Returning them does not export them: every caller that does not ask for
+/// tombstones discards the third element, and the default is to discard it.
 #[cfg(feature = "vcon")]
-fn apply_deny_filter<'a>(
+fn split_denied<'a>(
     mut selection: crate::sip::dsl::DialogSelection<'a>,
     deny: Option<&str>,
-) -> (crate::sip::dsl::DialogSelection<'a>, u64) {
+) -> (
+    crate::sip::dsl::DialogSelection<'a>,
+    u64,
+    Vec<&'a crate::sip::dialog::SipDialog>,
+) {
     let Some(header) = deny else {
-        return (selection, 0);
+        return (selection, 0, Vec::new());
     };
+    let denied: Vec<&crate::sip::dialog::SipDialog> = selection
+        .dialogs
+        .iter()
+        .filter(|(dialog, _)| dialog_carries_header(dialog, header))
+        .map(|(dialog, _)| *dialog)
+        .collect();
     let before = selection.dialogs.len();
     selection
         .dialogs
@@ -5005,7 +5199,7 @@ fn apply_deny_filter<'a>(
     selection
         .streams
         .retain(|s| kept.iter().any(|k| std::ptr::eq(*k, *s)));
-    (selection, suppressed)
+    (selection, suppressed, denied)
 }
 
 /// Whether any message in this dialog carries the named header.
@@ -5093,6 +5287,7 @@ fn export_vcon(
             capture_id: crate::output::vcon::dialog_capture_id(dialog),
             facts: &facts,
             analysis: Some(&analysis),
+            max_inline_media_bytes: media_budget(cli),
         },
         audio,
     );
@@ -5109,7 +5304,11 @@ fn export_vcon(
     let Some(path) = cli.output_args.vcon_out.as_deref() else {
         return write_stdout(&json);
     };
-    if let Err(e) = std::fs::write(path, json.as_bytes()) {
+    // Atomic for the sake of the sentence below: `std::fs::write` truncates
+    // the destination before it fills it, so "Nothing was exported" would be
+    // false exactly when it is printed -- the operator's previous export would
+    // already be gone.
+    if let Err(e) = write_container_atomically(path, json.as_bytes()) {
         eprintln!(
             "Could not write the vCon for Call-ID '{call_id}' to '{}': {e}. \
              Nothing was exported.",
@@ -5279,7 +5478,7 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 400".to_owned());
 
-        let (picked, _) = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
+        let (picked, _, _) = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
         let ids: Vec<&str> = picked
             .dialogs
             .iter()
@@ -5431,7 +5630,7 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 599".to_owned());
 
-        let (picked, _) = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
+        let (picked, _, _) = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
 
         assert!(
             picked.dialogs.is_empty(),
@@ -5486,7 +5685,7 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
 
-        let (picked, _) = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
+        let (picked, _, _) = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
         let names: std::collections::HashSet<String> = picked
             .dialogs
             .iter()
@@ -5889,7 +6088,7 @@ mod tests {
         );
         let before = selection.dialogs.len();
 
-        let (kept, suppressed) = apply_deny_filter(selection, Some("X-No-Record"));
+        let (kept, suppressed, _) = split_denied(selection, Some("X-No-Record"));
 
         assert_eq!(suppressed, 1, "one dialog carried the header");
         assert_eq!(
@@ -5912,7 +6111,7 @@ mod tests {
         );
         let before = selection.dialogs.len();
 
-        let (kept, suppressed) = apply_deny_filter(selection, None);
+        let (kept, suppressed, _) = split_denied(selection, None);
 
         assert_eq!(suppressed, 0, "no header was named, so none was honored");
         assert_eq!(kept.dialogs.len(), before, "and nothing was removed");
@@ -5934,7 +6133,7 @@ mod tests {
         );
         let before = selection.dialogs.len();
 
-        let (kept, suppressed) = apply_deny_filter(selection, Some("X-Nobody-Sends-This"));
+        let (kept, suppressed, _) = split_denied(selection, Some("X-Nobody-Sends-This"));
 
         assert_eq!(suppressed, 0);
         assert_eq!(kept.dialogs.len(), before);
@@ -6725,7 +6924,7 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("rtp.codec == 'PCMU'".to_owned());
 
-        let (picked, _) = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
+        let (picked, _, _) = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
         assert!(
             picked.dialogs.is_empty(),
             "no streams means no dialog carries PCMU"
@@ -6747,7 +6946,7 @@ mod tests {
 
         match vcon_selection(&cli, &dialogs, &streams) {
             Err(_) => {}
-            Ok((sel, _)) => assert!(
+            Ok((sel, _, _)) => assert!(
                 sel.dialogs.is_empty(),
                 "an empty expression must not select every dialog: {} selected",
                 sel.dialogs.len()
@@ -6817,6 +7016,156 @@ mod tests {
     /// The vCon module has no `Party.name` field so the rule cannot be broken
     /// by an edit, and this asserts the property end to end through the new
     /// path rather than trusting the type alone.
+    /// PV12: the digest line is one `sha256sum -c` can actually read.
+    ///
+    /// Not a signature, and this test is where that distinction is kept
+    /// honest: a signature over sipnab's bytes cannot verify against the
+    /// object a store holds, because a conserver adds fields on ingest. The
+    /// digest claims only what sipnab wrote.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_digest_line_is_in_the_format_sha256sum_reads() {
+        let line = digest_line(std::path::Path::new("/spool/call-id.vcon.json"), b"{}");
+
+        // Known-answer: SHA-256 of the two bytes `{}`.
+        let (hex, name) = line
+            .split_once("  ")
+            .expect("two spaces separate digest from name, as `sha256sum -c` requires");
+        assert_eq!(
+            hex, "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "the digest must be over the CONTAINER bytes and nothing else"
+        );
+        assert_eq!(
+            name, "call-id.vcon.json",
+            "the name is the file alone, so a spool that moved still verifies \
+             from inside its own directory"
+        );
+        assert_eq!(hex.len(), 64, "SHA-256 renders as 64 hex characters");
+        assert!(
+            hex.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "`sha256sum` writes lowercase hex: {hex}"
+        );
+    }
+
+    /// Different bytes, different digest — and identical bytes agree.
+    ///
+    /// The anti-vacuity half. A digest_line that ignored its input would pass
+    /// the format test above on every call.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_digest_follows_the_bytes_not_the_name() {
+        let p = std::path::Path::new("a.json");
+        let q = std::path::Path::new("b.json");
+
+        let a = digest_line(p, br#"{"vcon":"0.4.0"}"#);
+        let b = digest_line(p, br#"{"vcon":"0.4.1"}"#);
+        assert_ne!(
+            a, b,
+            "one changed byte in the container must change the digest, or the \
+             line certifies nothing"
+        );
+
+        let same_bytes_other_name = digest_line(q, br#"{"vcon":"0.4.0"}"#);
+        assert_eq!(
+            a.split_once("  ").expect("split").0,
+            same_bytes_other_name.split_once("  ").expect("split").0,
+            "the digest covers the bytes; renaming a container does not \
+             change what it contains"
+        );
+    }
+
+    /// PV13: a container appears in the spool whole or not at all.
+    ///
+    /// `--export-vcon-dir` is a queue an external bridge polls. A bridge that
+    /// reads a file the moment it appears gets whatever bytes have landed so
+    /// far, and `std::fs::write` truncates the destination and then fills it —
+    /// so the window where the file exists and is invalid is the whole write.
+    /// A same-directory rename has no such window: the name resolves to the
+    /// old container or the new one, never to half of either.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_spool_stages_beside_its_destination_so_the_rename_is_atomic() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dest = dir.path().join("call-id.vcon.json");
+        let staged = spool_staging_path(&dest);
+
+        assert_eq!(
+            staged.parent(),
+            dest.parent(),
+            "the staging file must share the destination's directory: a \
+             rename across filesystems is not atomic and can fail outright, \
+             which is exactly what staging in the system temp dir would do"
+        );
+        assert_ne!(
+            staged, dest,
+            "staging under the final name defeats the point"
+        );
+        assert!(
+            staged
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with('.')),
+            "a staging file a directory listing shows is a container a bridge \
+             will try to read: {}",
+            staged.display()
+        );
+    }
+
+    /// A completed write leaves the container and nothing else.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_completed_spool_write_leaves_no_staging_file_behind() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dest = dir.path().join("call-id.vcon.json");
+
+        write_container_atomically(&dest, br#"{"vcon":"0.4.0"}"#).expect("writes");
+
+        let entries: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("readable")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            entries,
+            vec!["call-id.vcon.json".to_string()],
+            "a staging file left in the spool is one a bridge eventually \
+             picks up as a container: {entries:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&dest).expect("readable"),
+            r#"{"vcon":"0.4.0"}"#
+        );
+    }
+
+    /// A failed write leaves the PREVIOUS container intact.
+    ///
+    /// This is the property `fs::write` cannot offer. It opens the
+    /// destination with truncate, so a write that fails after that leaves the
+    /// spool holding a file that is neither the old container nor the new one
+    /// — and the bridge has no way to tell.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_failed_spool_write_does_not_destroy_what_was_already_there() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dest = dir.path().join("call-id.vcon.json");
+        std::fs::write(&dest, r#"{"vcon":"0.4.0","uuid":"the-old-one"}"#).expect("seed");
+
+        // A directory where the staging file needs to be is a write that
+        // cannot succeed, and it fails at the same point a full disk would.
+        let staged = spool_staging_path(&dest);
+        std::fs::create_dir(&staged).expect("occupy the staging name");
+
+        assert!(
+            write_container_atomically(&dest, br#"{"vcon":"0.4.0","uuid":"the-new-one"}"#).is_err(),
+            "the write must report the failure rather than half-performing it"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&dest).expect("readable"),
+            r#"{"vcon":"0.4.0","uuid":"the-old-one"}"#,
+            "the previous container must survive a failed replacement"
+        );
+    }
+
     #[cfg(feature = "vcon")]
     #[test]
     fn a_written_container_names_no_party() {
@@ -6833,14 +7182,20 @@ mod tests {
         let text = std::fs::read_to_string(&containers_in(tmp.path())[0]).expect("readable");
         let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
         for party in v["parties"].as_array().expect("parties") {
-            assert!(
-                party.get("name").is_none(),
-                "a From header is what somebody wrote, not an identity: {party}"
-            );
             assert_eq!(
                 party["validation"], "none",
                 "every party says it is unverified: {party}"
             );
+            // A `name` IS emitted -- a From header is what somebody wrote, and
+            // `validation: "none"` above is what says so. The two travel
+            // together or the name reads as an identity someone established.
+            if party.get("name").is_some() {
+                assert!(
+                    party.get("validation").is_some(),
+                    "a name with no `validation` beside it asserts an \
+                     identity: {party}"
+                );
+            }
         }
     }
 
@@ -7188,6 +7543,95 @@ mod tests {
         store
     }
 
+    /// Without the flag, a denied dialog leaves no file at all.
+    ///
+    /// The conservative default, asserted so it cannot drift: turning
+    /// suppression into a tombstone reveals the call existed, and that is the
+    /// operator's decision rather than sipnab's.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_denied_dialog_writes_nothing_unless_a_tombstone_is_asked_for() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let mut cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
+        assert!(
+            !cli.output_args.content_deny_tombstone,
+            "the default is off"
+        );
+
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_first_flagged("X-No-Record", "1"),
+            &StreamStore::new(16),
+            7,
+            None
+        ));
+
+        let files = containers_in(tmp.path());
+        assert_eq!(
+            files.len(),
+            1,
+            "only the undenied dialog may produce a file: {files:?}"
+        );
+        let text = std::fs::read_to_string(&files[0]).expect("readable");
+        assert!(
+            !text.contains("flagged@example.com"),
+            "the denied dialog must not appear anywhere: {text}"
+        );
+    }
+
+    /// With the flag, the denied dialog gets an identity-only container.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_tombstone_declares_the_redaction_and_carries_no_trace() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let mut cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
+        cli.output_args.content_deny_tombstone = true;
+
+        assert!(export_vcon_selection(
+            &cli,
+            &two_dialogs_first_flagged("X-No-Record", "1"),
+            &StreamStore::new(16),
+            7,
+            None
+        ));
+
+        let files = containers_in(tmp.path());
+        assert_eq!(files.len(), 2, "one kept, one tombstone: {files:?}");
+
+        let tombstone = files
+            .iter()
+            .map(|p| std::fs::read_to_string(p).expect("readable"))
+            .find(|t| t.contains("flagged@example.com"))
+            .expect("the denied dialog has a container");
+        let v: serde_json::Value = serde_json::from_str(&tombstone).expect("valid JSON");
+
+        assert_eq!(
+            v["redacted"]["type"], "content-withheld",
+            "the withholding must be declared in the registered field: {v}"
+        );
+        assert!(
+            v["redacted"].get("uuid").is_none(),
+            "there is no unredacted instance to name: {}",
+            v["redacted"]
+        );
+        assert!(
+            !tombstone.contains("X-No-Record: "),
+            "the header VALUE is content the deny rule covers: {tombstone}"
+        );
+        let purposes: Vec<&str> = v["attachments"]
+            .as_array()
+            .expect("attachments")
+            .iter()
+            .filter_map(|a| a["purpose"].as_str())
+            .collect();
+        assert!(
+            !purposes.contains(&"sip-message-trace"),
+            "the trace is exactly what was withheld: {purposes:?}"
+        );
+    }
+
     /// A deny header suppresses a dialog the predicate selected.
     #[cfg(feature = "vcon")]
     #[test]
@@ -7236,7 +7680,7 @@ mod tests {
         cli.output_args.export_vcon_when = Some("response_code >= 599".to_owned());
         cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
 
-        let (picked, _) = vcon_selection(&cli, &dialogs, &streams).expect("valid");
+        let (picked, _, _) = vcon_selection(&cli, &dialogs, &streams).expect("valid");
 
         assert!(
             picked.dialogs.is_empty(),
@@ -7383,7 +7827,7 @@ mod tests {
         };
         assert_eq!(selection.streams.len(), 2, "the fixture carries media");
 
-        let (filtered, _) = apply_deny_filter(selection, Some("X-No-Record"));
+        let (filtered, _, _) = split_denied(selection, Some("X-No-Record"));
 
         assert_eq!(filtered.dialogs.len(), 1, "the flagged dialog is gone");
         assert_eq!(
@@ -7413,7 +7857,7 @@ mod tests {
             streams: vec![&media],
         };
 
-        let (out, _) = apply_deny_filter(selection, None);
+        let (out, _, _) = split_denied(selection, None);
 
         assert_eq!(out.dialogs.len(), 2, "no header named, nothing suppressed");
         assert_eq!(out.streams.len(), 1, "and no media dropped");
@@ -7443,7 +7887,7 @@ mod tests {
                 streams: vec![&media],
             };
             let before = selection.dialogs.len();
-            let after = apply_deny_filter(selection, Some(header)).0.dialogs.len();
+            let after = split_denied(selection, Some(header)).0.dialogs.len();
             assert!(
                 after <= before,
                 "{header} grew the selection from {before} to {after}"

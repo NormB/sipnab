@@ -22,6 +22,10 @@ fixes where it goes.
 """
 import pathlib, re, subprocess, sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from lib_markdown import fence_mask  # noqa: E402
+
 # Derived from this file's location, like every sibling script
 # (`check-line-drift.py` and `rfc-links.py` both use the same `parents[1]`).
 # It was an absolute `/srv/sipnab`, which exists on exactly
@@ -74,15 +78,15 @@ def convert(doc: pathlib.Path, text: str) -> tuple[str, int]:
         n += 1
         return f"[`{label}:{lines}`]({new})"
 
-    out, fence = [], None
-    for line in text.split("\n"):
-        t = line.lstrip()
-        marker = "```" if t.startswith("```") else ("~~~" if t.startswith("~~~") else None)
-        if marker:
-            fence = marker if fence is None else (None if fence == marker else fence)
-            out.append(line)
-            continue
-        out.append(line if fence else LINK.sub(sub, line))
+    out: list[str] = []
+    # `fence_mask`, not a per-line toggle: a fence is three or MORE markers and
+    # only a run at least as long as the opener closes it. A toggle reads the
+    # inner ``` of a ```` block as closing it and rewrites the rest of the
+    # code block as prose.
+    mask = fence_mask(text)
+    for idx, line in enumerate(text.split("\n")):
+        inside = idx < len(mask) and mask[idx]
+        out.append(line if inside else LINK.sub(sub, line))
     return "\n".join(out), n
 
 

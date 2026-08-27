@@ -142,6 +142,7 @@ fn main() {
             facts: &facts,
             // `None` is honest here: this example runs no capture analysis, and
             // the container reports that rather than implying a clean bill.
+            max_inline_media_bytes: None,
             analysis: None,
         },
     );

@@ -1,0 +1,3302 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "vcon.store API",
+  "version": "0.1.0",
+  "description": "Hosted vCon Conserver API by Everycast Labs. Manage vCons (virtual conversation containers) per the IETF vCon specification (draft-ietf-vcon-vcon-core-02). Authenticate with a Bearer API key.",
+  "x-sipnab-provenance": "VENDORED, NOT AUTHORED HERE. Fetched from https://api.vcon.store/openapi.json on 2026-08-27. This is a SECOND consumer's schema, kept beside the working group's own so `a_container_meets_or_knowingly_diverges_from_the_second_consumer` can state exactly how a sipnab container fares against a real store rather than against the format alone. Do not edit it to make a test pass -- the whole value is that it is somebody else's. Re-fetch to update, and expect the divergence test to need rewriting when you do."
+ },
+ "servers": [
+  {
+   "url": "https://api.vcon.store"
+  }
+ ],
+ "security": [
+  {
+   "bearerAuth": []
+  }
+ ],
+ "components": {
+  "securitySchemes": {
+   "bearerAuth": {
+    "type": "http",
+    "scheme": "bearer",
+    "description": "API key (vcs_live_* or vcs_test_*) or service token"
+   }
+  },
+  "schemas": {
+   "JWKS": {
+    "type": "object",
+    "properties": {
+     "keys": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/JWK"
+      }
+     }
+    },
+    "required": [
+     "keys"
+    ]
+   },
+   "JWK": {
+    "type": "object",
+    "properties": {
+     "kty": {
+      "type": "string",
+      "example": "EC"
+     },
+     "crv": {
+      "type": "string",
+      "example": "P-256"
+     },
+     "x": {
+      "type": "string",
+      "example": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU"
+     },
+     "y": {
+      "type": "string",
+      "example": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0"
+     },
+     "kid": {
+      "type": "string",
+      "example": "a1b2c3d4e5f6..."
+     },
+     "alg": {
+      "type": "string",
+      "example": "ES256"
+     },
+     "use": {
+      "type": "string",
+      "example": "sig"
+     },
+     "_role": {
+      "type": "string",
+      "example": "org_signing_key",
+      "description": "Role: org_signing_key (per-org, signs statements) or platform_service_key (shared, signs receipts)"
+     }
+    },
+    "required": [
+     "kty",
+     "crv",
+     "x",
+     "y",
+     "kid",
+     "alg",
+     "use"
+    ],
+    "additionalProperties": {
+     "nullable": true
+    }
+   },
+   "VConList": {
+    "type": "object",
+    "properties": {
+     "data": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/VCon"
+      }
+     },
+     "cursor": {
+      "type": "string",
+      "nullable": true,
+      "example": "eyJpZCI6ImFiYzEyMyJ9"
+     },
+     "page": {
+      "type": "number",
+      "example": 1
+     },
+     "limit": {
+      "type": "number",
+      "example": 50
+     },
+     "total": {
+      "type": "number",
+      "example": 142
+     }
+    },
+    "required": [
+     "data"
+    ]
+   },
+   "VCon": {
+    "type": "object",
+    "properties": {
+     "vcon": {
+      "type": "string",
+      "example": "0.0.1"
+     },
+     "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "example": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab"
+     },
+     "created_at": {
+      "type": "string",
+      "example": "2026-02-17T10:00:00.000Z"
+     },
+     "updated_at": {
+      "type": "string",
+      "example": "2026-02-17T10:05:00.000Z"
+     },
+     "subject": {
+      "type": "string",
+      "example": "Support call \u2014 order #4521"
+     },
+     "parties": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Party"
+      },
+      "example": [
+       {
+        "tel": "+14155551234",
+        "name": "Alice Smith",
+        "role": "agent"
+       },
+       {
+        "tel": "+14155559876",
+        "name": "Bob Jones",
+        "role": "customer"
+       }
+      ]
+     },
+     "dialog": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Dialog"
+      },
+      "example": [
+       {
+        "type": "recording",
+        "start": "2026-02-17T10:00:00.000Z",
+        "duration": 312.5,
+        "parties": [
+         0,
+         1
+        ],
+        "originator": 1,
+        "mimetype": "audio/wav",
+        "url": "https://media.example.com/calls/abc123.wav"
+       }
+      ]
+     },
+     "analysis": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Analysis"
+      },
+      "example": [
+       {
+        "type": "transcript",
+        "dialog": 0,
+        "mimetype": "text/plain",
+        "body": "Hello, thanks for calling Acme Corp. How can I help you today?",
+        "vendor": "deepgram",
+        "product": "nova-2"
+       }
+      ]
+     },
+     "attachments": {
+      "type": "array",
+      "items": {
+       "nullable": true
+      },
+      "example": []
+     }
+    },
+    "required": [
+     "vcon",
+     "uuid",
+     "created_at",
+     "parties",
+     "dialog"
+    ]
+   },
+   "Party": {
+    "type": "object",
+    "properties": {
+     "tel": {
+      "type": "string",
+      "example": "+14155551234"
+     },
+     "mailto": {
+      "type": "string",
+      "example": "alice@example.com"
+     },
+     "name": {
+      "type": "string",
+      "example": "Alice Smith"
+     },
+     "role": {
+      "type": "string",
+      "example": "agent"
+     }
+    },
+    "additionalProperties": {
+     "nullable": true
+    }
+   },
+   "Dialog": {
+    "type": "object",
+    "properties": {
+     "type": {
+      "type": "string",
+      "example": "recording"
+     },
+     "start": {
+      "type": "string",
+      "example": "2026-02-17T10:00:00.000Z"
+     },
+     "duration": {
+      "type": "number",
+      "example": 312.5
+     },
+     "parties": {
+      "type": "array",
+      "items": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "array",
+         "items": {
+          "type": "number"
+         }
+        }
+       ]
+      },
+      "example": [
+       0,
+       1
+      ]
+     },
+     "originator": {
+      "type": "number",
+      "example": 0
+     },
+     "mimetype": {
+      "type": "string",
+      "example": "audio/wav"
+     },
+     "url": {
+      "type": "string",
+      "example": "https://media.example.com/calls/abc123.wav"
+     }
+    },
+    "required": [
+     "type",
+     "start",
+     "parties"
+    ],
+    "additionalProperties": {
+     "nullable": true
+    }
+   },
+   "Analysis": {
+    "type": "object",
+    "properties": {
+     "type": {
+      "type": "string",
+      "example": "transcript"
+     },
+     "dialog": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "array",
+        "items": {
+         "type": "number"
+        }
+       }
+      ],
+      "example": 0
+     },
+     "mimetype": {
+      "type": "string",
+      "example": "text/plain"
+     },
+     "body": {
+      "nullable": true,
+      "example": "Hello, thanks for calling Acme Corp..."
+     },
+     "vendor": {
+      "type": "string",
+      "example": "deepgram"
+     },
+     "product": {
+      "type": "string",
+      "example": "nova-2"
+     }
+    },
+    "required": [
+     "type"
+    ],
+    "additionalProperties": {
+     "nullable": true
+    }
+   },
+   "Error": {
+    "type": "object",
+    "properties": {
+     "error": {
+      "type": "string",
+      "example": "Not found"
+     },
+     "details": {
+      "nullable": true
+     }
+    },
+    "required": [
+     "error"
+    ]
+   },
+   "PatchVConRequest": {
+    "type": "object",
+    "properties": {
+     "subject": {
+      "type": "string",
+      "example": "Support call \u2014 updated subject",
+      "description": "Overwrite the vCon subject"
+     },
+     "analysis": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Analysis"
+      },
+      "description": "Analysis objects to append to the existing array"
+     },
+     "attachments": {
+      "type": "array",
+      "items": {
+       "nullable": true
+      },
+      "description": "Attachments to append to the existing array"
+     },
+     "parties": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Party"
+      },
+      "description": "Parties to append to the existing array"
+     },
+     "dialog": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Dialog"
+      },
+      "description": "Dialog entries (recordings, IM, etc.) to append to the existing array"
+     }
+    }
+   },
+   "ScittEntry": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "example": "scitt_01HX..."
+     },
+     "vconUuid": {
+      "type": "string",
+      "format": "uuid",
+      "example": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab"
+     },
+     "operation": {
+      "type": "string",
+      "example": "create"
+     },
+     "timestamp": {
+      "type": "string",
+      "example": "2026-02-17T10:00:00.000Z"
+     },
+     "hash": {
+      "type": "string",
+      "example": "sha256:a1b2c3d4e5f6..."
+     }
+    },
+    "required": [
+     "id",
+     "vconUuid",
+     "operation",
+     "timestamp",
+     "hash"
+    ],
+    "additionalProperties": {
+     "nullable": true
+    }
+   },
+   "RedactResponse": {
+    "type": "object",
+    "properties": {
+     "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "example": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "description": "UUID of the new redacted vCon"
+     },
+     "originalUuid": {
+      "type": "string",
+      "format": "uuid",
+      "example": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab"
+     },
+     "stored_at": {
+      "type": "string",
+      "example": "2026-02-17T14:30:00.000Z"
+     }
+    },
+    "required": [
+     "uuid",
+     "originalUuid",
+     "stored_at"
+    ]
+   },
+   "LifecycleError": {
+    "type": "object",
+    "properties": {
+     "error": {
+      "type": "string",
+      "example": "vCon not found"
+     },
+     "missing": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "error"
+    ]
+   },
+   "RedactRequest": {
+    "type": "object",
+    "properties": {
+     "fieldsToRemove": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "example": [
+       "subject"
+      ],
+      "description": "Top-level vCon fields to remove entirely (uuid, vcon, created_at are protected)"
+     },
+     "partyIndicesToRedact": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "example": [
+       1
+      ],
+      "description": "Indices of parties to redact. The party slot is preserved as an empty object per the vCon spec."
+     }
+    }
+   },
+   "AmendResponse": {
+    "type": "object",
+    "properties": {
+     "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "example": "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+     },
+     "originalUuid": {
+      "type": "string",
+      "format": "uuid",
+      "example": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab"
+     },
+     "stored_at": {
+      "type": "string",
+      "example": "2026-02-17T14:35:00.000Z"
+     }
+    },
+    "required": [
+     "uuid",
+     "originalUuid",
+     "stored_at"
+    ]
+   },
+   "AmendRequest": {
+    "type": "object",
+    "properties": {
+     "analysis": {
+      "type": "array",
+      "items": {
+       "nullable": true
+      },
+      "example": [
+       {
+        "type": "summary",
+        "dialog": 0,
+        "mimetype": "text/plain",
+        "body": "Customer called about billing issue. Resolved by applying credit.",
+        "vendor": "openai",
+        "product": "gpt-4o"
+       }
+      ],
+      "description": "New analysis objects to append to the vCon"
+     },
+     "attachments": {
+      "type": "array",
+      "items": {
+       "nullable": true
+      },
+      "example": [],
+      "description": "New attachments to append"
+     },
+     "subject": {
+      "type": "string",
+      "example": "Support call \u2014 order #4521 (amended with AI summary)",
+      "description": "Updated subject line for the amended vCon"
+     }
+    }
+   },
+   "GroupResponse": {
+    "type": "object",
+    "properties": {
+     "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "example": "c3d4e5f6-a7b8-9012-cdef-123456789012"
+     },
+     "members": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "format": "uuid"
+      }
+     },
+     "stored_at": {
+      "type": "string",
+      "example": "2026-02-17T14:40:00.000Z"
+     }
+    },
+    "required": [
+     "uuid",
+     "members",
+     "stored_at"
+    ]
+   },
+   "GroupRequest": {
+    "type": "object",
+    "properties": {
+     "memberUuids": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "format": "uuid"
+      },
+      "minItems": 2,
+      "example": [
+       "018e4a2f-7b3c-7d4e-8f5a-1234567890ab",
+       "018e4a2f-9c4d-7e5f-0a1b-234567890abc"
+      ],
+      "description": "UUIDs of existing vCons to bundle into a group. All must exist."
+     },
+     "subject": {
+      "type": "string",
+      "example": "Customer journey \u2014 Alice Smith, Feb 2026",
+      "description": "Optional subject for the group vCon"
+     }
+    },
+    "required": [
+     "memberUuids"
+    ]
+   },
+   "Version": {
+    "type": "object",
+    "properties": {
+     "uuid": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "derivation_type": {
+      "type": "string",
+      "nullable": true
+     },
+     "derived_from_uuid": {
+      "type": "string",
+      "nullable": true,
+      "format": "uuid"
+     },
+     "created_at": {
+      "type": "string"
+     },
+     "stored_at": {
+      "type": "string"
+     },
+     "subject": {
+      "type": "string",
+      "nullable": true
+     }
+    },
+    "required": [
+     "uuid",
+     "derivation_type",
+     "derived_from_uuid",
+     "created_at",
+     "stored_at",
+     "subject"
+    ]
+   },
+   "Organisation": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "example": "org_01HXK9Z4B2N..."
+     },
+     "name": {
+      "type": "string",
+      "example": "Acme Corp"
+     },
+     "slug": {
+      "type": "string",
+      "example": "acme-corp"
+     },
+     "plan": {
+      "type": "string",
+      "example": "pro"
+     },
+     "status": {
+      "type": "string",
+      "example": "active"
+     },
+     "storageUsedBytes": {
+      "type": "number",
+      "example": 524288000
+     },
+     "vconCount": {
+      "type": "number",
+      "example": 1423
+     },
+     "retentionDays": {
+      "type": "number",
+      "nullable": true,
+      "example": 365
+     },
+     "retentionAction": {
+      "type": "string",
+      "nullable": true,
+      "example": "redact"
+     },
+     "aiAnalysisEnabled": {
+      "type": "boolean",
+      "example": false
+     },
+     "aiProvider": {
+      "type": "string",
+      "nullable": true,
+      "example": "openai"
+     },
+     "aiApiKeySet": {
+      "type": "boolean",
+      "example": false,
+      "description": "Whether an AI API key has been configured. The key itself is never returned."
+     },
+     "transcriptionEnabled": {
+      "type": "boolean",
+      "example": false
+     },
+     "transcriptionProvider": {
+      "type": "string",
+      "nullable": true,
+      "example": "openai"
+     },
+     "transcriptionApiKeySet": {
+      "type": "boolean",
+      "example": false,
+      "description": "Whether a transcription API key has been configured. The key itself is never returned."
+     },
+     "createdAt": {
+      "type": "string",
+      "example": "2026-01-15T08:30:00.000Z"
+     },
+     "updatedAt": {
+      "type": "string",
+      "example": "2026-02-17T12:00:00.000Z"
+     }
+    },
+    "required": [
+     "id",
+     "name",
+     "slug",
+     "plan",
+     "status",
+     "storageUsedBytes",
+     "vconCount",
+     "aiAnalysisEnabled",
+     "aiApiKeySet",
+     "transcriptionEnabled",
+     "transcriptionApiKeySet",
+     "createdAt",
+     "updatedAt"
+    ]
+   },
+   "Usage": {
+    "type": "object",
+    "properties": {
+     "vconCount": {
+      "type": "number",
+      "example": 87,
+      "description": "vCons created this billing period"
+     },
+     "storageBytes": {
+      "type": "number",
+      "example": 104857600,
+      "description": "Total storage used in bytes"
+     },
+     "apiCalls": {
+      "type": "number",
+      "example": 3452,
+      "description": "API calls made this billing period"
+     }
+    },
+    "required": [
+     "vconCount",
+     "storageBytes",
+     "apiCalls"
+    ]
+   },
+   "ApiKey": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "example": "key_01HXK..."
+     },
+     "name": {
+      "type": "string",
+      "example": "Production integration"
+     },
+     "keyPrefix": {
+      "type": "string",
+      "example": "vcs_live_abc1"
+     },
+     "scopes": {
+      "type": "string",
+      "nullable": true,
+      "example": "*"
+     },
+     "lastUsedAt": {
+      "type": "string",
+      "nullable": true,
+      "example": "2026-02-17T09:00:00.000Z"
+     },
+     "expiresAt": {
+      "type": "string",
+      "nullable": true,
+      "example": null
+     },
+     "createdAt": {
+      "type": "string",
+      "example": "2026-01-20T14:00:00.000Z"
+     },
+     "revokedAt": {
+      "type": "string",
+      "nullable": true,
+      "example": null
+     }
+    },
+    "required": [
+     "id",
+     "name",
+     "keyPrefix",
+     "createdAt"
+    ]
+   },
+   "NewApiKey": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "example": "key_01HXK..."
+     },
+     "key": {
+      "type": "string",
+      "example": "vcs_live_abc123def456ghi789jkl012mno345",
+      "description": "The full API key. This is only shown once \u2014 store it securely."
+     },
+     "prefix": {
+      "type": "string",
+      "example": "vcs_live_abc1"
+     },
+     "name": {
+      "type": "string",
+      "example": "Production integration"
+     },
+     "createdAt": {
+      "type": "string",
+      "example": "2026-02-17T16:00:00.000Z"
+     }
+    },
+    "required": [
+     "id",
+     "key",
+     "prefix",
+     "name",
+     "createdAt"
+    ]
+   },
+   "UploadResponse": {
+    "type": "object",
+    "properties": {
+     "key": {
+      "type": "string",
+      "example": "org_01HXK9Z4B2N/a3f1b2c4-d5e6-7890-abcd-ef1234567890/call-recording-2026-02-17.wav",
+      "description": "Storage key \u2014 use this as the media URL in vCon dialog objects"
+     },
+     "uploadUrl": {
+      "type": "string",
+      "example": "/v1/media/org_01HXK9Z4B2N%2Fa3f1b2c4-d5e6-7890-abcd-ef1234567890%2Fcall-recording-2026-02-17.wav",
+      "description": "Relative URL to PUT the file content to"
+     },
+     "method": {
+      "type": "string",
+      "enum": [
+       "PUT"
+      ],
+      "example": "PUT"
+     }
+    },
+    "required": [
+     "key",
+     "uploadUrl",
+     "method"
+    ]
+   },
+   "UploadRequest": {
+    "type": "object",
+    "properties": {
+     "filename": {
+      "type": "string",
+      "example": "call-recording-2026-02-17.wav",
+      "description": "Original filename including extension"
+     },
+     "contentType": {
+      "type": "string",
+      "example": "audio/wav",
+      "description": "MIME type of the file to upload"
+     }
+    },
+    "required": [
+     "filename",
+     "contentType"
+    ]
+   },
+   "MediaDeleteConfirm": {
+    "type": "object",
+    "properties": {
+     "deleted": {
+      "type": "boolean",
+      "enum": [
+       true
+      ],
+      "example": true
+     }
+    },
+    "required": [
+     "deleted"
+    ]
+   },
+   "MediaError": {
+    "type": "object",
+    "properties": {
+     "error": {
+      "type": "string",
+      "example": "Forbidden"
+     }
+    },
+    "required": [
+     "error"
+    ]
+   },
+   "WorkflowInstance": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "Workflow instance ID"
+     }
+    },
+    "required": [
+     "id"
+    ]
+   },
+   "TriggerIngest": {
+    "type": "object",
+    "additionalProperties": {
+     "nullable": true
+    },
+    "description": "The vCon object to ingest"
+   },
+   "TriggerConsentRevocation": {
+    "type": "object",
+    "properties": {
+     "partyIdentifier": {
+      "type": "string",
+      "example": "+15551234567",
+      "description": "The tel or mailto identifier of the party revoking consent"
+     },
+     "action": {
+      "type": "string",
+      "enum": [
+       "redact",
+       "delete"
+      ],
+      "default": "redact",
+      "description": "Action to take on affected vCons"
+     }
+    },
+    "required": [
+     "partyIdentifier"
+    ]
+   },
+   "WorkflowStatus": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "status": {
+      "type": "string",
+      "example": "running"
+     },
+     "output": {
+      "nullable": true
+     },
+     "error": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "status"
+    ]
+   },
+   "VerifyResponse": {
+    "type": "object",
+    "properties": {
+     "signed_statement": {
+      "$ref": "#/components/schemas/VerifyResult"
+     },
+     "receipt": {
+      "$ref": "#/components/schemas/VerifyResult"
+     }
+    }
+   },
+   "VerifyResult": {
+    "type": "object",
+    "properties": {
+     "valid": {
+      "type": "boolean"
+     },
+     "kid": {
+      "type": "string",
+      "nullable": true
+     },
+     "signer": {
+      "type": "string",
+      "enum": [
+       "org",
+       "platform"
+      ]
+     },
+     "payload_hex": {
+      "type": "string",
+      "nullable": true
+     }
+    },
+    "required": [
+     "valid",
+     "kid",
+     "signer",
+     "payload_hex"
+    ]
+   },
+   "VerifyRequest": {
+    "type": "object",
+    "properties": {
+     "signed_statement": {
+      "type": "string",
+      "description": "Base64url COSE Sign1 signed statement (verified against org key)"
+     },
+     "receipt": {
+      "type": "string",
+      "description": "Base64url COSE Sign1 receipt (verified against platform service key)"
+     }
+    }
+   },
+   "TeamMember": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "userId": {
+      "type": "string"
+     },
+     "role": {
+      "type": "string"
+     },
+     "email": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "createdAt": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "userId",
+     "role",
+     "createdAt"
+    ]
+   },
+   "TeamError": {
+    "type": "object",
+    "properties": {
+     "error": {
+      "type": "string",
+      "example": "Not found"
+     }
+    },
+    "required": [
+     "error"
+    ]
+   },
+   "Invitation": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "email": {
+      "type": "string"
+     },
+     "role": {
+      "type": "string"
+     },
+     "status": {
+      "type": "string"
+     },
+     "invitedBy": {
+      "type": "string"
+     },
+     "expiresAt": {
+      "type": "string"
+     },
+     "createdAt": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "email",
+     "role",
+     "status",
+     "invitedBy",
+     "expiresAt",
+     "createdAt"
+    ]
+   }
+  },
+  "parameters": {}
+ },
+ "paths": {
+  "/health": {
+   "get": {
+    "tags": [
+     "Health"
+    ],
+    "summary": "Health check",
+    "responses": {
+     "200": {
+      "description": "Service is healthy",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "status": {
+           "type": "string",
+           "example": "ok"
+          },
+          "timestamp": {
+           "type": "string",
+           "example": "2026-02-17T00:00:00.000Z"
+          },
+          "version": {
+           "type": "string",
+           "example": "0.1.0"
+          }
+         },
+         "required": [
+          "status",
+          "timestamp",
+          "version"
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/.well-known/scitt/service-key": {
+   "get": {
+    "tags": [
+     "SCITT"
+    ],
+    "summary": "Get platform transparency service public key",
+    "description": "Returns the vcon.store platform's ECDSA P-256 public key used to sign SCITT receipts. This is a platform-level key shared across all orgs \u2014 use it to verify that a receipt was genuinely issued by vcon.store. No authentication required.",
+    "responses": {
+     "200": {
+      "description": "Platform service public key in JWKS format",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/JWKS"
+        }
+       }
+      }
+     },
+     "503": {
+      "description": "Service key not configured"
+     }
+    }
+   }
+  },
+  "/v1/vcons": {
+   "get": {
+    "tags": [
+     "vCons"
+    ],
+    "summary": "List vCons",
+    "description": "Returns a paginated list of vCons for the authenticated organisation. Use the `cursor` from the response to fetch the next page.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "example": "50",
+       "description": "Number of vCons to return (max 100)"
+      },
+      "required": false,
+      "description": "Number of vCons to return (max 100)",
+      "name": "limit",
+      "in": "query"
+     },
+     {
+      "schema": {
+       "type": "string",
+       "description": "Opaque cursor from a previous response for pagination"
+      },
+      "required": false,
+      "description": "Opaque cursor from a previous response for pagination",
+      "name": "cursor",
+      "in": "query"
+     },
+     {
+      "schema": {
+       "type": "string",
+       "example": "1",
+       "description": "Page number for offset-based pagination (ignored if cursor is provided)"
+      },
+      "required": false,
+      "description": "Page number for offset-based pagination (ignored if cursor is provided)",
+      "name": "page",
+      "in": "query"
+     },
+     {
+      "schema": {
+       "type": "string",
+       "description": "Filter by subject or UUID substring"
+      },
+      "required": false,
+      "description": "Filter by subject or UUID substring",
+      "name": "search",
+      "in": "query"
+     },
+     {
+      "schema": {
+       "type": "string",
+       "description": "Filter by derivation type (redacted, amended, group)"
+      },
+      "required": false,
+      "description": "Filter by derivation type (redacted, amended, group)",
+      "name": "derivation_type",
+      "in": "query"
+     },
+     {
+      "schema": {
+       "type": "string",
+       "example": "+14155551234",
+       "description": "Filter to vCons that include a participant whose tel or mailto matches this substring"
+      },
+      "required": false,
+      "description": "Filter to vCons that include a participant whose tel or mailto matches this substring",
+      "name": "participant",
+      "in": "query"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A paginated list of vCon objects",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/VConList"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "vCons"
+    ],
+    "summary": "Create a vCon",
+    "description": "Validates the vCon against the IETF vCon specification (draft-ietf-vcon-vcon-core-02) and stores it. The `uuid` must be unique within your organisation. Fields `redacted`, `amended`, and `group` are mutually exclusive.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/VCon"
+       },
+       "example": {
+        "vcon": "0.0.1",
+        "uuid": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab",
+        "created_at": "2026-02-17T10:00:00.000Z",
+        "subject": "Support call \u2014 order #4521",
+        "parties": [
+         {
+          "tel": "+14155551234",
+          "name": "Alice Smith",
+          "role": "agent"
+         },
+         {
+          "tel": "+14155559876",
+          "name": "Bob Jones",
+          "role": "customer"
+         }
+        ],
+        "dialog": [
+         {
+          "type": "recording",
+          "start": "2026-02-17T10:00:00.000Z",
+          "duration": 312.5,
+          "parties": [
+           0,
+           1
+          ],
+          "originator": 1,
+          "mimetype": "audio/wav",
+          "url": "https://media.example.com/calls/abc123.wav"
+         }
+        ],
+        "analysis": [
+         {
+          "type": "transcript",
+          "dialog": 0,
+          "mimetype": "text/plain",
+          "body": "Hello, thanks for calling Acme Corp. How can I help you today?",
+          "vendor": "deepgram",
+          "product": "nova-2"
+         }
+        ],
+        "attachments": []
+       }
+      }
+     }
+    },
+    "responses": {
+     "201": {
+      "description": "The created vCon, echoed back with any server-set fields",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/VCon"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Validation failed \u2014 the body is not a valid vCon",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        },
+        "example": {
+         "error": "Invalid vCon",
+         "details": [
+          {
+           "path": [
+            "parties"
+           ],
+           "message": "Required"
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/vcons/{uuid}": {
+   "get": {
+    "tags": [
+     "vCons"
+    ],
+    "summary": "Get a vCon",
+    "description": "Retrieves a single vCon by its UUID, including all parties, dialogs, analysis, and attachments.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "example": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab",
+       "description": "The vCon UUID"
+      },
+      "required": true,
+      "description": "The vCon UUID",
+      "name": "uuid",
+      "in": "path"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The full vCon object",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/VCon"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "No vCon found with this UUID",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "vCons"
+    ],
+    "summary": "Replace a vCon",
+    "description": "Fully replaces a vCon with the provided body. The UUID in the route must match the body (or be omitted in the body). Creates a SCITT ledger entry recording the replacement. Use PATCH for partial updates.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "example": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab"
+      },
+      "required": true,
+      "name": "uuid",
+      "in": "path"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/VCon"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The vCon was replaced successfully",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "uuid": {
+           "type": "string",
+           "format": "uuid"
+          },
+          "updated_at": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "uuid",
+          "updated_at"
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Validation failed or UUID mismatch",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "No vCon found with this UUID",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   },
+   "patch": {
+    "tags": [
+     "vCons"
+    ],
+    "summary": "Patch a vCon",
+    "description": "Partially updates a vCon in-place. Arrays (analysis, attachments, parties) are **appended** to the existing arrays. Scalar fields (subject) are overwritten. This modifies the vCon directly \u2014 for spec-compliant derivative creation, use POST /{uuid}/amend instead.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "example": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab"
+      },
+      "required": true,
+      "name": "uuid",
+      "in": "path"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PatchVConRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The vCon was patched successfully",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "uuid": {
+           "type": "string",
+           "format": "uuid"
+          },
+          "updated_at": {
+           "type": "string"
+          },
+          "patched_fields": {
+           "type": "array",
+           "items": {
+            "type": "string"
+           }
+          }
+         },
+         "required": [
+          "uuid",
+          "updated_at",
+          "patched_fields"
+         ]
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "No vCon found with this UUID",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "vCons"
+    ],
+    "summary": "Delete a vCon",
+    "description": "Permanently removes a vCon and its associated SCITT ledger entries. This action cannot be undone.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "example": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab"
+      },
+      "required": true,
+      "name": "uuid",
+      "in": "path"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Deletion confirmed",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "deleted": {
+           "type": "boolean",
+           "enum": [
+            true
+           ]
+          }
+         },
+         "required": [
+          "deleted"
+         ],
+         "example": {
+          "deleted": true
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "No vCon found with this UUID",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/vcons/{uuid}/scitt": {
+   "get": {
+    "tags": [
+     "SCITT"
+    ],
+    "summary": "Get SCITT transparency ledger",
+    "description": "Returns the append-only SCITT (Supply Chain Integrity, Transparency and Trust) ledger entries for this vCon. Each entry records a lifecycle operation (create, update, transfer, redact) with a content hash for tamper evidence.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "example": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab"
+      },
+      "required": true,
+      "name": "uuid",
+      "in": "path"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Ordered list of SCITT ledger entries",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/ScittEntry"
+           }
+          }
+         },
+         "required": [
+          "data"
+         ]
+        },
+        "example": {
+         "data": [
+          {
+           "id": "scitt_01HXK9Z...",
+           "vconUuid": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab",
+           "operation": "create",
+           "timestamp": "2026-02-17T10:00:00.000Z",
+           "hash": "sha256:a1b2c3d4e5f6..."
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/vcons/{uuid}/lineage": {
+   "get": {
+    "tags": [
+     "vCons"
+    ],
+    "summary": "Get vCon lineage",
+    "description": "Returns the lineage graph for this vCon, showing parent/child relationships from amendments, redactions, and group membership.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "example": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab"
+      },
+      "required": true,
+      "name": "uuid",
+      "in": "path"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Lineage graph: every vCon reachable from this one via parent or child derivation, plus the directed edges between them.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "rootUuid": {
+           "type": "string",
+           "format": "uuid"
+          },
+          "nodes": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "properties": {
+             "uuid": {
+              "type": "string",
+              "format": "uuid"
+             },
+             "subject": {
+              "type": "string",
+              "nullable": true
+             },
+             "derivationType": {
+              "type": "string",
+              "nullable": true
+             },
+             "derivedFromUuid": {
+              "type": "string",
+              "nullable": true,
+              "format": "uuid"
+             },
+             "createdAt": {
+              "type": "string"
+             },
+             "storedAt": {
+              "type": "string"
+             }
+            },
+            "required": [
+             "uuid",
+             "derivationType",
+             "derivedFromUuid",
+             "createdAt",
+             "storedAt"
+            ]
+           }
+          },
+          "edges": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "properties": {
+             "from": {
+              "type": "string",
+              "format": "uuid"
+             },
+             "to": {
+              "type": "string",
+              "format": "uuid"
+             },
+             "type": {
+              "type": "string",
+              "nullable": true
+             }
+            },
+            "required": [
+             "from",
+             "to",
+             "type"
+            ]
+           }
+          }
+         },
+         "required": [
+          "rootUuid",
+          "nodes",
+          "edges"
+         ]
+        },
+        "example": {
+         "rootUuid": "018e4a2f-9c4d-7e5f-0a1b-234567890abc",
+         "nodes": [
+          {
+           "uuid": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab",
+           "subject": "Call with Acme",
+           "derivationType": null,
+           "derivedFromUuid": null,
+           "createdAt": "2026-05-01T10:00:00Z",
+           "storedAt": "2026-05-01T10:00:01Z"
+          },
+          {
+           "uuid": "018e4a2f-9c4d-7e5f-0a1b-234567890abc",
+           "subject": "Call with Acme",
+           "derivationType": "amended",
+           "derivedFromUuid": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab",
+           "createdAt": "2026-05-02T09:30:00Z",
+           "storedAt": "2026-05-02T09:30:01Z"
+          }
+         ],
+         "edges": [
+          {
+           "from": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab",
+           "to": "018e4a2f-9c4d-7e5f-0a1b-234567890abc",
+           "type": "amended"
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/vcons/{uuid}/analyse": {
+   "post": {
+    "tags": [
+     "vCons"
+    ],
+    "summary": "Trigger AI analysis",
+    "description": "Triggers an AI analysis workflow for this vCon. The analysis result is stored as a new amended derivative \u2014 the original vCon is never modified. Requires AI analysis to be enabled and configured for the organisation.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "example": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab"
+      },
+      "required": true,
+      "name": "uuid",
+      "in": "path"
+     }
+    ],
+    "responses": {
+     "202": {
+      "description": "Analysis workflow queued",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "instanceId": {
+           "type": "string",
+           "example": "wf_01HXK9Z4B2N...",
+           "description": "Workflow instance ID for status polling"
+          }
+         },
+         "required": [
+          "instanceId"
+         ]
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "vCon not found",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "error"
+         ]
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "AI analysis not configured",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "error"
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/vcons/{uuid}/transcribe": {
+   "post": {
+    "tags": [
+     "vCons"
+    ],
+    "summary": "Trigger transcription",
+    "description": "Triggers a transcription workflow for audio dialogs in this vCon. Transcripts are stored as analysis entries on a new amended derivative. If AI analysis is also configured, it runs automatically after transcription completes. Requires transcription to be enabled and configured for the organisation.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "example": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab"
+      },
+      "required": true,
+      "name": "uuid",
+      "in": "path"
+     }
+    ],
+    "responses": {
+     "202": {
+      "description": "Transcription workflow queued",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "instanceId": {
+           "type": "string",
+           "example": "wf_01HXK9Z4B2N...",
+           "description": "Workflow instance ID for status polling"
+          }
+         },
+         "required": [
+          "instanceId"
+         ]
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Transcription not configured",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "error"
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/vcons/{uuid}/redact": {
+   "post": {
+    "tags": [
+     "vCon Lifecycle"
+    ],
+    "summary": "Create a redacted copy",
+    "description": "Creates a new vCon with specified PII removed. The original is preserved unchanged. Per the IETF vCon spec (draft-ietf-vcon-vcon-core-02), redacted party slots are replaced with empty objects to preserve array indices. The new vCon's `redacted.uuid` references the original. Both vCons receive SCITT ledger entries.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "example": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab"
+      },
+      "required": true,
+      "name": "uuid",
+      "in": "path"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RedactRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "201": {
+      "description": "Redacted vCon created",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RedactResponse"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Original vCon not found",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/LifecycleError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/vcons/{uuid}/amend": {
+   "post": {
+    "tags": [
+     "vCon Lifecycle"
+    ],
+    "summary": "Create an amended copy",
+    "description": "Creates a new vCon with additional analysis or attachments appended to the original's content. The original is preserved unchanged. The new vCon's `amended.uuid` references the original.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "example": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab"
+      },
+      "required": true,
+      "name": "uuid",
+      "in": "path"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/AmendRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "201": {
+      "description": "Amended vCon created",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AmendResponse"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Original vCon not found",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/LifecycleError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/vcons/group": {
+   "post": {
+    "tags": [
+     "vCon Lifecycle"
+    ],
+    "summary": "Create a group vCon",
+    "description": "Creates a new group vCon that bundles multiple existing vCons together (e.g. a multi-session customer journey). All member UUIDs must exist. The group vCon's `group[]` array references the members. Each member receives a SCITT ledger entry recording the grouping.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/GroupRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "201": {
+      "description": "Group vCon created",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/GroupResponse"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "One or more member vCons not found",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/LifecycleError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/vcons/{uuid}/versions": {
+   "get": {
+    "tags": [
+     "vCon Lifecycle"
+    ],
+    "summary": "List vCon versions",
+    "description": "Returns all versions of a vCon \u2014 the original plus any redacted, amended, or grouped derivatives, ordered chronologically.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "example": "018e4a2f-7b3c-7d4e-8f5a-1234567890ab"
+      },
+      "required": true,
+      "name": "uuid",
+      "in": "path"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "List of versions",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/Version"
+           }
+          }
+         },
+         "required": [
+          "data"
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/org": {
+   "get": {
+    "tags": [
+     "Organisation"
+    ],
+    "summary": "Get organisation details",
+    "description": "Returns details about the authenticated organisation including plan, status, and usage counters.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Organisation details",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Organisation"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Organisation not found",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "error"
+         ]
+        }
+       }
+      }
+     }
+    }
+   },
+   "patch": {
+    "tags": [
+     "Organisation"
+    ],
+    "summary": "Update organisation details",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "name": {
+          "type": "string",
+          "minLength": 1,
+          "example": "Acme Corp"
+         },
+         "retentionDays": {
+          "type": "integer",
+          "nullable": true,
+          "minimum": 1,
+          "maximum": 3650,
+          "example": 365
+         },
+         "retentionAction": {
+          "type": "string",
+          "enum": [
+           "redact",
+           "delete"
+          ],
+          "example": "redact"
+         },
+         "aiAnalysisEnabled": {
+          "type": "boolean",
+          "example": true
+         },
+         "aiProvider": {
+          "type": "string",
+          "nullable": true,
+          "enum": [
+           "openai",
+           "anthropic",
+           "xai",
+           null
+          ],
+          "example": "openai"
+         },
+         "aiApiKey": {
+          "type": "string",
+          "nullable": true,
+          "minLength": 1,
+          "example": "sk-...",
+          "description": "Plaintext API key \u2014 stored encrypted, never returned."
+         },
+         "transcriptionEnabled": {
+          "type": "boolean",
+          "example": true
+         },
+         "transcriptionProvider": {
+          "type": "string",
+          "nullable": true,
+          "enum": [
+           "openai",
+           "deepgram",
+           null
+          ],
+          "example": "openai"
+         },
+         "transcriptionApiKey": {
+          "type": "string",
+          "nullable": true,
+          "minLength": 1,
+          "example": "sk-...",
+          "description": "Plaintext transcription API key \u2014 stored encrypted, never returned."
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Updated",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Organisation"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/org/usage": {
+   "get": {
+    "tags": [
+     "Organisation"
+    ],
+    "summary": "Get current period usage",
+    "description": "Returns usage metrics for the current billing period (calendar month).",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Current period usage stats",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Usage"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/org/api-keys": {
+   "get": {
+    "tags": [
+     "API Keys"
+    ],
+    "summary": "List API keys",
+    "description": "Returns all API keys for the organisation. The full key value is never returned \u2014 only the prefix for identification.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "List of API keys (key values are redacted)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/ApiKey"
+           }
+          }
+         },
+         "required": [
+          "data"
+         ]
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "API Keys"
+    ],
+    "summary": "Create an API key",
+    "description": "Creates a new API key for the organisation. The full key is returned **only once** in this response \u2014 store it securely. Subsequent requests will only show the prefix.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "name": {
+          "type": "string",
+          "example": "Production integration",
+          "description": "A human-readable label for this key"
+         }
+        },
+        "required": [
+         "name"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "201": {
+      "description": "API key created \u2014 the full key is only shown here",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/NewApiKey"
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Plan key limit reached",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "error"
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/org/api-keys/{id}": {
+   "delete": {
+    "tags": [
+     "API Keys"
+    ],
+    "summary": "Revoke an API key",
+    "description": "Permanently revokes an API key. Revoked keys cannot be used for authentication and cannot be un-revoked.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "example": "key_01HXK...",
+       "description": "The API key ID to revoke"
+      },
+      "required": true,
+      "description": "The API key ID to revoke",
+      "name": "id",
+      "in": "path"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Key successfully revoked",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "revoked": {
+           "type": "boolean",
+           "enum": [
+            true
+           ]
+          }
+         },
+         "required": [
+          "revoked"
+         ],
+         "example": {
+          "revoked": true
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/media/upload": {
+   "post": {
+    "tags": [
+     "Media"
+    ],
+    "summary": "Request a media upload URL",
+    "description": "Returns a storage key and upload URL for a new media file. After receiving the response, PUT the raw file bytes to the `uploadUrl` with the appropriate `Content-Type` header. The returned `key` can then be used as the `url` field in vCon dialog objects.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/UploadRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Upload details including the storage key and PUT URL",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/UploadResponse"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/media/{key}": {
+   "delete": {
+    "tags": [
+     "Media"
+    ],
+    "summary": "Delete a media object",
+    "description": "Permanently removes a media file from storage. This does not automatically update any vCon dialog objects that reference this file \u2014 you should update or delete those separately.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "example": "org_01HXK9Z4B2N/a3f1b2c4-d5e6-7890-abcd-ef1234567890/call-recording-2026-02-17.wav",
+       "description": "The storage key returned from the upload endpoint"
+      },
+      "required": true,
+      "description": "The storage key returned from the upload endpoint",
+      "name": "key",
+      "in": "path"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Media object deleted successfully",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MediaDeleteConfirm"
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "The media key does not belong to your organisation",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MediaError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/workflows/ingest": {
+   "post": {
+    "tags": [
+     "Workflows"
+    ],
+    "summary": "Ingest a vCon via workflow",
+    "description": "Submits a vCon for async processing: validation, storage, consent parsing, retention scheduling, and automatic transcription/analysis if enabled in organisation settings.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/TriggerIngest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "202": {
+      "description": "Workflow started",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/WorkflowInstance"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/workflows/consent-revocation": {
+   "post": {
+    "tags": [
+     "Workflows"
+    ],
+    "summary": "Trigger consent revocation",
+    "description": "Starts a workflow to find and redact/delete all vCons containing a specific party. Use for GDPR erasure requests.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/TriggerConsentRevocation"
+       }
+      }
+     }
+    },
+    "responses": {
+     "202": {
+      "description": "Workflow started",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/WorkflowInstance"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/workflows/{workflowName}/{instanceId}": {
+   "get": {
+    "tags": [
+     "Workflows"
+    ],
+    "summary": "Get workflow instance status",
+    "description": "Polls the status of a running or completed workflow instance.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "enum": [
+        "ingest",
+        "retention",
+        "consent-revocation"
+       ],
+       "example": "ingest"
+      },
+      "required": true,
+      "name": "workflowName",
+      "in": "path"
+     },
+     {
+      "schema": {
+       "type": "string",
+       "example": "abc-123"
+      },
+      "required": true,
+      "name": "instanceId",
+      "in": "path"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Workflow status",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/WorkflowStatus"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Workflow not found"
+     }
+    }
+   }
+  },
+  "/v1/scitt/keys": {
+   "get": {
+    "tags": [
+     "SCITT"
+    ],
+    "summary": "Get signing keys for this org (JWKS)",
+    "description": "Returns the JWKS containing both the org's ECDSA P-256 signing key (used for signed statements) and the vcon.store platform's service key (used for receipts). Verify signed statements with the org key and receipts with the platform key.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "JWKS with org + platform keys",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/JWKS"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/scitt/vcons/{uuid}/ledger": {
+   "get": {
+    "tags": [
+     "SCITT"
+    ],
+    "summary": "Get SCITT transparency ledger for a vCon",
+    "description": "Returns all SCITT ledger entries for a vCon, including signed statements (org key) and receipts (platform key). Each entry represents a lifecycle event (created, redacted, amended, grouped, deleted).",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "format": "uuid",
+       "example": "550e8400-e29b-41d4-a716-446655440000"
+      },
+      "required": true,
+      "name": "uuid",
+      "in": "path"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Ledger entries",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/ScittEntry"
+           }
+          }
+         },
+         "required": [
+          "data"
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/scitt/verify": {
+   "post": {
+    "tags": [
+     "SCITT"
+    ],
+    "summary": "Verify COSE Sign1 signed statement and/or receipt",
+    "description": "Verifies a signed statement against the org's key and/or a receipt against the platform service key. Provide one or both. The signed_statement proves the org submitted the vCon; the receipt proves vcon.store logged it.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/VerifyRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Verification results",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/VerifyResponse"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Invalid input"
+     }
+    }
+   }
+  },
+  "/v1/team/members": {
+   "get": {
+    "tags": [
+     "Team"
+    ],
+    "summary": "List team members",
+    "description": "Returns all members of the authenticated organisation with their roles.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "List of team members",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/TeamMember"
+           }
+          }
+         },
+         "required": [
+          "data"
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/team/members/{userId}": {
+   "delete": {
+    "tags": [
+     "Team"
+    ],
+    "summary": "Remove a team member",
+    "description": "Removes a member from the organisation. Cannot remove the last owner.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "example": "user_abc123"
+      },
+      "required": true,
+      "name": "userId",
+      "in": "path"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Member removed",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "removed": {
+           "type": "boolean",
+           "enum": [
+            true
+           ]
+          }
+         },
+         "required": [
+          "removed"
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Cannot remove \u2014 e.g. last owner",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TeamError"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Member not found in this org",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TeamError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "patch": {
+    "tags": [
+     "Team"
+    ],
+    "summary": "Update member role",
+    "description": "Changes a team member's role (owner, admin, member).",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "example": "user_abc123"
+      },
+      "required": true,
+      "name": "userId",
+      "in": "path"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "role": {
+          "type": "string",
+          "enum": [
+           "owner",
+           "admin",
+           "member"
+          ],
+          "example": "admin"
+         }
+        },
+        "required": [
+         "role"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Role updated",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "updated": {
+           "type": "boolean",
+           "enum": [
+            true
+           ]
+          },
+          "role": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "updated",
+          "role"
+         ]
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Member not found",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TeamError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/team/invitations": {
+   "get": {
+    "tags": [
+     "Team"
+    ],
+    "summary": "List pending invitations",
+    "description": "Returns all pending invitations for the organisation.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "List of invitations",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/Invitation"
+           }
+          }
+         },
+         "required": [
+          "data"
+         ]
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "Team"
+    ],
+    "summary": "Invite a team member",
+    "description": "Sends an invitation email to the specified address. The invitee can accept to join the organisation.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "email": {
+          "type": "string",
+          "format": "email",
+          "example": "alice@example.com"
+         },
+         "role": {
+          "type": "string",
+          "enum": [
+           "admin",
+           "member"
+          ],
+          "default": "member",
+          "example": "member"
+         }
+        },
+        "required": [
+         "email"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "201": {
+      "description": "Invitation created and email sent",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "id": {
+           "type": "string"
+          },
+          "email": {
+           "type": "string"
+          },
+          "role": {
+           "type": "string"
+          },
+          "expiresAt": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "id",
+          "email",
+          "role",
+          "expiresAt"
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "User already a member or invitation already pending",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TeamError"
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Plan member limit reached",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TeamError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/team/invitations/{token}/accept": {
+   "post": {
+    "tags": [
+     "Team"
+    ],
+    "summary": "Accept an invitation",
+    "description": "Accepts a pending invitation and adds the authenticated user to the organisation. The user must be logged in.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "example": "abc123-def456"
+      },
+      "required": true,
+      "name": "token",
+      "in": "path"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Invitation accepted, user added to org",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "joined": {
+           "type": "boolean",
+           "enum": [
+            true
+           ]
+          },
+          "orgId": {
+           "type": "string"
+          },
+          "role": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "joined",
+          "orgId",
+          "role"
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Invitation expired, already accepted, or user already a member",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TeamError"
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Organisation has reached its member limit",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TeamError"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Invitation not found",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TeamError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/team/invitations/{id}": {
+   "delete": {
+    "tags": [
+     "Team"
+    ],
+    "summary": "Revoke an invitation",
+    "description": "Revokes a pending invitation so it can no longer be accepted.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "schema": {
+       "type": "string",
+       "example": "inv_abc123"
+      },
+      "required": true,
+      "name": "id",
+      "in": "path"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Invitation revoked",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "revoked": {
+           "type": "boolean",
+           "enum": [
+            true
+           ]
+          }
+         },
+         "required": [
+          "revoked"
+         ]
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Invitation not found",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TeamError"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}

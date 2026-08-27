@@ -7442,6 +7442,13 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 - `sipnab -N -I ./captures --export-vcon-when "duration > 30 and rtp.codec == 'PCMU'" --export-vcon-dir ./long-g711/ --no-cli-print` -- the predicate is the filter language, so the same conditions that narrow a report also choose a container set. The containers carry the same ICMP media evidence the report shows, because both go through one selection path
 - `sipnab -N -I ./captures --export-vcon '1-1966@10.0.2.20' --vcon-out ./captures/1-1966.vcon` -- refused before anything opens a writer. `--vcon-out` goes through the guard `-O` does, so a container cannot land inside a directory this run reads: a name that is free today becomes an input on the next run, and the container would then overwrite the evidence it summarizes
 - `sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20' | jq -r '.analysis[0].body | fromjson | .capture_completeness.note'` -- read the caveat before the contents. The `fromjson` is not optional: the draft makes every `body` a JSON-encoded STRING, so indexing into it without parsing yields nothing. The note comes from this run's own counters and says what sipnab READ and dropped; it never says the call was short, silent or broken, because none of that follows from a capture that missed something
+- `sipnab -N -I ./captures --export-vcon-when 'duration > 30' --export-vcon-dir ./long/ --vcon-max-inline-media 64` -- carry audio the shipped 5 MiB budget would refuse. One store answers HTTP 204 and then drops the payload in its file spool, telling the producer nothing, and that measurement set the default -- so raise it only when you know what reads your containers
+- `sipnab -N -I ./captures --export-vcon-when 'response_code >= 200' --export-vcon-dir ./calls/ --vcon-max-inline-media 0 --retain-audio` -- keep the containers and inline none of the audio. `0` says "never inline media" without turning the exporter off, and the refusal still appears in the completeness caveat rather than passing as a call that had no audio
+- `sipnab -N -I ./captures --export-vcon-when "state == 'Failed'" --export-vcon-dir ./failed/ --content-deny-header X-No-Record --content-deny-tombstone` -- write an identity-only container for each denied dialog instead of nothing, so a consumer can tell a call that was deliberately withheld from one that never happened. It carries no message trace, no media and no bodies, and declares `redacted` with `type` alone, because no fuller version of the container exists anywhere to point at
+- `sipnab -N -I capture.pcap --export-vcon-when 'duration > 0' --export-vcon-dir ./out/ --content-deny-header Privacy --content-deny-tombstone` -- off by default for a reason worth stating: a tombstone reveals that the call EXISTED. If the header means "this call must leave no trace", leave the flag off and let the dialog produce nothing at all
+- `sipnab -N -I ./captures --export-vcon-when 'duration > 30' --export-vcon-dir ./long/ --vcon-digest > SHA256SUMS` -- record what sipnab wrote. The digests go to stdout in `sha256sum` format while the progress summary stays on stderr, so the redirect captures the one and not the other
+- `sipnab -N -I capture.pcap --export-vcon-when 'duration > 0' --export-vcon-dir ./out/ --vcon-digest | tee ./out/SHA256SUMS` -- keep the digests beside the containers they describe, so the spool carries its own manifest. The name in each line is the bare file name rather than a path, so a spool that is later moved or mounted elsewhere still verifies from inside its own directory
+- `cd ./long/ && sha256sum -c ../SHA256SUMS` -- verify later with the standard tool and no glue. This is a digest, not a signature: a signature over sipnab's bytes could never verify against the object a store holds, because a conserver adds fields on ingest. What the digest buys is binding an emission to a store's own ledger entry out of band
 - `sipnab -N -I capture.pcap --tshark-filter 'sip.Method == "INVITE"'` — print a tshark-compatible display filter for the INVITE traffic in a capture. sipnab hands the expression to tshark's `-Y` verbatim, so it takes WIRESHARK display-filter syntax rather than sipnab's `--filter` DSL: `sip.Method`, not `method`. Quote the whole expression in single quotes so the inner double quotes survive the shell
 
 
@@ -17568,6 +17575,42 @@ without the feature.
 
 Read on for what the container means once you hold one.
 
+## The spool contract, for a bridge that consumes it
+
+`--export-vcon-dir` is a queue. Nothing in sipnab ships the containers
+anywhere — the export path writes files and makes no outbound connection — so
+whatever forwards them to a store is a separate program watching that
+directory. These are the guarantees it may rely on.
+
+**A name resolves to a whole container, or to nothing.** Every write stages the
+bytes under a dot-prefixed sibling, flushes them to the filesystem, and renames
+into place. A reader polling the directory therefore never sees a truncated
+container, and a write that fails leaves the previous one intact. Staging is
+deliberately in the DESTINATION directory rather than in the system temp dir:
+`rename` is atomic only within one filesystem, and across a mount boundary it
+either fails outright or degrades into a copy, which puts the partial file
+back.
+
+**A staging file you can see is litter.** sipnab writes it as
+`.<container>.partial`, so an ordinary listing and a `*.json` glob both skip
+it. A failed write removes it. One left behind means sipnab died mid-write, and
+it is safe to delete.
+
+**Names are stable, and sipnab reuses them.** A container's file name comes
+from its Call-ID, with an underscore replacing every character outside
+`[A-Za-z0-9._-]`. Re-exporting
+the same dialog to the same directory overwrites its file rather than
+accumulating a second one, which is what makes the directory a queue and not a
+log. Two dialogs whose Call-IDs differ only outside that character set land on
+one name. If that matters to you, consume the directory rather than trusting
+the name to be unique.
+
+**A container is complete when it appears.** There is no partial state, no
+lock file and no sentinel to wait for. Read it, forward it, delete it.
+
+**Deleting is the consumer's job.** sipnab never removes a container it wrote,
+so a spool nobody drains grows without bound.
+
 ## Walk through one, end to end
 
 The capture is [`tests/fixtures/sip_call.pcap`](../tests/fixtures/sip_call.pcap),
@@ -17772,10 +17815,9 @@ one, not that the endpoint has none.
 
 **The Dialog Object describes no media, and that is correct here.** This run
 retained no RTP payload, so there is nothing to describe and inventing a
-`mediatype` or a `url` would name a file that does not exist. `type` is
-`incomplete` because that is the only value in the enum that claims no content
-— see the type rule above — and there is no `disposition`, because the call in
-this fixture completed and nothing about it failed.
+`mediatype` or a `url` would name a file that does not exist. The object names
+no `type` at all — see the type rule below — and no `disposition`, because the
+call in this fixture completed and nothing about it failed.
 
 **The completeness body appears twice.** Once as an attachment, once inside the
 report. The next section is about why.
@@ -17791,28 +17833,34 @@ decode or hit a retention cap can never render as clean.
 
 **vCon has no field for that.** Not a weak one — none. The `type` enum admits
 five values and no others: `recording`, `recording-set`, `text`, `transfer`,
-`incomplete`. Four of the five promise content the object holds, and every
-Dialog Object must carry one of them.
+`incomplete`. Four of the five promise content the object holds, and the fifth
+names a call that "failed to be setup" — a claim about the conversation rather
+than about the object.
 
-So sipnab types the object by **what it carries**, never by what the call did:
+So sipnab types the object by **what it carries**, never by what the call did,
+and where no value is true it names none:
 
 | The object holds | `type` | `disposition` |
 |---|---|---|
 | audio | `recording` | absent — it is an `incomplete` field |
-| no content | `incomplete` | present only when sipnab SAW a final failure |
+| no content, no observed failure | absent | absent |
+| no content, an observed final failure | `incomplete` | the reason, always |
 
-That leaves `incomplete` doing double duty, and the honest reading of it here
-is *an incompleted record*, which a signaling-only export is. The alternative
-is worse in a way that is not a matter of taste: an object typed `recording`
-carrying neither `url` nor `body` promises content that is not there, and a
-conserver chain link that selects `type == "recording"` reads `dialog["url"]`
-unguarded — it raises, and the conserver dead-letters the **whole** container
-rather than the one step. A label that is imprecise beats a label that destroys
-the record.
+The empty row is the one §4.3 of the core draft provides for: "it is possible
+to have a Dialog Object with no parameters in it". Reaching for `incomplete`
+there is the mistake sipnab shipped until 0.5.128, and it is not a matter of
+taste — it made every container for a call that answered assert a setup failure
+that never happened. Reaching for `recording` instead is worse still: an object
+typed `recording` carrying neither `url` nor `body` promises content that is
+not there, and a conserver chain link that selects `type == "recording"` reads
+`dialog["url"]` unguarded — it raises, and the conserver dead-letters the
+**whole** container rather than the one step.
 
-What the object cannot say, `disposition` and the caveat do. `disposition`
-names a failure **only** when sipnab saw the final response that caused it, so
-its absence never means "the call succeeded".
+The last two rows move together. §4.3.1 makes `disposition` a MUST on an
+incomplete object, and no value in the closed set of §4.3.11 means "not
+observed", so one decision fixes both fields. `disposition` names a failure
+**only** when sipnab saw the final response that caused it, and its absence
+never means "the call succeeded".
 
 The extension mechanism offers no repair either. An extension is *ignorable*,
 in which case the consumer that most needs the caveat drops it, or *fatal*, in
@@ -22278,15 +22326,35 @@ text on the way out, and every test that reads one parses it back. A body typed
 as `serde_json::Value` round-trips fine through `serde_json` and fails against a
 real store, which is exactly the class of defect a local test cannot see.
 
-**The format demands some fields even when there is nothing to say.** The
-working group's schema makes `type` and `start` mandatory on every dialog
-object and `start`, `party` and `dialog` mandatory on every attachment. An
-empty dialog object reads as tidy and is invalid. `dialog_object()` therefore
-always names a `type` and always carries a `start`.
+**Two separate defects in the draft meet on this one field.** The first is a
+vocabulary gap: none of the five §4.3.1 type values describes a conversation
+known to have occurred whose content the container does not carry or
+reference, which is the ordinary result for an observer that retains no media.
+The second is a prose/schema inconsistency: §4.3 says "it is possible to have a
+Dialog Object with no parameters in it", and the schema published beside that
+sentence requires `type` AND `start`, so it forbids that shape twice over.
 
-**The `type` follows the CONTENT, not the call.** `dialog_object()` builds
-`incomplete`, because at construction the object carries nothing. The media
-path retypes it to `recording` when audio actually arrives, and clears
+sipnab needs only the first requirement relaxed — it knows the start time — so
+the vendored copy removes `type` from `required` and leaves `start`. Read that
+as a documented compatibility deviation rather than a fix: making a required
+field optional changes validation behavior and obliges consumers to handle a
+state the schema used to guarantee away. The cleaner long-term answer is an
+explicit sixth type for the content-unavailable state, which an absent `type`
+cannot distinguish from a producer that simply omitted it. `start`, `party`
+and `dialog` stay mandatory on every attachment.
+
+**The `type` follows the CONTENT, not the call — and an object carrying nothing
+names no type at all.** Of the five values §4.3.1 defines, none is true of a
+signaling-only object: four promise content it does not hold, and `incomplete`
+names a call that "failed to be setup", which is a claim about the
+CONVERSATION. sipnab emitted `incomplete` there until 0.5.128, so every
+signaling-only export of a successful call shipped a container reporting a
+setup failure — read months later beside a switch's CDR showing a connected
+ninety-second call, the container is the thing that looks wrong. sipnab now keeps `incomplete`
+for a dialog whose final response it OBSERVED to be a failure, and `dialog_object()` decides the type and the disposition in one
+expression because §4.3.1 couples them: an incomplete object MUST name a
+disposition, and a disposition is only nameable when sipnab saw a failure. The
+media path types the object `recording` when audio actually arrives, and clears
 `disposition` with it. Typing an object `recording` when it carries no
 content — which this module did until 0.5.125 — is an ingest hazard rather than
 an imprecise label. The conserver's transcription link selects
@@ -22301,7 +22369,12 @@ mutation survives.
 
 **The repository carries the schema, so the gate runs offline.**
 [`tests/schemas/vcon.schema.json`](../../tests/schemas/vcon.schema.json) is the
-working group's own schema, vendored.
+working group's own schema, vendored, with the one deviation described above
+recorded in a `$comment` beside the line it changes.
+`the_vendored_schema_deviates_from_the_draft_at_exactly_one_point` is the
+tripwire: re-vendoring the file from the draft is a correct-looking action that
+silently restores the contradiction, and whoever does it lands on that test and
+reads why before deciding.
 `a_container_validates_against_the_working_group_schema` in
 [`tests/vcon_ingest_contract_test.rs`](../../tests/vcon_ingest_contract_test.rs)
 validates a real export against it. That one test found six violations that the

@@ -44,7 +44,7 @@ import pathlib, re, subprocess, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from lib_markdown import code_trees, repo_root  # noqa: E402
+from lib_markdown import code_trees, fence_mask, repo_root  # noqa: E402
 
 # Derived from __file__, never hardcoded: this script runs inside git
 # worktrees, and an absolute root makes a fixer invoked from a worktree edit
@@ -147,19 +147,15 @@ def convert(text: str, depth: int = 0, internals: bool = False) -> tuple[str, in
         n += 1
         return f"[`{m.group(1)}`]({u})"
 
-    out, fence = [], None
-    for line in text.split("\n"):
-        t = line.lstrip()
-        marker = "```" if t.startswith("```") else ("~~~" if t.startswith("~~~") else None)
-        if marker:
-            # Close only on the same marker: a ``` inside a ~~~ block is content.
-            if fence is None:
-                fence = marker
-            elif fence == marker:
-                fence = None
-            out.append(line)
-            continue
-        out.append(line if fence else SPAN.sub(sub, line))
+    out: list[str] = []
+    # `fence_mask`, not a per-line toggle: a fence is three or MORE markers and
+    # only a run at least as long as the opener closes it. A toggle reads the
+    # inner ``` of a ```` block as closing it and rewrites the rest of the
+    # code block as prose.
+    mask = fence_mask(text)
+    for idx, line in enumerate(text.split("\n")):
+        inside = idx < len(mask) and mask[idx]
+        out.append(line if inside else SPAN.sub(sub, line))
     return "\n".join(out), n
 
 if __name__ == "__main__":

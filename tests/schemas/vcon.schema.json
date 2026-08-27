@@ -214,7 +214,8 @@
     "Dialog": {
       "type": "object",
       "description": "Represents a segment of captured conversation",
-      "required": ["type", "start"],
+      "$comment": "LOCAL DEVIATION, and the only one in this file: `type` was removed from `required`. This is a documented compatibility deviation, not a claim that the published schema is wrong to validate as it does. Two defects in draft-ietf-vcon-vcon-core-03 meet here. First, a vocabulary gap: none of the five §4.3.1 type values truthfully describes a conversation known to have occurred whose content this container does not carry or reference, so a passive observer that retains no media has no honest value to emit. Second, a prose/schema inconsistency: §4.3 states that \"it is possible to have a Dialog Object with no parameters in it\", which the published `required` list forbids twice over, since `start` is required as well. sipnab needs only the first of those relaxed -- it knows the start time -- so this removes `type` alone and leaves `start` required. Revert the moment the draft resolves either defect; the preferred resolution is an explicit sixth type for the content-unavailable state rather than an optional `type`. The tripwire is `the_vendored_schema_deviates_from_the_draft_at_exactly_one_point` in src/output/vcon.rs.",
+      "required": ["start"],
       "properties": {
         "type": {
           "type": "string",

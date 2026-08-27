@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 235 | 114 | 40 | 80 | 1 |
+| CLI flags | 238 | 114 | 43 | 80 | 1 |
 | HTTP routes | 11 | 11 | -- | 0 | 0 |
 | MCP tools | 38 | 38 | -- | 0 | 0 |
 
@@ -151,7 +151,10 @@ behind them.
 | `--export-vcon` |  |  | Output | e2e | `tests/vcon_cli_test.rs` |  |  |
 | `--export-vcon-when` |  | `EXPR` | Output | parsed | `src/cli.rs` |  |  |
 | `--export-vcon-dir` |  | `DIR` | Output | parsed | `src/cli.rs` |  |  |
+| `--vcon-max-inline-media` |  | `MIB` | Output | parsed | `src/cli.rs` |  |  |
 | `--content-deny-header` |  | `NAME` | Output | parsed | `src/cli.rs` |  |  |
+| `--content-deny-tombstone` |  |  | Output | parsed | `src/cli.rs` |  |  |
+| `--vcon-digest` |  |  | Output | parsed | `src/cli.rs` |  |  |
 | `--vcon-out` |  | `PATH` | Output | e2e | `tests/vcon_cli_test.rs` |  |  |
 | `--markdown` |  |  | Output | e2e | `tests/analyze_test.rs` |  |  |
 | `--hexdump` |  |  | Output | e2e | `tests/integration_test.rs` |  |  |

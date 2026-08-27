@@ -78,6 +78,15 @@ pub struct SipnabMcp {
     /// six detectors in this tree accept a threshold no production caller ever
     /// supplies, and this must not become the seventh.
     row_cap: usize,
+    /// Largest inline media body a container this server builds may carry,
+    /// from `--vcon-max-inline-media`. `None` takes the measured default.
+    ///
+    /// Carried on the server for the same reason `row_cap` is: a budget that
+    /// exists only in a signature is not a setting. It matters more here than
+    /// most, because the REST door and this one must enforce ONE number — the
+    /// same call exported through two doors otherwise comes back carrying
+    /// audio in one container and a refusal in the other.
+    max_inline_media_bytes: Option<usize>,
     /// The numbers the diagnostic filter aliases compare against.
     ///
     /// Carried here for the same reason `row_cap` is: `find_problems` used to
@@ -209,6 +218,7 @@ impl SipnabMcp {
             armed_detections: Vec::new(),
             source_exhausted: None,
             row_cap: HARD_LIMIT,
+            max_inline_media_bytes: None,
             alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
             body_cap: super::shape::DEFAULT_MAX_BODY_BYTES,
             file_root: None,
@@ -243,6 +253,20 @@ impl SipnabMcp {
     #[must_use]
     pub fn with_row_cap(mut self, rows: usize) -> Self {
         self.row_cap = if rows == 0 { HARD_LIMIT } else { rows };
+        self
+    }
+
+    /// Set the largest inline media body a container this server builds may
+    /// carry, in BYTES.
+    ///
+    /// Unlike [`Self::with_row_cap`], `Some(0)` means what it says: refuse
+    /// every inline body. An operator who wants "never inline media" has no
+    /// other way to ask for it, and the refusal is still stated in the
+    /// completeness caveat rather than passing as a call with no audio. `None`
+    /// takes the measured default.
+    #[must_use]
+    pub fn with_max_inline_media_bytes(mut self, bytes: Option<usize>) -> Self {
+        self.max_inline_media_bytes = bytes;
         self
     }
 
@@ -3767,6 +3791,7 @@ impl SipnabMcp {
                 capture_id: crate::output::vcon::dialog_capture_id(dialog),
                 facts: &facts,
                 analysis: Some(&analysis),
+                max_inline_media_bytes: self.max_inline_media_bytes,
             },
             audio,
         );
@@ -8615,10 +8640,13 @@ mod tests {
              `party` index points at a caller"
         );
         for party in parties {
-            assert!(
-                party.get("name").is_none(),
-                "a party carries a `name`, which reads as an established \
-                 identity nobody established: {party}"
+            // A `name` IS emitted. What stops it reading as an established
+            // identity is `validation: "none"` traveling beside it, so the
+            // pairing is the invariant rather than the absence.
+            assert_eq!(
+                party["validation"], "none",
+                "a party names somebody without saying sipnab established \
+                 nothing: {party}"
             );
         }
     }

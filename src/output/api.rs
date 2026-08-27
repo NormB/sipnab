@@ -60,6 +60,116 @@ use crate::sip::dialog_store::DialogStore;
 
 // ── Shared application state ────────────────────────────────────────
 
+/// An RFC 9457 `application/problem+json` error body.
+///
+/// sipnab's REST errors used to be a bare [`StatusCode`] with NO body at all,
+/// so a client received a number and nothing else — not which resource, not
+/// which of the several reasons a 400 has, and nothing stable to branch on.
+///
+/// RFC 9457 is the registered way to say more. `type` is a URI naming the
+/// problem KIND, and it is the field a client should switch on; `title` is a
+/// short human-readable summary of that kind; `status` repeats the HTTP code
+/// so the body survives being logged apart from its response; `detail` is
+/// about THIS occurrence.
+///
+/// One vCon store this project probes answers exactly this shape live while
+/// its own OpenAPI document advertises `{"error": "..."}`, which is a useful
+/// warning in both directions: a client must not trust a documented error
+/// shape it has not seen, and a server should not document one it does not
+/// send.
+///
+/// No `instance` member. RFC 9457 makes it optional, and it would be a URI
+/// identifying this specific occurrence — sipnab has no such identifier to
+/// give, and inventing one that resolves to nothing is worse than omitting it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Problem {
+    /// HTTP status, and the value of the body's `status` member.
+    pub status: StatusCode,
+    /// What went wrong THIS time, or `None` to send the kind's title alone.
+    pub detail: Option<String>,
+}
+
+impl Problem {
+    /// The base for every `type` URI sipnab sends.
+    ///
+    /// A relative URI would resolve against the request, so two deployments
+    /// would give one problem kind two identities and a client could not
+    /// compare them.
+    pub const TYPE_BASE: &'static str = "https://sipnab.com/problems/";
+
+    /// A problem carrying only its kind.
+    #[must_use]
+    pub fn new(status: StatusCode) -> Self {
+        Self {
+            status,
+            detail: None,
+        }
+    }
+
+    /// A problem that also says what happened this time.
+    #[must_use]
+    pub fn detailed(status: StatusCode, detail: impl Into<String>) -> Self {
+        Self {
+            status,
+            detail: Some(detail.into()),
+        }
+    }
+
+    /// The slug in this problem's `type` URI.
+    ///
+    /// Derived from the status rather than free text, so one kind of failure
+    /// has one URI across every handler. A client branching on `type` is the
+    /// whole point, and two handlers spelling the same problem differently
+    /// would defeat it.
+    #[must_use]
+    pub fn slug(&self) -> &'static str {
+        match self.status {
+            StatusCode::BAD_REQUEST => "bad-request",
+            StatusCode::UNAUTHORIZED => "unauthorized",
+            StatusCode::FORBIDDEN => "forbidden",
+            StatusCode::NOT_FOUND => "not-found",
+            StatusCode::TOO_MANY_REQUESTS => "rate-limited",
+            StatusCode::PAYLOAD_TOO_LARGE => "payload-too-large",
+            StatusCode::SERVICE_UNAVAILABLE => "unavailable",
+            StatusCode::INTERNAL_SERVER_ERROR => "internal",
+            _ => "error",
+        }
+    }
+}
+
+impl From<StatusCode> for Problem {
+    fn from(status: StatusCode) -> Self {
+        Self::new(status)
+    }
+}
+
+impl IntoResponse for Problem {
+    fn into_response(self) -> axum::response::Response {
+        let title = self
+            .status
+            .canonical_reason()
+            .unwrap_or("Error")
+            .to_string();
+        let mut body = json!({
+            "type": format!("{}{}", Self::TYPE_BASE, self.slug()),
+            "title": title,
+            "status": self.status.as_u16(),
+        });
+        if let Some(detail) = self.detail {
+            body["detail"] = Value::String(detail);
+        }
+        let mut response = (self.status, Json(body)).into_response();
+        // RFC 9457 §3: the media type is what tells a generic client this body
+        // is a problem rather than the resource it asked for. `Json` sets
+        // application/json, so this replaces it.
+        response.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/problem+json"),
+        );
+        response
+    }
+}
+
 /// Shared state passed to every axum handler via `State(...)`.
 #[derive(Clone)]
 pub struct ApiState {
@@ -75,6 +185,15 @@ pub struct ApiState {
     /// `--api-max-rows` / `[limits] api_max_rows` by the caller that starts
     /// the server (config is in scope there and not here).
     pub max_rows: usize,
+    /// Largest inline media body a container this server builds may carry,
+    /// resolved from `--vcon-max-inline-media` by the caller that starts the
+    /// server — the same arrangement as [`Self::max_rows`], and for the same
+    /// reason: the CLI is in scope there and not here.
+    ///
+    /// `None` takes the measured default. A server and a batch run on one host
+    /// must enforce ONE budget, or the same call exported through two doors
+    /// comes back carrying audio in one container and a refusal in the other.
+    pub max_inline_media_bytes: Option<usize>,
     /// Which capture this process holds — the SAME object the MCP server
     /// stamps its answers with, when both are running.
     ///
@@ -524,11 +643,7 @@ fn enforce_bind_auth_policy(
 /// `Ok(())` when auth is unconfigured (disabled) or a valid
 /// `Bearer <token>` credential is presented; `Err(401 UNAUTHORIZED)` for a
 /// missing, non-ASCII, non-Bearer, or unverifiable credential.
-fn check_auth(
-    state: &ApiState,
-    headers: &HeaderMap,
-    required_scope: &str,
-) -> Result<(), StatusCode> {
+fn check_auth(state: &ApiState, headers: &HeaderMap, required_scope: &str) -> Result<(), Problem> {
     // No signing keys and no static secret configured ⇒ auth disabled
     // (loopback-allowed behavior unchanged from before this feature).
     if state.verifier.is_unconfigured() {
@@ -536,7 +651,7 @@ fn check_auth(
     }
 
     let Some(auth_header) = headers.get("authorization") else {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(Problem::new(StatusCode::UNAUTHORIZED));
     };
 
     let auth_str = auth_header.to_str().map_err(|_| StatusCode::UNAUTHORIZED)?;
@@ -549,7 +664,7 @@ fn check_auth(
         return Ok(());
     }
 
-    Err(StatusCode::UNAUTHORIZED)
+    Err(Problem::new(StatusCode::UNAUTHORIZED))
 }
 
 /// Check rate limit. Returns `Err(StatusCode)` if over limit.
@@ -567,12 +682,12 @@ fn check_auth(
 ///
 /// Takes the rate-limiter mutex and mutates its per-IP counters (see
 /// `RateLimiter::check`).
-fn check_rate_limit(state: &ApiState, ip: IpAddr) -> Result<(), StatusCode> {
+fn check_rate_limit(state: &ApiState, ip: IpAddr) -> Result<(), Problem> {
     let mut limiter = state.rate_limiter.lock();
     if limiter.check(ip) {
         Ok(())
     } else {
-        Err(StatusCode::SERVICE_UNAVAILABLE)
+        Err(Problem::new(StatusCode::SERVICE_UNAVAILABLE))
     }
 }
 
@@ -592,7 +707,7 @@ fn check_rate_limit(state: &ApiState, ip: IpAddr) -> Result<(), StatusCode> {
 /// # Side effects
 ///
 /// Mutates the shared rate limiter via `check_rate_limit`.
-fn guard(state: &ApiState, headers: &HeaderMap, client_ip: IpAddr) -> Result<(), StatusCode> {
+fn guard(state: &ApiState, headers: &HeaderMap, client_ip: IpAddr) -> Result<(), Problem> {
     // SCOPE_FULL is the default on purpose: it is the RESTRICTIVE direction.
     // A `full` token satisfies every requirement, so demanding `full` admits
     // only full tokens, while demanding `metrics` would admit both. A route
@@ -626,7 +741,7 @@ fn guard_scoped(
     headers: &HeaderMap,
     client_ip: IpAddr,
     required_scope: &str,
-) -> Result<(), StatusCode> {
+) -> Result<(), Problem> {
     // Rate-limit BEFORE authenticating: if auth ran first, a wrong-token
     // request would 401 without ever touching the limiter, letting an
     // attacker brute-force the token at unlimited speed. Charging every
@@ -670,7 +785,7 @@ async fn list_dialogs(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Query(params): Query<DialogListParams>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
     let offset = params.offset.unwrap_or(0);
@@ -756,11 +871,13 @@ async fn get_dialog(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Path(call_id): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
     let ds = state.dialog_store.read();
-    let dialog = ds.get(&call_id).ok_or(StatusCode::NOT_FOUND)?;
+    let dialog = ds
+        .get(&call_id)
+        .ok_or(Problem::new(StatusCode::NOT_FOUND))?;
 
     let ss = state.stream_store.read();
     let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&call_id).collect();
@@ -806,11 +923,13 @@ async fn get_dialog_report(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Path(call_id): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
     let ds = state.dialog_store.read();
-    let dialog = ds.get(&call_id).ok_or(StatusCode::NOT_FOUND)?;
+    let dialog = ds
+        .get(&call_id)
+        .ok_or(Problem::new(StatusCode::NOT_FOUND))?;
 
     let ss = state.stream_store.read();
     let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&call_id).collect();
@@ -884,11 +1003,13 @@ async fn get_dialog_vcon(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Path(call_id): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
     let ds = state.dialog_store.read();
-    let dialog = ds.get(&call_id).ok_or(StatusCode::NOT_FOUND)?;
+    let dialog = ds
+        .get(&call_id)
+        .ok_or(Problem::new(StatusCode::NOT_FOUND))?;
     let ss = state.stream_store.read();
 
     // Frames read comes from the same process-global the Prometheus scrape and
@@ -923,6 +1044,7 @@ async fn get_dialog_vcon(
             capture_id: output::vcon::dialog_capture_id(dialog),
             facts: &facts,
             analysis: Some(&analysis),
+            max_inline_media_bytes: state.max_inline_media_bytes,
         },
         audio,
     );
@@ -963,7 +1085,7 @@ async fn get_persistence(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
     Ok(persistence_body(&state.persistence_gate))
 }
@@ -979,7 +1101,7 @@ async fn set_persistence(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
     // The body is extracted fallibly and AFTER the guard, in that order and
     // for two reasons. Taken infallibly, axum would answer a malformed body
@@ -987,7 +1109,7 @@ async fn set_persistence(
     // its JSON parsed. And a rejection has to stay a rejection: the dangerous
     // reading of "I could not understand this request" is `enabled: true`.
     let Ok(Json(raw)) = body else {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(Problem::new(StatusCode::BAD_REQUEST));
     };
     // A JSON object, and nothing else. Extracting straight into the struct
     // looks equivalent and is not: a derived `Deserialize` also accepts a
@@ -997,10 +1119,10 @@ async fn set_persistence(
     // unknown. Nothing but this check stands between a stray array and an
     // operator's close being undone.
     if !raw.is_object() {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(Problem::new(StatusCode::BAD_REQUEST));
     }
     let Ok(req) = serde_json::from_value::<PersistenceRequest>(raw) else {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(Problem::new(StatusCode::BAD_REQUEST));
     };
     state.persistence_gate.set(req.enabled);
     Ok(persistence_body(&state.persistence_gate))
@@ -1046,7 +1168,7 @@ async fn list_streams(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Query(params): Query<StreamListParams>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
     let offset = params.offset.unwrap_or(0);
@@ -1141,7 +1263,7 @@ async fn get_stream(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
     let ss = state.stream_store.read();
@@ -1157,7 +1279,7 @@ async fn get_stream(
         .iter()
         .filter(|s| s.key.ssrc == ssrc)
         .max_by_key(|s| s.packet_count)
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .ok_or(Problem::new(StatusCode::NOT_FOUND))?;
 
     let json_str = output::json::stream_to_json(stream);
     drop(ss);
@@ -1198,7 +1320,7 @@ async fn get_capture_report(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
     let analysis = {
@@ -1255,7 +1377,7 @@ async fn get_stats(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
     // Capture lock first, then dialogs, then streams -- the order
@@ -1477,7 +1599,7 @@ async fn get_metrics(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, Problem> {
     // The only route a SCOPE_METRICS token reaches. A `full` token still works
     // here — full satisfies every requirement — so this narrows nothing for an
     // existing deployment.
@@ -1630,6 +1752,120 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    /// PV11: an error carries an RFC 9457 body, not a bare status code.
+    ///
+    /// The previous behavior returned a [`StatusCode`] and no body at all, so
+    /// a client got a number and had to guess which of a handler's several
+    /// 400s it had hit.
+    #[tokio::test]
+    async fn an_error_response_is_rfc_9457_problem_json() {
+        use axum::response::IntoResponse as _;
+        use http_body_util::BodyExt as _;
+
+        let response = Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            "`since` is not an RFC 3339 instant",
+        )
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/problem+json"),
+            "RFC 9457 §3: the media type is what tells a generic client this \
+             body describes a problem rather than the resource it asked for"
+        );
+
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body collects")
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+
+        assert_eq!(
+            body["type"], "https://sipnab.com/problems/bad-request",
+            "`type` is the member a client branches on, and it must be \
+             absolute: a relative URI resolves against the request, so two \
+             deployments would give one problem two identities: {body}"
+        );
+        assert_eq!(body["title"], "Bad Request", "title names the KIND: {body}");
+        assert_eq!(
+            body["status"], 400,
+            "the status is repeated in the body so it survives being logged \
+             apart from its response: {body}"
+        );
+        assert_eq!(
+            body["detail"], "`since` is not an RFC 3339 instant",
+            "detail is about THIS occurrence: {body}"
+        );
+        assert!(
+            body.get("instance").is_none(),
+            "RFC 9457 makes `instance` optional and sipnab has no per-occurrence \
+             URI to give; inventing one that resolves to nothing is worse than \
+             omitting it: {body}"
+        );
+    }
+
+    /// A problem with no detail still carries the three required members.
+    #[tokio::test]
+    async fn a_problem_without_detail_omits_it_rather_than_sending_a_placeholder() {
+        use axum::response::IntoResponse as _;
+        use http_body_util::BodyExt as _;
+
+        let response = Problem::new(StatusCode::NOT_FOUND).into_response();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body collects")
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+
+        assert_eq!(body["type"], "https://sipnab.com/problems/not-found");
+        assert_eq!(body["title"], "Not Found");
+        assert_eq!(body["status"], 404);
+        assert!(
+            body.get("detail").is_none(),
+            "an empty-string detail reads as `we have nothing to say about \
+             this`, which is different from having nothing to add: {body}"
+        );
+    }
+
+    /// One kind of failure has ONE `type` URI across every handler.
+    ///
+    /// The slug comes from the status rather than from free text at each call
+    /// site, because a client branching on `type` is the entire point and two
+    /// handlers spelling one problem differently would defeat it.
+    #[test]
+    fn every_status_maps_to_a_stable_problem_slug() {
+        for (status, slug) in [
+            (StatusCode::BAD_REQUEST, "bad-request"),
+            (StatusCode::UNAUTHORIZED, "unauthorized"),
+            (StatusCode::FORBIDDEN, "forbidden"),
+            (StatusCode::NOT_FOUND, "not-found"),
+            (StatusCode::TOO_MANY_REQUESTS, "rate-limited"),
+            (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+        ] {
+            assert_eq!(
+                Problem::new(status).slug(),
+                slug,
+                "{status} must map to one stable slug"
+            );
+            assert_eq!(
+                Problem::detailed(status, "anything").slug(),
+                slug,
+                "detail describes an occurrence and must not change the KIND \
+                 a client branches on"
+            );
+        }
+    }
+
     /// Build an `ApiState` with empty stores and no auth configured.
     fn make_state() -> ApiState {
         ApiState {
@@ -1639,6 +1875,7 @@ mod tests {
                 crate::auth::VerifierConfig::default(),
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
+            max_inline_media_bytes: None,
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             // No capture context: these fixtures build a server around bare
             // stores, which is exactly the state `source: "unknown"` and a
@@ -1666,6 +1903,7 @@ mod tests {
                 },
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
+            max_inline_media_bytes: None,
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             // No capture context: these fixtures build a server around bare
             // stores, which is exactly the state `source: "unknown"` and a
@@ -2124,6 +2362,7 @@ mod tests {
                 },
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
+            max_inline_media_bytes: None,
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             // No capture context: these fixtures build a server around bare
             // stores, which is exactly the state `source: "unknown"` and a
@@ -2894,6 +3133,7 @@ mod tests {
                 crate::auth::VerifierConfig::default(),
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(1))),
+            max_inline_media_bytes: None,
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             // No capture context: these fixtures build a server around bare
             // stores, which is exactly the state `source: "unknown"` and a
@@ -2939,11 +3179,11 @@ mod tests {
         let mut saw_rate_limit = false;
         for _ in 0..25 {
             match guard(&state, &headers, ip) {
-                Err(StatusCode::SERVICE_UNAVAILABLE) => {
+                Err(p) if p.status == StatusCode::SERVICE_UNAVAILABLE => {
                     saw_rate_limit = true;
                     break;
                 }
-                Err(StatusCode::UNAUTHORIZED) => {} // still under budget
+                Err(p) if p.status == StatusCode::UNAUTHORIZED => {} // still under budget
                 other => panic!("unexpected guard result: {other:?}"),
             }
         }

@@ -126,23 +126,57 @@ mod exporting {
             "the last party must be the sipnab observer, or every attachment's \
              `party` index points at a caller"
         );
+        // A `name` IS emitted, and this capture is the best argument for why
+        // `validation` must travel beside it: the caller's display name here
+        // is `PCMU/8000`. SIPp put a codec in the `From` header, and sipnab
+        // reports it faithfully because that is what the wire said. A consumer
+        // reading `name` as an identity gets a codec -- which the `validation:
+        // "none"` on the same object is precisely the signal against.
         for party in parties {
             assert_eq!(
                 party["validation"], "none",
                 "a party claims validation sipnab never performed: {party}"
             );
-            assert!(
-                party.get("name").is_none(),
-                "a party carries a `name`, which reads as an established identity: {party}"
-            );
+            if let Some(name) = party.get("name") {
+                assert!(
+                    party.get("validation").is_some(),
+                    "a name with no disclaimer beside it reads as an \
+                     established identity: {party}"
+                );
+                assert!(
+                    !name.as_str().unwrap_or_default().is_empty(),
+                    "an empty name is worse than an absent one -- it looks \
+                     like a party whose name is blank rather than one the \
+                     headers did not give: {party}"
+                );
+            }
         }
 
         // Signaling only, and unsigned. Both are refusals the design turns on, so
         // both are asserted rather than assumed.
-        for banned in ["signatures", "payload", "protected", "consent", "subject"] {
+        //
+        // `subject` left this list when it started being emitted: it names the
+        // dialog so a store whose search matches subject or UUID can find the
+        // container by something an operator knows. What it must never become
+        // is a place for sipnab's words ABOUT the call -- the caveat has its
+        // own two surfaces, and a verdict here would sit where a reader
+        // expects the participants' own description and read as authoritative.
+        for banned in ["signatures", "payload", "protected", "consent"] {
             assert!(
                 v.get(banned).is_none(),
                 "an observer vCon must carry no {banned}"
+            );
+        }
+        let subject = v["subject"].as_str().expect("a subject is present");
+        assert!(
+            subject.contains(CALL_A),
+            "the subject must identify the dialog: {subject:?}"
+        );
+        for verdict in ["SIGNALING ONLY", "incomplete", "PARTIAL", "failed"] {
+            assert!(
+                !subject.contains(verdict),
+                "the subject carries a verdict ({verdict:?}), which belongs on \
+                 the completeness surfaces built for it: {subject:?}"
             );
         }
     }

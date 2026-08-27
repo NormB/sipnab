@@ -190,6 +190,18 @@ pub const OBSERVER_ROLE: &str = "observer";
 /// against: absence reading as "this call had no media".
 pub const MAX_INLINE_MEDIA_BYTES: usize = 5 * 1024 * 1024;
 
+/// `dialog.type` of an observed transfer. §4.3.1's fifth value.
+pub const TRANSFER_TYPE: &str = "transfer";
+
+/// `redacted.type` sipnab writes when a deny header suppressed a dialog.
+///
+/// The §4.1 `redacted` object normally REFERENCES a less-redacted instance by
+/// `uuid` or `url`. Here there is nothing to reference: sipnab never wrote an
+/// unredacted container, so the object carries `type` alone. That is the
+/// format's way of saying content was withheld and no fuller version of it
+/// exists anywhere to ask for.
+pub const CONTENT_WITHHELD: &str = "content-withheld";
+
 /// `mediatype` of the media sipnab inlines. RIFF/WAVE, 16-bit linear PCM.
 pub const RECORDING_MEDIATYPE: &str = "audio/x-wav";
 
@@ -272,11 +284,33 @@ pub struct Party {
     /// re-invited, and a wrong role is worse than none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<&'static str>,
+    /// §4.2 `name` — the display name the wire carried.
+    ///
+    /// It travels under the declared key so a consumer reads it at all: a
+    /// container whose only name is under `sip_display_name` is one where
+    /// every generic reader shows an unnamed party. What keeps that honest is
+    /// [`Self::validation`], which is unconditionally `"none"` — this is a
+    /// name a header asserted, not a person sipnab identified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// §4.2 `stir` — an observed RFC 8224 PASSporT, copied verbatim.
+    ///
+    /// The JWS ALONE. An `Identity` header carries the token followed by
+    /// `info`, `alg` and `ppt` parameters, and a consumer handed the whole
+    /// header value as a token cannot parse it.
+    ///
+    /// Transcribed, never asserted: sipnab fetches no certificate and checks
+    /// no signature, so this is evidence a consumer may verify rather than a
+    /// verdict sipnab reached. [`Self::validation`] stays `"none"` beside it,
+    /// and that pairing is what makes carrying the token legitimate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stir: Option<String>,
     /// Display name from the observed `From`/`To` header, verbatim.
     ///
-    /// Deliberately NOT promoted into a `name`: it travels under a
-    /// SIP-specific key so a consumer reads it as "what the header said",
-    /// which is all it is.
+    /// Kept beside [`Self::name`] rather than replaced by it: the
+    /// SIP-specific key says "this is what the header said", which the
+    /// generic key cannot, and a reader joining containers across sources
+    /// needs to know which of them a name came off the wire in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sip_display_name: Option<String>,
     /// The `Contact` header this party offered, when one was observed.
@@ -288,6 +322,37 @@ pub struct Party {
     /// this is the only slot in the declared vocabulary that holds one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sip_user_agent: Option<String>,
+}
+
+/// §4.1 `redacted` — content was withheld from this container.
+///
+/// Only [`Self::kind`] is ever set. The schema also defines `uuid`, `url` and
+/// `content_hash`, all of which point at a less-redacted instance, and sipnab
+/// has none to point at: the deny header fires before any container is built,
+/// so an unredacted original never existed. Emitting a `url` here would offer
+/// the withheld content for retrieval, which is the opposite of withholding
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Redacted {
+    /// The redaction performed. Always [`CONTENT_WITHHELD`].
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+}
+
+/// §4.3 `session_id` — the two halves of an RFC 7989 Session-ID.
+///
+/// Both halves are optional in the schema and both are optional here for the
+/// same reason: a first INVITE carries only the local half, and the remote
+/// half appears once the far side answers. Emitting an invented `remote` would
+/// claim a correlation that has not happened yet.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SessionIdPair {
+    /// The UUID this side contributed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local: Option<String>,
+    /// The UUID the far side contributed, echoed back as `remote=`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
 }
 
 /// The Dialog Object — deliberately almost empty.
@@ -308,6 +373,43 @@ pub struct Dialog {
     /// [`CaptureCompleteness`] where it cannot be mistaken for the first.
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub kind: Option<&'static str>,
+    /// §4.3 `session_id` — the RFC 7989 pair, when the header was observed.
+    ///
+    /// The draft's own leg-correlation mechanism, and the one identifier that
+    /// survives a B2BUA where `Call-ID` does not: each side contributes a
+    /// half, and the far side's half comes back as `remote`. sipnab
+    /// approximates leg correlation with `sip_from_tag`/`sip_to_tag`, which no
+    /// consumer knows how to join on; this is the field that already means
+    /// this.
+    ///
+    /// NOT the SIPREC session id in [`crate::sip::siprec`], which is a
+    /// different identifier with the same name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionIdPair>,
+    /// §4.3 `transferor` — party index of whoever sent the REFER.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transferor: Option<usize>,
+    /// §4.3 `transferee` — party index of the party being moved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transferee: Option<usize>,
+    /// §4.3 `transfer_target` — party index the `Refer-To` named.
+    ///
+    /// Absent when the `Refer-To` URI could not be parsed into a party: the
+    /// member is an INDEX, so it can only be emitted once the party it points
+    /// at exists in the array.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer_target: Option<usize>,
+    /// §4.3 `original` — dialog index the transfer happened in. Always 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original: Option<usize>,
+    /// §4.3 `consultation` — dialog index of the consultative call.
+    ///
+    /// Present ONLY for an attended transfer, which a `Replaces` parameter in
+    /// the `Refer-To` URI is what identifies. Its absence is the format's way
+    /// of saying the transfer was blind, so emitting it unconditionally would
+    /// claim a consultation for transfers that had none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consultation: Option<usize>,
     /// Why the call did not complete, mapped from the observed final status.
     ///
     /// Present exactly when [`Self::kind`] is `"incomplete"`, and on no other
@@ -317,6 +419,13 @@ pub struct Dialog {
     pub disposition: Option<&'static str>,
     /// The `Call-ID` this dialog was tracked under — the one identifier that
     /// ties the container back to a capture an operator still holds.
+    ///
+    /// Skipped when EMPTY, which is not a defaulted value but the one case
+    /// that has no Call-ID to give: the empty Dialog Object of §4.3, standing
+    /// for a call known to have occurred with nothing available about it.
+    /// Every other object sets it, and [`Dialog::empty`] is the only
+    /// constructor that leaves it blank.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub sip_call_id: String,
     /// The dialog's `From` tag, when the capture observed one.
     ///
@@ -407,6 +516,22 @@ pub struct Dialog {
 }
 
 impl Dialog {
+    /// The EMPTY Dialog Object of §4.3 — `{}`, with no members at all.
+    ///
+    /// "There are situations when no information is available for a dialog
+    /// either initially or over the entire life of the vCon and yet it is
+    /// known that the dialog occurred." The working group settled on this
+    /// shape in issue #20 after discussion at IETF 124, and issue #9 raised it
+    /// for exactly the case that produces one here: a transfer whose
+    /// consultative call this leg never saw.
+    ///
+    /// It does not validate against the schema published with the draft, which
+    /// requires `type` and `start`. That contradiction is documented in the
+    /// vendored copy under `tests/schemas/`.
+    fn empty() -> Self {
+        Self::bare(String::new())
+    }
+
     /// A Dialog Object with every optional field absent.
     ///
     /// Constructor rather than `Default`, because `sip_call_id` is mandatory
@@ -416,6 +541,12 @@ impl Dialog {
     fn bare(sip_call_id: String) -> Self {
         Self {
             kind: None,
+            session_id: None,
+            transferor: None,
+            transferee: None,
+            transfer_target: None,
+            original: None,
+            consultation: None,
             disposition: None,
             sip_call_id,
             sip_from_tag: None,
@@ -682,6 +813,12 @@ pub struct Vcon {
     /// own clock is reachable through the message trace, which carries a
     /// timestamp per message.
     pub created_at: String,
+    /// §4.1 `subject` — descriptive, and descriptive only. See [`subject_of`].
+    pub subject: String,
+    /// §4.1 `redacted` — present ONLY on a container whose content a deny
+    /// header suppressed. See [`Redacted`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redacted: Option<Redacted>,
     /// Always `["sip-signaling"]`. `critical` is absent by construction —
     /// there is no field for it here, because nothing in this container may
     /// refuse itself to a generic reader.
@@ -744,6 +881,26 @@ pub struct ExportContext<'a> {
     /// `None` is honest and is reported as such: see
     /// [`CaptureCompleteness::blind_spots`].
     pub analysis: Option<&'a CaptureAnalysis>,
+    /// Largest inline media body this run will carry, overriding
+    /// [`MAX_INLINE_MEDIA_BYTES`].
+    ///
+    /// `None` takes the measured default, which is the right answer for the
+    /// store that default was measured against. The number is a property of a
+    /// CONSUMER rather than of the format, and the consumer it was measured
+    /// against publishes no per-container cap — so an operator writing to a
+    /// spool they control is entitled to a different one. `Some(0)` refuses
+    /// every inline body, which is how an operator says "never inline media"
+    /// without turning the exporter off.
+    pub max_inline_media_bytes: Option<usize>,
+}
+
+impl ExportContext<'_> {
+    /// The inline-media budget this export enforces, in bytes of base64url.
+    #[must_use]
+    pub fn media_budget(&self) -> usize {
+        self.max_inline_media_bytes
+            .unwrap_or(MAX_INLINE_MEDIA_BYTES)
+    }
 }
 
 /// What [`dialog_capture_id`] returns for a dialog that carries no provenance.
@@ -824,6 +981,154 @@ pub fn export_dialog_with_audio(
     export_dialog_with_audio_at(dialog, context, audio, Utc::now())
 }
 
+/// What an observed REFER says about a transfer.
+///
+/// Everything here comes off the wire. The `Refer-To` URI is what one party
+/// ASKED for, not somewhere the call is known to have gone, and the transfer
+/// object says only that the request was observed.
+struct ObservedTransfer {
+    /// The `Refer-To` target as a bare SIP URI, when one could be read.
+    target: Option<String>,
+    /// Whether the `Refer-To` carried a `Replaces` parameter, which is what
+    /// distinguishes an attended transfer from a blind one.
+    attended: bool,
+}
+
+/// The first REFER in the ladder, read for what it says about a transfer.
+///
+/// The FIRST: a dialog can carry several REFERs, and later ones are further
+/// transfers rather than restatements of this one. Emitting an object per
+/// REFER would be defensible; emitting one built from a mixture of them would
+/// not.
+fn observed_transfer(dialog: &SipDialog) -> Option<ObservedTransfer> {
+    let refer = dialog.messages.iter().find(|m| {
+        m.is_request && m.method.as_ref() == Some(&crate::sip::method::SipMethod::Refer)
+    })?;
+    // A REFER with no `Refer-To` is malformed. It still happened, so the
+    // transfer is reported with no target rather than dropped -- an absent
+    // target says the header was missing, which is a fact about the traffic.
+    let raw = refer.header("Refer-To").unwrap_or_default();
+    Some(ObservedTransfer {
+        target: refer_to_uri(raw),
+        // RFC 3891: the `Replaces` rides in the URI's header portion, after a
+        // `?`. Matched case-insensitively because a URI header name is
+        // case-insensitive and a peer that capitalizes it differently is
+        // making a blind transfer look attended -- or, worse, the reverse.
+        attended: raw
+            .split_once('?')
+            .is_some_and(|(_, q)| q.to_ascii_lowercase().contains("replaces=")),
+    })
+}
+
+/// The bare SIP URI inside a `Refer-To` header value.
+///
+/// Strips the angle brackets, any display name before them, and the URI
+/// header portion after `?`. What remains is what can be compared against a
+/// party's `sip` value; keeping the parameters would make every target a
+/// string no other field in the container matches.
+fn refer_to_uri(raw: &str) -> Option<String> {
+    let inside = match (raw.find('<'), raw.find('>')) {
+        (Some(a), Some(b)) if b > a + 1 => &raw[a + 1..b],
+        // A bare URI with no brackets is legal when it carries no parameters.
+        _ => raw.trim(),
+    };
+    let uri = inside.split('?').next().unwrap_or("").trim();
+    (uri.starts_with("sip:") || uri.starts_with("sips:")).then(|| uri.to_string())
+}
+
+/// The party a `Refer-To` names, appended so `transfer_target` has an index.
+///
+/// `validation: "none"`, like every other party: a `Refer-To` URI is what one
+/// participant asked for, and sipnab watched the asking rather than the
+/// arriving.
+fn transfer_target_party(uri: &str) -> Party {
+    Party {
+        sip: Some(uri.to_string()),
+        tel: None,
+        validation: "none",
+        role: None,
+        name: None,
+        stir: None,
+        sip_display_name: None,
+        sip_contact: None,
+        sip_user_agent: None,
+    }
+}
+
+/// A container for a dialog a deny header suppressed: identity, no content.
+///
+/// The alternative sipnab shipped first was to emit NOTHING for a denied
+/// dialog, and to report the count in the completeness attachment on its
+/// siblings. That leaves a consumer reading the format rather than this
+/// implementation with no way to know a call was withheld at all, and it puts
+/// the only record of the withholding inside containers describing OTHER
+/// calls.
+///
+/// This says it where the format says it. What travels is the dialog's
+/// identity — which call, when, between whom — and a §4.1 `redacted` object
+/// declaring that its content was withheld and no fuller instance exists.
+/// What does not travel is everything the deny header asked sipnab not to
+/// keep: no message trace, no media, no bodies.
+///
+/// # Arguments
+///
+/// * `deny_header` — the header whose presence fired the rule, named in the
+///   caveat so an operator reading the container months later can tell a
+///   deliberate suppression from a capture that missed the traffic.
+#[must_use]
+pub fn export_withheld_dialog(
+    dialog: &SipDialog,
+    context: &ExportContext<'_>,
+    deny_header: &str,
+) -> Vcon {
+    export_withheld_dialog_at(dialog, context, deny_header, Utc::now())
+}
+
+/// [`export_withheld_dialog`], with the clock supplied.
+#[must_use]
+pub fn export_withheld_dialog_at(
+    dialog: &SipDialog,
+    context: &ExportContext<'_>,
+    deny_header: &str,
+    exported_at: DateTime<Utc>,
+) -> Vcon {
+    let mut parties = observed_parties(dialog);
+    parties.push(observer_party());
+
+    let started = observed_start(dialog);
+    // The same contentless object every other no-media export builds, and for
+    // the same reason: no value of `type` is true of an object carrying
+    // nothing. A withheld dialog is not a FAILED one.
+    let object = dialog_object(dialog, started);
+
+    let note = format!(
+        "Produced by sipnab {} on node {}. The content of this dialog was WITHHELD: it carried \
+         the header `{deny_header}`, which this capture was configured to treat as a refusal to \
+         record. What is here is the dialog's identity. What is absent was not missed -- no \
+         message trace, no media and no bodies were retained, and no unredacted container of \
+         this dialog exists anywhere to request.",
+        env!("CARGO_PKG_VERSION"),
+        node_name(),
+    );
+
+    Vcon {
+        vcon: VCON_SYNTAX_VERSION,
+        uuid: dialog_uuid(dialog, context.capture_id),
+        created_at: exported_at.to_rfc3339(),
+        subject: subject_of(dialog),
+        redacted: Some(Redacted {
+            kind: CONTENT_WITHHELD,
+        }),
+        extensions: vec![SIP_SIGNALING_EXTENSION, CC_EXTENSION],
+        parties,
+        dialog: vec![object],
+        // No trace attachment: the trace IS the withheld content. The caveat
+        // travels alone so the container still explains itself.
+        attachments: vec![withheld_caveat(&note, exported_at)],
+        analysis: Vec::new(),
+    }
+}
+
 /// The one builder: signaling, the completeness caveat, and — when there is
 /// any — the media.
 ///
@@ -864,6 +1169,20 @@ pub fn export_dialog_with_audio_at(
     exported_at: DateTime<Utc>,
 ) -> Vcon {
     let mut parties = observed_parties(dialog);
+
+    // A transfer target joins the party array BEFORE the observer, so the
+    // observer stays the final entry. Every attachment's `party` resolves to
+    // that index, and appending a participant after it would silently
+    // re-point all of them at somebody who took part in the call.
+    let transfer = observed_transfer(dialog);
+    let target_party = transfer
+        .as_ref()
+        .and_then(|t| t.target.as_deref())
+        .map(|uri| {
+            parties.push(transfer_target_party(uri));
+            parties.len() - 1
+        });
+
     parties.push(observer_party());
     // Last entry, computed before the borrow ends so both attachments and any
     // future analysis reference one number.
@@ -874,7 +1193,34 @@ pub fn export_dialog_with_audio_at(
     // audio cannot move the object the analysis describes.
     let started = observed_start(dialog);
     let mut dialog_objects = vec![dialog_object(dialog, started.clone())];
-    let media = media_objects(dialog, audio, &mut dialog_objects);
+    let media = media_objects(dialog, audio, &mut dialog_objects, context.media_budget());
+
+    // The transfer object goes last, after any media, for the same reason
+    // media goes after signaling: appending never moves an existing index.
+    if let Some(observed) = transfer {
+        // An attended transfer's consultative call is known to have happened
+        // and nothing about it was captured on this leg. Issue #9 of the draft
+        // asks this exact question and issue #20 answers it: an EMPTY Dialog
+        // Object. It is pushed first so the transfer object can name its
+        // index.
+        let consultation = observed.attended.then(|| {
+            dialog_objects.push(Dialog::empty());
+            dialog_objects.len() - 1
+        });
+        dialog_objects.push(Dialog {
+            kind: Some(TRANSFER_TYPE),
+            // The party that sent the REFER is the caller on this leg, and the
+            // party being moved is the other one. Both come from the dialog's
+            // own From/To rather than from the REFER's, which a mid-dialog
+            // request may present in either direction.
+            transferor: Some(0),
+            transferee: Some(1),
+            transfer_target: target_party,
+            original: Some(0),
+            consultation,
+            ..Dialog::bare(dialog.call_id.clone())
+        });
+    }
 
     let completeness = completeness_of(context, &media);
 
@@ -887,6 +1233,8 @@ pub fn export_dialog_with_audio_at(
         vcon: VCON_SYNTAX_VERSION,
         uuid: dialog_uuid(dialog, context.capture_id),
         created_at: exported_at.to_rfc3339(),
+        subject: subject_of(dialog),
+        redacted: None,
         extensions: vec![SIP_SIGNALING_EXTENSION, CC_EXTENSION],
         parties,
         dialog: dialog_objects,
@@ -917,6 +1265,7 @@ fn media_objects(
     dialog: &SipDialog,
     audio: ObservedAudio<'_>,
     objects: &mut Vec<Dialog>,
+    budget: usize,
 ) -> MediaVerdict {
     let decoded = match audio {
         ObservedAudio::NotConsidered => {
@@ -937,7 +1286,7 @@ fn media_objects(
     };
 
     let body = URL_SAFE_NO_PAD.encode(&decoded.wav);
-    if body.len() > MAX_INLINE_MEDIA_BYTES {
+    if body.len() > budget {
         return MediaVerdict {
             outcome: MediaOutcome::RefusedOverBudget,
             note: Some(decoded.note.clone()),
@@ -950,7 +1299,7 @@ fn media_objects(
                 decoded.duration_secs,
                 decoded.wav.len(),
                 body.len(),
-                MAX_INLINE_MEDIA_BYTES,
+                budget,
             )),
         };
     }
@@ -1160,6 +1509,13 @@ fn observed_parties(dialog: &SipDialog) -> Vec<Party> {
             tel: tel_uri(dialog.from_user.as_deref()),
             validation: "none",
             role: None,
+            name: dialog.from_display.clone(),
+            // The `Identity` header authenticates the CALLER. Attaching it to
+            // the callee would invent an attestation for a party the
+            // authentication service said nothing about.
+            stir: first
+                .and_then(|m| m.header("Identity"))
+                .and_then(passport_of),
             sip_display_name: dialog.from_display.clone(),
             // From the OPENING message only. A `Contact`/`User-Agent` taken
             // from the latest message in the ladder would attribute a
@@ -1172,6 +1528,8 @@ fn observed_parties(dialog: &SipDialog) -> Vec<Party> {
             tel: tel_uri(dialog.to_user.as_deref()),
             validation: "none",
             role: None,
+            name: dialog.to_display.clone(),
+            stir: None,
             sip_display_name: dialog.to_display.clone(),
             // The callee's own headers arrive on its responses, so this reads
             // the first message coming back rather than the first message.
@@ -1202,6 +1560,10 @@ fn observer_party() -> Party {
         tel: None,
         validation: "none",
         role: Some(OBSERVER_ROLE),
+        // The observer is not a named participant, and it authenticated
+        // nothing.
+        name: None,
+        stir: None,
         sip_display_name: None,
         sip_contact: None,
         sip_user_agent: Some(format!(
@@ -1271,12 +1633,25 @@ fn sip_uri(user: Option<&str>, host: Option<&str>) -> Option<String> {
 /// that is imprecise beside a caveat that is exact beats a caveat that cannot
 /// reach the reader at all.
 fn dialog_object(dialog: &SipDialog, start: String) -> Dialog {
+    // The failure reason, decided once. `None` covers three different cases
+    // -- the call succeeded, no final response was seen, or the final response
+    // was a redirect -- and all three share the same property: sipnab observed
+    // no failure, so no failure may be reported.
+    let failure = dialog.final_status_code().and_then(failure_disposition);
+
     Dialog {
         // Typed by what this object CARRIES, not by what the call did. At
-        // construction it carries no content, and of the five values §4.3.1
-        // allows, `incomplete` is the only one that does not claim content
-        // this object does not hold. Media enrichment retypes it to
-        // `recording` when audio actually arrives.
+        // construction it carries no content, and §4.3 allows exactly that:
+        // "it is possible to have a Dialog Object with no parameters in it",
+        // which is the shape for a dialog known to have occurred with nothing
+        // available from it. So an object with nothing in it names NO type.
+        // Media enrichment types it `recording` when audio actually arrives.
+        //
+        // `incomplete` was the earlier choice here and is wrong for a call
+        // that connected: §4.3.1 binds that value to a call that "failed to be
+        // setup", so a signaling-only export of a ninety-second conversation
+        // shipped a container asserting the call never happened. It is
+        // reserved now for the case that genuinely is one.
         //
         // `recording` was the earlier choice for the no-failure case, and it
         // is an ingest hazard rather than merely an imprecise label: a
@@ -1287,13 +1662,76 @@ fn dialog_object(dialog: &SipDialog, start: String) -> Dialog {
         // that, not just the step that raised.
         sip_from_tag: dialog.from_tag.clone(),
         sip_to_tag: dialog.to_tag.clone(),
-        kind: Some(INCOMPLETE_TYPE),
+        // ONE decision drives both fields, because §4.3.1 couples them: an
+        // `incomplete` object MUST carry a disposition, and a disposition is
+        // only nameable when a failure was actually observed. Splitting the
+        // decision across two expressions is how a container comes to claim a
+        // setup failure it cannot name a reason for.
+        kind: failure.map(|_| INCOMPLETE_TYPE),
+        session_id: session_id_of(dialog),
         // Only an OBSERVED final failure names a reason. Its absence says
         // nothing failed that sipnab saw, which is not the same as success.
-        disposition: dialog.final_status_code().and_then(failure_disposition),
+        disposition: failure,
         start: Some(start),
         ..Dialog::bare(dialog.call_id.clone())
     }
+}
+
+/// The JWS alone from an RFC 8224 `Identity` header value.
+///
+/// The header is `<token>;info=<...>;alg=...;ppt=shaken`. §4.2's `stir` is
+/// defined as "STIR PASSporT in JWS Compact Serialization form", which is the
+/// token and nothing else — a consumer handed the whole header value cannot
+/// parse it as a token, and the parameters describe where to FETCH the
+/// certificate rather than forming part of the credential.
+///
+/// Shape-checked, not verified: three dot-separated non-empty segments is what
+/// JWS Compact Serialization is. Anything else is not a PASSporT and is
+/// dropped rather than passed on as one. That is the only judgement made here;
+/// no certificate is fetched and no signature is checked.
+fn passport_of(identity: &str) -> Option<String> {
+    let token = identity.split(';').next()?.trim();
+    let mut parts = token.split('.');
+    let (a, b, c) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() || a.is_empty() || b.is_empty() || c.is_empty() {
+        return None;
+    }
+    Some(token.to_string())
+}
+
+/// The RFC 7989 pair, from the first message that carried the header.
+///
+/// Malformed halves yield `None` rather than a transcribed string:
+/// `SessionIdHalf::uuid` answers `None` for `nil` and for anything that is not
+/// a UUID, and a correlation field holding a value nothing can join on is
+/// worse than an absent one.
+fn session_id_of(dialog: &SipDialog) -> Option<SessionIdPair> {
+    let raw = dialog
+        .messages
+        .iter()
+        .find_map(|m| m.header("Session-ID"))?;
+    let parsed = crate::sip::session_id::SessionId::parse(raw)?;
+    let pair = SessionIdPair {
+        local: parsed.local.uuid().map(str::to_string),
+        remote: parsed
+            .remote
+            .as_ref()
+            .and_then(|h| h.uuid())
+            .map(str::to_string),
+    };
+    // Both halves unusable means the header carried nothing joinable.
+    (pair.local.is_some() || pair.remote.is_some()).then_some(pair)
+}
+
+/// §4.1 `subject` — what this container is about, descriptively.
+///
+/// A store whose search matches subject or UUID substring can otherwise find a
+/// sipnab container only by a UUIDv8 nobody has memorized. This names the
+/// dialog and stops there: an observer is in no position to characterize what
+/// a conversation was ABOUT, and a subject that tried would be the one field
+/// in the container asserting something nothing measured.
+fn subject_of(dialog: &SipDialog) -> String {
+    format!("SIP call {}", dialog.call_id)
 }
 
 /// When the dialog was first observed, RFC 3339, for `Dialog::start`.
@@ -1438,6 +1876,31 @@ fn strip_credentials(value: &mut serde_json::Value) {
             }
         }
         _ => {}
+    }
+}
+
+/// The lone attachment on a withheld container: the caveat, nothing else.
+///
+/// It reuses [`COMPLETENESS_PURPOSE`] deliberately. A consumer that already
+/// reads sipnab's caveat finds this one in the same place, and inventing a
+/// second purpose would mean a reader looking for "why is this container
+/// thin?" has two places to look and no reason to prefer either.
+fn withheld_caveat(note: &str, exported_at: DateTime<Utc>) -> Attachment {
+    Attachment {
+        purpose: COMPLETENESS_PURPOSE,
+        // The observer is the last party, and on a withheld container that is
+        // index 2 -- two observed parties plus sipnab, the same as any other.
+        party: 2,
+        dialog: 0,
+        start: exported_at.to_rfc3339(),
+        mediatype: "application/json",
+        encoding: "json",
+        body: json_text(&serde_json::json!({
+            "note": note,
+            "content_withheld": true,
+            "sipnab_version": env!("CARGO_PKG_VERSION"),
+            "node": node_name(),
+        })),
     }
 }
 
@@ -1950,6 +2413,7 @@ mod tests {
             &ExportContext {
                 capture_id: "fixture.pcap",
                 facts,
+                max_inline_media_bytes: None,
                 analysis: None,
             },
             exported_at(),
@@ -2127,13 +2591,31 @@ mod tests {
              reader, which nothing here justifies: {v}"
         );
 
-        // `subject` is "the subject or topic of the conversation". Borrowing it
-        // for a caveat would put sipnab's words where a reader expects the
-        // participants', and it would read as authoritative.
+        // `subject` is "the subject or topic of the conversation", and it now
+        // names the dialog so a store whose search matches subject or UUID can
+        // find this container by something an operator knows. What it must
+        // NEVER become is a place for sipnab's words about the call: the
+        // caveat has its own two surfaces, and a caveat here would read as
+        // authoritative and sit where a reader expects the participants'.
+        let subject = v["subject"].as_str().expect("a subject is present");
         assert!(
-            v.get("subject").is_none(),
-            "subject must stay empty; the caveat has its own two surfaces: {v}"
+            subject.contains("vcon-fixture@example.com"),
+            "the subject must identify the dialog: {subject:?}"
         );
+        for verdict in [
+            "SIGNALING ONLY",
+            "incomplete",
+            "PARTIAL",
+            "no media",
+            "failed",
+            "sipnab read",
+        ] {
+            assert!(
+                !subject.contains(verdict),
+                "the subject carries a caveat or a verdict ({verdict:?}), \
+                 which belongs on the two surfaces built for it: {subject:?}"
+            );
+        }
 
         for banned in [
             "signatures",
@@ -2169,8 +2651,16 @@ mod tests {
         );
     }
 
-    /// Parties come from the observed headers, carry no `name`, and always say
+    /// Parties come from the observed headers and always say
     /// `validation: "none"`.
+    ///
+    /// `name` IS emitted, and this test is where that stays honest. The
+    /// earlier rule here was that a `From` display name is an unverified claim
+    /// by the sender, so promoting it asserts an identity — true of the name
+    /// alone, and answered by the field beside it rather than by silence.
+    /// `validation: "none"` on every party says sipnab established nothing, so
+    /// a name under the declared key reads as what the header said. Withholding
+    /// it instead only meant every generic consumer showed an unnamed party.
     #[test]
     fn parties_are_the_observed_headers_and_never_a_verified_name() {
         let dialog = dialog_with(&[response(200, "OK")]);
@@ -2185,9 +2675,9 @@ mod tests {
                 "sipnab cannot validate a party and must not imply it did: {party}"
             );
             assert!(
-                party.get("name").is_none(),
-                "a From display name is an unverified claim by the sender; \
-                 promoting it to `name` asserts an identity: {party}"
+                party.get("validation").is_some(),
+                "a party carrying a name without `validation` beside it \
+                 asserts an identity: {party}"
             );
         }
 
@@ -2229,8 +2719,9 @@ mod tests {
 
     /// A dialog sipnab saw succeed carries an EMPTY Dialog Object.
     ///
-    /// The anti-vacuity half matters more than the shape: `incomplete` must
-    /// not appear merely because a signaling-only export has no media.
+    /// The anti-vacuity half matters more than the shape: no media-shaped
+    /// field may appear merely because the object exists, and `incomplete`
+    /// must not appear merely because a signaling-only export has no media.
     #[test]
     fn a_signaling_only_dialog_object_describes_no_media_and_claims_no_recording() {
         let dialog = dialog_with(&[response(200, "OK")]);
@@ -2243,10 +2734,10 @@ mod tests {
             "this object carries no audio, and `recording` is the one value \
              that promises a consumer content it can reach: {object}"
         );
-        assert_eq!(
-            object["type"], INCOMPLETE_TYPE,
-            "of the five values §4.3.1 allows, only `incomplete` claims no \
-             content: {object}"
+        assert!(
+            object.get("type").is_none(),
+            "no value of `type` is true of an object that carries nothing \
+             about a call that connected -- §4.3 lets it name none: {object}"
         );
         assert!(
             object.get("disposition").is_none(),
@@ -2260,6 +2751,959 @@ mod tests {
                  any: {object} carries {invented}"
             );
         }
+    }
+
+    /// A Dialog Object that carries nothing and failed at nothing asserts
+    /// NEITHER a type nor a disposition.
+    ///
+    /// §4.3 of the core draft: "it is possible to have a Dialog Object with no
+    /// parameters in it" -- the shape for a dialog known to have occurred with
+    /// nothing available from it. That is this object exactly. `incomplete` is
+    /// the wrong reach because §4.3.1 binds it to a call that "failed to be
+    /// setup", which is a claim about the CALL that a successful capture must
+    /// not make.
+    #[test]
+    fn a_dialog_that_carries_nothing_and_failed_at_nothing_asserts_neither() {
+        let dialog = dialog_with(&[response(200, "OK")]);
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        let object = &v["dialog"][0];
+
+        assert!(
+            object.get("type").is_none(),
+            "the call connected and this object carries no content, so every \
+             value of `type` would assert something untrue -- §4.3 allows the \
+             object to name none: {object}"
+        );
+        assert!(
+            object.get("disposition").is_none(),
+            "nothing failed, so there is no reason to name: {object}"
+        );
+        assert_eq!(
+            object["sip_call_id"], "vcon-fixture@example.com",
+            "the object must still identify the dialog it stands for: {object}"
+        );
+    }
+
+    /// The vendored schema's Dialog constraints, read from the file the gate
+    /// validates against.
+    fn vendored_dialog_schema() -> serde_json::Value {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/schemas/vcon.schema.json"
+        );
+        let text = std::fs::read_to_string(path).expect("the vendored schema is readable");
+        let schema: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        schema["definitions"]["Dialog"].clone()
+    }
+
+    /// The vendored schema departs from the published one at ONE point, and
+    /// this names it.
+    ///
+    /// §4.3 of draft-ietf-vcon-vcon-core-03 says "it is possible to have a
+    /// Dialog Object with no parameters in it". The published `required` list
+    /// says `type` is mandatory. Both cannot hold, the prose is treated as
+    /// normative, and `type` was moved out of `required` locally.
+    ///
+    /// The tripwire matters more than the assertion. Re-vendoring the schema
+    /// from the draft is a correct-looking action that silently restores the
+    /// contradiction and breaks every signaling-only export. Whoever does it
+    /// lands here and reads why before deciding.
+    #[test]
+    fn the_vendored_schema_deviates_from_the_draft_at_exactly_one_point() {
+        let dialog = vendored_dialog_schema();
+
+        assert_eq!(
+            dialog["required"],
+            serde_json::json!(["start"]),
+            "the local deviation is `type` out of `required` and NOTHING \
+             else; if this now reads [\"type\", \"start\"] the schema was \
+             re-vendored and signaling-only exports no longer validate"
+        );
+
+        // Everything else about the object must still be the published
+        // constraint, or the deviation has quietly grown past its warrant.
+        let kinds = dialog["properties"]["type"]["enum"]
+            .as_array()
+            .expect("type is still a closed enum");
+        assert_eq!(
+            kinds.len(),
+            5,
+            "§4.3.1 defines five dialog types; a sixth means the draft moved \
+             and the deviation above may no longer be needed: {kinds:?}"
+        );
+        let dispositions = dialog["properties"]["disposition"]["enum"]
+            .as_array()
+            .expect("disposition is still a closed enum");
+        assert_eq!(
+            dispositions.len(),
+            6,
+            "§4.3.11 defines six dispositions, and the mapping below is \
+             checked against exactly this list: {dispositions:?}"
+        );
+    }
+
+    /// Every disposition the export can emit is one the schema admits.
+    ///
+    /// The mapping and the schema are two independent statements of the same
+    /// closed set, and `an_observed_final_failure_maps_to_a_disposition` pins
+    /// only the codes someone thought to list. This sweeps the whole status
+    /// space, so a disposition invented outside §4.3.11 cannot reach a
+    /// container by way of a code nobody wrote a case for.
+    #[test]
+    fn every_disposition_the_export_can_emit_is_one_the_schema_admits() {
+        let schema = vendored_dialog_schema();
+        let admitted: Vec<&str> = schema["properties"]["disposition"]["enum"]
+            .as_array()
+            .expect("closed enum")
+            .iter()
+            .map(|v| v.as_str().expect("string"))
+            .collect();
+
+        let mut emitted = std::collections::BTreeSet::new();
+        for code in 100u16..=699 {
+            let dialog = dialog_with(&[response(code, "Sweep")]);
+            let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+            let Some(d) = v["dialog"][0].get("disposition") else {
+                continue;
+            };
+            let d = d.as_str().expect("disposition is a string").to_string();
+            assert!(
+                admitted.contains(&d.as_str()),
+                "status {code} emitted disposition {d:?}, which §4.3.11 does \
+                 not define; the schema admits only {admitted:?}"
+            );
+            emitted.insert(d);
+        }
+
+        assert!(
+            !emitted.is_empty(),
+            "the sweep produced no disposition at all, so it proved nothing \
+             -- the mapping or the fixture stopped reaching this branch"
+        );
+    }
+
+    /// An object that names `incomplete` can always name WHY.
+    ///
+    /// §4.3.1 makes the disposition a MUST on an incomplete object. The two
+    /// fields are now decided together for exactly this reason, and the
+    /// assertion runs in both directions: the type without the reason is a
+    /// spec violation, and the reason without the type is an orphan field a
+    /// consumer keyed on `type` will never read.
+    #[test]
+    fn an_object_that_names_incomplete_can_always_name_why() {
+        for code in [200u16, 100, 180, 302, 486, 503, 408, 404, 500, 600] {
+            let dialog = dialog_with(&[response(code, "Fixture")]);
+            let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+            let object = &v["dialog"][0];
+            let typed_incomplete =
+                object.get("type").and_then(|t| t.as_str()) == Some(INCOMPLETE_TYPE);
+            let has_reason = object.get("disposition").is_some();
+
+            assert_eq!(
+                typed_incomplete, has_reason,
+                "status {code}: §4.3.1 binds `incomplete` and `disposition` \
+                 together, so one without the other is always a defect: \
+                 {object}"
+            );
+        }
+    }
+
+    /// The three ways sipnab observes no failure all reach the same shape.
+    ///
+    /// A call that succeeded, a call whose final response was never seen, and
+    /// a call that was redirected are different facts about the CONVERSATION
+    /// and the identical fact about the capture: no failure was observed. A
+    /// container that distinguished them would be reporting something sipnab
+    /// does not know.
+    #[test]
+    fn no_observed_failure_reaches_one_shape_whatever_the_reason() {
+        let success = dialog_with(&[response(200, "OK")]);
+        let unanswered = dialog_with(&[response(100, "Trying")]);
+        let redirected = dialog_with(&[response(302, "Moved Temporarily")]);
+
+        for (label, dialog) in [
+            ("answered", &success),
+            ("no final response", &unanswered),
+            ("redirected", &redirected),
+        ] {
+            let v = serde_json::to_value(export_with(dialog, &clean_facts())).expect("serializes");
+            let object = &v["dialog"][0];
+            assert!(
+                object.get("type").is_none() && object.get("disposition").is_none(),
+                "{label}: sipnab observed no failure, so the object must \
+                 assert neither a type it cannot back nor a reason it does \
+                 not have: {object}"
+            );
+        }
+    }
+
+    /// A type-free object still carries what a consumer indexes on.
+    ///
+    /// Dropping `type` buys correctness and costs nothing only while the
+    /// object remains addressable. An Analysis Object points at a dialog by
+    /// INDEX and the identity fields are how a reader confirms it landed on
+    /// the right one, so an object stripped to nothing would make the
+    /// reference unverifiable.
+    #[test]
+    fn a_type_free_object_still_carries_the_identity_a_consumer_indexes_on() {
+        let dialog = dialog_with(&[response(200, "OK")]);
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        let object = &v["dialog"][0];
+
+        assert!(object.get("type").is_none(), "premise: {object}");
+        for required in ["sip_call_id", "start"] {
+            assert!(
+                object.get(required).is_some(),
+                "a type-free object is still the anchor an Analysis Object \
+                 indexes into; without {required} the reference cannot be \
+                 checked against anything: {object}"
+            );
+        }
+        assert!(
+            object.as_object().expect("an object").len() >= 3,
+            "the object collapsed to almost nothing, which is not the empty \
+             shape §4.3 permits but an export that lost its identity: {object}"
+        );
+    }
+
+    /// A FAILED call's container validates against the working group's schema.
+    ///
+    /// The existing gate validates a call that succeeded, which is the branch
+    /// that emits no `type` and no `disposition` -- so it exercises none of
+    /// the constraints the schema places on either. The failure branch is the
+    /// one that fills both fields from closed enums, and until now nothing
+    /// checked its output against the schema at all.
+    #[test]
+    fn a_failed_call_container_validates_against_the_working_group_schema() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/schemas/vcon.schema.json"
+        );
+        let text = std::fs::read_to_string(path).expect("the vendored schema is readable");
+        let schema: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        let validator = jsonschema::validator_for(&schema).expect("the schema compiles");
+
+        for code in [486u16, 503, 408, 480, 404, 500, 600] {
+            let dialog = dialog_with(&[response(code, "Fixture")]);
+            let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+            assert!(
+                v["dialog"][0].get("disposition").is_some(),
+                "premise: {code} must reach the failure branch, or this \
+                 validates the shape it was written to exclude: {}",
+                v["dialog"][0]
+            );
+            if let Err(e) = validator.validate(&v) {
+                panic!("the container for a {code} does not validate: {e}\n{v:#}");
+            }
+        }
+    }
+
+    /// An INVITE carrying the headers PV5-PV7 read.
+    fn invite_with_provenance() -> crate::sip::SipMessage {
+        message(
+            "INVITE sip:bob@example.net SIP/2.0",
+            &[
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>",
+                "Call-ID: vcon-fixture@example.com",
+                "CSeq: 1 INVITE",
+                "Contact: <sip:alice@10.0.0.1:5060>",
+                "User-Agent: AliceUA/1.0",
+                "Identity: eyJhbGciOiJFUzI1NiJ9.eyJhdHRlc3QiOiJBIn0.SIGNATURE;\
+                 info=<https://example.com/cert.pem>;alg=ES256;ppt=shaken",
+                "Session-ID: ab30317f1a784dc48ff824d0d3715d86;\
+                 remote=47755a9de7794ba387653f2099600ef2",
+                "Content-Length: 0",
+            ],
+        )
+    }
+
+    /// A dialog opened by [`invite_with_provenance`].
+    fn provenance_dialog() -> SipDialog {
+        let invite = invite_with_provenance();
+        let mut dialog = SipDialog::new(&invite).expect("INVITE opens a dialog");
+        crate::sip::dialog::update_state(&mut dialog, &response(200, "OK"));
+        dialog.messages.push(response(200, "OK"));
+        dialog
+    }
+
+    /// PV4: the container names its own subject.
+    ///
+    /// A store whose search matches subject or UUID substring can otherwise
+    /// find a sipnab container only by a UUID nobody memorized. The subject
+    /// is purely descriptive -- it names the dialog, it does not characterize
+    /// the conversation, which an observer is in no position to do.
+    #[test]
+    fn a_container_carries_a_subject_that_names_the_dialog() {
+        let dialog = dialog_with(&[response(200, "OK")]);
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        let subject = v["subject"].as_str().expect("a subject is present");
+        assert!(
+            subject.contains("vcon-fixture@example.com"),
+            "the subject must carry the Call-ID or the container stays \
+             unfindable by anything an operator knows: {subject:?}"
+        );
+    }
+
+    /// PV5: the display name travels under the declared key too.
+    ///
+    /// `sip_display_name` is a sipnab extension no consumer reads.
+    /// `validation: "none"` on every party is what makes `name` honest: it
+    /// says this is a name the wire carried, not a person sipnab identified.
+    #[test]
+    fn a_party_carries_the_display_name_under_the_declared_key() {
+        let dialog = dialog_with(&[response(200, "OK")]);
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        let parties = v["parties"].as_array().expect("parties");
+
+        assert_eq!(parties[0]["name"], "Alice", "caller name: {}", parties[0]);
+        assert_eq!(parties[1]["name"], "Bob", "callee name: {}", parties[1]);
+        for (i, p) in parties.iter().enumerate() {
+            assert_eq!(
+                p["validation"], "none",
+                "party {i} names a person without saying it verified nothing: {p}"
+            );
+        }
+        assert!(
+            parties[2].get("name").is_none(),
+            "the observer is not a named participant: {}",
+            parties[2]
+        );
+    }
+
+    /// PV6: an observed PASSporT is transcribed, never asserted.
+    ///
+    /// A passive tap sees the `Identity` header verbatim and can copy it. It
+    /// cannot verify it -- no certificate is fetched, no signature checked --
+    /// so `validation` stays `"none"` beside it. The pairing is the point: the
+    /// PASSporT is evidence a consumer may verify, not a verdict sipnab reached.
+    #[test]
+    fn an_observed_passport_is_copied_verbatim_and_still_unverified() {
+        let dialog = provenance_dialog();
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        let caller = &v["parties"][0];
+
+        let stir = caller["stir"].as_str().expect("the PASSporT is carried");
+        assert!(
+            stir.starts_with("eyJhbGciOiJFUzI1NiJ9."),
+            "the JWS must be copied verbatim, not reformatted: {stir:?}"
+        );
+        assert!(
+            !stir.contains("info=") && !stir.contains("ppt="),
+            "`stir` is the JWS alone -- the header parameters are not part of \
+             it and a consumer parsing this as a token would choke: {stir:?}"
+        );
+        assert_eq!(
+            caller["validation"], "none",
+            "sipnab fetched no certificate and checked no signature, so \
+             carrying a PASSporT must not raise the claim: {caller}"
+        );
+        assert!(
+            v["parties"][1].get("stir").is_none(),
+            "the Identity header authenticates the CALLER; attaching it to \
+             the callee would invent an attestation: {}",
+            v["parties"][1]
+        );
+    }
+
+    /// PV7: RFC 7989 `Session-ID` becomes the declared `session_id`.
+    ///
+    /// The draft's own leg-correlation mechanism, and the one identifier that
+    /// survives a B2BUA where Call-ID does not. sipnab approximates leg
+    /// correlation with custom `sip_from_tag`/`sip_to_tag`; this is the field
+    /// a consumer already knows how to join on.
+    #[test]
+    fn an_observed_session_id_is_carried_as_the_declared_pair() {
+        let dialog = provenance_dialog();
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        let sid = &v["dialog"][0]["session_id"];
+
+        assert_eq!(
+            sid["local"], "ab30317f1a784dc48ff824d0d3715d86",
+            "the local half is the UUID this side contributed: {sid}"
+        );
+        assert_eq!(
+            sid["remote"], "47755a9de7794ba387653f2099600ef2",
+            "the remote half is the one that survives the B2BUA: {sid}"
+        );
+    }
+
+    /// A dialog whose messages carry neither header emits neither field.
+    ///
+    /// The anti-vacuity half of PV6 and PV7 together: absent means "not
+    /// observed", and a synthesized empty `session_id` or `stir` would report
+    /// a header that never arrived.
+    #[test]
+    fn absent_provenance_headers_produce_no_fields_at_all() {
+        let dialog = dialog_with(&[response(200, "OK")]);
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+
+        assert!(
+            v["dialog"][0].get("session_id").is_none(),
+            "no Session-ID was observed: {}",
+            v["dialog"][0]
+        );
+        for (i, p) in v["parties"].as_array().expect("parties").iter().enumerate() {
+            assert!(
+                p.get("stir").is_none(),
+                "party {i} carries a PASSporT that never arrived: {p}"
+            );
+        }
+    }
+
+    /// A dialog whose opening INVITE carries one extra header.
+    fn dialog_carrying_header(name: &str, value: &str) -> SipDialog {
+        let invite = message(
+            "INVITE sip:bob@example.net SIP/2.0",
+            &[
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>",
+                "Call-ID: vcon-fixture@example.com",
+                "CSeq: 1 INVITE",
+                &format!("{name}: {value}"),
+                "Content-Length: 0",
+            ],
+        );
+        SipDialog::new(&invite).expect("INVITE opens a dialog")
+    }
+    /// No party in ANY export shape carries a name without its disclaimer.
+    ///
+    /// "No `name`" was asserted in three separate files, and changing the
+    /// contract found them one at a time by breaking the build. The invariant
+    /// that replaced it is a PAIRING, so it is checked here across every shape
+    /// the exporter can produce rather than restated per surface.
+    #[test]
+    fn no_export_shape_names_a_party_without_saying_it_verified_nothing() {
+        let shapes: [(&str, SipDialog); 4] = [
+            ("answered", dialog_with(&[response(200, "OK")])),
+            ("failed", dialog_with(&[response(486, "Busy Here")])),
+            ("unanswered", dialog_with(&[response(100, "Trying")])),
+            ("with provenance headers", provenance_dialog()),
+        ];
+        for (label, dialog) in shapes {
+            let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+            let parties = v["parties"].as_array().expect("parties");
+            assert!(!parties.is_empty(), "{label}: no parties at all");
+            for (i, p) in parties.iter().enumerate() {
+                assert_eq!(
+                    p["validation"], "none",
+                    "{label}: party {i} omits the disclaimer that makes every \
+                     other field on it readable as observation: {p}"
+                );
+            }
+        }
+    }
+
+    /// A PASSporT never travels without the disclaimer either.
+    ///
+    /// `stir` is the strongest-looking field a passive observer can fill: it
+    /// is a signed token, and a reader may take its presence for verification.
+    /// sipnab fetched no certificate and checked no signature, so the token and
+    /// `validation: "none"` are one statement split across two keys.
+    #[test]
+    fn a_passport_never_travels_without_the_disclaimer_beside_it() {
+        let dialog = provenance_dialog();
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        let carrier = v["parties"]
+            .as_array()
+            .expect("parties")
+            .iter()
+            .find(|p| p.get("stir").is_some())
+            .expect("premise: some party must carry the PASSporT");
+        assert_eq!(
+            carrier["validation"], "none",
+            "a signed token beside a validation claim of anything but `none` \
+             reports an attestation sipnab did not perform: {carrier}"
+        );
+    }
+
+    /// The extractor takes the JWS and refuses everything that is not one.
+    ///
+    /// The parameters after the token say where to FETCH a certificate; they
+    /// are not part of the credential, and a consumer handed the whole header
+    /// value cannot parse it as a token. Shape is the only judgement made --
+    /// three dot-separated non-empty segments -- because verifying is
+    /// precisely what sipnab must not claim to have done.
+    #[test]
+    fn the_passport_extractor_keeps_the_token_and_drops_the_rest() {
+        let token = "eyJhbGciOiJFUzI1NiJ9.eyJhdHRlc3QiOiJBIn0.SIGNATURE";
+        assert_eq!(
+            passport_of(&format!(
+                "{token};info=<https://x/c.pem>;alg=ES256;ppt=shaken"
+            )),
+            Some(token.to_string()),
+            "the parameters must not ride along inside the token"
+        );
+        assert_eq!(passport_of(token), Some(token.to_string()), "a bare token");
+        assert_eq!(
+            passport_of(&format!("  {token}  ;info=<x>")),
+            Some(token.to_string()),
+            "surrounding whitespace is header framing, not token content"
+        );
+
+        for not_a_jws in [
+            "",
+            "not.a",
+            "a.b.c.d",
+            ".b.c",
+            "a..c",
+            "a.b.",
+            "opaque-string",
+            ";info=<https://x/c.pem>",
+        ] {
+            assert_eq!(
+                passport_of(not_a_jws),
+                None,
+                "{not_a_jws:?} is not JWS Compact Serialization and must not \
+                 be published as a PASSporT"
+            );
+        }
+    }
+
+    /// A Session-ID nothing can join on is dropped, not transcribed.
+    ///
+    /// `nil` is the RFC 7989 placeholder for "no UUID here", and a malformed
+    /// half is not a UUID at all. Either one in `session_id` gives a consumer
+    /// a correlation key that matches nothing -- worse than an absent field,
+    /// because absence is readable and a dead key is not.
+    #[test]
+    fn a_session_id_half_that_cannot_correlate_is_left_out() {
+        let local = "ab30317f1a784dc48ff824d0d3715d86";
+
+        // A first INVITE carries only the local half.
+        let one_sided = dialog_carrying_header("Session-ID", local);
+        let pair = session_id_of(&one_sided).expect("the local half is usable");
+        assert_eq!(pair.local.as_deref(), Some(local));
+        assert!(
+            pair.remote.is_none(),
+            "the far side has not answered, so no remote half exists: {pair:?}"
+        );
+
+        // `nil` is the placeholder, not an identifier.
+        let nil_remote = dialog_carrying_header(
+            "Session-ID",
+            &format!("{local};remote=00000000000000000000000000000000"),
+        );
+        let pair = session_id_of(&nil_remote).expect("the local half is still usable");
+        assert!(
+            pair.remote.is_none(),
+            "the nil UUID is 'no value here' and must not become a \
+             correlation key: {pair:?}"
+        );
+
+        // Nothing usable at all yields no field rather than an empty object.
+        let junk = dialog_carrying_header("Session-ID", "not-a-uuid;remote=also-not");
+        assert!(
+            session_id_of(&junk).is_none(),
+            "neither half can correlate, so the field would be dead weight"
+        );
+    }
+
+    /// Each SIP response class is handled on its own signaling semantics.
+    ///
+    /// The sweep beside this proves every disposition sipnab CAN emit is one
+    /// §4.3.11 admits. It does not prove the classes are told apart, and a
+    /// mapping that answered "failed" for the whole `100..=699` range would
+    /// satisfy it. Only a final failure to set the call up is `incomplete`,
+    /// and this states what each class is instead.
+    ///
+    /// 4xx carries one exception worth naming: 401 and 407 are challenges, not
+    /// outcomes. A challenged INVITE that is then authenticated succeeds, and
+    /// `final_status_code` prefers a non-challenge final precisely so the
+    /// challenge does not become the reported result.
+    #[test]
+    fn every_response_class_is_read_on_its_own_terms() {
+        // (code, expect_incomplete, why)
+        let cases: [(u16, bool, &str); 14] = [
+            (
+                100,
+                false,
+                "provisional: the transaction is still in progress",
+            ),
+            (180, false, "provisional: ringing is not an outcome"),
+            (183, false, "provisional: early media is not an outcome"),
+            (200, false, "success: the call was set up"),
+            (202, false, "success: accepted is not a failure"),
+            (
+                300,
+                false,
+                "redirection: the call was not failed, it was moved",
+            ),
+            (302, false, "redirection: moved temporarily"),
+            (305, false, "redirection: use proxy"),
+            (
+                400,
+                true,
+                "client error: a final failure to set the call up",
+            ),
+            (486, true, "client error: busy here"),
+            (503, true, "server error: service unavailable"),
+            (600, true, "global failure: busy everywhere"),
+            (
+                699,
+                true,
+                "6xx: unassigned, but the class is a global failure",
+            ),
+            (
+                999,
+                false,
+                "outside every defined class: not a failure sipnab can name",
+            ),
+        ];
+
+        for (code, expect_incomplete, why) in cases {
+            let dialog = dialog_with(&[response(code, "Fixture")]);
+            let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+            let object = &v["dialog"][0];
+            let typed = object.get("type").and_then(|t| t.as_str());
+
+            if expect_incomplete {
+                assert_eq!(
+                    typed,
+                    Some(INCOMPLETE_TYPE),
+                    "{code} -- {why} -- must be reported as a setup failure: {object}"
+                );
+                assert!(
+                    object.get("disposition").is_some(),
+                    "{code} -- {why} -- §4.3.1 makes the reason mandatory here: {object}"
+                );
+            } else {
+                assert_eq!(
+                    typed, None,
+                    "{code} -- {why} -- must NOT be reported as a setup failure: {object}"
+                );
+                assert!(
+                    object.get("disposition").is_none(),
+                    "{code} -- {why} -- naming a reason invents a failure: {object}"
+                );
+            }
+        }
+    }
+
+    /// An authentication challenge is not the call's outcome.
+    ///
+    /// A 401 or 407 alone is a challenge sipnab watched go unanswered, which
+    /// IS a setup that never completed. The same challenge followed by a
+    /// success is an ordinary authenticated call, and reporting the challenge
+    /// as the result would mark every authenticated call a failure.
+    #[test]
+    fn an_authentication_challenge_is_not_the_outcome_once_the_call_succeeds() {
+        let challenged_only = dialog_with(&[response(407, "Proxy Authentication Required")]);
+        let v = serde_json::to_value(export_with(&challenged_only, &clean_facts()))
+            .expect("serializes");
+        assert_eq!(
+            v["dialog"][0]["type"], INCOMPLETE_TYPE,
+            "a challenge that was never answered is a setup that never \
+             completed: {}",
+            v["dialog"][0]
+        );
+
+        let then_answered = dialog_with(&[
+            response(407, "Proxy Authentication Required"),
+            response(200, "OK"),
+        ]);
+        let v =
+            serde_json::to_value(export_with(&then_answered, &clean_facts())).expect("serializes");
+        assert!(
+            v["dialog"][0].get("type").is_none() && v["dialog"][0].get("disposition").is_none(),
+            "the challenge was answered and the call was set up; reporting the \
+             407 as the outcome would fail every authenticated call: {}",
+            v["dialog"][0]
+        );
+    }
+
+    /// A withheld export against a stated deny header.
+    fn export_withheld(dialog: &SipDialog, facts: &CaptureFacts, header: &str) -> Vcon {
+        export_withheld_dialog_at(
+            dialog,
+            &ExportContext {
+                capture_id: "fixture.pcap",
+                facts,
+                analysis: None,
+                max_inline_media_bytes: None,
+            },
+            header,
+            exported_at(),
+        )
+    }
+    /// PV2: a withheld dialog says so in the registered vocabulary.
+    ///
+    /// `dialogs_suppressed_by_deny` is a sipnab field inside a sipnab
+    /// attachment, and a consumer that reads the format rather than this
+    /// implementation will never see it. §4.1 `redacted` is where the format
+    /// says content was withheld, and an object carrying `type` with no
+    /// `uuid` and no `url` says the thing that is true here: content was
+    /// withheld and no unredacted instance exists anywhere to point at.
+    #[test]
+    fn a_withheld_dialog_is_declared_redacted_with_nothing_to_point_at() {
+        let dialog = dialog_with(&[response(200, "OK")]);
+        let v = serde_json::to_value(export_withheld(&dialog, &clean_facts(), "X-No-Record"))
+            .expect("serializes");
+
+        let redacted = &v["redacted"];
+        assert_eq!(
+            redacted["type"], CONTENT_WITHHELD,
+            "§4.1 requires `type` on a redacted object, and it names the \
+             redaction performed: {redacted}"
+        );
+        assert!(
+            redacted.get("uuid").is_none(),
+            "a uuid here points at an unredacted instance. sipnab never wrote \
+             one, so any value would name a container that does not exist: \
+             {redacted}"
+        );
+        assert!(
+            redacted.get("url").is_none() && redacted.get("content_hash").is_none(),
+            "a url would offer the withheld content for retrieval, which is \
+             the opposite of withholding it: {redacted}"
+        );
+    }
+
+    /// The tombstone carries no content of any kind.
+    ///
+    /// The whole point is that the container says a call happened and offers
+    /// nothing from it. A tombstone that leaked the trace would be worse than
+    /// emitting nothing, because it would look like a deliberate disclosure.
+    #[test]
+    fn a_withheld_dialog_carries_identity_and_no_content_whatsoever() {
+        let dialog = dialog_with(&[response(200, "OK")]);
+        let v = serde_json::to_value(export_withheld(&dialog, &clean_facts(), "X-No-Record"))
+            .expect("serializes");
+
+        assert_eq!(
+            v["dialog"][0]["sip_call_id"], "vcon-fixture@example.com",
+            "the container must still identify which dialog was withheld, or \
+             an operator cannot answer a question about it later"
+        );
+        for content in ["body", "url", "mediatype", "encoding", "content_hash"] {
+            assert!(
+                v["dialog"][0].get(content).is_none(),
+                "a withheld dialog carries no {content}: {}",
+                v["dialog"][0]
+            );
+        }
+        assert!(
+            v["dialog"][0].get("type").is_none(),
+            "no type is true of an object carrying nothing about a call that \
+             connected -- the same rule as any other contentless object: {}",
+            v["dialog"][0]
+        );
+
+        // The message trace is the content that matters most here: it is the
+        // SIP the deny header asked sipnab not to keep.
+        let purposes: Vec<&str> = v["attachments"]
+            .as_array()
+            .expect("attachments")
+            .iter()
+            .filter_map(|a| a["purpose"].as_str())
+            .collect();
+        assert!(
+            !purposes.contains(&"sip-message-trace"),
+            "the trace is the withheld content; shipping it defeats the deny \
+             header entirely: {purposes:?}"
+        );
+    }
+
+    /// An ordinary container declares no redaction at all.
+    ///
+    /// The anti-vacuity half. A `redacted` object on every container would say
+    /// content was withheld from calls nothing was withheld from, which is a
+    /// claim about those calls.
+    #[test]
+    fn a_container_nothing_was_withheld_from_declares_no_redaction() {
+        let dialog = dialog_with(&[response(200, "OK")]);
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        assert!(
+            v.get("redacted").is_none(),
+            "nothing was withheld from this dialog: {v}"
+        );
+    }
+
+    /// A dialog whose caller REFERs the callee elsewhere.
+    fn dialog_with_refer(refer_to: &str) -> SipDialog {
+        let invite = invite();
+        let mut dialog = SipDialog::new(&invite).expect("INVITE opens a dialog");
+        dialog.messages.push(response(200, "OK"));
+        dialog.messages.push(message(
+            "REFER sip:bob@example.net SIP/2.0",
+            &[
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>;tag=t2",
+                "Call-ID: vcon-fixture@example.com",
+                "CSeq: 2 REFER",
+                &format!("Refer-To: {refer_to}"),
+                "Content-Length: 0",
+            ],
+        ));
+        dialog
+    }
+
+    /// PV8: an observed REFER becomes a `transfer` Dialog Object.
+    ///
+    /// A transfer object carries no content by design, which makes it
+    /// structurally an observer's object rather than a recorder's — and a
+    /// transfer is where a passive tap adds most over a recorder that only
+    /// ever sees one leg.
+    #[test]
+    fn an_observed_refer_becomes_a_transfer_object() {
+        let dialog = dialog_with_refer("<sip:carol@example.org>");
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        let objects = v["dialog"].as_array().expect("dialog array");
+
+        assert!(
+            objects.len() >= 2,
+            "the transfer is a SECOND object; replacing the signaling object \
+             would move what `Analysis::dialog` points at: {objects:#?}"
+        );
+        let transfer = objects
+            .iter()
+            .find(|o| o["type"] == "transfer")
+            .expect("a transfer object");
+
+        for content in ["body", "url", "mediatype", "encoding"] {
+            assert!(
+                transfer.get(content).is_none(),
+                "§4.3.1 forbids Dialog Content on a transfer object: {transfer}"
+            );
+        }
+        assert!(
+            transfer.get("disposition").is_none(),
+            "`disposition` belongs to `incomplete`, and nothing failed: {transfer}"
+        );
+    }
+
+    /// The transfer names who moved whom, by party index.
+    #[test]
+    fn a_transfer_names_the_transferor_the_transferee_and_the_target() {
+        let dialog = dialog_with_refer("<sip:carol@example.org>");
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        let parties = v["parties"].as_array().expect("parties");
+        let transfer = v["dialog"]
+            .as_array()
+            .expect("dialog")
+            .iter()
+            .find(|o| o["type"] == "transfer")
+            .expect("a transfer object");
+
+        let transferor = transfer["transferor"].as_u64().expect("transferor index") as usize;
+        let transferee = transfer["transferee"].as_u64().expect("transferee index") as usize;
+        assert_eq!(
+            parties[transferor]["sip"], "sip:alice@example.com",
+            "the transferor is whoever SENT the REFER: {transfer}"
+        );
+        assert_eq!(
+            parties[transferee]["sip"], "sip:bob@example.net",
+            "the transferee is the party being moved: {transfer}"
+        );
+
+        let target = transfer["transfer_target"].as_u64().expect("target index") as usize;
+        assert_eq!(
+            parties[target]["sip"], "sip:carol@example.org",
+            "the target comes from `Refer-To`, and it is a party index — so \
+             the party must exist in the array to point at: {transfer}"
+        );
+        assert_eq!(
+            parties[target]["validation"], "none",
+            "a Refer-To URI is what one party asked for, not an identity: {}",
+            parties[target]
+        );
+
+        assert_eq!(
+            transfer["original"], 0,
+            "`original` points at the dialog this transfer happened in, which \
+             is always index 0: {transfer}"
+        );
+    }
+
+    /// The observer stays LAST even after a transfer target is added.
+    ///
+    /// Every attachment's `party` index resolves to the observer, and it is
+    /// computed as the final entry. Appending a target party after it would
+    /// silently re-point every attachment at a participant.
+    #[test]
+    fn a_transfer_target_does_not_displace_the_observer() {
+        let dialog = dialog_with_refer("<sip:carol@example.org>");
+        let vcon = export_with(&dialog, &clean_facts());
+        let observer = vcon.observer_index();
+        assert_eq!(observer, vcon.parties.len() - 1, "the observer is last");
+
+        let v = serde_json::to_value(&vcon).expect("serializes");
+        assert_eq!(v["parties"][observer]["role"], "observer");
+        for attachment in v["attachments"].as_array().expect("attachments") {
+            assert_eq!(
+                attachment["party"], observer,
+                "an attachment must still resolve to the observer: {attachment}"
+            );
+        }
+    }
+
+    /// An ATTENDED transfer names a consultation dialog that is empty.
+    ///
+    /// `Refer-To` carrying `?Replaces=` says the transferor already had a
+    /// consultation call with the target. A passive tap on this leg never saw
+    /// it, and issue #9 of the draft asks exactly this question. The working
+    /// group's answer in issue #20 is an EMPTY Dialog Object, so that is what
+    /// `consultation` points at: the call is known to have occurred and
+    /// nothing about it is available.
+    #[test]
+    fn an_attended_transfer_points_consultation_at_an_empty_object() {
+        let dialog = dialog_with_refer(
+            "<sip:carol@example.org?Replaces=abc%40example.org%3Bto-tag%3D1%3Bfrom-tag%3D2>",
+        );
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        let objects = v["dialog"].as_array().expect("dialog array");
+        let transfer = objects
+            .iter()
+            .find(|o| o["type"] == "transfer")
+            .expect("a transfer object");
+
+        let consultation = transfer["consultation"]
+            .as_u64()
+            .expect("an attended transfer names its consultation")
+            as usize;
+        let empty = &objects[consultation];
+        assert_eq!(
+            empty.as_object().expect("an object").len(),
+            0,
+            "the consultation call happened and sipnab saw nothing of it. The \
+             working group agreed on `{{}}` for exactly this case: {empty}"
+        );
+    }
+
+    /// A BLIND transfer names no consultation at all.
+    ///
+    /// The anti-vacuity half: `consultation` present on every transfer would
+    /// claim a consultative call for transfers that were blind, and the
+    /// presence of the member is what distinguishes the two.
+    #[test]
+    fn a_blind_transfer_claims_no_consultation() {
+        let dialog = dialog_with_refer("<sip:carol@example.org>");
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        let transfer = v["dialog"]
+            .as_array()
+            .expect("dialog")
+            .iter()
+            .find(|o| o["type"] == "transfer")
+            .expect("a transfer object");
+
+        assert!(
+            transfer.get("consultation").is_none(),
+            "no `Replaces` was observed, so no consultative call is known to \
+             have happened: {transfer}"
+        );
+    }
+
+    /// A dialog with no REFER gets no transfer object.
+    #[test]
+    fn a_dialog_without_a_refer_has_no_transfer_object() {
+        let dialog = dialog_with(&[response(200, "OK")]);
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        let objects = v["dialog"].as_array().expect("dialog array");
+        assert_eq!(objects.len(), 1, "one signaling object only: {objects:#?}");
+        assert!(
+            objects.iter().all(|o| o["type"] != "transfer"),
+            "nothing was transferred: {objects:#?}"
+        );
     }
 
     /// A dialog with no final response at all is STILL not `incomplete`.
@@ -2653,6 +4097,7 @@ mod tests {
             &ExportContext {
                 capture_id: "fixture.pcap",
                 facts: &facts,
+                max_inline_media_bytes: None,
                 analysis: Some(&CaptureAnalysis::default()),
             },
             exported_at(),
@@ -2713,6 +4158,7 @@ mod tests {
             &ExportContext {
                 capture_id: "fixture.pcap",
                 facts: &facts,
+                max_inline_media_bytes: None,
                 analysis: Some(&analysis),
             },
             exported_at(),
@@ -2810,6 +4256,7 @@ mod tests {
             &ExportContext {
                 capture_id: "fixture.pcap",
                 facts: &clean_facts(),
+                max_inline_media_bytes: None,
                 analysis: None,
             },
             exported_at(),
@@ -2819,6 +4266,7 @@ mod tests {
             &ExportContext {
                 capture_id: "fixture.pcap",
                 facts: &clean_facts(),
+                max_inline_media_bytes: None,
                 analysis: None,
             },
             exported_at() + chrono::TimeDelta::days(400),

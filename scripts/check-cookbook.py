@@ -43,6 +43,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from lib_markdown import fences  # noqa: E402
+
 REPO = Path(__file__).resolve().parent.parent
 COOKBOOK = REPO / "docs" / "examples.md"
 FIXTURES = REPO / "tests" / "pcap-samples"
@@ -69,22 +73,29 @@ CAPTURE_SUFFIXES = (".pcap", ".pcapng", ".cap")
 
 
 def extract_commands(text: str) -> list[tuple[str, str]]:
-    """Return (recipe, command) for every command in every ```bash block."""
+    """Return (recipe, command) for every command in every ```bash block.
+
+    Blocks come from `lib_markdown.fences`, not a per-line toggle on
+    ``startswith("```")``. A fence is three or MORE markers and only a run at
+    least as long as the opener closes it, so a ````bash block that shows a
+    three-backtick block inside it ends early under a toggle -- and the
+    commands after that point are silently never checked. A gate that examines
+    less than it claims is worse than no gate.
+    """
     out: list[tuple[str, str]] = []
-    recipe = "preamble"
-    block: list[str] | None = None
-    for line in text.split("\n"):
-        if line.startswith("## "):
-            recipe = line[3:].strip()
-        if line.startswith("```bash"):
-            block = []
+    lines = text.split("\n")
+
+    # Recipe headings, by line, so each block can name the one above it.
+    headings = {n: ln[3:].strip() for n, ln in enumerate(lines) if ln.startswith("## ")}
+
+    for fence in fences(text):
+        if fence.lang != "bash":
             continue
-        if block is not None and line.startswith("```"):
-            out.extend((recipe, c) for c in _join(block))
-            block = None
-            continue
-        if block is not None:
-            block.append(line)
+        recipe = "preamble"
+        for n in sorted(headings):
+            if n < fence.start:
+                recipe = headings[n]
+        out.extend((recipe, c) for c in _join(fence.body))
     return out
 
 

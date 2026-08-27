@@ -3968,6 +3968,13 @@ fn the_tree_spells_in_us_english() {
             // contains all of them. Exempting it is not a loophole: the list
             // is the gate, and a gate cannot be its own violation.
             || f == "tests/docs_drift_test.rs"
+            // VENDORED, and the words are the vendor's. `analyse` and
+            // `organisation` are vcon.store's own spellings in their own
+            // OpenAPI document, kept verbatim so the divergence tests measure
+            // a real second consumer rather than an edited copy of one.
+            // Named individually rather than exempting `tests/schemas/`,
+            // which also holds schemas this project does author.
+            || f == "tests/schemas/vcon-store-openapi.json"
             || f.ends_with(".lock")
         {
             continue;

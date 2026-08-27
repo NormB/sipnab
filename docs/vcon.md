@@ -76,6 +76,42 @@ without the feature.
 
 Read on for what the container means once you hold one.
 
+## The spool contract, for a bridge that consumes it
+
+`--export-vcon-dir` is a queue. Nothing in sipnab ships the containers
+anywhere — the export path writes files and makes no outbound connection — so
+whatever forwards them to a store is a separate program watching that
+directory. These are the guarantees it may rely on.
+
+**A name resolves to a whole container, or to nothing.** Every write stages the
+bytes under a dot-prefixed sibling, flushes them to the filesystem, and renames
+into place. A reader polling the directory therefore never sees a truncated
+container, and a write that fails leaves the previous one intact. Staging is
+deliberately in the DESTINATION directory rather than in the system temp dir:
+`rename` is atomic only within one filesystem, and across a mount boundary it
+either fails outright or degrades into a copy, which puts the partial file
+back.
+
+**A staging file you can see is litter.** sipnab writes it as
+`.<container>.partial`, so an ordinary listing and a `*.json` glob both skip
+it. A failed write removes it. One left behind means sipnab died mid-write, and
+it is safe to delete.
+
+**Names are stable, and sipnab reuses them.** A container's file name comes
+from its Call-ID, with an underscore replacing every character outside
+`[A-Za-z0-9._-]`. Re-exporting
+the same dialog to the same directory overwrites its file rather than
+accumulating a second one, which is what makes the directory a queue and not a
+log. Two dialogs whose Call-IDs differ only outside that character set land on
+one name. If that matters to you, consume the directory rather than trusting
+the name to be unique.
+
+**A container is complete when it appears.** There is no partial state, no
+lock file and no sentinel to wait for. Read it, forward it, delete it.
+
+**Deleting is the consumer's job.** sipnab never removes a container it wrote,
+so a spool nobody drains grows without bound.
+
 ## Walk through one, end to end
 
 The capture is [`tests/fixtures/sip_call.pcap`](../tests/fixtures/sip_call.pcap),
@@ -280,10 +316,9 @@ one, not that the endpoint has none.
 
 **The Dialog Object describes no media, and that is correct here.** This run
 retained no RTP payload, so there is nothing to describe and inventing a
-`mediatype` or a `url` would name a file that does not exist. `type` is
-`incomplete` because that is the only value in the enum that claims no content
-— see the type rule above — and there is no `disposition`, because the call in
-this fixture completed and nothing about it failed.
+`mediatype` or a `url` would name a file that does not exist. The object names
+no `type` at all — see the type rule below — and no `disposition`, because the
+call in this fixture completed and nothing about it failed.
 
 **The completeness body appears twice.** Once as an attachment, once inside the
 report. The next section is about why.
@@ -299,28 +334,34 @@ decode or hit a retention cap can never render as clean.
 
 **vCon has no field for that.** Not a weak one — none. The `type` enum admits
 five values and no others: `recording`, `recording-set`, `text`, `transfer`,
-`incomplete`. Four of the five promise content the object holds, and every
-Dialog Object must carry one of them.
+`incomplete`. Four of the five promise content the object holds, and the fifth
+names a call that "failed to be setup" — a claim about the conversation rather
+than about the object.
 
-So sipnab types the object by **what it carries**, never by what the call did:
+So sipnab types the object by **what it carries**, never by what the call did,
+and where no value is true it names none:
 
 | The object holds | `type` | `disposition` |
 |---|---|---|
 | audio | `recording` | absent — it is an `incomplete` field |
-| no content | `incomplete` | present only when sipnab SAW a final failure |
+| no content, no observed failure | absent | absent |
+| no content, an observed final failure | `incomplete` | the reason, always |
 
-That leaves `incomplete` doing double duty, and the honest reading of it here
-is *an incompleted record*, which a signaling-only export is. The alternative
-is worse in a way that is not a matter of taste: an object typed `recording`
-carrying neither `url` nor `body` promises content that is not there, and a
-conserver chain link that selects `type == "recording"` reads `dialog["url"]`
-unguarded — it raises, and the conserver dead-letters the **whole** container
-rather than the one step. A label that is imprecise beats a label that destroys
-the record.
+The empty row is the one §4.3 of the core draft provides for: "it is possible
+to have a Dialog Object with no parameters in it". Reaching for `incomplete`
+there is the mistake sipnab shipped until 0.5.128, and it is not a matter of
+taste — it made every container for a call that answered assert a setup failure
+that never happened. Reaching for `recording` instead is worse still: an object
+typed `recording` carrying neither `url` nor `body` promises content that is
+not there, and a conserver chain link that selects `type == "recording"` reads
+`dialog["url"]` unguarded — it raises, and the conserver dead-letters the
+**whole** container rather than the one step.
 
-What the object cannot say, `disposition` and the caveat do. `disposition`
-names a failure **only** when sipnab saw the final response that caused it, so
-its absence never means "the call succeeded".
+The last two rows move together. §4.3.1 makes `disposition` a MUST on an
+incomplete object, and no value in the closed set of §4.3.11 means "not
+observed", so one decision fixes both fields. `disposition` names a failure
+**only** when sipnab saw the final response that caused it, and its absence
+never means "the call succeeded".
 
 The extension mechanism offers no repair either. An extension is *ignorable*,
 in which case the consumer that most needs the caveat drops it, or *fatal*, in

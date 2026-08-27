@@ -972,6 +972,31 @@ pub struct OutputArgs {
     )]
     pub export_vcon_dir: Option<std::path::PathBuf>,
 
+    /// Largest inline media body a vCon may carry, in MiB.
+    ///
+    /// Default 5 MiB, and that number is MEASURED rather than chosen: one
+    /// probed vCon store answered HTTP 204 for a ~12 MB container, wrote it to
+    /// Postgres, and had its file spool refuse the payload — with neither
+    /// transport reporting the partial write. The default protects a producer
+    /// from being told "accepted" while a backend drops the audio.
+    ///
+    /// It is a property of that CONSUMER, not of the format, and that consumer
+    /// publishes no per-container cap. Raise it when you know what reads your
+    /// containers. `0` refuses every inline body, which says "never inline
+    /// media" without turning the exporter off; the refusal is still stated in
+    /// the completeness caveat rather than passing as a call with no audio.
+    ///
+    /// Applies to every door that builds a container — batch export, the REST
+    /// server and the MCP server all read this one value, so the same call
+    /// exported two ways cannot come back carrying audio in one container and
+    /// a refusal in the other.
+    #[arg(
+        help_heading = "Output",
+        long = "vcon-max-inline-media",
+        value_name = "MIB"
+    )]
+    pub vcon_max_inline_media: Option<usize>,
+
     /// Suppress content for any dialog carrying this header.
     ///
     /// No default. sipnab ships no opinion about which header your switches
@@ -998,6 +1023,51 @@ pub struct OutputArgs {
         value_name = "NAME"
     )]
     pub content_deny_header: Option<String>,
+
+    /// Write an identity-only container for each dialog the deny header
+    /// suppressed.
+    ///
+    /// Off by default, and that default is the conservative one: a denied
+    /// dialog produces no container at all, so nothing about the call leaves
+    /// this process. Note that `--content-deny-header` is documented as
+    /// suppressing CONTENT and in fact suppresses the whole dialog — this flag
+    /// is what makes the narrower reading available.
+    ///
+    /// Turn it on when a consumer needs to know a call happened and was
+    /// deliberately withheld. The container carries the dialog's identity and
+    /// a §4.1 `redacted` object saying content was withheld with no unredacted
+    /// instance to point at. It carries no message trace, no media and no
+    /// bodies.
+    ///
+    /// The trade is explicit: a tombstone reveals that the call EXISTED. If
+    /// the header means "this call must leave no trace", leave this off.
+    #[arg(
+        help_heading = "Output",
+        long = "content-deny-tombstone",
+        requires = "content_deny_header"
+    )]
+    pub content_deny_tombstone: bool,
+
+    /// Print a SHA-256 of every container written, in `sha256sum` format.
+    ///
+    /// Deliberately NOT a signature, and deliberately not inside the
+    /// container. A signature over the bytes sipnab emits cannot verify
+    /// against the object a store holds, because a conserver adds fields on
+    /// ingest — so a signature would fail for the ordinary reason and tell an
+    /// operator nothing. The same argument rules out SCITT-style transparency
+    /// claims here.
+    ///
+    /// A digest is a smaller and honest claim: this is what sipnab wrote, at
+    /// this path, at this moment. It says nothing about the conversation and
+    /// nothing about what a store did afterwards. What it buys is a way to
+    /// bind an emission to a store's own ledger entry out of band — an
+    /// operator who kept these lines can answer "is the container you have the
+    /// one we sent?" without trusting either side's metadata.
+    ///
+    /// The format is `sha256sum`'s, so `sipnab ... --vcon-digest > SHA256SUMS`
+    /// and a later `sha256sum -c SHA256SUMS` both work with no glue.
+    #[arg(help_heading = "Output", long = "vcon-digest")]
+    pub vcon_digest: bool,
 
     /// Write the `--export-vcon` container to this path instead of stdout.
     ///
@@ -4799,6 +4869,117 @@ mod tests {
             dir_alone.is_err(),
             "--export-vcon-dir alone names a destination for containers no \
              predicate selects"
+        );
+    }
+
+    /// `--vcon-max-inline-media` parses in MiB and stands alone.
+    ///
+    /// It began life gated on `--export-vcon-when`, copying the pair above,
+    /// and that was wrong the moment the REST and MCP doors started reading
+    /// it: a flag that is inert on two of the three surfaces that honor it is
+    /// worse than no flag. Asserting it parses without the batch predicate is
+    /// what stops that being re-added by symmetry with its neighbors.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_inline_media_budget_flag_stands_alone_and_counts_in_mib() {
+        let cli = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--vcon-max-inline-media", "64"])
+            .expect("the budget is not tied to any other flag");
+        assert_eq!(
+            cli.output_args.vcon_max_inline_media,
+            Some(64),
+            "the flag carries MiB; the conversion to bytes happens once, at \
+             the point the exporter is handed a budget"
+        );
+
+        let zero = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--vcon-max-inline-media", "0"])
+            .expect("zero is a setting, not an error");
+        assert_eq!(
+            zero.output_args.vcon_max_inline_media,
+            Some(0),
+            "0 means `never inline media`, and rejecting it would leave an \
+             operator no way to say that"
+        );
+
+        let unset = Cli::try_parse_from(["sipnab", "-I", "x.pcap"]).expect("parses");
+        assert_eq!(
+            unset.output_args.vcon_max_inline_media, None,
+            "unset must stay None so the MEASURED default applies rather than \
+             a number this layer invented"
+        );
+
+        assert!(
+            Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--vcon-max-inline-media", "-1"])
+                .is_err(),
+            "a negative budget is not a smaller budget"
+        );
+    }
+
+    /// `--content-deny-tombstone` needs the header it acts on.
+    ///
+    /// The flag decides what happens to a dialog the deny rule matched, so
+    /// without `--content-deny-header` there is no rule and nothing to
+    /// tombstone. Asserting the `requires` is what turns "I typed the
+    /// attribute" into "the parser enforces it".
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_tombstone_flag_requires_the_deny_header_it_acts_on() {
+        assert!(
+            Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--content-deny-tombstone"]).is_err(),
+            "a tombstone setting with no deny rule configures nothing"
+        );
+
+        let paired = Cli::try_parse_from([
+            "sipnab",
+            "-I",
+            "x.pcap",
+            "--content-deny-header",
+            "X-No-Record",
+            "--content-deny-tombstone",
+        ])
+        .expect("the pair is valid");
+        assert!(paired.output_args.content_deny_tombstone);
+
+        let header_alone = Cli::try_parse_from([
+            "sipnab",
+            "-I",
+            "x.pcap",
+            "--content-deny-header",
+            "X-No-Record",
+        ])
+        .expect("the header stands alone");
+        assert!(
+            !header_alone.output_args.content_deny_tombstone,
+            "OFF by default: a tombstone reveals that the call EXISTED, and \
+             that disclosure is the operator's to choose"
+        );
+    }
+
+    /// `--vcon-digest` is a plain switch and defaults off.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_digest_flag_is_off_until_asked_for() {
+        let on = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--vcon-digest"])
+            .expect("the switch stands alone");
+        assert!(on.output_args.vcon_digest);
+
+        let off = Cli::try_parse_from(["sipnab", "-I", "x.pcap"]).expect("parses");
+        assert!(
+            !off.output_args.vcon_digest,
+            "digests go to stdout, so emitting them unasked would put lines \
+             into a pipeline that did not expect any"
+        );
+
+        // It consumes no value. A following token must fall through to the
+        // parser as an ordinary argument rather than being swallowed as an
+        // algorithm choice, because no such choice exists -- the format is
+        // fixed at SHA-256 so `sha256sum -c` can read it.
+        let followed = Cli::try_parse_from(["sipnab", "--vcon-digest", "-I", "x.pcap"])
+            .expect("a flag taking no value leaves the next token alone");
+        assert!(followed.output_args.vcon_digest);
+        assert_eq!(
+            followed.capture_args.input,
+            vec!["x.pcap".to_string()],
+            "`-I` after the switch must still be read as the input"
         );
     }
 

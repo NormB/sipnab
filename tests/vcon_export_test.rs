@@ -93,6 +93,7 @@ fn a_real_capture_exports_a_complete_signaling_only_container() {
         &ExportContext {
             capture_id: "sip_call.pcap",
             facts: &facts,
+            max_inline_media_bytes: None,
             analysis: None,
         },
     );
@@ -108,16 +109,24 @@ fn a_real_capture_exports_a_complete_signaling_only_container() {
     assert!(v["uuid"].as_str().is_some_and(|u| u.len() == 36));
     assert!(v["created_at"].as_str().is_some());
 
-    // Parties: the observed two, then the observer, and no `name` anywhere.
+    // Parties: the observed two, then the observer. A `name` may appear, and
+    // `validation: "none"` is what keeps it readable as what a header said
+    // rather than as an identity anyone established.
     let parties = v["parties"].as_array().expect("parties");
     assert_eq!(parties.len(), 3);
     for party in parties {
         assert_eq!(party["validation"], "none");
         assert!(
-            party.get("name").is_none(),
-            "a party carries a name: {party}"
+            party.get("validation").is_some(),
+            "a party carrying a name without its disclaimer asserts an \
+             identity: {party}"
         );
     }
+    assert!(
+        parties[2].get("name").is_none(),
+        "the observer is not a named participant: {}",
+        parties[2]
+    );
     assert_eq!(vcon.observer_index(), 2);
     assert_eq!(parties[2]["role"], "observer");
 
@@ -157,10 +166,26 @@ fn a_real_capture_exports_a_complete_signaling_only_container() {
             "{header} reached a container built to be handed to somebody else"
         );
     }
-    for banned in ["signatures", "payload", "protected", "consent", "subject"] {
+    for banned in ["signatures", "payload", "protected", "consent"] {
         assert!(
             v.get(banned).is_none(),
             "an observer vCon must carry no {banned}"
+        );
+    }
+    // `subject` is emitted, and bounded rather than banned: it names the
+    // dialog so a store can find the container by an identifier an operator
+    // has, and it must carry no verdict about the call -- those belong on the
+    // two completeness surfaces asserted above.
+    let subject = v["subject"].as_str().expect("a subject is present");
+    assert!(
+        subject.contains(&dialog.call_id),
+        "the subject must identify the dialog it stands for: {subject:?}"
+    );
+    for verdict in ["SIGNALING ONLY", "incomplete", "PARTIAL", "failed"] {
+        assert!(
+            !subject.contains(verdict),
+            "the subject carries a verdict ({verdict:?}) that belongs on the \
+             completeness surfaces: {subject:?}"
         );
     }
 }
@@ -182,6 +207,7 @@ fn re_exporting_one_dialog_from_one_capture_keeps_its_identifier() {
             &ExportContext {
                 capture_id,
                 facts: &facts,
+                max_inline_media_bytes: None,
                 analysis: None,
             },
         )

@@ -25,6 +25,10 @@ wrong citation; this makes citations reachable, it does not make them right.
 """
 import pathlib, re, sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from lib_markdown import fence_mask  # noqa: E402
+
 BASE = "https://www.rfc-editor.org/rfc"
 # Not preceded by "[" (already a link label) and not already inside a link.
 SECTION = re.compile(r"(?<!\[)\bRFC ?(\d{3,5}) ?§ ?(\d+(?:\.\d+)*)")
@@ -34,7 +38,7 @@ BARE    = re.compile(r"(?<!\[)\bRFC ?(\d{3,5})\b(?! ?§)")
 def convert(text: str) -> tuple[str, int, int]:
     seen: set[str] = set()
     n_sec = n_bare = 0
-    out, fence = [], None
+    out: list[str] = []
 
     def sub_section(m):
         nonlocal n_sec
@@ -52,14 +56,13 @@ def convert(text: str) -> tuple[str, int, int]:
         n_bare += 1
         return f"[RFC {num}]({BASE}/rfc{num})"
 
-    for line in text.split("\n"):
-        t = line.lstrip()
-        marker = "```" if t.startswith("```") else ("~~~" if t.startswith("~~~") else None)
-        if marker:
-            fence = marker if fence is None else (None if fence == marker else fence)
-            out.append(line)
-            continue
-        if fence:
+    # `fence_mask`, not a per-line toggle: a fence is three or MORE markers and
+    # only a run at least as long as the opener closes it. A toggle reads the
+    # inner ``` of a ```` block as closing it and rewrites the rest of the
+    # code block as prose.
+    mask = fence_mask(text)
+    for n, line in enumerate(text.split("\n")):
+        if n < len(mask) and mask[n]:
             out.append(line)
             continue
         # Record RFCs already linked by hand so rule 2 does not double up.

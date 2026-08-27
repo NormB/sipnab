@@ -89,3 +89,41 @@ pub fn null_paths(value: &Value) -> Vec<String> {
     walk(value, "", &mut out);
     out
 }
+
+/// Validate `instance` against one named schema inside a vendored OpenAPI
+/// document, returning the errors as strings.
+///
+/// An OpenAPI document is not itself a JSON Schema: the schemas live under
+/// `components/schemas` and refer to each other with `#/components/schemas/X`
+/// pointers. Validating a sub-schema in isolation breaks every one of those
+/// references, so this wraps the ENTIRE document around a `$ref` entry point —
+/// the pointers then resolve against the document they were written for.
+///
+/// Errors come back as strings rather than as a pass/fail, because a second
+/// consumer's schema is not a gate. Some of its demands are ones this project
+/// has considered and declined, and a caller needs to say which failures it
+/// expects.
+/// `allow(dead_code)` for the reason [`null_paths`] records: `tests/support/`
+/// is compiled into every test binary and each uses a different slice, so a
+/// helper only the vCon contract tests call fails every other feature combo
+/// under CI's `-Dwarnings`.
+#[allow(dead_code)]
+pub fn openapi_errors(doc_file: &str, schema_name: &str, instance: &Value) -> Vec<String> {
+    let path = schema_path(doc_file);
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let doc: Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+
+    let mut wrapper = serde_json::json!({
+        "$ref": format!("#/components/schemas/{schema_name}"),
+    });
+    wrapper["components"] = doc["components"].clone();
+
+    let validator = jsonschema::validator_for(&wrapper)
+        .unwrap_or_else(|e| panic!("compile {schema_name} from {}: {e}", path.display()));
+    validator
+        .iter_errors(instance)
+        .map(|e| format!("at `{}`: {e}", e.instance_path()))
+        .collect()
+}

@@ -205,7 +205,7 @@ states the reasoning, and `:21-29` states why the fix is a type:
 > remembering.
 
 Both fixes reached MCP, and how they reached it is the point. `resolve_in_root`
-([`server.rs:458`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L458)) accepts a bare filename and rejects
+([`server.rs:482`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L482)) accepts a bare filename and rejects
 any separator, `..`, root prefix or drive letter *before* touching the
 filesystem — its doc comment (`:163-173`) argues that requiring one component
 has no middle ground, where "every clever normaliser eventually meets a symlink,
@@ -323,7 +323,7 @@ touching the analysis at all.
   Call-IDs, a verdict per call, free text — to a bare filename under
   `--mcp-file-root`.
 - It reaches the filesystem through `resolve_in_root`
-  ([`server.rs:458`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L458)) exactly as `export_capture` and
+  ([`server.rs:482`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L482)) exactly as `export_capture` and
   `export_audio` do, and therefore inherits `ProtectedInputs::check` and cannot
   land on a capture.
 - **Nothing reads it back.** No tool, no report, no REST route, no diagnosis.

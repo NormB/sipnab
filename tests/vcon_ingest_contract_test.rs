@@ -120,6 +120,7 @@ fn every_container_carries_the_two_fields_the_store_requires() {
         &ExportContext {
             capture_id: "sip_call.pcap",
             facts: &facts,
+            max_inline_media_bytes: None,
             analysis: None,
         },
     );
@@ -182,6 +183,7 @@ fn the_uuid_identifies_the_dialog_and_not_the_moment_of_export() {
     let ctx = |capture: &'static str| ExportContext {
         capture_id: capture,
         facts: &facts,
+        max_inline_media_bytes: None,
         analysis: None,
     };
     let uuid_of = |v: &sipnab::output::vcon::Vcon| {
@@ -230,6 +232,7 @@ fn a_signaling_only_container_is_far_beneath_the_store_ceiling() {
         &ExportContext {
             capture_id: "sip_call.pcap",
             facts: &facts,
+            max_inline_media_bytes: None,
             analysis: None,
         },
     );
@@ -283,6 +286,7 @@ fn a_json_body_is_a_string_a_consumer_parses() {
         &ExportContext {
             capture_id: "sip_call.pcap",
             facts: &facts,
+            max_inline_media_bytes: None,
             analysis: None,
         },
     );
@@ -381,6 +385,7 @@ fn a_container_validates_against_the_working_group_schema() {
         &ExportContext {
             capture_id: "sip_call.pcap",
             facts: &facts,
+            max_inline_media_bytes: None,
             analysis: None,
         },
     );
@@ -414,6 +419,7 @@ fn nothing_is_typed_a_recording_without_content_to_reach() {
         &ExportContext {
             capture_id: "sip_call.pcap",
             facts: &facts,
+            max_inline_media_bytes: None,
             analysis: None,
         },
     );
@@ -474,6 +480,7 @@ fn party_sip_and_tel(from_user: &str) -> (Option<String>, Option<String>) {
         &ExportContext {
             capture_id: "tel-fixture",
             facts: &facts,
+            max_inline_media_bytes: None,
             analysis: None,
         },
     );
@@ -528,6 +535,7 @@ fn the_observer_carries_no_tel() {
         &ExportContext {
             capture_id: "sip_call.pcap",
             facts: &facts,
+            max_inline_media_bytes: None,
             analysis: None,
         },
     );
@@ -561,6 +569,7 @@ fn the_dialog_object_names_the_tags_that_distinguish_a_forked_leg() {
         &ExportContext {
             capture_id: "sip_call.pcap",
             facts: &facts,
+            max_inline_media_bytes: None,
             analysis: None,
         },
     );
@@ -701,6 +710,7 @@ fn uuid_of(call_id: &str, capture_id: &str, at: chrono::DateTime<chrono::Utc>) -
         &ExportContext {
             capture_id,
             facts: &facts,
+            max_inline_media_bytes: None,
             analysis: None,
         },
     );
@@ -737,6 +747,7 @@ fn no_field_is_ever_emitted_as_an_explicit_null() {
             &ExportContext {
                 capture_id: "sip_call.pcap",
                 facts: &facts,
+                max_inline_media_bytes: None,
                 analysis,
             },
         );
@@ -761,4 +772,154 @@ fn no_field_is_ever_emitted_as_an_explicit_null() {
              optional fields, so an empty walk would pass on nothing: {json}"
         );
     }
+}
+
+/// No container asserts a setup failure for a call that connected.
+///
+/// This is the defect stated at the level a reader of the container sees it.
+/// The unit tests above check the emitting function; this checks a container
+/// built from a REAL capture of a call that was answered and completed, which
+/// is the artifact somebody opens months later beside a switch's CDR. A
+/// container claiming the call "failed to be setup" next to a CDR showing a
+/// connected conversation is the disagreement that costs the container its
+/// credibility -- and every signaling-only export of a successful call took
+/// that shape until the type became optional.
+#[test]
+fn no_container_asserts_a_setup_failure_for_a_call_that_connected() {
+    let (store, call_id) = capture_of("sip_call.pcap");
+    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+    assert_eq!(
+        dialog.final_status_code(),
+        Some(200),
+        "premise: this fixture must be a call that was ANSWERED, or the \
+         assertion below passes for the wrong reason"
+    );
+
+    let facts = CaptureFacts::default();
+    let vcon = export_dialog(
+        dialog,
+        &ExportContext {
+            capture_id: "sip_call.pcap",
+            facts: &facts,
+            max_inline_media_bytes: None,
+            analysis: None,
+        },
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+
+    let objects = json["dialog"].as_array().expect("dialog is an array");
+    assert!(!objects.is_empty(), "the export produced no dialog object");
+    for (i, object) in objects.iter().enumerate() {
+        assert_ne!(
+            object.get("type").and_then(|t| t.as_str()),
+            Some("incomplete"),
+            "dialog[{i}] reports a call that reached 200 OK as one that \
+             failed to be set up: {object}"
+        );
+        assert!(
+            object.get("disposition").is_none(),
+            "dialog[{i}] names a failure reason for a call that succeeded: \
+             {object}"
+        );
+    }
+}
+
+/// PV3: how a sipnab container fares against a SECOND consumer's schema.
+///
+/// `tests/schemas/vcon.schema.json` is the working group's. This one is
+/// vcon.store's, fetched from their live OpenAPI document, and it is stricter
+/// in ways the format does not require. Validating against one schema proves a
+/// container is well-formed; validating against two proves it is portable, and
+/// where it is not, this test says so out loud rather than leaving an operator
+/// to discover it at ingest.
+///
+/// The divergences are ASSERTED rather than fixed. Each one is a deliberate
+/// choice this project has already made and would not reverse to satisfy one
+/// store, so the value here is that a change on either side — ours or theirs,
+/// on the next re-fetch — lands on this test with the reasoning attached.
+#[test]
+fn a_container_meets_or_knowingly_diverges_from_the_second_consumer() {
+    let (store, call_id) = capture_of("sip_call.pcap");
+    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+    let facts = CaptureFacts::default();
+    let vcon = export_dialog(
+        dialog,
+        &ExportContext {
+            capture_id: "sip_call.pcap",
+            facts: &facts,
+            max_inline_media_bytes: None,
+            analysis: None,
+        },
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+
+    let errors = support::schema::openapi_errors("vcon-store-openapi.json", "VCon", &json);
+
+    // Divergence 1: their Dialog requires `type`, and a signaling-only object
+    // has no truthful value for it. This is the PV1 decision, and it is the
+    // same disagreement the working group's own schema has with its own prose.
+    // Their schema is not wrong; it faithfully implements a draft whose
+    // `required` list nobody has updated.
+    assert!(
+        errors.iter().any(|e| e.contains("type")),
+        "expected the known `type` divergence against vcon.store; if it is \
+         gone, either they relaxed the requirement or sipnab started naming a \
+         type it cannot back — find out which: {errors:#?}"
+    );
+
+    // Divergence 2: their Dialog requires `parties` on the DIALOG OBJECT.
+    // sipnab carries parties at container level and names them per channel
+    // only where each channel could be attributed from evidence. Inventing a
+    // dialog-level parties array to satisfy a validator would assert an
+    // attribution nothing measured.
+    assert!(
+        errors.iter().any(|e| e.contains("parties")),
+        "expected the known dialog-level `parties` divergence: {errors:#?}"
+    );
+
+    // Everything else must pass. A third failure is news, and it is the reason
+    // this test asserts the divergence set rather than merely `is_err`.
+    assert_eq!(
+        errors.len(),
+        2,
+        "a sipnab container diverges from vcon.store in exactly two known \
+         ways; a third is either a regression here or a change there: \
+         {errors:#?}"
+    );
+}
+
+/// The field-name divergence their schema cannot catch.
+///
+/// vcon.store's Dialog names the media type `mimetype`; sipnab emits
+/// `mediatype`, which is what the IETF draft defines. Their
+/// `additionalProperties` accepts anything, so `mediatype` validates cleanly
+/// and their consumer still finds no media — the container passes and is
+/// unreadable, which is the worst of both.
+///
+/// A schema gate cannot see this, so it is asserted directly.
+#[test]
+fn the_second_consumer_names_the_media_type_field_differently() {
+    let text = std::fs::read_to_string(support::schema::schema_path("vcon-store-openapi.json"))
+        .expect("the vendored schema is readable");
+    let doc: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+    let props = &doc["components"]["schemas"]["Dialog"]["properties"];
+
+    assert!(
+        props.get("mimetype").is_some(),
+        "vcon.store used to name it `mimetype`; if that changed, the note in \
+         docs/vcon.md about the two names is now wrong"
+    );
+    assert!(
+        props.get("mediatype").is_none(),
+        "if they now accept `mediatype`, this divergence is over and the \
+         documentation should say so"
+    );
+    assert_eq!(
+        doc["components"]["schemas"]["Dialog"]["additionalProperties"],
+        serde_json::json!({"nullable": true}),
+        "their permissiveness is what makes this silent: a container carrying \
+         `mediatype` validates against them and still reads as having no media"
+    );
 }

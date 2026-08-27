@@ -178,6 +178,16 @@ fn stream(
 
 /// Export one dialog with the audio decoded from its streams.
 fn export(store: &DialogStore, call_id: &str, streams: &[&RtpStream]) -> (Vcon, DialogAudio) {
+    export_within(store, call_id, streams, None)
+}
+
+/// The same export, under a stated inline-media budget.
+fn export_within(
+    store: &DialogStore,
+    call_id: &str,
+    streams: &[&RtpStream],
+    budget: Option<usize>,
+) -> (Vcon, DialogAudio) {
     let audio = decode_dialog_audio(streams).expect("the fixture streams decode");
     let dialog = store
         .get(call_id)
@@ -188,6 +198,7 @@ fn export(store: &DialogStore, call_id: &str, streams: &[&RtpStream]) -> (Vcon, 
         &ExportContext {
             capture_id: "vcon-media-fixture.pcap",
             facts: &facts,
+            max_inline_media_bytes: budget,
             analysis: None,
         },
         ObservedAudio::Decoded(&audio),
@@ -511,6 +522,7 @@ fn a_dialog_with_no_exportable_audio_carries_no_recording_and_explains_itself() 
         &ExportContext {
             capture_id: "vcon-media-fixture.pcap",
             facts: &facts,
+            max_inline_media_bytes: None,
             analysis: None,
         },
         ObservedAudio::NothingToDecode(&reason),
@@ -547,6 +559,7 @@ fn a_dialog_with_no_exportable_audio_carries_no_recording_and_explains_itself() 
         &ExportContext {
             capture_id: "vcon-media-fixture.pcap",
             facts: &facts,
+            max_inline_media_bytes: None,
             analysis: None,
         },
     );
@@ -913,4 +926,153 @@ fn no_media_container_emits_an_explicit_null() {
              media fields it exists to check: {json}"
         );
     }
+}
+
+/// A media object still names `recording` now that `type` became optional.
+///
+/// `type` was dropped from the signaling-only object because no value of it
+/// was true there. That reasoning stops exactly where content begins: an
+/// object carrying a WAV must say so, because every consumer that wants audio
+/// selects on `type == "recording"` and an untyped object is one they skip
+/// with the audio still inside it. The two changes share a code path, so the
+/// correctness of the first is only safe while this holds.
+#[test]
+fn a_media_object_still_names_recording_after_type_became_optional() {
+    for (label, wrapped, expected) in [
+        ("intact ring", false, RECORDING_TYPE),
+        ("wrapped ring", true, RECORDING_SET_TYPE),
+    ] {
+        let json = media_container(wrapped);
+        let object = &json["dialog"][0];
+        assert!(
+            carries_audio(&json),
+            "premise: the {label} container must actually carry audio, or \
+             this asserts a type on an object with nothing to reach: {object}"
+        );
+        assert_eq!(
+            object["type"], expected,
+            "the {label} object holds content and must name it; an untyped \
+             object is skipped by every `type == \"recording\"` selector and \
+             the audio becomes unreachable: {object}"
+        );
+        assert!(
+            object.get("disposition").is_none(),
+            "content and a setup failure are mutually exclusive claims: \
+             {object}"
+        );
+    }
+}
+
+/// PV9: the inline-media ceiling is an operator's number with a measured
+/// default.
+///
+/// The 5 MiB default is measured against one store that answers HTTP 204 and
+/// then drops the payload in its file spool, telling the producer nothing. It
+/// stays the default for exactly that reason. But the number is a property of
+/// a CONSUMER rather than of the format, and that consumer publishes no
+/// per-container cap -- an operator writing to a spool they control should not
+/// inherit a limit measured somewhere else.
+#[test]
+fn the_inline_media_budget_is_an_operator_setting() {
+    let call_id = "intact@example.com";
+    let store = dialog_store(call_id, sock(10, 0, 0, 1, 20000), sock(10, 0, 0, 2, 30000));
+    let s = stream(
+        sock(10, 0, 0, 1, 20000),
+        sock(10, 0, 0, 2, 30000),
+        1,
+        2,
+        0xFF,
+        0,
+        TimeDelta::seconds(0),
+    );
+
+    // Unset: the measured default carries this fixture.
+    let (default_vcon, _) = export_within(&store, call_id, &[&s], None);
+    assert!(
+        carries_audio(&json_of(&default_vcon)),
+        "premise: the fixture must fit under the default, or the refusal \
+         below proves nothing about the budget"
+    );
+
+    // A budget below what this WAV encodes to refuses it.
+    let (tight_vcon, audio) = export_within(&store, call_id, &[&s], Some(8));
+    let tight = json_of(&tight_vcon);
+    assert!(
+        !carries_audio(&tight),
+        "a lowered budget must actually refuse: {}",
+        tight["dialog"]
+    );
+
+    // And the refusal names the budget that was ENFORCED. Quoting the
+    // compiled-in default while enforcing something else would send an
+    // operator looking for a limit nothing applied.
+    let note = completeness(&tight)["note"]
+        .as_str()
+        .expect("a completeness note")
+        .to_string();
+    assert!(
+        note.contains("8 byte budget"),
+        "the refusal must quote the enforced budget: {note}"
+    );
+    assert!(
+        note.contains(&audio.wav.len().to_string()),
+        "the refusal must name the size that was refused, so an operator can \
+         choose a number: {note}"
+    );
+
+    // Zero is a legitimate setting: "never inline media", said once, with the
+    // refusal still visible rather than passing as a call that had no audio.
+    let (zero_vcon, _) = export_within(&store, call_id, &[&s], Some(0));
+    let zero = json_of(&zero_vcon);
+    assert!(
+        !carries_audio(&zero),
+        "a zero budget must inline nothing: {}",
+        zero["dialog"]
+    );
+    assert!(
+        completeness(&zero)["media"] != "none-decodable",
+        "a refused body must not report as undecodable audio -- that is a \
+         claim about the CALL: {}",
+        completeness(&zero)
+    );
+}
+
+/// A raised budget carries audio the default would have refused.
+///
+/// The other direction of the same setting, and the one that makes it worth
+/// having: without this, "configurable" could mean a knob that only ever
+/// tightens.
+#[test]
+fn a_raised_budget_carries_what_the_default_would_refuse() {
+    let call_id = "intact@example.com";
+    let store = dialog_store(call_id, sock(10, 0, 0, 1, 20000), sock(10, 0, 0, 2, 30000));
+    let s = stream(
+        sock(10, 0, 0, 1, 20000),
+        sock(10, 0, 0, 2, 30000),
+        1,
+        2,
+        0xFF,
+        0,
+        TimeDelta::seconds(0),
+    );
+
+    // A budget of one byte under what this body needs refuses it; one byte
+    // over carries it. Deriving both from the measured body rather than from
+    // a guessed constant is what keeps this from silently going vacuous when
+    // the fixture changes size.
+    let (_, audio) = export_within(&store, call_id, &[&s], None);
+    let encoded = audio.wav.len().div_ceil(3) * 4;
+
+    let (refused, _) = export_within(&store, call_id, &[&s], Some(encoded / 2));
+    assert!(
+        !carries_audio(&json_of(&refused)),
+        "premise: half the encoded size must be under budget"
+    );
+
+    let (carried, _) = export_within(&store, call_id, &[&s], Some(encoded * 2));
+    assert!(
+        carries_audio(&json_of(&carried)),
+        "twice the encoded size must carry it: {}",
+        json_of(&carried)["dialog"]
+    );
 }
