@@ -4813,11 +4813,6 @@ fn prepare_export_dir(cli: &Cli) -> Result<&std::path::Path, String> {
     Ok(dir)
 }
 
-/// Write one container per dialog the predicate selected.
-///
-/// Reports the count on stderr rather than staying silent. A run that matched
-/// nothing and a run that wrote forty containers look identical from the shell
-/// otherwise, and the first is the one an operator needs to know about --
 /// The inline-media budget this run enforces, from `--vcon-max-inline-media`.
 ///
 /// The flag is in MiB because an operator thinks in MiB; the exporter counts
@@ -4825,12 +4820,18 @@ fn prepare_export_dir(cli: &Cli) -> Result<&std::path::Path, String> {
 /// definition of what the number means -- two sites doing their own arithmetic
 /// is how a flag comes to mean something different depending on which export
 /// path produced the container.
+#[cfg(feature = "vcon")]
 fn media_budget(cli: &Cli) -> Option<usize> {
     cli.output_args
         .vcon_max_inline_media
         .map(|mib| mib.saturating_mul(1024 * 1024))
 }
 
+/// Write one container per dialog the predicate selected.
+///
+/// Reports the count on stderr rather than staying silent. A run that matched
+/// nothing and a run that wrote forty containers look identical from the shell
+/// otherwise, and the first is the one an operator needs to know about --
 /// `--export-vcon` already refuses silence for the same reason.
 #[cfg(feature = "vcon")]
 fn export_vcon_selection(
