@@ -31,6 +31,7 @@ fuzz_target!(|data: &[u8]| {
 
         let pkt = ParsedPacket {
             frame: None,
+            frame_bytes: None,
             timestamp: chrono::Utc::now(),
             src_addr: src,
             dst_addr: dst,

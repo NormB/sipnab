@@ -60,6 +60,7 @@ fn rtp_packet(ssrc: u32, seq: u16) -> Vec<u8> {
 
 fn parsed_for(ssrc: u32, payload: Vec<u8>) -> ParsedPacket {
     ParsedPacket {
+        frame_bytes: None,
         frame: None,
         timestamp: Utc::now(),
         src_addr: IpAddr::V4(Ipv4Addr::new(
