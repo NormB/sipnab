@@ -422,25 +422,6 @@ fn reconstruct(
 /// stream↔dialog association is resolved globally.
 ///
 /// Returns the merged stores for report generation. Reconstruction only — see
-/// Fill in the frame digest the reader deliberately left empty.
-///
-/// The reader stamps the ordinal — a serial fact only it can know — and leaves
-/// `digest: None`, because hashing is a pure function of bytes and the reader
-/// is the stage every worker waits on. This runs in the workers, where the
-/// cores are idle, and produces the identical FNV-1a value the single-threaded
-/// reader produces, so a pointer from a `--cores` run resolves the same way.
-///
-/// Idempotent, and it never invents provenance: a packet that arrived with no
-/// origin at all (live capture, HEP) is left alone rather than given one, and a
-/// digest already present is not recomputed.
-fn stamp_digest(packet: &mut crate::capture::packet::Packet) {
-    if let Some(origin) = packet.origin.as_mut()
-        && origin.digest.is_none()
-    {
-        origin.digest = Some(crate::capture::packet::frame_digest(&packet.data));
-    }
-}
-
 /// `reconstruct`; advanced features stay on the single-threaded path.
 pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
     use crate::capture::packet::Packet;
@@ -473,9 +454,7 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
                 }
                 let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
                 let (mut sip, mut rtp, mut total) = (0u64, 0u64, 0u64);
-                for mut packet in wrx.iter() {
-                    // Off the reader's serial path, onto this idle core.
-                    stamp_digest(&mut packet);
+                for packet in wrx.iter() {
                     for pp in processor.process(&packet) {
                         total += 1;
                         reconstruct(
@@ -750,6 +729,8 @@ fn shard_opened<S: ShardSink>(
                 packet.origin = Some(crate::capture::packet::FrameOrigin {
                     ordinal,
                     digest: None,
+                    // A file, sharded across workers. Still re-readable.
+                    verifiable: true,
                 });
                 ordinal += 1;
                 // The newest timestamp of THIS file, folded into the run's
@@ -1899,10 +1880,8 @@ pub fn run_offline_parallel_file(
                 }
                 let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
                 let (mut sip, mut rtp, mut total) = (0u64, 0u64, 0u64);
-                for mut batch in wrx.iter() {
-                    for packet in batch.iter_mut() {
-                        // Off the reader's serial path, onto this idle core.
-                        stamp_digest(packet);
+                for batch in wrx.iter() {
+                    for packet in batch.iter() {
                         for pp in processor.process(packet) {
                             total += 1;
                             reconstruct(

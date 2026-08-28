@@ -2133,6 +2133,7 @@ mod tests {
         // The pipeline recognizes it as SIP, declines it, and counts it.
         let sip = b"OPTIONS sip:probe@test SIP/2.0\r\nCall-ID: oor@test\r\nCSeq: 1 OPTIONS\r\n\r\n";
         let pp = crate::capture::ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("ts"),
             src_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
@@ -3234,6 +3235,7 @@ mod tests {
         use crate::rtp::parser::RtpHeader;
 
         let parsed = crate::capture::ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("ts"),
             src_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
@@ -3511,6 +3513,7 @@ mod tests {
             let mut ss = state.stream_store.write();
             for seq in 1..=5u16 {
                 let parsed = crate::capture::ParsedPacket {
+                    frame_bytes: None,
                     frame: None,
                     timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
                     src_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),

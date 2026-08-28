@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**46 open, 341 done** across 20 sections.
+**45 open, 342 done** across 20 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -56,7 +56,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | P3 | 1 | 63 | `##########` |
 | P4 | 0 | 39 | `##########` |
 | PA | 13 | 0 | `..........` |
-| PB | 14 | 4 | `##........` |
+| PB | 13 | 5 | `###.......` |
 | TK | 4 | 6 | `######....` |
 | RE | 3 | 4 | `######....` |
 | BA | 3 | 1 | `##........` |
@@ -1879,7 +1879,7 @@ output path.
     refs so the retrofit never grows.
   - **In progress — the resolver end exists; the threading is partial (status
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
-    ([`src/capture/packet.rs:325`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L325)) and `capture::resolve::resolve`
+    ([`src/capture/packet.rs:377`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L377)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
     (`#[tool(` at [`src/mcp/server.rs:5965`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5965), handler at `:3866`), confined to
     the file root and honest about
@@ -2568,8 +2568,56 @@ PA2. PB's resources and prompts are PA3. PB's redaction is PA5. PB's SIPp
 export is PA7. PB's multi-leg ladder is PA10. Those PA entries stay
 authoritative; the PB text above adds only what they do not already say.
 
-- [ ] **PERF1 — the frame digest is computed for every packet, and ~93% of
-  them can never be pointed at.** Measured 2026-08-08 against checksum-verified
+- [x] **PERF1 — the frame digest is computed for every packet, and ~93% of
+  them can never be pointed at. DONE 2026-08-28.**
+
+  **Measured, not asserted.** Two release binaries built from the same tree,
+  the only difference being this change; [`bench/scaling.sh`](https://github.com/NormB/sipnab/blob/main/bench/scaling.sh), the 535k carrier
+  corpus, median-of-5 after a discarded warmup, host 99% idle:
+
+  | cores | before | after | change |
+  |------:|-------:|------:|-------:|
+  | 2     | 2.10M  | 2.70M | **+29%** |
+  | 4     | 3.21M  | 3.56M | +11%   |
+  | 8     | 3.22M  | 3.18M | --     |
+
+  Two further interleaved replicates at two cores gave 2.11M/2.70M and
+  2.10M/2.68M, so the headline is three independent measurements, not one. The
+  shape is exactly what the 2026-08-17 ablation predicted -- large at two
+  cores, small at four, nothing at eight -- and the magnitude is lower than the
+  ablation's +40% for the right reason: the ablation computed NO digest, while
+  this still computes one for the ~7% of frames a pointer is kept for.
+
+  **The entry's own diagnosis was wrong, and following it would have shipped a
+  no-op.** It said the remaining cost was `stamp_digest` running per frame in
+  the workers. It was not: `read_opened_inner` -- the reader -- was still
+  stamping every frame unconditionally, and `stamp_digest` skipped any packet
+  that already carried a digest, so the worker call did nothing at all. The
+  cost had been on the reader the whole time, which is where the 0.5.88 fix
+  was supposed to have removed it.
+
+  **What shipped.** The readers stamp the ordinal and leave `digest: None`;
+  `ParsedPacket` carries the frame `Bytes` (a refcount on the allocation
+  `payload` already holds, not a copy); and `ParsedPacket::retained_frame_ref`
+  hashes at the two sites that KEEP a pointer -- [`src/pipeline.rs`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs) for a
+  dialog's first frame, [`src/rtp/stream_store.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs) for a stream's.
+
+  **A test caught a real regression on the way.** Hashing at retention began
+  stamping digests on LIVE-captured frames, which had none before and correctly
+  so: a digest answers "did the capture change under you", which only a
+  re-readable source can be asked. A device cannot be rewound. That turned a
+  rendered pointer from `eth9#0` into `eth9#0@<hash>` and
+  `a_live_captured_stream_has_a_resolvable_first_frame` failed immediately.
+  `FrameOrigin` now carries `verifiable`, set by the reader that knows.
+
+  The first fix for THAT was also wrong: putting `verifiable` in `FrameOrigin`
+  made it part of a pointer's identity, and a pointer's text form (`eth9#0`)
+  has nowhere to record it -- so a pointer parsed back from text could never
+  equal itself. It is excluded from `PartialEq`/`Ord` with the reasoning
+  written at the impls.
+
+  ORIGINAL: the frame digest is computed for every packet, and ~93% of
+  them can never be pointed at. Measured 2026-08-08 against checksum-verified
   release artifacts on the reference host, fixed-state 535k corpus, 2 cores,
   interleaved replicates:
 
@@ -4264,7 +4312,7 @@ ones that fit an analysis tool.
   unfragmented DATA chunk per packet. Enables SIGTRAN/Diameter (3GPP IMS).
   **Corrected 2026-08-06:** this used to end *"multi-packet fragment reassembly
   (B/E spanning) is a documented follow-up"*, and that follow-up shipped —
-  `SctpReassembler` ([`src/capture/parse.rs:1804`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1804)), constructed on every
+  `SctpReassembler` ([`src/capture/parse.rs:1867`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1867)), constructed on every
   `PacketProcessor` ([`src/capture/mod.rs:897`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs#L897), `:651`, `:686`). The P2 entry
   above records it as done. Two entries in one file disagreeing about the same
   feature is the cheapest kind of wrong to produce and the most expensive to

@@ -252,6 +252,9 @@ fn to_packet(bytes: &[u8], pid: u32, ordinal: u64) -> Packet {
     pkt.origin = Some(FrameOrigin {
         ordinal,
         digest: None,
+        // Read out of a process, never a frame on a wire. There is
+        // nothing to re-read, so there is nothing a digest could check.
+        verifiable: false,
     });
     pkt
 }

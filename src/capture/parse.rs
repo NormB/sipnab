@@ -152,6 +152,28 @@ pub struct ParsedPacket {
     /// point a fact actually keeps the pointer — see the type's docs for why
     /// building one per packet cost ~40% of the packet path in atomics.
     pub frame: Option<crate::capture::packet::FrameLocator>,
+    /// The frame's own bytes, kept so a RETAINED pointer can be verified.
+    ///
+    /// The digest in `frame.origin` exists to tell "here is your frame" apart
+    /// from "the capture changed under you", and it is only ever read through
+    /// a pointer something kept. On a carrier corpus that is ~35k of 535k
+    /// frames, so hashing every frame as it is read spends ~93% of the work on
+    /// pointers nobody can ever follow -- measured at +40% throughput on two
+    /// cores with the stamp ablated.
+    ///
+    /// This carries the bytes instead, and the digest is computed where the
+    /// pointer is kept. It costs one refcount rather than a copy: `payload` is
+    /// already a slice of this same allocation, so the frame is retained for
+    /// every packet either way.
+    ///
+    /// It does NOT go in [`crate::capture::packet::FrameLocator`], which is
+    /// `Copy` precisely so the parser touches no refcount -- building an owned
+    /// pointer per packet cost ~40% of the packet path in atomics, which is the
+    /// regression this field exists to avoid re-introducing.
+    ///
+    /// `None` for a synthetic packet, exactly as `frame` is: a packet nobody
+    /// read from anything has no bytes to verify against.
+    pub frame_bytes: Option<bytes::Bytes>,
     /// IP fragment identification (IPv4 16-bit `Identification`, or the IPv6
     /// Fragment extension header's 32-bit `Identification`) for reassembly
     /// keying. `None` when the packet is not fragmented.
@@ -200,6 +222,37 @@ pub struct ParsedPacket {
     /// `None` on the wire path, where nothing wrapped the packet and the ng
     /// detector reads the datagram itself.
     pub hep: Option<crate::capture::packet::HepOrigin>,
+}
+
+impl ParsedPacket {
+    /// The owned frame pointer, with its digest computed HERE if it has one to
+    /// compute.
+    ///
+    /// Call this at a site that KEEPS the pointer -- a dialog's first frame, a
+    /// stream's first frame -- and nowhere else. That is the whole point: the
+    /// digest verifies a stored pointer against the capture it came from, so
+    /// only a stored pointer needs one, and computing it per packet spends
+    /// ~93% of the hashing on frames nobody can ever point at.
+    ///
+    /// A locator that ALREADY carries a digest is returned untouched. The
+    /// single-threaded reader stamps as it reads, and a pointer that came in
+    /// verified must not be re-hashed into a different answer.
+    ///
+    /// Returns `None` when there is no pointer, exactly as `frame` does. A
+    /// pointer without bytes stays a pointer without a digest rather than
+    /// becoming an unverified one that claims otherwise -- a resolver reads
+    /// `digest: None` as UNVERIFIED, which is the honest report.
+    #[must_use]
+    pub fn retained_frame_ref(&self) -> Option<crate::capture::packet::FrameRef> {
+        let mut r = self.frame?.to_frame_ref();
+        if r.origin.verifiable
+            && r.origin.digest.is_none()
+            && let Some(bytes) = &self.frame_bytes
+        {
+            r.origin.digest = Some(crate::capture::packet::frame_digest(bytes));
+        }
+        Some(r)
+    }
 }
 
 // ── ICMP error quotes ─────────────────────────────────────────────────
@@ -2289,6 +2342,12 @@ pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket, CaptureError> {
     // next decapsulation path could forget to pass, and a frame that silently
     // loses its pointer is indistinguishable from one that never had one.
     parsed.frame = packet.frame_locator();
+    // The bytes ride along from the same one site, for the same reason: every
+    // decapsulation path funnels back through here, so nothing can acquire a
+    // pointer without acquiring what verifies it. A refcount on an allocation
+    // `payload` already holds -- not a copy, and not a hash. The hash happens
+    // where the pointer is KEPT, which is ~7% of frames on a carrier corpus.
+    parsed.frame_bytes = Some(packet.data.clone());
     Ok(parsed)
 }
 
@@ -2313,6 +2372,10 @@ fn parse_packet_unstamped(packet: &Packet) -> Result<ParsedPacket, CaptureError>
             // meaningful. `frame_locator` yields None when either half is
             // missing, which is the old behavior for sources that set neither.
             frame: packet.frame_locator(),
+            // Mirrors `frame` on the same reasoning: this path carries a real
+            // pointer, so it carries what verifies one. A refcount on an
+            // allocation `payload` already holds, not a copy.
+            frame_bytes: Some(packet.data.clone()),
             timestamp: packet.timestamp,
             src_addr: meta.src_addr,
             dst_addr: meta.dst_addr,
@@ -3022,6 +3085,7 @@ fn extract_parsed_packet(
 
         return Ok(ParsedPacket {
             frame: None,
+            frame_bytes: None,
             timestamp,
             src_addr,
             dst_addr,
@@ -3054,6 +3118,7 @@ fn extract_parsed_packet(
         let (src_port, dst_port, payload) = extracted.unwrap_or((0, 0, bytes::Bytes::new()));
         return Ok(ParsedPacket {
             frame: None,
+            frame_bytes: None,
             timestamp,
             src_addr,
             dst_addr,
@@ -3104,6 +3169,7 @@ fn extract_parsed_packet(
     match transport_slice {
         TransportSlice::Udp(udp) => Ok(ParsedPacket {
             frame: None,
+            frame_bytes: None,
             timestamp,
             src_addr,
             dst_addr,
@@ -3123,6 +3189,7 @@ fn extract_parsed_packet(
         }),
         TransportSlice::Tcp(tcp) => Ok(ParsedPacket {
             frame: None,
+            frame_bytes: None,
             timestamp,
             src_addr,
             dst_addr,

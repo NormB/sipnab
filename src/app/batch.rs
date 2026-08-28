@@ -5747,6 +5747,7 @@ mod tests {
             bytes[4..6].copy_from_slice(&total.to_be_bytes());
         }
         ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: chrono::Utc::now(),
             src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11)),
@@ -8844,6 +8845,7 @@ mod tests {
     /// A UDP `ParsedPacket` from 10.0.0.1 to 10.0.0.2 carrying `payload`.
     fn parsed_sip_packet(payload: Vec<u8>, src_port: u16, dst_port: u16) -> ParsedPacket {
         ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: chrono::Utc::now(),
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
@@ -8923,6 +8925,7 @@ mod tests {
         payload.push(0x80);
         payload.extend_from_slice(&duration_ts.to_be_bytes());
         ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: chrono::Utc::now(),
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),

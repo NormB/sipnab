@@ -4281,6 +4281,7 @@ mod tui_state {
                 payload.extend_from_slice(&[0x7F; 160]);
 
                 let parsed = ParsedPacket {
+                    frame_bytes: None,
                     frame: None,
                     timestamp: chrono::DateTime::from_timestamp(1_700_000_000 + i as i64, 0)
                         .unwrap(),

@@ -45,6 +45,7 @@ use sipnab::rtp::heuristic::RtpHeuristic;
 /// Build a UDP `ParsedPacket` carrying `payload` between the given ports.
 fn parsed(payload: Vec<u8>, src_port: u16, dst_port: u16) -> ParsedPacket {
     ParsedPacket {
+        frame_bytes: None,
         frame: None,
         timestamp: Utc::now(),
         src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),

@@ -2035,7 +2035,7 @@ pub fn classify_packet(
                 // Materialise the owned pointer HERE, where the message keeps
                 // it. The parser carries a Copy locator precisely so the ~93%
                 // of frames that never reach a retention site pay no refcount.
-                sip_msg.frame = pp.frame.map(|l| l.to_frame_ref());
+                sip_msg.frame = pp.retained_frame_ref();
                 // The QoS marking rides across the same boundary and for the
                 // same reason: it is a fact about the packet, the parser never
                 // sees a packet, and every consumer downstream sees only the
@@ -2476,6 +2476,7 @@ mod quiet_bad_parse_tests {
     /// `payload`, for driving `classify_packet` without a real capture.
     fn packet(payload: &[u8]) -> ParsedPacket {
         ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: Utc::now(),
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
@@ -2817,6 +2818,7 @@ mod relay_control_tests {
 
         // Then media for that call turns up.
         let parsed = ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: ts,
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
@@ -2911,6 +2913,7 @@ mod relay_control_tests {
         // builds one. Registration alone creates no stream -- a stream is a
         // thing packets made -- so without this there is nothing to serialize.
         let media = |port: u16| ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: ts,
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),

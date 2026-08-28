@@ -238,7 +238,15 @@ fn read_merged(
         );
         packet.origin = Some(crate::capture::packet::FrameOrigin {
             ordinal,
-            digest: Some(crate::capture::packet::frame_digest(&packet.data)),
+            // Not hashed here. The digest verifies a pointer something KEPT,
+            // and ~93% of frames are never pointed at, so hashing on the reader
+            // spends the one serial stage on work nobody can use.
+            // `ParsedPacket::retained_frame_ref` computes it where the pointer
+            // is stored, over the same bytes, to the same FNV-1a value.
+            digest: None,
+            // A capture file can be reopened, so the question a digest answers
+            // is one this source can actually be asked.
+            verifiable: true,
         });
         ordinal += 1;
         *count += 1;
@@ -893,7 +901,12 @@ fn read_opened_inner(
                 // be wrong the moment anything reorders or drops.
                 packet.origin = Some(crate::capture::packet::FrameOrigin {
                     ordinal,
-                    digest: Some(crate::capture::packet::frame_digest(&packet.data)),
+                    // See the note in `read_merged`: hashed at retention, not
+                    // here. The ordinal still must be stamped before the send,
+                    // for the reason above; the digest has no such constraint,
+                    // because the bytes travel with the packet.
+                    digest: None,
+                    verifiable: true,
                 });
                 ordinal += 1;
 

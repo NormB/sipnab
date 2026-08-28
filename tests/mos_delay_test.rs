@@ -282,6 +282,7 @@ fn rtp_packet(ssrc: u32, seq: u16, at: DateTime<Utc>) -> ParsedPacket {
     payload.extend_from_slice(&ssrc.to_be_bytes());
     payload.extend_from_slice(&[0x7F; 160]);
     ParsedPacket {
+        frame_bytes: None,
         frame: None,
         timestamp: at,
         src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),

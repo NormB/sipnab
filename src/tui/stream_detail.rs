@@ -973,6 +973,7 @@ mod tests {
     /// and timestamp, carrying a 172-byte zeroed payload.
     fn parsed(src_port: u16, dst_port: u16, ts: DateTime<Utc>) -> ParsedPacket {
         ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: ts,
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),

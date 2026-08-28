@@ -173,6 +173,7 @@ mod tui_snapshots {
 
             // Stream 1: healthy, linked to dialog
             let parsed1 = sipnab::capture::ParsedPacket {
+                frame_bytes: None,
                 frame: None,
                 timestamp: ts,
                 src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
@@ -212,6 +213,7 @@ mod tui_snapshots {
 
             // Stream 2: orphaned
             let parsed2 = sipnab::capture::ParsedPacket {
+                frame_bytes: None,
                 frame: None,
                 timestamp: ts,
                 src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3)),
@@ -261,6 +263,7 @@ mod tui_snapshots {
     /// the packet-loss-map fixtures rely on to place clustered vs no loss.
     fn push_rtp(store: &mut StreamStore, ssrc: u32, seq: u16, ts: DateTime<Utc>) {
         let parsed = sipnab::capture::ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: ts,
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),

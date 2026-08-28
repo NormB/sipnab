@@ -74,7 +74,7 @@ pub struct PreParsed {
 /// `read_opened_inner` keeps this counter separately from the run-global one
 /// it already threads through for `--count` and the summary line, because
 /// those two answer different questions and only one of them resets per file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy)]
 pub struct FrameOrigin {
     /// 0-based position of this frame within its source.
     pub ordinal: u64,
@@ -90,6 +90,54 @@ pub struct FrameOrigin {
     /// `None` when the run did not compute one. A resolver must then say the
     /// frame is UNVERIFIED rather than implying it checked.
     pub digest: Option<u64>,
+    /// Whether this frame's source can be READ AGAIN, so a digest is worth
+    /// computing for it.
+    ///
+    /// A digest exists to tell "here is your frame" apart from "the capture
+    /// changed under you", which is a question only a re-readable source can be
+    /// asked. A capture file can be reopened; a device or a HEP listener cannot,
+    /// and a pointer into one names bytes that are simply gone.
+    ///
+    /// This carries the READER's answer to the retention site, because that is
+    /// the only place that knows it. It used to be implicit in whether the
+    /// reader had already stamped `digest`: the file readers hashed as they
+    /// read and the live counter left `None`. Moving the hash to retention
+    /// erased that distinction and started stamping live frames, which changed
+    /// a rendered pointer from `eth9#0` to `eth9#0@<hash>` and was caught by
+    /// `a_live_captured_stream_has_a_resolvable_first_frame`. The distinction
+    /// is now written down instead of inferred.
+    pub verifiable: bool,
+}
+
+// `verifiable` is deliberately NOT part of any of these.
+//
+// It describes the SOURCE -- whether those bytes can be read again -- and a
+// pointer's text form has no room to say so: `eth9#0` and `capture.pcap#0`
+// carry an ordinal and an optional digest and nothing else. So a pointer
+// parsed back from text cannot know it, and deriving equality over it made a
+// round-trip compare unequal to itself, which
+// `a_live_captured_stream_has_a_resolvable_first_frame` caught immediately.
+//
+// Two pointers naming the same frame of the same source with the same digest
+// ARE the same pointer, whichever reader happened to mint one of them.
+impl PartialEq for FrameOrigin {
+    fn eq(&self, other: &Self) -> bool {
+        self.ordinal == other.ordinal && self.digest == other.digest
+    }
+}
+
+impl Eq for FrameOrigin {}
+
+impl PartialOrd for FrameOrigin {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for FrameOrigin {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.ordinal, self.digest).cmp(&(other.ordinal, other.digest))
+    }
 }
 
 /// One capture source's own frame counter.
@@ -145,6 +193,10 @@ impl FrameCounter {
         FrameOrigin {
             ordinal,
             digest: None,
+            // A device cannot be rewound. The ordinal still names the frame
+            // within the run; nothing can verify it afterwards, and claiming
+            // otherwise would render a pointer that looks checkable.
+            verifiable: false,
         }
     }
 }
@@ -348,6 +400,9 @@ impl FrameRef {
             origin: FrameOrigin {
                 ordinal,
                 // No digest, and none is possible: a digest exists so a
+                // Read out of a process, never a frame on a wire. There is
+                // nothing to re-read, so there is nothing a digest could check.
+                verifiable: false,
                 // resolver can prove it found the same bytes again, and these
                 // bytes cannot be read a second time.
                 digest: None,
@@ -444,12 +499,27 @@ impl Packet {
     /// an ordinal with no source does not say which file it counts within — so
     /// either alone is unresolvable, and returning it would be the fabrication
     /// this whole mechanism exists to prevent.
+    /// The digest is computed HERE when the source supports one and the reader
+    /// did not already record it.
+    ///
+    /// This is not the accessor inventing provenance, which
+    /// `a_frame_ref_needs_both_halves_or_it_is_not_offered` rightly forbids:
+    /// `verifiable` is the READER's statement that these bytes can be read
+    /// again, and a packet that does not carry it gets no digest here either.
+    /// What changed is only WHEN a verifiable frame is hashed. Hashing every
+    /// frame as it was read spent ~93% of the work on pointers nobody keeps and
+    /// cost 29% of two-core throughput; this method is called when something
+    /// wants an OWNED pointer, which is already the decision to retain one.
     pub fn frame_ref(&self) -> Option<FrameRef> {
         let source = Arc::clone(self.interface.as_ref()?);
+        let mut origin = (self.origin)?;
+        if origin.verifiable && origin.digest.is_none() {
+            origin.digest = Some(frame_digest(&self.data));
+        }
         Some(FrameRef {
             kind: FrameSource::from_source_name(&source),
             source,
-            origin: (self.origin)?,
+            origin,
         })
     }
 
@@ -656,6 +726,7 @@ mod tests {
             link_type: 1,
             pre_parsed: None,
             origin: Some(FrameOrigin {
+                verifiable: false,
                 ordinal: 3,
                 digest: None,
             }),

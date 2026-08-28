@@ -7843,6 +7843,7 @@ mod tests {
         msg.frame = Some(FrameRef {
             source: "calls.pcap".into(),
             origin: FrameOrigin {
+                verifiable: false,
                 ordinal: 41,
                 digest: Some(0x6d1f_4c0a_9b2e_7a53),
             },
@@ -7928,6 +7929,7 @@ mod tests {
         stream.first_frame = Some(FrameRef {
             source: "calls.pcap".into(),
             origin: FrameOrigin {
+                verifiable: false,
                 ordinal: 41,
                 digest: Some(0x6d1f_4c0a_9b2e_7a53),
             },
@@ -8965,6 +8967,7 @@ mod tests {
             payload_offset: 12,
         };
         let parsed = |dst_port: u16| crate::capture::parse::ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: base_ts(),
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
@@ -10430,6 +10433,7 @@ mod tests {
         framed.extend_from_slice(&(sip.len() as u16).to_be_bytes());
         framed.extend_from_slice(sip);
         let pp = crate::capture::parse::ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: chrono::Utc::now(),
             src_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
@@ -11496,6 +11500,7 @@ mod tests {
             msg.frame = Some(FrameRef {
                 source: "calls.pcap".into(),
                 origin: FrameOrigin {
+                    verifiable: false,
                     ordinal,
                     digest: Some(digest),
                 },

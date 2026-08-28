@@ -176,7 +176,14 @@ pub fn parse_pointer(text: &str) -> Result<FrameRef, ResolveError> {
     let ordinal: u64 = ordinal.parse().map_err(|_| malformed())?;
     Ok(FrameRef {
         source: std::sync::Arc::from(source),
-        origin: super::packet::FrameOrigin { ordinal, digest },
+        origin: super::packet::FrameOrigin {
+            ordinal,
+            digest,
+            // A pointer parsed from text names a source someone intends to
+            // resolve; `resolve` refuses a uprobe pointer separately, on the
+            // ground that those bytes were never on a wire.
+            verifiable: true,
+        },
         kind: super::packet::FrameSource::from_source_name(source),
     })
 }
@@ -284,6 +291,7 @@ mod uprobe_origin_tests {
         let wire = FrameRef {
             source: std::sync::Arc::from("capture.pcap"),
             origin: FrameOrigin {
+                verifiable: false,
                 ordinal: 3,
                 digest: None,
             },

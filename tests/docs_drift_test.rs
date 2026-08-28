@@ -2812,6 +2812,12 @@ fn no_documentation_table_repeats_a_row() {
     // measurement: that file carries exactly two table separators and no other
     // page gained one. It is not a published page, so it costs no second entry
     // for a site mirror.
+    // 694 -> 695: closing PERF1. One table, three rows, one per core count
+    // measured (2, 4, 8) with the before and after throughput and the change.
+    // A table because the CLAIM is the SHAPE across core counts -- large at
+    // two, small at four, nothing at eight -- and that shape is what says the
+    // digest was the bottleneck at low core counts rather than something else.
+    // Three prose sentences would state the same numbers and hide the trend.
     // 693 -> 694: closing the wiki-mermaid item in the backlog. One table,
     // three rows, one per virtual-time-budget the headless render was measured
     // at (20 s, 45 s, 120 s) against the ready/failed counts. It is a table
@@ -2829,7 +2835,7 @@ fn no_documentation_table_repeats_a_row() {
     // `docs/vcon-harness.md` and ten in its generated site mirror, counted
     // with `grep -c '^|---'` on each before the number moved. Twenty is the
     // whole delta, and a published page always costs this counter double.
-    const EXPECTED_TABLES: usize = 694;
+    const EXPECTED_TABLES: usize = 695;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

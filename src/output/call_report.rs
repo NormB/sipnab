@@ -845,6 +845,7 @@ mod tests {
         dialog.first_frame = Some(FrameRef {
             source: std::sync::Arc::from("capture.pcap"),
             origin: FrameOrigin {
+                verifiable: false,
                 ordinal: 4212,
                 digest: Some(0x0123_4567_89ab_cdef),
             },

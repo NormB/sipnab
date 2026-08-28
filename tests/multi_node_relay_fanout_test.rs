@@ -120,6 +120,7 @@ fn invite_with_sdp(call_id: &str, relay: Ipv4Addr, port: u16) -> Vec<u8> {
 /// A UDP packet carrying `payload` toward `dst`.
 fn packet(payload: Vec<u8>, src_port: u16, dst: Ipv4Addr, dst_port: u16) -> ParsedPacket {
     ParsedPacket {
+        frame_bytes: None,
         frame: None,
         timestamp: Utc::now(),
         src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),

@@ -50,6 +50,7 @@ fn serialized() -> std::sync::MutexGuard<'static, ()> {
 /// A parsed packet the fragment reassembler will buffer and never release.
 fn incomplete_fragment(ip_id: u32) -> ParsedPacket {
     ParsedPacket {
+        frame_bytes: None,
         frame: None,
         timestamp: chrono::Utc::now(),
         src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
@@ -80,6 +81,7 @@ fn incomplete_fragment(ip_id: u32) -> ParsedPacket {
 /// A parsed TCP packet with a partial SIP message that never completes.
 fn idle_tcp_segment(src_port: u16) -> ParsedPacket {
     ParsedPacket {
+        frame_bytes: None,
         frame: None,
         timestamp: chrono::Utc::now(),
         src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),

@@ -1503,6 +1503,7 @@ mod tests {
     fn push_rtp_stream(ss: &mut crate::rtp::stream_store::StreamStore, i: u16) {
         let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
         let parsed = crate::capture::ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: ts,
             src_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
@@ -1560,6 +1561,7 @@ mod tests {
         for i in 3..6 {
             app.stream_store.clone().write().process_rtp(
                 &crate::capture::ParsedPacket {
+                    frame_bytes: None,
                     frame: None,
                     timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
                     src_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
@@ -2150,6 +2152,7 @@ mod tests {
             let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
             for i in 0..4u16 {
                 let parsed = crate::capture::ParsedPacket {
+                    frame_bytes: None,
                     frame: None,
                     timestamp: ts,
                     src_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),

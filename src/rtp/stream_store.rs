@@ -709,7 +709,7 @@ impl StreamStore {
             // neighbor — a stream with no provenance must say so.
             // STREAM, not per packet -- and now the refcount is paid here
             // too, once per stream, rather than once per parsed frame.
-            stream.first_frame = parsed.frame.map(|l| l.to_frame_ref());
+            stream.first_frame = parsed.retained_frame_ref();
             // Which source carried the media, stamped in the same branch and
             // from the same packet as `first_frame`. Without it a stream can
             // be told which source its DIALOG came from and still not know
@@ -1973,6 +1973,7 @@ mod tests {
 
     fn make_parsed(src_port: u16, dst_port: u16, payload_len: usize) -> ParsedPacket {
         ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: DateTime::from_timestamp(1_700_000_000, 0).expect("valid"),
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
@@ -2546,6 +2547,7 @@ a=rtpmap:96 H264/90000\r\n";
             Some(crate::capture::packet::FrameLocator {
                 source: "calls.pcap",
                 origin: FrameOrigin {
+                    verifiable: false,
                     ordinal,
                     digest: Some(0x0102_0304_0506_0708),
                 },

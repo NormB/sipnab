@@ -227,6 +227,7 @@ fn a_tunnelled_packet_reports_the_inner_marking_not_the_carriers() {
 /// Feed one RTP packet of a stream, marked `dscp`.
 fn push_rtp(store: &mut sipnab::rtp::stream_store::StreamStore, seq: u16, dscp: u8) {
     let parsed = sipnab::capture::ParsedPacket {
+        frame_bytes: None,
         frame: None,
         timestamp: Utc
             .timestamp_opt(1_700_000_000 + i64::from(seq), 0)
@@ -329,6 +330,7 @@ fn a_steady_stream_does_not_claim_it_was_remarked() {
 fn an_unobserved_marking_is_not_reported_as_a_wrong_one() {
     let mut store = sipnab::rtp::stream_store::StreamStore::new(16);
     let parsed = sipnab::capture::ParsedPacket {
+        frame_bytes: None,
         frame: None,
         timestamp: Utc.timestamp_opt(1_700_000_000, 0).single().expect("ts"),
         src_addr: "10.0.0.1".parse().expect("addr"),

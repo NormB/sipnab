@@ -74,6 +74,7 @@ fn make_rtp_parsed(
     payload.extend_from_slice(&[0x7F; 160]);
 
     ParsedPacket {
+        frame_bytes: None,
         frame: None,
         timestamp: DateTime::from_timestamp(1_700_000_000, 0).expect("valid"),
         src_addr: IpAddr::V4(Ipv4Addr::from(src_ip)),

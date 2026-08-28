@@ -40,6 +40,7 @@ fn a_frame_ref_needs_both_halves_or_it_is_not_offered() {
 
     let mut both = base.clone();
     both.origin = Some(FrameOrigin {
+        verifiable: false,
         ordinal: 41,
         digest: None,
     });
@@ -51,6 +52,7 @@ fn a_frame_ref_needs_both_halves_or_it_is_not_offered() {
         FrameRef {
             source: Arc::from("capture.pcap"),
             origin: FrameOrigin {
+                verifiable: false,
                 ordinal: 41,
                 digest: None
             },
@@ -69,6 +71,7 @@ fn a_frame_ref_needs_both_halves_or_it_is_not_offered() {
     let mut ordinal_only = base;
     ordinal_only.interface = None;
     ordinal_only.origin = Some(FrameOrigin {
+        verifiable: false,
         ordinal: 41,
         digest: None,
     });
@@ -86,6 +89,7 @@ fn a_frame_ref_renders_as_source_hash_ordinal() {
     let r = FrameRef {
         source: Arc::from("/captures/tg.pcap0"),
         origin: FrameOrigin {
+            verifiable: false,
             ordinal: 4211,
             digest: None,
         },
@@ -109,12 +113,28 @@ fn the_digest_is_computed_over_the_frame_and_tells_frames_apart() {
     );
     let packets = read_all(&pcap);
 
+    // Read through the POINTER, not the raw origin. Since PERF1 the reader
+    // records the ordinal and leaves the digest to be computed where a pointer
+    // is actually taken -- hashing every frame as it was read spent ~93% of the
+    // work on pointers nobody keeps and cost 29% of two-core throughput. The
+    // invariant that matters is unchanged and is asserted here: a frame read
+    // from a FILE yields a pointer carrying a digest of its own bytes.
+    for (i, p) in packets.iter().enumerate() {
+        assert!(
+            p.origin
+                .expect("a frame read from a file has an origin")
+                .verifiable,
+            "frame {i} came from a capture file, which can be reopened, so it \
+             must be marked verifiable -- otherwise no pointer to it will ever \
+             carry a digest and every one resolves UNVERIFIED"
+        );
+    }
     let digests: Vec<u64> = packets
         .iter()
         .map(|p| {
-            p.origin
-                .and_then(|o| o.digest)
-                .expect("a frame read from a file must carry a digest")
+            p.frame_ref()
+                .and_then(|r| r.origin.digest)
+                .expect("a pointer to a frame read from a file must carry a digest")
         })
         .collect();
 
@@ -534,8 +554,15 @@ fn a_sip_message_carries_a_frame_ref_that_resolves_to_its_own_bytes() {
         // claim and the one the change rests on: the cheap form must round-trip
         // to exactly the pointer the old path built, or every stored pointer
         // shifts meaning.
+        // Compare the two MATERIALISED forms. `to_frame_ref` is the bare
+        // conversion and deliberately hashes nothing; since PERF1 the digest is
+        // computed where a pointer is RETAINED, which is what
+        // `retained_frame_ref` and `Packet::frame_ref` both do. Comparing a
+        // retained pointer against a bare one would only assert that one of
+        // them hashes, which is a fact about this test rather than about the
+        // parse boundary.
         assert_eq!(
-            pp.frame.map(|l| l.to_frame_ref()),
+            pp.retained_frame_ref(),
             pkt.frame_ref(),
             "the parse boundary dropped or altered the frame pointer"
         );

@@ -500,6 +500,7 @@ mod tests {
         data.extend_from_slice(&[0xAA; 160]);
         let rtp = crate::rtp::parser::parse_rtp_header(&data).unwrap();
         let parsed = ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: t0,
             src_addr: addr_a(),

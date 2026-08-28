@@ -202,6 +202,7 @@ fn rtp_packet(
     payload.extend_from_slice(&[0x7F; 160]);
 
     ParsedPacket {
+        frame_bytes: None,
         frame: None,
         timestamp: ts(0),
         src_addr: src,

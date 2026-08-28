@@ -128,6 +128,7 @@ fn parsed_for(ssrc: u32, payload: Vec<u8>) -> ParsedPacket {
     // Vary the 4-tuple per SSRC too, so the StreamKey is genuinely
     // unique (an attacker controls all of it).
     ParsedPacket {
+        frame_bytes: None,
         frame: None,
         timestamp: Utc::now(),
         src_addr: IpAddr::V4(Ipv4Addr::new(

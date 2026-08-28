@@ -762,6 +762,7 @@ mod tests {
     fn pcmu_packet() -> crate::capture::ParsedPacket {
         use std::net::{IpAddr, Ipv4Addr};
         crate::capture::ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid epoch"),
             src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),

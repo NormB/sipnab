@@ -1182,6 +1182,7 @@ mod tests {
         data.extend_from_slice(&[0xAA; 160]); // payload
         let rtp = crate::rtp::parser::parse_rtp_header(&data).expect("rtp header");
         let parsed = ParsedPacket {
+            frame_bytes: None,
             frame: None,
             timestamp: base_ts(),
             src_addr: addr_a(),

@@ -590,6 +590,7 @@ fn the_sdp_ptime_reaches_the_stream_in_both_orderings() {
     let media_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
     let far_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
     let pp = ParsedPacket {
+        frame_bytes: None,
         frame: None,
         timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid"),
         src_addr: media_ip,
