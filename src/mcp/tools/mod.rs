@@ -15,6 +15,8 @@
 //! opens one file rather than searching a large one.
 
 pub mod aggregation;
+pub mod compare;
+pub mod endpoints;
 pub mod expectations;
 pub mod inspect;
 pub mod provenance;

@@ -239,7 +239,9 @@ impl SipnabMcp {
                 + Self::aggregation_router()
                 + Self::expectations_router()
                 + Self::inspect_router()
-                + Self::provenance_router(),
+                + Self::provenance_router()
+                + Self::compare_router()
+                + Self::endpoints_router(),
         }
     }
 
