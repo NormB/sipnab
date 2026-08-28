@@ -19,9 +19,10 @@ use super::FindingSink;
 use super::finding::{
     BRANCH_COOKIE, CONTACT_MISSING_IN_2XX, CONTENT_LENGTH_MISMATCH, CSEQ_MALFORMED,
     CSEQ_METHOD_MISMATCH, HEADER_CONTROL_BYTE, MANDATORY_HEADER_MISSING, MAX_FORWARDS_MISSING,
-    MAX_FORWARDS_RANGE, MIN_SE_TOO_SMALL, REFRESHER_MISSING, RELIABLE_PROVISIONAL_WITHOUT_RSEQ,
-    SESSION_EXPIRES_BELOW_MIN_SE, SESSION_EXPIRES_TOO_SMALL, SESSION_ID_LEGACY_FORM,
-    SESSION_ID_MALFORMED, SESSION_ID_UPPERCASE, URI_BRACKETS, URI_PARAM_DEMOTED,
+    MAX_FORWARDS_RANGE, MIN_SE_TOO_SMALL, RECORD_ROUTE_NOT_LOOSE, REFRESHER_MISSING,
+    RELIABLE_PROVISIONAL_WITHOUT_RSEQ, SESSION_EXPIRES_BELOW_MIN_SE, SESSION_EXPIRES_TOO_SMALL,
+    SESSION_ID_LEGACY_FORM, SESSION_ID_MALFORMED, SESSION_ID_UPPERCASE, SINGULAR_HEADER_REPEATED,
+    URI_BRACKETS, URI_PARAM_DEMOTED, VIA_BRANCH_DUPLICATE,
 };
 
 /// The five header fields RFC 3261 §8.1.1 makes mandatory in every request and
@@ -46,6 +47,45 @@ const BRANCH_MAGIC_COOKIE: &str = "z9hG4bK";
 
 /// The `Max-Forwards` value RFC 3261 §20.22 recommends as the initial one.
 const RECOMMENDED_MAX_FORWARDS: u32 = 70;
+
+/// The header fields RFC 3261 defines with a single value, so a second row of
+/// the same name breaks §7.3.1.
+///
+/// Every entry's ABNF in §25.1 is `header HCOLON <one value>` with no
+/// `*(COMMA ...)` tail, which is the exact test §7.3.1 states. The list is
+/// deliberately short of the full registry: a name whose grammar this comment
+/// cannot vouch for is left out, because a false positive on a header an
+/// operator has never thought about is how a linter loses its reader.
+///
+/// **The four authentication header fields are absent on purpose.** §7.3.1
+/// names `WWW-Authenticate`, `Authorization`, `Proxy-Authenticate` and
+/// `Proxy-Authorization` as its own exception: multiple rows "MAY be present in
+/// a message", they simply may not be joined with commas. Listing them here
+/// would report the RFC's own permitted form as a violation, and a `407` with
+/// two challenges is ordinary traffic.
+const SINGULAR_HEADERS: [&str; 17] = [
+    "Call-ID",
+    "Content-Disposition",
+    "Content-Length",
+    "Content-Type",
+    "CSeq",
+    "Date",
+    "Expires",
+    "From",
+    "Max-Forwards",
+    "MIME-Version",
+    "Min-Expires",
+    "Organization",
+    "Priority",
+    "Reply-To",
+    "Server",
+    "Subject",
+    "To",
+];
+
+/// The loose-routing parameter RFC 3261 §19.1.1 defines and §16.6 item 4
+/// requires in a `Record-Route` URI.
+const LOOSE_ROUTE_PARAM: &str = "lr";
 
 // ── Shared predicates ───────────────────────────────────────────────────
 //
@@ -183,6 +223,161 @@ pub(crate) fn lint(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     dialog_target(msg, index, sink);
     reliable_provisional(msg, index, sink);
     session_identifier(msg, index, sink);
+    singular_headers(msg, index, sink);
+    record_route_loose(msg, index, sink);
+    via_branch_duplicates(msg, index, sink);
+}
+
+/// RFC 3261 §7.3.1 — a single-valued header field gets one row.
+fn singular_headers(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
+    if !sink.wants(&SINGULAR_HEADER_REPEATED) {
+        return;
+    }
+    for name in SINGULAR_HEADERS {
+        let rows = msg.headers_by_name(name).len();
+        if rows < 2 {
+            continue;
+        }
+        sink.push(
+            &SINGULAR_HEADER_REPEATED,
+            index,
+            format!("{rows} {name} header field rows"),
+            format!("one {name} row"),
+            format!(
+                "§7.3.1 permits repeated rows only where the field-value is defined as a \
+                 comma-separated list, and {name} is not. Which row a receiver honors is \
+                 then an implementation choice: parsers that keep the first and parsers \
+                 that keep the last both exist, so two elements reading these same bytes \
+                 disagree about the message — which is the shape every header-smuggling \
+                 attack on a SIP border takes."
+            ),
+        );
+    }
+}
+
+/// The URIs inside one `Record-Route` or `Route` header field row.
+///
+/// A row is a comma-separated list, and each entry is a `name-addr` whose URI
+/// sits inside angle brackets. Extracting the bracketed spans rather than
+/// splitting on commas is what keeps a display name holding a comma from
+/// splitting one route into two: `"Smith, John" <sip:p1.example.com;lr>` is one
+/// entry, and a comma split reads it as two of which neither parses.
+///
+/// A row with no angle brackets at all yields nothing. RFC 3261 §20 requires
+/// the brackets around any URI carrying a semicolon, and every route URI worth
+/// checking carries `lr` — so a bracketless row is a different defect, already
+/// reported by [`URI_BRACKETS`] and not restated here.
+pub(crate) fn bracketed_uris(row: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let bytes = row.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            let start = i + 1;
+            match row[start..].find('>') {
+                Some(offset) => {
+                    out.push(&row[start..start + offset]);
+                    i = start + offset + 1;
+                }
+                // An unterminated `<` cannot be read as a URI at all.
+                None => break,
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Whether a URI's parameter list carries a bare or valued `lr`.
+fn has_loose_route_param(uri: &str) -> bool {
+    uri.split(';')
+        .skip(1)
+        .any(|p| param_name(p).eq_ignore_ascii_case(LOOSE_ROUTE_PARAM))
+}
+
+/// RFC 3261 §16.6 item 4 — a recorded route URI is a loose route.
+fn record_route_loose(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
+    if !sink.wants(&RECORD_ROUTE_NOT_LOOSE) {
+        return;
+    }
+    for row in msg.headers_by_name("Record-Route") {
+        for uri in bracketed_uris(row) {
+            if has_loose_route_param(uri) {
+                continue;
+            }
+            sink.push(
+                &RECORD_ROUTE_NOT_LOOSE,
+                index,
+                format!("Record-Route: <{uri}> carries no lr parameter"),
+                format!("Record-Route: <{uri};{LOOSE_ROUTE_PARAM}>"),
+                "§16.6 item 4 makes the URI a proxy places in Record-Route contain an lr \
+                 parameter. Without it the recorded hop is a STRICT route, and a UA \
+                 building its route set from this response rewrites the Request-URI on \
+                 every in-dialog request to reach it. A route set that mixes the two \
+                 conventions loses the original target at the first strict hop, which is \
+                 why a BYE reaches the proxy and never reaches the phone.",
+            );
+        }
+    }
+}
+
+/// Every `branch` in the message's `Via` stack, in stack order.
+///
+/// One `Via` row may carry several values (§7.3.1 makes `Via` a
+/// comma-separated list), so the rows are split before the branches are read.
+fn via_branches(msg: &SipMessage) -> Vec<&str> {
+    let mut out = Vec::new();
+    for row in msg.via_headers() {
+        for value in row.split(',') {
+            for param in value.split(';').skip(1) {
+                let Some((name, branch)) = param.split_once('=') else {
+                    continue;
+                };
+                if name.trim().eq_ignore_ascii_case("branch") {
+                    let branch = branch.trim();
+                    if !branch.is_empty() {
+                        out.push(branch);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// RFC 3261 §8.1.1.7 — one branch identifies one transaction, once.
+///
+/// Requests only, and for the same reason [`branch_cookie`] is: a response
+/// copies the request's whole `Via` stack (§8.2.6.2), so reporting both would
+/// count one element's defect twice for every message it provoked.
+fn via_branch_duplicates(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
+    if !msg.is_request || !sink.wants(&VIA_BRANCH_DUPLICATE) {
+        return;
+    }
+    let branches = via_branches(msg);
+    let mut reported: Vec<&str> = Vec::new();
+    for (position, branch) in branches.iter().enumerate() {
+        // Only the SECOND appearance is the finding, and each value is
+        // reported once however many times it repeats: a request that looped
+        // five times through one proxy is one loop, not four findings.
+        if !branches[..position].contains(branch) || reported.contains(branch) {
+            continue;
+        }
+        reported.push(branch);
+        sink.push(
+            &VIA_BRANCH_DUPLICATE,
+            index,
+            format!("branch={branch} appears at Via positions with an earlier copy above it"),
+            "one branch value per Via header field value",
+            "§8.1.1.7 makes a branch unique across space and time, and §16.6 item 8 spells \
+             out the consequence: a spiraled or looped request gets a DIFFERENT branch each \
+             time it passes an element. Two identical values in one stack therefore say the \
+             request came back to an element that failed to re-derive it. Loop detection \
+             keys on exactly this comparison, so the loop is running unbounded until \
+             Max-Forwards stops it.",
+        );
+    }
 }
 
 /// Whether this response answers an `INVITE`, by its own `CSeq`.
@@ -1545,6 +1740,232 @@ mod tests {
             !got.iter()
                 .any(|(id, _)| *id == SESSION_ID_MALFORMED.id || *id == SESSION_ID_UPPERCASE.id),
             "{got:?}"
+        );
+    }
+
+    // ── RFC 3261 §7.3.1 — single-valued header fields ───────────────────
+
+    /// A second `To` row is reported, and the count is named.
+    ///
+    /// The count matters because §7.3.1's whole objection is that a receiver
+    /// has to pick, and "2 To header field rows" tells the operator how many
+    /// candidates two elements could disagree about.
+    #[test]
+    fn a_repeated_singular_header_is_reported() {
+        let raw = clean_invite().replace(
+            "CSeq: 314159 INVITE\r\n",
+            "CSeq: 314159 INVITE\r\nTo: <sip:mallory@example.net>\r\n",
+        );
+        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw), 0);
+        let found = findings
+            .iter()
+            .find(|f| f.rule_id == SINGULAR_HEADER_REPEATED.id)
+            .unwrap_or_else(|| panic!("{:?}", ids(&raw)));
+        assert!(found.observed.contains("2 To"), "{}", found.observed);
+    }
+
+    /// A compact row and its long form are two rows of one header field.
+    ///
+    /// The parser expands compact names at parse (RFC 3261 §7.3.3), so `i:`
+    /// beside `Call-ID:` is the same field name twice — and it is the shape a
+    /// header-smuggling attempt takes, because a parser that reads only one
+    /// spelling sees a message with one `Call-ID`.
+    #[test]
+    fn a_compact_row_beside_its_long_form_is_a_repeat() {
+        let raw = clean_invite().replace(
+            "Call-ID: a84b4c76e66710\r\n",
+            "Call-ID: a84b4c76e66710\r\ni: smuggled-call-id\r\n",
+        );
+        assert!(
+            ids(&raw).contains(&SINGULAR_HEADER_REPEATED.id),
+            "{:?}",
+            ids(&raw)
+        );
+    }
+
+    /// Two `Authorization` rows are the exception §7.3.1 writes down, not a
+    /// finding.
+    ///
+    /// This is the mutation that matters for this rule: adding the four
+    /// authentication header fields to `SINGULAR_HEADERS` would report the
+    /// RFC's own permitted form as a violation, and a `407` carrying two
+    /// challenges is ordinary traffic.
+    #[test]
+    fn repeated_authorization_rows_are_the_documented_exception() {
+        let raw = clean_invite().replace(
+            "CSeq: 314159 INVITE\r\n",
+            "CSeq: 314159 INVITE\r\n\
+             Authorization: Digest username=\"alice\", realm=\"a\"\r\n\
+             Authorization: Digest username=\"alice\", realm=\"b\"\r\n",
+        );
+        assert!(
+            !ids(&raw).contains(&SINGULAR_HEADER_REPEATED.id),
+            "{:?}",
+            ids(&raw)
+        );
+    }
+
+    /// Two `Via` rows are the ordinary shape of a forwarded request.
+    #[test]
+    fn repeated_via_rows_are_not_a_singular_header_finding() {
+        let raw = clean_invite().replace(
+            "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds\r\n",
+            "Via: SIP/2.0/UDP 192.0.2.9:5060;branch=z9hG4bKproxy\r\n\
+             Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds\r\n",
+        );
+        assert!(
+            !ids(&raw).contains(&SINGULAR_HEADER_REPEATED.id),
+            "{:?}",
+            ids(&raw)
+        );
+    }
+
+    // ── RFC 3261 §16.6 item 4 — Record-Route is a loose route ───────────
+
+    /// A recorded route with no `lr` is reported.
+    #[test]
+    fn a_strict_record_route_is_reported() {
+        let raw = clean_invite().replace(
+            "Content-Length: 0\r\n",
+            "Record-Route: <sip:p1.example.net>\r\nContent-Length: 0\r\n",
+        );
+        let findings = Linter::new(LintConfig::new()).lint_message(&msg(&raw), 0);
+        let found = findings
+            .iter()
+            .find(|f| f.rule_id == RECORD_ROUTE_NOT_LOOSE.id)
+            .unwrap_or_else(|| panic!("{:?}", ids(&raw)));
+        assert!(found.expected.contains(";lr>"), "{}", found.expected);
+    }
+
+    /// A loose route is silent, and so is the `lr=on` spelling some stacks
+    /// emit.
+    ///
+    /// §19.1.1 defines `lr` as a flag parameter, and equipment that writes it
+    /// with a value is still loose-routing. Reporting that spelling would send
+    /// an operator to change a proxy that is behaving correctly.
+    #[test]
+    fn a_loose_record_route_is_silent() {
+        for uri in ["sip:p1.example.net;lr", "sip:p1.example.net;lr=on"] {
+            let raw = clean_invite().replace(
+                "Content-Length: 0\r\n",
+                &format!("Record-Route: <{uri}>\r\nContent-Length: 0\r\n"),
+            );
+            assert!(
+                !ids(&raw).contains(&RECORD_ROUTE_NOT_LOOSE.id),
+                "{uri}: {:?}",
+                ids(&raw)
+            );
+        }
+    }
+
+    /// A comma inside a display name does not split one route into two.
+    ///
+    /// Splitting the row on commas — the obvious implementation — reads
+    /// `"Smith, John" <sip:p1.example.net;lr>` as two entries of which neither
+    /// carries `lr`, and reports a conformant proxy twice.
+    #[test]
+    fn a_display_name_comma_does_not_split_a_route() {
+        let raw = clean_invite().replace(
+            "Content-Length: 0\r\n",
+            "Record-Route: \"Smith, John\" <sip:p1.example.net;lr>\r\nContent-Length: 0\r\n",
+        );
+        assert!(
+            !ids(&raw).contains(&RECORD_ROUTE_NOT_LOOSE.id),
+            "{:?}",
+            ids(&raw)
+        );
+    }
+
+    /// Two routes on one row are both read, and only the strict one reports.
+    #[test]
+    fn a_multi_value_record_route_row_reports_only_the_strict_hop() {
+        let raw = clean_invite().replace(
+            "Content-Length: 0\r\n",
+            "Record-Route: <sip:p1.example.net;lr>, <sip:p2.example.net>\r\nContent-Length: 0\r\n",
+        );
+        let strict: Vec<String> = Linter::new(LintConfig::new())
+            .lint_message(&msg(&raw), 0)
+            .into_iter()
+            .filter(|f| f.rule_id == RECORD_ROUTE_NOT_LOOSE.id)
+            .map(|f| f.observed)
+            .collect();
+        assert_eq!(strict.len(), 1, "{strict:?}");
+        assert!(strict[0].contains("p2.example.net"), "{strict:?}");
+    }
+
+    // ── RFC 3261 §8.1.1.7 — one branch, once ────────────────────────────
+
+    /// The same branch twice in one Via stack is reported once.
+    ///
+    /// Once, not twice: a request that came round the loop repeatedly is one
+    /// loop, and a finding per repetition would bury every other rule under a
+    /// single defect.
+    #[test]
+    fn a_duplicated_via_branch_is_reported_once() {
+        let raw = clean_invite().replace(
+            "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds\r\n",
+            "Via: SIP/2.0/UDP 192.0.2.9:5060;branch=z9hG4bKloop\r\n\
+             Via: SIP/2.0/UDP 192.0.2.8:5060;branch=z9hG4bKloop\r\n\
+             Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKloop\r\n",
+        );
+        let hits = ids(&raw)
+            .iter()
+            .filter(|id| **id == VIA_BRANCH_DUPLICATE.id)
+            .count();
+        assert_eq!(hits, 1, "{:?}", ids(&raw));
+    }
+
+    /// Distinct branches in a deep Via stack are silent.
+    #[test]
+    fn distinct_via_branches_are_silent() {
+        let raw = clean_invite().replace(
+            "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds\r\n",
+            "Via: SIP/2.0/UDP 192.0.2.9:5060;branch=z9hG4bKtwo\r\n\
+             Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKone\r\n",
+        );
+        assert!(
+            !ids(&raw).contains(&VIA_BRANCH_DUPLICATE.id),
+            "{:?}",
+            ids(&raw)
+        );
+    }
+
+    /// A response carrying the same duplicated stack is not reported.
+    ///
+    /// §8.2.6.2 makes the response copy the request's Via values verbatim, so
+    /// reporting the response would count one element's defect once more for
+    /// every message the loop provoked.
+    #[test]
+    fn a_response_echoing_a_duplicated_stack_is_silent() {
+        let raw = ok_to_invite(&[]).replace(
+            "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds\r\n",
+            "Via: SIP/2.0/UDP 192.0.2.9:5060;branch=z9hG4bKloop\r\n\
+             Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKloop\r\n",
+        );
+        assert!(
+            !ids(&raw).contains(&VIA_BRANCH_DUPLICATE.id),
+            "{:?}",
+            ids(&raw)
+        );
+    }
+
+    /// One row carrying two comma-separated Via values with one branch is
+    /// still a duplicate.
+    ///
+    /// §7.3.1 makes `Via` a comma-separated list, so a stack written on one row
+    /// is the same stack. Reading rows without splitting them is the shape that
+    /// lets a loop hide from this rule.
+    #[test]
+    fn a_comma_separated_via_row_is_read_as_a_stack() {
+        let raw = clean_invite().replace(
+            "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds\r\n",
+            "Via: SIP/2.0/UDP 192.0.2.9:5060;branch=z9hG4bKloop, \
+             SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKloop\r\n",
+        );
+        assert!(
+            ids(&raw).contains(&VIA_BRANCH_DUPLICATE.id),
+            "{:?}",
+            ids(&raw)
         );
     }
 }

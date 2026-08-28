@@ -15,6 +15,9 @@
 //! - `event_exec` — External command hooks for events
 //! - `api` — REST API daemon mode (feature-gated: `api`)
 //! - `prometheus` — Prometheus exposition-format metric data model/formatting
+//! - `redact` — keyed pseudonymization at the serialization boundary
+//!   (feature-gated: available wherever `api`, `mcp` or `vcon` is, which is
+//!   where a container or a response leaves this process)
 //! - `prometheus_server` — standalone `/metrics` HTTP server (feature-gated:
 //!   `metrics`; independent of `api` since it uses raw TCP, no axum/tokio)
 //! - `sink` — buffered stdout sink for batch-mode per-message output
@@ -44,6 +47,8 @@ pub mod persistence;
 pub mod prometheus;
 #[cfg(feature = "metrics")]
 pub mod prometheus_server;
+#[cfg(any(feature = "api", feature = "mcp", feature = "vcon"))]
+pub mod redact;
 pub mod sink;
 pub mod stun_report;
 pub mod synthetic;

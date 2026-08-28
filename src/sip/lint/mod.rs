@@ -110,6 +110,38 @@ impl SuppressionFile {
         })
     }
 
+    /// The suppression list governing a run: the named file, or the
+    /// discovered one, or nothing.
+    ///
+    /// One function so the CLI and the MCP tools cannot drift into two answers
+    /// about the same file on disk. An explicit name wins outright and never
+    /// falls back to discovery — a caller that pointed at a file has stated an
+    /// intent, and a full-catalog run would be read as "my suppressions matched
+    /// nothing" rather than as the failure it is.
+    ///
+    /// `capture_dir` is the directory holding the capture, and only a file
+    /// replay has one: a live interface is not a path, so discovery does not
+    /// run there.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the read error from [`Self::load`], for the named file and
+    /// for a discovered one alike. A discovered file that cannot be read is
+    /// reported rather than skipped: it is on disk, and whoever checked it in
+    /// believes it applies.
+    pub fn resolve(
+        explicit: Option<&str>,
+        capture_dir: Option<&Path>,
+    ) -> std::io::Result<Option<Self>> {
+        if let Some(name) = explicit {
+            return Self::load(name).map(Some);
+        }
+        let Some(found) = capture_dir.and_then(Self::discover) else {
+            return Ok(None);
+        };
+        Self::load(found).map(Some)
+    }
+
     /// Find the `.sipnablint` that governs a capture, or `None`.
     ///
     /// `start` is the directory holding the capture. That directory always
@@ -650,6 +682,22 @@ impl Linter {
         let mut sink = FindingSink::new(&self.config);
         self.run_signalling(dialog, &mut sink);
         sink.finish()
+    }
+
+    /// Run every rule that does not need media against a dialog, keeping the
+    /// counts.
+    ///
+    /// The signaling-only twin of [`Self::lint_dialog_with_media_detailed`],
+    /// and it exists for the surface that needs it most. A CI run reading a
+    /// capture file has no RTP attributed to it on the batch path, so the
+    /// media entry point is the wrong one — and a gate that reports a short
+    /// finding list without saying a `.sipnablint` shortened it is a gate
+    /// reporting green for a reason nobody in the pipeline can see.
+    #[must_use]
+    pub fn lint_dialog_detailed(&self, dialog: &SipDialog) -> LintOutcome {
+        let mut sink = FindingSink::new(&self.config);
+        self.run_signalling(dialog, &mut sink);
+        sink.finish_outcome()
     }
 
     /// Run every rule, including the declaration-versus-observation ones.

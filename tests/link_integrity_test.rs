@@ -635,13 +635,19 @@ fn wiki_intra_docs_links_resolve() {
     // the §6b relay config, which previously told a reader to set up a mirror
     // and never said what reads it. Attributed per file; every other page in
     // this walk held its count.
+    // 503 -> 552 by the PA batch. Twelve tools documented in
+    // docs/mcp-tools.md, each contributing an index-table row that links to its
+    // own section plus the cross-references inside it (the metric tables point
+    // at the DSL and MOS pages, the evidence tools at show_evidence). The rest
+    // are the RFC section citations scripts/rfc-links.py linked in
+    // docs/sip-lint-rules.md for the nine new lint rules.
     // 502 -> 503 by the `timeline` row in the docs/mcp-tools.md index table.
     // One tool, one link: the index entry points at that tool's own section,
     // which is what makes the table an index rather than a list of names.
     // 501 -> 502 by the docs index entry for `vcon-harness.md`. One link, and
     // one is the whole delta: the page's own body links only pages already
     // counted here, so it adds a link TO itself and none that were missing.
-    const EXPECTED_WIKI_LINKS: usize = 503;
+    const EXPECTED_WIKI_LINKS: usize = 552;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

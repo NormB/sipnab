@@ -54,6 +54,7 @@ pub mod config;
 pub mod crash;
 pub mod crypto;
 pub mod error;
+pub mod expect;
 pub mod llmnr;
 pub mod names;
 pub mod net;

@@ -426,6 +426,10 @@ pub fn start_servers(
                 Some(dir) => s.with_file_root(dir),
                 None => s,
             };
+            let s = match cli.mcp_args.mcp_sampling_budget {
+                Some(per_hour) => s.with_sampling_budget(per_hour),
+                None => s,
+            };
             let s = if cli.mcp_args.mcp_allow_shutdown {
                 s.with_shutdown()
             } else {

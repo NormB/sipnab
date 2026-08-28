@@ -58,7 +58,7 @@ For the tools themselves see [MCP tool reference](@/docs/mcp-tools.md).
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 39 carry MCP annotations, so a host
+- **Every tool declares what it does.** All 50 carry MCP annotations, so a host
   can decide what to call without asking. Thirty are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the five that are
   not. Every tool sets `openWorldHint` to `false`, because sipnab answers from
@@ -144,7 +144,7 @@ something the file does not contain.
 
 ## What the write verbs do
 
-Thirty-one of the 39 tools are `readOnlyHint: true`. These seven are not, and
+Forty of the 50 tools are `readOnlyHint: true`. These ten are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 
@@ -157,6 +157,9 @@ confirmation:
 | `shutdown_server` | **true** | true | Ends the run. Gated on `--mcp-allow-shutdown`. |
 | `start_tls_capture` | false | **false** | Attaches uprobes to a TLS library in a running process, so it changes the state of a program that is not sipnab. Needs `CAP_BPF`/root, and each call attaches again. |
 | `stop_tls_capture` | false | true | Detaches them. |
+| `build_evidence_package` | false | **false** | Creates a directory of artifacts under `--mcp-file-root`. Additive, and it refuses a name already on disk rather than overwriting, so a second call with the same name fails instead of replacing evidence someone may already have sent. |
+| `compare_captures` | false | true | Reads two capture files into private stores and drops them. It changes no sipnab state a later answer depends on, but reading through the shared pipeline bumps the process-wide undecodable tallies `get_capture_report` reports, and a tool whose effects stay invisible in its own answer should not call itself read-only. |
+| `generate_repro` | false | true | Writes a SIPp scenario when the caller supplies `filename`, through the same confinement and overwrite refusal as `export_capture`. Without `filename` it returns the scenario and writes nothing to disk. |
 
 Every tool sets `openWorldHint` to `false`, explicitly rather than by
 omission. sipnab answers from the capture it has loaded and contacts no external

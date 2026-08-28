@@ -432,7 +432,13 @@ fn every_catalogued_rule_is_explainable() {
     let mut session = McpSession::start(OPTIONS_PING, &[]);
     // Read out of the library so a rule added later has to appear here too.
     let ids: Vec<&'static str> = sipnab::sip::lint::RULES.iter().map(|r| r.id).collect();
-    assert_eq!(ids.len(), 32, "the catalog size moved: {}", ids.len());
+    // 32 -> 41: PA4 added nine rules — three message-scoped
+    // (SINGULAR-HEADER-REPEATED, RECORD-ROUTE-NOT-LOOSE,
+    // VIA-BRANCH-DUPLICATE) and six dialog-scoped (ACK-BRANCH-MISMATCH,
+    // RECORD-ROUTE-NOT-COPIED, DYNAMIC-PT-REBOUND,
+    // TELEPHONE-EVENT-ONE-WAY, REJECTED-STREAM-ATTRIBUTES,
+    // OPUS-RTPMAP-RATE).
+    assert_eq!(ids.len(), 41, "the catalog size moved: {}", ids.len());
 
     for id in ids {
         let payload = ok_payload(&session.call("explain_rule", serde_json::json!({"rule_id": id})));

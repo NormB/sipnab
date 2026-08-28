@@ -248,8 +248,10 @@ for src_root in ROOTS:
           depth = 0
           exempt_depths = []   # exempt while depth > this
           pending = False       # saw #[cfg(test)], deciding what it annotates
+          _waived_until = None  # last line covered by an #[expect] waiver
           state = _START
-          for i, line in enumerate(open(rel), 1):
+          _lines = open(rel).readlines()
+          for i, line in enumerate(_lines, 1):
               code, state = strip_noncode(line, state)
               stripped = code.strip()
               opens = code.count('{')
@@ -285,6 +287,45 @@ for src_root in ROOTS:
                   exempt_depths.pop()
 
               if exempt:
+                  continue
+              # A REVIEWED waiver: `#[expect(clippy::unwrap_used, reason = ..)]`.
+              #
+              # This is not a second rule loosening the first. `src/lib.rs` and
+              # `src/main.rs` both carry `#![warn(clippy::unwrap_used)]` and
+              # clippy runs with `-D warnings`, so the attribute is checked by
+              # the compiler rather than by convention -- and `expect` (unlike
+              # `allow`) FAILS when the lint stops firing, so a waiver cannot
+              # outlive the code it covers. Without this the text scan and
+              # clippy disagree about one rule, and the only way to satisfy both
+              # is to write something less safe than the literal it guards.
+              #
+              # A reason is mandatory. A bare waiver is the thing nobody reads.
+              if _waived_until is not None and i <= _waived_until:
+                  continue
+              if stripped.startswith('#[expect('):
+                  # The attribute may span lines -- rustfmt breaks it whenever
+                  # the reason string is long, which is most of the time. Read
+                  # the whole attribute before judging it, or the multi-line
+                  # form (the common one) is never recognized and the waiver
+                  # appears to work only where it was needed least.
+                  attr, j = '', i - 1
+                  while j < len(_lines) and ')]' not in attr:
+                      attr += _lines[j]
+                      j += 1
+                  if 'clippy::unwrap_used' not in attr and 'clippy::expect_used' not in attr:
+                      continue
+                  if 'reason' not in attr:
+                      count += 1
+                      print(
+                          f'  {rel}:{i}: #[expect(clippy::unwrap_used)] with no '
+                          f'reason = "..."; a waiver nobody explained',
+                          file=sys.stderr,
+                      )
+                  # Covers the attribute's own multi-line form plus the
+                  # expression it annotates. Bounded deliberately: a waiver that
+                  # swallowed the rest of a function would exempt code nobody
+                  # reviewed.
+                  _waived_until = j + 2
                   continue
               if '.unwrap()' in code or '.expect(' in code:
                   count += 1

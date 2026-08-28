@@ -111,6 +111,22 @@ impl DialogTiming {
         elapsed_ms(self.bye_sent?, self.bye_answered?)
     }
 
+    /// Conversation time: 200 OK to INVITE through to the BYE, in milliseconds.
+    ///
+    /// The interval a carrier bills and the one Average Call Duration averages
+    /// — not the dialog's wall-clock span, which starts at the INVITE and so
+    /// charges the caller for the ringing. A call that was never answered has
+    /// no conversation and reports `None` rather than zero, because zero here
+    /// would drag an average down as if the call had connected and said
+    /// nothing.
+    ///
+    /// `None` also while a call is still up: the BYE has not arrived, so the
+    /// duration is not short, it is unfinished. Same rule for a pair that runs
+    /// backwards, for the reason `elapsed_ms` gives.
+    pub fn conversation_ms(&self) -> Option<i64> {
+        elapsed_ms(self.answered_at?, self.bye_sent?)
+    }
+
     /// Total retransmission count across all transactions in this dialog.
     pub fn total_retransmits(&self) -> u32 {
         self.retransmit_counts.values().sum()

@@ -183,6 +183,8 @@ impl RuleMeta {
 /// silent misclassification would run a rule with too little context.
 const DIALOG_SCOPED: &[&str] = &[
     ACK_CSEQ_MISMATCH.id,
+    ACK_BRANCH_MISMATCH.id,
+    RECORD_ROUTE_NOT_COPIED.id,
     TO_TAG_IN_INITIAL_REQUEST.id,
     PRACK_MISSING.id,
 ];
@@ -426,6 +428,155 @@ pub const CONTACT_MISSING_IN_2XX: RuleMeta = RuleMeta {
     // Without it the caller has no remote target for the dialog, so the ACK
     // and every in-dialog request afterwards have nowhere to go.
     section: "12.1.1",
+};
+
+/// A dialog-establishing response whose `Record-Route` does not reproduce the
+/// request's.
+pub const RECORD_ROUTE_NOT_COPIED: RuleMeta = RuleMeta {
+    id: "SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED",
+    title: "dialog-establishing response does not reproduce the request's Record-Route",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §12.1.1: "the UAS MUST copy all Record-Route header field values from
+    // the request into the response (including the URIs, URI parameters, and
+    // any Record-Route header field parameters, whether they are known or
+    // unknown to the UAS) and MUST maintain the order of those values." The
+    // caller builds its route set from the response (§12.1.2), so a response
+    // that drops or reorders a value sends every in-dialog request past a
+    // proxy that expected to stay in the path.
+    section: "12.1.1",
+};
+
+/// A `Record-Route` URI carrying no `lr` parameter.
+pub const RECORD_ROUTE_NOT_LOOSE: RuleMeta = RuleMeta {
+    id: "SIP-3261-16.6-RECORD-ROUTE-NOT-LOOSE",
+    title: "Record-Route URI without the lr parameter",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §16.6, item 4 (Record-Route): "The URI placed in the Record-Route header
+    // field value MUST be a SIP or SIPS URI. This URI MUST contain an lr
+    // parameter (see Section 19.1.1)." Written lowercase and unquoted in the
+    // document — `an lr parameter`, not `"lr"`.
+    section: "16.6",
+};
+
+/// Two `Via` header field values in one request carrying the same branch.
+pub const VIA_BRANCH_DUPLICATE: RuleMeta = RuleMeta {
+    id: "SIP-3261-8.1.1.7-VIA-BRANCH-DUPLICATE",
+    title: "the same branch appears twice in one Via stack",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §8.1.1.7: "The branch parameter value MUST be unique across space and
+    // time for all requests sent by the UA." §16.6 item 8 carries the
+    // consequence for a proxy: "Note that this implies that the branch
+    // parameter will be different for different instances of a spiraled or
+    // looped request through a proxy." Two identical branches in one stack say
+    // the request passed the same element twice under one transaction key,
+    // which is the loop §16.3 exists to catch.
+    section: "8.1.1.7",
+};
+
+/// A header field defined as single-valued arriving on more than one row.
+pub const SINGULAR_HEADER_REPEATED: RuleMeta = RuleMeta {
+    id: "SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED",
+    title: "single-valued header field present on more than one row",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §7.3.1: "Multiple header field rows with the same field-name MAY be
+    // present in a message if and only if the entire field-value for that
+    // header field is defined as a comma-separated list". The four
+    // authentication header fields are named there as the exception and are
+    // absent from SINGULAR_HEADERS for that reason.
+    section: "7.3.1",
+};
+
+/// An `ACK` to a non-2xx carrying a branch other than its `INVITE`'s.
+pub const ACK_BRANCH_MISMATCH: RuleMeta = RuleMeta {
+    id: "SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH",
+    title: "ACK to a non-2xx does not reuse the INVITE's branch",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §17.1.1.3: "The ACK MUST contain a single Via header field, and this
+    // MUST be equal to the top Via header field of the original request."
+    // Non-2xx ONLY. The same section opens "A UAC core that generates an ACK
+    // for 2xx MUST instead follow the rules described in Section 13", where
+    // the ACK is a new transaction and a new branch is required — so applying
+    // this rule to a 2xx ACK would report the correct behavior as a defect.
+    section: "17.1.1.3",
+};
+
+/// A dynamic payload type rebound to a different codec inside one session.
+pub const DYNAMIC_PT_REBOUND: RuleMeta = RuleMeta {
+    id: "SDP-3264-8.3.2-DYNAMIC-PT-REBOUND",
+    title: "dynamic payload type rebound to a different codec mid-session",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 3264,
+    // §8.3.2: "in the case of RTP, the mapping from a particular dynamic
+    // payload type number to a particular codec within that media stream MUST
+    // NOT change for the duration of a session." Scoped to one media stream by
+    // that sentence's own words, so the rule compares an `m=` line against the
+    // same position in later bodies and never across streams.
+    section: "8.3.2",
+};
+
+/// `telephone-event` offered on an accepted stream and absent from the answer.
+///
+/// Cited to RFC 3264 rather than to RFC 4733, deliberately. RFC 4733 carries no
+/// offer/answer rule at all: §2.5.1.1 says negotiation happens "by out-of-band
+/// means, using SDP, for example", and the document never states what an
+/// omitted `telephone-event` means. The binding statement is RFC 3264's, and it
+/// is a MAY — which is why this reports as interop rather than as a violation.
+pub const TELEPHONE_EVENT_ONE_WAY: RuleMeta = RuleMeta {
+    id: "SDP-3264-7-TELEPHONE-EVENT-ONE-WAY",
+    title: "telephone-event offered and not answered on an accepted stream",
+    severity: Severity::Warning,
+    basis: Basis::Interop,
+    rfc: 3264,
+    // §7: "The offerer MAY immediately cease listening for media formats that
+    // were listed in the initial offer, but not present in the answer." So
+    // nothing is broken and out-of-band DTMF is simply not negotiated — while
+    // the equipment on both sides frequently sends it anyway, which is the
+    // shape of every "DTMF works one way" ticket.
+    section: "7",
+};
+
+/// A stream declined with port zero that still carries its attributes.
+pub const REJECTED_STREAM_ATTRIBUTES: RuleMeta = RuleMeta {
+    id: "SDP-3264-8.2-REJECTED-STREAM-ATTRIBUTES",
+    title: "stream declined with port zero still carries attributes",
+    severity: Severity::Notice,
+    basis: Basis::Interop,
+    rfc: 3264,
+    // NOT §6, which is where this is usually attributed. §6 says only "To
+    // reject an offered stream, the port number in the corresponding stream in
+    // the answer MUST be set to zero. Any media formats listed are ignored."
+    // and says nothing about attributes. The attribute sentence is §8.2:
+    // "The stream description MAY omit all attributes present previously, and
+    // MAY list just a single media format." A MAY, so keeping them is legal —
+    // and `a=crypto` on a stream nobody will use is key material published for
+    // no reason.
+    section: "8.2",
+};
+
+/// `a=rtpmap` naming opus at a clock rate or channel count RFC 7587 forbids.
+pub const OPUS_RTPMAP_RATE: RuleMeta = RuleMeta {
+    id: "SDP-7587-7-OPUS-RTPMAP-RATE",
+    title: "opus rtpmap is not 48000/2",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 7587,
+    // §7, the SDP considerations bullet: "The RTP clock rate in "a=rtpmap"
+    // MUST be 48000, and the number of channels MUST be 2." Cited here and not
+    // to §4.1, which states the same 48 kHz clock as "the RTP timestamp is
+    // incremented with a 48000 Hz clock rate" — true, load-bearing, and not
+    // RFC 2119 language. §7 is the only place the requirement is a MUST.
+    section: "7",
 };
 
 /// A reliable provisional response with no `RSeq`.
@@ -727,7 +878,12 @@ pub const RULES: &[RuleMeta] = &[
     TO_TAG_IN_INITIAL_REQUEST,
     CSEQ_METHOD_MISMATCH,
     ACK_CSEQ_MISMATCH,
+    ACK_BRANCH_MISMATCH,
     CONTACT_MISSING_IN_2XX,
+    RECORD_ROUTE_NOT_COPIED,
+    RECORD_ROUTE_NOT_LOOSE,
+    VIA_BRANCH_DUPLICATE,
+    SINGULAR_HEADER_REPEATED,
     RELIABLE_PROVISIONAL_WITHOUT_RSEQ,
     PRACK_MISSING,
     SESSION_EXPIRES_BELOW_MIN_SE,
@@ -741,6 +897,10 @@ pub const RULES: &[RuleMeta] = &[
     ANSWER_EXTRA_FORMAT,
     ANSWER_DIRECTION_ILLEGAL,
     HOLD_CONNECTION_ZERO,
+    DYNAMIC_PT_REBOUND,
+    TELEPHONE_EVENT_ONE_WAY,
+    REJECTED_STREAM_ATTRIBUTES,
+    OPUS_RTPMAP_RATE,
     PT_UNDECLARED,
     MEDIA_PORT_MISMATCH,
     DIRECTION_UNMET,

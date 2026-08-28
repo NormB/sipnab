@@ -1513,7 +1513,7 @@ fn homepage_mcp_tool_tile_matches_the_server() {
     let idx = read("website/templates/index.html");
     let server = read("src/mcp/server.rs");
 
-    let registered = regex::Regex::new(r#"(?m)^\s+name = "[a-z_]+","#)
+    let registered = regex::Regex::new(r#"(?m)^\s+name = "[a-z0-9_]+","#)
         .unwrap()
         .find_iter(&server)
         .count();

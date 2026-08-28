@@ -15,13 +15,16 @@
 //! offer it answers.
 
 use crate::sip::dialog::SipDialog;
+use crate::sip::message::SipMessage;
 use crate::sip::method::SipMethod;
 use crate::sip::sdp::{SdpDirection, SdpMedia, SdpSession, effective_address};
 
 use super::FindingSink;
 use super::finding::{
-    ACK_CSEQ_MISMATCH, ANSWER_DIRECTION_ILLEGAL, ANSWER_EXTRA_FORMAT, ANSWER_NO_COMMON_FORMAT,
-    HOLD_CONNECTION_ZERO, PRACK_MISSING, TO_TAG_IN_INITIAL_REQUEST,
+    ACK_BRANCH_MISMATCH, ACK_CSEQ_MISMATCH, ANSWER_DIRECTION_ILLEGAL, ANSWER_EXTRA_FORMAT,
+    ANSWER_NO_COMMON_FORMAT, DYNAMIC_PT_REBOUND, HOLD_CONNECTION_ZERO, OPUS_RTPMAP_RATE,
+    PRACK_MISSING, RECORD_ROUTE_NOT_COPIED, REJECTED_STREAM_ATTRIBUTES, TELEPHONE_EVENT_ONE_WAY,
+    TO_TAG_IN_INITIAL_REQUEST,
 };
 
 /// The unspecified IPv4 address RFC 2543 used to signal hold.
@@ -104,14 +107,164 @@ fn paired_media(pair: &OfferAnswer) -> impl Iterator<Item = (usize, &SdpMedia, &
 pub(crate) fn lint(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
     to_tag_in_initial_request(dialog, sink);
     ack_cseq(dialog, sink);
+    ack_branch(dialog, sink);
+    record_route_copied(dialog, sink);
 
     let pairs = offer_answer_pairs(dialog);
     for pair in &pairs {
         answer_formats(pair, sink);
         answer_direction(pair, sink);
+        telephone_event_unanswered(pair, sink);
+        rejected_stream_attributes(pair, sink);
     }
     hold_with_unspecified_address(dialog, sink);
     prack_for_reliable_provisionals(dialog, sink);
+    dynamic_payload_types(dialog, sink);
+    opus_rtpmap(dialog, sink);
+}
+
+/// RFC 3261 §17.1.1.3 — an `ACK` to a non-2xx stays on the `INVITE`'s branch.
+///
+/// # Why the 2xx case is excluded rather than merely uninteresting
+///
+/// §17.1.1.3 opens "A UAC core that generates an ACK for 2xx MUST instead
+/// follow the rules described in Section 13". An ACK to a 2xx is a NEW
+/// transaction and §8.1.1.7 makes it carry a NEW branch, so a rule that read
+/// every ACK would report the correct behavior as a violation on every
+/// successful call in every capture — the single largest false-positive source
+/// available in SIP.
+///
+/// So the rule reports only where the capture proved the response was non-2xx:
+/// a final response to this `INVITE`, matched by CSeq number, with a status
+/// below 200 or at 300 and above. An ACK whose INVITE the capture never carried
+/// settles nothing and is skipped.
+fn ack_branch(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
+    if !sink.wants(&ACK_BRANCH_MISMATCH) {
+        return;
+    }
+
+    for (index, ack) in dialog.messages.iter().enumerate() {
+        if !ack.is_request || ack.method.as_ref() != Some(&SipMethod::Ack) {
+            continue;
+        }
+        let (Some((seq, _)), Some(ack_branch)) = (ack.cseq(), ack.top_via_branch()) else {
+            continue;
+        };
+
+        // The final answer to this INVITE, if the capture holds one. A 2xx
+        // takes the ACK off this rule entirely.
+        let non_2xx = dialog.messages.iter().any(|m| {
+            !m.is_request
+                && m.cseq()
+                    .is_some_and(|(s, method)| s == seq && method.eq_ignore_ascii_case("INVITE"))
+                && m.status_code.is_some_and(|c| (300..700).contains(&c))
+        });
+        if !non_2xx {
+            continue;
+        }
+
+        let Some(invite_branch) = dialog
+            .messages
+            .iter()
+            .find(|m| {
+                m.is_request
+                    && m.method.as_ref() == Some(&SipMethod::Invite)
+                    && m.cseq().is_some_and(|(s, _)| s == seq)
+            })
+            .and_then(|m| m.top_via_branch())
+        else {
+            continue;
+        };
+
+        if ack_branch == invite_branch {
+            continue;
+        }
+        sink.push(
+            &ACK_BRANCH_MISMATCH,
+            index,
+            format!("ACK branch={ack_branch}, INVITE branch={invite_branch}"),
+            format!("ACK branch={invite_branch}"),
+            "§17.1.1.3 makes the ACK to a non-2xx carry a single Via equal to the top Via \
+             of the INVITE, so it reuses that branch and completes the same transaction \
+             hop by hop. On a new branch it is a new transaction to every element in the \
+             path: the INVITE server transaction never absorbs it, retransmits its final \
+             response until Timer H, and the stray ACK arrives at a proxy that has no \
+             matching transaction for it.",
+        );
+    }
+}
+
+/// RFC 3261 §12.1.1 — a dialog-establishing response reproduces the request's
+/// `Record-Route`, in order.
+///
+/// # What this compares, and what it deliberately does not
+///
+/// The request half is the dialog-forming request the capture holds; the
+/// response half is the 2xx that establishes the dialog. Both are read as
+/// ordered lists of bracketed URIs, and the comparison is on the URIs alone.
+///
+/// A capture is a window: an element that inserts a `Record-Route` on the way
+/// out sees a request WITHOUT it, and the response comes back WITH it. That
+/// asymmetry is ordinary at any point that is not the UAS, so a rule reporting
+/// "the response has more than the request" would fire on every proxy-side
+/// capture in existence. Only the other direction is reported — a value the
+/// request carried and the response dropped, or one whose position moved —
+/// because that is what §12.1.1's copy-and-maintain-order sentence forbids and
+/// what breaks the caller's route set.
+fn record_route_copied(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
+    if !sink.wants(&RECORD_ROUTE_NOT_COPIED) {
+        return;
+    }
+    let Some(request) = dialog.messages.first().filter(|m| m.is_request) else {
+        return;
+    };
+    let asked = record_route_uris(request);
+    if asked.is_empty() {
+        return;
+    }
+    let Some((seq, _)) = request.cseq() else {
+        return;
+    };
+
+    for (index, response) in dialog.messages.iter().enumerate().skip(1) {
+        if response.is_request
+            || !response
+                .status_code
+                .is_some_and(|c| (200..300).contains(&c))
+            || !response.cseq().is_some_and(|(s, _)| s == seq)
+        {
+            continue;
+        }
+        let echoed = record_route_uris(response);
+        // A prefix comparison, not equality: extra values ABOVE the ones the
+        // request carried are the ordinary shape of a capture taken before the
+        // last recording proxy, and only a dropped or reordered value is the
+        // defect §12.1.1 names.
+        if echoed.len() >= asked.len() && echoed[echoed.len() - asked.len()..] == asked[..] {
+            continue;
+        }
+        sink.push(
+            &RECORD_ROUTE_NOT_COPIED,
+            index,
+            format!("request recorded {asked:?}, the 2xx returned {echoed:?}"),
+            format!("the 2xx ending with {asked:?}, in that order"),
+            "§12.1.1 makes the UAS copy every Record-Route value from the request into the \
+             response and keep their order. §12.1.2 then has the caller build its route set \
+             from the response, in reverse — so a value dropped here is a proxy removed from \
+             the path it recorded itself into, and a value reordered sends the BYE through \
+             the hops backwards. Both fail after the call is up, which is why they are read \
+             as a network fault rather than a signaling one.",
+        );
+    }
+}
+
+/// Every bracketed `Record-Route` URI in a message, in header order.
+fn record_route_uris(msg: &SipMessage) -> Vec<String> {
+    msg.headers_by_name("Record-Route")
+        .iter()
+        .flat_map(|row| super::message::bracketed_uris(row))
+        .map(str::to_string)
+        .collect()
 }
 
 /// RFC 3262 §4 — a reliable provisional has to draw a `PRACK`.
@@ -457,6 +610,279 @@ fn hold_with_unspecified_address(dialog: &SipDialog, sink: &mut FindingSink<'_>)
                  form, and breaks connection-oriented media. Equipment that reads only the \
                  direction attributes sees no hold at all and keeps sending.",
             );
+        }
+    }
+}
+
+/// The `a=rtpmap` encoding name RFC 4733 registers for named telephone events.
+const TELEPHONE_EVENT: &str = "telephone-event";
+
+/// Whether a media description declares `telephone-event` in its `a=rtpmap`.
+fn declares_telephone_event(media: &SdpMedia) -> bool {
+    media
+        .rtpmap
+        .iter()
+        .any(|m| m.encoding.eq_ignore_ascii_case(TELEPHONE_EVENT))
+}
+
+/// RFC 3264 §7 — an offered format the answer omits is not negotiated.
+///
+/// Restricted to `telephone-event` on an accepted audio stream, because that is
+/// the one omission whose consequence is invisible until somebody presses a
+/// key. Every other missing format shows up as a codec that does not work; DTMF
+/// shows up as an IVR that ignores the caller.
+///
+/// # Why this is not a MUST, and why it is not RFC 4733
+///
+/// RFC 4733 states no offer/answer rule at all — §2.5.1.1 says negotiation
+/// happens "by out-of-band means, using SDP, for example" and stops there. The
+/// binding text is RFC 3264 §7, and it is a MAY: the offerer *may* cease
+/// listening for a format the answer omitted. So nothing here breaks, and the
+/// interop failure is real anyway, because plenty of equipment sends
+/// `telephone-event` on the payload type it offered regardless of the answer.
+///
+/// The stream has to be accepted (port non-zero) and share an audio format:
+/// a declined stream negotiated nothing, and a stream with no common format is
+/// already [`ANSWER_NO_COMMON_FORMAT`]'s finding and would be reported twice.
+fn telephone_event_unanswered(pair: &OfferAnswer, sink: &mut FindingSink<'_>) {
+    if !sink.wants(&TELEPHONE_EVENT_ONE_WAY) {
+        return;
+    }
+    for (m_index, offer, answer) in paired_media(pair) {
+        if answer.port == 0
+            || !offer.media_type.eq_ignore_ascii_case("audio")
+            || !declares_telephone_event(offer)
+            || declares_telephone_event(answer)
+            || !answer.formats.iter().any(|f| offer.formats.contains(f))
+        {
+            continue;
+        }
+        sink.push(
+            &TELEPHONE_EVENT_ONE_WAY,
+            pair.answer.index,
+            format!(
+                "m={} line {m_index} offered telephone-event, the answer omits it",
+                offer.media_type
+            ),
+            "a=rtpmap:<pt> telephone-event/8000 in the answer, or in-band DTMF on both sides",
+            "§7 lets the offerer stop listening for a format the answer left out, so RFC 4733 \
+             DTMF is not negotiated on this stream. What makes it a one-way fault rather than \
+             no DTMF at all is that equipment routinely sends the event anyway on the payload \
+             type it offered: the far end receives a payload type it never agreed to and \
+             either drops it or decodes it as audio, while DTMF in the other direction works. \
+             That asymmetry is the whole of every \"the IVR cannot hear our digits\" ticket.",
+        );
+    }
+}
+
+/// The attribute names a declined stream is still carrying.
+///
+/// Read off the parsed description rather than the raw body, so this reports
+/// only attributes sipnab actually understood. An attribute the parser drops
+/// cannot be named here, and claiming a count the parser cannot back would be
+/// worse than reporting the ones it can.
+fn retained_attributes(media: &SdpMedia) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if !media.rtpmap.is_empty() {
+        out.push("a=rtpmap");
+    }
+    if !media.fmtp.is_empty() {
+        out.push("a=fmtp");
+    }
+    if !media.crypto.is_empty() {
+        out.push("a=crypto");
+    }
+    if !media.ice_candidates.is_empty() {
+        out.push("a=candidate");
+    }
+    if media.ptime.is_some() {
+        out.push("a=ptime");
+    }
+    if media.rtcp_mux {
+        out.push("a=rtcp-mux");
+    }
+    if media.rtcp_port.is_some() {
+        out.push("a=rtcp");
+    }
+    out
+}
+
+/// RFC 3264 §8.2 — a stream declined with port zero may drop its attributes.
+///
+/// Reported at notice and as interop because §8.2 is a MAY in both directions:
+/// "the answer MAY omit all attributes present previously, and MAY list just a
+/// single media format". Keeping them is legal. What makes it worth a line is
+/// the `a=crypto` case — SRTP key material published for a stream neither side
+/// will ever use — and equipment that reads the attributes of a port-zero
+/// stream and allocates for it anyway.
+///
+/// The offer half is not reported. An offer at port zero is §8.2's own
+/// mechanism for removing an existing stream, so its attributes are what the
+/// stream had; only the answer is the place §8.2 addresses.
+fn rejected_stream_attributes(pair: &OfferAnswer, sink: &mut FindingSink<'_>) {
+    if !sink.wants(&REJECTED_STREAM_ATTRIBUTES) {
+        return;
+    }
+    for (m_index, offer, answer) in paired_media(pair) {
+        // A stream the OFFER already removed was not declined by this answer.
+        if answer.port != 0 || offer.port == 0 {
+            continue;
+        }
+        let retained = retained_attributes(answer);
+        if retained.is_empty() {
+            continue;
+        }
+        sink.push(
+            &REJECTED_STREAM_ATTRIBUTES,
+            pair.answer.index,
+            format!(
+                "m={} line {m_index} declined with port 0 still carries {}",
+                answer.media_type,
+                retained.join(", ")
+            ),
+            format!("m={} 0 {} <one format>", answer.media_type, answer.proto),
+            "§8.2 lets a stream at port zero omit every attribute it previously carried, and \
+             a declined stream has no use for any of them. An a=crypto line here is SRTP key \
+             material published for a stream that will never carry a packet, and equipment \
+             that reads attributes before it reads the port allocates a relay leg and a \
+             transcoder for a stream nobody answered.",
+        );
+    }
+}
+
+/// The dynamic RTP payload types, RFC 3551 §6: 96 through 127.
+const DYNAMIC_PT_RANGE: std::ops::RangeInclusive<u8> = 96..=127;
+
+/// RFC 3264 §8.3.2 — a dynamic payload type keeps its codec for the session.
+///
+/// # Why the binding is tracked per media stream and not per session
+///
+/// §8.3.2 scopes it in its own words: "the mapping from a particular dynamic
+/// payload type number to a particular codec **within that media stream** MUST
+/// NOT change for the duration of a session". A call whose audio `m=` line uses
+/// 96 for `opus` and whose video `m=` line uses 96 for `H264` breaks nothing,
+/// and a session-wide table would report every such call. The key here is
+/// therefore the `m=` line's position, which is also how RFC 3264 §6 pairs
+/// offers with answers.
+fn dynamic_payload_types(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
+    if !sink.wants(&DYNAMIC_PT_REBOUND) {
+        return;
+    }
+    // (stream position, payload type) -> the encoding that claimed it first,
+    // and the message index that did the claiming.
+    let mut bound: Vec<((usize, u8), (String, usize))> = Vec::new();
+
+    for (index, msg) in dialog.messages.iter().enumerate() {
+        let Some(sdp) = msg.sdp() else {
+            continue;
+        };
+        for (m_index, media) in sdp.media.iter().enumerate() {
+            for map in &media.rtpmap {
+                if !DYNAMIC_PT_RANGE.contains(&map.payload_type) {
+                    continue;
+                }
+                let key = (m_index, map.payload_type);
+                match bound.iter().find(|(k, _)| *k == key) {
+                    None => bound.push((key, (map.encoding.clone(), index))),
+                    Some((_, (first, first_index))) => {
+                        if first.eq_ignore_ascii_case(&map.encoding) {
+                            continue;
+                        }
+                        sink.push(
+                            &DYNAMIC_PT_REBOUND,
+                            index,
+                            format!(
+                                "m= line {m_index} bound payload type {} to {first} in message \
+                                 {first_index} and to {} here",
+                                map.payload_type, map.encoding
+                            ),
+                            format!(
+                                "payload type {} still meaning {first}, or a different number \
+                                 for {}",
+                                map.payload_type, map.encoding
+                            ),
+                            "§8.3.2 fixes a dynamic payload type to one codec for the whole \
+                             session, and says why: SDP and the media stream are only loosely \
+                             synchronized, so packets encoded under the old mapping are still \
+                             in flight when the new one arrives. The receiver decodes them \
+                             with the wrong codec, which is heard as a burst of noise at the \
+                             moment of the re-INVITE. §8.3.2 permits a second number for the \
+                             same codec, which is the correct way to do this.",
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The clock rate RFC 7587 §7 requires in an opus `a=rtpmap`.
+const OPUS_CLOCK_RATE: u32 = 48000;
+
+/// The channel count RFC 7587 §7 requires in an opus `a=rtpmap`.
+const OPUS_CHANNELS: u32 = 2;
+
+/// The `a=rtpmap` encoding name RFC 7587 registers.
+const OPUS_ENCODING: &str = "opus";
+
+/// RFC 7587 §7 — an opus `a=rtpmap` reads `opus/48000/2`, always.
+///
+/// # Why the clock rate is a signaling rule here and not an observation
+///
+/// RFC 7587 §4.1 states the wire fact — "The RTP timestamp is incremented with
+/// a 48000 Hz clock rate for all modes of Opus and all sampling rates" — and it
+/// is deliberately not the citation. §4.1 is not RFC 2119 language, and §7's
+/// SDP bullet is: "The RTP clock rate in "a=rtpmap" MUST be 48000, and the
+/// number of channels MUST be 2."
+///
+/// The observation half of this defect — opus negotiated while the wire carries
+/// 160-octet packets at an 8 kHz cadence — is **not** implemented, and the
+/// reason is that it cannot be decided from what a stream records. 160 octets
+/// per 20 ms is 64 kbit/s, which is exactly G.711 and is also a legal Opus CBR
+/// configuration; separating them needs the RTP timestamp cadence, and the
+/// stream store keeps a last timestamp and no first one, so no clock rate can
+/// be derived from it. A rule that reported legal Opus CBR as a defect would be
+/// switched off in week one, and this one is decidable from the SDP alone.
+///
+/// A channel count RFC 4566 §6 makes default to one is a violation as much as
+/// an explicit `/1` is: `opus/48000` and `opus/48000/1` are the same
+/// declaration, and §7's MUST admits neither.
+fn opus_rtpmap(dialog: &SipDialog, sink: &mut FindingSink<'_>) {
+    if !sink.wants(&OPUS_RTPMAP_RATE) {
+        return;
+    }
+    for (index, msg) in dialog.messages.iter().enumerate() {
+        let Some(sdp) = msg.sdp() else {
+            continue;
+        };
+        for (m_index, media) in sdp.media.iter().enumerate() {
+            for map in &media.rtpmap {
+                if !map.encoding.eq_ignore_ascii_case(OPUS_ENCODING) {
+                    continue;
+                }
+                let channels = map.channels.unwrap_or(1);
+                if map.clock_rate == OPUS_CLOCK_RATE && channels == OPUS_CHANNELS {
+                    continue;
+                }
+                sink.push(
+                    &OPUS_RTPMAP_RATE,
+                    index,
+                    format!(
+                        "m= line {m_index} declares opus/{}/{channels} on payload type {}",
+                        map.clock_rate, map.payload_type
+                    ),
+                    format!("opus/{OPUS_CLOCK_RATE}/{OPUS_CHANNELS}"),
+                    "§7 makes the rtpmap clock rate 48000 and the channel count 2 whatever \
+                     the encoder is actually doing, because §4.1 increments the RTP timestamp \
+                     at 48 kHz for every Opus mode and every sampling rate. A peer that \
+                     believes the declared 8000 computes packet durations six times short: \
+                     the jitter buffer sizes itself for a stream that does not exist, and \
+                     every RTCP interarrival figure derived from it is wrong by the same \
+                     factor. Signal the narrower band with maxplaybackrate in a=fmtp, which \
+                     is what RFC 7587's own 16 kHz example does while still writing \
+                     opus/48000/2.",
+                );
+            }
         }
     }
 }
@@ -1028,5 +1454,374 @@ mod tests {
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].offer.index, 1, "the 2xx carried the delayed offer");
         assert_eq!(pairs[0].answer.index, 2);
+    }
+
+    // ── RFC 3261 §17.1.1.3 — the non-2xx ACK stays on the branch ────────
+
+    /// A final non-2xx response with an explicit status.
+    fn final_failure(cseq: u32, code: u16) -> String {
+        format!(
+            "SIP/2.0 {code} Busy Here\r\n\
+             Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK{cseq}\r\n\
+             To: <sip:bob@example.net>;tag=a6c85cf\r\n\
+             From: <sip:alice@example.com>;tag=1928301774\r\n\
+             Call-ID: lint-fixture-1\r\n\
+             CSeq: {cseq} INVITE\r\n\
+             Content-Length: 0\r\n\
+             \r\n"
+        )
+    }
+
+    /// An ACK carrying a chosen branch.
+    fn ack_on_branch(cseq: u32, branch: &str) -> String {
+        format!(
+            "ACK sip:bob@example.net SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 192.0.2.1:5060;branch={branch}\r\n\
+             Max-Forwards: 70\r\n\
+             To: <sip:bob@example.net>;tag=a6c85cf\r\n\
+             From: <sip:alice@example.com>;tag=1928301774\r\n\
+             Call-ID: lint-fixture-1\r\n\
+             CSeq: {cseq} ACK\r\n\
+             Content-Length: 0\r\n\
+             \r\n"
+        )
+    }
+
+    /// An ACK to a 486 on a fresh branch is reported.
+    #[test]
+    fn an_ack_to_a_non_2xx_on_a_new_branch_is_reported() {
+        let got = ids(&[
+            &invite(1, "", ""),
+            &final_failure(1, 486),
+            &ack_on_branch(1, "z9hG4bKfresh"),
+        ]);
+        assert!(got.contains(&ACK_BRANCH_MISMATCH.id), "{got:?}");
+    }
+
+    /// An ACK to a 486 reusing the INVITE's branch is silent.
+    #[test]
+    fn an_ack_to_a_non_2xx_on_the_invite_branch_is_silent() {
+        let got = ids(&[
+            &invite(1, "", ""),
+            &final_failure(1, 486),
+            &ack_on_branch(1, "z9hG4bK1"),
+        ]);
+        assert!(!got.contains(&ACK_BRANCH_MISMATCH.id), "{got:?}");
+    }
+
+    /// An ACK to a 2xx on a NEW branch is correct and must stay silent.
+    ///
+    /// This is the mutation that matters. §17.1.1.3 opens by sending the 2xx
+    /// case to §13, where the ACK is its own transaction and §8.1.1.7 requires
+    /// a new branch — so dropping the non-2xx guard would report the correct
+    /// behavior on every answered call in every capture.
+    #[test]
+    fn an_ack_to_a_2xx_on_a_new_branch_is_silent() {
+        let got = ids(&[
+            &invite(1, "", ""),
+            &ok(1, "INVITE", ""),
+            &ack_on_branch(1, "z9hG4bKbrandnew"),
+        ]);
+        assert!(!got.contains(&ACK_BRANCH_MISMATCH.id), "{got:?}");
+    }
+
+    // ── RFC 3261 §12.1.1 — the response reproduces Record-Route ─────────
+
+    /// Splice header lines into a message just above its `Content-Length`.
+    fn with_headers(raw: &str, lines: &[&str]) -> String {
+        let mut extra = String::new();
+        for line in lines {
+            extra.push_str(line);
+            extra.push_str("\r\n");
+        }
+        raw.replacen("Content-Length:", &format!("{extra}Content-Length:"), 1)
+    }
+
+    /// A 2xx that drops a recorded route is reported.
+    #[test]
+    fn a_2xx_dropping_a_record_route_is_reported() {
+        let request = with_headers(
+            &invite(1, "", ""),
+            &[
+                "Record-Route: <sip:p2.example.net;lr>",
+                "Record-Route: <sip:p1.example.net;lr>",
+            ],
+        );
+        let response = with_headers(
+            &ok(1, "INVITE", ""),
+            &["Record-Route: <sip:p1.example.net;lr>"],
+        );
+        let got = ids(&[&request, &response, &ack(1)]);
+        assert!(got.contains(&RECORD_ROUTE_NOT_COPIED.id), "{got:?}");
+    }
+
+    /// A 2xx that reverses the order is reported.
+    ///
+    /// §12.1.1 makes the UAS "maintain the order of those values", and §12.1.2
+    /// has the caller read the response's list in reverse — so a reversal
+    /// silently sends every in-dialog request through the path backwards.
+    #[test]
+    fn a_2xx_reordering_the_record_route_is_reported() {
+        let routes = [
+            "Record-Route: <sip:p2.example.net;lr>",
+            "Record-Route: <sip:p1.example.net;lr>",
+        ];
+        let request = with_headers(&invite(1, "", ""), &routes);
+        let response = with_headers(&ok(1, "INVITE", ""), &[routes[1], routes[0]]);
+        let got = ids(&[&request, &response, &ack(1)]);
+        assert!(got.contains(&RECORD_ROUTE_NOT_COPIED.id), "{got:?}");
+    }
+
+    /// A 2xx reproducing the list exactly is silent.
+    #[test]
+    fn a_2xx_copying_the_record_route_is_silent() {
+        let routes = [
+            "Record-Route: <sip:p2.example.net;lr>",
+            "Record-Route: <sip:p1.example.net;lr>",
+        ];
+        let request = with_headers(&invite(1, "", ""), &routes);
+        let response = with_headers(&ok(1, "INVITE", ""), &routes);
+        let got = ids(&[&request, &response, &ack(1)]);
+        assert!(!got.contains(&RECORD_ROUTE_NOT_COPIED.id), "{got:?}");
+    }
+
+    /// A 2xx carrying MORE routes than the request is silent.
+    ///
+    /// A capture taken before the last recording proxy sees the request
+    /// without that proxy's own value and the response with it. That asymmetry
+    /// is ordinary at every point that is not the UAS, so a rule comparing for
+    /// equality would fire on most proxy-side captures in existence.
+    #[test]
+    fn a_2xx_carrying_an_extra_record_route_above_the_request_is_silent() {
+        let request = with_headers(
+            &invite(1, "", ""),
+            &["Record-Route: <sip:p1.example.net;lr>"],
+        );
+        let response = with_headers(
+            &ok(1, "INVITE", ""),
+            &[
+                "Record-Route: <sip:p2.example.net;lr>",
+                "Record-Route: <sip:p1.example.net;lr>",
+            ],
+        );
+        let got = ids(&[&request, &response, &ack(1)]);
+        assert!(!got.contains(&RECORD_ROUTE_NOT_COPIED.id), "{got:?}");
+    }
+
+    /// A dialog whose request recorded nothing is silent whatever the response
+    /// says.
+    #[test]
+    fn a_dialog_with_no_recorded_route_is_silent() {
+        let got = ids(&[&invite(1, "", ""), &ok(1, "INVITE", ""), &ack(1)]);
+        assert!(!got.contains(&RECORD_ROUTE_NOT_COPIED.id), "{got:?}");
+    }
+
+    // ── RFC 3264 — the SDP rules ────────────────────────────────────────
+
+    /// An SDP body with an explicit `m=` line and attribute block.
+    fn sdp_with(port: u16, formats: &str, attrs: &[&str]) -> String {
+        let mut out = format!(
+            "v=0\r\n\
+             o=- 1 1 IN IP4 192.0.2.1\r\n\
+             s=-\r\n\
+             c=IN IP4 192.0.2.1\r\n\
+             t=0 0\r\n\
+             m=audio {port} RTP/AVP {formats}\r\n"
+        );
+        for a in attrs {
+            out.push_str("a=");
+            out.push_str(a);
+            out.push_str("\r\n");
+        }
+        out
+    }
+
+    /// An offer declaring telephone-event that the answer omits is reported.
+    #[test]
+    fn telephone_event_dropped_by_the_answer_is_reported() {
+        let offer = sdp_with(
+            10000,
+            "0 101",
+            &["rtpmap:0 PCMU/8000", "rtpmap:101 telephone-event/8000"],
+        );
+        let answer = sdp_with(20000, "0", &["rtpmap:0 PCMU/8000"]);
+        let got = ids(&[&invite(1, "", &offer), &ok(1, "INVITE", &answer), &ack(1)]);
+        assert!(got.contains(&TELEPHONE_EVENT_ONE_WAY.id), "{got:?}");
+    }
+
+    /// An answer that keeps telephone-event is silent.
+    #[test]
+    fn telephone_event_answered_is_silent() {
+        let body = sdp_with(
+            10000,
+            "0 101",
+            &["rtpmap:0 PCMU/8000", "rtpmap:101 telephone-event/8000"],
+        );
+        let got = ids(&[&invite(1, "", &body), &ok(1, "INVITE", &body), &ack(1)]);
+        assert!(!got.contains(&TELEPHONE_EVENT_ONE_WAY.id), "{got:?}");
+    }
+
+    /// A stream the answer declined negotiated nothing, so it is silent.
+    #[test]
+    fn telephone_event_on_a_declined_stream_is_silent() {
+        let offer = sdp_with(
+            10000,
+            "0 101",
+            &["rtpmap:0 PCMU/8000", "rtpmap:101 telephone-event/8000"],
+        );
+        let answer = sdp_with(0, "0", &[]);
+        let got = ids(&[&invite(1, "", &offer), &ok(1, "INVITE", &answer), &ack(1)]);
+        assert!(!got.contains(&TELEPHONE_EVENT_ONE_WAY.id), "{got:?}");
+    }
+
+    /// A declined stream that still carries its attributes is reported, and
+    /// the finding names `a=crypto` where one is present.
+    #[test]
+    fn a_declined_stream_keeping_its_attributes_is_reported() {
+        let offer = sdp_with(10000, "0", &["rtpmap:0 PCMU/8000"]);
+        let answer = sdp_with(
+            0,
+            "0",
+            &[
+                "rtpmap:0 PCMU/8000",
+                "crypto:1 AES_CM_128_HMAC_SHA1_80 inline:d0RmdmcmVCspeEc3QGZiNWpVLFJhQX1cfHAwJSoj",
+            ],
+        );
+        let store = store_of(&[&invite(1, "", &offer), &ok(1, "INVITE", &answer), &ack(1)]);
+        let findings = Linter::new(LintConfig::new()).lint_dialog(only(&store));
+        let found = findings
+            .iter()
+            .find(|f| f.rule_id == REJECTED_STREAM_ATTRIBUTES.id)
+            .unwrap_or_else(|| panic!("{findings:?}"));
+        assert!(found.observed.contains("a=crypto"), "{}", found.observed);
+    }
+
+    /// A declined stream stripped of its attributes is silent.
+    #[test]
+    fn a_bare_declined_stream_is_silent() {
+        let offer = sdp_with(10000, "0", &["rtpmap:0 PCMU/8000"]);
+        let answer = sdp_with(0, "0", &[]);
+        let got = ids(&[&invite(1, "", &offer), &ok(1, "INVITE", &answer), &ack(1)]);
+        assert!(!got.contains(&REJECTED_STREAM_ATTRIBUTES.id), "{got:?}");
+    }
+
+    /// A stream the OFFER already removed is not this rule's finding.
+    ///
+    /// §8.2 removes an existing stream by re-offering it at port zero, and the
+    /// answer then MUST mark it zero too. Reporting that pair would fire on
+    /// every conformant stream teardown.
+    #[test]
+    fn a_stream_the_offer_removed_is_silent() {
+        let removed = sdp_with(0, "0", &["rtpmap:0 PCMU/8000"]);
+        let got = ids(&[
+            &invite(1, "", &removed),
+            &ok(1, "INVITE", &removed),
+            &ack(1),
+        ]);
+        assert!(!got.contains(&REJECTED_STREAM_ATTRIBUTES.id), "{got:?}");
+    }
+
+    /// A dynamic payload type rebound to another codec mid-dialog is reported.
+    #[test]
+    fn a_rebound_dynamic_payload_type_is_reported() {
+        let first = sdp_with(10000, "96", &["rtpmap:96 opus/48000/2"]);
+        let second = sdp_with(10000, "96", &["rtpmap:96 G729/8000"]);
+        let got = ids(&[
+            &invite(1, "", &first),
+            &ok(1, "INVITE", &first),
+            &ack(1),
+            &invite(2, ";tag=a6c85cf", &second),
+            &ok(2, "INVITE", &second),
+        ]);
+        assert!(got.contains(&DYNAMIC_PT_REBOUND.id), "{got:?}");
+    }
+
+    /// A dynamic payload type that keeps its codec is silent.
+    #[test]
+    fn a_stable_dynamic_payload_type_is_silent() {
+        let body = sdp_with(10000, "96", &["rtpmap:96 opus/48000/2"]);
+        let got = ids(&[
+            &invite(1, "", &body),
+            &ok(1, "INVITE", &body),
+            &ack(1),
+            &invite(2, ";tag=a6c85cf", &body),
+            &ok(2, "INVITE", &body),
+        ]);
+        assert!(!got.contains(&DYNAMIC_PT_REBOUND.id), "{got:?}");
+    }
+
+    /// Payload type 96 meaning different things in two different `m=` lines is
+    /// silent.
+    ///
+    /// §8.3.2 scopes the binding "within that media stream". A session-wide
+    /// table would report every call whose audio and video streams both start
+    /// their dynamic numbering at 96, which is most of them.
+    #[test]
+    fn one_number_in_two_streams_is_not_a_rebinding() {
+        let body = "v=0\r\n\
+             o=- 1 1 IN IP4 192.0.2.1\r\n\
+             s=-\r\n\
+             c=IN IP4 192.0.2.1\r\n\
+             t=0 0\r\n\
+             m=audio 10000 RTP/AVP 96\r\n\
+             a=rtpmap:96 opus/48000/2\r\n\
+             m=video 10002 RTP/AVP 96\r\n\
+             a=rtpmap:96 H264/90000\r\n";
+        let got = ids(&[&invite(1, "", body), &ok(1, "INVITE", body), &ack(1)]);
+        assert!(!got.contains(&DYNAMIC_PT_REBOUND.id), "{got:?}");
+    }
+
+    /// A static payload type is outside the rule's range.
+    ///
+    /// 0 through 95 are assigned by RFC 3551, not negotiated, so §8.3.2's
+    /// sentence about "a particular dynamic payload type number" does not
+    /// reach them.
+    #[test]
+    fn a_static_payload_type_is_outside_the_dynamic_range() {
+        let first = sdp_with(10000, "8", &["rtpmap:8 PCMA/8000"]);
+        let second = sdp_with(10000, "8", &["rtpmap:8 L8/8000"]);
+        let got = ids(&[
+            &invite(1, "", &first),
+            &ok(1, "INVITE", &first),
+            &ack(1),
+            &invite(2, ";tag=a6c85cf", &second),
+        ]);
+        assert!(!got.contains(&DYNAMIC_PT_REBOUND.id), "{got:?}");
+    }
+
+    /// `opus/8000` is reported, and the expectation quotes the required form.
+    #[test]
+    fn an_opus_rtpmap_at_the_wrong_clock_rate_is_reported() {
+        let body = sdp_with(10000, "96", &["rtpmap:96 opus/8000/2"]);
+        let store = store_of(&[&invite(1, "", &body)]);
+        let findings = Linter::new(LintConfig::new()).lint_dialog(only(&store));
+        let found = findings
+            .iter()
+            .find(|f| f.rule_id == OPUS_RTPMAP_RATE.id)
+            .unwrap_or_else(|| panic!("{findings:?}"));
+        assert_eq!(found.expected, "opus/48000/2");
+    }
+
+    /// `opus/48000` with no channel count is the same declaration as
+    /// `opus/48000/1`, and §7 admits neither.
+    #[test]
+    fn an_opus_rtpmap_without_a_channel_count_is_reported() {
+        for encoding in ["opus/48000", "opus/48000/1"] {
+            let body = sdp_with(10000, "96", &[&format!("rtpmap:96 {encoding}")]);
+            let got = ids(&[&invite(1, "", &body)]);
+            assert!(got.contains(&OPUS_RTPMAP_RATE.id), "{encoding}: {got:?}");
+        }
+    }
+
+    /// `opus/48000/2` is silent, whatever `a=fmtp` narrows it to.
+    #[test]
+    fn a_conformant_opus_rtpmap_is_silent() {
+        let body = sdp_with(
+            10000,
+            "96",
+            &["rtpmap:96 opus/48000/2", "fmtp:96 maxplaybackrate=16000"],
+        );
+        let got = ids(&[&invite(1, "", &body)]);
+        assert!(!got.contains(&OPUS_RTPMAP_RATE.id), "{got:?}");
     }
 }

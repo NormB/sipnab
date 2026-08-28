@@ -105,6 +105,59 @@ pub enum CorrelationReason {
     TimingHeuristic,
 }
 
+impl CorrelationReason {
+    /// The wire name for this strategy, and whether it is an identifier
+    /// comparison rather than a guess.
+    ///
+    /// Lives here, beside the enum, because more than one surface reports it
+    /// and a second copy of the mapping is how `timing_heuristic` ends up
+    /// labeled an identifier match on one tool and a guess on another. The
+    /// name is part of sipnab's wire contract: `find_correlated` and
+    /// `get_call_tree` both return it, and an agent selecting on it must get
+    /// one vocabulary.
+    ///
+    /// # Returns
+    ///
+    /// `(strategy, identifier_match)`. `identifier_match` is `false` for
+    /// exactly one variant — [`Self::TimingHeuristic`] — and that split is the
+    /// whole point: every other strategy compares a value two legs both carry,
+    /// while that one infers a link from endpoint overlap and elapsed time, on
+    /// which a busy server routinely puts unrelated calls.
+    pub fn strategy(&self) -> (&'static str, bool) {
+        match self {
+            Self::SessionId => ("session_id", true),
+            Self::XCallId => ("x_call_id", true),
+            // An identifier comparison, so `true` — but of the MEDIA SESSION
+            // rather than the dialog. It is the whole RFC 8866 uniqueness
+            // tuple, never `sess-id` alone.
+            Self::SdpOrigin => ("sdp_origin", true),
+            // Both charging-vector strategies compare identifiers, so both are
+            // `true` — and they are two names rather than one because they are
+            // two claims. RFC 7315's `related-icid` is an intermediary
+            // DECLARING the link across a B2BUA; plain `icid-value` equality is
+            // an intermediary having copied a per-dialog identifier onto a
+            // second dialog, which no RFC grants.
+            //
+            // Neither value leaves the server. RFC 7315 §4.6's own suggested
+            // construction embeds the generating proxy's hostname or address in
+            // the icid, so it is treated as operator-internal, not as an opaque
+            // token.
+            Self::ChargingVectorRelatedIcid => ("charging_vector_related_icid", true),
+            Self::ChargingVectorIcid => ("charging_vector_icid", true),
+            Self::ViaBranch => ("via_branch", true),
+            Self::TimingHeuristic => ("timing_heuristic", false),
+            // NO CATCH-ALL, deliberately. `CorrelationReason` is
+            // `#[non_exhaustive]` for external crates, but this match lives in
+            // the defining crate, so it is checked exhaustively: a new strategy
+            // is a COMPILE ERROR here rather than something that quietly
+            // reports as "unknown, not an identifier". Whoever adds the next
+            // strategy has to decide, in this file, whether it is an identifier
+            // match — which is exactly the decision that must not be made by
+            // default.
+        }
+    }
+}
+
 /// A correlated dialog with a confidence score.
 #[derive(Debug, Clone)]
 pub struct CorrelationResult<'a> {

@@ -202,6 +202,17 @@ pub const TRANSFER_TYPE: &str = "transfer";
 /// exists anywhere to ask for.
 pub const CONTENT_WITHHELD: &str = "content-withheld";
 
+/// `redacted.type` sipnab writes when a container went through keyed
+/// pseudonymization.
+///
+/// Beside [`CONTENT_WITHHELD`] and in the same §4.1 slot deliberately. The two
+/// are the same family of statement — "sipnab removed something on purpose" —
+/// and giving pseudonymization its own invented mechanism would leave a
+/// consumer two places to look for one fact. It carries `type` alone, for the
+/// reason [`CONTENT_WITHHELD`] does: there is no less-redacted instance to
+/// reference, because sipnab never wrote one.
+pub const CONTENT_PSEUDONYMIZED: &str = "pseudonymized";
+
 /// `mediatype` of the media sipnab inlines. RIFF/WAVE, 16-bit linear PCM.
 pub const RECORDING_MEDIATYPE: &str = "audio/x-wav";
 
@@ -860,6 +871,273 @@ impl Vcon {
     /// a file named `.vcon`.
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
+    }
+}
+
+/// Serialize a container that has been through the redaction boundary.
+///
+/// The only serializer the CLI export paths use, and that is the point.
+/// [`crate::output::redact::Redacted`] has no accessor and no `Deref`, so a
+/// caller holding one can do exactly two things with it: serialize it here, or
+/// drop it. Writing a container therefore cannot skip the boundary by
+/// accident — it has to skip it by naming
+/// [`crate::output::redact::Redacted::pass_through`], which is a line somebody
+/// has to defend in review.
+///
+/// # Errors
+///
+/// Propagates any `serde_json` failure, for the reason [`Vcon::to_json`] does.
+pub fn sealed_json(
+    container: &crate::output::redact::Redacted<Vcon>,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(container)
+}
+
+/// Seal a container, redacting it when a policy is in force.
+///
+/// One place where "redaction is off" turns into a value, so no export path
+/// has to spell the `Option` out and none of them can spell it differently.
+#[must_use]
+pub fn seal(
+    container: Vcon,
+    redactor: Option<&crate::output::redact::Redactor<'_>>,
+) -> crate::output::redact::Redacted<Vcon> {
+    match redactor {
+        Some(r) => crate::output::redact::Redacted::seal_with(container, r),
+        None => crate::output::redact::Redacted::pass_through(container),
+    }
+}
+
+// ── The redaction boundary ───────────────────────────────────────────────
+//
+// Every impl below DESTRUCTURES. A field added to one of these structs then
+// fails to compile until somebody has decided whether it identifies anybody,
+// which turns "I forgot to redact the new field" from a CVE in the next
+// release into a build error in the pull request that introduced it. That is
+// the whole reason the impls are written the long way instead of walking the
+// serialized JSON.
+
+impl crate::output::redact::Redact for Vcon {
+    fn redact(&mut self, r: &crate::output::redact::Redactor<'_>) {
+        let Self {
+            // A syntax version.
+            vcon: _,
+            // A UUIDv8 already derived through SHA-256 from the Call-ID and
+            // the capture identity (see `dialog_uuid`), so it is a one-way
+            // function of values that are themselves redacted below. Rewriting
+            // it would break the container's own identity for no gain.
+            uuid: _,
+            // When the container was written. Not a fact about anybody.
+            created_at: _,
+            subject,
+            redacted,
+            // A fixed list of extension names.
+            extensions: _,
+            parties,
+            dialog,
+            attachments,
+            analysis,
+        } = self;
+
+        // The subject is built from the Call-ID, and the same token has to
+        // come out here as comes out of the Dialog Object below — otherwise a
+        // consumer searching by subject cannot find the container it names.
+        // Taken BEFORE the dialog objects are redacted, so the value fed to
+        // the map is the original.
+        let call_id = dialog.first().map(|d| d.sip_call_id.clone());
+        if let Some(id) = call_id.filter(|id| !id.is_empty()) {
+            *subject = subject.replace(&id, &r.opaque(&id));
+        }
+        *subject = r.text(subject);
+
+        // §4.1 says redaction happened, in the format's own vocabulary. A
+        // withheld container keeps its own marker: nothing survived it to
+        // pseudonymize, and overwriting it would understate what was done.
+        if redacted.is_none() {
+            *redacted = Some(Redacted {
+                kind: CONTENT_PSEUDONYMIZED,
+            });
+        }
+
+        for party in parties.iter_mut() {
+            party.redact(r);
+        }
+        for object in dialog.iter_mut() {
+            object.redact(r);
+        }
+        for attachment in attachments.iter_mut() {
+            attachment.redact(r);
+        }
+        for report in analysis.iter_mut() {
+            report.redact(r);
+        }
+
+        // What was done, stated inside the container rather than only on the
+        // operator's terminal. Without it an agent handed `+1555x123456` reads
+        // it as the caller's number and says so to somebody who will act on
+        // it. The completeness caveat is where this container already explains
+        // itself, so the account of the redaction goes beside the account of
+        // the capture instead of inventing a second place to look.
+        let report = r.policy().report();
+        for attachment in attachments.iter_mut() {
+            if attachment.purpose != COMPLETENESS_PURPOSE {
+                continue;
+            }
+            let Ok(mut body) = serde_json::from_str::<serde_json::Value>(&attachment.body) else {
+                continue;
+            };
+            if let (Some(map), Ok(value)) = (body.as_object_mut(), serde_json::to_value(&report)) {
+                map.insert("redaction".to_string(), value);
+                attachment.body = json_text(&body);
+            }
+        }
+    }
+}
+
+impl crate::output::redact::Redact for Party {
+    fn redact(&mut self, r: &crate::output::redact::Redactor<'_>) {
+        let Self {
+            sip,
+            tel,
+            // Unconditionally "none", and a pseudonym does not change that:
+            // sipnab never verified who this party was, before or after.
+            validation: _,
+            // "observer" or absent.
+            role: _,
+            name,
+            stir,
+            sip_display_name,
+            sip_contact,
+            sip_user_agent,
+        } = self;
+
+        *sip = sip.as_deref().map(|v| r.uri(v));
+        *tel = tel.as_deref().map(|v| r.uri(v));
+        *name = name.as_deref().map(|v| r.identity(v));
+        *sip_display_name = sip_display_name.as_deref().map(|v| r.identity(v));
+        *sip_contact = sip_contact.as_deref().map(|v| r.name_addr(v));
+        // A product string names equipment, not a person, and it is load
+        // bearing for interop triage — "which firmware sends this" is most of
+        // a carrier ticket. Swept as free text rather than kept verbatim,
+        // because vendors put serial numbers and MAC addresses in it.
+        *sip_user_agent = sip_user_agent.as_deref().map(|v| r.text(v));
+
+        // DELETED, not tokenized. An RFC 8224 PASSporT is a signed JWS whose
+        // payload carries `orig` and `dest` in the clear — base64url is an
+        // encoding, not encryption — so publishing the token publishes both
+        // numbers. It cannot be rewritten either: any edit to the payload
+        // invalidates the signature, and a PASSporT that does not verify is
+        // worse than an absent one, because a consumer that checks it reports
+        // a forgery where there was none.
+        *stir = None;
+    }
+}
+
+impl crate::output::redact::Redact for Dialog {
+    fn redact(&mut self, r: &crate::output::redact::Redactor<'_>) {
+        let Self {
+            kind,
+            session_id,
+            // Party indices into an array whose entries are themselves
+            // redacted. An index identifies nobody on its own.
+            transferor: _,
+            transferee: _,
+            transfer_target: _,
+            original: _,
+            consultation: _,
+            // A coarse outcome from a fixed vocabulary.
+            disposition: _,
+            sip_call_id,
+            // Dialog-scoped nonces. A tag correlates messages inside this one
+            // container and says nothing about a subscriber, and rewriting it
+            // would put the Dialog Object out of step with the `;tag=` in the
+            // message trace, which keeps its own.
+            sip_from_tag: _,
+            sip_to_tag: _,
+            start: _,
+            duration: _,
+            parties: _,
+            dialogs: _,
+            recording_set: _,
+            mediatype,
+            encoding,
+            body,
+            content_hash,
+        } = self;
+
+        if !sip_call_id.is_empty() {
+            *sip_call_id = r.opaque(sip_call_id);
+        }
+        if let Some(pair) = session_id.as_mut() {
+            pair.local = pair.local.as_deref().map(|v| r.opaque(v));
+            pair.remote = pair.remote.as_deref().map(|v| r.opaque(v));
+        }
+
+        // The audio is REFUSED under redaction, not pseudonymized. A recording
+        // is the conversation itself: there is no keyed transform of speech
+        // that keeps a diagnosis answerable and carries no content, and a
+        // container that pseudonymized every identifier and then inlined four
+        // minutes of the call would be the most complete privacy failure this
+        // module could ship. The object stays, carrying its clock, so the
+        // export still says a recording existed.
+        if *kind == Some(RECORDING_TYPE) {
+            *body = None;
+            *content_hash = None;
+            *mediatype = None;
+            *encoding = None;
+        }
+    }
+}
+
+impl crate::output::redact::Redact for Attachment {
+    fn redact(&mut self, r: &crate::output::redact::Redactor<'_>) {
+        let Self {
+            // A fixed purpose name.
+            purpose: _,
+            // Indices into arrays that are redacted in their own right.
+            party: _,
+            dialog: _,
+            // The dialog's observed start.
+            start: _,
+            mediatype: _,
+            encoding: _,
+            body,
+        } = self;
+        *body = redact_json_text(body, r);
+    }
+}
+
+impl crate::output::redact::Redact for Analysis {
+    fn redact(&mut self, r: &crate::output::redact::Redactor<'_>) {
+        let Self {
+            kind: _,
+            dialog: _,
+            vendor: _,
+            product: _,
+            schema: _,
+            mediatype: _,
+            encoding: _,
+            body,
+        } = self;
+        *body = redact_json_text(body, r);
+    }
+}
+
+/// Redact a JSON document that travels as a string.
+///
+/// [`Attachment::body`] and [`Analysis::body`] are JSON TEXT rather than
+/// objects — the format's own rule, see [`Attachment::body`] — so redaction has
+/// to parse before it can walk. A body that will not parse is swept as free
+/// text instead of being passed through: it is still capture-derived, and
+/// "sipnab could not read its own attachment" is not a reason to publish it
+/// unredacted.
+fn redact_json_text(body: &str, r: &crate::output::redact::Redactor<'_>) -> String {
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(mut value) => {
+            crate::output::redact::redact_json(&mut value, r);
+            json_text(&value)
+        }
+        Err(_) => r.text(body),
     }
 }
 
@@ -4310,5 +4588,327 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert!(parsed.is_object());
         assert_eq!(parsed["analysis"].as_array().map(Vec::len), Some(1));
+    }
+
+    // ── The redaction boundary ──────────────────────────────────────────
+
+    /// Every identifying value the PA5 inventory names, in one dialog.
+    ///
+    /// Written as ONE fixture rather than one per field on purpose: the leak
+    /// test below asserts over the whole serialized container, so a field that
+    /// nothing redacts fails the test wherever it happens to be emitted. A
+    /// per-field test would only ever cover the fields somebody remembered.
+    fn identifying_dialog() -> SipDialog {
+        let headers: &[&str] = &[
+            "From: \"Alice Kowalski\" <sip:+15551234567@pbx.internal.example>;tag=t1",
+            "To: \"Bob Vance\" <sip:+15559876543@carrier.internal.example>",
+            "Call-ID: 8f2a1c@pbx.internal.example",
+            "CSeq: 1 INVITE",
+            "Contact: <sip:+15551234567@10.11.12.13:5060>",
+            "P-Asserted-Identity: <sip:+15551234567@pbx.internal.example>",
+            "Diversion: <sip:+15550001111@pbx.internal.example>;reason=no-answer",
+            "Remote-Party-ID: <sip:+15551234567@pbx.internal.example>;party=calling",
+            "P-Charging-Vector: icid-value=\"sbc01.carrier.internal.example-abc\";\
+             icid-generated-at=sbc01.carrier.internal.example;orig-ioi=carrier.internal.example;\
+             term-ioi=peer.internal.example;transit-ioi=transit1.internal.example.1",
+            "Authorization: Digest username=\"alice\", realm=\"pbx.internal.example\", \
+             nonce=\"deadbeefcafe\", response=\"0123456789abcdef0123456789abcdef\"",
+            "User-Agent: AliceUA/1.0",
+            "Content-Type: application/sdp",
+        ];
+        let body = b"v=0\r\n\
+                     o=alice 2890844526 2890844527 IN IP4 10.11.12.13\r\n\
+                     s=Alice Kowalski calling\r\n\
+                     c=IN IP4 10.11.12.13\r\n\
+                     t=0 0\r\n\
+                     m=audio 49170 RTP/AVP 0\r\n\
+                     a=rtpmap:0 PCMU/8000\r\n";
+        let invite = parse_sip(
+            &build_sip(
+                "INVITE sip:+15559876543@carrier.internal.example SIP/2.0",
+                headers,
+                body,
+            ),
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("fixture parses");
+        SipDialog::new(&invite).expect("INVITE opens a dialog")
+    }
+
+    /// Every value the container must not contain once redaction is on.
+    const MUST_NOT_LEAK: &[&str] = &[
+        // Subscriber E.164s, and the bare national numbers inside them.
+        "+15551234567",
+        "5551234567",
+        "+15559876543",
+        "9876543",
+        "+15550001111",
+        // Display names.
+        "Alice Kowalski",
+        "Bob Vance",
+        // Internal host names, whole and in fragments that identify them.
+        "pbx.internal.example",
+        "carrier.internal.example",
+        "sbc01",
+        "peer.internal.example",
+        "transit1",
+        // Internal addresses.
+        "10.11.12.13",
+        // The digest credential: the offline attack against HA1.
+        "deadbeefcafe",
+        "0123456789abcdef",
+        // The Call-ID's local half.
+        "8f2a1c",
+    ];
+
+    /// A redacted container, and the policy that produced it.
+    fn redacted_container() -> String {
+        let dialog = identifying_dialog();
+        let facts = clean_facts();
+        let container = export_with(&dialog, &facts);
+        let policy = crate::output::redact::RedactionPolicy::new(
+            crate::output::redact::RedactionKey::from_secret(b"vcon-leak-test"),
+        );
+        let redactor = policy.redactor();
+        sealed_json(&seal(container, Some(&redactor))).expect("a sealed container serializes")
+    }
+
+    /// **The leak test.** Not one value on the inventory survives redaction.
+    ///
+    /// Asserted over the WHOLE serialized container rather than field by
+    /// field, and that is the point. A field-by-field test proves only that the
+    /// fields somebody thought of are covered; this one fails the day a new
+    /// field carries an identity out through a path nobody considered — which
+    /// is the failure mode a privacy feature actually has.
+    #[test]
+    fn nothing_on_the_inventory_survives_redaction() {
+        let json = redacted_container();
+        for value in MUST_NOT_LEAK {
+            assert!(
+                !json.contains(value),
+                "'{value}' survived redaction in:\n{json}"
+            );
+        }
+    }
+
+    /// The same values ARE present without redaction.
+    ///
+    /// Without this the leak test above is unfalsifiable: a fixture whose
+    /// values never reached the container in the first place would pass it
+    /// while proving nothing at all. This is the guard that makes the guard
+    /// mean something.
+    #[test]
+    fn the_leak_test_is_testing_something() {
+        let dialog = identifying_dialog();
+        let facts = clean_facts();
+        let json = export_with(&dialog, &facts)
+            .to_json()
+            .expect("an unredacted container serializes");
+        // The two digest values are the exception, and they are absent for a
+        // reason that predates redaction: `strip_credentials` already removes
+        // the whole `Authorization` row from the trace. Everything else on the
+        // inventory has to be here, or the test above is measuring an empty
+        // fixture.
+        for value in MUST_NOT_LEAK {
+            if *value == "deadbeefcafe" || *value == "0123456789abcdef" {
+                continue;
+            }
+            assert!(
+                json.contains(value),
+                "the fixture never emitted '{value}', so redacting it proves nothing"
+            );
+        }
+    }
+
+    /// Correlation survives: one identity, one token, everywhere it appears.
+    ///
+    /// The whole reason this is pseudonymization and not masking. `From`,
+    /// `Contact`, `P-Asserted-Identity` and `Remote-Party-ID` all carry the
+    /// same caller in this fixture, and an agent asked "is this the same
+    /// subscriber" has to still be able to answer yes.
+    #[test]
+    fn one_identity_reaches_the_container_as_one_token() {
+        let json = redacted_container();
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        let token = value["parties"][0]["tel"]
+            .as_str()
+            .or_else(|| value["parties"][0]["sip"].as_str())
+            .unwrap_or_else(|| panic!("the caller party must carry a URI: {json}"))
+            .to_string();
+        let user = token
+            .rsplit_once('@')
+            .map_or(token.as_str(), |(left, _)| left)
+            .rsplit_once(':')
+            .map_or(token.as_str(), |(_, right)| right);
+        let hits = json.matches(user).count();
+        assert!(
+            hits >= 3,
+            "the caller's token appears {hits} time(s); correlation across From, Contact and \
+             P-Asserted-Identity is the reason this is not masking:\n{json}"
+        );
+    }
+
+    /// The container says, in the format's own vocabulary, that it was
+    /// redacted.
+    ///
+    /// Without it an agent quotes `+1x...` to an operator as the caller's
+    /// number. The §4.1 `redacted` object is where a vCon consumer already
+    /// looks for "content was removed", so pseudonymization goes there rather
+    /// than inventing a second place.
+    #[test]
+    fn a_redacted_container_declares_itself() {
+        let json = redacted_container();
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(value["redacted"]["type"], CONTENT_PSEUDONYMIZED, "{json}");
+
+        let caveat = value["attachments"]
+            .as_array()
+            .and_then(|a| a.iter().find(|x| x["purpose"] == COMPLETENESS_PURPOSE))
+            .unwrap_or_else(|| panic!("the completeness caveat must be present: {json}"));
+        let body = body_of(caveat);
+        assert_eq!(body["redaction"]["enabled"], true, "{body}");
+        assert_eq!(body["redaction"]["key_mode"], "supplied", "{body}");
+        assert!(
+            body["redaction"]["classes"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|v| v == "credential")),
+            "{body}"
+        );
+    }
+
+    /// A withheld container keeps its own marker.
+    ///
+    /// `content-withheld` is the stronger statement of the two: nothing
+    /// survived to pseudonymize. Overwriting it would understate what the deny
+    /// rule did.
+    #[test]
+    fn a_withheld_container_keeps_its_stronger_marker() {
+        let dialog = identifying_dialog();
+        let facts = clean_facts();
+        let container = export_withheld_dialog_at(
+            &dialog,
+            &ExportContext {
+                capture_id: "fixture.pcap",
+                facts: &facts,
+                analysis: None,
+                max_inline_media_bytes: None,
+            },
+            "X-No-Record",
+            exported_at(),
+        );
+        let policy = crate::output::redact::RedactionPolicy::new(
+            crate::output::redact::RedactionKey::from_secret(b"vcon-leak-test"),
+        );
+        let json = sealed_json(&seal(container, Some(&policy.redactor()))).expect("serializes");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(value["redacted"]["type"], CONTENT_WITHHELD, "{json}");
+        for leak in MUST_NOT_LEAK {
+            assert!(!json.contains(leak), "'{leak}' survived: {json}");
+        }
+    }
+
+    /// An unsealed export is byte-identical to a sealed pass-through.
+    ///
+    /// The bypass exists — `--redact` is opt-in — and this pins that turning
+    /// redaction OFF changes nothing else about a container. A boundary that
+    /// quietly reshaped the output for every run would be paid for by every
+    /// consumer, redacting or not.
+    #[test]
+    fn pass_through_changes_nothing() {
+        let dialog = identifying_dialog();
+        let facts = clean_facts();
+        let direct = export_with(&dialog, &facts).to_json().expect("serializes");
+        let sealed = sealed_json(&seal(export_with(&dialog, &facts), None)).expect("serializes");
+        assert_eq!(direct, sealed);
+    }
+
+    /// A PASSporT is deleted, not carried through redaction.
+    ///
+    /// An RFC 8224 token is a signed JWS whose payload holds `orig` and `dest`
+    /// in the clear — base64url is an encoding, not encryption — so publishing
+    /// it publishes both numbers. It cannot be rewritten either: any edit to
+    /// the payload invalidates the signature, and a PASSporT that does not
+    /// verify is worse than an absent one, because a consumer that checks it
+    /// reports a forgery where there was none.
+    #[test]
+    fn a_passport_does_not_survive_redaction() {
+        use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
+        // The payload decodes to {"dest":{"tn":["15559876543"]},...}.
+        let token = "eyJhbGciOiJFUzI1NiJ9.\
+                     eyJkZXN0Ijp7InRuIjpbIjE1NTU5ODc2NTQzIl19fQ.sig";
+        let mut party = Party {
+            sip: Some("sip:+15551234567@pbx.internal.example".to_string()),
+            tel: None,
+            validation: "none",
+            role: None,
+            name: None,
+            stir: Some(token.to_string()),
+            sip_display_name: None,
+            sip_contact: None,
+            sip_user_agent: None,
+        };
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"stir"));
+        party.redact(&policy.redactor());
+        assert!(
+            party.stir.is_none(),
+            "a PASSporT carries the numbers it attests, in the clear"
+        );
+    }
+
+    /// The capturing host's own name does not survive redaction.
+    ///
+    /// It reaches the container twice: as a field, and inside the completeness
+    /// caveat's prose — "Produced by sipnab X on node Y". The field was
+    /// redacted from the first day and the prose was not, which is exactly the
+    /// free-text leak a structured-field-only design ships with: every
+    /// identifier dutifully tokenized, and the operator's capture host named in
+    /// a sentence beside them.
+    #[test]
+    fn the_capture_host_does_not_survive_in_prose() {
+        let node = crate::provenance::node_name();
+        if node.is_empty() {
+            return;
+        }
+        let json = redacted_container();
+        assert!(
+            !json.contains(node),
+            "the capture host '{node}' survived redaction in:\n{json}"
+        );
+    }
+
+    /// Inline audio is refused rather than pseudonymized.
+    ///
+    /// There is no keyed transform of speech that keeps a diagnosis answerable
+    /// and carries no content. A container that tokenized every identifier and
+    /// then inlined the conversation would be the most complete privacy
+    /// failure this module could ship.
+    #[test]
+    fn redaction_refuses_inline_audio() {
+        use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
+        let mut object = Dialog::bare("call-1".to_string());
+        object.kind = Some(RECORDING_TYPE);
+        object.mediatype = Some(RECORDING_MEDIATYPE);
+        object.encoding = Some("base64url");
+        object.body = Some("UklGRiQAAABXQVZF".to_string());
+        object.content_hash = Some(format!("{CONTENT_HASH_PREFIX}abc"));
+        object.duration = Some(4.5);
+
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"audio"));
+        object.redact(&policy.redactor());
+
+        assert!(object.body.is_none(), "the audio must not survive");
+        assert!(object.content_hash.is_none(), "nor a hash over it");
+        assert!(object.mediatype.is_none());
+        assert!(object.encoding.is_none());
+        assert_eq!(
+            object.duration,
+            Some(4.5),
+            "the clock stays: the export still has to say a recording existed"
+        );
     }
 }

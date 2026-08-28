@@ -64,7 +64,7 @@ pub struct SipnabMcp {
     /// armed, so `alert_engine.is_some()` reads true on a server with no
     /// detection at all. The capture owner is what knows, so the capture owner
     /// is what tells it (`crate::app::servers::Selection::armed_detections`).
-    armed_detections: Vec<String>,
+    pub(crate) armed_detections: Vec<String>,
     /// Shared flag the capture owner sets once the source (typically a pcap
     /// file) is fully consumed; `tail_dialogs` reports it as
     /// `source_exhausted` so pollers know no more updates will come. When
@@ -77,7 +77,7 @@ pub struct SipnabMcp {
     /// site, because a value that exists only in a signature is not a setting:
     /// six detectors in this tree accept a threshold no production caller ever
     /// supplies, and this must not become the seventh.
-    row_cap: usize,
+    pub(crate) row_cap: usize,
     /// Largest inline media body a container this server builds may carry,
     /// from `--vcon-max-inline-media`. `None` takes the measured default.
     ///
@@ -92,7 +92,7 @@ pub struct SipnabMcp {
     /// Carried here for the same reason `row_cap` is: `find_problems` used to
     /// expand `problems` from a `'static` string, so an operator who tuned
     /// `[diagnosis]` still got a filter selecting on figures nobody chose.
-    alias_thresholds: crate::sip::dsl::AliasThresholds,
+    pub(crate) alias_thresholds: crate::sip::dsl::AliasThresholds,
     /// Ceiling on body/snippet bytes in one response, from
     /// `--mcp-max-body-bytes` or `[limits] mcp_max_body_bytes`. Defaults to
     /// [`shape::DEFAULT_MAX_BODY_BYTES`](super::shape::DEFAULT_MAX_BODY_BYTES).
@@ -100,7 +100,7 @@ pub struct SipnabMcp {
     /// Carried beside `row_cap` and for the reason spelled out there: a value
     /// read from a constant at each call site is not something an operator can
     /// move.
-    body_cap: usize,
+    pub(crate) body_cap: usize,
     /// Directory the file tools are confined to. `None` disables them.
     file_root: Option<std::path::PathBuf>,
     /// Capture files and directories this server is reading, which the file
@@ -142,7 +142,7 @@ pub struct SipnabMcp {
     /// carries its own copy and the swap reaches none of them. Two agents on
     /// one server would read the same stores and disagree about which capture
     /// they were reading.
-    capture: Arc<RwLock<CaptureState>>,
+    pub(crate) capture: Arc<RwLock<CaptureState>>,
     /// Bounds tool calls in flight at once, or `None` for no cap.
     ///
     /// **Shared, not per-session**, for the same reason `capture` and
@@ -180,6 +180,13 @@ pub struct SipnabMcp {
     rate_limiter: Option<Arc<parking_lot::Mutex<crate::rate_limit::FixedWindowLimiter<PeerKey>>>>,
     /// rmcp router mapping tool names to the handler methods below.
     tool_router: ToolRouter<Self>,
+    /// Governs whether sipnab may ask the client's model to narrate an
+    /// observation. Disabled unless the operator sets a budget.
+    ///
+    /// Shared across clones on purpose. `SipnabMcp` is `Clone`, and a budget
+    /// that copied with it would reset every time the server was cloned --
+    /// an hourly ceiling anything can reset is not a ceiling.
+    sampling: Arc<parking_lot::Mutex<super::sampling::Governor>>,
 }
 
 /// The identity a per-peer MCP rate limit counts against.
@@ -235,6 +242,9 @@ impl SipnabMcp {
             // block, so a batch of additions all edited the same region; a
             // group in its own file merges here instead, and this line is the
             // only one they share.
+            sampling: Arc::new(parking_lot::Mutex::new(
+                super::sampling::Governor::disabled(),
+            )),
             tool_router: Self::tool_router()
                 + Self::aggregation_router()
                 + Self::expectations_router()
@@ -441,6 +451,54 @@ impl SipnabMcp {
         self
     }
 
+    /// Enable sampling with an hourly request budget.
+    ///
+    /// Without this the governor refuses every request as `Disabled`, which is
+    /// the default and the honest one: client support for sampling is thin, so
+    /// nothing in sipnab may depend on a narration arriving.
+    #[must_use]
+    pub fn with_sampling_budget(mut self, per_hour: u32) -> Self {
+        self.sampling = Arc::new(parking_lot::Mutex::new(
+            super::sampling::Governor::disabled().with_budget(per_hour),
+        ));
+        self
+    }
+
+    /// Record that the peer advertised the sampling capability.
+    ///
+    /// Named for tests because nothing negotiates it yet: the live path that
+    /// would read this from the initialize handshake is not wired, and a
+    /// builder that looked general-purpose would imply otherwise. Renaming it
+    /// is the one-line change when the narration loop lands.
+    #[must_use]
+    pub fn with_client_sampling_for_test(self, advertised: bool) -> Self {
+        {
+            let mut g = self.sampling.lock();
+            let budget = g.budget_per_hour();
+            *g = super::sampling::Governor::disabled().with_client_sampling(advertised);
+            if let Some(b) = budget {
+                *g = std::mem::replace(&mut *g, super::sampling::Governor::disabled())
+                    .with_budget(b);
+            }
+        }
+        self
+    }
+
+    /// Whether a sampling request for `signature` may go out now.
+    ///
+    /// Exposed so a caller narrating an alert asks the governor rather than
+    /// keeping its own budget -- two budgets is two things to get wrong, and
+    /// the one that drifts is the one nobody reads.
+    ///
+    /// # Errors
+    ///
+    /// The [`Refusal`](super::sampling::Refusal) that applied.
+    pub fn may_sample(&self, signature: &str) -> Result<(), super::sampling::Refusal> {
+        self.sampling
+            .lock()
+            .allow(signature, std::time::Instant::now())
+    }
+
     /// Permit `shutdown_server` to stop this process.
     pub fn with_shutdown(mut self) -> Self {
         self.allow_shutdown = true;
@@ -489,7 +547,10 @@ impl SipnabMcp {
     /// normaliser eventually meets a symlink, a unicode separator, or a
     /// `..%2f`. Requiring one component and rejecting everything else has no
     /// such middle ground.
-    fn resolve_in_root(&self, name: &str) -> Result<std::path::PathBuf, rmcp::ErrorData> {
+    pub(crate) fn resolve_in_root(
+        &self,
+        name: &str,
+    ) -> Result<std::path::PathBuf, rmcp::ErrorData> {
         let root = self.file_root.as_ref().ok_or_else(|| {
             rmcp::ErrorData::invalid_params(
                 "file tools are disabled: start sipnab with --mcp-file-root <DIR> \
@@ -571,7 +632,10 @@ impl SipnabMcp {
     /// A guard justified by "we are about to truncate this" belongs only on the
     /// calls that truncate. Splitting it makes each call site state which it is,
     /// so the next reader cannot inherit the wrong premise.
-    fn resolve_in_root_for_write(&self, name: &str) -> Result<std::path::PathBuf, rmcp::ErrorData> {
+    pub(crate) fn resolve_in_root_for_write(
+        &self,
+        name: &str,
+    ) -> Result<std::path::PathBuf, rmcp::ErrorData> {
         let target = self.resolve_in_root(name)?;
         self.protected_inputs
             .check(&target, "the requested filename", false)
@@ -621,7 +685,7 @@ impl SipnabMcp {
     /// replay has one — a live interface is not a path. See
     /// [`SuppressionFile::discover`](crate::sip::lint::SuppressionFile::discover)
     /// for why the walk stops at a project root.
-    fn resolve_suppressions(
+    pub(crate) fn resolve_suppressions(
         &self,
         explicit: Option<&String>,
     ) -> Result<Option<crate::sip::lint::SuppressionFile>, rmcp::ErrorData> {
@@ -780,6 +844,75 @@ pub struct AggregateDialogsParams {
     /// truncated aggregate that does not say what it left out is a wrong
     /// total, not a partial one.
     pub top_n: Option<u32>,
+}
+
+/// Every field a dialog can be grouped by, shared by `aggregate_dialogs` and
+/// `compare_captures`.
+///
+/// One list rather than one per tool. A key one tool accepts and the other
+/// rejects is a vocabulary an agent cannot learn: it would have to discover,
+/// per tool, which of two overlapping sets it was talking to.
+pub(crate) const GROUPABLE: &[&str] = &[
+    "state",
+    "response_code",
+    "method",
+    "from.user",
+    "to.user",
+    "ua",
+    "src.ip",
+    "dst.ip",
+    "rtp.codec",
+];
+
+/// The bucket `dialog` falls into for `key`, ready to put in front of a model.
+///
+/// `None` for a key outside [`GROUPABLE`], which callers report as an internal
+/// error: adding a key to that list without an arm here is a bug the compiler
+/// cannot see, so it fails loudly rather than silently bucketing every dialog
+/// as one.
+///
+/// `(none)` rather than dropping the row: "how many dialogs carry no
+/// User-Agent" is a real question, and a bucket set that silently omits them
+/// would not sum to the total the caller reports beside it.
+pub(crate) fn dialog_group_value(
+    key: &str,
+    dialog: &crate::sip::dialog::SipDialog,
+    streams: &[&crate::rtp::stream::RtpStream],
+) -> Option<String> {
+    let value = match key {
+        "state" => dialog.state().to_string(),
+        "response_code" => dialog
+            .final_status_code()
+            .map_or_else(|| "(none)".to_string(), |c| c.to_string()),
+        "method" => dialog.method.as_str().to_string(),
+        "from.user" => dialog.from_user.clone().unwrap_or_else(|| "(none)".into()),
+        "to.user" => dialog.to_user.clone().unwrap_or_else(|| "(none)".into()),
+        // Across all messages, matching `Field::Ua`: the UA can sit on any of
+        // them, not only the first.
+        "ua" => dialog
+            .messages
+            .iter()
+            .find_map(|m| m.user_agent().map(str::to_string))
+            .unwrap_or_else(|| "(none)".into()),
+        "src.ip" => dialog.src_addr.to_string(),
+        "dst.ip" => dialog.dst_addr.to_string(),
+        "rtp.codec" => streams
+            .first()
+            .and_then(|s| s.codec.clone())
+            .unwrap_or_else(|| "(none)".to_string()),
+        _ => return None,
+    };
+    // Three of these keys carry text the packet's SENDER wrote --
+    // `from.user`, `to.user` and `ua` are attacker-controlled on a public
+    // interface. They reach a language model here exactly as they would in a
+    // row, so they are fenced exactly as a row fences them (#139). The rest
+    // are values sipnab derived: a state name, a status code, an IP, a codec
+    // from a payload type table.
+    Some(if matches!(key, "from.user" | "to.user" | "ua") {
+        super::shape::fence(&value)
+    } else {
+        value
+    })
 }
 
 /// One bucket of an [`AggregateDialogsParams`] answer.
@@ -2975,7 +3108,10 @@ impl SipnabMcp {
     ///
     /// `invalid_params` (-32602) naming the offending expression when it is
     /// neither a known alias nor parseable.
-    fn compile_filter(&self, filter: Option<&str>) -> Result<Option<FilterExpr>, rmcp::ErrorData> {
+    pub(crate) fn compile_filter(
+        &self,
+        filter: Option<&str>,
+    ) -> Result<Option<FilterExpr>, rmcp::ErrorData> {
         let Some(f) = filter else { return Ok(None) };
         let expanded = expand_alias(f, &self.alias_thresholds);
         let expr_str = expanded.as_deref().unwrap_or(f);
@@ -2997,17 +3133,32 @@ impl SipnabMcp {
     /// the agent still could not obtain the bytes it had just asked sipnab to
     /// preserve.
     fn resource_list(&self) -> Result<Vec<rmcp::model::Resource>, rmcp::ErrorData> {
-        let root = self.file_root.as_ref().ok_or_else(|| {
-            rmcp::ErrorData::invalid_params(
-                "resources are disabled: start sipnab with --mcp-file-root <DIR>".to_string(),
-                None,
-            )
-        })?;
+        // Reference material first, and unconditionally. `--mcp-file-root`
+        // gates access to CAPTURES -- an operator's traffic. The filter DSL
+        // grammar is published on a website, and gating it behind the
+        // capture-access flag means an agent running against a live device
+        // with no file root has to guess at syntax it could have read.
+        let mut out: Vec<rmcp::model::Resource> = super::reference::all()
+            .into_iter()
+            .map(|r| {
+                let mut res = rmcp::model::Resource::new(r.uri, r.name.to_string())
+                    .with_mime_type("text/markdown");
+                res.description = Some(r.description.to_string());
+                res.size = Some(r.text.len() as u64);
+                res
+            })
+            .collect();
+
+        // Captures are the gated half. With no root configured the reference
+        // list still answers, so an agent learns the vocabulary and is told
+        // separately that no captures are reachable.
+        let Some(root) = self.file_root.as_ref() else {
+            return Ok(out);
+        };
         let entries = std::fs::read_dir(root).map_err(|e| {
             rmcp::ErrorData::internal_error(format!("cannot read the file root: {e}"), None)
         })?;
 
-        let mut out = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_file() {
@@ -3050,9 +3201,24 @@ impl SipnabMcp {
         /// beats returning something unusable or truncating in silence.
         const MAX_RESOURCE_BYTES: u64 = 8 * 1024 * 1024;
 
+        // Reference material is answered from the binary, before any file
+        // handling. It is not on disk, so it has no path to resolve, no size to
+        // stat and no root to be confined to -- routing it through the capture
+        // path would require inventing all three.
+        if let Some(reference) = super::reference::find(uri) {
+            return Ok(vec![rmcp::model::ResourceContents::text(
+                reference.text,
+                uri,
+            )]);
+        }
+
         let name = uri.strip_prefix("sipnab:///").ok_or_else(|| {
             rmcp::ErrorData::invalid_params(
-                format!("'{uri}' is not a sipnab resource URI; expected sipnab:///<filename>"),
+                format!(
+                    "'{uri}' is not a sipnab resource URI; expected \
+                     sipnab:///<filename> for a capture, or one of the \
+                     sipnab://reference/... URIs that resources/list names"
+                ),
                 None,
             )
         })?;
@@ -3501,21 +3667,6 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<AggregateDialogsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        /// Every groupable key. Listed once, used by both the dispatch and the
-        /// refusal message, so a key can never be accepted without being
-        /// offered or offered without being accepted.
-        const GROUPABLE: &[&str] = &[
-            "state",
-            "response_code",
-            "method",
-            "from.user",
-            "to.user",
-            "ua",
-            "src.ip",
-            "dst.ip",
-            "rtp.codec",
-        ];
-
         let key = params.group_by.trim();
         if !GROUPABLE.contains(&key) {
             return Err(rmcp::ErrorData::invalid_params(
@@ -3552,51 +3703,11 @@ impl SipnabMcp {
                     continue;
                 }
                 total += 1;
-                // `(none)` rather than dropping the row: "how many dialogs
-                // carry no User-Agent" is a real question, and a bucket set
-                // that silently omits them would not sum to total_matched.
-                let value = match key {
-                    "state" => d.state().to_string(),
-                    "response_code" => d
-                        .final_status_code()
-                        .map_or_else(|| "(none)".to_string(), |c| c.to_string()),
-                    "method" => d.method.as_str().to_string(),
-                    "from.user" => d.from_user.clone().unwrap_or_else(|| "(none)".into()),
-                    "to.user" => d.to_user.clone().unwrap_or_else(|| "(none)".into()),
-                    // Across all messages, matching `Field::Ua`: the UA can
-                    // sit on any of them, not only the first.
-                    "ua" => d
-                        .messages
-                        .iter()
-                        .find_map(|m| m.user_agent().map(str::to_string))
-                        .unwrap_or_else(|| "(none)".into()),
-                    "src.ip" => d.src_addr.to_string(),
-                    "dst.ip" => d.dst_addr.to_string(),
-                    "rtp.codec" => streams
-                        .first()
-                        .and_then(|s| s.codec.clone())
-                        .unwrap_or_else(|| "(none)".to_string()),
-                    // GROUPABLE gated this above; a new key added there without
-                    // an arm here is a compile-time-invisible bug, so it fails
-                    // loudly rather than silently bucketing everything as one.
-                    other => {
-                        return Err(rmcp::ErrorData::internal_error(
-                            format!("groupable key '{other}' has no extractor"),
-                            None,
-                        ));
-                    }
-                };
-                // Three of these keys carry text the packet's SENDER wrote --
-                // `from.user`, `to.user` and `ua` are attacker-controlled on a
-                // public interface. They reach a language model here exactly
-                // as they would in a row, so they are fenced exactly as a row
-                // fences them (#139). The rest are values sipnab derived: a
-                // state name, a status code, an IP, a codec from a payload
-                // type table.
-                let value = if matches!(key, "from.user" | "to.user" | "ua") {
-                    super::shape::fence(&value)
-                } else {
-                    value
+                let Some(value) = dialog_group_value(key, d, &streams) else {
+                    return Err(rmcp::ErrorData::internal_error(
+                        format!("groupable key '{key}' has no extractor"),
+                        None,
+                    ));
                 };
                 *tally.entry(value).or_insert(0) += 1;
             }
@@ -6596,40 +6707,12 @@ impl SipnabMcp {
                 .iter()
                 .take(limit)
                 .map(|r| {
-                    use crate::sip::dialog_store::CorrelationReason as R;
-                    let (strategy, identifier_match) = match r.reason {
-                        R::SessionId => ("session_id", true),
-                        R::XCallId => ("x_call_id", true),
-                        // An identifier comparison, so `true` — but of the
-                        // MEDIA SESSION rather than the dialog. It is the whole
-                        // RFC 8866 uniqueness tuple, never `sess-id` alone.
-                        R::SdpOrigin => ("sdp_origin", true),
-                        // Both charging-vector strategies compare identifiers,
-                        // so both are `true` — and they are two names rather
-                        // than one because they are two claims. RFC 7315's
-                        // `related-icid` is an intermediary DECLARING the link
-                        // across a B2BUA; plain `icid-value` equality is an
-                        // intermediary having copied a per-dialog identifier
-                        // onto a second dialog, which no RFC grants.
-                        //
-                        // Neither value leaves the server. RFC 7315 §4.6's own
-                        // suggested construction embeds the generating proxy's
-                        // hostname or address in the icid, so it is treated as
-                        // operator-internal, not as an opaque token.
-                        R::ChargingVectorRelatedIcid => ("charging_vector_related_icid", true),
-                        R::ChargingVectorIcid => ("charging_vector_icid", true),
-                        R::ViaBranch => ("via_branch", true),
-                        R::TimingHeuristic => ("timing_heuristic", false),
-                        // NO CATCH-ALL, deliberately. `CorrelationReason` is
-                        // `#[non_exhaustive]` for external crates, but this
-                        // match lives in the defining crate, so it is checked
-                        // exhaustively: a new strategy is a COMPILE ERROR here
-                        // rather than something that quietly reports as
-                        // "unknown, not an identifier". Whoever adds the next
-                        // strategy has to decide, in this file, whether it is
-                        // an identifier match — which is exactly the decision
-                        // that must not be made by default.
-                    };
+                    // The name and the identifier/guess split come from
+                    // `CorrelationReason::strategy`, not from a match written
+                    // here. `get_call_tree` reports the same vocabulary, and a
+                    // second copy is how one tool ends up calling a timing
+                    // guess an identifier match while the other does not.
+                    let (strategy, identifier_match) = r.reason.strategy();
                     // The gap is the evidence for the guess, so it is attached
                     // only where it IS the evidence. On an identifier match it
                     // would be a number with no bearing on why they matched.
@@ -7332,6 +7415,57 @@ impl ServerHandler for SipnabMcp {
     /// Delegates to `resource_list` so the logic is testable without
     /// fabricating a `RequestContext`, and so the sandbox has exactly one
     /// implementation.
+    /// The workflows this server suggests, and the order inside each.
+    async fn list_prompts(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListPromptsResult, rmcp::ErrorData> {
+        let prompts = super::prompts::all()
+            .into_iter()
+            .map(|w| {
+                // No `arguments`: every workflow is a fixed ordering, and an
+                // argument a client can fill is a place the ordering can be
+                // edited into something the tools do not support.
+                rmcp::model::Prompt::new(w.name, Some(w.description), None)
+            })
+            .collect();
+        Ok(rmcp::model::ListPromptsResult::with_all_items(prompts))
+    }
+
+    /// One workflow by name.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) for a name nothing serves, listing what is
+    /// available -- a client that guessed should be told the vocabulary rather
+    /// than handed the first entry.
+    async fn get_prompt(
+        &self,
+        request: rmcp::model::GetPromptRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::GetPromptResponse, rmcp::ErrorData> {
+        let Some(workflow) = super::prompts::find(&request.name) else {
+            let known: Vec<&str> = super::prompts::all().iter().map(|w| w.name).collect();
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "no prompt named '{}'. Served: {}",
+                    request.name,
+                    known.join(", ")
+                ),
+                None,
+            ));
+        };
+        Ok(
+            rmcp::model::GetPromptResult::new(vec![rmcp::model::PromptMessage::new(
+                rmcp::model::Role::User,
+                ContentBlock::text(workflow.text),
+            )])
+            .with_description(workflow.description)
+            .into(),
+        )
+    }
+
     async fn list_resources(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
@@ -7475,6 +7609,11 @@ impl ServerHandler for SipnabMcp {
                 // host can grant them without granting tool calls -- a
                 // distinction no tool annotation can express.
                 .enable_resources()
+                // Prompts carry the ORDER to call tools in. Fifty-one tool
+                // descriptions cannot express "read capture_status before you
+                // believe any count", because that is a fact about the
+                // sequence rather than about any one tool.
+                .enable_prompts()
                 .build(),
         );
         // Name ourselves. The default comes from `Implementation::from_build_env`,
@@ -7520,7 +7659,7 @@ impl ServerHandler for SipnabMcp {
 /// IP headers are reconstructed from the addresses and ports sipnab recorded,
 /// not the bytes originally on the wire.
 #[cfg(feature = "mcp")]
-fn write_messages_to_pcap(
+pub(crate) fn write_messages_to_pcap(
     messages: &[crate::sip::SipMessage],
     path: &std::path::Path,
 ) -> anyhow::Result<usize> {

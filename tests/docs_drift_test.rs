@@ -2243,7 +2243,7 @@ fn registered_mcp_sources() -> String {
 #[test]
 fn mcp_tool_table_lists_every_registered_tool() {
     let server = registered_mcp_sources();
-    let registered: BTreeSet<String> = regex::Regex::new(r#"name = "([a-z_]+)""#)
+    let registered: BTreeSet<String> = regex::Regex::new(r#"name = "([a-z0-9_]+)""#)
         .expect("regex")
         .captures_iter(&server)
         .map(|c| c[1].to_string())
@@ -2281,9 +2281,14 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // `server.rs`. Its arrival is why this count and every prose count now read
     // the whole of `src/mcp/` through `registered_mcp_sources` -- reading one
     // file would have reported 38 while a 39th tool answered calls.
+    // 39 -> 50 by the PA batch: twelve tools landed together across six
+    // modules under src/mcp/tools/. That is also why every count in this file
+    // now reads the whole of src/mcp/ rather than server.rs -- eleven of the
+    // twelve live outside it, and a scanner reading one file reported 39 while
+    // 50 answered calls.
     assert_eq!(
         registered.len(),
-        39,
+        50,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -2303,7 +2308,7 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // tools missing, which is a formatting change reading as a catastrophe:
     // the extraction was coupled to markup that has nothing to do with what
     // the gate is checking.
-    let documented: BTreeSet<String> = regex::RegexBuilder::new(r"^\| \[?`([a-z_]+)`")
+    let documented: BTreeSet<String> = regex::RegexBuilder::new(r"^\| \[?`([a-z0-9_]+)`")
         .multi_line(true)
         .build()
         .expect("regex")
@@ -2854,6 +2859,12 @@ fn no_documentation_table_repeats_a_row() {
     // measurement: that file carries exactly two table separators and no other
     // page gained one. It is not a published page, so it costs no second entry
     // for a site mirror.
+    // 697 -> 733: the twelve PA tools documented in docs/mcp-tools.md. Each
+    // carries one parameter table, and several carry a second for their metric
+    // or response vocabulary; scripts/build-site-pages.py mirrors the page, so
+    // every table written once is counted twice here. Plus the redaction flag
+    // rows in docs/cli-reference.md and the rule table in docs/sip-lint-rules.md
+    // from the nine new lint rules, both likewise mirrored.
     // 695 -> 697: the `timeline` tool's parameter table in docs/mcp-tools.md,
     // plus the generated copy of that page under website/content/docs/. One
     // table written once moves this by TWO, because scripts/build-site-pages.py
@@ -2881,7 +2892,7 @@ fn no_documentation_table_repeats_a_row() {
     // `docs/vcon-harness.md` and ten in its generated site mirror, counted
     // with `grep -c '^|---'` on each before the number moved. Twenty is the
     // whole delta, and a published page always costs this counter double.
-    const EXPECTED_TABLES: usize = 697;
+    const EXPECTED_TABLES: usize = 733;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -3584,7 +3595,7 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() {
     let page =
         std::fs::read_to_string(repo.join("docs/mcp-tools.md")).expect("read docs/mcp-tools.md");
 
-    let name_re = regex::Regex::new(r#"name\s*=\s*"([a-z_]+)""#).unwrap();
+    let name_re = regex::Regex::new(r#"name\s*=\s*"([a-z0-9_]+)""#).unwrap();
     let tools: std::collections::BTreeSet<String> = name_re
         .captures_iter(&server)
         .map(|c| c[1].to_string())
@@ -3846,7 +3857,7 @@ fn the_benchmarks_page_names_one_measured_release_throughout() {
 fn prose_mcp_tool_counts_match_the_server() {
     let server = registered_mcp_sources();
     let server = server.as_str();
-    let registered = regex::Regex::new(r#"(?m)^\s+name = "[a-z_]+","#)
+    let registered = regex::Regex::new(r#"(?m)^\s+name = "[a-z0-9_]+","#)
         .unwrap()
         .find_iter(server)
         .count();

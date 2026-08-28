@@ -29,9 +29,11 @@ ordinary update.
 | Tool | Parameters | Returns |
 |---|---|---|
 | [`list_dialogs`](#list-dialogs) | `filter?`, `limit?`, `cursor?` | A page of dialog summaries, with the total behind it |
+| [`validate_filter`](#validate-filter) | `expr` | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
 | [`get_dialog_report`](#get-dialog-report) | `call_id`, `format?` | Structured per-call report (JSON / Markdown / text) |
 | [`aggregate_dialogs`](#aggregate-dialogs) | `group_by`, `filter?`, `top_n?` | Counts dialogs grouped by ONE field, in the store rather than in the model |
 | [`timeline`](#timeline) | `bucket_seconds?` | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
+| [`group_dialogs`](#group-dialogs) | `by`, `metrics?`, `filter?`, `top_n?` | Carrier metrics per group — ASR, NER, ACD, post-dial delay, MOS, retransmissions — each beside the population it rests on |
 | [`get_capture_report`](#get-capture-report) | `format?` | Whole-capture analysis: findings, orphaned media, STUN/ICMP evidence, what the caps shed |
 | [`find_problems`](#find-problems) | `kinds?`, `filter?`, `limit?`, `cursor?` | A page of dialogs matching one or more diagnostic alias names |
 | [`get_dialog`](#get-dialog) | `call_id`, `max_messages?`, `cursor?` | Paginated dialog with full SIP messages |
@@ -49,17 +51,26 @@ ordinary update.
 | [`validate_message`](#validate-message) | `call_id`, `index`, `suppression_file?` | Conformance findings for one message, read alone |
 | [`explain_rule`](#explain-rule) | `rule_id` | The catalog entry behind one rule identifier: citation, basis, scope, selectors |
 | [`show_evidence`](#show-evidence) | `refs`, `max_bytes?` | Follows frame pointers back to the captured bytes: verified, unverified, or unresolvable with a reason |
+| [`decode_evidence`](#decode-evidence) | `frame_ref`, `field?` | Decodes the frame one pointer names: link type, addressing, and each SIP header's byte range inside the message and the frame |
 | [`check_codec_negotiation`](#check-codec-negotiation) | `call_id` | Codecs offered vs answered and whether they intersect — for 488s |
 | [`diagnose_registration`](#diagnose-registration) | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
 | [`explain_response_code`](#explain-response-code) | `code` | IANA registry meaning and class for a SIP status code |
 | [`compare_dialogs`](#compare-dialogs) | `call_id_a`, `call_id_b` | Two calls side by side, with the differences named |
 | [`find_correlated`](#find-correlated) | `call_id`, `limit?` | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
+| [`get_call_tree`](#get-call-tree) | `call_id`, `limit?` | Every leg of one call as a tree, each edge carrying its parent, depth, score, strategy and whether the walk went through it |
 | [`get_sdp_timeline`](#get-sdp-timeline) | `call_id` | SDP offer/answer exchanges in order: codecs, ptime, direction |
 | [`search_by_time`](#search-by-time) | `start`, `end?`, `filter?`, `limit?`, `cursor?` | Dialogs whose first message falls in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) window |
+| [`describe_endpoint`](#describe-endpoint) | `ip?`, `user?`, `limit?` | Everything one participant did: dialogs by method and state, INVITE outcomes, REGISTER state, banners, streams, findings |
 | [`list_captures`](#list-captures) | -- | Capture files in `--mcp-file-root`, with sizes |
+| [`compare_captures`](#compare-captures) | `a`, `b`, `dimensions?`, `top_n?` | Diffs two capture files in `--mcp-file-root` by aggregate, ranked by how far each bucket MOVED. Neither becomes the loaded capture |
 | [`export_capture`](#export-capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
 | [`export_audio`](#export-audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
 | [`export_vcon`](#export-vcon) | `call_id` | One dialog as a vCon conversation container, structured JSON. Unsigned, retained audio inline, and it carries what the capture missed |
+| [`build_evidence_package`](#build-evidence-package) | `call_ids`, `filename` | **Write.** One directory of escalation artifacts in `--mcp-file-root`: pcapng, ladder and RTP stats per call, manifest, and the rebuilt-frames README |
+| [`evaluate_expectations`](#evaluate-expectations) | `rules?`, `rules_toml?`, `suppression_file?` | A pass/fail verdict per rule plus an exit code for a build. A rule whose population is empty fails rather than passing quietly |
+| [`generate_repro`](#generate-repro) | `call_id`, `format?`, `pin?`, `vary?`, `filename?` | A SIPp scenario replaying one call, with the hypothesis as an input: `pin` holds the suspected cause fixed, `vary` regenerates identity |
+| [`generate_wireshark_filter`](#generate-wireshark-filter) | `call_id`, `include_media?` | A Wireshark display filter selecting one call's signaling and its RTP by SSRC, plus the tshark line that applies it |
+| [`generate_fail2ban_rule`](#generate-fail2ban-rule) | `finding_id` | A fail2ban filter and jail derived from ONE recorded finding, with that finding attached as the evidence |
 | [`shutdown_server`](#shutdown-server) | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
 | [`open_capture`](#open-capture) | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
 | [`save_findings`](#save-findings) | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
@@ -281,6 +292,73 @@ A field already absent from a row stays absent rather than reappearing as
 null: the projection runs on the serialized page, so `skip_serializing_if`
 still decides what exists.
 
+### `validate_filter`
+
+Compiles a Filter DSL expression, counts what it selects, and returns no rows.
+
+The DSL narrows [`list_dialogs`](#list-dialogs), [`find_problems`](#find-problems),
+[`search_by_time`](#search-by-time), [`aggregate_dialogs`](#aggregate-dialogs)
+and [`group_dialogs`](#group-dialogs), and before this tool every way of trying
+an expression cost a page. An agent converging on a working filter — widen it,
+narrow it, try the other field name — paid for a page of fenced summaries per
+attempt and discarded every row. The two failure modes also look alike from
+outside: a malformed expression comes back as `invalid_params`, which lands in
+the error channel where a model acts on it least, and an expression that parses
+but selects nothing returns the same empty page as an empty capture.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `expr` | string | A raw [filter DSL](@/docs/filter-dsl.md) expression, **or** one of the diagnostic aliases [`list_dialogs`](#list-dialogs) takes. Nothing you can put here fails the call. | Required — the call fails. |
+
+**A parse failure is a successful call.** Every other tool rejects a bad filter
+with `invalid_params`, which is right there and wrong here: learning what is
+wrong with an expression is the entire point of this tool, and an error object
+carries that message where a model is least likely to act on it. So a bad
+expression answers `valid: false` with the parser's own text — position, caret
+and hint included — and the only error this tool raises is one it did not
+expect.
+
+```jsonc
+// validate_filter { "expr": "state = Failed" }
+{
+  "schema_version": 1,
+  "expr": "state = Failed",
+  "valid": false,
+  "error": "invalid filter 'state = Failed': unexpected input at position 6: '='\n  state = Failed\n        ^\nvalid operators: ==, !=, <, <=, >, >=, =~ (regex)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
+  "total_matched": null,
+  "total_dialogs": 2
+}
+```
+
+`total_matched` stays `null` on a parse failure rather than dropping to `0`,
+because a zero there reads as "parsed, matched nothing" — the opposite of what
+happened. Fix the expression and the count arrives, measured against the whole
+store with no cursor and no truncation. The example runs against
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+
+```jsonc
+// validate_filter { "expr": "state == 'Completed' and rtp.mos < 4.5" }
+{
+  "schema_version": 1,
+  "expr": "state == 'Completed' and rtp.mos < 4.5",
+  "valid": true,
+  "error": null,
+  "total_matched": 1,
+  "total_dialogs": 2
+}
+```
+
+**Read `total_dialogs` beside `total_matched`.** It is the denominator, and it
+comes back even on a parse failure: 0 matches out of 0 dialogs is an empty
+capture, 0 out of 4000 is an expression that selects nothing, and no single
+number separates them.
+
+Aliases expand here exactly as they do everywhere else, because this tool calls
+the same compiler the other tools call. A second parser would eventually accept
+an expression `list_dialogs` then rejects, which is worse than no tool at all.
+This response carries your own expression and two integers and nothing read off
+the wire, so it appends no provenance note.
+
 ### `aggregate_dialogs`
 
 Counts dialogs grouped by one field, inside the store.
@@ -355,6 +433,154 @@ and line up against each other. Aligning to the earliest call would instead
 shift every boundary whenever that call changed. The series also **keeps empty
 buckets**, as the middle row above shows -- a gap is a finding, and a series
 that silently drops it renders as continuous traffic on a shorter axis.
+
+### `group_dialogs`
+
+Carrier metrics per group, computed inside the store.
+
+[`aggregate_dialogs`](#aggregate-dialogs) answers "how many" and stops.
+Every question beginning with WHICH — which trunk is failing, which User-Agent
+has the worst audio, which hour it started — wants a rate, and a rate is the one
+thing a language model cannot recover from a page of rows: it would have to hold
+every dialog, classify each outcome and divide. Agents stop early and answer
+from the rows they happen to hold, which is how a truncated page becomes a
+confident verdict about a carrier. So this tool computes the rate where the
+dialogs live and reports the population underneath it.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `by` | string | ONE of `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, `rtp.codec`, `to_domain`, `hour`, `next_hop`. Anything else — including two names in one string, such as `"src.ip,hour"` — fails with `invalid_params` naming all twelve. | Required. |
+| `metrics` | string[]? | Any of `count`, `asr`, `ner`, `acd`, `pdd_p50`, `pdd_p95`, `mos_p10`, `retransmit_rate`. The tool sorts and de-duplicates the list, so the key order in the answer never depends on the order you wrote. An unknown name fails naming all eight. | All eight. |
+| `filter` | string? | Alias or DSL, applied before grouping — the same vocabulary [`list_dialogs`](#list-dialogs) takes. | No filter — the whole store. |
+| `top_n` | integer? | Bounded by `--mcp-max-rows`, the same knob that bounds dialog rows. Everything past it lands in `other_count` rather than disappearing. | 50, the same default as any row limit. |
+
+```jsonc
+// group_dialogs { "by": "next_hop", "metrics": ["count", "asr", "ner"], "top_n": 2 }
+{
+  "schema_version": 1,
+  "group_by": "next_hop",
+  "metrics": ["asr", "count", "ner"],
+  "units": { "asr": "percent", "count": "dialogs", "ner": "percent" },
+  "groups": [
+    {
+      "value": "203.0.113.9:5060",
+      "count": 412,
+      "metrics": { "asr": 71.6, "count": 412.0, "ner": 98.27 },
+      "not_grounded": {},
+      "population": {
+        "dialogs": 412, "seizures": 405, "answered": 290, "delivered": 398,
+        "completed_calls": 288, "pdd_measured": 401,
+        "mos_grounded_dialogs": 260, "retransmits": 14
+      }
+    },
+    {
+      "value": "203.0.113.10:5060",
+      "count": 77,
+      "metrics": { "asr": null, "count": 77.0, "ner": null },
+      "not_grounded": {
+        "asr": "no INVITE in this group reached a final response, so nothing in it was a decided call attempt",
+        "ner": "no INVITE in this group reached a final response, so nothing in it was a decided call attempt"
+      },
+      "population": {
+        "dialogs": 77, "seizures": 0, "answered": 0, "delivered": 0,
+        "completed_calls": 0, "pdd_measured": 0,
+        "mos_grounded_dialogs": 0, "retransmits": 0
+      }
+    }
+  ],
+  "other_count": 11,
+  "distinct_values": 6,
+  "total_matched": 500,
+  "capture_identity": { "node": "capture-01", "instance": "1d1a718cb5c33b7c52754-1",
+                        "dialog_generation": 4113, "stream_generation": 902 }
+}
+```
+
+**A `null` metric is an answer, and `not_grounded` says which population went
+missing.** The second group above holds 77 REGISTER dialogs. An ASR of `0` there
+would name a working registrar a dead trunk, which is a wrong answer rather than
+a missing one. That is the discipline `mos_grounded` already applies to a MOS on
+an unpublished codec, extended to the other seven metrics.
+
+**Every figure names its unit in the answer.** An ASR of `0.65` and an ASR of
+`65` describe the same trunk and differ by a factor of a hundred, so `units`
+travels with the numbers rather than living on this page. `asr` and `ner` are
+PERCENTS here and in [`evaluate_expectations`](#evaluate-expectations), which
+takes its thresholds in the same unit: a rule reads `"value": 99`, matching the
+number you read in a report. The two tools disagreed on this before 0.5.130 --
+one percent, one a ratio -- and a threshold copied between them was wrong by a
+hundredfold in the direction that always passes.
+
+The eight metrics, and what each one measures:
+
+| Metric | Unit | Definition | Population it rests on |
+|---|---|---|---|
+| `count` | dialogs | Dialogs in the group. | `dialogs` |
+| `asr` | percent | Answer-seizure ratio: 2xx answers over seizures. | `seizures` |
+| `ner` | percent | Network effectiveness ratio ([ITU-T E.411](https://www.itu.int/rec/T-REC-E.411)): seizures the network delivered over seizures. | `seizures` |
+| `acd` | seconds | Average call duration: mean CONVERSATION time, not dialog span. | `completed_calls` |
+| `pdd_p50`, `pdd_p95` | milliseconds | Post-dial delay percentiles, nearest rank. | `pdd_measured` |
+| `mos_p10` | mos | Tenth-percentile MOS across dialogs holding a stream sipnab can score, worst stream per dialog. | `mos_grounded_dialogs` |
+| `retransmit_rate` | retransmissions per dialog | `retransmits` over `dialogs`. Never refused — a group exists because a dialog fell into it. | `dialogs` |
+
+**A seizure is an INVITE dialog that reached a final response.** Both halves
+carry weight. A REGISTER is not a call attempt, and an INVITE still ringing when
+the capture ended has not failed — counting it as a failed seizure reports a live
+capture as an outage that looks worse the earlier you look.
+
+**NER credits the far end where ASR does not.** A trunk full of 486s has an ASR
+of zero and works perfectly: the network delivered every call and the callee was
+busy, so reading the ASR alone escalates a healthy carrier. The five codes that
+count as delivered are `480`, `486`, `487`, `600` and `603` — the callee
+unavailable, busy, busy everywhere, declining, or the CALLER hanging up on a
+call that had already reached the far end. **`408 Request Timeout` is
+deliberately absent.** A proxy emits it both for a silent phone and for an
+unreachable next hop, so crediting it would credit the network for calls that
+may never have arrived, which is the exact misattribution NER exists to prevent.
+
+**ACD times the conversation, not the dialog.** A call that rang for five
+seconds, talked for sixty and took one more on the BYE handshake spans 66
+seconds and contributes 60. Averaging the span bills the caller for the
+ring-back, which is not what any carrier means by average call duration.
+
+**Percentiles use nearest rank, with no interpolation.** An interpolated p95
+returns a number no call experienced, and these figures get quoted back to a
+carrier as evidence about real calls. Every metric rounds to two decimal places,
+because a ratio over three dialogs is not accurate to fourteen — and the
+population sits beside it, so anyone wanting the exact ratio divides the two
+integers.
+
+**Groups rank by dialog count, largest first, ties broken by value.** Ranking by
+the metric would answer a different question per call and could not page against
+`other_count`. That remainder carries a count and nothing else, deliberately: an
+ASR averaged over the groups that fell off the end is an average of averages
+across the smallest groups, which is the arithmetic that turns one busy trunk
+into a capture-wide verdict. The groups plus `other_count` always equal
+`total_matched`.
+
+**Three dimensions live here and not in `aggregate_dialogs`**, and the set is a
+strict SUPERSET rather than an overlapping one, so an agent never has to
+discover per tool which vocabulary it is talking to:
+
+| Dimension | Value | Fenced? |
+|---|---|---|
+| `to_domain` | The host half of the To URI, port stripped, IPv6 brackets kept. | Yes — the sender wrote it. |
+| `hour` | The calendar hour the dialog opened in, aligned to the epoch like [`timeline`](#timeline) buckets, RFC 3339. | No |
+| `next_hop` | `host:port` the opening message went to, read off the IP and transport headers. | No |
+
+Fencing follows the same rule as everywhere else. `to_domain`, `to.user`,
+`from.user` and `ua` arrive wrapped in `⟦untrusted-capture-data⟧` because a
+sender chose them. A state name, a status code, an address, a codec and
+`next_hop` come back verbatim, because they are sipnab's own derivation and
+telling an agent to distrust them would tell it to distrust the analysis.
+
+Note `next_hop` names the peer only from the vantage point of a capture taken
+beside the sender, which is where a proxy's own trunk traffic gets captured.
+
+One dimension, for the reason [`aggregate_dialogs`](#aggregate-dialogs) gives:
+two is a pivot table, and a pivot table wants a UI. Narrow with `filter`
+instead. Reach for `aggregate_dialogs` when a bare count answers the question —
+it does the same walk without computing seven metrics.
 
 ### `get_capture_report`
 
@@ -1715,6 +1941,129 @@ One bad pointer never discards the rest of a batch — each gets its own entry, 
 a caller can tell which one failed. `max_bytes` caps the hex per frame (default
 256, maximum 4096) and `truncated` says when a frame was longer.
 
+### `decode_evidence`
+
+Follows one frame pointer down to the byte range of a single header.
+
+[`show_evidence`](#show-evidence) answers half the provenance question — are
+these the bytes behind the claim — and hands back a hexdump. That
+leaves a reader holding 500 bytes of Ethernet, IP, UDP and SIP when one header
+line provoked the finding. This tool follows the same pointer through the same
+resolver and reports what the frame CONTAINS: the link type, the innermost
+addressing, and one row per SIP header with where that header sits.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `frame_ref` | string | ONE pointer in `<source>#<ordinal>@<digest>` form — the `frame` key on a dialog, message or stream, or the `frame_ref` key on a `lint_dialog` or `validate_message` finding. Both names carry the same text. A blank string fails with `invalid_params`. | Required — the call fails. |
+| `field` | string? | Keep only headers with this name, matched case-insensitively against the canonical long form (`Contact`, never `m`). | Every header in the message. |
+
+One pointer rather than a batch, unlike `show_evidence`: a status line per
+pointer is small, and a whole packet's structure per pointer fills a context
+window with frames nobody asked to read. `field` is the compact form and the one
+an agent chasing a finding wants — a REGISTER carries a dozen headers and the
+malformed one is a single line.
+
+The example follows the pointer
+[`list_dialogs`](#list-dialogs) returns for the first call in
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+
+```jsonc
+// decode_evidence { "frame_ref": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546",
+//                   "field": "Contact" }
+{
+  "frame_bytes": 500,
+  "link_type": 1,
+  "network": { "src_addr": "10.0.2.20", "src_port": 5060,
+               "dst_addr": "10.0.2.15", "dst_port": 5060, "transport": "UDP" },
+  "ordinal": 0,
+  "payload_bytes": 458,
+  "payload_offset": 42,
+  "pointer": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546",
+  "schema_version": 1,
+  "sip": {
+    "header_count": 9,
+    "headers_returned": 1,
+    "headers": [
+      { "name": "Contact", "value": "sip:sipp@10.0.2.20:5060", "index": 5,
+        "message_byte_start": 227, "message_byte_end": 259,
+        "frame_byte_start": 269, "frame_byte_end": 301 }
+    ],
+    "is_request": true,
+    "method": "INVITE",
+    "start_line": "INVITE sip:test@10.0.2.15:5060 SIP/2.0"
+  },
+  "source": "sip-rtp-g711.pcap",
+  "status": "verified"
+}
+```
+
+`header_count` counts the message and `headers_returned` counts this answer, so
+`field` never hides how much it filtered out. `index` is the ordinal a lint
+finding cites, so a caller holding one pairs the two without matching on header
+names. The message-relative pair locates the header inside the SIP bytes and the
+frame-relative pair locates it inside the whole frame, which is what turns
+`show_evidence`'s hexdump into a quotation.
+
+**A range this tool cannot vouch for disappears, and `ranges_unavailable` says
+why.** The SIP parser keeps no span per header, so this tool walks the raw
+message a second time to find where each logical header line sits — and a second
+walk of one grammar can part company with the first, over a line with no colon,
+a non-UTF-8 line, an over-long one, or the per-message header cap. Every located
+range therefore has to reproduce the value the parser already produced, and on
+any disagreement the WHOLE set drops:
+
+```jsonc
+{ "sip": { "header_count": 7, "headers_returned": 7, "headers": [ /* no byte keys */ ],
+           "ranges_unavailable": "the header walk found 6 logical header line(s) where the parser produced 7 header(s), so nothing pairs them reliably. A range pinned to the wrong header still resolves, which makes it worse than no range." } }
+```
+
+Citing a neighboring header would be worse than citing none, precisely because
+it resolves. The frame-relative pair also drops on its own when the transport
+payload does not sit at exactly one place in the frame — a decapsulated or
+reassembled payload need not be a contiguous slice at all, and two candidate
+offsets make `frame[start..end]` a coin toss. Keys stay absent rather than
+empty throughout, the rule `frame_ref` already follows: `0` and `""` both read
+as real values.
+
+`status` carries the same three words `show_evidence` uses, with the same
+meanings. An unresolvable pointer keeps its own compact shape — no addressing,
+no headers, no byte counts — so a thin decode can never pass for a partial one:
+
+```jsonc
+// decode_evidence { "frame_ref": "uprobe:opensips/1234#7" }
+{
+  "schema_version": 1,
+  "pointer": "uprobe:opensips/1234#7",
+  "status": "unresolvable",
+  "reason": "read 7 came from the TLS library inside opensips (pid 1234); it was never a frame on any wire, so there is no capture to seek into and no bytes to verify it against. This is not a missing file"
+}
+```
+
+Two more refusals sit between "resolved" and "decoded", and each keeps its own
+key rather than pretending to a decode. `decode_unavailable` appears when the
+frame resolves and the capture does not reopen for its link-layer type —
+decoding an SLL or PPPoE capture as Ethernet produces addressing that looks
+decoded and is wrong — and when the frame carries no SIP-bearing transport.
+`not_sip` appears when the transport payload does not parse as SIP.
+
+**The file root confines every source.** A pointer carries whatever path the
+producing run read, usually an absolute path far outside this server's reach.
+This tool never opens that path: it keeps the final component and pushes it
+through `resolve_in_root`, the same guard the file tools use, which is why
+`source` above reads `sip-rtp-g711.pcap` and not the path in the pointer. Without
+that step, a tool taking a caller-supplied path and returning the decoded
+contents of the file there is an arbitrary-file-read primitive wearing a
+`readOnlyHint`. A pointer naming a file outside the root comes back
+`unresolvable` with the confined path in its reason.
+
+**No timestamp, deliberately.** The resolver returns the frame's bytes without
+the capture record that framed them, so any time here would be an invention —
+and a manufactured capture time on an evidence surface is the exact failure this
+mechanism exists to prevent. [`get_message`](#get-message) carries the message's
+time alongside the same pointer. For the same honesty, a frame carrying two
+SIP messages packed into one TCP segment decodes as the FIRST one: the
+pointer is frame-granular, so it cannot name the second.
+
 ### `explain_response_code`
 
 The IANA registry, not an agent's recollection.
@@ -1825,6 +2174,97 @@ since the elapsed time is not why they matched.
 A caveat worth stating plainly: most deployments emit no correlation header at
 all. Where none is present, the only strategy left is the bottom row, and on a
 busy SBC unrelated calls routinely share an endpoint inside its window.
+
+### `get_call_tree`
+
+Every leg of one call, as a tree.
+
+The TUI has stitched B2BUA legs together since the `x` key, and nothing on the
+MCP surface reached it. [`find_correlated`](#find-correlated) answers one hop
+from one Call-ID, so an agent facing a carrier call across an SBC and a PBX —
+three or four dialogs deep — had to call it on each result and assemble the
+graph itself. Multi-leg is the normal case in carrier work, and
+[`get_dialog`](#get-dialog) hands back a quarter of the call without saying so.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `call_id` | string | Any leg of the call. The walk is symmetric, so naming the B-leg returns the same set rooted differently. A Call-ID the store does not hold fails with `call_id '...' not found`. | Required — the call fails. |
+| `limit` | u32? | Maximum legs including the root. Ceiling is `--mcp-max-rows` (1000 by default), higher clamps to it, `0` means the default. | 50 legs. |
+
+The example runs against
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap),
+whose two calls share an SDP origin, with each leg's `dialog` summary trimmed to
+its first three keys:
+
+```jsonc
+// get_call_tree { "call_id": "1-1966@10.0.2.20" }
+{
+  "schema_version": 1,
+  "root_call_id": "1-1966@10.0.2.20",
+  "legs": [
+    {
+      "call_id": "1-1966@10.0.2.20",
+      "depth": 0,
+      "parent_call_id": null,
+      "score": null,
+      "strategy": null,
+      "identifier_match": null,
+      "followed": true,
+      "dialog": { "call_id": "1-1966@10.0.2.20", "state": "Completed", "method": "INVITE" }
+    },
+    {
+      "call_id": "1-1968@10.0.2.20",
+      "depth": 1,
+      "parent_call_id": "1-1966@10.0.2.20",
+      "score": 90,
+      "strategy": "sdp_origin",
+      "identifier_match": true,
+      "followed": true,
+      "dialog": { "call_id": "1-1968@10.0.2.20", "state": "InCall", "method": "INVITE" }
+    }
+  ],
+  "total_legs": 2,
+  "max_depth": 1,
+  "truncated": false,
+  "heuristic_edges": 0,
+  "total_messages": 10,
+  "first_activity": "2016-11-26T14:52:59.666393+00:00",
+  "last_activity": "2016-11-26T14:53:08.290927+00:00"
+}
+```
+
+Every leg past the root names the leg it came from (`parent_call_id`), how far
+out it sits (`depth`), and the strategy and score of that one edge — the same
+`strategy` vocabulary [`find_correlated`](#find-correlated) tabulates. The root
+carries `null` for all four, because the caller named it rather than any
+strategy matching it.
+
+**The walk stops at a timing guess, and says so.** Six of the seven correlation
+strategies compare a value both legs carry, and the walk expands those
+transitively. `timing_heuristic` links two INVITE dialogs that share an endpoint
+address and started inside the leg-correlation window, so on a proxy carrying
+ten calls a second every dialog sits within a guess of every other. Expanded
+transitively that is not a call tree, it is the capture. Such an edge still
+appears in `legs` with `followed: false`, so an agent that wants the next hop
+calls `get_call_tree` again rooted there and sees what it costs.
+
+**Read `followed` before you read the shape.** A leaf appears for two opposite
+reasons — a `timing_heuristic` edge the walk declined to expand, or a leg the
+row cap cut the walk short of — and `followed` reflects what the walk actually
+visited rather than what it intended to visit. A leg still sitting in the queue
+when `limit` ended the walk reports `followed: false`, because claiming it
+had searched that subtree would describe work nobody did. `truncated` says
+the cap fired at all.
+
+`heuristic_edges` counts the guesses in the whole tree. Zero means every link is
+an identifier both legs carried. `total_messages` is the size of the merged
+ladder the TUI's extended flow renders, and `first_activity` and
+`last_activity` bracket the call rather than the root leg.
+
+An unknown `call_id` fails with `invalid_params` rather than answering with an
+empty tree. A call with no other legs and a Call-ID nobody holds are different
+facts, and one empty answer for both collapses them — a lone dialog comes back
+as a one-leg tree with `total_legs: 1` and `max_depth: 0`.
 
 ### `compare_dialogs`
 
@@ -1977,11 +2417,133 @@ every row past the 1000-row ceiling out of reach. The cursor is
 the same compound form [`list_dialogs`](#list-dialogs) issues, and it is opaque:
 pass it back exactly as it arrived.
 
+### `describe_endpoint`
+
+Everything the capture holds about one participant.
+
+The rest of this surface keys on Call-ID, which is the right shape for "why did
+this call fail" and the wrong shape for the question that comes first. An
+operator handed a complaint holds a phone, a trunk or a subscriber — an address
+or a name — and wants to know what that thing has been doing. Agents reason in
+entities too. Answering from a dialog-centric surface meant listing every
+dialog, filtering client-side, and re-deriving per-entity facts the stores
+already hold.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `ip` | string? | The endpoint's address, v4 or v6. Mutually exclusive with `user`. An unparseable value fails with `ip '...' is not an address`. | Give `user` instead. |
+| `user` | string? | The user part of a SIP URI — `alice` from `sip:alice@example.com`. Mutually exclusive with `ip`. | Give `ip` instead. |
+| `limit` | u32? | Bounds `recent_dialogs`, `problem_call_ids` and `findings` only. Ceiling is `--mcp-max-rows` (1000 by default), `0` means the default. | 50. |
+
+**Exactly one selector, and the tool refuses both.** A caller passing an address
+and a name means either their intersection or their union, the two give
+different answers, and picking one silently would answer a question nobody
+asked:
+
+```jsonc
+{ "code": -32602,
+  "message": "give exactly one of ip or user, not both: the two select different sets, and whether you meant their intersection or their union changes the answer" }
+```
+
+The example runs against
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+
+```jsonc
+// describe_endpoint { "ip": "10.0.2.20", "limit": 1 }
+{
+  "schema_version": 1,
+  "endpoint_kind": "ip",
+  "endpoint": "10.0.2.20",
+  "dialogs": 2,
+  "by_method": { "INVITE": 2 },
+  "by_state": { "Completed": 1, "InCall": 1 },
+  "messages_sent": 5,
+  "messages_received": 5,
+  "calls": {
+    "invites": 2, "with_final_status": 2, "failed": 0,
+    "failure_rate_pct": 0.0, "by_final_status": { "200": 2 }
+  },
+  "registration": {
+    "applicable": false, "dialogs": 0, "succeeded": 0, "failed": 0,
+    "auth_loops": 0, "problem_call_ids": []
+  },
+  "user_agents": [],
+  "streams": {
+    "count": 2, "orphaned": 0, "packets": 839, "lost_packets": 0,
+    "max_jitter_ms": 0.0061987502747274615, "codecs": ["PCMA", "PCMU"]
+  },
+  "findings": {
+    "selectable": true, "findings": [], "total_matched": 0, "armed_kinds": [],
+    "note": "No detection rule is armed on this server, so no finding could have been recorded. ..."
+  },
+  "recent_dialogs": [ /* one fenced dialog summary */ ],
+  "truncated": true
+}
+```
+
+**`limit` bounds the page and never the counts.** `dialogs`, `by_method`,
+`by_state`, `calls` and `streams` describe every match, and only
+`recent_dialogs` shortens — with `truncated` saying so. `recent_dialogs` runs
+newest first, because an operator chasing a complaint wants what just happened,
+and [`list_dialogs`](#list-dialogs) already pages the whole history oldest-first
+for anyone sweeping it.
+
+**An `ip` matches on MESSAGES, not on the dialog's opening addresses.** A dialog
+records the socket pair its first message arrived on, so a proxy re-originating
+mid-dialog, a re-INVITE from a second interface, and a BYE from the far side all
+belong to the call while carrying different addresses. Matching the dialog
+record alone would silently drop them, and the dropped ones are exactly the
+transfers and hand-offs an operator is looking for.
+
+**A `user` matches the From or To user part EXACTLY.** [RFC 3261
+§19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4) makes the user
+part case-sensitive, so `Alice` and `alice` name two URIs, and folding the case
+here would file one endpoint's traffic under the name of a second.
+
+Three fields answer differently for a `user`, and each says so rather than
+inventing a number:
+
+| Field | For a `user` | Why |
+|---|---|---|
+| `messages_sent`, `messages_received` | Always `0` | A URI user part names a party, not a socket. Which party sent a given message does not follow from it, and a count derived from something else under this name would be worse than zero. |
+| `streams` | The streams linked to that user's dialogs | A user has no media identity of its own, so the Call-IDs are the only bridge. An `ip` matches the media 5-tuple directly and therefore sees orphans too. |
+| `findings.selectable` | `false`, with a `note` | The alert engine files every finding against a source IP, so no key selects a user. Re-ask with the address. |
+
+That `selectable` flag matters because an empty list has three readings, not
+one. `selectable: false` means nobody could ask. An empty `armed_kinds` means
+nothing was watching, and the `note` says so in the same words
+[`security_findings`](#security-findings) uses. Only on a server with a detector
+armed does an empty list mean the endpoint stayed clean.
+
+`failure_rate_pct` guards its denominator: it comes back `null`, not `0.0`, when
+nothing reached a final status. A zero there hands a clean bill of health to an
+endpoint nobody has measured. `registration.applicable` does the same job for
+REGISTER — `false` means the endpoint sent none, so the four counts under it
+read as "no input" rather than "no failures". A registration counts by the
+REQUEST rather than by the dialog's method, because a REGISTER can arrive inside
+a dialog something else opened once Call-ID reuse is in play, and a registration
+nobody examined reports as a healthy one. The Call-IDs in `problem_call_ids` go
+straight into [`diagnose_registration`](#diagnose-registration).
+
+`user_agents` attributes a banner to whoever wrote it: `User-Agent` off requests
+the address SENT and `Server` off responses it sent, per [RFC 3261
+§20.41](https://www.rfc-editor.org/rfc/rfc3261#section-20.41) and
+[§20.35](https://www.rfc-editor.org/rfc/rfc3261#section-20.35). Reading them off
+received messages would file the far end's software under this endpoint. For a
+`user` only `User-Agent` on requests whose From user matches counts, the one
+case where the URI identifies the party that wrote the header. Values arrive
+fenced, and so do the summaries in `recent_dialogs`.
+
 ### File tools — the shared rule
 
-`list_captures`, `export_capture` and `export_audio` all require
+`list_captures`, `export_capture`, `export_audio`,
+[`compare_captures`](#compare-captures) and
+[`build_evidence_package`](#build-evidence-package) all require
 `--mcp-file-root <DIR>` and refuse to run without it. They take a **bare
-filename, never a path**.
+filename, never a path**. [`generate_repro`](#generate-repro) joins them the
+moment you give it a `filename`, and
+[`decode_evidence`](#decode-evidence) pushes the source half of a frame pointer
+through the same guard.
 
 sipnab refuses `../x`, `/etc/passwd` and `sub/dir.pcap` before any filesystem
 call. That is the whole security model and it is deliberately absolute: a tool
@@ -1999,7 +2561,8 @@ remote break. sipnab closes it because this page calls the boundary absolute, an
 a boundary described that way ought to be.
 
 > **The boundary stops an escape, and an overwrite.** Inside the root,
-> `export_capture`, `export_audio` and `shutdown_server`'s `save_to` refuse a
+> `export_capture`, `export_audio`, `build_evidence_package`, `generate_repro`'s
+> `filename` and `shutdown_server`'s `save_to` refuse a
 > filename that already exists, name the file, and ask for one that is free.
 > sipnab declines to write over a file it did not create, because that file may
 > hold the only copy of a capture. Call
@@ -2053,6 +2616,104 @@ directory:
   ]
 }
 ```
+
+### `compare_captures`
+
+Is today worse than yesterday, and where.
+
+Baseline comparison is what turns a capture tool into an operations tool, and
+nothing else on this surface reaches past the loaded capture. The answer has to
+be a diff of AGGREGATES rather than of dialog lists — two captures never share a
+Call-ID, so comparing rows finds every dialog different and says nothing. This
+tool reads both files, groups each one the way
+[`aggregate_dialogs`](#aggregate-dialogs) groups, and ranks the buckets by how
+far they MOVED.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `a` | string | The baseline: a bare filename inside `--mcp-file-root`. | Required — the call fails. |
+| `b` | string | The capture to hold against it, in the same root. | Required — the call fails. |
+| `dimensions` | string[]? | From the `aggregate_dialogs` vocabulary: `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, `rtp.codec`. A repeated name de-duplicates rather than failing. Anything else fails naming the nine. | `["state", "response_code"]` — how many calls reached each state, and which codes they ended on. |
+| `top_n` | integer? | Rows per dimension. Everything past it sums into `other`. Ceiling is `--mcp-max-rows`. | 50. |
+
+The example diffs two files in `tests/pcap-samples`:
+
+```jsonc
+// compare_captures { "a": "sip-rtp-g711.pcap", "b": "sip-auth-failure.pcapng",
+//                    "dimensions": ["state"], "top_n": 4 }
+{
+  "schema_version": 1,
+  "a": { "filename": "sip-rtp-g711.pcap", "packets": 852, "dialogs": 2,
+         "streams": 2, "dialogs_dropped": 0, "read_error": null },
+  "b": { "filename": "sip-auth-failure.pcapng", "packets": 8, "dialogs": 2,
+         "streams": 0, "dialogs_dropped": 0, "read_error": null },
+  "dimensions": [
+    {
+      "dimension": "state",
+      "buckets": [
+        { "value": "Completed",  "a": 1, "b": 0, "delta": -1 },
+        { "value": "Failed",     "a": 0, "b": 1, "delta":  1 },
+        { "value": "InCall",     "a": 1, "b": 0, "delta": -1 },
+        { "value": "Terminated", "a": 0, "b": 1, "delta":  1 }
+      ],
+      "other": { "value": "(other)", "a": 0, "b": 0, "delta": 0 },
+      "distinct_values": 4
+    }
+  ],
+  "summary": "'sip-rtp-g711.pcap' (2 dialogs) is the baseline; 'sip-auth-failure.pcapng' (2 dialogs) is held against it, so delta is b minus a. Neither is the capture this server has loaded."
+}
+```
+
+**Buckets rank by absolute movement, not by size.** The question is what
+changed, and the largest bucket is usually the one that changed least, so "today
+is worse than yesterday, and here is where" reads off the first row. `delta` is
+`b - a` throughout. A value absent from one side counts as zero there rather
+than as missing, because a response code appearing only in `b` IS the finding.
+
+**Neither file becomes the loaded capture.** Both reads land in private stores
+that the call drops before it builds the answer, so what an agent asked a minute
+ago stays true afterwards. The read runs on a blocking thread, since two whole
+captures inside a tool handler would otherwise hold the single runtime thread
+the MCP server and the REST API share.
+
+One thing does escape that isolation, which is why this tool carries
+`readOnlyHint: false`: reading a file through the shared pipeline bumps the
+PROCESS-WIDE undecodable-frame tallies and the ICMP evidence store that
+[`get_capture_report`](#get-capture-report) reports. It destroys nothing, and
+something observable moves. This reuses
+[`open_capture`](#open-capture)'s existing behavior rather than inventing a new
+one.
+
+**Read the two `CaptureSide` blocks before the deltas.** `dialogs_dropped` above
+zero means that side hit the dialog ceiling and every count under it is a FLOOR
+rather than a total, and `read_error` names a read that stopped early. A
+truncated pcap is the normal state of a rotating capture's newest member, so a
+partial read reports rather than fails — and `summary` restates both conditions
+in words, because a comparison against a partial population is a wrong answer
+wearing the shape of a right one.
+
+Four refusals, each cheaper than the mistake it prevents:
+
+| Situation | Answer |
+|---|---|
+| No `--mcp-file-root` | `file tools are disabled: start sipnab with --mcp-file-root <DIR> to enable them` |
+| A path rather than a bare name | `'../../etc/passwd' is not a bare filename. These tools take a name, not a path, ...` |
+| `a` and `b` resolving to one file | `'x.pcap' and 'x.pcap' are the same file (...); a capture compared with itself differs from itself nowhere` |
+| A dimension outside the vocabulary | `cannot compare on 'hour'; one of: state, response_code, ...` |
+
+The vocabulary check runs BEFORE either file opens, because reading two captures
+is the most expensive thing this surface does and a mistyped dimension must not
+cost it. The same-file check runs after the resolver fully resolves both names,
+so it catches two spellings of one file as well as the same name twice. And a
+capture that yielded no dialogs AND reported a read error fails with
+`internal_error` rather than diffing: every bucket would appear to collapse to
+zero, which is a finding that is not there.
+
+Note the dimension list here is the plain
+[`aggregate_dialogs`](#aggregate-dialogs) nine.
+[`group_dialogs`](#group-dialogs)'s three extras — `to_domain`, `hour`,
+`next_hop` — do not apply, and `hour` in particular would compare two captures
+of different days bucket by bucket.
 
 ### `export_capture`
 
@@ -2306,6 +2967,445 @@ layout, which spends a v7's entropy on a host-derived `rand_b`.
 A binary built without the `vcon` Cargo feature refuses this tool with
 `invalid_params` and names the feature, rather than the tool being absent.
 [`server_capabilities`](#server-capabilities) lists what a given binary carries.
+
+### `build_evidence_package`
+
+One directory holding everything an escalation needs for a set of calls.
+
+Analysis ending in a paragraph creates work: somebody has to translate it into
+an attachment, a ticket or a message to a carrier. This tool ends the analysis
+in an artifact instead — a pcapng of the signaling, a ladder and an RTP-stats
+file per call, a manifest, and a README carrying the rebuilt-frames disclaimer.
+The disclaimer lives INSIDE the directory on purpose. The directory is what gets
+forwarded, and whoever opens it at the carrier never saw the tool that made it.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `call_ids` | string[] | At least one Call-ID the store holds, in the order they should appear. A repeat packages once. More than `--mcp-max-rows` of them fails, asking for batches. | Required — the call fails. |
+| `filename` | string | A bare directory name inside `--mcp-file-root`, and it must not already exist. | Required — the call fails. |
+
+```jsonc
+// build_evidence_package { "call_ids": ["1-1966@10.0.2.20", "1-1968@10.0.2.20"],
+//                          "filename": "escalation-4417" }
+{
+  "schema_version": 1,
+  "path": "/var/spool/sipnab-exports/escalation-4417",
+  "calls": 2,
+  "messages": 10,
+  "files": [
+    "README.md", "manifest.json",
+    "call-01-ladder.md", "call-01-rtp.json",
+    "call-02-ladder.md", "call-02-rtp.json",
+    "signaling.pcapng"
+  ],
+  "summary": "2 call(s) packaged in /var/spool/sipnab-exports/escalation-4417. README.md inside it states that the frames in signaling.pcapng were rebuilt from parsed messages rather than copied, which is the claim the recipient has to see."
+}
+```
+
+`manifest.json` maps each ordinal back to its Call-ID and repeats the
+disclaimer as a field:
+
+```jsonc
+{
+  "schema_version": 1,
+  "sipnab_version": "0.5.129",
+  "package": "escalation-4417",
+  "signaling": "signaling.pcapng",
+  "signaling_frames_rebuilt": true,
+  "calls": [
+    { "index": 1, "call_id": "1-1966@10.0.2.20",
+      "ladder": "call-01-ladder.md", "rtp_stats": "call-01-rtp.json" },
+    { "index": 2, "call_id": "1-1968@10.0.2.20",
+      "ladder": "call-02-ladder.md", "rtp_stats": "call-02-rtp.json" }
+  ]
+}
+```
+
+**Filenames are ordinals, never the Call-ID.** A Call-ID is arbitrary text a
+peer chose: it can hold a separator, a leading dash, four hundred characters, or
+bytes no filesystem wants. None of that belongs in a name this tool constructs,
+so the manifest carries the correlation and `call-01-ladder.md` carries the
+content.
+
+**The pcapng holds every named call's messages in one chronological run**, not
+grouped by leg. A multi-leg escalation reads as one timeline, and splitting it
+by leg hides the interleaving that is usually the finding. Its frames come from
+[`export_capture`](#export-capture)'s writer and carry that tool's whole
+asterisk: the SIP layer is faithful, everything under it comes rebuilt from
+recorded addresses and ports, a SIP-over-TCP message writes as UDP, and RTP,
+RTCP, DNS and ICMP are absent. The RTP measurements in `call-NN-rtp.json` come
+from the ORIGINAL capture and nobody can reproduce them from the pcapng alone,
+which is exactly why the README says so.
+
+The ladder and the stats come from [`render_ladder`](#render-ladder) and
+[`rtp_stats`](#rtp-stats) rather than from a second rendering path, so a package
+can never disagree with what the same agent saw over the wire.
+
+**Nothing gets created until every Call-ID checks out.** The tool collects the
+messages first, so an unknown id in the middle of the list fails with
+`invalid_params` and leaves no directory and no claimed name behind. Any write
+that fails afterwards removes the part-built directory too: a half-written
+package would hold the name against a retry and read as complete evidence.
+
+The [shared file rule](#file-tools-the-shared-rule) applies in full — bare
+names only, no symlink out of the root, and the tool declines a name already
+taken, including by a directory:
+
+```jsonc
+{ "code": -32602,
+  "message": "the requested filename '/var/spool/sipnab-exports/escalation-4417' already exists. sipnab will not write over it, because that file may be the only copy of a capture — choose a name that is not taken." }
+```
+
+An empty `call_ids` array fails too, with `an empty package is a directory of
+disclaimers`.
+
+### `evaluate_expectations`
+
+A pass/fail verdict on the loaded capture, and an exit code for a build.
+
+Every other tool here makes a bad day shorter. This one prevents it, and it
+moves sipnab from something an operator reaches for during an incident to
+something that runs on every commit. The rules live in a checked-in
+`sipnab.expect.toml` beside the SBC config: that file is the UX, and this tool
+is how an agent reasons about it.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `rules` | object[]? | The suite inline. Each rule is `{metric, op, value}` plus optional `name`, `scope`, `min_sample` and `grounded_only`. Mutually exclusive with `rules_toml`. | Give `rules_toml` instead. |
+| `rules_toml` | string? | The verbatim text of a `sipnab.expect.toml`. Mutually exclusive with `rules`. | Give `rules` instead. |
+| `suppression_file` | string? | A lint suppression file in `--mcp-file-root`, applied to the `lint_errors` rules. | Discovers a `.sipnablint` beside the capture, exactly as [`lint_dialog`](#lint-dialog) does. |
+
+Passing the file's own bytes is the point of `rules_toml`: the agent then judges
+the capture against exactly what CI judges it against, rather than against its
+own transcription. Passing both, or neither, fails — two suites in one call have
+no defined order, and a call with no suite would report a verdict on nothing.
+
+One rule is a metric, a comparison, a threshold, and what it applies to:
+
+| Field | Legal values |
+|---|---|
+| `metric` | `count` (dialogs matching the scope), `asr` (answered over seized, as a PERCENT from 0 to 100, the same unit `group_dialogs` reports), `lint_errors` (conformance findings at or above a severity floor), `mos_p<N>` (a MOS percentile, `mos_p0` worst to `mos_p100` best). |
+| `op` | `>=`, `>`, `<=`, `<`, `==`, `!=` |
+| `value` | The threshold, in the metric's own unit. |
+| `scope` | `filter:<alias-or-DSL>` to narrow by dialog, or `severity:<info\|notice\|warning\|error>` to set the floor a `lint_errors` rule counts from. Omitted means the whole capture. |
+| `min_sample` | Observations below which the rule reports `skipped` rather than a verdict. |
+| `grounded_only` | MOS metrics only. Defaults to `true`. |
+
+```jsonc
+// evaluate_expectations { "rules": [
+//   { "name": "no codec rejections", "metric": "count", "op": "==", "value": 0,
+//     "scope": "filter:response_code == 488" },
+//   { "name": "audio floor", "metric": "mos_p10", "op": ">=", "value": 4.0 },
+//   { "name": "answer rate", "metric": "asr", "op": ">=", "value": 99, "min_sample": 50 } ] }
+{
+  "schema_version": 1,
+  "verdict": "pass",
+  "exit_code": 0,
+  "rules_total": 3, "evaluated": 2, "passed": 2, "failed": 0, "skipped": 1,
+  "dialogs_in_capture": 2,
+  "streams_in_capture": 2,
+  "suppressions_applied": false,
+  "results": [
+    { "index": 0, "name": "no codec rejections", "metric": "count",
+      "unit": "dialogs", "op": "==", "threshold": 0.0,
+      "scope": "filter:response_code == 488", "observed": 0.0, "sample": 2,
+      "verdict": "pass", "reason": "0 is == 0 over 2 dialog(s)" },
+    { "index": 1, "name": "audio floor", "metric": "mos_p10",
+      "unit": "mos (1.0-5.0)", "op": ">=", "threshold": 4.0,
+      "observed": 4.358100156401542, "sample": 2, "ungrounded_excluded": 0,
+      "verdict": "pass", "reason": "4.3581 is >= 4 over 2 scored stream(s)" },
+    { "index": 2, "name": "answer rate", "metric": "asr",
+      "unit": "ratio (0.0-1.0)", "op": ">=", "threshold": 0.99,
+      "observed": 1.0, "sample": 2, "min_sample": 50,
+      "verdict": "skipped",
+      "reason": "skipped: 2 seizure(s) is below the declared min_sample of 50" }
+  ],
+  "capture_identity": { "node": "capture-01", "instance": "1d1a718cb5c33b7c52754-1",
+                        "dialog_generation": 13, "stream_generation": 2 }
+}
+```
+
+**`unit` rides on every outcome, and reading it is not optional.** `asr` here is
+a RATIO from 0.0 to 1.0, and the same name in
+[`group_dialogs`](#group-dialogs) is a PERCENT. A threshold of `0.99` means 99%
+under one reading and 1% under the other, so the answer names its unit rather
+than leaving it to this page.
+
+**An empty population FAILS, and the message says why.** Three failure modes get
+a gate deleted rather than fixed, and each one has an answer here:
+
+| Failure mode | What this tool does |
+|---|---|
+| Passing on data it never judged | A rule whose population is empty reports `fail` with `reason` beginning `unevaluable:`. A MOS threshold on a capture full of AMR-WB would otherwise score every stream off a placeholder and report green having measured nothing. |
+| Failing on a sample too small to mean anything | `min_sample` is a declared floor. Below it a rule reports `skipped`, so a three-call smoke test never trips an ASR threshold on a Friday afternoon. |
+| Lying about coverage | A suite where every rule skipped reports `not_evaluated` with exit code `2`, distinct from a pass. A file of rules that never run is exactly the thing that stays in a repository claiming to check something. |
+
+Declaring `min_sample` of 1 or more is the ONLY way to have an empty population
+tolerated, and that asymmetry carries weight: a gate goes quiet only where its
+author wrote down that it may. `min_sample: 0` declares no floor at all, so it
+leaves the empty case failing exactly as an absent one does.
+
+```jsonc
+// evaluate_expectations { "rules": [{ "metric": "asr", "op": ">=", "value": 95 }] }
+// ... on a capture holding two REGISTER dialogs and no call attempt:
+{ "verdict": "fail", "exit_code": 1, "evaluated": 1, "failed": 1,
+  "results": [ { "index": 0, "metric": "asr", "observed": null, "sample": 0,
+    "verdict": "fail",
+    "reason": "unevaluable: no seizure was in scope, so 'asr >= 95' rests on nothing. Declare a min_sample of 1 or more to accept an empty population in writing; a gate does not pass on data it never judged" } ] }
+```
+
+The verdict tests the SAMPLE rather than whether a value came back. `count`
+always produces a value — zero matches is zero — so checking the value alone let
+`count == 0` pass on a capture holding no dialogs at all, which is the exact
+"green on data it never judged" this design refuses.
+
+`exit_code` is what a command line reports: `0` every rule that ran passed, `1`
+at least one failed, `2` nothing ran. CI has to tell a green run from a run that
+judged nothing, and a shell script comparing against `0` cannot.
+
+Three more things the report says out loud. `sample` names how many observations
+each figure rests on. `ungrounded_excluded` appears on MOS rules and counts the
+streams whose codec has no published impairment value — with `grounded_only`
+off, `notes` says instead that placeholder scores entered the percentile.
+`suppressions_applied` says whether a lint suppression file was in force, so a
+`lint_errors` count of zero cannot pass for one taken with every rule armed.
+
+A defect in the RULES is a hard error rather than a per-rule failure: an unknown
+metric, an unparseable filter, a `severity:` scope on a metric that reads no
+findings, `grounded_only` on a metric that reads no MOS, or a percentile outside
+0 to 100 all fail the whole call with `invalid_params` naming the rule's index.
+A misspelled metric evaluating to "fail" would look identical to traffic that
+genuinely broke the threshold, and one evaluating to "pass" would be a gate that
+checks nothing while looking green. Half a gate reporting green is the outcome
+this refuses to produce.
+
+> Nothing on the CLI reaches this evaluator yet. It and `exit_code` both ship
+> and both carry tests, and no flag runs them, so a checked-in
+> `sipnab.expect.toml` cannot fail a build on its own today.
+
+### `generate_repro`
+
+A SIPp scenario that replays one call, with your hypothesis as an input.
+
+The novel part is the second half of that sentence. `pin` names the aspects of
+the captured request you believe caused the outcome and copies them
+byte-for-byte. `vary` names the identity fields SIPp regenerates per run, so the
+replay is a new call rather than a retransmission of the captured one. The
+artifact then encodes the theory, and running it tests THAT rather than
+replaying generically. Getting the split wrong emits a scenario that
+"reproduces" for unrelated reasons, which is worse than emitting nothing.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `call_id` | string | A Call-ID the store holds, carrying at least one request. | Required — the call fails. |
+| `format` | string? | `"sipp"`, the only one. Anything else fails with `unknown format 'x'; 'sipp' is the only one`. | `"sipp"`. |
+| `pin` | string[]? | Any of `branch`, `call_id`, `cseq`, `headers`, `request_uri`, `sdp`, `tags`, `user_agent`. An explicit `[]` means "nothing", not "the default". | Nothing pinned — the scenario tests no theory and the response says so. |
+| `vary` | string[]? | `branch`, `call_id`, `tags` — the three SIPp can regenerate. Anything else from the `pin` vocabulary fails, naming the three. | All three. |
+| `filename` | string? | A bare name in `--mcp-file-root` to write the scenario to as well. The text comes back either way. | The response carries the scenario and nothing touches the disk. |
+
+```jsonc
+// generate_repro { "call_id": "1-1966@10.0.2.20", "pin": ["sdp", "user_agent"] }
+{
+  "schema_version": 1,
+  "call_id": "1-1966@10.0.2.20",
+  "format": "sipp",
+  "hypothesis": {
+    "pinned": ["sdp", "user_agent"],
+    "varied": ["branch", "call_id", "tags"],
+    "generated": ["contact", "content_length", "cseq", "max_forwards", "request_uri", "via"],
+    "omitted": ["headers"]
+  },
+  "asserted": { "provisional": [100], "final": 200 },
+  "scenario": "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<!DOCTYPE scenario SYSTEM \"sipp.dtd\">\n...",
+  "run": "sipp -sf <scenario.xml> -m 1 <proxy-host>:<port>",
+  "caveats": [
+    "user_agent was pinned and the captured request carries no User-Agent header, so none is sent",
+    "the pinned body names the media endpoint the ORIGINAL caller advertised, so any RTP the far end sends goes there and not to the machine running SIPp",
+    "SIPp sends from the host you run it on. Source address, routing and any IP access list differ from the capture, and a reproduction depends on those matching."
+  ]
+}
+```
+
+**Read the `hypothesis` block as a four-way split of the original request.**
+`pinned` came across byte-for-byte, `varied` is what SIPp regenerates,
+`generated` is what the template supplies instead of the capture, and `omitted`
+is what the capture held and the scenario leaves out. Nothing falls outside
+those four, so no aspect of the original quietly survives or quietly vanishes.
+
+**Only three aspects can vary, because varying needs a generator rather than an
+opinion.** SIPp supplies a fresh Call-ID, tag and branch for every call it
+places. It has no defined way to invent a plausible SDP body or User-Agent, and
+a scenario built on an invented one would reproduce — or fail to — for a reason
+nobody chose. Asking for anything else fails:
+
+```jsonc
+{ "code": -32602,
+  "message": "'sdp' cannot be varied: SIPp has no generator for it. Variable aspects are branch, call_id, tags. Pin it instead if it is part of your hypothesis." }
+```
+
+**An aspect in both `pin` and `vary` fails outright.** Held fixed and
+regenerated are opposite instructions, and a scenario that silently picked one
+would encode a theory nobody stated. All three identity fields vary by default
+for a reason worth stating: replaying a captured Call-ID, tag and branch at a
+proxy is not a repro at all — to the transaction layer it is a retransmission of
+a call that proxy already answered, so the response says more about its
+transaction state than about the theory under test.
+
+**Anything unpinned takes a generic value, and `caveats` names the cost.** With
+no `sdp` pin the offer is a stock PCMU one, so a codec or attribute the far end
+rejected never appears. With an empty `pin` list the response says outright that
+the scenario encodes no hypothesis. A pinned body brings the captured
+`Content-Type` with it, because the aspect pins BYTES and the label has to
+describe them — a multipart body announced as `application/sdp` gets rejected
+for a reason that has nothing to do with the theory.
+
+The `recv` sequence asserts what the capture actually held: every provisional
+code seen, plus `100` whether or not the capture held one, and the final status.
+A call with no final response in the capture asserts nothing about the outcome —
+the scenario sends the request and waits. For an INVITE the scenario sends an ACK either
+way, with the Via that RFC 3261 calls for in each case: a fresh branch on a 2xx,
+because that ACK is a new transaction, and `[last_Via:]` on a non-2xx, because
+[§17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) makes it
+part of the INVITE transaction.
+
+Twelve headers the scenario always owns come from the template whatever the
+capture held, `pin: ["headers"]` included: `Via`, `Contact`, `Content-Length`,
+`Content-Type`, `CSeq`, `From`, `To`, `Call-ID`, `Max-Forwards`, `Record-Route`,
+`Route` and `User-Agent`. A replay runs from a different host, so a captured
+`Via` or `Contact` would send the responses to a machine that is not the one
+running the test.
+
+Two escaping rules protect the artifact, because an operator runs it against
+their own proxy. A CR or LF inside a captured header value would end that header
+and start another, so this tool strips control characters rather than escaping
+them — a SIP header has no escape for one. And `]]>` inside a header value or
+SDP attribute would close the scenario's CDATA section early, so it splits
+across two sections, which preserves the bytes exactly.
+
+Everything in `scenario` beyond the template — the Request-URI, header values,
+SDP — came from the packet's sender, so the response carries the provenance note
+rather than fencing the document field by field.
+
+### `generate_wireshark_filter`
+
+A display filter selecting one call, and the tshark line that applies it.
+
+This is a deliberate small thing. Handing off cleanly to the human's preferred
+tool signals that sipnab is not trying to own the workflow, and the person who
+takes the escalation usually opens Wireshark next.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `call_id` | string | A Call-ID the store holds. | Required — the call fails. |
+| `include_media` | bool? | `true` adds one `rtp.ssrc` term per stream attributed to the call. | `true`. |
+
+```jsonc
+// generate_wireshark_filter { "call_id": "1-1966@10.0.2.20" }
+{
+  "schema_version": 1,
+  "call_id": "1-1966@10.0.2.20",
+  "display_filter": "sip.Call-ID == \"1-1966@10.0.2.20\" || rtp.ssrc == 0x343da99b",
+  "tshark": "tshark -r 'tests/pcap-samples/sip-rtp-g711.pcap' -Y 'sip.Call-ID == \"1-1966@10.0.2.20\" || rtp.ssrc == 0x343da99b'",
+  "streams_included": 1,
+  "notes": [
+    "rtp.ssrc matches only once Wireshark is decoding those packets as RTP. Enable 'Try to decode RTP outside of conversations', or use Decode As on the media ports, if the SSRC terms select nothing."
+  ]
+}
+```
+
+The `tshark` line names this run's capture file when the server reads one, and
+falls back to `<capture.pcap>` on a live capture. Both the filename and the
+filter go through POSIX shell quoting, so an embedded quote in a Call-ID closes
+and reopens the quoted word rather than ending it.
+
+`notes` earns its place twice. With `include_media: true` and no stream
+attributed to the call, it says the filter selects signaling only — otherwise a
+filter that quietly lost half its intent looks the same as one that never had
+it. With SSRC terms present, it warns that `rtp.ssrc` matches nothing until
+Wireshark decodes those packets as RTP, which is the first thing that goes wrong
+when someone pastes this filter into a fresh window.
+
+**A Call-ID carrying a control character fails.** The display-filter grammar
+escapes `\` and `"` and nothing else, so a filter built around a control
+character either fails to compile or selects something other than what it names.
+A filter that quietly selects the wrong packets is worse than no filter:
+
+```jsonc
+{ "code": -32602,
+  "message": "this Call-ID carries the control character U+0009, which a Wireshark display-filter string literal cannot represent. A filter written around it would not mean what the Call-ID says." }
+```
+
+### `generate_fail2ban_rule`
+
+A fail2ban filter and jail derived from ONE recorded security finding.
+
+Scoped to one finding, with that finding attached as the evidence. A rule
+generated from a class of findings would be a policy this tool has no standing
+to write. A rule generated from one, with the alert line it matches printed
+beside it, is something an operator can read and decide on.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `finding_id` | string | `<rule_name>@<src_ip>@<timestamp>` — the three fields [`security_findings`](#security-findings) already returns for every finding. | Required — the call fails. |
+
+The id derives from the finding rather than coming from a counter, because an
+assigned id would have to survive eviction, restart and a second server reading
+the same capture, and none of those hold for a position in a bounded ring
+buffer. An agent holding "id 7" across a restart would act on a different
+finding.
+
+```jsonc
+// generate_fail2ban_rule { "finding_id": "digest@203.0.113.101@2026-08-28T11:31:03.859034298+00:00" }
+{
+  "schema_version": 1,
+  "finding_id": "digest@203.0.113.101@2026-08-28T11:31:03.859034298+00:00",
+  "evidence": {
+    "rule_name": "digest",
+    "src_ip": "203.0.113.101",
+    "detail": "⟦untrusted-capture-data⟧WeakAlgorithm: challenge uses algorithm=MD5 (should be SHA-256+)⟦/untrusted-capture-data⟧",
+    "timestamp": "2026-08-28T11:31:03.859034298+00:00"
+  },
+  "filter_name": "sipnab-digest",
+  "filter_path": "/etc/fail2ban/filter.d/sipnab-digest.conf",
+  "filter_conf": "# Generated by sipnab from finding digest@203.0.113.101@...\n[Definition]\nfailregex = ^.*\\[ALERT\\] digest src=<HOST> .*$\nignoreregex =\n",
+  "jail_path": "/etc/fail2ban/jail.d/sipnab-digest.conf",
+  "jail_conf": "[sipnab-digest]\nenabled  = true\nfilter   = sipnab-digest\nlogpath  = /var/log/syslog\nport     = 5060,5061\nprotocol = udp\nmaxretry = 3\nfindtime = 600\nbantime  = 3600\n",
+  "log_line_format": "[ALERT] <rule_name> src=<ip> <detail>",
+  "caveats": [ /* three, below */ ]
+}
+```
+
+**The `failregex` matches sipnab's own alert line**, the `[ALERT] <rule> src=<ip>
+<detail>` form sipnab writes. So the jail sees nothing until sipnab runs with
+`--alert syslog`, or something captures its stderr to the `logpath`. That is the
+first caveat, and it is the one that makes an otherwise-correct jail inert.
+
+The other two caveats say what the numbers are not. `maxretry`, `findtime` and
+`bantime` are fail2ban's conventional starting values rather than figures sipnab
+measured on this traffic — choose them from your own false-positive tolerance.
+And one finding is evidence that this detector fired, not that every future
+match is an attacker: the jail bans any source the detector reports, this one
+included. A loopback `src_ip` adds a fourth caveat, because a jail acting on it
+would ban the host from itself.
+
+Two refusals. A server with no detector armed holds no findings at all, and says
+so rather than reporting an unknown id:
+
+```jsonc
+{ "code": -32602,
+  "message": "this server holds no findings: no detection rule was armed, so nothing could have been recorded. Arm one with --kill-scanner, --fraud-detect, --digest-leak or --reg-flood and re-run the capture." }
+```
+
+An id the server does not hold comes back with the ids it does hold, up to the
+row cap, so a caller that mistyped a timestamp does not have to go back to
+[`security_findings`](#security-findings). The scan walks the whole ring buffer
+for that list, because a truncated scan cannot report what it truncated — and
+here the truncated part is the vocabulary the caller gets offered.
+
+`detail` arrives fenced: it quotes headers a sender wrote. `rule_name` does not,
+because sipnab chose it — and the tool checks that name is a bare identifier
+before writing it into a regular expression, since a name carrying a
+regular-expression operator would produce a pattern the author never wrote.
 
 ### `shutdown_server`
 

@@ -45,6 +45,9 @@
 mod findings;
 
 pub mod load;
+pub mod prompts;
+pub mod reference;
+pub mod sampling;
 pub mod server;
 pub mod shape;
 /// Starting and stopping a uprobe TLS capture on an agent's request.

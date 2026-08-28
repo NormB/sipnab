@@ -72,12 +72,51 @@ fn tool_descriptions(src: &str) -> Vec<(String, String)> {
 }
 
 /// No `#[tool]` description tells the model to trust, verify, ensure or act on
+/// Every `.rs` file under `src/mcp/`, concatenated.
+///
+/// NOT `server.rs` alone. Tool groups moved into `src/mcp/tools/*.rs` when the
+/// `rmcp` router became composable, and this gate went on reading one file --
+/// so the D22 anti-prompt-injection rule stopped applying to every tool added
+/// after the split, which is now most of them. Its own `tools.len() >= 20` pin
+/// could not catch that, because `server.rs` still holds more than twenty on
+/// its own: the floor was satisfied by the tools it could still see while the
+/// new ones went unchecked.
+fn mcp_registry_source() -> String {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    walk(&repo.join("src/mcp"), &mut files);
+    files.sort();
+    assert!(
+        files.len() >= 2,
+        "only {} file(s) under src/mcp; the walk is not reaching the module and \
+         this gate would judge a fraction of the registry while reporting on all \
+         of it",
+        files.len()
+    );
+    files
+        .iter()
+        .filter_map(|f| std::fs::read_to_string(f).ok())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// what it gets back.
 #[test]
 fn tool_descriptions_do_not_instruct_the_model_to_trust_content() {
-    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let src =
-        std::fs::read_to_string(repo.join("src/mcp/server.rs")).expect("read src/mcp/server.rs");
+    let src = mcp_registry_source();
     let tools = tool_descriptions(&src);
 
     // Pinned. The extractor is a hand-rolled scan over attribute text, and the
@@ -135,9 +174,7 @@ fn tool_descriptions_do_not_instruct_the_model_to_trust_content() {
 /// This gate keeps the disclosure at the layer the consumer actually reads.
 #[test]
 fn an_export_that_synthesises_frames_says_so_where_the_model_reads() {
-    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let src =
-        std::fs::read_to_string(repo.join("src/mcp/server.rs")).expect("read src/mcp/server.rs");
+    let src = mcp_registry_source();
 
     let export = tool_descriptions(&src)
         .into_iter()

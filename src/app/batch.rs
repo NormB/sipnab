@@ -754,13 +754,35 @@ fn run_lint_stage(cli: &Cli, config: &Config, ds: &crate::sip::dialog_store::Dia
         .lint_fail_on
         .as_deref()
         .and_then(crate::sip::lint::Severity::from_name);
-    let linter = crate::sip::lint::Linter::new(
-        crate::sip::lint::LintConfig::new().with_max_per_rule(cli.lint_max_per_rule(config)),
-    );
+
+    let suppressions = match lint_suppressions(cli) {
+        Ok(file) => file,
+        Err(reason) => {
+            eprintln!("{reason}");
+            // The invocation was wrong, which is exit 2. Not 3: a pipeline has
+            // to tell "this capture is non-conformant" apart from "sipnab was
+            // asked to read a file that is not there", and only the first is a
+            // fact about the traffic.
+            std::process::exit(2);
+        }
+    };
+
+    let mut lint_config =
+        crate::sip::lint::LintConfig::new().with_max_per_rule(cli.lint_max_per_rule(config));
+    if let Some(file) = &suppressions {
+        lint_config = lint_config.with_suppression_file(file);
+    }
+    let linter = crate::sip::lint::Linter::new(lint_config);
+
     let mut total = 0usize;
     let mut tripped = false;
+    let mut withheld = crate::sip::lint::WithheldCounts::default();
     for dialog in ds.iter() {
-        for f in linter.lint_dialog(dialog) {
+        let outcome = linter.lint_dialog_detailed(dialog);
+        withheld.suppressed += outcome.withheld.suppressed;
+        withheld.below_severity += outcome.withheld.below_severity;
+        withheld.capped += outcome.withheld.capped;
+        for f in outcome.findings {
             total += 1;
             if threshold.is_some_and(|t| f.severity >= t) {
                 tripped = true;
@@ -782,7 +804,67 @@ fn run_lint_stage(cli: &Cli, config: &Config, ds: &crate::sip::dialog_store::Dia
     // Name the denominator: "0 findings" over 0 dialogs and over 900 are
     // different answers and only one is good news.
     eprintln!("Lint: {total} finding(s) across {dialogs} dialog(s)");
+    // Suppression never hides itself, on this surface as on the MCP one. A
+    // short finding list has to say why it is short, and "which file" is the
+    // actionable half: discovery may have climbed several directories to reach
+    // a `.sipnablint` nobody on this pipeline knew about.
+    if let Some(file) = &suppressions {
+        eprintln!(
+            "Lint: suppressions from {} ({} pattern(s)), {} finding(s) silenced",
+            file.path().display(),
+            file.patterns().len(),
+            withheld.suppressed,
+        );
+    }
+    if withheld.capped > 0 {
+        eprintln!(
+            "Lint: {} finding(s) dropped by the per-rule cap of {}",
+            withheld.capped,
+            cli.lint_max_per_rule(config),
+        );
+    }
     tripped
+}
+
+/// The `.sipnablint` governing this run, named or discovered, or nothing.
+///
+/// `--lint-no-suppress` wins over both. Otherwise `--lint-suppress-file` wins
+/// over discovery, and discovery starts at the directory holding the FIRST
+/// `-I` argument — the same directory the MCP tools walk up from, so the two
+/// surfaces read the same file for the same capture.
+///
+/// Live capture has no such directory, so nothing is discovered there. A
+/// `-I` naming a directory or a glob is used as given when it is itself a
+/// directory, and by its parent otherwise: `--lint-suppress-file` is the way
+/// to be explicit about a layout this cannot guess.
+///
+/// # Errors
+///
+/// Returns a ready-to-print reason when a file that was named, or was found on
+/// disk, cannot be read.
+fn lint_suppressions(cli: &Cli) -> Result<Option<crate::sip::lint::SuppressionFile>, String> {
+    if cli.output_args.lint_no_suppress {
+        return Ok(None);
+    }
+    let explicit = cli.output_args.lint_suppress_file.as_deref();
+    let dir = cli.capture_args.input.first().map(|first| {
+        let path = std::path::Path::new(first);
+        if path.is_dir() {
+            path.to_path_buf()
+        } else {
+            path.parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map_or_else(
+                    || std::path::PathBuf::from("."),
+                    std::path::Path::to_path_buf,
+                )
+        }
+    });
+    crate::sip::lint::SuppressionFile::resolve(explicit, dir.as_deref()).map_err(|e| match explicit
+    {
+        Some(name) => format!("cannot read suppression file '{name}': {e}"),
+        None => format!("cannot read the discovered .sipnablint: {e}"),
+    })
 }
 
 /// Multi-core offline file reconstruction (`--cores N` with `-I`, single
@@ -4827,6 +4909,85 @@ fn media_budget(cli: &Cli) -> Option<usize> {
         .map(|mib| mib.saturating_mul(1024 * 1024))
 }
 
+/// The redaction policy this run exports under, or `None`.
+///
+/// [`Cli::validate`] has already refused `--redact` on a run that exports
+/// nothing, so reaching here with the flag set means a container is about to be
+/// written.
+///
+/// # Errors
+///
+/// Returns a ready-to-print reason. A key that cannot be read is fatal rather
+/// than a fall back to a fresh one: an operator who named a file wanted tokens
+/// that join against yesterday's export, and quietly drawing a new key would
+/// produce a container that looks right and correlates with nothing.
+#[cfg(feature = "vcon")]
+fn redaction_policy(cli: &Cli) -> Result<Option<crate::output::redact::RedactionPolicy>, String> {
+    use crate::output::redact::{RedactionKey, RedactionPolicy};
+    if !cli.redacting() {
+        return Ok(None);
+    }
+    let key = match cli.output_args.redact_key_file.as_deref() {
+        Some(path) => {
+            let secret = std::fs::read(path)
+                .map_err(|e| format!("cannot read --redact-key-file '{}': {e}", path.display()))?;
+            RedactionKey::from_secret(&secret)
+        }
+        None => RedactionKey::ephemeral().map_err(|e| {
+            format!(
+                "--redact needs a key and none was supplied, so sipnab drew one from \
+                 the operating system and could not: {e}. There is no weaker fallback: \
+                 a guessable key makes every token in the export reversible by anyone \
+                 holding a phone book. Pass --redact-key-file, or fix the entropy source"
+            )
+        })?,
+    };
+    Ok(Some(RedactionPolicy::new(key).with_keep_prefix(
+        cli.output_args.redact_keep_prefix.unwrap_or(0),
+    )))
+}
+
+/// Write the token-to-original table, owner-readable only.
+///
+/// # Errors
+///
+/// Returns a ready-to-print reason. An existing file is refused rather than
+/// replaced: it may be the map for containers that have already been sent
+/// somewhere, and overwriting it strands them.
+#[cfg(feature = "vcon")]
+fn write_redaction_map(
+    path: &std::path::Path,
+    redactor: &crate::output::redact::Redactor<'_>,
+) -> Result<usize, String> {
+    use std::io::Write as _;
+    if std::fs::symlink_metadata(path).is_ok() {
+        return Err(format!(
+            "--redact-map '{}' already exists and sipnab will not write over it. \
+             That file may be the only way back from tokens already sent somewhere",
+            path.display()
+        ));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        // Set at CREATION, not with a chmod afterwards. Between an open and a
+        // chmod the file exists at whatever the umask allows, and this file is
+        // the reversal of every pseudonym in the export.
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|e| format!("cannot create --redact-map '{}': {e}", path.display()))?;
+    let table = redactor.mappings();
+    for (token, original) in &table {
+        writeln!(file, "{token}\t{original}")
+            .map_err(|e| format!("writing --redact-map '{}': {e}", path.display()))?;
+    }
+    Ok(table.len())
+}
+
 /// Write one container per dialog the predicate selected.
 ///
 /// Reports the count on stderr rather than staying silent. A run that matched
@@ -4857,6 +5018,20 @@ fn export_vcon_selection(
         }
     };
 
+    let policy = match redaction_policy(cli) {
+        Ok(p) => p,
+        Err(reason) => {
+            eprintln!("{reason}");
+            return false;
+        }
+    };
+    // ONE redactor for the whole run, not one per container. The reverse table
+    // it accumulates is what `--redact-map` writes, and a redactor per
+    // container would hand back as many partial tables as there were dialogs.
+    let redactor = policy
+        .as_ref()
+        .map(crate::output::redact::RedactionPolicy::redactor);
+
     let mut facts =
         crate::analysis::CaptureFacts::observed(dialog_store, stream_store, frames_read);
     // What this run deliberately did not write. Recorded on the facts BEFORE
@@ -4878,7 +5053,10 @@ fn export_vcon_selection(
                 max_inline_media_bytes: media_budget(cli),
             },
         );
-        let json = match container.to_json() {
+        let json = match crate::output::vcon::sealed_json(&crate::output::vcon::seal(
+            container,
+            redactor.as_ref(),
+        )) {
             Ok(j) => j,
             Err(e) => {
                 eprintln!(
@@ -4926,7 +5104,10 @@ fn export_vcon_selection(
                 },
                 header,
             );
-            let json = match container.to_json() {
+            let json = match crate::output::vcon::sealed_json(&crate::output::vcon::seal(
+                container,
+                redactor.as_ref(),
+            )) {
                 Ok(j) => j,
                 Err(e) => {
                     eprintln!(
@@ -4951,6 +5132,31 @@ fn export_vcon_selection(
         }
     }
 
+    if let Some(r) = redactor.as_ref() {
+        let report = r.policy().report();
+        // On stderr beside the count, because an operator has to be able to
+        // say what was redacted and how reversible it is without opening a
+        // container. The same report travels INSIDE every container too.
+        eprintln!(
+            "Redaction: {} classes, key {}, {} leading digit(s) retained.",
+            report.classes.len(),
+            report.key_mode,
+            report.keep_prefix,
+        );
+        if let Some(path) = cli.output_args.redact_map.as_deref() {
+            match write_redaction_map(path, r) {
+                Ok(n) => eprintln!(
+                    "Wrote {n} token mapping(s) to '{}' (mode 0600). It reverses every \
+                     pseudonym in these containers, so it is as sensitive as the capture.",
+                    path.display()
+                ),
+                Err(reason) => {
+                    eprintln!("{reason}");
+                    return false;
+                }
+            }
+        }
+    }
     eprintln!("Wrote {written} vCon container(s) to '{}'.", dir.display());
     true
 }
@@ -5293,7 +5499,21 @@ fn export_vcon(
         audio,
     );
 
-    let mut json = match container.to_json() {
+    let policy = match redaction_policy(cli) {
+        Ok(p) => p,
+        Err(reason) => {
+            eprintln!("{reason}");
+            return false;
+        }
+    };
+    let redactor = policy
+        .as_ref()
+        .map(crate::output::redact::RedactionPolicy::redactor);
+
+    let mut json = match crate::output::vcon::sealed_json(&crate::output::vcon::seal(
+        container,
+        redactor.as_ref(),
+    )) {
         Ok(json) => json,
         Err(e) => {
             eprintln!("The vCon for Call-ID '{call_id}' would not serialize: {e}");
@@ -5301,6 +5521,28 @@ fn export_vcon(
         }
     };
     json.push('\n');
+
+    if let Some(r) = redactor.as_ref() {
+        let report = r.policy().report();
+        eprintln!(
+            "Redaction: {} classes, key {}, {} leading digit(s) retained.",
+            report.classes.len(),
+            report.key_mode,
+            report.keep_prefix,
+        );
+        if let Some(path) = cli.output_args.redact_map.as_deref() {
+            match write_redaction_map(path, r) {
+                Ok(n) => eprintln!(
+                    "Wrote {n} token mapping(s) to '{}' (mode 0600).",
+                    path.display()
+                ),
+                Err(reason) => {
+                    eprintln!("{reason}");
+                    return false;
+                }
+            }
+        }
+    }
 
     let Some(path) = cli.output_args.vcon_out.as_deref() else {
         return write_stdout(&json);

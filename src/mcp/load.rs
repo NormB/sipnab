@@ -192,7 +192,7 @@ pub fn spawn(
 ///
 /// The packets read before the failure, and the message. A file that will not
 /// open reports zero and the reason.
-fn read_into_stores(
+pub(crate) fn read_into_stores(
     path: &Path,
     dialog_store: &Arc<RwLock<DialogStore>>,
     stream_store: &Arc<RwLock<StreamStore>>,
