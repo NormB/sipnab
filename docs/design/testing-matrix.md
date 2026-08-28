@@ -49,15 +49,15 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 238 | 114 | 43 | 80 | 1 |
+| CLI flags | 247 | 114 | 48 | 83 | 2 |
 | HTTP routes | 11 | 11 | -- | 0 | 0 |
-| MCP tools | 39 | 39 | -- | 0 | 0 |
+| MCP tools | 51 | 50 | -- | 1 | 0 |
 
-**Flags with no occurrence at all:** `--syslog`
+**Flags with no occurrence at all:** `--syslog`, `--mcp-tools`
 
 ## What a person found that the detector could not
 
-The generator understates. Of the 80 flags it could only call
+The generator understates. Of the 83 flags it could only call
 `referenced`, a read of the tests found 62 with a real behavior test --
 evidence that arrives through a config-file equivalent sharing the flag's
 resolver, through a golden file, or through a library-level test, none of
@@ -86,7 +86,7 @@ behind them.
 | `--help` | `-h` |  | Options | e2e | `tests/cli_test.rs` |  |  |
 | `--version` | `-V` |  | Options | e2e | `tests/branch_protection_drift_test.rs`, `tests/cli_test.rs` +2 |  |  |
 | `--device` | `-d` | `IFACE` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/hep_test.rs` +1 |  |  |
-| `--input` | `-I` |  | Capture | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +35 |  |  |
+| `--input` | `-I` |  | Capture | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +36 |  |  |
 | `--recursive` |  |  | Capture | e2e | `tests/input_set_accounting_test.rs`, `tests/multi_input_test.rs` |  |  |
 | `--input-name` |  | `GLOB` | Capture | e2e | `tests/multi_input_test.rs` |  |  |
 | `--output` | `-O` | `FILE` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/integration_test.rs` +4 |  |  |
@@ -111,11 +111,11 @@ behind them.
 | `--split-keep` |  | `N` | Capture | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--replay` |  |  | Capture | e2e | `tests/mcp_stdio_shutdown_test.rs` |  |  |
 | `--pcapng` |  |  | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/integration_test.rs` +2 |  |  |
-| `--no-tui` | `-N` |  | Mode | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +34 |  |  |
+| `--no-tui` | `-N` |  | Mode | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +35 |  |  |
 | `--calls-only` | `-c` |  | Mode | e2e | `src/output/event_exec.rs`, `src/security/alerting.rs` +7 |  |  |
 | `--telephone-event` | `-t` |  | Mode | e2e | `tests/tui_e2e_test.rs` |  |  |
 | `--dtmf-cleartext` |  |  | Mode | referenced | `tests/dtmf_masking_test.rs` | **behavior** | dtmf_cleartext_emits_the_digit_value_at_debug_level (tests/dtmf_masking_test.rs), with an anti-vacuity guard |
-| `--quiet` | `-q` |  | Mode | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_wiring_test.rs` +21 |  |  |
+| `--quiet` | `-q` |  | Mode | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_wiring_test.rs` +22 |  |  |
 | `--resolve` |  |  | Name resolution | e2e | `tests/integration_test.rs` |  |  |
 | `--reverse-dns` |  |  | Name resolution | parsed | `src/cli.rs` |  |  |
 | `--dns-cache-entries` |  | `N` | Name resolution | e2e | `tests/config_wiring_test.rs` |  |  |
@@ -156,6 +156,10 @@ behind them.
 | `--content-deny-tombstone` |  |  | Output | parsed | `src/cli.rs` |  |  |
 | `--vcon-digest` |  |  | Output | parsed | `src/cli.rs` |  |  |
 | `--vcon-out` |  | `PATH` | Output | e2e | `tests/vcon_cli_test.rs` |  |  |
+| `--redact` |  |  | Output | parsed | `src/cli.rs` |  |  |
+| `--redact-key-file` |  | `FILE` | Output | referenced | `src/app/batch.rs`, `src/cli.rs` |  |  |
+| `--redact-keep-prefix` |  | `N` | Output | parsed | `src/cli.rs` |  |  |
+| `--redact-map` |  | `FILE` | Output | parsed | `src/cli.rs` |  |  |
 | `--markdown` |  |  | Output | e2e | `tests/analyze_test.rs` |  |  |
 | `--hexdump` |  |  | Output | e2e | `tests/integration_test.rs` |  |  |
 | `--delta-time` |  |  | Output | referenced | `tests/cli_options_test.rs` | **behavior** | golden tests/cli/out/text-delta.trycmd pins relative stamps where the flagless golden pins absolute |
@@ -171,6 +175,8 @@ behind them.
 | `--lint` |  |  | Output | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--lint-fail-on` |  | `SEVERITY` | Output | referenced | `tests/cli_options_test.rs` | **parse-only** | EXIT 3 IS NEVER OBSERVED. The assertion is guarded behind `if findings > 0` and no checked-in capture produces a lint finding |
 | `--lint-max-per-rule` |  | `N` | Output | referenced | `tests/threshold_wiring_test.rs` | **behavior** | lint_max_per_rule_bounds_the_findings_one_rule_prints (tests/threshold_wiring_test.rs); proves the flag can raise the cap |
+| `--lint-suppress-file` |  | `FILE` | Output | parsed | `src/cli.rs` |  |  |
+| `--lint-no-suppress` |  |  | Output | parsed | `src/cli.rs` |  |  |
 | `--tshark-filter` |  | `EXPR` | Output | referenced | `src/app/batch.rs`, `src/cli.rs` | **behavior** | golden tests/cli/out/tshark-filter.trycmd emits the -Y filter |
 | `--fail2ban` |  |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/offline_never_transmits_test.rs` |  |  |
 | `--group-by` |  | `FIELD` | Output | e2e | `tests/config_wiring_test.rs` |  |  |
@@ -196,7 +202,7 @@ behind them.
 | `--kill-spoof` |  | `MODE` | Security | e2e | `tests/offline_never_transmits_test.rs` |  |  |
 | `--hep-allow-kill` |  |  | Security | parsed | `src/cli.rs` |  |  |
 | `--fraud-detect` |  |  | Security | parsed | `src/cli.rs` |  |  |
-| `--reg-flood` |  |  | Security | referenced | `src/app/bootstrap.rs`, `src/config.rs` +3 | **behavior** | reg_flood_threshold_decides_when_a_burst_is_a_flood (tests/threshold_wiring_test.rs); an inert flag fails it |
+| `--reg-flood` |  |  | Security | referenced | `src/app/bootstrap.rs`, `src/config.rs` +5 | **behavior** | reg_flood_threshold_decides_when_a_burst_is_a_flood (tests/threshold_wiring_test.rs); an inert flag fails it |
 | `--reg-flood-threshold` |  | `N` | Security | referenced | `tests/threshold_wiring_test.rs` | **behavior** | same test, third run: the flag silences a burst the config key raised |
 | `--kill-rate-limit` |  | `N` | Security | parsed | `src/cli.rs` |  |  |
 | `--business-hours` |  |  | Security | referenced | `tests/threshold_wiring_test.rs` | **behavior** | business_hours_make_the_off_hours_detection_reachable |
@@ -215,7 +221,7 @@ behind them.
 | `--scanner-established-factor` |  | `N` | Security | referenced | `tests/threshold_wiring_test.rs` | **behavior** | scanner_established_factor_decides_what_a_registration_buys |
 | `--scanner-answer-grace` |  | `MS` | Security | referenced | `tests/threshold_wiring_test.rs` | **behavior** | scanner_answer_grace_ms_decides_how_slow_a_link_may_be |
 | `--findings-history` |  | `N` | Security | parsed | `src/cli.rs` |  |  |
-| `--digest-leak` |  |  | Security | referenced | `src/app/bootstrap.rs`, `src/mcp/server.rs` +1 | **parse-only** | INTRUSION DETECTOR. The only tests assert the flag changes nothing on a clean fixture; a regression that stops building the detector passes them |
+| `--digest-leak` |  |  | Security | referenced | `src/app/bootstrap.rs`, `src/mcp/server.rs` +3 | **parse-only** | INTRUSION DETECTOR. The only tests assert the flag changes nothing on a clean fixture; a regression that stops building the detector passes them |
 | `--alert` |  | `CHANNEL` | Security | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--alert-exec` |  | `CMD` | Security | referenced | `src/app/batch.rs`, `src/security/alerting.rs` | **mention-only** | COMMAND EXECUTION. The mechanism is extremely well tested, always by constructing AlertEngine directly. Nothing proves the flag reaches it |
 | `--stir-shaken` |  |  | Security | e2e | `tests/config_wiring_test.rs` |  |  |
@@ -240,7 +246,7 @@ behind them.
 | `--metrics-max-conn` |  | `N` | Network listeners | referenced | `src/cli.rs` | **parse-only** | DoS BOUND (SN-02). Resolver precedence tested, ConnGate tested, the join between them is not |
 | `--api-max-rows` |  | `N` | Network listeners | referenced | `src/cli.rs` | **parse-only** | Resolver tested and enforcement tested by setting state.max_rows directly; the wiring between them is not |
 | `--api-rate-limit-per-peer` |  | `N` | Network listeners | referenced | `src/cli.rs` | **behavior** | via config key: probe_api_rate_limit_per_peer counts HTTP 503 refusals from one peer |
-| `--mcp` |  |  | MCP (Model Context Protocol) | e2e | `tests/analyze_test.rs`, `tests/config_wiring_test.rs` +5 |  |  |
+| `--mcp` |  |  | MCP (Model Context Protocol) | e2e | `tests/analyze_test.rs`, `tests/config_wiring_test.rs` +6 |  |  |
 | `--mcp-transport` |  | `TRANSPORT` | MCP (Model Context Protocol) | e2e | `tests/mcp_scope_test.rs`, `tests/mcp_stdio_test.rs` +1 |  |  |
 | `--mcp-bind` |  | `ADDR` | MCP (Model Context Protocol) | e2e | `tests/mcp_scope_test.rs`, `tests/support/mcp.rs` |  |  |
 | `--mcp-token` |  | `TOKEN` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
@@ -249,18 +255,21 @@ behind them.
 | `--mcp-signing-key-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_rotation_test.rs` |  |  |
 | `--mcp-revoked-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
 | `--mcp-token-ttl` |  | `SECS` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
+| `--mcp-audit-file` |  | `FILE` | MCP (Model Context Protocol) | referenced | `src/app/servers.rs` |  |  |
 | `--mcp-max-concurrent` |  | `N` | MCP (Model Context Protocol) | parsed | `src/cli.rs` |  |  |
+| `--mcp-tools` |  | `PROFILE` | MCP (Model Context Protocol) | none | -- |  |  |
 | `--mcp-max-rows` |  | `N` | MCP (Model Context Protocol) | parsed | `tests/mcp_row_cap_test.rs` |  |  |
 | `--mcp-max-body-bytes` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs` | **behavior** | via config key: probe_mcp_max_body_bytes changes the search_messages snippet length |
 | `--mcp-max-findings` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs` | **behavior** | via config key: probe_mcp_max_findings changes the remaining budget in save_findings |
 | `--mcp-rate-limit-per-peer` |  | `N` | MCP (Model Context Protocol) | e2e | `tests/mcp_stdio_test.rs` |  |  |
 | `--mcp-allowed-host` |  | `HOST` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
 | `--mcp-file-root` |  | `DIR` | MCP (Model Context Protocol) | e2e | `tests/mcp_diagnostic_tools_test.rs` |  |  |
+| `--mcp-sampling-budget` |  | `PER_HOUR` | MCP (Model Context Protocol) | referenced | `src/mcp/sampling.rs`, `tests/mcp_sampling_wiring_test.rs` |  |  |
 | `--mcp-allow-shutdown` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_diagnostic_tools_test.rs` |  |  |
 | `--retain-audio` |  |  | MCP (Model Context Protocol) | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--mcp-allow-open-capture` |  |  | MCP (Model Context Protocol) | referenced | `src/mcp/server.rs`, `tests/mcp_open_capture_test.rs` | **behavior** | the real binary runs WITH the flag; refusal without it, 1 dialog -> 1334 with it |
 | `--mcp-allow-tls-capture` |  |  | MCP (Model Context Protocol) | referenced | `src/mcp/server.rs`, `tests/mcp_tls_capture_test.rs` | **behavior** | default-deny and opt-in effect asserted; the one-line CLI hop is untested |
-| `--mcp-allow-save-findings` |  |  | MCP (Model Context Protocol) | e2e | `tests/config_wiring_test.rs` |  |  |
+| `--mcp-allow-save-findings` |  |  | MCP (Model Context Protocol) | e2e | `tests/config_wiring_test.rs`, `tests/mcp_protocol_features_test.rs` |  |  |
 | `--one-way-delay` |  | `MS` | Analysis | parsed | `tests/mos_delay_test.rs` |  |  |
 | `--pdd-threshold` |  | `SECS` | Analysis | e2e | `tests/metrics_headless_test.rs` |  |  |
 | `--ack-timeout` |  | `SECS` | Analysis | referenced | `tests/threshold_wiring_test.rs` | **behavior** | diagnosis_ack_timeout_decides_when_a_missing_ack_is_a_fault; flag passed to a subprocess, NDJSON changes |
@@ -342,42 +351,54 @@ behind them.
 
 | Tool | Evidence | Where |
 |---|---|---|
-| `aggregate_dialogs` | exercised | `tests/mcp_stdio_test.rs` |
-| `capture_health` | exercised | `tests/mcp_stdio_test.rs` |
-| `capture_status` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_open_capture_test.rs` +5 |
+| `aggregate_dialogs` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
+| `build_evidence_package` | exercised | `tests/mcp_stdio_test.rs` |
+| `capture_health` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
+| `capture_status` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_open_capture_test.rs` +6 |
 | `check_codec_negotiation` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
+| `compare_captures` | exercised | `tests/mcp_stdio_test.rs` |
 | `compare_dialogs` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
+| `decode_evidence` | exercised | `tests/mcp_stdio_test.rs` |
+| `describe_endpoint` | exercised | `tests/mcp_stdio_test.rs` |
 | `diagnose_registration` | exercised | `tests/mcp_stdio_test.rs` |
+| `evaluate_expectations` | exercised | `tests/mcp_expectations_test.rs`, `tests/mcp_stdio_test.rs` |
 | `explain_response_code` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
 | `explain_rule` | exercised | `tests/mcp_lint_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
 | `export_audio` | exercised | `tests/mcp_stdio_test.rs` |
 | `export_capture` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
 | `export_vcon` | exercised | `tests/mcp_stdio_test.rs` |
-| `find_correlated` | exercised | `tests/leg_correlation_window_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
+| `find_correlated` | exercised | `tests/leg_correlation_window_test.rs`, `tests/mcp_operator_flows_test.rs` +2 |
 | `find_problems` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
+| `generate_fail2ban_rule` | exercised | `tests/mcp_expectations_test.rs`, `tests/mcp_stdio_test.rs` |
+| `generate_repro` | exercised | `tests/mcp_expectations_test.rs`, `tests/mcp_stdio_test.rs` |
+| `generate_wireshark_filter` | exercised | `tests/mcp_expectations_test.rs`, `tests/mcp_stdio_test.rs` |
+| `get_call_tree` | exercised | `tests/mcp_stdio_test.rs` |
 | `get_capture_report` | exercised | `tests/mcp_stdio_test.rs` |
-| `get_dialog` | exercised | `tests/mcp_operator_flows_test.rs`, `tests/mcp_stdio_test.rs` |
+| `get_dialog` | exercised | `tests/mcp_operator_flows_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |
 | `get_dialog_report` | exercised | `tests/mcp_operator_flows_test.rs`, `tests/mcp_stdio_test.rs` |
 | `get_message` | exercised | `tests/mcp_stdio_test.rs` |
 | `get_sdp_timeline` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
+| `group_dialogs` | exercised | `tests/mcp_stdio_test.rs` |
 | `lint_dialog` | exercised | `tests/mcp_lint_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
 | `list_captures` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
-| `list_dialogs` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +3 |
-| `list_tls_libraries` | exercised | `tests/mcp_stdio_test.rs` |
+| `list_dialogs` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +4 |
+| `list_tls_libraries` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
 | `media_diagnostics` | exercised | `tests/mcp_media_diagnostics_test.rs`, `tests/mcp_stdio_test.rs` |
 | `open_capture` | exercised | `tests/mcp_open_capture_test.rs`, `tests/mcp_stdio_test.rs` |
-| `render_ladder` | exercised | `tests/mcp_operator_flows_test.rs`, `tests/mcp_stdio_test.rs` |
-| `rtp_stats` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
-| `save_findings` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_save_findings_test.rs` +1 |
+| `render_ladder` | exercised | `tests/mcp_operator_flows_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |
+| `rtp_stats` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +2 |
+| `save_findings` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_protocol_features_test.rs` +2 |
 | `search_by_time` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
 | `search_messages` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_stdio_test.rs` |
 | `security_findings` | exercised | `tests/mcp_operator_flows_test.rs`, `tests/mcp_stdio_test.rs` |
-| `server_capabilities` | exercised | `tests/mcp_open_capture_test.rs`, `tests/mcp_stdio_test.rs` |
+| `server_capabilities` | exercised | `tests/mcp_open_capture_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |
 | `show_evidence` | exercised | `tests/mcp_operator_flows_test.rs`, `tests/mcp_stdio_test.rs` |
 | `shutdown_server` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_scope_test.rs` +1 |
 | `start_tls_capture` | exercised | `tests/mcp_stdio_test.rs` |
 | `stop_tls_capture` | exercised | `tests/mcp_stdio_test.rs` |
 | `tail_dialogs` | exercised | `tests/mcp_open_capture_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
-| `timeline` | exercised | `tests/mcp_stdio_test.rs` |
+| `timeline` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
+| `top_talkers` | defined only | `src/mcp/tools/endpoints.rs` |
 | `triage_call` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
+| `validate_filter` | exercised | `tests/mcp_stdio_test.rs` |
 | `validate_message` | exercised | `tests/mcp_lint_tools_test.rs`, `tests/mcp_stdio_test.rs` |

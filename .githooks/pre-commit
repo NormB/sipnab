@@ -429,6 +429,27 @@ if ! UNWRAP_OUT=$(python3 scripts/check-unwrap.py 2>&1); then
 fi
 echo -e "${GREEN}OK${NC}"
 
+# ── 3a. Every feature declares what its own modules import ────────
+# `--features vcon` did not build at 0.5.130: src/output/redact.rs is gated by
+# any(api, mcp, vcon) and imports hmac, and only two of those three features
+# declared dep:hmac. `--features full` hid it, because mcp supplies hmac
+# anyway, so every ordinary build passed while one matrix combination failed.
+#
+# The feature matrix in pre-push exists for exactly this and still missed it:
+# it builds the WORKING TREE, and the working tree held the fix while the
+# commit did not. This reads the source, so it answers about what is written
+# rather than about what happens to be checked out, in milliseconds rather
+# than eleven compilations.
+echo -n "  Features declare their modules' imports... "
+if ! FEATDEP_OUT=$(python3 scripts/check-feature-deps.py 2>&1); then
+    echo -e "${RED}FAIL${NC}"
+    echo "$FEATDEP_OUT"
+    echo "A feature-gated module imports a crate its feature does not declare."
+    echo "Add the missing dep: entry to that feature in Cargo.toml."
+    exit 1
+fi
+echo -e "${GREEN}OK${NC}"
+
 # ── 3b. The privilege-drop path still drops privileges ────────────
 # Runs BEFORE the expensive gates, and reads source rather than running it.
 # On 2026-08-05 a mutation-testing pass left four controls disabled at once in

@@ -8,6 +8,82 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.130] - 2026-08-28
+
+### Added
+
+- **Twelve MCP tools, taking the surface from 38 to 50.** `group_dialogs`
+  reports eight metrics per group, each defined rather than assumed: ASR as 2xx
+  over seizures, NER per [ITU-T E.411](https://www.itu.int/rec/T-REC-E.411) with
+  408 deliberately excluded -- a proxy emits it for a silent phone and an
+  unreachable next hop alike -- ACD as conversation time rather than dialog
+  span, and percentiles by nearest rank so every one names an observed sample.
+  `timeline` buckets call volume on epoch-aligned intervals so two captures of
+  the same window line up, and KEEPS empty buckets, because a gap is the finding
+  and a series that drops it renders an outage as continuous traffic.
+- **`get_call_tree`**, which walks identifier correlations transitively but
+  REPORTS timing-heuristic edges without following them. Chaining timing guesses
+  on a busy proxy sweeps a whole capture into one "tree"; each unwalked edge
+  carries `followed: false` so an agent can re-root there deliberately.
+- **`compare_captures`**, a diff of AGGREGATES between two capture files, ranked
+  by absolute movement rather than size -- the biggest bucket is usually the one
+  that changed least. Each side reads into private stores and drops them, so the
+  loaded capture is untouched.
+- **`describe_endpoint`, `validate_filter`, `decode_evidence`,
+  `build_evidence_package`, `evaluate_expectations`, `generate_repro`,
+  `generate_wireshark_filter` and `generate_fail2ban_rule`.**
+  `evaluate_expectations` FAILS a rule whose population is empty rather than
+  passing quietly, and an all-skipped suite reports `not_evaluated` with its own
+  exit code, distinct from pass. `decode_evidence` returns per-header byte
+  ranges, and drops the whole set rather than emit one that disagrees with the
+  parser: a range pinned one header early still resolves, which is worse than no
+  range.
+- **MCP resources and prompts.** Three reference resources serve the filter DSL
+  grammar, the response-code registry and the MOS grounding table as
+  `include_str!` of the published pages, so the page a person reads and the bytes
+  an agent reads cannot drift. They do NOT require `--mcp-file-root`: that flag
+  gates an operator's captures, and putting a published grammar behind it leaves
+  an agent on a live device guessing at syntax it could have read. Four prompts
+  carry the ORDER to call tools in, each opening with `capture_status`.
+- **`--mcp-sampling-budget`**, off by default. sipnab can ask the connected
+  client's model to narrate an observation, with no API key in the config and no
+  weights in the binary. Requests dedupe by finding signature before spending
+  from the hourly budget, so a rule a scanner trips five hundred times costs one
+  narration. `0` means none rather than unbounded.
+- **Nine RFC conformance lint rules**, covering repeated singular headers,
+  non-loose Record-Route, duplicate and mismatched Via branches, rebound dynamic
+  payload types, one-way telephone-event, attributes on rejected streams and the
+  Opus rtpmap rate. Three citations moved after reading the RFC text rather than
+  recalling it: rejected streams are [RFC 3264](https://www.rfc-editor.org/rfc/rfc3264)
+  §8.2 not §6, telephone-event is RFC 3264 §7 rather than
+  [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733) -- which carries no
+  offer/answer rule at all -- and Opus is
+  [RFC 7587](https://www.rfc-editor.org/rfc/rfc7587) §7 not §4.1, because §4.1 is
+  not RFC 2119 language.
+- **`--lint-suppress-file` and `--lint-no-suppress`**, closing a gap where the
+  MCP tools honored a `.sipnablint` beside a capture while the binary ignored it.
+- **Redaction for vCon export** (`--redact` and its options). Identities become
+  keyed tokens equal exactly when the originals were equal, and addresses go
+  through a prefix-preserving map, so "these forty failures came from one
+  subscriber" stays answerable -- masking answers neither.
+
+### Fixed
+
+- **The frame digest is computed where a pointer is KEPT, not for every frame
+  read.** Hashing every frame spent about 93% of the work on pointers nobody can
+  follow. Measured on the 535k carrier corpus, median-of-5 on an idle host:
+  **+29% at two cores**, +11% at four, unchanged at eight. The entry's own
+  diagnosis was wrong -- the cost sat on the reader, not in the workers, where a
+  0.5.88 fix was supposed to have removed it.
+- **`asr` meant a percent in one tool and a ratio in another.** Both are percent
+  now. A threshold copied between them was wrong by a hundredfold, in the
+  direction that always passes.
+- **Seven counters that stopped counting when tools moved out of `server.rs`** --
+  the testing-matrix generator, two documentation-drift gates, the gate enforcing
+  the anti-prompt-injection rule on tool descriptions, and four regexes whose
+  character class excluded digits, which made `generate_fail2ban_rule` live and
+  invisible to every count derived from them.
+
 ## [0.5.129] - 2026-08-28
 
 No change to the binary. Every source file under `src/` is byte-identical to
