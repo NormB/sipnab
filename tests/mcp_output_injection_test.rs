@@ -499,6 +499,62 @@ fn an_rtpmap_encoding_name_carrying_a_sentence_is_fenced() {
     }
 }
 
+/// Build a capture holding one INVITE with an oversized `User-Agent`, ask
+/// `get_message` for it, and return the response.
+///
+/// Shared so every assertion below measures the SAME response rather than each
+/// building its own fixture and quietly diverging. The `TempDir` comes back
+/// with it because dropping it removes the capture the server is reading.
+fn oversized_header_response() -> (serde_json::Value, tempfile::TempDir) {
+    oversized_header_response_in("big")
+}
+
+/// As above, with control over the capture's file stem.
+///
+/// The stem is a parameter because the original bug turned on the length of the
+/// enclosing path: a longer temp path on macOS inflated the container the old
+/// assertion measured. A test that can vary it can prove the field does not
+/// move with it.
+fn oversized_header_response_in(stem: &str) -> (serde_json::Value, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // 4 KiB of legal `User-Agent`, deliberately under the parser's 8 KiB header
+    // line limit: past that the message is REJECTED, and a rejected message
+    // would report the cap working while it was never reached.
+    let long = "U".repeat(4096);
+    let sdp = "v=0\r\no=- 1 1 IN IP4 192.0.2.1\r\ns=-\r\nc=IN IP4 192.0.2.1\r\nt=0 0\r\n\
+               m=audio 40000 RTP/AVP 0\r\n";
+    let invite = format!(
+        "INVITE sip:bob@example.com SIP/2.0\r\n\
+         Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-big-1\r\n\
+         From: <sip:alice@example.com>;tag=big1\r\n\
+         To: <sip:bob@example.com>\r\n\
+         Call-ID: big-header@example.com\r\n\
+         CSeq: 1 INVITE\r\n\
+         User-Agent: {long}\r\n\
+         Max-Forwards: 70\r\n\
+         Content-Type: application/sdp\r\n\
+         Content-Length: {}\r\n\r\n{sdp}",
+        sdp.len()
+    );
+    let path = dir.path().join(format!("{stem}.pcap"));
+    write_pcap(
+        &path,
+        &[udp_frame(
+            [192, 0, 2, 1],
+            [192, 0, 2, 2],
+            5060,
+            5060,
+            invite.as_bytes(),
+        )],
+    );
+    let mut server = Server::start(&path);
+    let result = server.call(
+        "get_message",
+        serde_json::json!({"call_id": "big-header@example.com", "index": 0}),
+    );
+    (result, dir)
+}
+
 /// A `User-Agent` cannot spend an agent's context: the field cap fires and the
 /// result says it fired.
 #[test]
@@ -545,18 +601,263 @@ fn an_oversized_header_is_bounded_in_the_response() {
     );
     let mut strings = Vec::new();
     all_strings(&result, &mut strings);
+    // Take the FIELD, not any string that happens to contain the payload.
+    //
+    // This used to `find` the first string containing "UUUU", which is the
+    // enclosing message JSON -- a blob whose length is dominated by the capture
+    // path and the other headers, not by the field under test. It measured 992
+    // bytes on Linux and passed under a 1024 limit, and 1036 on macOS and
+    // failed, while the field itself was correctly capped at 327 bytes in both.
+    // A green Linux run and a red macOS one, and neither was about the cap.
+    //
+    // The field is the string that STARTS with the fence marker: fencing is
+    // applied per value, so a fenced string is a value and not a container.
     let ua = strings
         .iter()
-        .find(|s| s.contains("UUUU"))
-        .unwrap_or_else(|| panic!("the long User-Agent is not in the response: {result}"));
+        .filter(|s| s.contains("UUUU"))
+        .find(|s| s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
+        .unwrap_or_else(|| {
+            panic!(
+                "no FENCED string carries the long User-Agent. Either the field \
+                 is unfenced, or it never reached the response: {result}"
+            )
+        });
+    // The cap, plus the fence markers and the truncation marker the value
+    // carries when it fires. Pinned against the constant rather than a round
+    // number, so raising the cap does not silently widen what this accepts.
+    let ceiling = sipnab::mcp::shape::MAX_FIELD_BYTES + 128;
     assert!(
-        ua.len() < 1024,
-        "an 8 KiB header reached the agent whole ({} bytes); the per-field cap \
-         is not wired into this path",
-        ua.len()
+        ua.len() <= ceiling,
+        "a 4 KiB header reached the agent at {} bytes, past the {ceiling}-byte \
+         ceiling ({}-byte field cap plus markers); the per-field cap is not \
+         wired into this path",
+        ua.len(),
+        sipnab::mcp::shape::MAX_FIELD_BYTES
     );
     assert!(
         ua.contains("truncated"),
         "a shortened value that does not say so reads as a whole one: {ua}"
+    );
+}
+
+// ── Debt: an assertion that measured a container, not a value ──────────
+//
+// `an_oversized_header_is_bounded_in_the_response` searched the response for
+// the first string containing the payload and asserted its LENGTH. That string
+// was the enclosing message JSON, whose size is dominated by the capture path
+// and the other headers. It measured 992 bytes on Linux and passed a 1024-byte
+// limit; it measured 1036 on macOS and failed. The field itself was correctly
+// capped at 327 bytes in both. Four commits ran red on a test that was never
+// about the cap it named, and the Linux pass was as accidental as the macOS
+// failure.
+//
+// These pin the properties that make that mistake detectable.
+
+/// The payload appears in a container AND in a field, and they differ in size.
+///
+/// This is the fact that made the original assertion meaningless. If a future
+/// response ever carries the value in exactly one place, the ambiguity is gone
+/// and this test should be revisited rather than silently kept passing.
+#[test]
+fn the_response_carries_an_oversized_field_in_more_than_one_string() {
+    let (result, _dir) = oversized_header_response();
+    let mut strings = Vec::new();
+    all_strings(&result, &mut strings);
+    let carrying: Vec<&String> = strings.iter().filter(|s| s.contains("UUUU")).collect();
+    assert!(
+        carrying.len() >= 2,
+        "only {} string carries the payload. The container/value ambiguity this \
+         suite guards against is gone; re-read the assertions above before \
+         trusting them",
+        carrying.len()
+    );
+    let fenced: Vec<&&String> = carrying
+        .iter()
+        .filter(|s| s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
+        .collect();
+    assert_eq!(
+        fenced.len(),
+        1,
+        "expected exactly one FENCED carrier of the payload; found {}. More \
+         than one and `find` is ambiguous again",
+        fenced.len()
+    );
+}
+
+/// The container is bigger than the field, which is why measuring it was wrong.
+#[test]
+fn the_container_is_larger_than_the_field_it_encloses() {
+    let (result, _dir) = oversized_header_response();
+    let mut strings = Vec::new();
+    all_strings(&result, &mut strings);
+    let field = strings
+        .iter()
+        .find(|s| s.contains("UUUU") && s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
+        .expect("a fenced field");
+    let container = strings
+        .iter()
+        .find(|s| s.contains("UUUU") && !s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
+        .expect("an enclosing container");
+    assert!(
+        container.len() > field.len(),
+        "the container ({} bytes) is not larger than the field ({} bytes), so \
+         measuring either would give the same verdict and the original bug \
+         could not have happened. Something changed; re-derive it",
+        container.len(),
+        field.len()
+    );
+}
+
+/// The field cap holds regardless of how long the surrounding capture path is.
+///
+/// The platform split came from a longer temp path on macOS inflating the
+/// CONTAINER. Nothing about a capture's filesystem path should be able to move
+/// a field's size, and this states that directly.
+#[test]
+fn the_field_cap_is_independent_of_the_capture_path_length() {
+    let (short, _d1) = oversized_header_response();
+    let (long, _d2) = oversized_header_response_in(&"p".repeat(60));
+    let field_of = |v: &serde_json::Value| -> usize {
+        let mut out = Vec::new();
+        all_strings(v, &mut out);
+        out.iter()
+            .find(|s| s.contains("UUUU") && s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
+            .map(String::len)
+            .expect("a fenced field")
+    };
+    // Non-vacuity probe: the CONTAINER must differ between the two, or the
+    // fixture is not varying anything and the equality below is trivially true.
+    let container_of = |v: &serde_json::Value| -> usize {
+        let mut out = Vec::new();
+        all_strings(v, &mut out);
+        out.iter()
+            .find(|s| s.contains("UUUU") && !s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
+            .map(String::len)
+            .expect("a container")
+    };
+    assert_ne!(
+        container_of(&short),
+        container_of(&long),
+        "the enclosing container did not change size when the capture path grew, \
+         so this test is not exercising the condition that split Linux from \
+         macOS and its equality assertion proves nothing"
+    );
+    assert_eq!(
+        field_of(&short),
+        field_of(&long),
+        "the fenced field changed size when only the capture PATH got longer. A \
+         cap that moves with an unrelated string is not a cap"
+    );
+}
+
+/// The cap actually fires: the field is far smaller than the input.
+#[test]
+fn the_capped_field_is_a_fraction_of_the_header_that_produced_it() {
+    let (result, _dir) = oversized_header_response();
+    let mut strings = Vec::new();
+    all_strings(&result, &mut strings);
+    let field = strings
+        .iter()
+        .find(|s| s.contains("UUUU") && s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
+        .expect("a fenced field");
+    assert!(
+        field.len() < 4096 / 4,
+        "the field is {} bytes against a 4096-byte input; the cap either did \
+         not fire or fired far too late to bound an agent's context",
+        field.len()
+    );
+    assert!(
+        field.len() > sipnab::mcp::shape::MAX_FIELD_BYTES / 2,
+        "the field is {} bytes, well under the {}-byte cap. Something other \
+         than the cap truncated it, and this suite would then be measuring that \
+         other thing -- exactly the substitution it exists to catch",
+        field.len(),
+        sipnab::mcp::shape::MAX_FIELD_BYTES
+    );
+}
+
+/// A truncated value SAYS it was truncated.
+///
+/// A silently shortened field is indistinguishable from a short one, and an
+/// agent reasoning about a `User-Agent` cannot tell "this is the value" from
+/// "this is the first 256 bytes of the value".
+#[test]
+fn a_capped_field_declares_that_it_was_cut() {
+    let (result, _dir) = oversized_header_response();
+    let mut strings = Vec::new();
+    all_strings(&result, &mut strings);
+    let field = strings
+        .iter()
+        .find(|s| s.contains("UUUU") && s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
+        .expect("a fenced field");
+    assert!(
+        field.contains("truncated") || field.contains('…'),
+        "the field was cut without saying so: {field:?}. An agent cannot tell a \
+         bounded value from a complete one"
+    );
+}
+
+/// The fence survives the cap.
+///
+/// Truncating a fenced value could cut the closing marker off, which would
+/// leave attacker text outside the fence -- the failure the fence exists for.
+#[test]
+fn capping_a_field_does_not_strip_its_closing_fence() {
+    let (result, _dir) = oversized_header_response();
+    let mut strings = Vec::new();
+    all_strings(&result, &mut strings);
+    let field = strings
+        .iter()
+        .find(|s| s.contains("UUUU") && s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
+        .expect("a fenced field");
+    assert!(
+        field.ends_with(sipnab::mcp::shape::UNTRUSTED_CLOSE),
+        "a capped field lost its closing fence, so the text after it reads as \
+         sipnab's own words: {field:?}"
+    );
+}
+
+/// No string in the response carries the payload unbounded.
+///
+/// The original test asked whether ONE string was small enough. This asks the
+/// question that matters: is there ANY path by which the whole 4 KiB header
+/// reaches an agent?
+#[test]
+fn no_string_in_the_response_carries_the_header_whole() {
+    let (result, _dir) = oversized_header_response();
+    let mut strings = Vec::new();
+    all_strings(&result, &mut strings);
+    for s in strings.iter().filter(|s| s.contains("UUUU")) {
+        let run = s
+            .chars()
+            .fold((0usize, 0usize), |(best, cur), c| {
+                if c == 'U' {
+                    (best.max(cur + 1), cur + 1)
+                } else {
+                    (best, 0)
+                }
+            })
+            .0;
+        assert!(
+            run <= sipnab::mcp::shape::MAX_FIELD_BYTES,
+            "a string carries {run} consecutive payload bytes, past the {}-byte \
+             field cap. Some path returns the header unbounded, whatever the \
+             enclosing object's total size happens to be",
+            sipnab::mcp::shape::MAX_FIELD_BYTES
+        );
+    }
+}
+
+/// The probe finds something, so the assertions above are not vacuous.
+#[test]
+fn the_oversized_header_fixture_actually_reaches_the_response() {
+    let (result, _dir) = oversized_header_response();
+    let mut strings = Vec::new();
+    all_strings(&result, &mut strings);
+    let n = strings.iter().filter(|s| s.contains("UUUU")).count();
+    assert!(
+        n > 0,
+        "the payload does not appear in the response at all. Every length \
+         assertion in this suite would then be checking nothing: {result}"
     );
 }
