@@ -367,10 +367,13 @@ appear ten minutes later in CI.
 
 The site build arrived on 2026-08-27 and for the same kind of cause the prose
 pair did. A Zola template is neither Rust nor prose, so a malformed macro in
-`website/templates/` passed every other gate in this hook and failed in the
-Pages deploy — twice in one afternoon, because the second error only appears at
-render and the first one masked it. Zola publishes no aarch64 Linux binary, so
-on some machines here the gate reports `NOT CHECKED` and names the
+`website/templates/` passed every other gate in this hook and reached CI —
+twice in one afternoon, because the second error only appears at render and the
+first one masked it. CI does catch it: `quality.yml` runs `zola build`, and its
+Build site step is what went red both times. The gap this closes is local, not
+in CI — the ten-minute round trip, paid twice, for an error a build finds in
+four hundred milliseconds. Zola publishes no aarch64 Linux binary, so on some
+machines here the gate reports `NOT CHECKED` and names the
 `cargo install --git` line that fixes it. The prose pair arrived last and for cause: on
 2026-08-03 Vale turned main red with 12 passive-voice errors and codespell
 followed with two spelling hits in `src/` doc comments, each found only after
@@ -462,7 +465,7 @@ because a hand-kept list cannot catch a *new* corpus binary, which is the one
 thing this gate exists for. The first draft did hand-keep the list, and it went
 stale inside an hour, when a twelfth binary landed mid-review.
 
-**When it runs.** Last, after the nine hard gates. Each of those fails in
+**When it runs.** Last, after the ten hard gates. Each of those fails in
 seconds, and spending a minute on the corpus only to hear that the tree does not
 compile wastes the minute. The gate then reaches one of five states — a run, or
 one of the four reasons not to run — and each prints its own line:

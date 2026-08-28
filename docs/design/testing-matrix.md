@@ -84,7 +84,7 @@ behind them.
 | Flag | Short | Value | Group | Detected | Where | Audited | What a person found |
 |---|---|---|---|---|---|---|---|
 | `--help` | `-h` |  | Options | e2e | `tests/cli_test.rs` |  |  |
-| `--version` | `-V` |  | Options | e2e | `tests/cli_test.rs`, `tests/multi_input_test.rs` |  |  |
+| `--version` | `-V` |  | Options | e2e | `tests/cli_test.rs`, `tests/multi_input_test.rs` +1 |  |  |
 | `--device` | `-d` | `IFACE` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/hep_test.rs` +1 |  |  |
 | `--input` | `-I` |  | Capture | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +35 |  |  |
 | `--recursive` |  |  | Capture | e2e | `tests/input_set_accounting_test.rs`, `tests/multi_input_test.rs` |  |  |
@@ -115,7 +115,7 @@ behind them.
 | `--calls-only` | `-c` |  | Mode | e2e | `src/output/event_exec.rs`, `src/security/alerting.rs` +7 |  |  |
 | `--telephone-event` | `-t` |  | Mode | e2e | `tests/tui_e2e_test.rs` |  |  |
 | `--dtmf-cleartext` |  |  | Mode | referenced | `tests/dtmf_masking_test.rs` | **behavior** | dtmf_cleartext_emits_the_digit_value_at_debug_level (tests/dtmf_masking_test.rs), with an anti-vacuity guard |
-| `--quiet` | `-q` |  | Mode | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_wiring_test.rs` +20 |  |  |
+| `--quiet` | `-q` |  | Mode | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_wiring_test.rs` +21 |  |  |
 | `--resolve` |  |  | Name resolution | e2e | `tests/integration_test.rs` |  |  |
 | `--reverse-dns` |  |  | Name resolution | parsed | `src/cli.rs` |  |  |
 | `--dns-cache-entries` |  | `N` | Name resolution | e2e | `tests/config_wiring_test.rs` |  |  |
@@ -138,7 +138,7 @@ behind them.
 | `--short-calls` |  |  | Diagnostic aliases | referenced | `tests/cli_options_test.rs`, `tests/filter_corpus_test.rs` +1 | **parse-only** | short_calls_filter asserts only count <= 7; the alias-equivalence test is vacuous (0 of 1334 dialogs selected on its fixture) |
 | `--one-way` |  |  | Diagnostic aliases | referenced | `tests/cli_options_test.rs`, `tests/filter_corpus_test.rs` +3 | **behavior** | one_way_filter plus one_way_output_carries_the_stun_versus_sdp_finding (tests/stun_test.rs); both directions pinned |
 | `--nat-issues` |  |  | Diagnostic aliases | referenced | `tests/cli_options_test.rs`, `tests/filter_corpus_test.rs` +3 | **behavior** | nat_issues_filter plus the_nat_issues_alias_selects_the_rewritten_call (tests/media_diagnosis_wiring_test.rs) |
-| `--json` |  |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_test.rs` +8 |  |  |
+| `--json` |  |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_test.rs` +9 |  |  |
 | `--json-pretty` |  |  | Output | e2e | `tests/json_schema_test.rs` |  |  |
 | `--json-dialogs` |  |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_wiring_test.rs` +11 |  |  |
 | `--plugin` |  | `PATH` | Output | e2e | `tests/plugin_example_test.rs` |  |  |

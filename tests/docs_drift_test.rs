@@ -33,6 +33,17 @@ mod markdown;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `--git` is cargo's. The build-and-release page carries the
+    // `cargo install --git ... --tag` line the site-build gate prints when zola
+    // is missing, because Zola publishes no aarch64 Linux binary and building
+    // one is the only way to get it on such a machine.
+    (
+        "git",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // `--audio` belongs to `harness/clients/vcon_view.py`, the small reader the
     // capture-stack page uses to extract a stored container's WAV. It is a
     // harness client rather than sipnab, and naming it here is what keeps this
@@ -109,22 +120,12 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/vcon-harness.md",
             "docs/examples.md",
             "website/content/docs/cookbook.md",
-            "docs/vcon.md",
-            "website/content/docs/vcon.md",
         ],
     ),
     // `--example` is cargo's. The vCon page points at the committed
     // `export_vcon` example because a program that compiles with the tree
     // cannot drift from the API the way a fragment on a page can.
-    (
-        "example",
-        &[
-            "docs/vcon.md",
-            "website/content/docs/vcon.md",
-            "docs/examples.md",
-            "website/content/docs/cookbook.md",
-        ],
-    ),
+    ("example", &["docs/vcon.md", "website/content/docs/vcon.md"]),
     // `--keylogfile` is eCapture's, not sipnab's, and BOTH pages that name it
     // are legitimate: the cookbook's §7e tells the reader to run
     // `ecapture tls -m keylog --keylogfile=...` on the SIP host to lift secrets
@@ -547,12 +548,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     ),
     (
         "nginx",
-        &[
-            "docs/mcp-deploy.md",
-            "website/content/docs/mcp-deploy.md",
-            "docs/mcp-estate.md",
-            "website/content/docs/mcp-estate.md",
-        ],
+        &["docs/mcp-estate.md", "website/content/docs/mcp-estate.md"],
     ),
     (
         "allowedTools",
@@ -660,9 +656,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "no-default-features",
         &[
             "docs/internals/build-ci-release.md",
-            "docs/internals/testing.md",
             "website/content/docs/internals/build-ci-release.md",
-            "website/content/docs/internals/testing.md",
         ],
     ),
     (
@@ -674,24 +668,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "no-typescript",
-        &[
-            "docs/internals/testing.md",
-            "website/content/docs/internals/testing.md",
-        ],
-    ),
-    (
         "out",
         &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
-        ],
-    ),
-    (
-        "out-dir",
-        &[
-            "docs/internals/testing.md",
-            "website/content/docs/internals/testing.md",
         ],
     ),
     (
@@ -728,13 +708,6 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
-        ],
-    ),
-    (
-        "target",
-        &[
-            "docs/internals/testing.md",
-            "website/content/docs/internals/testing.md",
         ],
     ),
     (
@@ -820,25 +793,16 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     (
         "now",
         &[
-            "docs/mcp.md",
-            "website/content/docs/mcp.md",
             "docs/mcp-deploy.md",
             "website/content/docs/mcp-deploy.md",
             "docs/mcp-estate.md",
             "website/content/docs/mcp-estate.md",
         ],
     ),
-    // voipmonitor (benchmark comparison command lines)
-    (
-        "config-file",
-        &["docs/benchmarks.md", "website/content/docs/benchmarks.md"],
-    ),
     // claude mcp add (http-transport client wiring)
     (
         "transport",
         &[
-            "docs/mcp.md",
-            "website/content/docs/mcp.md",
             "docs/mcp-deploy.md",
             "website/content/docs/mcp-deploy.md",
             "docs/mcp-estate.md",
@@ -848,8 +812,6 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     (
         "header",
         &[
-            "docs/mcp.md",
-            "website/content/docs/mcp.md",
             "docs/mcp-deploy.md",
             "website/content/docs/mcp-deploy.md",
             "docs/mcp-estate.md",
@@ -4257,6 +4219,13 @@ fn documented_pre_push_gate_count_matches_the_hook() {
         8 => "eight",
         9 => "nine",
         10 => "ten",
+        // Two arms ahead of the hook, deliberately.
+        // `the_gate_count_spelling_table_covers_one_more_than_today` requires
+        // the NEXT count to exist, so adding a gate is a documentation edit
+        // rather than a panic about a missing match arm several minutes into
+        // a CI run.
+        11 => "eleven",
+        12 => "twelve",
         n => panic!("no spelling for {n} gates; add one rather than dropping the check"),
     };
 
@@ -5109,5 +5078,235 @@ fn every_scanning_gate_refuses_to_pass_on_an_empty_scan() {
         "a scanning gate counts what it examined but never asserts a floor on \
          that count, so an empty corpus reads as a clean pass. Every entry in \
          SCANNERS must have an `assert!(<counter> > N, ...)` beside its loop."
+    );
+}
+
+/// Every refusal in `pre-push` sits inside a marked gate.
+///
+/// `documented_pre_push_gate_count_matches_the_hook` counts `# -- Hard gate`
+/// markers and compares that number against three documents. It cannot see a
+/// step that has no marker: one added without it leaves the count low, the
+/// prose right, and the new gate invisible to the check meant to keep them in
+/// step. The site build shipped exactly that way -- ten gates, a count of
+/// nine, and three documents I had just corrected to "ten" turning CI red.
+///
+/// The invariant is containment, not a one-to-one count. A single gate refuses
+/// for several distinct reasons: the feature-combo gate blocks for a bad combo
+/// AND for a broken wasm build, and the tag gate blocks for a red run AND for
+/// no runs at all. Counting `Push blocked` lines and expecting one per marker
+/// was this test's first draft, and it reported the hook as broken when the
+/// hook was right.
+#[test]
+fn every_refusal_in_pre_push_sits_inside_a_marked_gate() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let hook =
+        std::fs::read_to_string(root.join(".githooks/pre-push")).expect("read .githooks/pre-push");
+
+    let first_marker = hook
+        .find("\n# -- Hard gate")
+        .expect("pre-push has no `# -- Hard gate` markers at all");
+
+    let markers = hook.matches("\n# -- Hard gate").count();
+    let refusals = hook.matches("Push blocked").count();
+    assert!(
+        markers >= 5 && refusals >= markers,
+        "found {markers} markers and {refusals} refusals -- one of these \
+         shapes changed, and this gate is comparing nothing to nothing"
+    );
+
+    // Anything that can block before the first marker is a gate the count
+    // cannot see.
+    let orphans = hook[..first_marker].matches("Push blocked").count();
+    assert_eq!(
+        orphans, 0,
+        "pre-push refuses a push {orphans} time(s) before its first \
+         `# -- Hard gate` marker, so those gates are invisible to the count \
+         the documents are checked against"
+    );
+}
+
+/// The spelling table covers every count the hook can currently reach.
+///
+/// `documented_pre_push_gate_count_matches_the_hook` panics with "no spelling
+/// for N gates" rather than failing quietly, which is right — but it means
+/// adding an eleventh gate turns a documentation check into a panic about a
+/// missing match arm, several minutes into a CI run. Cheaper to say so here.
+#[test]
+fn the_gate_count_spelling_table_covers_one_more_than_today() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let hook =
+        std::fs::read_to_string(root.join(".githooks/pre-push")).expect("read .githooks/pre-push");
+    let gates = hook.matches("\n# -- Hard gate").count();
+
+    let test_src =
+        std::fs::read_to_string(root.join("tests/docs_drift_test.rs")).expect("read this file");
+    // The arm for the NEXT gate must already exist, so adding one is a doc
+    // edit rather than a panic.
+    let next = gates + 1;
+    let spellings = [
+        (4, "four"),
+        (5, "five"),
+        (6, "six"),
+        (7, "seven"),
+        (8, "eight"),
+        (9, "nine"),
+        (10, "ten"),
+        (11, "eleven"),
+        (12, "twelve"),
+    ];
+    let want = spellings
+        .iter()
+        .find(|(n, _)| *n == next)
+        .map(|(_, s)| *s)
+        .unwrap_or_else(|| panic!("extend this table past {next}"));
+
+    assert!(
+        test_src.contains(&format!("=> \"{want}\"")),
+        "pre-push has {gates} hard gates, so the next one makes {next}, and \
+         the spelling table in \
+         `documented_pre_push_gate_count_matches_the_hook` has no arm for \
+         {next} (\"{want}\"). Adding a gate would panic there instead of \
+         reporting a documentation mismatch."
+    );
+}
+
+/// Every `FOREIGN_FLAGS` entry still describes a document that carries it.
+///
+/// The list exempts a flag name from `readme_long_flags_exist_in_cli`, scoped
+/// to the pages that legitimately show another tool's command line -- cargo's
+/// `--release`, curl's `--data-binary`, rtpengine's `--listen-ng`. Every entry
+/// is a hole in that gate, deliberately cut.
+///
+/// A hole outlives the text that justified it. Reword the paragraph, move the
+/// example to another page, drop the command entirely, and the exemption stays
+/// -- so a real sipnab flag with the same name could later be documented,
+/// never implemented, and pass. Entries are cheap to add under deadline; this
+/// is what makes them cost something to keep.
+#[test]
+fn no_foreign_flag_exemption_outlives_the_text_it_was_cut_for() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut stale: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+
+    for (flag, scopes) in FOREIGN_FLAGS {
+        for scope in *scopes {
+            checked += 1;
+            let path = root.join(scope);
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                stale.push(format!("{scope}: file does not exist (exempts --{flag})"));
+                continue;
+            };
+            if !text.contains(&format!("--{flag}")) {
+                stale.push(format!("{scope}: no longer mentions --{flag}"));
+            }
+        }
+    }
+
+    assert!(
+        checked >= 20,
+        "walked only {checked} FOREIGN_FLAGS scopes -- the list shrank or its \
+         shape changed, and this gate is checking almost nothing"
+    );
+    assert!(
+        stale.is_empty(),
+        "these FOREIGN_FLAGS exemptions no longer cover any text, so they are \
+         holes in `readme_long_flags_exist_in_cli` protecting nothing:\n  {}",
+        stale.join("\n  ")
+    );
+}
+
+/// A foreign-flag exemption never names a flag sipnab actually has.
+///
+/// The opposite rot, and the more dangerous one. If sipnab later grows a flag
+/// whose name is already exempted for some page -- `--force`, `--output-dir`,
+/// `--interface` are all plausible -- then that page can document it wrongly
+/// and the gate stays silent, because the name is on the exemption list.
+#[test]
+fn no_foreign_flag_exemption_shadows_a_real_sipnab_flag() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let cli = std::fs::read_to_string(root.join("src/cli.rs")).expect("read src/cli.rs");
+
+    let mut shadowed: Vec<&str> = Vec::new();
+    for (flag, _) in FOREIGN_FLAGS {
+        if cli.contains(&format!("long = \"{flag}\"")) {
+            shadowed.push(flag);
+        }
+    }
+
+    assert!(
+        !FOREIGN_FLAGS.is_empty(),
+        "FOREIGN_FLAGS is empty -- this gate is asserting nothing"
+    );
+    assert!(
+        shadowed.is_empty(),
+        "these names are exempted as another tool's flags AND exist in \
+         src/cli.rs as sipnab's own: {shadowed:?}. While the exemption stands, \
+         a page can document sipnab's version of the flag incorrectly and \
+         `readme_long_flags_exist_in_cli` will not notice."
+    );
+}
+
+/// Every `NOT CHECKED` in `pre-push` tells the operator what to do about it.
+///
+/// The hook reports a missing tool as `NOT CHECKED` rather than passing, which
+/// is the right half of the rule: a gate that goes quiet when its tool is
+/// absent claims a safety it is not providing. The other half is that the
+/// operator now has a yellow line and a decision to make, and no basis for
+/// making it — is this covered elsewhere, or did I just push unchecked?
+///
+/// Vale and codespell answer it ("CI runs it and it blocks", plus the install
+/// line). The wasm target answers it. The feature-matrix and non-Linux
+/// branches did NOT: they said a script was missing and stopped, so the one
+/// message that admits a gap gave no way to close it.
+///
+/// Checked structurally rather than by wording, because the useful sentence
+/// varies: sometimes it is an install command, sometimes it is which CI job
+/// still covers you.
+#[test]
+fn every_not_checked_branch_in_pre_push_says_what_to_do() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let hook =
+        std::fs::read_to_string(root.join(".githooks/pre-push")).expect("read .githooks/pre-push");
+    let lines: Vec<&str> = hook.lines().collect();
+
+    let mut silent: Vec<String> = Vec::new();
+    let mut announcements = 0usize;
+
+    for (n, line) in lines.iter().enumerate() {
+        // The ANNOUNCEMENT, not the comments explaining the convention: only a
+        // printf actually reaches an operator.
+        if !(line.contains("NOT CHECKED") && line.contains("printf")) {
+            continue;
+        }
+        announcements += 1;
+
+        // The remedy must sit INSIDE the same branch. Scanning a fixed window
+        // instead let the `else` arm's own progress line count as the remedy —
+        // it happens to contain "CI" — so deleting the real remedy left this
+        // test passing. Stop at the branch boundary.
+        let follows_up = lines
+            .iter()
+            .skip(n + 1)
+            .take_while(|l| {
+                let t = l.trim();
+                !(t == "else" || t == "fi" || t.starts_with("elif"))
+            })
+            .any(|l| l.contains("printf") && l.contains("'    "));
+        if !follows_up {
+            silent.push(format!("{}: {}", n + 1, line.trim()));
+        }
+    }
+
+    assert!(
+        announcements >= 5,
+        "found only {announcements} `NOT CHECKED` announcements — the wording \
+         changed and this gate is reading nothing"
+    );
+    assert!(
+        silent.is_empty(),
+        "these `NOT CHECKED` branches leave the operator with a warning and no \
+         next step. Say which CI job still covers it, or how to install the \
+         tool:\n  {}",
+        silent.join("\n  ")
     );
 }

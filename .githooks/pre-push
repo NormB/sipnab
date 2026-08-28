@@ -235,6 +235,8 @@ MATRIX_GATE="$(dirname "$0")/../scripts/check-feature-matrix.py"
 if [ ! -f "$MATRIX_GATE" ]; then
 	printf '%b  feature matrix: NOT CHECKED -- scripts/check-feature-matrix.py is missing%b\n' \
 		"$YELLOW" "$NC"
+	printf '    CI builds every combo and blocks there. The script is tracked, so a\n'
+	printf '    missing one means this checkout is incomplete rather than misconfigured.\n'
 else
 	printf '  feature matrix (every combo CI builds, with CI'"'"'s flags) ... '
 	set +e
@@ -315,6 +317,8 @@ NONLINUX_GATE="$(dirname "$0")/../scripts/check-non-linux.sh"
 if [ ! -f "$NONLINUX_GATE" ]; then
 	printf '%b  non-Linux cfg: NOT CHECKED -- scripts/check-non-linux.sh is missing%b\n' \
 		"$YELLOW" "$NC"
+	printf '    CI compiles the macOS arm and blocks there. The script is tracked, so a\n'
+	printf '    missing one means this checkout is incomplete rather than misconfigured.\n'
 else
 	printf '  non-Linux cfg (the macOS arm of every target_os split) ... '
 	set +e
@@ -859,12 +863,16 @@ rm -f "$PROSE_OUTPUT"
 
 fi
 
+# -- Hard gate: the site build -----------------------------------------------
+#
 # The site build. Every other gate here compiles Rust or reads prose, and a
-# Zola template passes all of them: a malformed macro in `website/templates/`
-# is not Rust, carries no prose, and reaches the Pages deploy unexamined. One
-# did, and the deploy failed on `macros.html` -- then a SECOND error behind it,
-# a macro namespace used without importing it, which only a real build finds
-# because it happens at render rather than at parse.
+# Zola template is neither, so a malformed macro in `website/templates/` clears
+# this hook and lands in CI. CI does catch it -- `quality.yml` runs `zola
+# build` -- so what this saves is the round trip, not the bug. It was paid
+# twice in one afternoon: a parse error in `macros.html`, and behind it a macro
+# namespace used without importing it, which only a real build finds because it
+# happens at render rather than at parse. Four hundred milliseconds here
+# against ten minutes there.
 #
 # NOT CHECKED rather than skipped silently when zola is absent: Zola publishes
 # no aarch64 Linux binary, so on some machines here this cannot run, and a gate

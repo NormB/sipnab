@@ -211,3 +211,29 @@ def test_fence_mask_runs_an_unclosed_fence_to_the_end_of_the_document():
         f"an unclosed fence stopped masking before end of document, so the "
         f"tail would be rewritten as prose: {mask}"
     )
+
+
+def test_this_files_parametrisation_is_not_empty():
+    """Every test above is parametrised over `TRANSFORMERS` and `BAIT`.
+
+    An empty list is not a failure in pytest — it collects zero cases, prints
+    nothing, and the run stays green. So the file that guards three
+    transformers against silently rewriting nothing could itself silently check
+    nothing, which would be a poor joke.
+
+    Named per transformer rather than counted, because a list that still has
+    three entries but has lost `link-repo-paths` is the same hole with a
+    passing count.
+    """
+    assert TRANSFORMERS, "TRANSFORMERS is empty — every test in this file collected zero cases"
+    for stem in ("rfc-links", "link-repo-paths", "fix-line-anchors"):
+        assert stem in TRANSFORMERS, (
+            f"{stem} is no longer covered. It rewrites documentation in place, "
+            f"and the fence guard is the only thing standing between it and "
+            f"code rewritten as prose."
+        )
+        assert stem in BAIT, (
+            f"{stem} has no bait, so its fence guard would pass over a "
+            f"document it never touches — the vacuity this file exists to "
+            f"refuse"
+        )

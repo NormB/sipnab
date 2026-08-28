@@ -157,7 +157,7 @@ Because gate 2 runs the whole suite, **every commit takes minutes**, and gate 5
 means adding a test obliges you to update the count in
 `website/templates/index.html` in the same commit.
 
-**`pre-push`** adds nine hard gates, all of which mirror CI exactly and any of
+**`pre-push`** adds ten hard gates, all of which mirror CI exactly and any of
 which blocks the push:
 
 | Gate | Why it is not covered by `cargo test` |
