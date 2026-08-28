@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**45 open, 342 done** across 20 sections.
+**44 open, 343 done** across 20 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -53,7 +53,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | P1 | 0 | 55 | `##########` |
 | PV | 0 | 13 | `##########` |
 | P2 | 0 | 109 | `##########` |
-| P3 | 1 | 63 | `##########` |
+| P3 | 0 | 64 | `##########` |
 | P4 | 0 | 39 | `##########` |
 | PA | 13 | 0 | `..........` |
 | PB | 13 | 5 | `###.......` |
@@ -1614,8 +1614,35 @@ holds anything to it.
   because `contains` proves a string is present, never that it is used. Both
   now require the string on a line that greps or sources.
 
-- [ ] **GATE2 — branch protection on `main` is bypassed on every push, so
-  neither rule it declares is enforced.** REOPENED 2026-08-26: closed on
+- [x] **GATE2 — branch protection on `main` is advisory by DECISION, and the
+  claim is now enforced. DONE 2026-08-28.**
+
+  **Decided: `enforce_admins` stays OFF.** Turning it on would require a pull
+  request for every change to `main`, because a required status check cannot
+  gate a direct push -- the push creates the commit and its status together, so
+  the check has nothing to run against in time. This is a one-maintainer
+  repository with a standing preference against PRs, so enforcement would buy
+  a rule nobody follows at the cost of the workflow that actually ships.
+
+  **What protects `main` is the `pre-push` gate**, which runs ten hard checks
+  on the machine doing the pushing, refuses a `v*` tag whose commit has a
+  failed run or runs still in flight, and cannot be switched off in a settings
+  page. That is a stronger guarantee than a rule every push bypasses, and it is
+  the one this repository has actually been relying on.
+
+  **The defect that remained was not the setting; it was that nothing kept the
+  claim honest.** The switch was turned on by hand on 2026-08-23 and was off
+  again by 2026-08-26 with no test, hook or workflow reporting it, while the
+  documentation went on describing a guarantee that had stopped existing.
+  [`tests/branch_protection_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/branch_protection_drift_test.rs)
+  now holds the declared state and the live API state together -- the switch,
+  the `CI success` context, the pull-request rule, and the prose that describes
+  them -- so the settings page and the docs can no longer diverge in silence.
+  Reversing this decision is one command, and the gate then FAILS until the
+  constant and the documentation move with it, which is the point.
+
+  ORIGINAL: branch protection on `main` is bypassed on every push, so
+  neither rule it declares is enforced. REOPENED 2026-08-26: closed on
   2026-08-23 by turning `enforce_admins` on, and the API now returns
   `enforce_admins.enabled: false` again, so the condition below holds once more.
   A push to `main` on 2026-08-26 reported both rule violations and succeeded. Every push to `main` reports:
