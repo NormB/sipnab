@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**47 open, 340 done** across 20 sections.
+**46 open, 341 done** across 20 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -62,7 +62,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | BA | 3 | 1 | `##........` |
 | NAT | 0 | 4 | `##########` |
 | MCPX | 1 | 6 | `#########.` |
-| P5 | 8 | 12 | `######....` |
+| P5 | 7 | 13 | `######....` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
 
 <!-- /BACKLOG-STATUS -->
@@ -1649,6 +1649,19 @@ holds anything to it.
   documented as advisory. The drift gate is correct under either, which is why
   it landed without waiting for the answer.
 
+  Both answers are one command, and each needs the SAME follow-up so the drift
+  gate stays green -- `DECLARED_ENFORCE_ADMINS` in the test and the
+  `enforce_admins` sentence in [`docs/internals/build-ci-release.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/build-ci-release.md) move with
+  the switch, or the gate fails on the next run. That coupling is the point:
+  the setting can no longer change without the documentation changing.
+
+  ```sh
+  # Enforce: main takes pull requests, and `CI success` actually gates.
+  gh api -X POST repos/NormB/sipnab/branches/main/protection/enforce_admins
+  # Leave advisory: the settings page states intent, pre-push is the real gate.
+  gh api -X DELETE repos/NormB/sipnab/branches/main/protection/enforce_admins
+  ```
+
   - `Required status check "CI success" is expected` — the rule wants CI green
     *before* the push, and admin bypass waves it through. So the check that is
     supposed to gate a merge gates nothing on this path, and a red commit can
@@ -2624,6 +2637,25 @@ authoritative; the PB text above adds only what they do not already say.
   allocation, so the frame is retained for every packet either way — the added
   cost is one more refcount increment on a counter the packet already holds,
   against ~240 bytes of dependent FNV multiplies saved on 93% of frames.
+
+  **Surveyed against the tree 2026-08-28, and the design above survives the
+  check.** The cheaper alternative -- hash at the retention site from the
+  `Packet` that is already in scope -- does not exist: there are exactly TWO
+  retention sites in production code,
+  [`src/pipeline.rs:2038`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2038)
+  and
+  [`src/rtp/stream_store.rs:712`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L712)
+  (a third at `stream_store.rs:2573` is a test), and at both of them only the
+  `ParsedPacket` is in scope. The originating `Packet`, and with it `.data`,
+  died at the parse boundary -- which is the whole reason `frame` is carried
+  across it. So the bytes must ride on `ParsedPacket`, exactly as specced.
+
+  Two facts that shape the edit rather than the design. `ParsedPacket` derives
+  only `Debug, Clone` -- no `Default` -- and `DateTime<Utc>` and `IpAddr` are
+  not `Default`, so a derived `Default` is not available to shrink the diff.
+  And only 3 of the construction sites use struct-update syntax, so a new field
+  is a genuine edit at every other one. Re-counted on the current tree the
+  radius is **71 sites, not 63**: 42 under `src/` and 29 under `tests/`.
 
   **Blast radius, counted before starting: 63 `ParsedPacket` literal
   construction sites** across `src/` and `tests/`. That is what makes this a
@@ -4172,8 +4204,8 @@ ones that fit an analysis tool.
   instead of reaching the flat wiki dead. ../docs/architecture.md and CONTRIBUTING.md
   delegate into the set rather than duplicating it. Note the **SIP problem
   diagnosis** item above is a separate P5 and is untouched by this work.
-- [ ] **Confirm visually that the wiki renders the developer-doc mermaid
-  diagrams** — mostly answered after the 2026-07-25 merge. `wiki-sync.yml` ran
+- [x] **Confirm visually that the wiki renders the developer-doc mermaid
+  diagrams — CONFIRMED 2026-08-28.** — mostly answered after the 2026-07-25 merge. `wiki-sync.yml` ran
   green; cloning `sipnab.wiki.git` shows all 10 `Internals-*` pages published,
   4 ```` ```mermaid ```` fences intact in `Internals-Subsystem-Guide.md`, and no
   unrewritten `](../` links anywhere. Fetching the published page shows GitHub
@@ -4185,6 +4217,35 @@ ones that fit an analysis tool.
   this host). Open one page in a real browser to close this out. Low risk
   either way: every diagram has a prose line above it carrying the same point,
   so the pages degrade to correct rather than to broken.
+
+  **Closed with a real browser.** The blocker recorded above -- "needs a
+  JavaScript-capable browser (none available on this host)" -- was stale:
+  Playwright's bundled Chromium sits at
+  `~/.cache/ms-playwright/chromium-1223/chrome-linux/chrome` and runs headless
+  without a display. Driving it with `--dump-dom` against
+  `Internals-Subsystem-Guide` shows GitHub reaching `is-render-ready` on the
+  diagram containers, which is the state it sets only after the render
+  SUCCEEDS -- so the fences are not merely recognized, they are drawn.
+
+  **The first reading of this was wrong, and how it was wrong is the useful
+  part.** At a 20-second budget all four containers carried
+  `is-render-failed`, which looks exactly like broken diagrams. Two checks
+  said otherwise. A control page whose mermaid is known to render
+  (`mermaid-js/mermaid`) reached 10 `is-render-ready` in the same browser, so
+  the method worked; and raising the budget moved the subject monotonically:
+
+  | virtual-time-budget | ready | failed |
+  |---|---:|---:|
+  | 20 s | 0 | 4 |
+  | 45 s | 1 | 3 |
+  | 120 s | 2 | 3 |
+
+  A count that climbs with nothing but added time is a pipeline being cut off,
+  not content being rejected -- GitHub renders each diagram in its own
+  cross-origin iframe against `viewscreen.githubusercontent.com`, so they
+  complete independently and slowly. Reporting "the wiki mermaid is broken"
+  off the first run would have been a false alarm generated entirely by the
+  instrument's impatience.
 - [x] **glibc floor: installer runtime value** — **Already done; this entry was
   stale.** [`website/static/install.sh`](https://github.com/NormB/sipnab/blob/main/website/static/install.sh) and [`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml) both carry
   `2.36`, matching the floor `release.yml` enforces, and

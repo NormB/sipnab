@@ -2812,6 +2812,13 @@ fn no_documentation_table_repeats_a_row() {
     // measurement: that file carries exactly two table separators and no other
     // page gained one. It is not a published page, so it costs no second entry
     // for a site mirror.
+    // 693 -> 694: closing the wiki-mermaid item in the backlog. One table,
+    // three rows, one per virtual-time-budget the headless render was measured
+    // at (20 s, 45 s, 120 s) against the ready/failed counts. It is a table
+    // because the CLAIM is the trend across budgets -- ready climbing 0, 1, 2
+    // on nothing but added time is what distinguishes a cut-off render pipeline
+    // from broken content, and prose would state the three readings without
+    // making the monotonicity visible.
     // 692 -> 693: the REL1 closure in the backlog. One table, four rows, one
     // per external host the release build reaches -- netmap, libpcap,
     // bpf-linker and the apt archives -- recording how each is pinned,
@@ -2822,7 +2829,7 @@ fn no_documentation_table_repeats_a_row() {
     // `docs/vcon-harness.md` and ten in its generated site mirror, counted
     // with `grep -c '^|---'` on each before the number moved. Twenty is the
     // whole delta, and a published page always costs this counter double.
-    const EXPECTED_TABLES: usize = 693;
+    const EXPECTED_TABLES: usize = 694;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
