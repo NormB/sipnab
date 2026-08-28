@@ -255,7 +255,7 @@ bpf = ["native", "dep:aya", "sipnab-bpf-types/pod"]
 # reuses, sha2 for the UUIDv8 derivation and the media content_hash, and base64
 # because media travels INLINE as base64url: the draft requires HTTPS for a
 # by-reference url and sipnab hosts nothing.
-vcon = ["native", "dep:sha2", "dep:base64"]
+vcon = ["native", "dep:sha2", "dep:hmac", "dep:base64"]
 full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metrics", "plugins", "vcon"]
 
 # Userspace half of the eBPF backend. Stable Rust; only the KERNEL half needs

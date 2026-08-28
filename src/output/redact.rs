@@ -38,7 +38,7 @@
 //! function evaluated over bits *0..i*. Because each output bit depends only on
 //! the input bits above it, two addresses agreeing on a *k*-bit prefix produce
 //! pseudonyms agreeing on the same *k*-bit prefix — which is the property that
-//! keeps "the RTP went somewhere outside the signalled subnet" answerable.
+//! keeps "the RTP went somewhere outside the signaled subnet" answerable.
 //!
 //! # What a token looks like, and why
 //!
