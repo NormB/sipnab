@@ -844,10 +844,15 @@ fn the_run_summary_counts_files_read_not_files_offered() {
         &["-N", "-I", &dir.path().to_string_lossy(), "--no-cli-print"],
         Some("warn"),
     );
+    // Since 0.5.131 a truncated member FAILS the run (backlog VAL2). This
+    // assertion used to demand exit 0, which is the behavior this test's own
+    // doc comment blames for making a truncation bug "nearly invisible" —
+    // `docs/fault-model.md` states the rule and the file path now implements
+    // it. The summary assertions below are what this test is actually for.
     assert_eq!(
         code,
-        Some(0),
-        "a truncated member does not fail the run:\n{err}"
+        Some(1),
+        "a truncated member must fail the run:\n{err}"
     );
     assert!(
         err.contains("2 of 3 file(s) read in full"),
@@ -899,7 +904,16 @@ fn the_run_summary_reports_files_a_limit_never_reached() {
 /// printing the wrong one.
 fn read_summary(args: &[&str]) -> Option<(bool, String)> {
     let (_out, err, code) = run_support::run(args, Some("info"));
-    assert_eq!(code, Some(0), "the run must succeed for {args:?}:\n{err}");
+    // 0 or 1: this helper is called with sets that deliberately include a
+    // truncated member, and since 0.5.131 a partial read exits 1 (backlog
+    // VAL2). What must never happen is a crash or a usage error, because
+    // either would mean the summary below was never printed for a reason
+    // unrelated to what this test measures.
+    assert!(
+        matches!(code, Some(0 | 1)),
+        "the run must complete (0) or report a partial read (1) for {args:?}, \
+         got {code:?}:\n{err}"
+    );
     err.lines()
         .find(|l| l.contains("file(s) read in full"))
         .map(|l| {

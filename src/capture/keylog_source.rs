@@ -1,5 +1,7 @@
 //! Where TLS keylog bytes come from, and nothing about what they mean.
 //!
+//! A file, a FIFO, or a descriptor inherited from a supervisor.
+//!
 //! [`TlsDecryptor`](crate::capture::decrypt::TlsDecryptor) used to reach for the keylog
 //! file itself, with a stat-size-and-seek that could not survive a producer
 //! which truncates or replaces the file, and could not read a FIFO at all. That

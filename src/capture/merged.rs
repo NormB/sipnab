@@ -28,6 +28,11 @@
 //! per-interface table the file already carries and hands the right one to
 //! every frame.
 //!
+//! Gated on `native` like its siblings: the decoder is `pcap-file`, which only
+//! `native` pulls in. Declaring it unconditionally broke every feature
+//! combination built without `native` — caught by the gate's `tls`-only and
+//! `wasm` legs, not by `--all-features`, which can never see a missing feature.
+//!
 //! Reads the file into memory rather than streaming it. Deliberate: this path
 //! exists for merged captures, which are assembled artifacts rather than live
 //! ring buffers, and the alternative is a self-referential borrow of the

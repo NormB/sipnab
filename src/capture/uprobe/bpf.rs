@@ -9,6 +9,11 @@
 //! every record into the same [`Packet`](crate::capture::packet::Packet) the
 //! tracefs reader produces.
 //!
+//! Loading and attaching the BPF programs needs `aya` and a built object, so
+//! this half is Linux only as well as feature-gated: `aya` calls `SYS_bpf`,
+//! `SYS_perf_event_open` and `CLOCK_BOOTTIME`, so it does not compile on Apple
+//! at all — and `--all-features` reaches this on every platform CI builds.
+//!
 //! # It is not the default, deliberately
 //!
 //! It needs BTF, and a kernel without `CONFIG_DEBUG_INFO_BTF` has none — the

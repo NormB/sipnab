@@ -197,6 +197,22 @@ pub struct SipnabMcp {
     /// so the numbering that lets a reader detect a gap would repeat instead,
     /// and every session's record would look like the only one.
     audit_sink: Option<Arc<super::audit::AuditSink>>,
+    /// Which resources THIS CONNECTION asked to be told about, and the state
+    /// the change detection compares against.
+    ///
+    /// **Per-connection, and the only field on this struct that is.** Every
+    /// `Arc` above is shared precisely so the per-session clones agree; this
+    /// one must not be, because a subscription belongs to the client that
+    /// asked for it. A shared registry would let one agent's
+    /// `resources/unsubscribe` silence another agent's subscription, and would
+    /// leave a departed session's entries behind with nothing able to remove
+    /// them.
+    ///
+    /// `Subscriptions` implements `Clone` by returning an EMPTY registry for
+    /// exactly that reason — see [`super::subscribe`], which also explains why
+    /// that is what makes a watcher stop on its own when the connection goes
+    /// away without unsubscribing.
+    subscriptions: super::subscribe::Subscriptions,
 }
 
 /// The identity a per-peer MCP rate limit counts against.
@@ -256,6 +272,7 @@ impl SipnabMcp {
                 super::sampling::Governor::disabled(),
             )),
             audit_sink: None,
+            subscriptions: super::subscribe::Subscriptions::new(),
             tool_router: Self::tool_router()
                 + Self::aggregation_router()
                 + Self::expectations_router()
@@ -474,6 +491,22 @@ impl SipnabMcp {
     pub fn with_source_exhausted(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
         self.source_exhausted = Some(flag);
         self
+    }
+
+    /// Whether the packet source has been read to its end.
+    ///
+    /// `false` when no capture owner attached a flag at all, which is the
+    /// answer that cannot mislead: a server that does not know whether its
+    /// source drained must not tell a caller that it did.
+    ///
+    /// Read under `Acquire` for the reason `capture_status` documents at its
+    /// own read — the loader stores this flag and then releases `done`, so an
+    /// `Acquire` load is what makes the store visible.
+    #[must_use]
+    pub(crate) fn source_is_exhausted(&self) -> bool {
+        self.source_exhausted
+            .as_ref()
+            .is_some_and(|f| f.load(std::sync::atomic::Ordering::Acquire))
     }
 
     /// Share this server's capture state with another door.
@@ -1679,6 +1712,37 @@ fn rule_selector_names() -> Vec<String> {
     rfcs.dedup();
     names.extend(rfcs.into_iter().map(|n| format!("rfc{n}")));
     names
+}
+
+/// One conformance rule's catalog entry, as JSON.
+///
+/// Shared by `explain_rule` and by the `sipnab://lint/{rule_id}` resource. Two
+/// builders would be two descriptions of one rule, and the door an agent
+/// happened to use would decide which severity it read.
+fn rule_entry_json(rule: &crate::sip::lint::RuleMeta) -> serde_json::Value {
+    // Every selector that would include this rule, and none that would
+    // not, so the field is directly usable as `lint_dialog.rulesets`
+    // rather than being a fact about the catalog the caller has to
+    // translate. `rule_selectors_round_trip` holds it to that contract.
+    let rulesets: Vec<String> = rule_selector_names()
+        .into_iter()
+        .filter(|name| RuleSelector::parse(name).is_some_and(|s| s.contains(rule)))
+        .collect();
+
+    serde_json::json!({
+        "schema_version": 1,
+        "rule_id": rule.id,
+        "title": rule.title,
+        "severity": rule.severity.as_str(),
+        "basis": rule.basis.as_str(),
+        "rfc": rule.rfc,
+        "section": rule.section,
+        "citation": rule.citation(),
+        "url": rule.url(),
+        "scope": rule.scope().as_str(),
+        "rulesets": rulesets,
+        "rule_catalogue": "docs/sip-lint-rules.md",
+    })
 }
 
 /// Parse the `rulesets` argument, refusing an unknown name by naming the set.
@@ -3232,6 +3296,26 @@ impl SipnabMcp {
             })
             .collect();
 
+        // The live views, also unconditionally. They describe the capture this
+        // run is already answering questions about, so nothing about them is
+        // gated on the flag that grants access to OTHER captures on disk.
+        for view in super::live::listed() {
+            let uri = view.uri();
+            let mut res = rmcp::model::Resource::new(uri.clone(), view.name().to_string())
+                .with_mime_type("application/json");
+            res.description = Some(
+                "Every dialog the loaded capture currently holds, rendered exactly as \
+                 `list_dialogs` renders it and bounded by the same --mcp-max-rows \
+                 ceiling. This is the resource `resources/subscribe` watches: on a live \
+                 capture its content changes as traffic arrives."
+                    .to_string(),
+            );
+            // Deliberately no `size`. It would be the length of one rendering
+            // of something that changes, and a client that trusted it would
+            // size a buffer against a capture that has since grown.
+            out.push(res);
+        }
+
         // Captures are the gated half. With no root configured the reference
         // list still answers, so an agent learns the vocabulary and is told
         // separately that no captures are reachable.
@@ -3295,12 +3379,47 @@ impl SipnabMcp {
             )]);
         }
 
+        // The live views, answered from the loaded stores. Same reasoning as
+        // above and one more: there is no file behind them at all, so every
+        // step of the capture path would have to be invented for a URI that
+        // names a rendering rather than a thing on disk.
+        if let Some(view) = super::live::Live::parse(uri) {
+            let page = self.live_page(&view)?;
+            let text = serde_json::to_string_pretty(&page).map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("cannot render '{uri}': {e}"), None)
+            })?;
+            return Ok(vec![rmcp::model::ResourceContents::text(text, uri)]);
+        }
+
+        // One conformance rule, by identifier. The payload is built by the same
+        // function `explain_rule` uses, so the resource door and the tool door
+        // cannot come to describe a rule differently.
+        if let Some(rule_id) = uri.strip_prefix(super::completion::LINT_RULE_URI_PREFIX) {
+            let rule = crate::sip::lint::rule_by_id(rule_id).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!(
+                        "'{rule_id}' is not a rule in the catalog; complete the \
+                         '{}' template's rule_id, or call explain_rule for the \
+                         whole list",
+                        "sipnab://lint/{rule_id}"
+                    ),
+                    None,
+                )
+            })?;
+            let text = serde_json::to_string_pretty(&rule_entry_json(rule)).map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("cannot render '{uri}': {e}"), None)
+            })?;
+            return Ok(vec![rmcp::model::ResourceContents::text(text, uri)]);
+        }
+
         let name = uri.strip_prefix("sipnab:///").ok_or_else(|| {
             rmcp::ErrorData::invalid_params(
                 format!(
                     "'{uri}' is not a sipnab resource URI; expected \
-                     sipnab:///<filename> for a capture, or one of the \
-                     sipnab://reference/... URIs that resources/list names"
+                     sipnab:///<filename> for a capture, one of the \
+                     sipnab://reference/... URIs that resources/list names, \
+                     or a URI built from a template that \
+                     resources/templates/list names"
                 ),
                 None,
             )
@@ -3341,6 +3460,221 @@ impl SipnabMcp {
             }
         };
         Ok(vec![contents])
+    }
+
+    /// Render one live view as the page a `resources/read` returns.
+    ///
+    /// Goes through `dialog_page`, which is what `list_dialogs` uses, so the
+    /// resource door and the tool door answer from one renderer under one
+    /// `--mcp-max-rows` ceiling with one set of fenced fields. Two renderers
+    /// would eventually disagree, and an operator holding two versions of the
+    /// same capture has no way to tell which one to believe.
+    ///
+    /// A Call-ID the capture does not hold renders an EMPTY page rather than
+    /// failing, which is where this deliberately parts company with
+    /// `get_dialog`. A live view's content is what the capture holds right now,
+    /// and "right now, nothing" is an answer: a subscriber watching a call that
+    /// has not started yet, or that has been evicted, needs the URI to have a
+    /// defined content on both sides of the change, or the subscription has
+    /// nothing to compare and nothing to report.
+    ///
+    /// # Errors
+    ///
+    /// Whatever `dialog_page` refuses; there is no cursor here, so in practice
+    /// nothing.
+    fn live_page(&self, view: &super::live::Live) -> Result<DialogPage, rmcp::ErrorData> {
+        match view {
+            super::live::Live::DialogList => {
+                self.dialog_page(None, self.row_cap, |_, _, _, _| true)
+            }
+            super::live::Live::Dialog(call_id) => {
+                self.dialog_page(None, self.row_cap, |d, _, _, _| d.call_id == *call_id)
+            }
+        }
+    }
+
+    /// The dialog store's revision counter.
+    ///
+    /// The cheap half of subscription change detection: `DialogStore` bumps
+    /// this on every mutation, so an unchanged value PROVES unchanged content
+    /// and the expensive half never runs. RTP does not touch it — media bumps
+    /// the stream store — which is why a dialog-list subscriber is not woken
+    /// by audio its list does not show.
+    fn dialog_generation(&self) -> u64 {
+        let ds = self.dialog_store.read();
+        let generation = ds.generation();
+        drop(ds);
+        generation
+    }
+
+    /// A digest of what `view` currently holds, for change detection.
+    ///
+    /// Covers the ROWS and the capture INSTANCE, and deliberately not the
+    /// generation counters. Those live inside `capture_identity`, which is
+    /// part of the rendered page, and they move on every RTP packet: a
+    /// fingerprint over them would notify a dialog-list subscriber about media
+    /// the list does not report. The instance IS folded in, because a capture
+    /// swap replaces every dialog even in the case where the rows happen to
+    /// render the same.
+    ///
+    /// A rendering that fails digests as `0`. A failure is a state like any
+    /// other here: staying in it sends nothing, and leaving it changes the
+    /// digest and notifies, which is what a client watching a capture that
+    /// broke should be told.
+    fn live_fingerprint(&self, view: &super::live::Live) -> u64 {
+        let Ok(page) = self.live_page(view) else {
+            return 0;
+        };
+        let Ok(rows) = serde_json::to_string(&page.dialogs) else {
+            return 0;
+        };
+        super::subscribe::digest(format!("{}\n{rows}", page.capture_identity.instance).as_bytes())
+    }
+
+    /// The live vocabulary behind one completion source.
+    ///
+    /// Read at the moment it is asked for, never held. A cached Call-ID list
+    /// would offer an agent a dialog the capture has since evicted, and the
+    /// agent would spend a call learning that and conclude the capture is
+    /// wrong rather than the completion.
+    ///
+    /// `typed` is applied HERE as well as in
+    /// [`narrow`](super::completion::narrow), through the same
+    /// [`matches`](super::completion::matches) rule, so a Call-ID that will not
+    /// be offered is never cloned. The dialog store holds up to
+    /// `--max-dialogs` entries — 100,000 by default — and materialising all of
+    /// them to discard most is work nobody asked for. Comparing them all is
+    /// not: it is strictly less than `list_dialogs` already does under the
+    /// same lock on every call.
+    ///
+    /// Bounded by what the source itself is bounded by: the dialog store by
+    /// `--max-dialogs`, the rule catalog and the reference set by the binary,
+    /// and the file root by its directory.
+    fn completion_values(&self, source: super::completion::Source, typed: &str) -> Vec<String> {
+        match source {
+            super::completion::Source::CallIds => {
+                let ds = self.dialog_store.read();
+                let ids: Vec<String> = ds
+                    .iter()
+                    .filter(|d| super::completion::matches(&d.call_id, typed))
+                    .map(|d| d.call_id.clone())
+                    .collect();
+                drop(ds);
+                ids
+            }
+            super::completion::Source::LintRules => crate::sip::lint::RULES
+                .iter()
+                .map(|r| r.id.to_string())
+                .collect(),
+            super::completion::Source::ReferenceTopics => super::reference::all()
+                .iter()
+                .filter_map(|r| {
+                    r.uri
+                        .strip_prefix("sipnab://reference/")
+                        .map(std::string::ToString::to_string)
+                })
+                .collect(),
+            super::completion::Source::CaptureFiles => {
+                let Some(root) = self.file_root.as_ref() else {
+                    return Vec::new();
+                };
+                let Ok(entries) = std::fs::read_dir(root) else {
+                    // An unreadable root is not an error a completion should
+                    // raise: the client asked what it could type, and "nothing
+                    // I can see" is a complete answer. `resources/list` reports
+                    // the failure, which is where an operator will look.
+                    return Vec::new();
+                };
+                entries
+                    .flatten()
+                    .filter(|e| e.path().is_file())
+                    .filter_map(|e| e.file_name().to_str().map(str::to_string))
+                    .collect()
+            }
+        }
+    }
+
+    /// Answer one `completion/complete`.
+    ///
+    /// Every path that cannot offer anything returns an EMPTY completion
+    /// rather than an error, which is both the spec's rule and the useful one:
+    /// a client asking about an argument this server does not complete gets
+    /// "no suggestions" and carries on, instead of a failed request it has to
+    /// recover from. The dangerous alternative is not the error — it is
+    /// answering the WRONG vocabulary, so an argument name that does not match
+    /// the template's variable is refused here rather than falling through to
+    /// whatever the template happens to complete.
+    fn completion_for(
+        &self,
+        reference: &rmcp::model::Reference,
+        argument: &str,
+        typed: &str,
+    ) -> super::completion::Completion {
+        // A prompt reference completes nothing, and that is a fact about
+        // sipnab's prompts rather than a gap: every workflow is a fixed
+        // ordering and takes no arguments (see `super::prompts`), so there is
+        // no vocabulary to offer.
+        let Some(uri) = reference.as_resource_uri() else {
+            return super::completion::Completion::none();
+        };
+        let Some(template) = super::completion::find(uri) else {
+            return super::completion::Completion::none();
+        };
+        if template.variable != argument {
+            return super::completion::Completion::none();
+        }
+        if template.needs_file_root && self.file_root.is_none() {
+            return super::completion::Completion::none();
+        }
+        super::completion::narrow(self.completion_values(template.source, typed), typed)
+    }
+
+    /// Start the task that watches `view` for this connection.
+    ///
+    /// One task per subscribed URI, waking once per
+    /// [`POLL`](super::subscribe::POLL) — finer than the debounce window on
+    /// purpose, so that the floor on the notification rate is enforced by the
+    /// debounce RULE rather than by how long this loop happens to sleep. See
+    /// [`POLL`](super::subscribe::POLL) for what mutation testing showed when
+    /// the two were the same number.
+    ///
+    /// The task holds a `Watcher`, which is a WEAK handle to this connection's
+    /// registry, and a CLONE of this server. The clone is what lets it render;
+    /// its own `subscriptions` field is a fresh empty registry (see
+    /// [`super::subscribe::Subscriptions::clone`]) and is never consulted —
+    /// the watcher's handle points at the original, so dropping the connection
+    /// drops the registry and the task stops on its next tick with nobody
+    /// having to tell it.
+    fn spawn_watcher(&self, view: super::live::Live, peer: rmcp::Peer<rmcp::RoleServer>) {
+        let uri = view.uri();
+        let watcher = self.subscriptions.watcher(&uri);
+        let server = self.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(super::subscribe::POLL).await;
+                let generation = server.dialog_generation();
+                let decision = watcher.tick(generation, std::time::Instant::now(), || {
+                    server.live_fingerprint(&view)
+                });
+                match decision {
+                    super::subscribe::Tick::Gone => break,
+                    super::subscribe::Tick::Notify => {
+                        let param = rmcp::model::ResourceUpdatedNotificationParam::new(uri.clone());
+                        if let Err(e) = peer.notify_resource_updated(param).await {
+                            // The client is gone, or its channel is closed.
+                            // Stopping is the whole cleanup: nothing else
+                            // holds this task, and the registry entry goes
+                            // with the connection.
+                            tracing::debug!("MCP resource subscription for {uri} ended: {e}");
+                            break;
+                        }
+                    }
+                    super::subscribe::Tick::Unchanged
+                    | super::subscribe::Tick::SameContent
+                    | super::subscribe::Tick::Debounced => {}
+                }
+            }
+        });
     }
 
     /// Narrow every row of a rendered page to `fields`, plus `call_id`.
@@ -6157,30 +6491,8 @@ impl SipnabMcp {
             )
         })?;
 
-        // Every selector that would include this rule, and none that would
-        // not, so the field is directly usable as `lint_dialog.rulesets`
-        // rather than being a fact about the catalog the caller has to
-        // translate. `rule_selectors_round_trip` holds it to that contract.
-        let rulesets: Vec<String> = rule_selector_names()
-            .into_iter()
-            .filter(|name| RuleSelector::parse(name).is_some_and(|s| s.contains(rule)))
-            .collect();
-
         Ok(CallToolResult::success(vec![ContentBlock::json(
-            serde_json::json!({
-                "schema_version": 1,
-                "rule_id": rule.id,
-                "title": rule.title,
-                "severity": rule.severity.as_str(),
-                "basis": rule.basis.as_str(),
-                "rfc": rule.rfc,
-                "section": rule.section,
-                "citation": rule.citation(),
-                "url": rule.url(),
-                "scope": rule.scope().as_str(),
-                "rulesets": rulesets,
-                "rule_catalogue": "docs/sip-lint-rules.md",
-            }),
+            rule_entry_json(rule),
         )?]))
     }
 
@@ -7644,6 +7956,159 @@ impl ServerHandler for SipnabMcp {
         ))
     }
 
+    /// The URI shapes a client may build and read, with the variable inside
+    /// each (PB3).
+    ///
+    /// A template is a promise that the URI resolves, so the file-root
+    /// template is withheld when no root is configured: advertising a shape
+    /// whose every URI would be refused tells an agent the captures are
+    /// reachable and lets it discover otherwise one call at a time.
+    async fn list_resource_templates(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListResourceTemplatesResult, rmcp::ErrorData> {
+        let templates = super::completion::all()
+            .into_iter()
+            .filter(|t| !t.needs_file_root || self.file_root.is_some())
+            .map(|t| {
+                rmcp::model::ResourceTemplate::new(t.uri_template, t.name)
+                    .with_description(t.description)
+                    .with_mime_type(t.mime_type)
+            })
+            .collect();
+        Ok(rmcp::model::ListResourceTemplatesResult::with_all_items(
+            templates,
+        ))
+    }
+
+    /// Complete one resource-template variable from LIVE state (PB3).
+    ///
+    /// An argument this server does not complete gets an EMPTY completion, not
+    /// an error: the spec asks for that, and it is also the useful answer —
+    /// "no suggestions" is something a client carries on from, and a failed
+    /// request is something it has to recover from. What must never happen is
+    /// the third option, answering with a vocabulary that belongs to a
+    /// different argument.
+    ///
+    /// # Errors
+    ///
+    /// `internal_error` only if the answer somehow exceeds the
+    /// spec's 100-value ceiling, which
+    /// [`narrow`](super::completion::narrow) enforces before it is built.
+    async fn complete(
+        &self,
+        request: rmcp::model::CompleteRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CompleteResult, rmcp::ErrorData> {
+        let completion = self.completion_for(
+            &request.r#ref,
+            &request.argument.name,
+            &request.argument.value,
+        );
+        let total = u32::try_from(completion.total).ok();
+        let info = rmcp::model::CompletionInfo::with_pagination(
+            completion.values,
+            total,
+            completion.has_more,
+        )
+        .map_err(|e| rmcp::ErrorData::internal_error(e, None))?;
+        Ok(rmcp::model::CompleteResult::new(info))
+    }
+
+    /// Watch one live resource for THIS connection (PB4).
+    ///
+    /// Only the live views are subscribable, and the refusal says so. A
+    /// reference page is `include_str!` of a document compiled into this
+    /// binary and cannot change while the run answers questions; a file under
+    /// `--mcp-file-root` changes only when something outside sipnab writes it,
+    /// and sipnab is a packet analyser rather than a filesystem watcher.
+    /// Accepting a subscription that can never fire would be a promise this
+    /// server cannot keep, and an agent would wait on it.
+    ///
+    /// Idempotent: subscribing twice to one URI starts one watcher, because a
+    /// second would double every notification.
+    ///
+    /// # Why the method rmcp calls legacy
+    ///
+    /// rmcp 3.1.3 marks `ServerHandler::subscribe` deprecated in favour of the
+    /// 2026-07-28 `subscriptions/listen`. sipnab negotiates 2025-06-18 and
+    /// 2025-11-25, and rmcp routes BOTH of those revisions to this method --
+    /// `subscriptions/listen` is refused as method-not-found below
+    /// 2026-07-28. So this is the only subscription method a client sipnab
+    /// talks to actually has, and implementing the newer one instead would
+    /// leave the capability advertised and unreachable. Implementing a
+    /// deprecated trait method raises no warning, so nothing is suppressed
+    /// here; the day rmcp removes it, this stops compiling rather than
+    /// silently stops working.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) for a URI that is not a live view, and for a
+    /// connection already holding
+    /// [`MAX_SUBSCRIPTIONS`](super::subscribe::MAX_SUBSCRIPTIONS).
+    async fn subscribe(
+        &self,
+        request: rmcp::model::SubscribeRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<(), rmcp::ErrorData> {
+        let Some(view) = super::live::Live::parse(&request.uri) else {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "'{}' cannot be subscribed to. Only the live views change \
+                     while this run is answering: {}, and \
+                     {}<Call-ID>. A reference page is compiled into the \
+                     binary and a file under --mcp-file-root is not watched, \
+                     so a subscription to either could never fire.",
+                    request.uri,
+                    super::live::DIALOG_LIST_URI,
+                    super::live::DIALOG_URI_PREFIX
+                ),
+                None,
+            ));
+        };
+        // Read the state BEFORE recording it, in this order: a generation
+        // taken after the fingerprint could describe a store the fingerprint
+        // has not seen, and the watcher would then treat a real change as
+        // already announced.
+        let generation = self.dialog_generation();
+        let digest = self.live_fingerprint(&view);
+        let started = self
+            .subscriptions
+            .add(&request.uri, generation, digest, std::time::Instant::now())
+            .map_err(|refusal| rmcp::ErrorData::invalid_params(refusal.explain(), None))?;
+        if started {
+            self.spawn_watcher(view, context.peer.clone());
+        }
+        Ok(())
+    }
+
+    /// Stop watching one resource for THIS connection (PB4).
+    ///
+    /// The removal is the cancellation: a watcher checks membership before it
+    /// sends, so a URI no longer in this connection's registry cannot produce
+    /// another notification.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when this connection was not subscribed. Told
+    /// rather than silently accepted, because a client that unsubscribed from
+    /// the wrong URI is still subscribed to the right one and would otherwise
+    /// never learn it.
+    async fn unsubscribe(
+        &self,
+        request: rmcp::model::UnsubscribeRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<(), rmcp::ErrorData> {
+        if !self.subscriptions.remove(&request.uri) {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!("this connection is not subscribed to '{}'", request.uri),
+                None,
+            ));
+        }
+        Ok(())
+    }
+
     /// Read one file under `--mcp-file-root` by resource URI.
     async fn read_resource(
         &self,
@@ -7822,6 +8287,22 @@ impl ServerHandler for SipnabMcp {
             }
         };
 
+        // VAL3/VAL4/VAL2, applied to every tool at once. See
+        // `super::completeness`: a page computed while the file is still being
+        // read said `truncated: false` — an affirmative claim that nothing was
+        // withheld — over a thousandth of the answer, and only `capture_status`
+        // and `tail_dialogs` carried the flag that would have said otherwise.
+        // Here for the same reason PB1 is here, and BEFORE it, so the text
+        // block and `structuredContent` stay one document.
+        if let Ok(rmcp::model::CallToolResponse::Complete(complete)) = &mut result {
+            super::completeness::stamp(
+                &tool,
+                self.source_is_exhausted(),
+                super::completeness::source_stopped_early(),
+                complete,
+            );
+        }
+
         // PB1, applied to every tool at once. See `super::structured`: the
         // payload every tool already returns as JSON text is republished as
         // `structuredContent`, so no client has to parse a string out of a
@@ -7864,6 +8345,15 @@ impl ServerHandler for SipnabMcp {
                 // host can grant them without granting tool calls -- a
                 // distinction no tool annotation can express.
                 .enable_resources()
+                // PB4. Without this flag a client never calls
+                // `resources/subscribe` at all, so the watcher, the debounce
+                // and the notification would all exist and never run — which
+                // is why `capabilities_advertise_subscriptions_and_completions`
+                // asserts it off the wire rather than off this expression.
+                .enable_resources_subscribe()
+                // PB3. Same argument: an undeclared completion capability is a
+                // handler no client will ever reach.
+                .enable_completions()
                 // Prompts carry the ORDER to call tools in. Fifty-one tool
                 // descriptions cannot express "read capture_status before you
                 // believe any count", because that is a fact about the

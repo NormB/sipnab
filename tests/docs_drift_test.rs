@@ -2746,7 +2746,14 @@ fn no_documentation_table_repeats_a_row() {
     // writeup. Two files, and two is the whole delta for the reason the
     // 172 -> 175 entry gives: notes are written for the website directly
     // and have no `docs/` source to mirror.
-    const EXPECTED_MARKDOWN_FILES: usize = 177;
+    // 177 -> 180: three markdown files added by the 0.5.131 batch, attributed
+    // by name from `git diff --cached --diff-filter=A -- '*.md'`:
+    // `docs/real-world-captures.md` (worked examples drawn from real traffic),
+    // its generated site mirror `website/content/docs/real-world-captures.md`,
+    // and `website/content/api-reference.md` (the OpenAPI page, which sits at
+    // the top level rather than under docs/ because the docs-nav gate requires
+    // every website/content/docs page to appear in both nav lists).
+    const EXPECTED_MARKDOWN_FILES: usize = 180;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -2901,7 +2908,24 @@ fn no_documentation_table_repeats_a_row() {
     // `docs/vcon-harness.md` and ten in its generated site mirror, counted
     // with `grep -c '^|---'` on each before the number moved. Twenty is the
     // whole delta, and a published page always costs this counter double.
-    const EXPECTED_TABLES: usize = 737;
+    // 737 -> 755: the 0.5.131 batch. Attributed by differential measurement
+    // against this gate rather than by counting pipes: with every changed
+    // markdown file restored to HEAD the gate PASSES at 737, so the whole
+    // delta belongs to files this batch touched, and nothing came from a
+    // change in how tables are detected.
+    //
+    // By file, from the staged diff: docs/design/backlog.md +8 (the VAL, RV,
+    // RP, HX and AS entries, none inside a fenced block -- checked, because a
+    // separator inside a fence is not a table); docs/mcp-protocol.md +2 and
+    // docs/rtpengine.md +1, each doubled by its generated site mirror; and
+    // docs/real-world-captures.md +3, likewise mirrored.
+    //
+    // Those add to 20 separator lines while the gate counts 18 tables. The
+    // gate's number is the authoritative one -- it counts tables, and two of
+    // those separators evidently continue a table rather than opening one.
+    // Recorded rather than smoothed over: an attribution that does not quite
+    // add up is worth saying so about.
+    const EXPECTED_TABLES: usize = 755;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

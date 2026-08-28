@@ -588,12 +588,16 @@ fn apply_load_outcome(app: &mut App, outcome: PcapLoadOutcome) {
 /// status line.
 pub(in crate::tui) fn begin_pcap_load(app: &mut App, path_str: &str) {
     if app.pcap_load.is_some() {
-        app.status_error = Some("A pcap load is already in progress".to_string());
+        let msg = "A pcap load is already in progress".to_string();
+        app.status_error = Some(msg.clone());
+        app.record_action("capture_swapped", path_str, "", "refused", &msg);
         return;
     }
     let path = std::path::Path::new(path_str);
     if !path.exists() {
-        app.status_error = Some(format!("File not found: {path_str}"));
+        let msg = format!("File not found: {path_str}");
+        app.status_error = Some(msg.clone());
+        app.record_action("capture_swapped", path_str, "", "failed", &msg);
         return;
     }
     // Same reason as `load_pcap_file`: this file is now an input.
@@ -625,9 +629,20 @@ pub(in crate::tui) fn begin_pcap_load(app: &mut App, path_str: &str) {
         Ok(_) => {
             app.status_error = Some(format!("Loading {filename}…"));
             app.pcap_load = Some(progress);
+            // The swap is the moment the session stops describing the capture
+            // it started with: `reset_for_load` above has already emptied both
+            // stores and dropped the active filter, so every later record in
+            // this trail is about THIS file. Recorded once, here, rather than
+            // when the background worker finishes -- an operator who swapped
+            // the capture swapped it whether or not the parse then succeeded,
+            // and a load that never completes is exactly the case a reader
+            // must not be left guessing about.
+            app.record_action("capture_swapped", path_str, "", "ok", "");
         }
         Err(e) => {
-            app.status_error = Some(format!("Failed to start the load worker: {e}"));
+            let msg = format!("Failed to start the load worker: {e}");
+            app.status_error = Some(msg.clone());
+            app.record_action("capture_swapped", path_str, "", "failed", &msg);
         }
     }
 }

@@ -647,7 +647,13 @@ fn wiki_intra_docs_links_resolve() {
     // 501 -> 502 by the docs index entry for `vcon-harness.md`. One link, and
     // one is the whole delta: the page's own body links only pages already
     // counted here, so it adds a link TO itself and none that were missing.
-    const EXPECTED_WIKI_LINKS: usize = 552;
+    // 552 -> 593: attributed by differential measurement. Removing
+    // docs/real-world-captures.md drops the count to 556, so the new page of
+    // worked examples contributes 37 of the 41; the other 4 come from links
+    // added across the batch's doc edits, including the ones
+    // `scripts/link-repo-paths.py --apply` created when it made bare repo
+    // paths clickable.
+    const EXPECTED_WIKI_LINKS: usize = 593;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1806,7 +1812,8 @@ fn every_docs_page_is_linked_from_the_index() {
     // the inverse of the markdown-file counter, which sees both. Attributed
     // with `git diff --diff-filter=A HEAD -- 'docs/*.md'` before the number
     // moved.
-    const EXPECTED_DOCS_PAGES: usize = 50;
+    // 50 -> 51: docs/real-world-captures.md, one new page.
+    const EXPECTED_DOCS_PAGES: usize = 51;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

@@ -44,23 +44,27 @@ Tiers:
 
 ## Status
 
-**26 open, 363 done** across 20 sections.
+**56 open, 371 done** across 24 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
 |---|---:|---:|---|
-| P0 | 0 | 18 | `##########` |
-| P1 | 0 | 55 | `##########` |
+| P0 | 0 | 21 | `##########` |
+| P1 | 12 | 58 | `########..` |
 | PV | 0 | 13 | `##########` |
 | P2 | 0 | 109 | `##########` |
 | P3 | 0 | 64 | `##########` |
 | P4 | 0 | 39 | `##########` |
 | PA | 2 | 11 | `########..` |
-| PB | 6 | 14 | `#######...` |
+| PB | 4 | 16 | `########..` |
 | TK | 4 | 6 | `######....` |
 | RE | 3 | 4 | `######....` |
 | BA | 3 | 1 | `##........` |
 | NAT | 0 | 4 | `##########` |
+| RV | 7 | 0 | `..........` |
+| RP | 4 | 0 | `..........` |
+| HX | 3 | 0 | `..........` |
+| AS | 6 | 0 | `..........` |
 | MCPX | 1 | 6 | `#########.` |
 | P5 | 7 | 13 | `######....` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
@@ -313,6 +317,214 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 - [x] src/sip/parser.rs:317 — [adversarial] MAX_HEADER_LINE_LEN enforced only on folded continuations; single unfolded multi-MB header accepted whole. **Done:** a new unfolded header line `>= max_header_line` now sets parse_error and is dropped (both the CRLF-terminated and truncated-remainder paths), so the cap bounds unfolded lines too.
 - [x] src/capture/hep.rs:1146 — [missed-edge-case] at HEP_MAX_TRACKED_PEERS, new peers bypass the per-peer cap for the rest of the window (many-source-IP attacker). **Done:** the map-full guard now fails *closed* — a new untracked peer is dropped (counted) instead of skipping the per-peer check; already-tracked peers are unaffected.
 - [x] src/capture/tls.rs:191 — [security] `KeyLogEntry::drop` wipes with elidable plain loop and skips `label`; use `zeroize` like `TlsSession`. **Done:** extracted `zeroize_material` (Drop calls it) that `zeroize`s secret, client_random, AND label via the crate (non-elidable).
+
+<!-- Added 2026-08-28 from the 0.5.130 release validation. Findings and
+     reproducers: the validation pass drove the published
+     sipnab-0.5.130-aarch64-unknown-linux-gnu binary (sha256 5ff06e4e...) over
+     MCP stdio and HTTP against tests/fixtures and a real capture corpus. -->
+
+- [x] **VAL1 — a single well-formed filter aborts the process, over stdio and
+  over HTTP.** A filter built as a long chain of binary `or` operators
+  overflows the stack: `fatal runtime error: stack overflow, aborting`, SIGABRT
+  (exit `-6`/134). Measured on the released 0.5.130 binary: 5,000 *nested
+  parens* survive cleanly (the depth guard works and returns
+  `expression exceeds maximum nesting depth of 50`), a 12,000-term or-chain
+  aborts, and the same chain through `list_dialogs`'s `filter` aborts too. It
+  needs a capture holding at least one dialog, so it fires in real use and not
+  on an empty file.
+
+  **Remotely reachable.** Over `--mcp-transport http` with a valid token and a
+  valid `Mcp-Session-Id`, a 225 KB `list_dialogs` call kills the server
+  mid-response (`IncompleteRead`, no HTTP status returned). An ordinary
+  `list_dialogs` returned HTTP 200 through the same session immediately before,
+  so the path was proven working before it was broken. Unauthenticated attempts
+  get 401 and the server survives — this is an **authenticated** DoS.
+  `--mcp-max-body-bytes` does not help: it caps responses, not requests.
+
+  **The reason this is P0 rather than hardening is that it is reachable by
+  accident.** The MCP surface exists so an agent can send filters, and an agent
+  asked to "check these call-ids" naturally emits `a or b or c or ...`. At
+  roughly 9,300 terms the capture server dies; on a live deployment that is a
+  monitoring process that stops capturing.
+
+  **Do:** bound the parse tree by node count, or by depth measured during
+  descent, rather than by grouping depth — the present guard measures the one
+  shape that cannot hurt. Return the same typed error the paren path already
+  returns. Reproducer (no shell arg-length limit):
+
+  ```python
+  chain = " or ".join(["state == 'Completed'"] * 12000)
+  # initialize, notifications/initialized, then:
+  # tools/call list_dialogs {"filter": chain, "limit": 10}
+  # against tests/fixtures/stun_sdp_mismatch.pcap -> returncode -6
+  ```
+
+  **Done:** the overflow was located to *two* independent recursions, not one.
+  The evaluator was the reported one: `eval_expr` recurses per level, and on
+  the 0.5.130 debug build a 4,633-term chain evaluated while 4,634 aborted —
+  the same chain against a capture holding no dialogs survived, which is what
+  placed it in evaluation rather than parsing. The second was the *destructor*:
+  the compiler's drop glue walks a tree the way it is shaped, so a
+  17,902-term chain **rejected for trailing input** — parsed into a tree, never
+  evaluated — aborted while being freed. A size cap alone could therefore not
+  have fixed this, because refusing an oversized expression means dropping one.
+
+  [`src/sip/dsl.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs)
+  now carries `MAX_EXPRESSION_NODES = 1024`, checked after the syntax checks so
+  a malformed expression is still reported as malformed, and refused with a
+  sibling of the paren error that names both figures: `expression exceeds
+  maximum size of 1024 nodes (this one has 23999); split it into several
+  filters`. `check_nesting_depth` is untouched — 5,000 nested parens still
+  return `expression exceeds maximum nesting depth of 50`, because parens
+  recurse *in the parser*, before a tree exists to count. `Expr` gained an
+  iterative `Drop` that dismantles a tree through a heap worklist at constant
+  stack depth, and `count_nodes` / `expr_references_diagnosis` are iterative
+  for the same reason: the walk that decides whether a tree is safe to recurse
+  over cannot itself recurse over it.
+
+  1024 nodes is a 512-term chain — 31× the widest expression sipnab itself
+  builds (33 nodes: every diagnostic alias flag at once; `--problems` alone is
+  23), 38× the TUI filter dialog at full stretch (27), and 205× the largest
+  hand-written filter in the docs (5). Those four figures are asserted by
+  `node_counts_the_cap_is_justified_against` rather than quoted, and the cap
+  keeps the deepest legal recursion 4.5× below the depth measured to fail in
+  the build whose frames are largest.
+
+  Verified: 15 tests in
+  [`tests/filter_depth_bounds_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/filter_depth_bounds_test.rs)
+  plus 4 in `sip::dsl`, each mutation-tested — reverting the node cap turns 7
+  red and brings the SIGABRT back on the reproducer, removing the iterative
+  `Drop` or recursing in `count_nodes` aborts both test binaries, and raising
+  `MAX_NESTING_DEPTH` aborts the paren test. All 43 filter expressions in the
+  user-facing docs are harvested and re-parsed. `cargo test --features full
+  --lib` 4411/4411, clippy clean, fmt clean; the reported reproducer now
+  returns exit 0 with a JSON-RPC `-32602`.
+
+
+- [x] **VAL8 — sniffed rtpengine NG is accepted from any source, on any port,
+  with no gate.** Reported by the vCon/rtpengine/HEP validation agent against
+  the released 0.5.130 binary and re-verified by that agent after its tooling
+  was rebuilt. The source address of a sniffed NG datagram is not checked (a
+  datagram `192.0.2.66 -> 192.0.2.77` attributed media on
+  `192.0.2.40:38664`), the destination port is not checked (UDP/12345 behaves
+  like 9060), and `--hep-allow` does not gate the sniffed path at all — it
+  governs only the `--hep-listen` receiver. The Call-ID is taken verbatim from
+  the correlation-id chunk, so a crafted datagram produced a report naming a
+  call `ATTACKER-CHOSEN-CALLID`.
+
+  Anyone able to put a single UDP datagram on the mirrored segment can invent
+  or erase media attribution, while [`docs/rtpengine.md`](https://github.com/NormB/sipnab/blob/main/docs/rtpengine.md) tells operators a
+  `media-relay` assertion is "authoritative about the port".
+
+  **Do:** gate the sniffed NG path on the same allow-list as the listener, or
+  state in the docs that a sniffed assertion is unauthenticated and must not be
+  treated as authoritative. The current combination — unauthenticated input
+  described as authoritative — is the part that has to change.
+
+  **Done:** both halves. The sniffed arm now runs through
+  `rtpengine::sniffed_ng_sdp_links`, which believes a mirror only when the
+  datagram is addressed to UDP 9060 (`HEP_MIRROR_PORTS`) — the reported
+  `192.168.66.66 -> 192.168.77.77:12345` datagram naming
+  `ATTACKER-CHOSEN-CALLID` no longer names anything, and the refusal is warned
+  once naming the port it saw and the `--hep-listen --hep-auth-mode hmac` path
+  that can authenticate a sender. A refused datagram is still consumed as
+  control traffic rather than handed to the media classifier, so it cannot
+  become a phantom stream.
+
+  The source is deliberately NOT gated and the docs now say so. `--hep-allow`
+  is parsed in `app::bootstrap` into the `--hep-listen` capture source and
+  never reaches `classify_packet`; wiring it there means a new
+  `PipelineOptions` field and four call sites, which is a change of a different
+  size from this fix. [`docs/rtpengine.md`](https://github.com/NormB/sipnab/blob/main/docs/rtpengine.md) drops the "authoritative about the
+  port" claim, gains a table of what each delivery path knows about its sender,
+  and states plainly that a sniffed assertion is unauthenticated and that the
+  port gate is a narrowing rather than an authentication.
+  `a_mirror_from_any_source_is_still_believed_on_the_hep_port` pins that
+  residual so it cannot be quietly forgotten.
+
+  Verified: 9 tests in
+  [`tests/rtpengine_sniffed_ng_gate_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/rtpengine_sniffed_ng_gate_test.rs),
+  each end-to-end over a crafted pcap through the shipped binary, with the
+  positive control asserted first so a rejection cannot pass because the
+  datagram never arrived. Mutation-tested: opening the port gate turns 4 red
+  (including the report naming `ATTACKER-CHOSEN-CALLID`, which is the reported
+  finding reproduced), closing it on every port turns 5 red, demoting the
+  refusal warning to `debug` turns 1 red, and returning `None` instead of an
+  empty link list turns 1 red. The committed relay fixture is unaffected.
+
+- [x] **VAL9 — `--hep-auth-mode hmac` does not authenticate the addresses the
+  packet asserts.** Confirmed at the source by the coordinator:
+  `hmac_signed_region` — the 0.5.130 helper the fix below deletes, at line 403
+  of [`src/capture/hep.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs) in that release — built
+  `version || ts || nonce || payload`, and both call sites (lines 428 and 489)
+  passed the SIP **payload** alone. The HEP chunks carrying source and destination IP
+  and port are outside the MAC, and there is no duplicate-chunk rejection (the
+  "already seen" guard at `:1497` is the per-second nonce replay check).
+
+  The consequence measured by the validation agent: a validly-signed packet
+  asserting `192.0.2.1:5060 -> 192.0.2.2:5060`, with three address/port chunks
+  **appended**, still verifies and was recorded as
+  `203.0.113.9:31337 -> 198.51.100.7:5060`. **No key is required** — the payload
+  is untouched, so an observed packet can be replayed with extra chunks and
+  last-wins parsing honors them.
+
+  This breaks the documented SN-01 mitigation. `--hep-allow-kill` says to enable
+  it only when "HEP input is authenticated", and [`src/app/batch.rs:4038`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4038)
+  aims the kill response at exactly these tamperable fields — so a forged
+  address chunk can point sipnab's kill response at a third party. The agent
+  deliberately did not fire that path, and neither did I.
+
+  The doc comment on `hmac_signed_region` is precise and true as written —
+  *"Binding the payload authenticates the message content, not merely
+  possession of the key"* — the gap is that the recorded addresses are not
+  message content in that sense.
+
+  **Do:** sign the chunk region as well as the payload, and reject duplicate
+  address chunks rather than taking the last.
+
+  **Done:** the signed region is the WHOLE datagram. `hmac_over_datagram` MACs
+  every byte from the `HEP3` magic to the last byte received, with only the
+  token's own 32-byte MAC field read as zeros — so the magic, the total length,
+  every chunk in wire order, the payload, and the token's version, timestamp
+  and nonce are all inside the signature. A field list would have left the same
+  shape of hole open for the next chunk somebody starts trusting; the region is
+  the datagram instead. It is fed to HMAC as three borrowed slices, so the hot
+  path copies nothing.
+
+  The token is version **2**, and version 1 is **refused** — no compatibility
+  switch, and a distinct `HmacAuthError::UnsupportedVersion` with a
+  once-per-process warning naming the cause and the remedy, because the two
+  rejections that drop every packet from a peer both present as "the collector
+  receives nothing". Accepting v1 would recreate the hole while the receiver
+  reported HMAC auth as active, which is a silent downgrade; the mode is opt-in
+  and sipnab-to-sipnab, so both ends move together.
+
+  Separately, and in EVERY auth mode including none, `parse_hep_v3` now refuses
+  a repeated known chunk type instead of taking the last one. The sniffed and
+  `--hep-parse` paths read the same chunks with no token at all, so last-wins
+  was exploitable there whatever `--hep-auth-mode` said. Source and destination
+  count as one field each across both address families. Unknown chunk types
+  stay repeatable, and skipped, for forward compatibility.
+
+  `HepPacket` gained `auth_span`, the byte range of the `0x000e` chunk data, so
+  the verifier knows where the MAC field sits without a second walk. The sender
+  builds through `build_hep_v3_hmac`, which assembles the datagram with a
+  zero-filled token of the final length and then writes the tag into it, so no
+  length field moves between the two passes.
+
+  Verified: 9 tests in
+  [`tests/hep_hmac_datagram_binding_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/hep_hmac_datagram_binding_test.rs)
+  on real bytes through the production sender and verifier, plus the rewritten
+  `capture::hep::tests::hmac_auth` module. Mutation-tested: shrinking the
+  signed region back to `version || ts || nonce || payload` makes an in-place
+  address edit verify `Ok(())` — the reported finding reproduced — and turns 2
+  red; disabling the duplicate guards makes the appended-chunk forgery parse to
+  `src=203.0.113.9` and turns 2 red; accepting v1, refusing everything, and
+  deduplicating unknown chunk types each turn their own tests red. Removing
+  either malformed-input bound (the span check or the chunk-overflow check)
+  panics the hardening test, whose resident-memory assertion holds the parse
+  loop to a 0.8 MB band.
+
 
 ## P1 — wrong results in real use
 
@@ -631,8 +843,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:4848`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4848)) currently takes
-  nowhere; `security_findings` ([`src/mcp/server.rs:4848`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4848)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5182`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5182)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5182`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5182)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -720,6 +932,317 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 - [x] src/cli.rs:64 — [edge-case] `PerPeerLimit::Auto.resolve` integer division yields 0 (disabled) when allowlist_len > global; should floor at 1. **Done:** `(global / allowlist_len).max(1)`.
 - [x] src/crash.rs:407 — [missed-edge-case] `hook_body` claims nothing may panic, but `eprintln!` panics on closed stderr; use `writeln!(io::stderr()).ok()`. **Done:** all five `eprintln!` sites in the hook path route through `hook_write_line` (`writeln!(...).ok()`), so a closed stderr can no longer abort the process from inside the panic hook.
 - [x] src/capture/hep.rs:1566 — [missed-edge-case] `HepSender::new` binds `0.0.0.0:0` (IPv4-only); IPv6 dest fails — bind family should follow destination. **Done:** the destination is resolved first and the bind follows its family (`[::]:0` for IPv6, `0.0.0.0:0` for IPv4).
+
+<!-- Added 2026-08-28 from the 0.5.130 release validation. -->
+
+- [x] **VAL2 — a run that could not do what was asked still exits 0, against
+  this project's own written rule. The three CLI instances are FIXED.** Four
+  measured instances on the released 0.5.130 binary. Each is detected
+  correctly and described well on stderr, and each is invisible to `$?` and to
+  stdout:
+
+  | condition | stderr says | exit | marker in JSON |
+  |---|---|---|---|
+  | truncated pcap | `libpcap error: truncated dump file` + `0 of 1 file(s) read in full, 1 stopped early` | **0** | none |
+  | `--plugin` unreadable / oversized / not WASM | `cannot read plugin: ... larger than the 16777216-byte plugin limit` | **0** | none |
+  | idle compaction drops messages | `Ladders for those calls are now incomplete.` | **0** | none |
+  | MCP `capture_health` on a truncated capture | (nothing) | n/a | none |
+
+  This is not a new principle. [`docs/fault-model.md`](https://github.com/NormB/sipnab/blob/main/docs/fault-model.md) already states it for the
+  LIVE path: *"a capture that stopped early leaves every report above it
+  resting on a partial read. The exit status is the only place that distinction
+  survives: downgrade that join to a warning and exit 0, and an incomplete run
+  reads exactly like a whole one to anything checking `$?`."* `CT1` above states
+  it again, and the `--cores` fix states it a third time: *"An empty output that
+  exits 0 reads as 'there was nothing to report', which is the one conclusion
+  the run had disproved."* The file and plugin paths simply do not implement it.
+  [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md)'s "Scripts can rely on these" table assigns `1` to
+  "capture error, I/O error", so exit 0 here also contradicts the published
+  contract.
+
+  `--on-dialog-exec` shows the standard the rest should meet — it reports
+  `10 command(s) run, 0 succeeded, 0 failed, 0 with an unknowable status, 10
+  still running at teardown; 1089 event(s) ran no command at all (rate limit
+  1089, queue full 0, spawn failed 0)`, distinguishing "did not run" from "ran
+  and we cannot tell".
+
+  **Do:** exit non-zero when a capture error or a requested-plugin load failure
+  was logged, and carry the partial-read fact into the JSON envelopes and
+  `capture_health`. `--lint-fail-on` and exit code `3` are the precedent for
+  adding a distinct code rather than overloading `1`.
+
+  **Done, rows 1-3.** `output::run_integrity` holds one per-run record. The
+  file readers record into it from `ReadTally::report` — the ONE place the
+  single-threaded and `--cores` readers already converge on to emit their
+  closing line — so the stderr sentence and the machine record come from the
+  same statement and cannot disagree, and the `lost` predicate that picks the
+  log severity is the same one that moves `$?`. `generate_reports` records the
+  `--plugin` outcome (requested AND failed, not a flag, so "one of three
+  failed" reads differently from "the only one failed") and the store's
+  lifetime idle-compaction count.
+
+  Exit code `1`, not a new one: [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md) already assigns `1` to
+  "capture error, I/O error" and both of these are exactly that, while `3`
+  means the opposite situation — the tool worked and the CAPTURE is
+  non-conformant — so spending it here would erase the distinction it exists to
+  make. The table now says so, and a test reads the code back out of the table
+  and runs the binary against it.
+
+  The marker is a per-run object, never a per-dialog field: the fact is about
+  the run, and the dialogs a truncated read never reached have no object to
+  carry it. NDJSON has no envelope, so it travels as one extra line after the
+  dialogs under a top-level `sipnab_run` key no dialog object has — a consumer
+  decides what a line is by looking at it, and one that assumes every line is a
+  dialog now finds no `call_id` and fails, which is right for an answer drawn
+  from a partial read. A clean run emits no extra line at all. `--report` ends
+  with an `INCOMPLETE RUN` block. `input_complete` in the record is the exit
+  status's own predicate, so stdout and `$?` cannot disagree.
+
+  Idle compaction (row 3) is in the record and deliberately does NOT move the
+  exit status: it is the configured retention policy working as configured and
+  fires on essentially every long-running live capture, so a non-zero exit
+  there would carry no information — the same reason a user-set `-l/--limit` is
+  not this defect. Verified on a corpus capture: `retention.messages_dropped`
+  2829, `input_complete` true, exit 0.
+
+  Row 4 (MCP `capture_health`) is NOT covered by this change.
+  [`tests/partial_run_exit_code_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/partial_run_exit_code_test.rs) pins rows 1-3 against the real binary
+  (14 tests, every one watched fail against a reverted behavior).
+
+- [x] **VAL3 — result-set tools do not carry `source_exhausted`, and claim
+  `truncated: false` while the capture is still loading.** Independently
+  reproduced four times (coordinator plus three validation agents). Measured:
+
+  | capture | delay before first call | `list_dialogs` total | `truncated` |
+  |---|---|---|---|
+  | 3.1 MB | 0 s | 13 | `false` |
+  | 3.1 MB | 0.5 s | 334 | `false` |
+  | 100 MB | 0 s | 3 | `false` |
+  | 921 MB | 0 s | 6 of 18,241 | `false` |
+
+  The hazard IS documented — [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) says *"The source has not
+  drained... Poll `capture_status` until `source_exhausted` is true"* — so this
+  entry is about the shape of the surface, not a missing warning.
+  `tail_dialogs` carries `source_exhausted` in its own envelope and the other
+  result-set tools do not, so one response is self-describing and the rest need
+  a second call to a different tool to interpret. `truncated: false` is an
+  affirmative claim that nothing was withheld, emitted when the set is a
+  thousandth of the answer. Agents issue their first call in milliseconds,
+  inside a window a human client never sees.
+
+  **Do:** put `source_exhausted` in every result envelope that can be affected,
+  as `tail_dialogs` already does, and do not emit `truncated: false` while the
+  source is undrained. **Done:** [`src/mcp/completeness.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/completeness.rs) stamps
+  `source_exhausted` and `source_stopped_early` onto every tool result in
+  `SipnabMcp::call_tool`, beside `structured::attach` and for the same reason —
+  43 of the 51 tools answer from a capture store, and a per-tool field is a rule
+  43 authors have to remember. The eight that opt out read no store. `timeline`
+  answers with a top-level array and carries the pair in a second content block
+  rather than changing its published shape. `truncated: false` is REMOVED while
+  the answer is not whole, so a caller reading only that field is handed no
+  claim instead of a wrong one; `truncated: true` still ships, because a cap
+  that bit is a fact whatever the load state. `save_findings` is exempt: its
+  `truncated` reports whether the caller's own summary was clipped.
+
+- [x] **VAL4 — `get_capture_report.complete` reads backwards during load.**
+  Same tool, same session, twelve seconds apart on a 100 MB capture:
+  `complete: true` at `frames_read: 312`, then `complete: false` at
+  `frames_read: 365747`. The field is `true` over 0.09% of the file and `false`
+  once the file has been read. The documented semantic — "nothing undecodable
+  among the frames already read" — is coherent, but the field is named
+  `complete` and an agent reading it during the window gets the inverted
+  signal.
+
+  **Do:** rename it (`no_undecodable_frames`) or gate it on `source_exhausted`.
+  **Done:** gated, not renamed. `complete` is `crate::analysis::CaptureAnalysis`
+  and the CLI's `--analyze` and the REST report publish the same field, so a
+  rename would be a three-surface compatibility change to fix a two-value
+  defect. Its own doc — *"whether sipnab read all of its input"* — is already
+  the right predicate, and a source still loading has unread input by
+  construction, so the gate makes the field more faithful to its documented
+  meaning rather than less. The stamp forces `complete: false` unless the source
+  drained AND the read reached the end of it. `get_dialog.complete` — "this page
+  holds every message" — gets the same gate for the same reason.
+
+- [ ] **VAL5 — `evaluate_expectations` ships the wrong unit for `asr`, so a
+  95% gate passes a 57% capture.** The tool description in `tools/list` — the
+  only syntax documentation an LLM client is ever handed — says `asr` is *"a
+  RATIO from 0.0 to 1.0"*. The runtime unit is `percent`. Measured on a real
+  capture with ASR 57.14% (7 seizures), after polling until the source drained:
+
+  | rule | verdict | observed | unit | exit_code |
+  |---|---|---|---|---|
+  | `asr >= 0.95` | **pass** | 57.14 | percent | **0** |
+  | `asr >= 95` | fail | 57.14 | percent | 1 |
+
+  An agent following the description writes `0.95` and builds a gate requiring
+  0.95 **percent** ASR — one that passes any capture. This is the worst shape a
+  defect can take in a monitoring tool: the alarm is installed and switched off,
+  and nothing reveals it, because a gate that always passes looks like a healthy
+  system. `exit_code: 0` carries it into CI.
+
+  **Do:** fix the description, and the doc comment on
+  [`src/expect.rs:336`](https://github.com/NormB/sipnab/blob/main/src/expect.rs#L336) `unit`, which is backwards about its own function:
+  it says *"`asr` is a RATIO here and a PERCENT in `group_dialogs`"* while
+  the `match` twelve lines below returns `"percent"` for `Self::Asr`.
+  Verified by the coordinator 2026-08-28; the earlier note called this
+  unverified and it is now measured. Worth preserving: the empty-population
+  refusal is exactly right — *"unevaluable: no seizure was in scope, so
+  'asr >= 0.95' rests on nothing... a gate does not pass on data it never
+  judged."*
+
+- [ ] **VAL6 — `capture_health(sample_seconds)` has no upper bound, so a
+  handful of calls wedge the server permanently.** `sample_seconds: 2` returns
+  in 2.0 s — it really sleeps. `sample_seconds: 4294967295` is accepted with no
+  validation error and never returns (~136 years), holding one of
+  `--mcp-max-concurrent` (default 100) slots for the life of the process. Other
+  calls still succeed meanwhile, so the wedge is gradual: 100 such lines — well
+  inside the default rate limit — leave every later call answered with
+  `-32000 ... at its concurrent tool-call cap; retry shortly`, permanently, with
+  no recovery short of a restart. Worst on `--mcp-transport http`.
+
+  **Do:** bound `sample_seconds`, and put a ceiling on how long any single tool
+  call may hold a concurrency slot.
+
+- [ ] **VAL7 — `get_dialog max_messages: 0` returns every message.** Measured:
+  `0` → all 7, `1` → 1, `2` → 2. `0` means "unbounded" in the one parameter
+  whose job is to bound the response, and the schema permits it. An agent
+  computing a budget as `max(0, remaining)` asks for nothing and is handed
+  everything.
+
+  **Do:** reject `0`, or make it mean zero.
+
+
+- [ ] **VAL10 — the vCon docs promise no party `name` is ever emitted, and one
+  is, on 42% of real containers.** Verified at the source by the coordinator:
+  [`src/output/vcon.rs`](https://github.com/NormB/sipnab/blob/main/src/output/vcon.rs) declares `pub name: Option<String>` with a doc comment
+  explaining why it is emitted — *"§4.2 `name` — the display name the wire
+  carried... a container whose only name is under `sip_display_name` is one
+  where every generic reader shows an unnamed party."* Two published pages say
+  the opposite: [`docs/vcon.md:501`](https://github.com/NormB/sipnab/blob/main/docs/vcon.md#L501) — *"type has no `name` field at all, so
+  no later edit can populate one by accident"* — and [`docs/rest-api.md:838`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L838)
+  — *"**No party `name`, ever.**"* [`CHANGELOG.md:158`](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md#L158) shows the emission was
+  deliberate; the docs were never updated to match.
+
+  The validation agent measured the field present on 42% and 31% of containers
+  across two real corpora, always duplicating `sip_display_name`.
+
+  **Why this is more than doc drift.** A display name is personal data, and a
+  vCon container is a thing operators forward. An operator who reads "No party
+  `name`, ever" and writes a redaction step keyed on the documented shape will
+  not strip `name`. In fairness the same value is also present under
+  `sip_display_name`, so the container was never free of the display name — the
+  defect is the written assurance, which is the thing an operator acts on.
+
+  **Do:** correct both pages to describe what is emitted and why, and say
+  plainly which keys carry a display name so a redaction step can be written
+  against reality.
+
+- [ ] **VAL11 — a 401/407 challenge is published as a failed, incomplete
+  dialog.** Reported by the vCon validation agent: an auth challenge is emitted
+  as `type: incomplete, disposition: failed` while sipnab's own store records
+  `state=Trying, response_class=None`. This is the same "assert a failure that
+  never happened" class the 0.5.128 `incomplete` fix removed, surviving in
+  `final_status_code` selection. A challenge is a normal step in almost every
+  authenticated call, so this inflates the failure rate of ordinary traffic.
+  (Agent-reported; not independently reproduced by the coordinator.)
+
+- [ ] **VAL12 — a REFER produces a `transfer` Dialog Object with no `start`,
+  which is schema-invalid.** Invalid against both the vendored and the
+  published schema (2 of 4,216 real containers, plus a synthetic reproducer),
+  and it contradicts the documented deviation's own justification that sipnab
+  "knows the start time". (Agent-reported; not independently reproduced.)
+
+- [ ] **VAL13 — headers of 8,192 bytes or more vanish while the completeness
+  note still says "No omissions recorded".** Another instance of the VAL2/VAL3
+  class, in the container rather than the exit code: data is dropped and the
+  field whose job is to say so reports nothing was. (Agent-reported; not
+  independently reproduced.)
+
+- [ ] **VAL14 — one capture addressed by relative vs absolute path mints
+  different vCon UUIDs** for the same dialog, though the frame content digest is
+  identical in both containers. A consumer de-duplicating on UUID sees two
+  conversations where the content proves there is one. (Agent-reported; not
+  independently reproduced.)
+
+
+- [ ] **VAL15 — `get_capture_report.frames_read` is latched to the capture the
+  server started on and never describes the one it is reporting.** Measured on
+  the released 0.5.130 binary by the coordinator, and independently reported by
+  two validation agents:
+
+  | | `frames_read` | `dialogs_examined` |
+  |---|---|---|
+  | startup capture (10-packet fixture) | 10 | 0 |
+  | after `open_capture` of a 3.1 MB capture, fully loaded | **10** | **334** |
+
+  `dialogs_examined` and `streams_examined` follow the new capture correctly;
+  `frames_read` does not move at all. It reads the process-wide captured-packet
+  counter, which the background `open_capture` load never advances.
+
+  **Customer consequence.** The number is not stale-by-a-little, it belongs to a
+  different capture. Any agent deriving coverage from it — frames per dialog,
+  "did we read enough of this file", a sanity check that the report matches the
+  input — gets an answer computed from another file's size. It is worse than an
+  absent field because it is present, plausible, and precise.
+
+  **Do:** advance the counter the background loader actually uses, or report the
+  loaded capture's own frame count. Whichever, `frames_read` must move with
+  `dialogs_examined` or say nothing. There is an existing test,
+  `capture_report_complete_never_reads_backwards`, that deliberately compares
+  `dialogs_examined` rather than `frames_read` *because* of this defect — that
+  workaround should be removed when this is fixed, and the comment there names
+  it.
+
+- [ ] **VAL16 — `timeline` answers with a bare array, so it can carry no
+  envelope.** It is the last top-level array on the agent surface, which is
+  exactly the defect class `DialogPage`'s own doc comment describes: a payload
+  with no key has nowhere to put `source_exhausted`, `truncated`, or a cursor.
+  The VAL3 fix reached it only as a second content block, which is additive but
+  not the same as a self-describing response.
+
+  **Do:** convert it to a page envelope, the project's own established fix.
+  [`tests/mcp_protocol_features_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/mcp_protocol_features_test.rs) pins the current array shape, so this is
+  a deliberate published-shape change and should be taken as one rather than
+  slipped in.
+
+- [ ] **VAL17 — rendered documents carry no completeness envelope.**
+  `render_ladder`, and `get_capture_report` / `get_dialog_report` in `markdown`
+  and `text`, answer with a rendered document that has no structured envelope,
+  so a caller asking for a human-readable form loses the "is this whole?" signal
+  that the `json` form now carries. They are excused by name today, and
+  [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) tells the reader to call `capture_status` beside them.
+
+  **Do:** have the renderer state the fact in prose, the way `--report` gained
+  its `INCOMPLETE RUN` block in the VAL2 fix. A reader of a rendered ladder has
+  no `$?` and no JSON in front of them, which is precisely the case that block
+  was added for.
+
+- [ ] **VAL18 — `search_messages` cannot see what the filter DSL can, and
+  answers 0 instead of saying so.** Measured by the coordinator on the released
+  0.5.130 binary against a 100 MB real capture, after waiting for the source to
+  drain (507 dialogs), in one session:
+
+  | query | `search_messages.total_matched` | `list_dialogs` with `payload =~` |
+  |---|---|---|
+  | `X-Asterisk-HangupCause` | **0** | **16** |
+  | `z9hG4bKPj` | **0** | **316** |
+
+  Same store, same instant, opposite answers. The content is demonstrably
+  present — `decode_evidence` on one of those frames returns
+  `X-Asterisk-HangupCause: Normal Clearing` with `status: "verified"`.
+
+  **Why this is worse than a missing feature.** An agent that reaches for a
+  tool called "search", gets `total_matched: 0`, and concludes the header is
+  absent has been given a wrong answer in the most convincing possible form. A
+  refusal would be safe; an empty result is not. It is the same class as VAL3
+  and VAL4 — a confident claim over data the tool did not actually consult.
+
+  **Do:** either search the raw message bytes (`search_messages` already builds
+  its snippet from `msg.raw`, so they are in hand — an optional
+  `scope: "raw"` is the smallest change), or state in the response and the
+  schema exactly which fields are searched, so a zero means "not in these
+  fields" rather than "not in the capture".
 
 ## PV — vCon conformance and interop (added 2026-08-27)
 
@@ -1089,8 +1612,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:4963`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4963),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:4963`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4963),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5297`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5297),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5297`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5297),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -1936,16 +2459,16 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:377`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L377)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:6305`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6305), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:6617`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6617), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1560`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1560)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1593`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1593)), which attaches `frame_ref`
     (`#[tool(` at [`src/mcp/server.rs:4528`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4528), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1560`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1560)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1593`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1593)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -2097,7 +2620,7 @@ output path.
     `SUPPRESSION_FILENAME` ([`src/sip/lint/mod.rs:70`](https://github.com/NormB/sipnab/blob/main/src/sip/lint/mod.rs#L70)),
     `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
     exist, and the MCP lint tools consume them through `resolve_suppressions`
-    ([`src/mcp/server.rs:746`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L746)), which takes an explicit filename or walks up from
+    ([`src/mcp/server.rs:779`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L779)), which takes an explicit filename or walks up from
     the capture's directory to a project root. **What is still missing is the
     suppression half of the CLI, and the evidence this line cited for that is
     now false too. Corrected 2026-08-06:** it read *"`grep -n lint src/cli.rs`
@@ -2450,7 +2973,7 @@ implementation.
 | STIR/SHAKEN | [`src/sip/stir_shaken.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/stir_shaken.rs) exists; `--stir-shaken` REPORTS the PASSporT claims and **verifies no signature** — corrected 2026-08-05, it never did | `report_stir_shaken(call_id)` → passport claims, attestation, `iat` freshness. NOT a cert-chain result: verifying means fetching the certificate the token references, and sipnab makes no outbound request to analyze a capture. A forged Identity header reports exactly like a genuine one. |
 | Wireshark / tshark filter | [`src/output/wireshark.rs`](https://github.com/NormB/sipnab/blob/main/src/output/wireshark.rs) exists; both flags refused under `--mcp` because they write to stdout | `generate_display_filter(call_id\|filter)`. The stdout invariant does not apply to a return value — this one is a pure oversight |
 | fail2ban | format exists in tree | `ban_candidates(kinds?, since?)` → structured src_ip, rule, count, plus the jail line |
-| SIPp XML | **IN THE TREE** — `save_to_sipp_path` at [`src/tui/save.rs:804`](https://github.com/NormB/sipnab/blob/main/src/tui/save.rs#L804), with three tests. This row said "not in the tree" until 2026-08-05, which scheduled a rewrite of code that already exists | `export_sipp_scenario(call_id, filename)` is an EXTRACTION of the existing TUI writer to a callable path, not a build. Same wrapper shape as the rest of bucket 1 |
+| SIPp XML | **IN THE TREE** — `save_to_sipp_path` at [`src/tui/save.rs:839`](https://github.com/NormB/sipnab/blob/main/src/tui/save.rs#L839), with three tests. This row said "not in the tree" until 2026-08-05, which scheduled a rewrite of code that already exists | `export_sipp_scenario(call_id, filename)` is an EXTRACTION of the existing TUI writer to a callable path, not a build. Same wrapper shape as the rest of bucket 1 |
 | Mermaid ladder | [`src/tui/call_flow/export.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/call_flow/export.rs) renders mermaid; `render_ladder` offers markdown/text only | add `format: "mermaid"` — agents render it inline, which is the point of a ladder |
 | Multi-leg / B2BUA | TUI `x` stitches correlated legs | `render_ladder(call_id, extended: true)` + `get_correlated_legs`. Duplicate of PA10; keep PA10 as the entry |
 | Capture-wide report | `--report` incl. Orphaned Streams | `get_capture_report(format?)`. `capture_status` gives counters, not the report |
@@ -2535,7 +3058,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:7402`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7402), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:7714`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7714), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -2605,7 +3128,7 @@ implementation.
   `resources/list` and `resources/read` are not tool calls and never reach the
   audit point, so neither the log nor the file records them.
 
-- [ ] **AUDIT1 — nothing records how a run was invoked, so a report cannot be
+- [x] **AUDIT1 — nothing records how a run was invoked, so a report cannot be
   traced back to the command that produced it.** `--mcp-audit-file` records an
   AGENT's tool calls, and records them well: append-only, sequence-numbered so a
   reader sees a gap, `0600` because arguments are sensitive, and a call that
@@ -2625,7 +3148,7 @@ implementation.
   **Do:** record, once at startup, the argv, working directory, effective user,
   wall-clock start, sipnab version and feature set, and the capture identity.
   The last one already exists -- `crate::provenance::CaptureEtag`
-  ([`src/provenance.rs:217`](https://github.com/NormB/sipnab/blob/main/src/provenance.rs#L217)) carries `node`, an opaque `instance` and the store
+  ([`src/provenance.rs:249`](https://github.com/NormB/sipnab/blob/main/src/provenance.rs#L249)) carries `node`, an opaque `instance` and the store
   generations, and the MCP surface already stamps it on answers. Reuse it rather
   than inventing a second notion of which capture this was.
 
@@ -2637,8 +3160,32 @@ implementation.
   **The privacy question has to be answered, not assumed.** argv routinely holds
   a capture path, and a path routinely holds a customer name. The MCP audit file
   is already `0600` for the same reason and that precedent should carry.
+  **Shipped 2026-08-28 as `--run-provenance-file <FILE>`**
+  ([`src/app/run_provenance.rs`](https://github.com/NormB/sipnab/blob/main/src/app/run_provenance.rs)), off by default, one JSON line per run:
+  `argv` as a LIST (a joined string loses where a path with a space ended),
+  `cwd`, `uid` and `user`, `pid`, `started`, `version`, `features`, and
+  `capture` -- a `CaptureEtag` and not a second notion of it. That last point is
+  the one that needed wiring rather than reusing a type: the identity is minted
+  once by `provenance::run_identity()` and `app::servers` SEEDS `CaptureState`
+  with it, so the record's `instance` is the same token every MCP and REST
+  answer carries. Before that the record would have named a capture nothing else
+  in the process ever named, which answers no question at all.
+  Written after argument validation and before the config load, so a refusal
+  costs nothing: no packet has been read. Fail-closed on the OPEN and on the
+  WRITE -- `/dev/full` stops the run with `ENOSPC` and no report reaches stdout.
+  Records go through `AuditSink::append_with`, a seam added to
+  [`src/mcp/audit.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/audit.rs) so the tool-call record, this one and the TUI trail
+  share ONE set of open flags, one mode, one lock and one numbering scheme.
+  Mutation-proved at each hop: never writing, a swallowed open error, a
+  swallowed write error, `0644` instead of `0600`, a truncating open, argv
+  joined into one string, and a freshly minted capture identity each fail a
+  test. Seven end-to-end tests in
+  [`tests/run_provenance_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/run_provenance_test.rs) read a file the BINARY wrote.
+  Still NOT covered: `--setup-caps` and `--strip-secrets` exit before this point
+  and write no record, and there is no rotation -- the file grows one line per
+  run and an operator who wants it bounded rotates it themselves.
 
-- [ ] **AUDIT2 — the TUI leaves no trail of what an operator did.** No
+- [x] **AUDIT2 — the TUI leaves no trail of what an operator did.** No
   keystroke, filter change, export or capture swap is recorded anywhere:
   verified 2026-08-28, `src/tui/` contains no audit or action-log path at all,
   while the TUI binds 38 distinct keys. An operator can open a capture, narrow
@@ -2671,6 +3218,44 @@ implementation.
   are to fail closed and say so loudly, or to fail open and mark the trail as
   incomplete at that point so a reader knows. Silently dropping records is not
   an option; that is the failure `--mcp-audit-file` was built to avoid.
+  **Shipped 2026-08-28 as `--tui-audit-file <FILE>`**
+  ([`src/tui/action_trail.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/action_trail.rs)), off by default, one JSON line per ACTION:
+  `capture_opened`, `capture_swapped`, `filter_applied`, `filter_cleared`,
+  `export` (with its destination and format, refusals included) and a closing
+  `session_end`. Records ride the same `AuditSink` the MCP audit does, reached
+  through `crate::app::audit` -- a re-export under `mcp` and a `#[path]` include
+  without it, because the DEFAULT build carries no `mcp` and CI compiles
+  `native,tui,audio`; one source file, exactly one compilation per build. The
+  caller identity is `tui uid=N user=NAME`: a terminal has no peer socket and no
+  bearer token, so what the process can prove is the account it runs as.
+  **The open decision was resolved FAIL OPEN.** A refused write does not stop
+  the TUI, because the operator may be holding a live capture that exists
+  nowhere else (`CaptureContext::unsaved`) and stopping to protect the record of
+  the evidence would destroy the evidence. Four things make it loud instead: the
+  sequence number is spent by the failed write, so the hole in the numbering IS
+  the count and needs no cooperation from a full disk; the `session_end` record
+  names actions offered and lost, which is the one thing a mid-file gap cannot
+  cover (records lost at the tail leave no upper bound); the status line says so
+  during the session; and standard error says so at exit, after the terminal is
+  restored. There is deliberately no "trail incomplete" MARKER line -- writing
+  it needs the same disk that just refused the record, and where it could be
+  written the contiguous numbering already says exactly how many are missing.
+  The OPEN keeps the MCP rule and fails closed, because refusing before the
+  terminal is taken costs nothing; `-N` is refused outright rather than
+  accepted with no operator to record.
+  Privacy: the search field is never recorded, not the query and not the fact
+  one was typed -- two tests fail if it ever is. The filter IS recorded, because
+  it decides what could be seen and therefore exported; the file is `0600` for
+  the same reason `argv` is.
+  Mutation-proved at each hop: an unrecorded export, an unrecorded refusal, an
+  unrecorded filter, an unrecorded swap, a recorded search term, a recorded
+  keystroke, a swallowed write error, a sequence allocated only on success, a
+  sequence that skips, an under-counted closing record, a swallowed open error
+  and a dropped `-N` refusal each fail a test. Fifteen tests in
+  [`tests/tui_action_trail_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/tui_action_trail_test.rs) drive real keys and read the real file.
+  Still NOT covered: a clipboard copy is an export to a destination this does
+  not record, and neither the F10 column save nor the `N` name-mapping save is
+  in the vocabulary -- both write settings rather than call data.
 - [x] **PB11 — Rate limiting and concurrency caps for MCP.** HEP had per-peer
   limits and REST had `--api-max-conn`; MCP HTTP had neither, so a looping
   agent could pin a capture host.
@@ -3593,7 +4178,7 @@ neither visible to `--features full`:**
    that has either.
 2. `TK6`'s `ebpf` feature sits **outside `full`**, and
    `no_test_hides_behind_a_feature_outside_full`
-   ([`tests/site_journey_test.rs:5312`](https://github.com/NormB/sipnab/blob/main/tests/site_journey_test.rs#L5312)) fails on any `#[test]` or
+   ([`tests/site_journey_test.rs:5348`](https://github.com/NormB/sipnab/blob/main/tests/site_journey_test.rs#L5348)) fails on any `#[test]` or
    `mod tests` gated on such a feature. So the offset table and version parsing
    are **ungated** pure logic and only the aya attachment is gated. This is
    architecture, not style.
@@ -4111,6 +4696,464 @@ a web-filtering appliance silently discarding UDP. sipnab read one of them as
   bare-RTP control rather than checking the bytes came back out — an unwrap
   helper can be correct while the pipeline still drops what it returns — and is
   mutation-checked by disabling the unwrap, which fails it.
+
+## RV — rtpengine and vCon on the agent surface (added 2026-08-28)
+
+Measured on the released 0.5.130 binary by listing `tools/list` and reading the
+schemas: of **51 tools, exactly one touches vCon** (`export_vcon`, taking a
+single `call_id` and nothing else) and **none is about the media relay**.
+
+That is not proportional to what sipnab knows. `src/rtpengine/` carries
+`Reconciler`, `Attribution`, `Unattributed`, `RelayLink`, `RelaySnapshot` and
+`OrphanSink`; [`src/rtp/stream_store.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs) models `EndpointAssertion` with
+distinct `relay_queried` and `relay_asserted` constructors and has a test named
+`a_relay_asserted_endpoint_is_distinguishable_from_a_signaled_one`. None of it
+is reachable from an agent. `rtp_stats` returns `orphaned` and no
+`asserted_by`. On the container side the CLI has six vCon flags
+(`--export-vcon`, `--export-vcon-dir`, `--export-vcon-when`, `--vcon-digest`,
+`--vcon-max-inline-media`, `--vcon-out`) against the agent surface's one
+argument.
+
+This is the surface-parity concern in its sharpest form: the CLI can express a
+policy over a whole capture, and the agent surface can ask about one call.
+
+**Scope discipline.** Every entry below is read-only and run-scoped, holding no
+state past the connection, because `positioning.md` §4 rules out anything that
+must be *operated* — the same test that had PB4 declined. RV2 is the one that
+transmits, and it is written to inherit `--mcp-allow-open-capture`'s shape for
+exactly that reason.
+
+- [ ] **RV1 — `explain_attribution`: how was this stream's endpoint learned,
+  and was that path authenticated?** Ranked first because VAL8 and VAL9 turned
+  attribution provenance into a security question and the fix does not fully
+  close it: sniffed rtpengine NG is now gated on the destination port but the
+  **source is still not authenticated**, and `a_mirror_from_any_source_is_still_believed_on_the_hep_port`
+  pins that residual on purpose. An agent that reports "media anchored at
+  `<addr>`" today cannot say whether that came from SDP the two parties
+  exchanged, from a relay sipnab asked, or from a mirrored datagram anybody
+  could have sent. Those three claims carry different weight in an incident
+  review and the surface renders them identically.
+
+  **Do:** for a stream or a call, return the `EndpointAssertion` that produced
+  each endpoint, when it was learned, and — for relay-asserted ones — the
+  delivery path and whether it was authenticated (`--hep-auth-mode hmac`
+  verified, port-gated only, or unauthenticated). The vocabulary already
+  exists; this exposes it rather than inventing it.
+
+- [ ] **RV2 — `query_relay`: the agent counterpart of `--rtpengine-control`.**
+  The flag's own help states the case: *"A passive decoder sees the `offer`
+  that created a stream, or it sees nothing: a call already in progress when
+  sipnab started has no control exchange left to read... Incident response
+  usually begins mid-call, which is exactly when that gap is worst."*
+  Incident response mid-call is agent work, and the one capability that closes
+  the gap is CLI-only.
+
+  **Do:** expose the read-only relay query over MCP, **off by default behind an
+  explicit allow flag**, in the shape of `--mcp-allow-open-capture`. The reason
+  is the same one that flag exists for and is stronger here: this tool
+  *transmits to a third party*, and the flag's help already warns that an
+  address learned from a capture may belong to somebody's laptop now. The
+  address must come from operator configuration, never from a tool argument,
+  or the agent surface becomes a way to make sipnab send packets to an
+  attacker-chosen host.
+
+- [ ] **RV3 — `reconcile_orphans`: explain an orphan, do not merely count it.**
+  `rtp_stats { "orphaned": true }` lists orphaned streams and nothing says why
+  any of them is orphaned or what it might belong to. `Reconciler`,
+  `Attribution` and `Unattributed` already compute exactly that.
+
+  **Do:** run the existing reconciliation and return, per orphan, either the
+  attribution and the evidence for it, or the `Unattributed` reason. Grounding
+  for why this matters in practice: a real-corpus example found 114 `no_media`
+  calls that all anchored on a relay pair the port mirror did not cover — a
+  conclusion reached by hand-comparing SDP addresses across calls, which is the
+  work this tool would do.
+
+- [ ] **RV4 — `decode_ng`: decode a captured relay control message.** The
+  bencode decoder exists, is `pub`, and is now hardened (a 20,000-round
+  malformed sweep over a 70-datagram corpus, bounded at ≤0.8 MB RSS growth).
+  An agent reading a relay exchange gets raw bytes today, while
+  `decode_evidence` does precisely this job for SIP frames.
+
+  **Do:** mirror `decode_evidence` for NG messages — take a frame pointer,
+  return the decoded command, and say which delivery path carried it and
+  whether that path was authenticated. Refuse a pointer whose digest no longer
+  matches, as `--show-frame` already does.
+
+- [ ] **RV5 — `export_vcon` should take a filter, and should return its
+  digest.** `--export-vcon-when` takes the filter DSL — *"Reusing it rather
+  than growing a flag per policy is deliberate"* — and pairs with
+  `--export-vcon-dir` to emit one container per matching dialog. The tool takes
+  one `call_id`. An agent asked to export every failed call in a capture must
+  first list dialogs, then issue one call per dialog; on a real corpus that is
+  hundreds of round trips to do what one CLI invocation does.
+
+  `--vcon-digest` has no counterpart either. Its help explains what it buys —
+  binding an emission to a store's ledger entry out of band — and that is a
+  thing an agent handing containers to a conserver needs more than a human
+  does.
+
+  **Do:** accept a filter expression as an alternative to `call_id`, bounded by
+  `--mcp-max-rows` like every other set-returning tool, and return the SHA-256
+  of each container beside it.
+
+- [ ] **RV6 — `validate_vcon`: check a container against the schema sipnab
+  vendors.** Grounded rather than speculative: a validation pass over **4,216
+  real containers found 2 schema-invalid** — a REFER producing a `transfer`
+  Dialog Object with no `start`, invalid against both the vendored and the
+  published schema. Nothing on any surface lets a producer notice that before a
+  conserver rejects it.
+
+  **Do:** validate a container (one just exported, or one supplied) against
+  [`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json), and report the **documented deviation
+  explicitly** rather than silently passing it — the empty Dialog Object `{}`
+  that IETF 124 agreed and the draft's own Appendix B schema rejects. A
+  validator that quietly tolerates the one shape the schema forbids teaches a
+  producer the wrong lesson.
+
+- [ ] **RV7 — a container's omissions must reach the agent that requested it.**
+  VAL13 in the P1 section: headers of 8,192 bytes or more vanish from a
+  container while the completeness note still reports *"No omissions
+  recorded"*. `--vcon-max-inline-media` has the same shape — a refused media
+  body is *stated* in the completeness caveat on the CLI, and an agent calling
+  `export_vcon` sees a container with no audio and nothing saying why.
+
+  **Do:** carry the completeness caveat, the applied inline-media bound, and
+  every omission into the tool's own response. This is the same rule as VAL3
+  one layer down: the honest fact exists and does not reach the caller.
+
+## RP — rtpproxy, the other relay OpenSIPS drives (added 2026-08-28)
+
+**Measured 2026-08-28: `grep -rin rtpproxy src/ docs/ tests/` returns nothing.**
+sipnab has no knowledge of rtpproxy at all.
+
+That is a real coverage hole rather than an oversight to shrug at. OpenSIPS
+ships `rtpproxy` and `rtpengine` as two separate modules, and they speak
+unrelated control protocols: sipnab's decoder ([`src/rtpengine/ng.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/ng.rs),
+[`src/rtpengine/bencode.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/bencode.rs)) reads **bencode**, while rtpproxy's classic control
+protocol is **line-oriented ASCII**. A capture from a deployment driving
+rtpproxy therefore reaches none of the relay machinery — `Reconciler`,
+`Attribution`, `RelayLink`, `EndpointAssertion::relay_asserted` — and its media
+arrives as unattributed orphans with no explanation available.
+
+**The prerequisite is a decoder, not a tool.** An MCP tool can only expose what
+sipnab knows, so RP1 has to land before anything else here means anything.
+
+**And the right shape is one relay abstraction, not two tool families.** RV1,
+RV3 and RV4 in the section above are written against `EndpointAssertion` and
+`Reconciler`, neither of which is rtpengine-specific by nature. If RP2 is done
+properly those three tools serve rtpproxy the day the decoder lands, and this
+section stays four entries instead of becoming a mirror of RV.
+
+- [ ] **RP1 — decode the rtpproxy control protocol.** Prerequisite for
+  everything else in this section.
+
+  **Verify the wire format against rtpproxy's own documentation and source
+  before implementing — do not take the following from memory, including
+  mine.** What needs establishing, stated as questions rather than as facts:
+  the exact command grammar and which commands create media (the analogue of
+  `NgCommand::MediaCreating`, whose comment explains why a recording or forking
+  stream must not be attributed as an ordinary leg); the response grammar for
+  success and for errors; how the leading cookie behaves under retransmission;
+  whether the deployment is reachable over UDP or only a unix socket, since a
+  passive capture can only see the former; and what default port to key a
+  sniffed-traffic heuristic on, given `HEP_MIRROR_PORTS = [9060]` and the
+  rtpengine control examples at `127.0.0.1:22222` are both rtpengine-shaped.
+
+  Also establish whether the rtpproxy build in question speaks a bencode
+  dialect as well as the text one. If it does, the existing decoder may already
+  cover part of the surface and the entry shrinks; if it does not, the text
+  parser is new work. **This is the single fact that most changes the size of
+  this item, and it is not yet known.**
+
+  Inherit the hardening the NG path now has: the malformed-input sweep added
+  with VAL9 runs 20,000 rounds over a 70-datagram corpus asserting RSS growth
+  stays under 0.8 MB. A text protocol has its own denial-of-service shapes — an
+  unterminated line, a cookie of unbounded length — and needs the equivalent.
+
+- [ ] **RP2 — encapsulate the relay so adding another RTP engine is easy and
+  well defined. This is a stated architectural requirement, not a
+  refactoring preference.** Today the vocabulary lives under `src/rtpengine/` and is named for
+  one implementation. `EndpointAssertion::relay_asserted` and `Reconciler` are
+  not conceptually rtpengine-specific; the module boundary is.
+
+  **Do:** lift the relay-facing traits and types out of `src/rtpengine/` so a
+  second control decoder plugs in behind them, then let RP1 register itself as
+  the first proof the seam works. The boundary owes a definition, not just a
+  trait: what a relay implementation MUST provide (decode a control message;
+  say whether a command creates media; yield endpoints with an
+  `EndpointAssertion`; report its own authentication status), and what it must
+  NOT be asked for.
+
+  **Three acceptance tests, all of which must hold:**
+  1. Adding a relay adds **no** MCP tool. If it does, the abstraction is in the
+     wrong place — a parallel `query_rtpproxy` beside `query_relay` doubles the
+     agent surface for no gain and leaves the surface-parity gate two families
+     to keep in step.
+  2. Adding a relay touches **no** file under `src/mcp/`, `src/output/` or
+     `src/tui/`. Those consume attributions; they must not learn vendor names.
+  3. A gate enforces both, so the seam cannot erode. The mechanism this repo
+     already uses is a source scan with an anti-vacuity floor — see
+     `check-feature-deps.py` — and it should name any vendor identifier that
+     appears outside the relay modules.
+
+  Do the encapsulation **before** RP1's decoder, not after. A second
+  implementation written against the current shape is what makes the seam
+  expensive to move later, and the first implementation is always the one that
+  defines the interface by accident.
+
+- [ ] **RP3 — attribution must name WHICH relay asserted an endpoint.** This
+  extends RV1 rather than repeating it, and it is not cosmetic: the two relays
+  have different trust properties and different failure modes, so "a relay said
+  so" is not a complete answer once more than one kind of relay exists in an
+  estate. VAL8 established that a sniffed assertion is authenticated by nothing
+  and is now gated on destination port alone; that gate is keyed on an
+  rtpengine-shaped port, so its meaning for an rtpproxy deployment is currently
+  undefined rather than safe.
+
+  **Do:** carry the asserting implementation and its delivery path alongside
+  the assertion, so an agent reporting a media anchor can say which relay
+  claimed it and how much that claim is worth.
+
+- [ ] **RP4 — surface duplicate and retried relay commands.** rtpproxy's
+  control protocol uses a leading cookie, and the reason a cookie exists at all
+  is retransmission — which means a passive observer can see a command
+  retried, and a retry usually means the proxy did not hear the answer.
+  **Verify the exact semantics before building** (see RP1), but if it holds,
+  this is diagnosable from a capture and is the kind of finding an operator
+  cannot get any other way: a relay control channel that is losing responses
+  looks, from the SIP side, like a proxy that is intermittently slow.
+
+  sipnab already counts an analogous thing well — `timing.retransmits` on the
+  SIP side, which a real-corpus example used to prove that "4 challenges" was
+  one 401 plus a Timer G ladder. The relay control channel deserves the same
+  treatment, and this belongs as a field on the RV3/RV4 output rather than as
+  its own tool.
+
+## HX — harness topology: a PBX, both directions, swappable media anchor (added 2026-08-28)
+
+**What the harness runs today**, read from [`harness/docker-compose.yml`](https://github.com/NormB/sipnab/blob/main/harness/docker-compose.yml):
+`sipp-uac -> the OpenSIPS container -> sipp-uas`, with **rtpengine** anchoring media in
+userspace and sharing the OpenSIPS network namespace, plus a `hep-sink` and two
+sipnab instances (`sipnab-proxy`, `sipnab-relay`). `make up` brings the whole
+stack up and `make mcp-test` drives the agent surface against it.
+
+Two things it cannot currently produce, and both are shapes real deployments
+take:
+
+1. **No PBX.** Every leg is sipp answering sipp. An OpenSIPS proxy in front of
+   an Asterisk PBX is one of the most common topologies in the field, and it
+   behaves differently from proxy-to-endpoint in ways sipnab has findings
+   about: Record-Route handling, ACK routing, re-INVITE for hold, direct media
+   moving the anchor mid-call.
+2. **One relay, hard-wired.** rtpengine is the only media anchor, so nothing
+   exercises a second relay — which is what RP1/RP2 exist to support, and what
+   RP2's acceptance tests need in order to mean anything.
+
+- [ ] **HX1 — add Asterisk to the harness and drive BOTH directions.**
+  `opensips -> asterisk` (the proxy fronts the PBX) and
+  `asterisk -> opensips` (the PBX originates outbound through the proxy). Both,
+  because they are not symmetric: which side owns Record-Route, which side
+  re-INVITEs, and which side's Contact survives NAT rewriting all differ, and a
+  harness that only tests one direction will find only one class of bug.
+
+  **Why this pays for itself beyond integration testing:** it is a *fixture
+  generator*. The private capture corpus, which lives outside the repository, can never be committed —
+  it is real customer traffic — so every fixture that exercises a two-hop
+  topology today either does not exist or was hand-built. A reproducible
+  Asterisk topology produces PII-free, committable captures of exactly the
+  paths the RV and RP entries describe. A documented real-corpus example found
+  `ACK-BRANCH-MISMATCH` moving 22 -> 2 -> 0 while `RECORD-ROUTE-NOT-COPIED`
+  moved 0 -> 38 as a filter narrowed to one hop; that finding is currently
+  reproducible only against traffic that cannot be shared.
+
+- [ ] **HX2 — make the media anchor swappable: rtpengine, rtpproxy, or
+  neither.** Parameterise the anchor the way `RTPENGINE_SOCK` is already
+  parameterised, so one variable selects the relay and the same call scenarios
+  run under each. "Neither" matters too: direct media between endpoints is the
+  case where sipnab must attribute streams with no relay assertion at all, and
+  it is the control the other two are measured against.
+
+  This is what turns RP2's acceptance tests from assertions into measurements:
+  the claim "adding a relay adds no MCP tool and touches no file under
+  `src/mcp/`" is only worth something if a second relay actually runs.
+
+  Blocked on RP1 for rtpproxy control decoding, but **not** blocked for the
+  media path — rtpproxy can anchor media in the harness before sipnab can read
+  its control channel, and that intermediate state is itself worth capturing:
+  it is exactly what an operator sees today, media arriving with no control
+  exchange to explain it.
+
+- [ ] **HX3 — the matrix, not the cross product.** Directions (2) x anchors (3)
+  x call outcomes is more combinations than are worth running on every commit.
+  Choose the set deliberately and write down why each is in or out, the way
+  [`docs/design/testing-matrix.md`](https://github.com/NormB/sipnab/blob/main/docs/design/testing-matrix.md) already does for flags. A harness that takes
+  an hour gets run by nobody, and a harness nobody runs is a harness that is
+  quietly broken.
+
+  State plainly which combinations are covered and which are not, so a reader
+  knows what a green harness does and does not prove. That is the same
+  discipline VAL2 just applied to exit codes: the absence of a signal must not
+  be readable as a pass.
+
+## AS — Asterisk on the agent surface (added 2026-08-28)
+
+**Measured 2026-08-28: sipnab knows nothing about Asterisk.** Not little —
+nothing. `grep -riE 'pjsip|chan_sip|res_pjsip|rewrite_contact|X-Asterisk'` over
+the Rust and markdown tree returns zero hits for every pattern, and
+`grep -ric asterisk src/mcp/` is zero. The only occurrences anywhere are two
+fixture filenames, a hosts-file test string, and one sentence in
+`positioning.md`.
+
+That is defensible as a starting position — sipnab is protocol-shaped, not
+vendor-shaped, and `get_sdp_timeline` already names mid-call behavior
+generically (`MediaAnchorChange`, `Hold`, `T38Switch`) which is the right
+instinct. The entries below are the cases where being vendor-blind loses
+information the capture actually contains.
+
+**Corpus evidence** (real traffic, addresses RFC1918/CGNAT only): the estate
+runs `Asterisk PBX 20.15.2`, two FreePBX builds and four Grandstream UCM models
+behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
+**373 are OPTIONS** — 73.6% of the dialog store is qualify churn.
+
+- [ ] **AS1 — expose extension headers on `get_dialog` / `get_message`.**
+  `build_message_json` has a closed field list (timestamp, addresses, method,
+  status, call_id, from, to, contact, ua, sdp, cseq, frame, dscp, …). Every
+  vendor-, carrier- and SBC-specific fact lives outside it: `X-Asterisk-*`,
+  `Reason`, `Diversion`, `P-Asserted-Identity`, `Remote-Party-ID`, `Require`,
+  `RSeq`. The parser retains them — unknown header names round-trip — so this
+  is a projection gap, not a parsing one.
+
+  Today the only route to one of those headers is `decode_evidence`, which
+  needs a server-side `--mcp-file-root` opt-in, a reachable original capture,
+  and one call per frame.
+
+  **Do:** an `extension_headers` array carrying only headers *outside* the
+  existing closed list, so nothing is duplicated and the response does not
+  double in size. The existing untrusted-data wrapper applies unchanged; note
+  in the threat model that this widens the prompt-injection surface it already
+  tracks.
+
+  **Correct a false claim while here:** `deferred-and-declined.md:366` states
+  `get_message` returns the parsed message *"headers and body included"*.
+  Measured against 0.5.130 that is false — there is no headers map — and a
+  threat-model section leans on it.
+
+- [ ] **AS2 — report the signaling-stack fingerprint on `describe_endpoint`.**
+  `top_talkers by=ua` reports a single row, `Asterisk PBX 20.15.2`, at
+  `share_pct: 100.0` across 507 dialogs — while `tshark` finds **18 distinct
+  source IPs** behind that one banner. One label, eighteen machines.
+
+  Worse, requests carrying the *identical* banner split cleanly into two
+  populations by construction:
+
+  | | Via branch | From tag | Call-ID | count |
+  |---|---|---|---|---|
+  | A | `z9hG4bKPj` + UUID | UUID | UUID, no `@host` | 1777 |
+  | B | `z9hG4bK` + 8 hex | `as` + 8 hex | 32 hex `@host:5060` | 155 |
+
+  Population A is pjproject (`res_pjsip`); B is `chan_sip`. The split
+  reproduces per source IP and across three separate capture sets, and the
+  `z9hG4bKPj` shape also appears from Grandstream UCM and FreePBX, so it
+  generalises past the bare Asterisk banner. Whether an endpoint is `chan_sip`
+  or `res_pjsip` changes the entire debugging path — different config, NAT
+  handling and re-INVITE behavior — and the banner cannot answer it.
+
+  **Do:** report the *observation*, not the vendor conclusion:
+  `{branch_cookie, tag_shape, callid_has_host, inference, confidence}`. Same
+  discipline `find_correlated` already applies with `identifier_match`.
+
+  **Verify before shipping the `inference` field:** that `chan_sip` genuinely
+  constructs From-tags as `as%08lx`. 155/155 were measured on the wire; nobody
+  has read `chan_sip.c`.
+
+- [ ] **AS3 — termination cause as a first-class field.** `triage_call` returns
+  `verdict: "none"` on a call whose BYE carries
+  `X-Asterisk-HangupCauseCode: 38 / Network out of order`. `Reason` is read in
+  exactly one place and only on the final failure response, so a `Reason:` or
+  `X-Asterisk-HangupCause` on a BYE is never reached. The corpus carries 16
+  such frames plus RFC 3326 `Reason: Q.850;cause=` values.
+
+  "The call ended" and "the call ended because the far end was out of order"
+  are different answers, and only the second closes a ticket.
+
+  **Do:** a `termination` block on `get_dialog_report` / `triage_call`:
+  `{cause_code, cause_text, source_header, frame_ref}`, populated from RFC 3326
+  `Reason` on BYE and CANCEL as well as responses, with `X-Asterisk-HangupCause*`
+  as one extra header name. **The generic half is the feature; the vendor half
+  is one string.** That is how to be Asterisk-aware without becoming
+  Asterisk-specific.
+
+- [ ] **AS4 — make the keepalive plane visible in `find_problems`.** 98 of 110
+  problem rows on a real capture are OPTIONS, and 89 of those trip the alias
+  solely through `retransmits > 3` — dead qualify peers, not call faults. The
+  hints themselves are excellent (*"No response to OPTIONS: 7 transmissions
+  over 24.0s with nothing received — and ICMP says why: host unreachable"*).
+  They are fleet facts occupying the default triage page.
+
+  The capability to exclude them already exists
+  (`filter='method != "OPTIONS"'` returns 12). **The gap is discoverability**:
+  the agent must already know that OPTIONS means qualify.
+
+  **Do:** return a `by_method` breakdown beside `total_matched`, so
+  `{"OPTIONS": 98, "INVITE": 11, "REGISTER": 1}` arrives with the first page.
+  Zero new scope — it makes an existing answer honest about its own
+  composition.
+
+- [ ] **AS5 — contact-rewrite finding on `diagnose_registration`, gated on a
+  conjunction.** 75% and 79% of REGISTERs in two captures carry a private
+  Contact from a public source, and sipnab says nothing.
+
+  **The entry carries its own falsifier, which is why it is written this way:**
+  all 89 dead-qualify OPTIONS in the same capture are addressed to **public**
+  destinations, so that registrar rewrites correctly and a naive
+  "private Contact implies NAT fault" rule would have produced 83 false
+  positives on one file.
+
+  **Do:** report the observation on `diagnose_registration`
+  (`contact_host_private && source_public`), corroborate on `describe_endpoint`
+  — which already crosses dialogs per IP — with whether later requests to that
+  endpoint went to the public source or the private Contact, and fire the
+  *finding* only on the conjunction.
+
+- [ ] **AS6 — cleartext AMI credentials as a security finding.**
+  `Asterisk Call Manager/9.0.0` on TCP/5038 between two hosts, with
+  `Action: login` followed by `Username:` and `Secret:` in the clear, plus
+  cleartext realtime SQL against `ps_endpoints`. `capture_status` reports
+  `unanalysed_sip_messages: 0` — sipnab notices none of it.
+
+  sipnab already ships `--digest-leak`; a manager password on the wire is the
+  same finding class with strictly worse consequences.
+
+  **Do:** a new finding kind on the existing `security_findings` tool — **not**
+  a new tool and emphatically **not** an AMI decoder. Match the banner and the
+  `Action: login` line, record src/dst/port/frame_ref, and **never store or
+  echo the secret**.
+
+**Rejected, with the measurement that rejected them** — this list is as useful
+as the one above:
+
+- **A dedicated peer-health tool.** `aggregate_dialogs` with a `group_by` and a
+  filter already returns the dead peers in one call; AS4 is enough to point an
+  agent at it.
+- **AMI event decoding for leg correlation.** `Linkedid` looks like the perfect
+  answer to Asterisk's B2BUA correlation failure, but **AMI events carry no SIP
+  Call-ID**, so the join does not exist; all 365 `SetVar` actions in the corpus
+  are `DEVICE_STATE(...)`. Cost is a second protocol with TCP reassembly and a
+  PII fire-hose; measured payoff is zero.
+- **Anything that connects to AMI or ARI.** Needs credentials, a socket
+  lifecycle and a login — the thing that has to be *operated*. Same test that
+  declined PB4.
+- **100rel/PRACK, T.38 and SRTP tooling.** Zero PRACK, zero `Require: 100rel`,
+  zero `RSeq`, zero `m=image`, zero `RTP/SAVP` across the two largest captures.
+  Building for behavior this traffic never exhibits is guessing.
+- **`directmedia` as a named concept.** `get_sdp_timeline` already emits
+  `MediaAnchorChange` with before/after address and port, measured firing as
+  media moved from a phone to the Asterisk RTP node. Naming it after an
+  Asterisk config keyword would make a correct generic observation wrong on
+  every other B2BUA.
+- **A `find_asterisk_calls` umbrella tool.** Restates `list_dialogs` plus a
+  filter.
 
 ## MCPX — gaps found by surveying the VoIP MCP field (added 2026-08-21)
 

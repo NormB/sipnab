@@ -824,6 +824,8 @@ report a healthy network in the middle of an outage.
 | `--alert-exec` | `<CMD>` | -- | Execute this command when an alert fires |
 | `--alert-json` | -- | off | Emit each security alert as a structured JSON line on stderr (in addition to the human `[ALERT]` line) |
 | `--stir-shaken` | -- | off | Report STIR/SHAKEN Identity claims — decodes the PASSporT, does NOT verify the signature |
+| `--run-provenance-file` | `<FILE>` | -- | Record the command that started this run, as one JSON line appended to FILE (`seq`, `ts`, `record`, `argv`, `cwd`, `uid`, `user`, `pid`, `started`, `version`, `features`, `capture`). A report, a vCon container or an exported pcap says what sipnab concluded and nothing in it says which invocation produced it — which capture, which filter, which port range, which retention caps. `--portrange` alone changes what a run can see, so a report produced under a narrow range is afterwards indistinguishable from one that examined everything. `capture` is the same instance token the MCP and REST surfaces stamp on their answers, which is what joins a record to an artefact. sipnab writes it once, at startup, before it loads the config and before it opens any capture device. Opened `O_APPEND` and never truncated, so successive runs accumulate; created mode `0600` when absent, because argv holds capture paths and a path holds a customer name. **A record sipnab cannot write stops the run**, because a best-effort line would leave its own absence ambiguous between "not enabled" and "the disk was full". Leave it off and nothing changes |
+| `--tui-audit-file` | `<FILE>` | -- | Record what the operator did in the TUI, one JSON line per action appended to FILE (`seq`, `ts`, `record`, `action`, `target`, `format`, `caller`, `outcome`, `error`). Actions, not keystrokes: the capture opened, the capture swapped, a filter applied or cleared, an export and its destination — including one sipnab refused. A keystroke log of the TUI bindings would be mostly navigation, unreadable at review time, and a privacy hazard of its own, so **the search field is never recorded**, neither the query nor the fact that the operator typed one. Same writer and same file shape as `--mcp-audit-file`: append-only, never truncated, one sequence number per record so a gap is a lost record, created mode `0600`. A path sipnab cannot open stops the run before sipnab takes the terminal, and sipnab refuses `-N` rather than accepting it with nothing to record. **A write that fails mid-session does NOT stop the TUI** — an operator holding a live capture that exists nowhere else must not lose it because a log partition filled; the lost record leaves a permanent hole in the numbering, the status line says the trail is incomplete, and the closing `session_end` record and the exit message on standard error name the count. Leave it off and nothing changes. Feature: `tui` |
 
 > **`--alert` takes a channel name, not a rule.** `syslog`, `json` or `exec`.
 > `--syslog` and `--alert-json` are the equivalent boolean forms; naming the
@@ -856,6 +858,10 @@ report a healthy network in the middle of an outage.
 - `sipnab -N -I pbx.pcap --kill-scanner --scanner-answer-grace 1500 --scanner-established-factor 8 --scanner-unanswered-probes 10` — a small PBX on a slow access circuit, where a registered phone needs eight times the evidence and every probe gets a second and a half to draw a reply
 - `sudo sipnab -N -d eth0 --kill-scanner --kill-rate-limit 2 --findings-history 20000` — answer scanners at a deliberately small two responses a second while keeping a long detection history for an agent to read back
 - `sudo sipnab -N -d eth0 --kill-target 192.0.2.66 --kill-rate-limit 50 --findings-history 0` — a targeted response with a wider transmit budget and no findings retained in memory
+- `sipnab -N -I capture.pcap --json --run-provenance-file /var/log/sipnab-runs.jsonl` — record the invocation beside the report, so a reader can trace the JSON above back to the capture, the filters and the build that produced it
+- `sudo sipnab -N -d eth0 --portrange 5060-5090 --report --run-provenance-file /var/log/sipnab-runs.jsonl` — the case the record exists for: the port range decided what this run could see, and without the record a later reader cannot tell a narrow run from a complete one
+- `sipnab -I capture.pcap --tui-audit-file /var/log/sipnab-tui.jsonl` — record which capture the analyst opened, what they filtered it down to and what they exported, for the review that opens with "who exported which calls"
+- `sudo sipnab -d eth0 --tui-audit-file /var/log/sipnab-tui.jsonl --run-provenance-file /var/log/sipnab-runs.jsonl` — both halves on a live capture: one line saying how the session started, and one record per state-changing thing the operator then did
 
 
 ## Event execution
@@ -1195,6 +1201,33 @@ Scripts can rely on these:
 | Code | Meaning |
 |------|---------|
 | `0` | Success |
-| `1` | Runtime failure — capture error, I/O error, or sipnab could not produce a requested report (e.g. `--call-report` Call-ID not found) |
+| `1` | Runtime failure — capture error, I/O error, a capture file that was not read in full (a truncated pcap, a member that would not open, a BPF filter that would not compile against one), a `--plugin` that would not load, or sipnab could not produce a requested report (e.g. `--call-report` Call-ID not found) |
 | `2` | Invalid usage — bad flag value or combination, or a flag whose feature is not compiled into this binary |
 | `3` | Lint gate tripped — `--lint --lint-fail-on <severity>` found a conformance finding at or above that severity. Distinct from `1` on purpose: the tool worked, the CAPTURE is non-conformant |
+
+A run that read its input in full and stopped where you asked it to stop —
+`-l/--limit`, `--duration` — still exits `0`. The distinction is whether
+sipnab failed to do what you asked, not whether it read everything there was.
+
+### When the answer is partial
+
+`1` says something went wrong. It cannot say what, and a consumer reading
+`--json-dialogs` on a pipe never sees it at all. So a run that could not
+deliver the whole answer also says so in its output:
+
+- **`--json-dialogs`** emits one extra NDJSON line, after the dialogs, under a
+  top-level `sipnab_run` key that no dialog object has. A clean run emits
+  nothing extra, so runs with nothing wrong with them look exactly as they do
+  today.
+- **`--report`** ends with an `INCOMPLETE RUN` block naming each reason.
+
+```json
+{"sipnab_run":{"input_complete":false,"reasons":["1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read"],"files":{"given":1,"read_in_full":0,"stopped_early":1,"skipped":0,"not_reached":0},"plugins":{"requested":0,"loaded":0,"failed":0},"retention":{"messages_dropped":0}}}
+```
+
+`input_complete` is the same predicate as the exit status, so a script reading
+stdout and a script reading `$?` cannot reach different verdicts.
+`retention.messages_dropped` counts captured messages that idle compaction
+discarded (`[limits] idle_compact_after_secs`) — it appears because those
+ladders are short, and it is deliberately NOT a failure, because a retention
+policy doing what you configured it to do is not a run that went wrong.

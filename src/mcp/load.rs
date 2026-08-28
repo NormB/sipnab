@@ -141,6 +141,11 @@ pub fn spawn(
     if let Some(flag) = source_exhausted.as_ref() {
         flag.store(false, Ordering::Relaxed);
     }
+    // The previous capture's partial-read record belongs to the previous
+    // capture. Carrying it forward would report a sound file as unsound for the
+    // life of the process, and `open_capture` has already rotated the identity
+    // every later answer carries.
+    super::completeness::clear_source_stopped_early();
     let worker = Arc::clone(&load);
     std::thread::Builder::new()
         .name("mcp-pcap-load".to_string())
@@ -202,7 +207,13 @@ pub(crate) fn read_into_stores(
     // must outlive the read loop, so keep it bound for the whole function.
     let (mut cap, _gz_guard) = match crate::capture::file::open_offline(path) {
         Ok(opened) => opened,
-        Err(e) => return Err((0, format!("{e:#}"))),
+        Err(e) => {
+            // Zero of the file was read. That is the most partial read there
+            // is, and every later answer rests on the stores this load was
+            // supposed to fill and did not.
+            super::completeness::note_source_stopped_early();
+            return Err((0, format!("{e:#}")));
+        }
     };
     let link_type = cap.get_datalink().0;
     let mut rtp_heuristic = crate::rtp::heuristic::RtpHeuristic::new();
@@ -214,11 +225,33 @@ pub(crate) fn read_into_stores(
         // read holds the process open long after the operator asked it to
         // stop, and the packets go nowhere anyone will see.
         if crate::signals::shutdown_requested() {
+            // Stopped by request rather than by a fault, and still a read that
+            // ended before the file did. Anything answered from these stores
+            // afterwards covers part of a capture.
+            super::completeness::note_source_stopped_early();
             return Err((packets, "shutdown requested during the load".to_string()));
         }
         let pkt = match cap.next_packet() {
             Ok(pkt) => pkt,
-            Err(_) => break,
+            // Clean EOF: the file ended where the file ends.
+            Err(pcap::Error::NoMorePackets) => break,
+            // Anything else is a read that ended before the FILE did — a
+            // truncated dump file is the common one, and it is the normal state
+            // of a ring buffer's newest member. The packets already parsed stay
+            // in the stores, exactly as the CLI keeps them, because discarding
+            // them would lose more than the error costs. What changes is that
+            // the run now says so: `sipnab -N -I truncated.pcap` prints
+            // `1 stopped early` on stderr and every MCP response was silent
+            // about it, including `capture_health`, which is the tool an agent
+            // calls to ask whether a capture is sound (VAL2).
+            Err(e) => {
+                tracing::warn!(
+                    "capture '{}' stopped early after {packets} packet(s): {e}",
+                    path.display()
+                );
+                super::completeness::note_source_stopped_early();
+                break;
+            }
         };
         packets += 1;
         progress.store(packets, Ordering::Relaxed);

@@ -1,4 +1,4 @@
-//! Deciding what a uprobe delivered may be used for.
+//! Deciding what a kernel uprobe delivered may be used for.
 //!
 //! A kernel uprobe fetch argument is a **fixed** size chosen when the probe is
 //! installed, but the write it observes is whatever length the application
@@ -18,28 +18,14 @@
 //! largest message sipnab supports. The band is a bound, not a guarantee, which
 //! is why the truncation below still happens.
 
-/// Loading and attaching the BPF programs. Needs `aya` and a built object.
-///
-/// Linux only as well as feature-gated: `aya` calls `SYS_bpf`,
-/// `SYS_perf_event_open` and `CLOCK_BOOTTIME`, so it does not compile on Apple
-/// at all — and `--all-features` reaches this on every platform CI builds.
 #[cfg(all(feature = "bpf", target_os = "linux"))]
 pub mod bpf;
-/// Turning one BPF record into a packet — no kernel, no `aya`, always tested.
 pub mod bpf_record;
-/// Reading struct member offsets from the running kernel's BTF.
 pub mod btf;
-/// Which TLS libraries this host is actually running.
 pub mod discover;
 pub mod elf;
-/// Reading records through `perf_event_open`, which needs `libc`.
-///
-/// Gated on `native` rather than the whole module being gated: `elf` and
-/// `record` are pure byte arithmetic and stay testable in feature
-/// combinations that carry no `libc` at all.
 #[cfg(feature = "native")]
 pub mod perf;
-/// Running the source: install, drain, convert, send. Needs `libc` via `perf`.
 #[cfg(feature = "native")]
 pub mod reader;
 pub mod record;

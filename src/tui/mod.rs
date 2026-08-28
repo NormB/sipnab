@@ -7,6 +7,7 @@
 //! Built on [`ratatui`] + [`crossterm`] with adaptive refresh rates
 //! (100ms active, 500ms idle, immediate on keypress).
 
+pub mod action_trail;
 pub mod call_flow;
 pub mod call_list;
 pub mod dashboard;
@@ -277,6 +278,14 @@ pub struct App {
     /// Capture files this session is reading, which a save must never write
     /// over. Seeded from `-I` and extended by every capture opened in-session.
     protected_inputs: crate::capture::output_guard::ProtectedInputs,
+    /// Where this session's state-changing actions are recorded, when
+    /// `--tui-audit-file` asked for a trail. `None` is the default and means
+    /// nothing is written anywhere — see [`crate::tui::action_trail`].
+    ///
+    /// Shared rather than owned so the exit path in
+    /// [`crate::app::tui_mode`] can read [`ActionTrail::exit_notice`] after
+    /// this `App` is gone.
+    action_trail: Option<Arc<action_trail::ActionTrail>>,
 }
 
 impl App {
@@ -356,6 +365,7 @@ impl App {
             names_save_path: None,
             names_config_path: None,
             column_config_path: None,
+            action_trail: None,
             name_dialog: NameDialogState::default(),
             header_form: header_form::HeaderFormMode::default(),
             sdp_display_mode: SdpDisplayMode::default(),
@@ -391,6 +401,89 @@ impl App {
     /// the file-open dialog did.
     pub(crate) fn protect_input_file(&mut self, path: &std::path::Path) {
         self.protected_inputs.protect_file(path);
+    }
+
+    /// Attach the session's action trail, or leave it off.
+    ///
+    /// Off is the default and the only state most runs are ever in; see
+    /// [`crate::tui::action_trail`] for what the trail records and, more to
+    /// the point, what it deliberately does not.
+    pub fn set_action_trail(&mut self, trail: Option<Arc<action_trail::ActionTrail>>) {
+        self.action_trail = trail;
+    }
+
+    /// The session's action trail, when one is attached.
+    #[must_use]
+    pub fn action_trail(&self) -> Option<&Arc<action_trail::ActionTrail>> {
+        self.action_trail.as_ref()
+    }
+
+    /// Record one state-changing action, if a trail is attached.
+    ///
+    /// The single door every action goes through, so the "is a trail
+    /// attached" test and the fail-open handling exist once. A caller that
+    /// reached [`ActionTrail::record`] directly would be a caller free to
+    /// forget the status message.
+    ///
+    /// # Arguments
+    ///
+    /// * `action` — the fixed vocabulary term, see
+    ///   [`action_trail::ActionRecord::action`].
+    /// * `target` — the capture path, filter text or export destination.
+    /// * `format` — the export format, empty for everything else.
+    /// * `outcome` — `ok`, `failed` or `refused`.
+    /// * `error` — the reason, empty when there is none.
+    ///
+    /// # Side effects
+    ///
+    /// Appends to the trail file. When the write FAILS the run continues and
+    /// the status line is overwritten with the reason, which is the fail-open
+    /// decision recorded in [`crate::tui::action_trail`]: the operator may be
+    /// holding a live capture that exists nowhere else, and stopping the TUI
+    /// to protect the record of the evidence would destroy the evidence.
+    pub(crate) fn record_action(
+        &mut self,
+        action: &str,
+        target: &str,
+        format: &str,
+        outcome: &str,
+        error: &str,
+    ) {
+        let Some(trail) = self.action_trail.clone() else {
+            return;
+        };
+        if let Some(warning) = trail.record(&action_trail::ActionRecord {
+            action,
+            target,
+            format,
+            outcome,
+            error,
+        }) {
+            self.status_error = Some(warning);
+        }
+    }
+
+    /// Drop the active filter and record that it was dropped.
+    ///
+    /// One method for four call sites -- the filter popup's empty-fields
+    /// apply, its F9, and the F9 binding in both the call list and the call
+    /// flow. Each of those cleared the same two fields itself, and a trail
+    /// entry written at three of the four would be a trail that reported the
+    /// last narrowing as still in force for whichever way the operator
+    /// actually used.
+    ///
+    /// Call it LAST at a site that also clears `status_error`: a failed trail
+    /// write replaces the status line with its warning, and clearing the
+    /// status afterwards would erase the one notice the operator gets.
+    ///
+    /// # Side effects
+    ///
+    /// Appends a `filter_cleared` record when a trail is attached, and may
+    /// overwrite the status line when that append fails.
+    pub(crate) fn clear_active_filter(&mut self) {
+        self.active_filter = None;
+        self.active_filter_text.clear();
+        self.record_action("filter_cleared", "", "", "ok", "");
     }
 
     /// Set the capture mode label (`mode`) displayed in the status bar.
@@ -498,7 +591,16 @@ impl App {
             .protected_inputs
             .check(std::path::Path::new(&path), "Save to", false)
         {
-            self.status_error = Some(msg);
+            // Recorded, not skipped. "The operator tried to write over the
+            // capture they were reading" is exactly what a review is looking
+            // for, and a trail holding only what succeeded answers the
+            // opposite question.
+            self.status_error = Some(msg.clone());
+            // AFTER the status line is set, never before: a failed trail write
+            // replaces the status message with its own warning, and doing this
+            // the other way round would overwrite the one notice the operator
+            // gets that the trail is now incomplete.
+            self.record_action("export", &path, pending.format.extension(), "refused", &msg);
             return;
         }
         let msg = match pending.format {
@@ -514,7 +616,20 @@ impl App {
             SaveFormat::SippXml => save_to_sipp_path(self, &path),
             SaveFormat::RtpJson => save_to_rtp_json_path(self, &path),
         };
-        self.status_error = Some(msg);
+        // The one choke point every one of the eleven formats passes through,
+        // which is why the trail is written here and not in each writer: a
+        // record in ten of eleven places is not a record.
+        let outcome = save::export_outcome(&msg);
+        self.status_error = Some(msg.clone());
+        // After the status line, for the reason given in the refused branch
+        // above.
+        self.record_action(
+            "export",
+            &path,
+            pending.format.extension(),
+            outcome,
+            if outcome == "ok" { "" } else { &msg },
+        );
     }
 
     /// Reset all per-call transient state when entering a call flow view.

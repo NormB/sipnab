@@ -1,11 +1,12 @@
 //! Running the uprobe capture source: install, drain, convert, send.
 //!
+//! Needs `libc`, which it reaches through `perf`.
+//!
 //! This is the piece that makes the rest of the module reachable. It installs
 //! the banded probes, opens one perf ring per CPU, and turns each accepted read
-//! into a [`Packet`](crate::capture::packet::Packet) on the same channel a live
-//! device or a HEP listener feeds — so filtering, the dialog store, the
-//! detectors and every output format work on uprobe input without knowing where
-//! it came from.
+//! into a [`Packet`] on the same channel a live device or a HEP listener
+//! feeds — so filtering, the dialog store, the detectors and every output
+//! format work on uprobe input without knowing where it came from.
 //!
 //! **What it does not do is invent a peer.** These bytes were handed to a TLS
 //! library by a process; sipnab never saw a socket, so the addresses are

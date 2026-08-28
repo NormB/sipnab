@@ -6,9 +6,7 @@
 
 use super::*;
 
-/// Modal popup rendering (save, filter, settings, file-open, name-address).
 mod popups;
-/// Status lines and the context-sensitive F-key bar.
 mod status;
 
 pub(in crate::tui) use popups::*;

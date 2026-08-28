@@ -4148,7 +4148,32 @@ fn packaging_scripts_reference_existing_paths() {
     // The expected figure was written twice, in the assertion and again in its
     // own failure message, so raising one left the other naming the old number
     // — the drift this file exists to catch, in this file. One const now.
-    const EXPECTED_REFERENCES: usize = 78;
+    // Raised 78 -> 79 by the Pagefind indexing step. Attributed by
+    // MEASUREMENT, per file, before moving: with the step removed from
+    // .github/workflows/quality.yml alone the scan reads 78, and with it
+    // removed from .github/workflows/pages.yml alone it still reads 79 — so
+    // the single new reference is the one in quality.yml's comment naming
+    // pages.yml as the workflow its Pagefind pin must equal. pages.yml
+    // contributes none: every path its step names is under website/public,
+    // which the GENERATED list above skips because Zola creates it.
+    // Raised 79 -> 81 by the accessibility and Lighthouse jobs added to
+    // .github/workflows/quality.yml. Attributed by MEASUREMENT, per reference,
+    // before moving: with both jobs deleted the scan reads 79; with them present
+    // it reads 81; rewording the accessibility job's comment so it no longer
+    // names `website/templates/*.html` brings it to 80, and separately rewording
+    // the Chrome-resolution comment so it no longer names
+    // `.github/actions/system-deps` also brings it to 80. So the delta is those
+    // two comment references and nothing else stopped being checked. Both name
+    // paths that exist, which is what this gate then verifies.
+    //
+    // A third candidate appeared and was FIXED rather than excluded. The axe
+    // step first read `npx playwright test tests/accessibility.spec.js`, and the
+    // scan reported `tests/accessibility.spec.js` as a repo path that does not
+    // exist -- correctly: in a workflow file a bare `tests/` reads as
+    // repository-root, and the spec lives under e2e/. The step now says
+    // `./tests/...`, which is both unambiguous to a reader and, because the
+    // preceding character is a slash, not a root-relative candidate.
+    const EXPECTED_REFERENCES: usize = 81;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
@@ -6227,4 +6252,1280 @@ fn homepage_mcp_tile_carries_the_same_count_in_both_spellings() {
          reader without JavaScript is served the stale figure",
         &attr[1], &text[1]
     );
+}
+
+// ---------------------------------------------------------------------------
+// Per-page metadata: the description in a docs page's front matter is the ONE
+// string that reaches four surfaces — `<meta name="description">`, the
+// `og:description` a social unfurl renders, the lead paragraph under the H1,
+// and the card text on the docs landing index. `page.html` and `section.html`
+// both fall back to `config.description` when a page has none, so a missing
+// description does not fail a build or look wrong on the page: it silently
+// publishes the site-wide blurb as that page's summary, and a search engine
+// that sees the same sentence on fifty URLs collapses them.
+//
+// The gates below assert that outcome rather than the template string that
+// produces it: present, unique, not the title restated, and never the
+// site-wide fallback.
+// ---------------------------------------------------------------------------
+
+/// One docs page's front matter: repo-relative path, `title`, `description`.
+///
+/// `description` is the empty string when the key is absent — the callers
+/// below report that as the failure rather than skipping the page, which is
+/// how `website/content/docs/_index.md` went un-described: the older
+/// `docs_page_weights_are_unique_and_descriptions_present` skips every
+/// `_index.md`, so the docs landing page — the most-linked URL in the tree —
+/// was outside every check.
+fn docs_front_matter() -> Vec<(String, String, String)> {
+    let root = repo().join("website/content/docs");
+    let title_re = regex::Regex::new(r#"(?m)^title = "(.*)"\s*$"#).unwrap();
+    let desc_re = regex::Regex::new(r#"(?m)^description = "(.*)"\s*$"#).unwrap();
+    let mut dirs = vec![root.clone()];
+    let mut out = Vec::new();
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read website/content/docs") {
+            let p = entry.expect("dir entry").path();
+            if p.is_dir() {
+                dirs.push(p);
+                continue;
+            }
+            if p.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let rel = p
+                .strip_prefix(repo())
+                .expect("under repo")
+                .to_string_lossy()
+                .into_owned();
+            let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            // Front matter only. A `description = "..."` line inside a fenced
+            // code block in the body would otherwise be read as the page's own.
+            let body = text.strip_prefix("+++\n").unwrap_or_else(|| {
+                panic!("{rel} does not open with `+++` — it is not a Zola page")
+            });
+            let fm = match body.split_once("\n+++") {
+                Some((fm, _)) => fm,
+                None => panic!("{rel} has an unterminated `+++` front matter block"),
+            };
+            let title = title_re
+                .captures(fm)
+                .map(|c| c[1].to_string())
+                .unwrap_or_default();
+            let desc = desc_re
+                .captures(fm)
+                .map(|c| c[1].to_string())
+                .unwrap_or_default();
+            out.push((rel, title, desc));
+        }
+    }
+    out.sort();
+    // The sweep walks a directory rather than a registry, so a wrong root or a
+    // broken extension filter yields an empty list that every assertion below
+    // passes. 50 pages at the time of writing; the floor only has to be high
+    // enough that a blind sweep cannot clear it.
+    assert!(
+        out.len() >= 40,
+        "only {} page(s) found under website/content/docs — the front-matter \
+         sweep has gone blind and every metadata gate built on it is vacuous",
+        out.len()
+    );
+    out
+}
+
+/// Normalize a title or description for comparison: lowercase, collapsed
+/// whitespace, no trailing period.
+fn normalize_meta(s: &str) -> String {
+    s.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_end_matches('.')
+        .to_string()
+}
+
+/// Every docs page carries its own `description`, `_index.md` included.
+///
+/// Without one, `page.html`/`section.html` substitute `config.description` and
+/// the page ships the site-wide blurb as its meta description — invisible on
+/// the page itself, wrong everywhere the page is quoted.
+#[test]
+fn every_docs_page_carries_its_own_meta_description() {
+    let missing: Vec<String> = docs_front_matter()
+        .into_iter()
+        .filter(|(_, _, d)| d.trim().is_empty())
+        .map(|(rel, _, _)| rel)
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "docs page(s) with no `description` in their front matter — each one \
+         publishes config.description as its own summary:\n  {}",
+        missing.join("\n  ")
+    );
+}
+
+/// No two docs pages share a description.
+///
+/// The failure mode this exists for is a generated description built from a
+/// template string — "Reference documentation for {title}" — which is unique
+/// per page only by accident and reads as boilerplate to a search engine. A
+/// description repeated across URLs is worse than none: Google collapses the
+/// duplicates and picks its own snippet.
+#[test]
+fn no_two_docs_pages_share_a_meta_description() {
+    let mut by_desc: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (rel, _, desc) in docs_front_matter() {
+        if desc.trim().is_empty() {
+            continue; // reported by every_docs_page_carries_its_own_meta_description
+        }
+        by_desc.entry(normalize_meta(&desc)).or_default().push(rel);
+    }
+    let dupes: Vec<String> = by_desc
+        .iter()
+        .filter(|(_, pages)| pages.len() > 1)
+        .map(|(desc, pages)| format!("{}\n    shared by: {}", desc, pages.join(", ")))
+        .collect();
+    assert!(
+        dupes.is_empty(),
+        "docs pages sharing one description — a search engine collapses \
+         duplicate snippets, so the repeated pages compete with each other:\n  {}",
+        dupes.join("\n  ")
+    );
+}
+
+/// No docs description is the site-wide blurb.
+///
+/// The template fallback is `config.description`. Pasting that string into a
+/// page's front matter satisfies "has a description" while producing exactly
+/// the output the fallback already produced, so this checks the value rather
+/// than its presence.
+#[test]
+fn no_docs_description_falls_back_to_the_site_wide_blurb() {
+    let config = read("website/config.toml");
+    let site_desc = regex::Regex::new(r#"(?m)^description = "(.*)"\s*$"#)
+        .unwrap()
+        .captures(&config)
+        .map(|c| normalize_meta(&c[1]))
+        .expect("website/config.toml has no top-level `description`");
+    assert!(
+        !site_desc.is_empty(),
+        "config.toml's description is empty, so this comparison matches every \
+         page and proves nothing"
+    );
+    let copies: Vec<String> = docs_front_matter()
+        .into_iter()
+        .filter(|(_, _, d)| normalize_meta(d) == site_desc)
+        .map(|(rel, _, _)| rel)
+        .collect();
+    assert!(
+        copies.is_empty(),
+        "docs page(s) whose description is a copy of config.description — \
+         identical to having none, and identical to each other:\n  {}",
+        copies.join("\n  ")
+    );
+}
+
+/// A description summarizes the page; it is never the title read back.
+///
+/// "Cookbook" / "Cookbook." / "Cookbook reference" all pass a presence check
+/// and a uniqueness check while telling a reader nothing the `<title>` did not
+/// already say. The floor is deliberately low — six words — because it is
+/// there to catch a stub, not to legislate prose length; the shortest real
+/// description in the tree at the time of writing runs seven.
+#[test]
+fn a_docs_description_is_never_the_page_title_restated() {
+    let mut bad = Vec::new();
+    for (rel, title, desc) in docs_front_matter() {
+        if desc.trim().is_empty() {
+            continue; // reported by every_docs_page_carries_its_own_meta_description
+        }
+        let n_desc = normalize_meta(&desc);
+        let n_title = normalize_meta(&title);
+        if !n_title.is_empty() && n_desc == n_title {
+            bad.push(format!(
+                "{rel}: description is the title verbatim ({desc:?})"
+            ));
+            continue;
+        }
+        // Strip a leading restatement of the title, then require the remainder
+        // to actually say something: "Cookbook reference." leaves one word.
+        let remainder = n_desc.strip_prefix(&n_title).unwrap_or(&n_desc);
+        let words = remainder.split_whitespace().count();
+        if words < 6 {
+            bad.push(format!(
+                "{rel}: description adds only {words} word(s) beyond the title \
+                 ({desc:?})"
+            ));
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "docs description(s) that restate the title instead of summarizing the \
+         page:\n  {}",
+        bad.join("\n  ")
+    );
+}
+
+/// The base template emits the full social-card head, wired to the page.
+///
+/// Presence in `base.html` is only half of it: every one of these tags reads a
+/// Tera block, and a block whose child override was dropped renders the
+/// `config.*` default on every page while the tag itself still looks correct
+/// in the template. So this asserts both ends — the tag in `base.html` and the
+/// override in the two templates that render `website/content/docs/`.
+#[test]
+fn the_base_template_emits_the_social_card_meta_tags() {
+    let base = read("website/templates/base.html");
+    // (what it is, the substring that must appear on one line of base.html)
+    let required: &[(&str, &str)] = &[
+        (
+            "meta description",
+            r#"<meta name="description" content="{% block description %}"#,
+        ),
+        (
+            "og:title",
+            r#"<meta property="og:title" content="{% block og_title %}"#,
+        ),
+        (
+            "og:description",
+            r#"<meta property="og:description" content="{% block og_description %}"#,
+        ),
+        (
+            "og:type",
+            r#"<meta property="og:type" content="{% block og_type %}"#,
+        ),
+        ("og:url", r#"<meta property="og:url" content="#),
+        ("og:image", r#"<meta property="og:image" content="#),
+        ("twitter:card", r#"<meta name="twitter:card" content="#),
+        ("twitter:image", r#"<meta name="twitter:image" content="#),
+        ("canonical link", r#"<link rel="canonical" href="#),
+    ];
+    let mut absent = Vec::new();
+    for (what, needle) in required {
+        if !base.contains(needle) {
+            absent.push(format!("{what}: no line containing {needle:?}"));
+        }
+    }
+    assert!(
+        absent.is_empty(),
+        "website/templates/base.html is missing social-card metadata:\n  {}",
+        absent.join("\n  ")
+    );
+
+    // og:url and canonical must be per-page, not the bare base_url — the
+    // whole point of the pair is telling a crawler which URL this page is.
+    for (what, tag) in [("og:url", "og:url"), ("canonical", r#"rel="canonical""#)] {
+        let line = base
+            .lines()
+            .find(|l| l.contains(tag))
+            .unwrap_or_else(|| panic!("no {what} line in base.html"));
+        assert!(
+            line.contains("current_path"),
+            "{what} does not interpolate current_path, so every page on the \
+             site declares the same URL: {line}"
+        );
+    }
+
+    // og:image must name a file that ships. A 404 here is not a broken image
+    // on the page — it is a card with no picture, which is only ever seen
+    // somewhere else.
+    let img_line = base
+        .lines()
+        .find(|l| l.contains(r#"property="og:image""#))
+        .expect("no og:image line in base.html");
+    let asset = regex::Regex::new(r#"content="[^"]*?/([A-Za-z0-9._-]+\.(?:png|jpg|jpeg|webp))""#)
+        .unwrap()
+        .captures(img_line)
+        .unwrap_or_else(|| panic!("og:image names no image file: {img_line}"));
+    let asset_path = repo().join("website/static").join(&asset[1]);
+    assert!(
+        asset_path.is_file(),
+        "og:image points at /{} but website/static/{} does not exist — every \
+         share of every page renders a card with a broken image",
+        &asset[1],
+        &asset[1]
+    );
+
+    // Both docs templates must feed their own description into both blocks.
+    for (tpl, var) in [
+        ("website/templates/page.html", "page.description"),
+        ("website/templates/section.html", "section.description"),
+    ] {
+        let text = read(tpl);
+        for block in ["description", "og_description"] {
+            let line = text
+                .lines()
+                .find(|l| l.starts_with(&format!("{{% block {block} %}}")))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{tpl} does not override `{block}`, so every page it \
+                         renders publishes config.description as its summary"
+                    )
+                });
+            assert!(
+                line.contains(var),
+                "{tpl}'s `{block}` block does not read {var}: {line}"
+            );
+        }
+    }
+}
+
+/// Docs pages declare `og:type = article`, not the site-wide `website`.
+///
+/// `website` is right for the homepage, the download page and a section index;
+/// a reference page is a document, and that is what tells an unfurler to
+/// render it as one. The block defaults to `website` in `base.html` so a
+/// template that says nothing keeps the old behavior, which means the
+/// property lives in the override — check the override.
+#[test]
+fn docs_pages_declare_the_article_open_graph_type() {
+    let base = read("website/templates/base.html");
+    let default = regex::Regex::new(r"\{% block og_type %\}(\w+)\{% endblock og_type %\}")
+        .unwrap()
+        .captures(&base)
+        .expect("base.html has no og_type block — og:type is hard-coded again");
+    assert_eq!(
+        &default[1], "website",
+        "base.html's og_type default is {:?}; it must stay `website` so a \
+         template that overrides nothing is unchanged",
+        &default[1]
+    );
+    // page.html renders every page under website/content/docs/.
+    let page = read("website/templates/page.html");
+    let over = regex::Regex::new(r"\{% block og_type %\}(\w+)\{% endblock og_type %\}")
+        .unwrap()
+        .captures(&page)
+        .expect(
+            "website/templates/page.html does not override og_type, so every \
+             docs page declares og:type=website",
+        );
+    assert_eq!(
+        &over[1], "article",
+        "page.html declares og:type={:?} for docs pages; expected `article`",
+        &over[1]
+    );
+}
+
+/// The Twitter card takes its title and text from the Open Graph fallback.
+///
+/// `base.html` deliberately carries no `twitter:title`/`twitter:description`:
+/// X falls back to `og:title`/`og:description`, and Tera cannot render a block
+/// twice, so a non-duplicating version is not expressible (the comment in
+/// `base.html` records the build failure that proves it). Restating the values
+/// would put the pair beside the templates that override `og_title` with a
+/// literal, where the two copies drift apart silently.
+///
+/// So this is not a prohibition — it is the condition attached to adding them.
+/// If the twitter pair ever appears, every template that overrides the og pair
+/// must override the twitter pair too, or those pages ship a card that
+/// disagrees with their own Open Graph tags.
+#[test]
+fn the_twitter_card_relies_on_the_open_graph_fallback() {
+    let base = read("website/templates/base.html");
+    assert!(
+        base.contains(r#"<meta name="twitter:card" content="summary_large_image""#),
+        "base.html declares no twitter:card, so nothing renders a card at all \
+         and the og: fallback this test describes has nothing to fall back into"
+    );
+
+    // The templates the fallback actually depends on: every child that
+    // replaces og_title or og_description with a value of its own.
+    let mut overriders = Vec::new();
+    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
+        let p = entry.expect("entry").path();
+        if p.extension().and_then(|e| e.to_str()) != Some("html") {
+            continue;
+        }
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        if name == "base.html" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&p).expect("read template");
+        if text.contains("{% block og_title %}") || text.contains("{% block og_description %}") {
+            overriders.push((name, text));
+        }
+    }
+    assert!(
+        overriders.len() >= 3,
+        "only {} template(s) override the og: pair (5 at the time of writing) \
+         — the conditional below has no subjects and this gate is vacuous",
+        overriders.len()
+    );
+
+    let has_tw_title = base.contains(r#"<meta name="twitter:title""#);
+    let has_tw_desc = base.contains(r#"<meta name="twitter:description""#);
+    if !(has_tw_title || has_tw_desc) {
+        return; // the documented state: fallback only, nothing to keep in step
+    }
+    let mut unpaired = Vec::new();
+    for (name, text) in &overriders {
+        if has_tw_title
+            && text.contains("{% block og_title %}")
+            && !text.contains("{% block twitter_title %}")
+        {
+            unpaired.push(format!("{name}: overrides og_title but not twitter_title"));
+        }
+        if has_tw_desc
+            && text.contains("{% block og_description %}")
+            && !text.contains("{% block twitter_description %}")
+        {
+            unpaired.push(format!(
+                "{name}: overrides og_description but not twitter_description"
+            ));
+        }
+    }
+    assert!(
+        unpaired.is_empty(),
+        "base.html now emits an explicit twitter: pair, so the og: fallback no \
+         longer covers these templates and their cards disagree with their own \
+         Open Graph tags:\n  {}",
+        unpaired.join("\n  ")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Documentation-search journey: the docs landing page carries a Pagefind-backed
+// search box. Three things have to hold at once for it to work on the live
+// site, and each fails silently on its own:
+//
+//   1. The index does not exist unless a build step makes it. `zola build`
+//      knows nothing about Pagefind and recreates its output directory from
+//      scratch, so an index produced at the wrong moment is deleted by the
+//      very build it was meant to describe.
+//   2. Everything the box loads has to be same-origin. Production's CSP is
+//      `script-src 'self'` with NO 'unsafe-inline' — a CDN would be blocked,
+//      and so would an inline <script> whose sha256 is not in the Cloudflare
+//      transform rule. That is how the homepage demos and feature tabs died
+//      on 2026-07-22.
+//   3. With JavaScript off it has to be ABSENT, not present-and-dead. An input
+//      that accepts keystrokes and can never answer is worse than no input.
+//
+// All three return HTTP 200 when broken. Nothing a reader or a crawler sees
+// distinguishes "search works" from "search box never appears".
+// ---------------------------------------------------------------------------
+
+/// `pages.yml` builds the search index from the rendered site, with a pinned Pagefind.
+///
+/// Order is the substance of this gate, not tidiness. `zola build` recreates
+/// `website/public` from scratch, so an index written before it is deleted by
+/// it; and `upload-pages-artifact` publishes that directory, so an index
+/// written after the upload is never deployed. The step has to sit between the
+/// two, and a workflow where it does not still goes green — it just publishes a
+/// site whose search box never appears.
+///
+/// The version pin is checked the way every other hand-fetched binary in this
+/// repository is: a tag names a release, it does not fix the bytes behind it.
+#[test]
+fn pages_workflow_indexes_the_built_site_with_a_pinned_pagefind() {
+    let yaml = read(".github/workflows/pages.yml");
+
+    let at = |needle: &str| -> usize {
+        yaml.find(needle)
+            .unwrap_or_else(|| panic!("pages.yml has no {needle:?} — the step was renamed"))
+    };
+    let build = at("- name: Build site");
+    let index = at("- name: Index the site for search (Pagefind)");
+    let upload = at("- name: Upload Pages artifact");
+    assert!(
+        build < index,
+        "the Pagefind step runs BEFORE `zola build`, which recreates \
+         website/public from scratch and deletes the index it just wrote"
+    );
+    assert!(
+        index < upload,
+        "the Pagefind step runs AFTER the Pages artifact upload, so the index \
+         is built into a directory that has already been published without it"
+    );
+
+    let step = workflow_step_body(
+        ".github/workflows/pages.yml",
+        "Index the site for search (Pagefind)",
+    );
+    assert!(
+        step.contains("pagefind --site website/public"),
+        "the step does not index the directory Zola renders and \
+         upload-pages-artifact publishes:\n{step}"
+    );
+    assert!(
+        step.contains("sha256sum -c"),
+        "the Pagefind download is installed without verifying its bytes:\n{step}"
+    );
+    assert!(
+        step.contains("${PAGEFIND_VERSION}") && step.contains("${PAGEFIND_SHA256}"),
+        "the download URL or the checksum is spelled out in the step instead of \
+         reading the job's pins, so the two can disagree:\n{step}"
+    );
+
+    // The pin itself: a concrete version, not a moving tag. `latest`, `v1` and
+    // an empty value all install "whatever is published today", which is the
+    // property this asserts against.
+    let version = regex::Regex::new(r"PAGEFIND_VERSION: '([^']+)'")
+        .expect("regex")
+        .captures(&yaml)
+        .map(|c| c[1].to_string())
+        .expect("pages.yml pins no PAGEFIND_VERSION");
+    assert!(
+        regex::Regex::new(r"^\d+\.\d+\.\d+$")
+            .expect("regex")
+            .is_match(&version),
+        "PAGEFIND_VERSION is {version:?}, which is not an exact release. A \
+         moving tag means the search index is built by a different binary on \
+         every deploy, and nothing records which one produced the live index"
+    );
+
+    // The index is a build product and must be checked for, not assumed: a
+    // Pagefind run that indexes nothing exits 0.
+    assert!(
+        step.contains("test -s website/public/pagefind/pagefind.js"),
+        "nothing in the step fails when the index does not land. A missing \
+         index is invisible from outside — the page still returns 200 and the \
+         search box simply never appears:\n{step}"
+    );
+}
+
+/// Every workflow that renders the site also indexes it, on the same pin.
+///
+/// `pages.yml` runs on push to `main`. If it is the only workflow that indexes,
+/// a change that makes the index unbuildable is discovered by the deploy rather
+/// than by the pull request — and the deploy is the run that publishes. The
+/// quality job already renders the site for its link pass, so proving the index
+/// still builds costs it one download.
+///
+/// This is written as a property over the workflow directory rather than as
+/// "quality.yml also does it", so a THIRD workflow that starts building the
+/// site cannot quietly ship a site with no search.
+#[test]
+fn every_workflow_that_builds_the_site_also_indexes_it() {
+    let mut builders: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    let mut pins: BTreeSet<String> = BTreeSet::new();
+    // Built once: `clippy::regex_creation_in_loops` fires at `-D warnings`
+    // under the pre-push flags (`--all-features --all-targets`), which the
+    // pre-commit run does not use.
+    let version_pin = regex::Regex::new(r"PAGEFIND_VERSION: '([^']+)'").expect("regex");
+
+    for entry in std::fs::read_dir(repo().join(".github/workflows")).expect("workflows dir") {
+        let p = entry.expect("entry").path();
+        if p.extension().and_then(|e| e.to_str()) != Some("yml") {
+            continue;
+        }
+        let name = p.file_name().expect("name").to_string_lossy().to_string();
+        let text = std::fs::read_to_string(&p).expect("read workflow");
+        if !text.contains("run: zola build") {
+            continue;
+        }
+        builders.push(name.clone());
+        if !text.contains("pagefind --site website/public") {
+            missing.push(name);
+            continue;
+        }
+        for cap in version_pin.captures_iter(&text) {
+            pins.insert(cap[1].to_string());
+        }
+    }
+
+    assert!(
+        builders.len() >= 2,
+        "only {} workflow(s) run `zola build` — the scan stopped matching and \
+         this gate is checking almost nothing: {builders:?}",
+        builders.len()
+    );
+    assert!(
+        missing.is_empty(),
+        "these workflows render the site but never index it, so what they check \
+         (and, for pages.yml, what they publish) is a site whose search box \
+         never appears: {missing:?}"
+    );
+    assert_eq!(
+        pins.len(),
+        1,
+        "the site-building workflows pin {} different Pagefind versions: {pins:?}. \
+         One of them is checking an index built by a binary the other never runs",
+        pins.len()
+    );
+}
+
+/// The docs search loads nothing from an origin other than the site's own.
+///
+/// Production's `script-src 'self'` (no 'unsafe-inline', no CDN host) means a
+/// `https://cdn.example/pagefind-ui.js` is not "slower", it is BLOCKED — the
+/// box would render and never respond. The Pagefind runtime, its wasm and its
+/// index chunks are therefore written into the site's own `/pagefind/` by the
+/// build step, and the entry point named here is root-relative so it resolves
+/// against whatever origin serves the page.
+#[test]
+fn docs_search_loads_only_same_origin_assets() {
+    let js = read("website/static/js/docs-search.js");
+
+    let entry = regex::Regex::new(r#"var PAGEFIND_JS = "([^"]*)";"#)
+        .expect("regex")
+        .captures(&js)
+        .map(|c| c[1].to_string())
+        .expect("docs-search.js names no PAGEFIND_JS entry point");
+    assert!(
+        entry.starts_with('/') && !entry.starts_with("//"),
+        "the Pagefind entry point is {entry:?}. It must be root-relative: a \
+         scheme-qualified or protocol-relative URL names an origin, and any \
+         origin but the site's own is refused by `script-src 'self'`"
+    );
+
+    // Prose may cite a URL; code may not. Whole-line `//` comments are dropped
+    // and the remainder must name no origin at all.
+    let code: String = js
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !code.contains("://"),
+        "docs-search.js names an external origin in executable code. Under \
+         `script-src 'self'` / `connect-src 'self'` that request is blocked, \
+         and the box renders but never answers"
+    );
+
+    // And nothing in the templates may pull a script off another host either —
+    // the search box's own script included. Every one goes through `get_url`,
+    // which resolves against config.toml's base_url.
+    let script_src = regex::Regex::new(r#"(?i)<script[^>]*\ssrc\s*=\s*"([^"]+)""#).expect("regex");
+    let mut foreign = Vec::new();
+    let mut seen = 0usize;
+    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
+        let p = entry.expect("entry").path();
+        if p.extension().and_then(|e| e.to_str()) != Some("html") {
+            continue;
+        }
+        let name = p.file_name().expect("name").to_string_lossy().to_string();
+        let text = std::fs::read_to_string(&p).expect("read template");
+        for cap in script_src.captures_iter(&text) {
+            seen += 1;
+            if cap[1].contains("://") {
+                foreign.push(format!("{name}: {}", &cap[1]));
+            }
+        }
+    }
+    assert!(
+        seen >= 3,
+        "only {seen} `<script src=...>` tags found across the templates — the \
+         extractor stopped matching and this half of the gate is vacuous"
+    );
+    assert!(
+        foreign.is_empty(),
+        "these templates load a script from a named origin rather than through \
+         get_url; `script-src 'self'` blocks every one of them: {foreign:?}"
+    );
+
+    // The search box's script is one of those, and it must be external rather
+    // than inline: an inline block only executes in production if its sha256 is
+    // in the Cloudflare transform rule, which is regenerated from the DEPLOYED
+    // html and therefore always one deploy behind a template edit.
+    let section = read("website/templates/section.html");
+    assert!(
+        section.contains("get_url(path='js/docs-search.js', cachebust=true)"),
+        "section.html no longer loads js/docs-search.js as an external, \
+         cachebusted file"
+    );
+    // Same extraction semantics as refresh_csp_hashes.py and the PINNED gate:
+    // a <script> is inline unless it carries `src=`. `regex` has no look-around,
+    // and a hand-rolled negative match here would be the bug, not the check.
+    let any_script = regex::Regex::new(r"(?is)<script([^>]*)>").expect("regex");
+    let inline: Vec<String> = any_script
+        .captures_iter(&section)
+        .filter(|c| !c[1].contains("src=") && !c[1].contains("ld+json"))
+        .map(|c| c[0].trim().to_string())
+        .collect();
+    assert!(
+        inline.is_empty(),
+        "section.html grew an inline <script>: {inline:?}. Production allows \
+         inline blocks only by sha256, pinned in a rule refreshed from the \
+         deployed HTML — so the first load after this deploy runs with it blocked"
+    );
+}
+
+/// With JavaScript off the search box is absent, and the docs index is not.
+///
+/// The failure being excluded is a search box that renders, takes focus,
+/// accepts every keystroke and can never answer — which is what shipping the
+/// input visible would produce for a reader with scripting off, for a crawler,
+/// and for any build of the site made without the Pagefind step. The box
+/// therefore ships `hidden` and only the external script clears it, and only
+/// after the engine has actually loaded.
+///
+/// The other half is what such a reader gets INSTEAD: the section template's
+/// own "Reference" index, which lists the same pages a search would have
+/// reached. Hiding the box would be no improvement if the fallback were also
+/// behind JavaScript.
+#[test]
+fn docs_search_is_absent_rather_than_broken_without_javascript() {
+    let section = read("website/templates/section.html");
+
+    let box_tag = section
+        .lines()
+        .find(|l| l.contains(r#"id="doc-search""#))
+        .unwrap_or_else(|| panic!("section.html renders no #doc-search container"))
+        .to_string();
+    assert!(
+        box_tag.contains(" hidden"),
+        "the #doc-search container does not ship `hidden`, so a reader with \
+         scripting off — and a site built without the Pagefind step — is \
+         served an input that swallows every keystroke:\n  {}",
+        box_tag.trim()
+    );
+
+    // Only the script may reveal it, and it must do so from the branch that
+    // runs after the engine resolved rather than unconditionally at load.
+    let js = read("website/static/js/docs-search.js");
+    assert!(
+        js.contains("box.hidden = false"),
+        "docs-search.js never reveals the box, so the search is dead even WITH \
+         JavaScript"
+    );
+    let reveal = js.find("box.hidden = false").expect("checked above");
+    let import = js
+        .find("import(PAGEFIND_JS)")
+        .expect("docs-search.js no longer imports the Pagefind entry point");
+    assert!(
+        import < reveal,
+        "the box is revealed before the Pagefind import is even attempted, so a \
+         site with no index shows a search box that can never answer"
+    );
+
+    // The no-JS fallback: rendered by Tera, not by script.
+    assert!(
+        section.contains(r#"<nav class="doc-index""#),
+        "section.html no longer renders the documentation index, which is the \
+         whole of what a reader without JavaScript gets in place of search"
+    );
+    let index_at = section
+        .find(r#"<nav class="doc-index""#)
+        .expect("checked above");
+    assert!(
+        section[..index_at].contains(r#"{% if section.pages | length > 0 %}"#),
+        "the docs index is no longer guarded by `section.pages`; if it moved \
+         behind anything else, check that a reader with scripting off still \
+         gets it"
+    );
+}
+
+/// Adding search did not reopen inline script execution or admit a new origin.
+///
+/// The reference policy in `website/static/_headers` is what a host honoring
+/// that file enforces, and it is deliberately STRICTER than the meta tag in
+/// base.html: no 'unsafe-inline' at all. The cheapest way to make a
+/// third-party search widget work is to widen `script-src` — with
+/// 'unsafe-inline' for its bootstrap, or with the CDN it is served from — and
+/// either edit would go unnoticed, because widening a policy breaks nothing.
+/// This holds the directive to `'self'` plus the wasm grant the analyzer
+/// already needs, and `connect-src` to `'self'`, which is what makes the
+/// Pagefind index chunks loadable and a remote index not.
+#[test]
+fn the_site_csp_grants_no_unsafe_inline_and_no_new_origin() {
+    let headers = read("website/static/_headers");
+    let policy = headers
+        .lines()
+        .find(|l| l.trim_start().starts_with("Content-Security-Policy:"))
+        .expect("website/static/_headers carries no CSP line")
+        .split_once(':')
+        .expect("a header line has a colon")
+        .1
+        .to_string();
+
+    let script_src = csp_directive(&policy, "script-src").expect("the CSP names script-src");
+    assert!(
+        !script_src.contains(&"'unsafe-inline'"),
+        "the reference script-src regained 'unsafe-inline'. Anyone adopting \
+         this file believes they copied the policy production enforces, while \
+         actually running one under which an injected <script> executes: \
+         script-src = {script_src:?}"
+    );
+    let allowed_script = ["'self'", "'wasm-unsafe-eval'"];
+    let extra: Vec<&&str> = script_src
+        .iter()
+        .filter(|t| !allowed_script.contains(*t) && !t.starts_with("'sha256-"))
+        .collect();
+    assert!(
+        extra.is_empty(),
+        "script-src admits {extra:?} beyond {allowed_script:?}. The search \
+         runtime is served from this site's own /pagefind/ precisely so that no \
+         host has to be named here"
+    );
+
+    let connect_src = csp_directive(&policy, "connect-src").expect("the CSP names connect-src");
+    assert_eq!(
+        connect_src,
+        vec!["'self'"],
+        "connect-src is no longer 'self' alone. The search index is fetched \
+         over it, and widening it is how a same-origin index quietly becomes a \
+         request to somebody else's server"
+    );
+
+    // The meta tag is the enforceable layer on GitHub Pages, which cannot set
+    // response headers. It grants 'unsafe-inline' by necessity (see base.html),
+    // but it must not name a foreign origin either.
+    let meta = meta_csp("website/templates/base.html");
+    let meta_script = csp_directive(&meta, "script-src").expect("the meta CSP names script-src");
+    let meta_extra: Vec<&&str> = meta_script
+        .iter()
+        .filter(|t| !t.starts_with('\'') && !t.starts_with("'sha256-"))
+        .collect();
+    assert!(
+        meta_extra.is_empty(),
+        "the meta CSP's script-src names the origin(s) {meta_extra:?}. A \
+         browser enforces every delivered policy independently, so a host \
+         named here and not in _headers is blocked in production anyway — the \
+         only thing it buys is a page that works locally and not live"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Website Phase 3: the accessibility and performance gates.
+//
+// These three tests guard the WIRING, not the pages. The pages are checked by
+// axe-core and Lighthouse in `.github/workflows/quality.yml`; what a Rust test
+// can add is the property those two tools cannot check about themselves --
+// that they are actually wired up, that they can actually fail, and that they
+// are pointed at a page that actually rendered.
+//
+// The third of those is not hypothetical. Zola bakes absolute `config.base_url`
+// URLs into every page, and `base.html`'s own `default-src 'self'` then blocks
+// every one of them when the build is served from anywhere other than
+// sipnab.com. The page still returns 200 and still renders its full HTML --
+// with no stylesheet, no script and no images. Measured on 2026-08-28: axe
+// reported ZERO violations on all five pages in that state, and Lighthouse
+// scored the homepage 1.00 on performance with a 0.000 layout shift. Rebuilt
+// with `--base-url http://127.0.0.1:1111`, the same five pages produced two
+// genuine serious accessibility violations and a 0.11 layout shift on
+// /download/. Both gates therefore assert the origin of the build they are
+// about to measure, and `website_gates_measure_a_page_that_actually_rendered`
+// holds the three places that port is written to the same value.
+// ---------------------------------------------------------------------------
+
+/// The port every part of the website test harness agrees on.
+///
+/// Written in four places -- the two `zola build --base-url` invocations in
+/// `quality.yml`, `playwright.config.js`'s default `baseURL`, and every
+/// `collect.url` in `e2e/lighthouserc.json` -- because each of those tools
+/// reads its own configuration. Nothing but a test holds them together, and a
+/// mismatch does not fail: it produces a measurement of an unstyled page.
+const SITE_GATE_PORT: &str = "1111";
+
+/// Both website gates exist in `quality.yml`, and each names a file that is
+/// really on disk.
+///
+/// The failure this prevents is a job that looks present and runs nothing: a
+/// step pointed at a spec file that was renamed, an `lhci` invocation whose
+/// `--config` names a file that no longer exists (lhci then falls back to its
+/// own defaults, which assert nothing at all and exit 0), or a
+/// `continue-on-error` that turns a red step into a green job.
+#[test]
+fn quality_workflow_runs_the_accessibility_and_lighthouse_gates() {
+    let yaml = read(".github/workflows/quality.yml");
+
+    // Job keys, at the two-space indent `jobs:` entries use.
+    for job in ["accessibility:", "lighthouse:"] {
+        assert!(
+            yaml.lines().any(|l| l == format!("  {job}")),
+            ".github/workflows/quality.yml has no `{job}` job. The website's \
+             accessibility and performance gates are not wired to anything, and \
+             every page-level check they perform is unreachable"
+        );
+    }
+
+    // The axe step must name the spec, and the spec must exist. A step running
+    // `playwright test` with no path would run every spec in the directory,
+    // which passes today and silently stops covering accessibility the moment
+    // someone splits the file.
+    let axe = workflow_step_body(
+        ".github/workflows/quality.yml",
+        "axe-core (WCAG 2 A/AA, serious + critical)",
+    );
+    assert!(
+        axe.contains("tests/accessibility.spec.js"),
+        "the axe step does not name e2e/tests/accessibility.spec.js:\n{axe}"
+    );
+    assert!(
+        repo().join("e2e/tests/accessibility.spec.js").is_file(),
+        "quality.yml runs e2e/tests/accessibility.spec.js and that file does not \
+         exist -- the step fails, or worse, matches nothing and reports success"
+    );
+
+    // The Lighthouse step must name the config, and the config must exist.
+    let lh = workflow_step_body(".github/workflows/quality.yml", "Lighthouse budgets");
+    assert!(
+        lh.contains("--config=lighthouserc.json"),
+        "the Lighthouse step does not pass --config=lighthouserc.json. Without \
+         it lhci searches for a config and, finding none, asserts NOTHING and \
+         exits 0:\n{lh}"
+    );
+    assert!(
+        repo().join("e2e/lighthouserc.json").is_file(),
+        "quality.yml runs `lhci autorun --config=lighthouserc.json` from e2e/ \
+         and that file does not exist. lhci reports the missing config and the \
+         budgets stop being enforced"
+    );
+
+    // Neither runner step may be conditional or forgiving. `assert_step_enforces`
+    // wants an `exit 1` in the body, which a `run: npx ...` step does not have,
+    // so the two properties that do apply are checked directly here.
+    for (name, body) in [
+        ("axe-core (WCAG 2 A/AA, serious + critical)", &axe),
+        ("Lighthouse budgets", &lh),
+    ] {
+        assert!(
+            !body.contains("continue-on-error"),
+            "quality.yml step {name:?} carries continue-on-error, which rewrites \
+             its conclusion to success: the gate runs and its verdict is thrown away"
+        );
+        assert!(
+            !body.lines().any(|l| l.trim_start().starts_with("if:")),
+            "quality.yml step {name:?} gained an `if:` guard. A guard is how a \
+             gate stops running without its body changing:\n{body}"
+        );
+    }
+}
+
+/// Every Lighthouse budget is a number somebody measured, not a number somebody
+/// hoped for.
+///
+/// `e2e/lighthouserc.json` carries a `_measured` block -- provenance as data,
+/// because JSON has no comments -- recording the date, the commit, how the
+/// collection was run, and the WORST value observed across three runs for each
+/// audit. This test pairs that block against `ci.assert`: every threshold must
+/// have a measurement, and must sit on the permissive side of it.
+///
+/// Two failures it exists for. A budget added without measuring is one nobody
+/// can size, and the usual outcome is a round number that either never fires or
+/// fires on the commit that adds it. A budget RELAXED past its measurement is
+/// the quieter one: moving `largest-contentful-paint` from 2000 to 8000 makes a
+/// red build green and leaves a gate that reads as if it still enforces
+/// something.
+///
+/// It also rejects `warn`. lhci accepts `["warn", {...}]`, which prints the
+/// violation and exits 0 -- the same shape as `continue-on-error`, and just as
+/// invisible in a green check.
+#[test]
+fn lighthouse_budgets_are_measured_not_aspirational() {
+    let raw = read("e2e/lighthouserc.json");
+    let rc: serde_json::Value =
+        serde_json::from_str(&raw).expect("e2e/lighthouserc.json is not valid JSON");
+
+    // Provenance. Without it the numbers below are unattributable, and the
+    // pairing this test performs has nothing to pair against.
+    let measured = &rc["_measured"];
+    let date = measured["date"].as_str().unwrap_or_default();
+    assert!(
+        date.len() == 10 && date.starts_with("20") && date.matches('-').count() == 2,
+        "e2e/lighthouserc.json `_measured.date` is {date:?}, not an ISO date. \
+         A budget whose measurement has no date cannot be judged stale"
+    );
+    let commit = measured["commit"].as_str().unwrap_or_default();
+    assert!(
+        commit.len() == 40 && commit.chars().all(|c| c.is_ascii_hexdigit()),
+        "e2e/lighthouserc.json `_measured.commit` is {commit:?}, not a full \
+         40-character SHA. An abbreviation stops resolving once the repository \
+         grows, which is exactly when someone wants to re-derive the baseline"
+    );
+
+    let worst = &measured["worst"];
+    assert!(
+        worst.is_object(),
+        "e2e/lighthouserc.json has no `_measured.worst` map, so no threshold \
+         below can be shown to have come from a measurement"
+    );
+
+    // Walk every assertion in the matrix.
+    let matrix = rc["ci"]["assert"]["assertMatrix"]
+        .as_array()
+        .expect("e2e/lighthouserc.json has no ci.assert.assertMatrix array");
+    assert!(
+        !matrix.is_empty(),
+        "ci.assert.assertMatrix is empty -- lhci asserts nothing and exits 0"
+    );
+    assert!(
+        rc["ci"]["assert"]["preset"].is_null(),
+        "ci.assert names a `preset`. A preset substitutes Lighthouse's own \
+         default assertions for the measured ones in this file, so the budgets \
+         recorded in `_measured` stop being what is enforced"
+    );
+
+    let mut checked = 0usize;
+    let mut unmeasured: Vec<String> = Vec::new();
+    let mut relaxed: Vec<String> = Vec::new();
+
+    for entry in matrix {
+        let pattern = entry["matchingUrlPattern"]
+            .as_str()
+            .expect("every assertMatrix entry needs a matchingUrlPattern");
+        let assertions = entry["assertions"]
+            .as_object()
+            .unwrap_or_else(|| panic!("assertMatrix entry {pattern:?} has no assertions map"));
+
+        for (audit, spec) in assertions {
+            let pair = spec.as_array().unwrap_or_else(|| {
+                panic!("{audit} under {pattern:?} is not a [level, options] pair: {spec}")
+            });
+            assert_eq!(
+                pair[0].as_str(),
+                Some("error"),
+                "{audit} under {pattern:?} is asserted at level {:?}. Only \
+                 `error` fails the build; `warn` prints the violation and exits \
+                 0, and `off` does not even print it",
+                pair[0]
+            );
+
+            let opts = pair[1]
+                .as_object()
+                .unwrap_or_else(|| panic!("{audit} under {pattern:?} carries no options object"));
+            let min_score = opts.get("minScore").and_then(serde_json::Value::as_f64);
+            let max_numeric = opts
+                .get("maxNumericValue")
+                .and_then(serde_json::Value::as_f64);
+            assert!(
+                min_score.is_some() || max_numeric.is_some(),
+                "{audit} under {pattern:?} sets neither minScore nor \
+                 maxNumericValue, so it asserts nothing: {spec}"
+            );
+            checked += 1;
+
+            // The measurement this threshold was derived from. Either a bare
+            // number (the audit behaves the same on every page) or a map keyed
+            // by path (it does not).
+            let record = &worst[audit.as_str()];
+            let observed = if record.is_number() {
+                record.as_f64()
+            } else if record.is_object() {
+                // A per-page map under a catch-all pattern names no page in
+                // particular, so there is no measurement to pair with. Reject
+                // it rather than pick one and call the budget measured.
+                assert_ne!(
+                    pattern, ".*",
+                    "{audit} is asserted for every URL but its measurement in \
+                     `_measured.worst` is recorded per page. One of the two is \
+                     wrong, and pairing them would mean choosing a page at random"
+                );
+                // The longest path the pattern's text contains wins:
+                // "/docs/tui/" also contains "/docs/" and "/".
+                record
+                    .as_object()
+                    .expect("checked is_object")
+                    .iter()
+                    .filter(|(path, _)| pattern.contains(path.as_str()))
+                    .filter_map(|(path, v)| v.as_f64().map(|f| (path.len(), f)))
+                    .max_by_key(|(len, _)| *len)
+                    .map(|(_, v)| v)
+            } else {
+                None
+            };
+
+            let Some(observed) = observed else {
+                unmeasured.push(format!("{audit} under {pattern:?}"));
+                continue;
+            };
+
+            if let Some(budget) = max_numeric
+                && budget < observed
+            {
+                relaxed.push(format!(
+                    "{audit} under {pattern:?}: budget {budget} is BELOW the \
+                     measured {observed}, so this gate is red on the commit \
+                     that adds it"
+                ));
+            }
+            if let Some(floor) = min_score
+                && floor > observed
+            {
+                relaxed.push(format!(
+                    "{audit} under {pattern:?}: floor {floor} is ABOVE the \
+                     measured {observed}, so this gate is red on the commit \
+                     that adds it"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        unmeasured.is_empty(),
+        "these Lighthouse budgets have no entry in `_measured.worst`, so nothing \
+         records what they were derived from -- a threshold nobody measured is a \
+         guess, and a guess is either unenforceable or already failing:\n  {}",
+        unmeasured.join("\n  ")
+    );
+    assert!(
+        relaxed.is_empty(),
+        "these Lighthouse budgets contradict the measurement recorded beside \
+         them:\n  {}",
+        relaxed.join("\n  ")
+    );
+    // A walk that visits nothing reports a clean bill of health. 20 is under
+    // the 21 the file carried when this test was written; the point is that the
+    // matrix cannot be gutted to one token assertion while this stays green.
+    assert!(
+        checked >= 20,
+        "only {checked} Lighthouse assertions were checked. The matrix was \
+         emptied, or the walk stopped seeing it -- either way a pass here means \
+         nothing"
+    );
+}
+
+/// The three configurations that decide WHICH page gets measured agree on one
+/// origin.
+///
+/// Zola renders every internal URL as an absolute `config.base_url` URL. Served
+/// anywhere other than `https://sipnab.com`, `base.html`'s `default-src 'self'`
+/// blocks the stylesheet, the script and every image as cross-origin, and the
+/// page renders with no CSS at all. It still returns 200. It still contains all
+/// of its text. axe finds nothing wrong with it, because a page with no
+/// computed colors has no contrast to fail and no `overflow-x: auto` to make a
+/// region unreachable; Lighthouse scores it 100, because nothing loaded.
+///
+/// So the build's `--base-url`, Playwright's `baseURL`, and Lighthouse's
+/// `collect.url` all have to name the same origin, and each of the three lives
+/// in a different file that the other two never read. This test is the only
+/// thing holding them together -- and a mismatch does not fail loudly, it
+/// produces a green run measuring an unstyled document.
+#[test]
+fn website_gates_measure_a_page_that_actually_rendered() {
+    let yaml = read(".github/workflows/quality.yml");
+    let expected_origin = format!("http://127.0.0.1:{SITE_GATE_PORT}");
+
+    // 1. Both jobs build the site for the origin they serve it from.
+    let builds: Vec<&str> = yaml
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("run: zola build"))
+        .collect();
+    let local_builds: Vec<&&str> = builds.iter().filter(|l| l.contains("--base-url")).collect();
+    assert!(
+        local_builds.len() >= 2,
+        "quality.yml has {} `zola build --base-url ...` step(s); the \
+         accessibility job and the Lighthouse job each need one. Without it the \
+         site is built for https://sipnab.com and measured on 127.0.0.1, which \
+         is a measurement of a page whose own CSP blocked its stylesheet:\n  {}",
+        local_builds.len(),
+        builds.join("\n  ")
+    );
+    for line in &local_builds {
+        assert!(
+            line.contains(&expected_origin),
+            "a website gate builds with {line:?}, which is not {expected_origin}. \
+             The server it is then measured on serves that origin, so its assets \
+             are cross-origin and blocked"
+        );
+    }
+
+    // 2. Both jobs refuse to measure a build that still points at production.
+    // These steps carry `exit 1` after an `::error::`, so the shared helper's
+    // full set of properties applies.
+    for step in [
+        "The built site references its own origin, not production",
+        "The built site references its own origin, not production (lighthouse)",
+    ] {
+        assert_step_enforces(".github/workflows/quality.yml", step, None);
+        let body = workflow_step_body(".github/workflows/quality.yml", step);
+        assert!(
+            body.contains("sipnab") && body.contains("style") && body.contains("grep"),
+            "{step:?} no longer greps the built HTML for the origin of its own \
+             stylesheet, which is the one cheap signal that separates a styled \
+             page from an unstyled one:\n{body}"
+        );
+        assert!(
+            body.contains(SITE_GATE_PORT),
+            "{step:?} does not mention port {SITE_GATE_PORT}, so it is checking \
+             for an origin nothing serves:\n{body}"
+        );
+    }
+
+    // 3. Playwright's default base URL uses the same port.
+    let pw = read("e2e/playwright.config.js");
+    assert!(
+        pw.contains(&expected_origin),
+        "e2e/playwright.config.js does not default to {expected_origin}. The \
+         accessibility job builds the site for that origin and then lets \
+         Playwright start its own server; if the two disagree the run measures \
+         a page whose assets were all blocked"
+    );
+
+    // 4. Every Lighthouse collect URL uses the same port, and the static server
+    // it starts serves on it too.
+    let rc: serde_json::Value = serde_json::from_str(&read("e2e/lighthouserc.json"))
+        .expect("e2e/lighthouserc.json is not valid JSON");
+    let urls = rc["ci"]["collect"]["url"]
+        .as_array()
+        .expect("e2e/lighthouserc.json has no ci.collect.url array");
+    assert!(
+        !urls.is_empty(),
+        "ci.collect.url is empty -- lhci measures nothing and asserts over nothing"
+    );
+    for u in urls {
+        let u = u.as_str().unwrap_or_default();
+        assert!(
+            u.starts_with(&expected_origin),
+            "Lighthouse collects {u:?}, which is not on {expected_origin}. The \
+             site is built for that origin, so anything else measures a page \
+             with no CSS -- and scores it 100"
+        );
+    }
+    let server = rc["ci"]["collect"]["startServerCommand"]
+        .as_str()
+        .expect("e2e/lighthouserc.json has no ci.collect.startServerCommand");
+    assert!(
+        server.contains(SITE_GATE_PORT),
+        "Lighthouse starts its server with {server:?}, which does not serve port \
+         {SITE_GATE_PORT}. Its collect URLs point there and would find nothing"
+    );
+    assert!(
+        server.contains("website/public"),
+        "Lighthouse serves {server:?} rather than the directory `zola build` \
+         renders. It would measure whatever else is in that path"
+    );
+
+    // 5. The axe spec still gates on the ruleset and the severities it
+    // documents. Narrowing `WCAG_TAGS` to `['wcag2a']` or `BLOCKING_IMPACTS` to
+    // `['critical']` halves the gate while every test in that file keeps
+    // passing, so the DECLARATIONS are pinned here.
+    //
+    // Whitespace-stripped and matched against the declaration, not against the
+    // file. The first version of this check looked for the substring
+    // `'wcag2aa'` anywhere in the spec -- and the spec's own header comment
+    // explains the ruleset in prose, so dropping wcag2aa from the constant left
+    // the string behind in the comment and this test went on passing. That was
+    // caught by mutating it; the lesson is that a gate reading prose is not
+    // reading the code.
+    let spec = read("e2e/tests/accessibility.spec.js");
+    let code: String = spec.chars().filter(|c| !c.is_whitespace()).collect();
+    for decl in [
+        "constWCAG_TAGS=['wcag2a','wcag2aa'];",
+        "constBLOCKING_IMPACTS=['serious','critical'];",
+        "constINCOMPLETE_NOT_GATED=['color-contrast'];",
+    ] {
+        assert!(
+            code.contains(decl),
+            "e2e/tests/accessibility.spec.js no longer declares `{decl}` \
+             (whitespace ignored). The gate's ruleset, its severity floor or its \
+             one incomplete-rule exemption changed, and the page tests in that \
+             file would keep passing while covering less"
+        );
+    }
+    // The `incomplete` bucket is GATED, not merely printed. Dropping that is how
+    // `aria-prohibited-attr` -- the one real defect the first run of this gate
+    // found -- would have gone unreported, because axe returns it as undecided
+    // rather than as a violation.
+    //
+    // Pinned to the expression that builds the blocking set, not to the string
+    // `results.incomplete.filter`. That substring appears TWICE in the spec: once
+    // here and once where the advisory list is assembled for printing. Replacing
+    // this one with `[]` left the other in place, and the first version of this
+    // check went on passing -- the same mutation-caught mistake as the ruleset
+    // check above, one occurrence further along.
+    for gating in [
+        "constundecided=results.incomplete.filter((v)=>BLOCKING_IMPACTS.includes(v.impact)&&!INCOMPLETE_NOT_GATED.includes(v.id)",
+        "return[...violations,...undecided];",
+    ] {
+        assert!(
+            code.contains(gating),
+            "e2e/tests/accessibility.spec.js no longer folds axe's `incomplete` \
+             results into the set that fails a page (looking for `{gating}`, \
+             whitespace ignored). Every rule axe cannot decide would pass silently, \
+             and the four page tests would stay green while covering less"
+        );
+    }
 }

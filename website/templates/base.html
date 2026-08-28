@@ -41,7 +41,15 @@
   <!-- Open Graph -->
   <meta property="og:title" content="{% block og_title %}{{ config.title }}{% endblock og_title %}">
   <meta property="og:description" content="{% block og_description %}{{ config.description }}{% endblock og_description %}">
-  <meta property="og:type" content="website">
+  <!-- og:type is per-page, not a constant. "website" is right for the
+       homepage, the download page and the two section indexes; a docs page
+       or an engineering note is an `article`, which is what tells an
+       unfurler to render it as a document rather than as a site. The block
+       defaults to the old constant so a template that says nothing keeps
+       the previous behavior; page.html and note.html override it.
+       `docs_pages_declare_the_article_open_graph_type` in
+       tests/site_journey_test.rs holds the wiring. -->
+  <meta property="og:type" content="{% block og_type %}website{% endblock og_type %}">
   <meta property="og:url" content="{{ config.base_url }}{% if current_path is defined %}{{ current_path }}{% endif %}">
   <meta property="og:site_name" content="sipnab">
   <meta property="og:image" content="{{ config.base_url }}/og-image.png">
@@ -49,7 +57,32 @@
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="{% block og_image_alt %}sipnab — SIP & RTP analysis tool{% endblock og_image_alt %}">
 
-  <!-- Twitter / X -->
+  <!-- Twitter / X.
+
+       There is deliberately no twitter:title or twitter:description here, and
+       it is not an omission. X's card parser falls back to og:title and
+       og:description when the twitter:* pair is absent, so the cards above
+       already carry the PAGE's title and description; a second pair would be a
+       copy of a value this file cannot re-read.
+
+       Tera cannot render a block twice, which is what a non-duplicating
+       version needs. A `self::og_title()` call parses and builds, but in a
+       tree where several children override the same block it resolves to the
+       WRONG child: with it in place, rendering analyze.html picked page.html's
+       definition and the build died on `Variable page.title not found in
+       context while rendering 'analyze.html'`. Measured 2026-08-28 against the
+       zola on PATH -- do not re-attempt it. (The call is named above with no
+       expression delimiters around it, and that is not a typo: Tera parses
+       expressions inside HTML comments too, so writing a real one in this
+       sentence blanks the whole site with `Macro namespace self was not
+       found`. It did, while this comment was being written.)
+
+       Restating the values instead would put twitter:title beside three
+       templates that override og_title with a literal (analyze.html,
+       download.html, index.html) and let the two drift silently, which is
+       worse than the fallback that already works.
+       `the_twitter_card_relies_on_the_open_graph_fallback` in
+       tests/site_journey_test.rs pins this. -->
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:image" content="{{ config.base_url }}/og-image.png">
 
@@ -144,6 +177,7 @@
             <p class="nav-drop-label" aria-hidden="true">Getting started</p>
             <a href="{{ get_url(path='@/docs/install.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/install/" %}class="active"{% endif %}>Install</a>
             <a href="{{ get_url(path='@/docs/cookbook.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/cookbook/" %}class="active"{% endif %}>Cookbook</a>
+            <a href="{{ get_url(path='@/docs/real-world-captures.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/cookbook/" %}class="active"{% endif %}>Real-world captures</a>
             <a href="{{ get_url(path='@/docs/tls-capture.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/tls-capture/" %}class="active"{% endif %}>Capture SIP over TLS</a>
             <a href="{{ get_url(path='@/docs/rtpengine.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/rtpengine/" %}class="active"{% endif %}>rtpengine Relays</a>
             <a href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/uprobe-walkthrough/" %}class="active"{% endif %}>TLS Without Keys</a>
@@ -169,6 +203,7 @@
             <p class="nav-drop-label" aria-hidden="true">API &amp; integrations</p>
             <a href="{{ get_url(path='@/docs/api.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/api/" %}class="active"{% endif %}>API</a>
             <a href="{{ get_url(path='@/docs/metrics.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/metrics/" %}class="active"{% endif %}>Prometheus Metrics</a>
+            <a href="{{ get_url(path='@/api-reference.md') }}" role="menuitem" {% if current_path is defined and current_path == "/api-reference/" %}class="active"{% endif %}>OpenAPI Reference</a>
             <a href="{{ get_url(path='@/docs/api-clients.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/api-clients/" %}class="active"{% endif %}>API Clients</a>
             <a href="{{ get_url(path='@/docs/auth.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/auth/" %}class="active"{% endif %}>Authentication</a>
             <a href="{{ get_url(path='@/docs/integrations.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/integrations/" %}class="active"{% endif %}>Integrations</a>

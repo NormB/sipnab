@@ -42,10 +42,21 @@
   </div>
 
   <div class="dl-method-head" id="installer"><h2>Fastest path &mdash; the installer picks for you</h2><span class="dl-rec">recommended &middot; start here</span></div>
+  {# Every terminal block below carries tabindex="0" on its <code>.
+     .dl-term-body code is `overflow-x: auto; white-space: nowrap`, which makes it
+     a horizontally SCROLLABLE region -- and a scrollable region that nothing can
+     focus is unreachable by keyboard, so the part of a command that runs off the
+     right edge is readable with a mouse and by no other means. WCAG 2.1.1;
+     axe-core reports it as scrollable-region-focusable, serious, and did so on
+     three of these blocks at a 1350px viewport (which three depends on the
+     width, so all of them are marked rather than the ones that happened to
+     overflow during the scan).
+     No CSS accompanies this: style.scss already gives `[tabindex]:focus-visible`
+     the same outline as a link or a button. #}
   <div class="dl-term">
     <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">any Linux or macOS &middot; detects OS, CPU, and glibc</span></div>
     <div class="dl-term-body">
-      <code><span class="dl-prompt">$</span>curl -fsSL {{ config.base_url }}/install.sh | sh</code>
+      <code tabindex="0"><span class="dl-prompt">$</span>curl -fsSL {{ config.base_url }}/install.sh | sh</code>
       <button type="button" class="dl-copy" data-copy="curl -fsSL {{ config.base_url }}/install.sh | sh" aria-label="Copy install command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
     </div>
   </div>
@@ -87,7 +98,7 @@
     <div class="dl-term">
       <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">macOS &middot; Intel &amp; Apple Silicon</span></div>
       <div class="dl-term-body">
-        <code><span class="dl-prompt">$</span>brew install NormB/tap/sipnab</code>
+        <code tabindex="0"><span class="dl-prompt">$</span>brew install NormB/tap/sipnab</code>
         <button type="button" class="dl-copy" data-copy="brew install NormB/tap/sipnab" aria-label="Copy command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
     </div>
@@ -139,7 +150,7 @@
       <div class="dl-term">
         <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">run in your download folder</span></div>
         <div class="dl-term-body">
-          <code><span class="dl-prompt">$</span>sudo apt install ./sipnab_{{ v }}_amd64.deb</code>
+          <code tabindex="0"><span class="dl-prompt">$</span>sudo apt install ./sipnab_{{ v }}_amd64.deb</code>
           <button type="button" class="dl-copy" data-copy="sudo apt install ./sipnab_{{ v }}_amd64.deb" aria-label="Copy command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
         </div>
       </div>
@@ -167,7 +178,7 @@
       <div class="dl-term">
         <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">run in your download folder</span></div>
         <div class="dl-term-body">
-          <code><span class="dl-prompt">$</span>sudo dnf install ./sipnab-{{ v }}-1.x86_64.rpm</code>
+          <code tabindex="0"><span class="dl-prompt">$</span>sudo dnf install ./sipnab-{{ v }}-1.x86_64.rpm</code>
           <button type="button" class="dl-copy" data-copy="sudo dnf install ./sipnab-{{ v }}-1.x86_64.rpm" aria-label="Copy command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
         </div>
       </div>
@@ -214,7 +225,7 @@
     <div class="dl-term">
       <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">cargo</span></div>
       <div class="dl-term-body dl-term-body--multi">
-        <code><span class="dl-prompt">$</span>git clone {{ config.extra.github_url }}.git
+        <code tabindex="0"><span class="dl-prompt">$</span>git clone {{ config.extra.github_url }}.git
 <span class="dl-prompt">$</span>cd sipnab &amp;&amp; cargo build --release --features full</code>
         <button type="button" class="dl-copy" data-copy="git clone {{ config.extra.github_url }}.git&#10;cd sipnab &amp;&amp; cargo build --release --features full" aria-label="Copy commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
@@ -223,7 +234,7 @@
     <div class="dl-term">
       <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">or straight from crates.io</span></div>
       <div class="dl-term-body">
-        <code><span class="dl-prompt">$</span>cargo install sipnab --features full</code>
+        <code tabindex="0"><span class="dl-prompt">$</span>cargo install sipnab --features full</code>
         <button type="button" class="dl-copy" data-copy="cargo install sipnab --features full" aria-label="Copy command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
     </div>
@@ -253,7 +264,7 @@
       <div class="dl-term">
         <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">pin the version tag; <code>latest</code> tracks releases</span></div>
         <div class="dl-term-body dl-term-body--multi">
-          <code><span class="dl-prompt">$</span>docker pull {{ config.extra.ghcr_image }}:{{ v }}
+          <code tabindex="0"><span class="dl-prompt">$</span>docker pull {{ config.extra.ghcr_image }}:{{ v }}
 <span class="dl-prompt">$</span>docker run --rm -v "$PWD:/data" {{ config.extra.ghcr_image }}:{{ v }} -N -I /data/capture.pcap --report</code>
           <button type="button" class="dl-copy" data-copy="docker pull {{ config.extra.ghcr_image }}:{{ v }}&#10;docker run --rm -v &quot;$PWD:/data&quot; {{ config.extra.ghcr_image }}:{{ v }} -N -I /data/capture.pcap --report" aria-label="Copy docker commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
         </div>
@@ -266,7 +277,7 @@
       <div class="dl-term">
         <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">same installer the Quick-install path uses</span></div>
         <div class="dl-term-body">
-          <code><span class="dl-prompt">$</span>curl -fsSL {{ config.base_url }}/install.sh | SIPNAB_VERSION={{ v }} sh</code>
+          <code tabindex="0"><span class="dl-prompt">$</span>curl -fsSL {{ config.base_url }}/install.sh | SIPNAB_VERSION={{ v }} sh</code>
           <button type="button" class="dl-copy" data-copy="curl -fsSL {{ config.base_url }}/install.sh | SIPNAB_VERSION={{ v }} sh" aria-label="Copy pinned install command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
         </div>
       </div>
@@ -278,7 +289,7 @@
       <div class="dl-term">
         <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">fetch artifact + checksum sidecar, then verify</span></div>
         <div class="dl-term-body dl-term-body--multi">
-          <code><span class="dl-prompt">$</span>curl -fsSLO {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz \
+          <code tabindex="0"><span class="dl-prompt">$</span>curl -fsSLO {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz \
        -O {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256
 <span class="dl-prompt">$</span>sha256sum -c sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256</code>
           <button type="button" class="dl-copy" data-copy="curl -fsSLO {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz -O {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256&#10;sha256sum -c sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256" aria-label="Copy fetch-and-verify commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
@@ -288,7 +299,7 @@
       <div class="dl-term">
         <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">latest release tag</span></div>
         <div class="dl-term-body">
-          <code><span class="dl-prompt">$</span>curl -fsSL https://api.github.com/repos/{{ config.extra.github_repo }}/releases/latest | jq -r .tag_name</code>
+          <code tabindex="0"><span class="dl-prompt">$</span>curl -fsSL https://api.github.com/repos/{{ config.extra.github_repo }}/releases/latest | jq -r .tag_name</code>
           <button type="button" class="dl-copy" data-copy="curl -fsSL https://api.github.com/repos/{{ config.extra.github_repo }}/releases/latest | jq -r .tag_name" aria-label="Copy latest-version command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
         </div>
       </div>
@@ -330,14 +341,14 @@
     <div class="dl-term">
       <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">macOS &middot; sha256 &middot; run in your download folder</span></div>
       <div class="dl-term-body">
-        <code><span class="dl-prompt">$</span>shasum -a 256 -c SHA256SUMS.txt --ignore-missing</code>
+        <code tabindex="0"><span class="dl-prompt">$</span>shasum -a 256 -c SHA256SUMS.txt --ignore-missing</code>
         <button type="button" class="dl-copy" data-copy="shasum -a 256 -c SHA256SUMS.txt --ignore-missing" aria-label="Copy macOS verify command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
     </div>
     <div class="dl-term">
       <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">Linux &middot; sha256 &middot; run in your download folder</span></div>
       <div class="dl-term-body">
-        <code><span class="dl-prompt">$</span>sha256sum -c SHA256SUMS.txt --ignore-missing</code>
+        <code tabindex="0"><span class="dl-prompt">$</span>sha256sum -c SHA256SUMS.txt --ignore-missing</code>
         <button type="button" class="dl-copy" data-copy="sha256sum -c SHA256SUMS.txt --ignore-missing" aria-label="Copy Linux verify command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
     </div>
@@ -354,7 +365,7 @@
     <div class="dl-term">
       <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">provenance &middot; needs the <a href="https://cli.github.com/">GitHub CLI</a></span></div>
       <div class="dl-term-body">
-        <code><span class="dl-prompt">$</span>gh attestation verify sipnab-&lt;file&gt; --repo {{ config.extra.github_repo }}</code>
+        <code tabindex="0"><span class="dl-prompt">$</span>gh attestation verify sipnab-&lt;file&gt; --repo {{ config.extra.github_repo }}</code>
         <button type="button" class="dl-copy" data-copy="gh attestation verify sipnab-<file> --repo {{ config.extra.github_repo }}" aria-label="Copy provenance verify command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
     </div>

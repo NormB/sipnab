@@ -104,7 +104,20 @@ Audited, found sound (true-positive findings: none):
 
 - **Capture file** (`pcap_reader.rs`): magic/length/block-truncation all
   return clean errors; tested (`too_short_file`, `invalid_magic`,
-  `truncated_epb_block_no_panic`) and smoke-fuzzed.
+  `truncated_epb_block_no_panic`) and smoke-fuzzed. The FILE path now
+  implements the same exit-status rule the live path below states, and did not
+  before: reading a set deliberately continues past a truncated member and
+  returns `Ok`, so the join never saw it and a truncated pcap exited 0 with a
+  whole-looking report. `ReadTally::report` — the one place both the
+  single-threaded and `--cores` readers converge on — now records the same
+  `lost` predicate that decides its log severity into
+  `output::run_integrity`, which the exit-code sites and the
+  `--json-dialogs`/`--report` markers read. One place emits both the human
+  sentence on stderr and the machine record, so they cannot disagree. A
+  `--plugin` that would not load is the same class and lands the same way
+  (exit `1`, `plugins.failed` in the record). The same record also carries
+  idle compaction, which deliberately does NOT move the exit status, because a
+  retention policy doing what you configured it to do is not a failed run.
 - **Live loop** (`capture/live.rs`): device-open and BPF-compile
   failures return clean errors via the ready channel; receiver-dropped
   breaks cleanly. A transient `recv()` error is currently fatal to the

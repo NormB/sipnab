@@ -391,6 +391,14 @@ impl ReadTally {
     /// stays `info`, or the warning that matters is buried under the ones that
     /// do not.
     ///
+    /// The same tally also lands in `output::run_integrity`, from here and
+    /// only from here. A person reads the stderr sentence and a script reads
+    /// the record, but they are ONE statement about the run, and emitting them
+    /// from two places is how they come to disagree — the same argument that
+    /// put both readers' closing lines in this one function. It also means the
+    /// identical `lost` predicate decides the log severity and moves `$?`, so
+    /// `warn` on stderr and a non-zero exit cannot come apart.
+    ///
     /// # Arguments
     ///
     /// * `packets` — packets the run read across the whole set.
@@ -398,7 +406,8 @@ impl ReadTally {
     /// # Side effects
     ///
     /// Emits exactly one `warn!` (data missing) or `info!` (clean, or a
-    /// requested stop) line via tracing.
+    /// requested stop) line via tracing, and adds this set's outcome to the
+    /// process-global run-integrity record.
     pub(crate) fn report(&self, packets: u64) {
         let line = self.summary(packets);
         if self.lossy() {
@@ -406,6 +415,16 @@ impl ReadTally {
         } else {
             tracing::info!("{line}");
         }
+        crate::output::run_integrity::record_files_read(
+            crate::output::run_integrity::FileReadOutcome {
+                given: self.given as u64,
+                read_in_full: self.complete as u64,
+                stopped_early: self.stopped_early as u64,
+                skipped: self.skipped as u64,
+                not_reached: self.not_reached() as u64,
+                lost: self.lost,
+            },
+        );
     }
 
     /// The closing line: packets read, and what happened to every file.

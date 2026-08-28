@@ -240,6 +240,48 @@ pub fn run_tui_mode(
     let rx = launched.rx;
     let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
 
+    // The operator's action trail, opened before any thread this function
+    // spawns and before the terminal is taken. A path that cannot be opened
+    // stops the run HERE, which is the fail-closed half of AUDIT2: refusing
+    // costs nothing at this point, and an operator who asked for a trail and
+    // silently got a run that recorded nothing would find out when they went
+    // looking for it -- the one moment it cannot be recreated. What a write
+    // that fails LATER does is the opposite call, and
+    // `crate::tui::action_trail` states why.
+    let action_trail = match cli.security_args.tui_audit_file.as_deref() {
+        Some(path) => {
+            let trail = crate::tui::action_trail::ActionTrail::open(std::path::Path::new(path))
+                .unwrap_or_else(|e| {
+                    tracing::error!(
+                        "--tui-audit-file {path}: {e}. sipnab refuses to run the TUI \
+                         without the action trail it was asked for"
+                    );
+                    std::process::exit(2);
+                });
+            // The first action of the session, and the one every later record
+            // is relative to: a filter or an export means nothing without the
+            // capture it was applied to. Named from the same flags the capture
+            // path uses -- `-I` beats `-d`, exactly as bootstrap resolves it.
+            let opened = if cli.capture_args.input.is_empty() {
+                cli.capture_args
+                    .device
+                    .clone()
+                    .unwrap_or_else(|| "(default interface)".to_string())
+            } else {
+                cli.capture_args.input.join(", ")
+            };
+            trail.record(&crate::tui::action_trail::ActionRecord {
+                action: "capture_opened",
+                target: &opened,
+                format: "",
+                outcome: "ok",
+                error: "",
+            });
+            Some(Arc::new(trail))
+        }
+        None => None,
+    };
+
     // Read before the capture config moves into the processing thread below.
     let bpf_filter = bpf_status_text(&capture_config);
 
@@ -561,9 +603,30 @@ pub fn run_tui_mode(
                 cli.capture_args.recursive,
             ),
             bpf_filter,
+            action_trail: action_trail.clone(),
         },
     ) {
         tracing::error!("TUI error: {e}");
+    }
+
+    // AFTER the TUI returns, so the terminal has left the alternate screen and
+    // this line survives on the operator's scrollback. Point 4 of the decision
+    // in `crate::tui::action_trail`: a status line inside a full-screen UI that
+    // the operator was not looking at is not a notification, and an incomplete
+    // trail is exactly the thing they must not learn about from the file weeks
+    // later.
+    if let Some(trail) = action_trail.as_ref() {
+        // The closing record FIRST, so `exit_notice` below reports the state
+        // after it: a closing write that itself failed is part of what the
+        // operator has to be told.
+        if let Some(problem) = trail.close_session() {
+            eprintln!("{problem}");
+            tracing::error!("{problem}");
+        }
+        if let Some(notice) = trail.exit_notice() {
+            eprintln!("{notice}");
+            tracing::error!("{notice}");
+        }
     }
 
     // Signal shutdown and wait for threads

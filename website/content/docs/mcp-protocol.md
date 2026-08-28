@@ -169,16 +169,20 @@ What the file guarantees:
 Leave the flag off and none of this applies: sipnab creates no file and nothing
 about the run changes.
 
-Not covered, and worth knowing: `resources/list` and `resources/read` are not
-tool calls and do not reach the audit point at all — neither the log line nor
-the file. That is the same gap the tracing record has, written down rather than
-left for the next reader to rediscover.
+Not covered, and worth knowing: nothing outside `tools/call` reaches the audit
+point at all — neither the log line nor the file. That is `resources/list`,
+`resources/read`, `resources/templates/list`, `completion/complete`,
+`resources/subscribe` and `resources/unsubscribe`, plus the prompt methods. It
+is the same gap the tracing record has, written down rather than left for the
+next reader to rediscover.
 
 ## Resources
 
 sipnab exposes the files under `--mcp-file-root` as MCP **resources**.
 `resources/list` enumerates them and `resources/read` fetches one at
-`sipnab:///<filename>`.
+`sipnab:///<filename>`. Three further URI spaces answer from the binary and
+from the loaded capture rather than from disk — see
+[Live views](#live-views-of-the-loaded-capture) below.
 
 This exists because of `export_capture`. That tool returns a server-LOCAL
 absolute path, which works over stdio and does nothing over the HTTP transport:
@@ -204,6 +208,117 @@ Two bounds:
 A file that is valid UTF-8 comes back as text, and anything else comes back as
 a base64 blob. A capture is bytes, and a lossy conversion would hand the model
 something the file does not contain.
+
+### Live views of the loaded capture
+
+Three URI spaces exist alongside the capture files, and all three answer with no
+`--mcp-file-root` at all — that flag gates access to OTHER captures on disk, not
+to the one this run is already answering questions about:
+
+| URI | What it returns |
+|---|---|
+| `sipnab://reference/<topic>` | a documentation page compiled into the binary |
+| `sipnab://live/dialogs` | every dialog the loaded capture holds |
+| `sipnab://live/dialogs/<Call-ID>` | one dialog, by Call-ID |
+| `sipnab://lint/<rule-id>` | one conformance rule's catalog entry |
+
+The two live ones render through the same code path as `list_dialogs`, under
+the same `--mcp-max-rows` ceiling and the same fencing of untrusted text. The
+resource door and the tool door answer from one renderer on purpose: an
+operator holding two versions of the same capture has no way to decide which
+one to believe.
+
+A Call-ID the capture does not hold reads as an EMPTY page rather than an
+error, which is where the resource parts company with `get_dialog`. A live
+view's content is what the capture holds right now, and "right now, nothing" is
+an answer — a subscriber watching a call that has not started yet, or that the
+store has since evicted, needs the URI to have a defined content on both sides of the
+change.
+
+The same function `explain_rule` uses builds `sipnab://lint/<rule-id>`,
+for the same reason.
+
+### Templates and completions
+
+`resources/templates/list` names the URI shapes a client may construct, each
+with one variable, and `completion/complete` fills that variable in from LIVE
+state:
+
+| Template | Variable | Completed from |
+|---|---|---|
+| `sipnab://live/dialogs/{call_id}` | `call_id` | the Call-IDs the capture holds right now |
+| `sipnab://lint/{rule_id}` | `rule_id` | the conformance rule catalog |
+| `sipnab://reference/{topic}` | `topic` | the reference pages `resources/list` names |
+| `sipnab:///{filename}` | `filename` | the directory `--mcp-file-root` names |
+
+sipnab caches nothing. A completion that offered a Call-ID the capture has since
+evicted would cost an agent a call to discover, and it would conclude the
+capture was wrong rather than the completion.
+
+Three bounds worth knowing:
+
+- **The last template stays hidden until an operator sets a file root.** A
+  template promises that the URI resolves, and advertising a shape whose every
+  URI would draw a refusal tells an agent the captures are reachable and lets
+  it find out otherwise one call at a time.
+- **An argument sipnab does not complete gets an EMPTY completion, never an
+  error.** That is the spec's rule and the useful one. What must never happen is
+  the third option: answering an unknown argument name with a vocabulary that
+  belongs to a different one, because a client would then fill that argument
+  with it.
+- **100 values per response**, the spec's ceiling, with `total` reporting what
+  actually matched so a client can see it needs to narrow rather than believing
+  it has the whole set.
+
+MCP has no way to complete a TOOL argument — the primitive completes prompt
+arguments and resource-template variables only — so a `call_id` completion is
+reachable through the template above and nowhere else. sipnab's prompts take no
+arguments, so a `ref/prompt` completion comes back empty.
+
+### Subscriptions
+
+`resources/subscribe` takes one of the two `sipnab://live/...` URIs and
+`notifications/resources/updated` follows when what that URI returns changes.
+`resources/unsubscribe` stops it.
+
+**Only the live views accept a subscription**, and a refusal says so by name. A
+reference page lives inside the binary and cannot change while the run
+answers questions. A file under `--mcp-file-root` changes only when something
+outside sipnab writes it, and sipnab is a packet analyser rather than a
+filesystem watcher. Accepting either would be a subscription that can never
+fire, and a client waiting on it cannot tell that from a quiet network.
+
+What causes a notification, and what does not:
+
+- **Not a timer.** A capture that is not changing produces nothing, however
+  long a client waits.
+- **Not a packet.** Detection is the dialog store's revision counter first —
+  an unchanged counter proves unchanged content and costs one `u64` read — and
+  a digest of the rendered content second. RTP moves the *stream* store, so
+  audio never wakes a subscriber to a dialog list that does not report it, and
+  a revision bump that leaves the rendering identical sends nothing.
+- **At most one per second per URI.** That is the debounce, and one second is
+  the floor because the notification carries no data: it says "read again", so
+  its whole value is one `resources/read` round trip through a model on the
+  client's side. A shorter interval would send the second notification before
+  the client could act on the first, which is the storm restated. The watcher
+  HOLDS changes inside the window rather than dropping them — the next look
+  announces the content as it then stands. A capture doing hundreds of calls a
+  second mutates the store thousands of times a second, and one notification
+  per mutation is a denial of service delivered politely.
+- **A capture swap always counts.** `open_capture` replaces every dialog, so a
+  Call-ID from the discarded capture names nothing. sipnab notifies subscribers even
+  where the rendered rows happen to be empty on both sides.
+
+The state is **per connection and dies with it**. Sixteen subscriptions per
+connection, refused past that. There is no registry that outlives a connection:
+each one owns its own, and a watcher holds a weak handle, so a client that
+disappears without unsubscribing takes its watchers with it and nothing has to
+notice the disconnect.
+
+sipnab negotiates the 2025-06-18 and 2025-11-25 revisions, where
+`resources/subscribe` is the only subscription method a client has. The
+2026-07-28 `subscriptions/listen` is not implemented.
 
 ## What the write verbs do
 

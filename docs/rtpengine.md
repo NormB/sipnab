@@ -70,7 +70,7 @@ Read down the first column and stop at the first row you can satisfy.
 
 | Your situation | Use | Changes rtpengine? | Notes |
 |---|---|---|---|
-| rtpengine already reports to a Homer collector | Capture on the relay host | **No** | sipnab reads the copy already on the wire. Nothing about your Homer pipeline changes. |
+| rtpengine already reports to a Homer collector | Capture on the relay host | **No** | sipnab reads the copy already on the wire. Nothing about your Homer pipeline changes. sipnab cannot authenticate that copy, and reads it only on UDP port 9060 — see [How much a `media-relay` assertion is worth](#how-much-a-media-relay-assertion-is-worth). |
 | rtpengine reports nowhere yet | Turn on `--homer-enable-ng`, point it anywhere sipnab can see | Yes, once | The destination can be a collector, or a host that discards the traffic |
 | You need it delivered rather than sniffed | `--hep-listen` on sipnab, point rtpengine at it | Yes | Costs you the collector — see the warning below. Requires 0.5.125 or later: earlier builds accepted the traffic and decoded none of it |
 
@@ -357,16 +357,59 @@ the MCP `rtp_stats` tool carries the same key with the same two spellings, and
 the TUI's stream detail prints `(via media-relay)` beside the Call-ID.
 
 The distinction changes what the address means, which is why it is not folded
-away. A relay's answer is **authoritative about the port** — rtpengine cannot
-be wrong about which socket it opened — and at the same time it is **not an
-endpoint**: it names the box the media passed through, not where either party
-sits. An operator tracing a one-way-audio fault to `192.0.2.40:38664` needs to
-know whether that is the far end or the box in the middle, and those lead to
-opposite next steps.
+away. A relay's answer is **not an endpoint**: it names the box the media
+passed through, not where either party sits. An operator tracing a one-way-audio
+fault to `192.0.2.40:38664` needs to know whether that is the far end or the box
+in the middle, and those lead to opposite next steps.
+
+It is also **only as trustworthy as the path it arrived on**, and this page used
+to say it was "authoritative about the port". That was true of rtpengine and
+false of the assertion: rtpengine cannot be wrong about which socket it opened,
+but sipnab is not always hearing from rtpengine. Read the next section before
+you act on a `media-relay` address.
 
 An absent key means nobody recorded who asserted the binding. It does not mean
 `signaled` — that is a claim, and keeping the two apart is the entire reason
 the field exists.
+
+#### How much a `media-relay` assertion is worth
+
+Two paths deliver it, and they are worth different amounts.
+
+| Path | What sipnab knows about the sender |
+|---|---|
+| **Delivered** — `--hep-listen`, rtpengine points at sipnab | Whatever you configured: `--hep-allow` restricts the source addresses, `--hep-auth` requires a shared secret, and `--hep-auth-mode hmac` requires a per-message token that covers the addresses the packet asserts |
+| **Sniffed** — sipnab reads the mirror on its way to another collector | **Nothing.** No authentication of any kind is possible: the datagram never reaches a sipnab socket, and anything able to transmit on the captured segment can produce one |
+
+Nothing authenticates a sniffed assertion. It carries a Call-ID copied verbatim
+out of the HEP correlation-id chunk and a media address copied out of the SDP,
+so a forged datagram can name a call of the sender's choosing and bind it to a
+socket of the sender's choosing.
+
+sipnab therefore believes a sniffed mirror **only on UDP port 9060**, the HEP
+port. That narrows the input without authenticating anybody, and this page says
+so plainly so nobody reads it as more. It stops every datagram on the segment
+being a candidate, and it stops nothing sent to 9060. sipnab logs one refusal,
+naming the port it saw.
+
+`--hep-allow` does **not** reach this path. It guards the `--hep-listen`
+socket, and there is no socket here.
+
+If any of that matters for your estate, take the delivered path and
+authenticate it:
+
+```sh
+sudo sipnab -N -d eth0 --hep-listen 0.0.0.0:9060 \
+    --hep-auth-file /etc/sipnab/hep.key --hep-auth-mode hmac
+```
+
+and point rtpengine's `homer =` at sipnab. It costs you the Homer collector —
+rtpengine takes exactly one destination — which is the trade the table at the
+top of this page is about.
+
+If your collector sits on a port other than 9060, sipnab does not read the
+sniffed copy at all. That is deliberate. The alternative is believing every
+port.
 
 `dialog_assertion` is a different question from `dialog_origin`, which says
 which **capture source** delivered the assertion. A relay can name a stream over a

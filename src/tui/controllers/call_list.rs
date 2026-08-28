@@ -276,14 +276,15 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
             app.active_popup = Some(Popup::SettingsDialog);
         }
         CallListAction::ClearFilter => {
-            app.active_filter = None;
-            app.active_filter_text.clear();
             app.filter_dialog.clear();
             // The persisted search query narrows the list exactly like the
             // filter does; "clear filter" must drop every narrowing input
             // or the list stays mysteriously incomplete.
             app.search_query.clear();
             app.status_error = None;
+            // Last, so a failed trail write's warning is not erased by the
+            // status reset above -- see `App::clear_active_filter`.
+            app.clear_active_filter();
         }
         CallListAction::OpenFileDialog => open_file_dialog(app),
         CallListAction::NameEndpoints => {

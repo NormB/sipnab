@@ -39,7 +39,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | r-efi | MIT OR Apache-2.0 OR LGPL-2.1-or-later | **Apache-2.0** |
 | termina | MIT OR MPL-2.0 | **MIT** |
 
-## Rust crates (398)
+## Rust crates (400)
 
 | Crate | Version | License |
 |---|---|---|
@@ -380,6 +380,8 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | unicode-width | 0.2.2 | MIT OR Apache-2.0 |
 | untrusted | 0.9.0 | ISC |
 | utf8parse | 0.2.2 | Apache-2.0 OR MIT |
+| utoipa | 5.5.0 | MIT OR Apache-2.0 |
+| utoipa-gen | 5.5.0 | MIT OR Apache-2.0 |
 | uuid | 1.23.0 | Apache-2.0 OR MIT |
 | valuable | 0.1.1 | MIT |
 | version_check | 0.9.5 | MIT/Apache-2.0 |

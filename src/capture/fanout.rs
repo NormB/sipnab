@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! `PACKET_FANOUT`: let the kernel spread one interface across N capture
-//! sockets.
+//! `PACKET_FANOUT`: kernel-side distribution of one interface across N capture
+//! sockets. Capture only — read on before assuming it shards processing.
 //!
 //! A single live capture is one `AF_PACKET` socket with one ring, drained by
 //! one thread. On a busy server that ring overflows and the drops are invisible

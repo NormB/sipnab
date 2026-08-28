@@ -95,7 +95,7 @@ decisions downstream read the source as a scalar:
 ### 2.3 How a packet reaches the pipeline
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:253`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L253)), `capture_files`
-([`src/capture/file.rs:310`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L310)), `capture_hep` ([`src/capture/hep.rs:1488`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1488)), the
+([`src/capture/file.rs:310`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L310)), `capture_hep` ([`src/capture/hep.rs:1831`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1831)), the
 uprobe reader — builds a `Packet` ([`src/capture/packet.rs:452`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L452)) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
@@ -253,7 +253,7 @@ compliant proxy keeps an unanswered INVITE transaction alive.
 
 **F4 — Clock disagreement.** A HEP v3 packet's timestamp comes from the
 *sender's* clock, read from the `TS_SEC`/`TS_USEC` chunks by `parse_hep_v3`
-([`src/capture/hep.rs:745`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L745) onward) and carried verbatim into `Packet::timestamp`
+([`src/capture/hep.rs:955`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L955) onward) and carried verbatim into `Packet::timestamp`
 by `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)). A live packet's timestamp comes
 from the local kernel (`pcap_ts_to_chrono`, [`src/capture/live.rs:928`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L928)). Two
 clocks, no discipline between them. Every figure that subtracts a signaling time
@@ -261,7 +261,7 @@ from a media time — post-dial delay against first RTP, ringback analysis,
 one-way-audio onset — inherits the offset.
 
 Two details soften this and one sharpens it. HEP v2 carries no timestamp at all,
-so `parse_hep_v2` ([`src/capture/hep.rs:938`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L938)) stamps local receive time, and v3
+so `parse_hep_v2` ([`src/capture/hep.rs:1221`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1221)) stamps local receive time, and v3
 falls back the same way when the chunk pair is unrepresentable — a v2 mirror
 therefore has *one* clock, not two. And when the skew runs the wrong way,
 `elapsed_ms` ([`src/sip/timing.rs:58`](https://github.com/NormB/sipnab/blob/main/src/sip/timing.rs#L58)) refuses a backwards pair rather than
@@ -405,7 +405,7 @@ One consequence to accept rather than fix: **the channel carries no
 end-of-source marker.** `Item` is `One` or `Many` ([`src/capture/channel.rs:130`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L130))
 and nothing else, so a consumer cannot tell "the HEP sender stopped" from "the
 HEP sender is quiet". A `--hep-listen` run already has the same blind spot, which
-`IdleWatch` ([`src/capture/hep.rs:1409`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1409)) papers over with a log line after a
+`IdleWatch` ([`src/capture/hep.rs:1693`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1693)) papers over with a log line after a
 silence threshold. A composite run inherits both the blind spot and the paper.
 
 **Backpressure is shared and the accounting is asymmetric.** `PacketTx::send`
@@ -836,7 +836,7 @@ Things this design could not settle from the code alone.
   advertises the RTCP socket only there, and `extract_sdp_links` reads `m=`/`c=`.
   Whether that produces real orphans is unconfirmed — no RTCP flowed in the runs.
 - **Does OpenSIPS mirror RTCP over HEP in practice?** `HepProtocol`
-  ([`src/capture/hep.rs:634`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L634)) parses protocol type 5 as RTCP, and SRC1 says such a
+  ([`src/capture/hep.rs:811`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L811)) parses protocol type 5 as RTCP, and SRC1 says such a
   report has nothing to attach to. Whether it becomes attachable once the NIC
   supplies the stream depends on whether the HEP path reaches RTCP ingestion at
   all, which this design did not trace.

@@ -1,5 +1,7 @@
 //! Which capture a server is holding, behind one lock so a swap is atomic.
 //!
+//! Shared by REST and MCP so both doors name the same one.
+//!
 //! Lives here, outside both server modules, because **two doors must answer
 //! with the same identity**. It was defined inside `src/mcp/server.rs` and
 //! gated on the `mcp` feature, which left `GET /v1/stats` with no way to say

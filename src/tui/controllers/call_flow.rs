@@ -604,8 +604,6 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
             app.active_popup = Some(Popup::FilterDialog);
         }
         CallFlowAction::ClearFilter => {
-            app.active_filter = None;
-            app.active_filter_text.clear();
             app.filter_dialog.clear();
             // `search_query` is a shared global narrowing input; clearing it
             // here matches the call list's "drop every narrowing input" F9
@@ -613,6 +611,9 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
             // narrowed by a stale search.
             app.search_query.clear();
             app.status_error = None;
+            // Last, so a failed trail write's warning is not erased by the
+            // status reset above -- see `App::clear_active_filter`.
+            app.clear_active_filter();
         }
     }
 }

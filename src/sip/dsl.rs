@@ -34,7 +34,40 @@ use crate::rtp::stream::RtpStream;
 // ── Maximum nesting depth (D17) ─────────────────────────────────────
 
 /// Maximum parenthesis nesting depth allowed in filter expressions.
+///
+/// Bounds recursion *in the parser* — `atom = "(" expr ")"` is the only rule
+/// that re-enters. It says nothing about how big the resulting tree is;
+/// [`MAX_EXPRESSION_NODES`] is the guard for that.
 const MAX_NESTING_DEPTH: usize = 50;
+
+/// Maximum number of nodes in a parsed expression tree.
+///
+/// [`MAX_NESTING_DEPTH`] counts parentheses, and parentheses are not what
+/// makes a tree deep. `a OR b OR c OR …` carries no parenthesis at all and
+/// still builds one [`Expr::Or`] per term, left-associated, so the tree is as
+/// deep as the chain is long. Every walk of that tree — evaluation, `Clone`,
+/// `Debug` — recurses once per level, so an unbounded chain is an unbounded
+/// recursion. Measured on the 0.5.130 debug build (2026-08-28): a
+/// 4,633-term chain evaluated, a 4,634-term chain overflowed the MCP server
+/// thread's stack and aborted the process.
+///
+/// 1024 nodes admits a 512-term chain (512 leaves + 511 combinators = 1023
+/// nodes), which is far past anything sipnab or its operators write:
+///
+/// - The largest expression sipnab itself builds is 33 nodes — every
+///   diagnostic alias flag at once, `(problems) OR (slow-setup) OR
+///   (short-calls) OR (one-way) OR (nat-issues)`. `--problems` alone, the
+///   biggest single alias, is 23.
+/// - The largest expression the TUI filter dialog can build is 27 nodes —
+///   five text fields ANDed with nine of the ten method checkboxes ORed.
+/// - The largest hand-written filter in the documentation is 5 nodes.
+///
+/// Those three figures are measured, not remembered:
+/// `node_counts_the_cap_is_justified_against` asserts each one.
+///
+/// The cap also keeps the deepest legal recursion 4.5× below the depth
+/// measured to fail, in the build whose frames are largest.
+const MAX_EXPRESSION_NODES: usize = 1024;
 
 /// Maximum regex size in bytes (D17).
 const REGEX_SIZE_LIMIT: usize = 1_000_000;
@@ -93,6 +126,90 @@ enum Expr {
     Not(Box<Expr>),
     /// Leaf comparison: `field operator value`.
     Compare(Field, Operator, Value),
+}
+
+/// A childless node, used as the stand-in a subtree is swapped out for while
+/// [`Expr`]'s destructor dismantles a tree iteratively.
+///
+/// Any leaf would do; this one allocates nothing (no `String`, no compiled
+/// regex) and is never evaluated — it exists only long enough to be dropped.
+fn placeholder_leaf() -> Expr {
+    Expr::Compare(Field::OneWay, Operator::Eq, Value::Bool(true))
+}
+
+/// Move `node`'s child subtrees onto `out`, leaving childless placeholders
+/// behind, so that dropping `node` itself unwinds no further.
+///
+/// A child that is already a leaf is left alone: it owns no subtree, so the
+/// compiler's own drop glue disposes of it without recursing.
+fn detach_children(node: &mut Expr, out: &mut Vec<Expr>) {
+    /// Swap one child for a placeholder unless it is already a leaf.
+    fn take(child: &mut Expr, out: &mut Vec<Expr>) {
+        if matches!(child, Expr::Compare(..)) {
+            return;
+        }
+        out.push(std::mem::replace(child, placeholder_leaf()));
+    }
+
+    match node {
+        Expr::And(lhs, rhs) | Expr::Or(lhs, rhs) => {
+            take(lhs, out);
+            take(rhs, out);
+        }
+        Expr::Not(inner) => take(inner, out),
+        Expr::Compare(..) => {}
+    }
+}
+
+impl Drop for Expr {
+    /// Dismantle the tree iteratively.
+    ///
+    /// The compiler's generated drop glue walks a tree the way it is shaped:
+    /// one stack frame per level. A left-associative `a OR b OR c …` chain is
+    /// exactly as deep as it is long, so *freeing* one is its own stack
+    /// overflow — reached without ever evaluating the expression. Measured on
+    /// the 0.5.130 debug build (2026-08-28): parsing a 17,901-term chain and
+    /// then rejecting it for trailing input returned an error, while the same
+    /// at 17,902 terms aborted the process while freeing the tree.
+    ///
+    /// [`MAX_EXPRESSION_NODES`] bounds what `parse` will *accept*, but the
+    /// oversized tree has to be built before it can be counted and refused,
+    /// and refusing it means dropping it. So the bound cannot be the only
+    /// guard: the destructor has to be safe at any size, which is what this
+    /// is. Each iteration detaches one node's children into a heap worklist
+    /// and lets that node fall out of scope holding only leaves, so the
+    /// nesting never exceeds two frames however deep the tree.
+    fn drop(&mut self) {
+        let mut pending: Vec<Expr> = Vec::new();
+        detach_children(self, &mut pending);
+        while let Some(mut node) = pending.pop() {
+            detach_children(&mut node, &mut pending);
+            // `node` is dropped here holding only placeholder leaves, so its
+            // own `Drop` finds nothing to detach and stops.
+        }
+    }
+}
+
+/// Total number of nodes in the tree rooted at `expr`, counted iteratively.
+///
+/// Iteratively because this is the very check that decides whether the tree
+/// is small enough to recurse over; a recursive count would overflow on the
+/// input it exists to reject.
+fn count_nodes(expr: &Expr) -> usize {
+    let mut count = 0usize;
+    let mut stack: Vec<&Expr> = vec![expr];
+    while let Some(node) = stack.pop() {
+        count += 1;
+        match node {
+            Expr::And(lhs, rhs) | Expr::Or(lhs, rhs) => {
+                stack.push(lhs);
+                stack.push(rhs);
+            }
+            Expr::Not(inner) => stack.push(inner),
+            Expr::Compare(..) => {}
+        }
+    }
+    count
 }
 
 /// Addressable fields in the filter DSL. Each variant maps to one entry in
@@ -395,14 +512,28 @@ pub fn expand_alias(alias: &str, t: &AliasThresholds) -> Option<String> {
 
 /// Whether any leaf comparison in the tree references a diagnosis-derived
 /// field. Walked once at parse time to cache `FilterExpr::needs_diagnosis`.
+///
+/// Iterative like [`count_nodes`]. `parse` only reaches it once the node cap
+/// has passed, so a stack frame per level would be survivable here — but it
+/// would be a second thing to re-argue every time that cap moves, and this
+/// walk gains nothing from the recursion.
 fn expr_references_diagnosis(expr: &Expr) -> bool {
-    match expr {
-        Expr::And(lhs, rhs) | Expr::Or(lhs, rhs) => {
-            expr_references_diagnosis(lhs) || expr_references_diagnosis(rhs)
+    let mut stack: Vec<&Expr> = vec![expr];
+    while let Some(node) = stack.pop() {
+        match node {
+            Expr::And(lhs, rhs) | Expr::Or(lhs, rhs) => {
+                stack.push(lhs);
+                stack.push(rhs);
+            }
+            Expr::Not(inner) => stack.push(inner),
+            Expr::Compare(field, _, _) => {
+                if field.is_diagnosis() {
+                    return true;
+                }
+            }
         }
-        Expr::Not(inner) => expr_references_diagnosis(inner),
-        Expr::Compare(field, _, _) => field.is_diagnosis(),
     }
+    false
 }
 
 // ── FilterExpr public API ───────────────────────────────────────────
@@ -456,6 +587,11 @@ impl FilterExpr {
     /// - The input is empty or contains only whitespace
     /// - A syntax error is found (with approximate position)
     /// - Parentheses nest deeper than 50 levels
+    /// - The expression tree exceeds 1024 nodes — the bound on `a OR b OR c …`
+    ///   chains, which nest no parentheses and so are invisible to the depth
+    ///   check above. Not linked to the constant that carries it, because that
+    ///   constant is private and rustdoc refuses a public link into private
+    ///   scope; it is `MAX_EXPRESSION_NODES` in this module.
     /// - A regex pattern fails to compile or exceeds the 1 MB size limit
     #[must_use = "parsing result must be handled"]
     pub fn parse(input: &str) -> Result<Self> {
@@ -481,6 +617,20 @@ impl FilterExpr {
             bail!(
                 "{}",
                 render_parse_error(trimmed, pos, "unexpected trailing input")
+            );
+        }
+
+        // Size, not grouping depth. `check_nesting_depth` above measures
+        // parentheses, and a flat `a OR b OR c …` chain has none while still
+        // building one node per term — so it walked straight past that guard
+        // and overflowed the stack later, during evaluation. Counted here,
+        // after the syntax checks, so that a malformed expression is still
+        // reported as malformed rather than as oversized.
+        let nodes = count_nodes(&expr);
+        if nodes > MAX_EXPRESSION_NODES {
+            bail!(
+                "expression exceeds maximum size of {MAX_EXPRESSION_NODES} nodes \
+                 (this one has {nodes}); split it into several filters"
             );
         }
 
@@ -3004,6 +3154,135 @@ mod tests {
     fn nesting_depth_unbalanced_close_parens_saturates() {
         // Leading ')' must not underflow; depth saturates at 0.
         assert!(check_nesting_depth(")))(((").is_ok());
+    }
+
+    // ── MAX_EXPRESSION_NODES: the figures it is justified against ──────
+
+    /// The node counts quoted in [`MAX_EXPRESSION_NODES`]'s own
+    /// justification, measured rather than remembered.
+    ///
+    /// A cap is only "generous" relative to something. These are that
+    /// something, and if any of them grows past what the constant claims,
+    /// this fails and the claim gets re-argued instead of quietly rotting.
+    #[test]
+    fn node_counts_the_cap_is_justified_against() {
+        /// Count the nodes in an expression that must parse.
+        fn nodes(expr: &str) -> usize {
+            let parsed = FilterExpr::parse(expr).unwrap_or_else(|e| panic!("{expr:?}: {e}"));
+            count_nodes(&parsed.root)
+        }
+
+        let t = AliasThresholds::default();
+        let problems = expand_alias("problems", &t).expect("problems is an alias");
+        assert_eq!(nodes(&problems), 23, "--problems, the biggest single alias");
+
+        // Every diagnostic alias flag at once, joined the way
+        // `app::bootstrap::build_filter_expr` joins them: the widest
+        // expression sipnab itself constructs.
+        let all_flags = [
+            "problems",
+            "slow-setup",
+            "short-calls",
+            "one-way",
+            "nat-issues",
+        ]
+        .iter()
+        .map(|a| format!("({})", expand_alias(a, &t).unwrap_or_default()))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+        assert_eq!(nodes(&all_flags), 33, "every alias flag at once");
+
+        // The widest the TUI filter dialog can build: five text fields ANDed
+        // with nine of the ten method checkboxes ORed (all ten emits no
+        // method clause at all).
+        let methods = [
+            "REGISTER",
+            "OPTIONS",
+            "INVITE",
+            "PUBLISH",
+            "SUBSCRIBE",
+            "MESSAGE",
+            "NOTIFY",
+            "REFER",
+            "INFO",
+        ]
+        .iter()
+        .map(|m| format!("method == '{m}'"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+        let dialog_max = format!(
+            "from.user =~ 'a' AND to.user =~ 'b' AND src.ip =~ 'c' AND dst.ip =~ 'd' \
+             AND payload =~ 'e' AND ({methods})"
+        );
+        assert_eq!(
+            nodes(&dialog_max),
+            27,
+            "the TUI filter dialog at its widest"
+        );
+
+        // The largest filter written out in the user-facing documentation.
+        assert_eq!(
+            nodes("dst.ip == '198.51.100.100' AND state == 'Failed' AND method == 'INVITE'"),
+            5,
+            "the biggest hand-written filter in docs/"
+        );
+
+        // And all of them together are still a small fraction of the cap.
+        assert!(
+            nodes(&all_flags) * 30 < MAX_EXPRESSION_NODES,
+            "the cap must stay at least 30x the widest expression sipnab builds"
+        );
+    }
+
+    /// A flat chain past the cap is refused, and the refusal names both the
+    /// limit and the size — the guard `check_nesting_depth` cannot see,
+    /// because a chain nests no parentheses.
+    #[test]
+    fn flat_chain_past_the_node_cap_is_refused_with_both_figures() {
+        let chain = vec!["state == 'Completed'"; 513].join(" OR ");
+        assert!(check_nesting_depth(&chain).is_ok(), "no parens to count");
+        let err = FilterExpr::parse(&chain)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "accepted".to_string());
+        assert!(err.contains("1024"), "must name the limit: {err}");
+        assert!(err.contains("1025"), "must name the size: {err}");
+    }
+
+    /// `count_nodes` agrees with the shape it is counting.
+    #[test]
+    fn count_nodes_counts_every_node_kind() {
+        let one = FilterExpr::parse("state == 'Failed'").expect("parses");
+        assert_eq!(count_nodes(&one.root), 1);
+
+        let not = FilterExpr::parse("NOT state == 'Failed'").expect("parses");
+        assert_eq!(count_nodes(&not.root), 2);
+
+        let mixed = FilterExpr::parse("state == 'Failed' AND (pdd > 1.0 OR NOT one_way == true)")
+            .expect("parses");
+        // 3 leaves + Not + Or + And.
+        assert_eq!(count_nodes(&mixed.root), 6);
+
+        // Parentheses add no node: the two spellings count the same.
+        let bare = FilterExpr::parse("state == 'Failed' AND pdd > 1.0").expect("parses");
+        let parens = FilterExpr::parse("(state == 'Failed') AND ((pdd > 1.0))").expect("parses");
+        assert_eq!(count_nodes(&bare.root), count_nodes(&parens.root));
+    }
+
+    /// Freeing a chain far past the point the recursive drop glue died on
+    /// (measured: 17,902 terms) completes normally.
+    ///
+    /// Built by hand rather than through `parse` so the destructor is the
+    /// only thing under test — and out of allocation-free leaves, so what the
+    /// test costs is the tree's shape rather than 60,000 heap strings.
+    #[test]
+    fn dropping_a_deep_tree_does_not_recurse() {
+        let mut root = placeholder_leaf();
+        for _ in 0..60_000 {
+            root = Expr::Or(Box::new(root), Box::new(placeholder_leaf()));
+        }
+        assert_eq!(count_nodes(&root), 120_001);
+        drop(root);
     }
 
     // ── render_parse_error: direct unit coverage ────────────────────────

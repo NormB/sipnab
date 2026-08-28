@@ -78,3 +78,9 @@ website/static/wasm/sipnab_bg.wasm
 e2e/node_modules/
 e2e/test-results/
 e2e/playwright-report/
+# Lighthouse writes one ~1 MB HTML report and one ~900 KB JSON report per run,
+# and the budget job collects three runs of five URLs -- 30 files, ~28 MB, all
+# of them a record of one machine on one afternoon. lighthouserc.json IS
+# tracked: it is the budget. The measurements behind it are recorded in that
+# file's `_measured` block rather than by committing the reports.
+e2e/.lighthouseci/

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Test utilities shared across modules. Only compiled in test builds.
+//! Shared helpers for the test suite: fixtures and builders.
+//!
+//! Shared across modules, and only compiled in test builds.
 
 /// Build raw SIP bytes from a request/status line, header lines, and an optional body.
 ///

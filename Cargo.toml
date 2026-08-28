@@ -147,6 +147,16 @@ opus-decoder = "0.1"
 # Phase 5: Metrics & API
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
+# OpenAPI 3.1 document for the REST surface, derived from the handlers rather
+# than written beside them. `docs/rest-api.md` is the prose reference and stays
+# hand-written; this is the machine-readable contract the website's Scalar page
+# renders, and `tests/openapi_contract_test.rs` fails the build when the two
+# disagree with the router. MSRV 1.75, comfortably under this crate's pinned
+# 1.97 — and no fork: the published crate is used as-is.
+#
+# Default features kept: the only one is `macros`, which is the whole point --
+# `#[utoipa::path]` and `#[derive(OpenApi)]` live there.
+utoipa = { version = "5", optional = true }
 
 # Phase 8.1: MCP server (Model Context Protocol)
 rmcp = { version = "3", default-features = false, features = ["server", "transport-io", "macros", "schemars"], optional = true }
@@ -231,7 +241,7 @@ hep = ["native", "dep:hmac", "dep:sha2"]
 # so it is independent of the `api` feature). Needs base64 for Basic-auth.
 metrics = ["native", "dep:base64"]
 audio = ["dep:libloading", "dep:libc"]
-api = ["native", "dep:axum", "dep:tokio", "dep:base64", "dep:hmac", "dep:sha2"]
+api = ["native", "dep:axum", "dep:tokio", "dep:base64", "dep:hmac", "dep:sha2", "dep:utoipa"]
 mcp = ["native", "dep:tokio", "dep:rmcp", "dep:base64", "dep:hmac", "dep:sha2"]
 mcp-http = ["mcp", "api", "rmcp/transport-streamable-http-server"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:console_error_panic_hook"]

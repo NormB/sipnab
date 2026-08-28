@@ -265,7 +265,7 @@ fn hep_allowlist_rejects_source_outside_cidr() {
 /// Built with the production token encoder, so the only thing wrong with it is
 /// the clock — which is the condition the acceptance window is about.
 fn hep3_sip_hmac_skewed(key: &str, payload: &[u8], skew: u64, nonce_byte: u8) -> Vec<u8> {
-    use sipnab::capture::hep::{build_hep_v3_bytes, build_hmac_auth_token};
+    use sipnab::capture::hep::build_hep_v3_hmac;
     let ep = HepEndpoint {
         src_addr: "127.0.0.1".parse().unwrap(),
         dst_addr: "127.0.0.1".parse().unwrap(),
@@ -275,8 +275,16 @@ fn hep3_sip_hmac_skewed(key: &str, payload: &[u8], skew: u64, nonce_byte: u8) ->
     };
     let ts = (Utc::now().timestamp().max(0) as u64).saturating_sub(skew);
     let nonce = [nonce_byte; 16];
-    let token = build_hmac_auth_token(key.as_bytes(), ts, &nonce, payload);
-    build_hep_v3_bytes(&ep, Utc::now(), HepProtocol::Sip, 0, Some(&token), payload)
+    build_hep_v3_hmac(
+        &ep,
+        Utc::now(),
+        HepProtocol::Sip,
+        0,
+        key.as_bytes(),
+        ts,
+        &nonce,
+        payload,
+    )
 }
 
 /// `--hep-hmac-window` decides whether a clock-skewed agent is heard at all.

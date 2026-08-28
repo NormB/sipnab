@@ -1,0 +1,1168 @@
+# Worked examples from real captures
+
+Every other page on this site demonstrates sipnab against a fixture: a capture
+built to hold exactly one fault, with two parties, one codec and nothing else
+happening. Production traffic looks nothing like that. This page works through
+twelve findings taken from live carrier and PBX captures — 4.5 million frames
+across two sites — and each one exists because the fixture version of it teaches
+the wrong lesson.
+
+The recurring theme is that the loudest finding is rarely the fault. On these
+captures the retransmit storm came from keepalives to peers that no longer
+existed, the scanner detector flagged the operator's own PBX, and 58 of the 59
+NAT mismatches were an SBC doing its job. Reading real traffic is mostly the
+work of separating those from the one that matters.
+
+## What do you want to learn?
+
+| Question | Example |
+|---|---|
+| What does a busy trunk actually contain? | [1. Take the census before you take the ticket](#1-take-the-census-before-you-take-the-ticket) |
+| Why does my capture hold fewer messages than I expected? | [2. The default port range hid most of the capture](#2-the-default-port-range-hid-most-of-the-capture) |
+| Should I read one rotated file or all of them? | [3. Read the whole ring, not one file of it](#3-read-the-whole-ring-not-one-file-of-it) |
+| Why is everything retransmitting? | [4. A retransmit storm that ICMP explains](#4-a-retransmit-storm-that-icmp-explains) |
+| Is it safe to wire scanner detection to a jail? | [5. The scanner detector flagged the PBX itself](#5-the-scanner-detector-flagged-the-pbx-itself) |
+| Every second call reports a NAT mismatch. Is that bad? | [6. NAT mismatch is what an SBC looks like from outside](#6-nat-mismatch-is-what-an-sbc-looks-like-from-outside) |
+| The loss figure says 90%. Do I believe it? | [7. Loss and jitter figures that no interval saw](#7-loss-and-jitter-figures-that-no-interval-saw) |
+| One-way audio and codec asymmetry on healthy calls? | [8. Findings that are ordinary behavior](#8-findings-that-are-ordinary-behavior) |
+| Which registration churn is worth chasing? | [9. Registration churn worth chasing, and churn that is a rounding error](#9-registration-churn-worth-chasing-and-churn-that-is-a-rounding-error) |
+| Why does the linter fire on a conformant proxy? | [10. Conformance findings move with the vantage point](#10-conformance-findings-move-with-the-vantage-point) |
+| What does toll fraud look like on the wire? | [11. Reading a toll-fraud probe line by line](#11-reading-a-toll-fraud-probe-line-by-line) |
+| A duplicate INVITE arrived three minutes late? | [12. One call, two carrier edge nodes](#12-one-call-two-carrier-edge-nodes) |
+
+## About the captures and the addresses
+
+Two capture sets run through this page, both taken on 2026-07-31 with
+`tcpdump -C -W` writing a rotating ring:
+
+| Placeholder | What it holds |
+|---|---|
+| `trunk.pcap0` … `trunk.pcap9` | A carrier access edge and its media relays. 3,406,114 frames, 121,841 SIP messages, 2,846,169 RTP packets. |
+| `pbx.pcap0` … `pbx.pcap4` | One PBX and its trunk peers. 1,126,158 frames, 2,077 dialogs. |
+| `inbound.pcap` | A single inbound call from a wholesale carrier, 60 frames. |
+
+Substitute your own paths. Every command below runs against a capture file and
+exits, so none of them needs an interface or root.
+
+**Addresses in this page are documentation addresses, not the ones on the
+wire.** Every routable address from the corpus maps to
+[RFC 5737](https://www.rfc-editor.org/rfc/rfc5737) documentation space, and
+every Call-ID, tag, branch, user and number is synthetic — rewritten value by
+value, keeping the structure two of the examples read. Ports, counts, timings,
+packet counts and loss figures are the measured values, because those are the
+teaching content:
+
+| Role in the examples | Address |
+|---|---|
+| Access edge proxy | 192.0.2.10 |
+| Media relay, outside interface | 192.0.2.20 |
+| The PBX | 192.0.2.30 |
+| Core network behind the edge | 198.51.100.0/24 |
+| Carrier peers and subscribers | 203.0.113.0/24 |
+
+Private [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) addresses appear
+unchanged, because a private address inside an SDP body is the whole point of
+several of these examples.
+
+---
+
+## 1. Take the census before you take the ticket
+
+**Situation:** someone hands you a trunk capture and a complaint. Before
+diagnosing anything, find out what the capture holds — the ratio decides
+which findings deserve attention.
+
+**Command:**
+
+```bash
+sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
+       --json-dialogs --no-cli-print --quiet \
+  | jq -r '.method' | sort | uniq -c | sort -rn
+```
+
+**Output:**
+
+```text
+  11887 OPTIONS
+  11623 KDMQ
+   2888 REGISTER
+   2171 SUBSCRIBE
+   1659 NOTIFY
+    442 INVITE
+    120 BYE
+     13 CANCEL
+      1 UPDATE
+      1 REFER
+      1 INFO
+```
+
+The same run, grouped by dialog state instead:
+
+```bash
+sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
+       --json-dialogs --no-cli-print --quiet \
+  | jq -r '.state' | sort | uniq -c | sort -rn
+```
+
+```text
+  25262 Completed
+   2746 Registered
+   2098 Active
+    231 Trying
+    144 InCall
+    138 Canceled
+     73 Failed
+     72 Terminated
+     37 Ringing
+      3 Redirected
+      1 Transferring
+      1 Pending
+```
+
+**What it means.** Calls are 1.4% of this capture. Of 30,806 dialogs, 442 carry
+an INVITE, and 76% of everything sipnab tracked is either an OPTIONS keepalive
+or `KDMQ` — the Kamailio distributed-message method that cluster members use to
+replicate user location and hash-table state to each other. Neither method
+belongs to a phone call, and neither appears in any synthetic fixture.
+
+Two consequences follow immediately:
+
+- **A count of dialogs is not a count of calls.** A dashboard reporting "30,806
+  sessions" from this hour describes a keepalive mesh. Filter to
+  `method == 'INVITE'` before any figure reaches a report.
+- **A diagnostic sweep inherits the same ratio.** `--problems` on this capture
+  returns mostly OPTIONS transactions, and [example 4](#4-a-retransmit-storm-that-icmp-explains)
+  is what they turn out to be.
+
+`Redirected`, `Transferring` and `Pending` appear once or three times each. A
+state that occurs three times in 30,806 dialogs is worth reading individually
+rather than aggregating, because it is either a genuine oddity or the one
+feature nobody tested.
+
+**What to do next.** Re-run every later command with
+`--filter "method == 'INVITE'"` when the question is about calls. The
+[filter DSL reference](filter-dsl.md#named-aliases) lists the aliases that
+combine method with a diagnosis.
+
+---
+
+## 2. The default port range hid most of the capture
+
+**Situation:** the capture is 100 MB and sipnab reports a few hundred SIP
+messages. Nothing looks wrong, and that is the problem.
+
+**Command:**
+
+```bash
+sipnab -N -I pbx.pcap0 --no-cli-print
+```
+
+**Output:**
+
+```text
+sipnab: 235762 packets captured, 456 SIP messages, 158223 RTP packets across 99 streams
+NOT ANALYZED: 1446 further SIP message(s) were seen on ports outside --portrange
+and are in none of the totals above. Busiest: 5080 (1065), 2397 (22), 11470 (20),
+46429 (19), 7374 (18). Re-run with --portrange 1-65535 to include them.
+```
+
+Now the same file with the gate opened:
+
+```bash
+sipnab -N -I pbx.pcap0 --portrange 1-65535 --no-cli-print
+```
+
+```text
+sipnab: 235762 packets captured, 1902 SIP messages, 158223 RTP packets across 99 streams
+```
+
+**What it means.** The default `--portrange 5060-5061` discarded 1,446 of 1,902
+messages — 76% of the SIP in the file. Port 5080 alone carried 1,065 of them,
+which on this PBX is the trunk side: internal phones register on 5060 and every
+carrier peer talks on 5080. Reading this capture with the default range answers
+questions about the phones and reports silence about the trunk.
+
+The trunk capture shows the same effect at a different scale. There the default
+range skipped 4,249 of 13,460 messages, and the busiest hidden port was 8090 —
+the Kamailio cluster mesh from [example 1](#1-take-the-census-before-you-take-the-ticket),
+which never touches 5060 at all.
+
+Notice what the counts do and do not move. Packets captured stays at 235,762 and
+RTP stays at 158,223 across 99 streams, because the port gate covers signaling
+only and sipnab never gates media on a port. So a capture read this way reports
+media it cannot attribute to a call, which reads as orphaned streams rather than
+as missing signaling.
+
+**What to do next.** Put `--portrange 1-65535` on every command when reading a
+file — the cost is one extra pass over frames that fail the SIP parse. On a
+**live** capture the range becomes the kernel BPF filter instead, so the traffic
+never reaches sipnab and no counter can report the loss. Set the range before
+you capture, and see the port-gate warning in
+[Troubleshooting](troubleshooting.md#start-here-one-pass-over-everything).
+
+---
+
+## 3. Read the whole ring, not one file of it
+
+**Situation:** `tcpdump -C 100 -W 10` left ten files. Reading the newest one is
+the obvious move, and it distorts every duration and stream count in the answer.
+
+**Command:**
+
+One file:
+
+```bash
+sipnab -N -I trunk.pcap0 --portrange 1-65535 --no-cli-print
+```
+
+```text
+sipnab: 369892 packets captured, 13460 SIP messages, 310249 RTP packets across 648 streams
+```
+
+All ten, in capture order:
+
+```bash
+sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 --no-cli-print
+```
+
+```text
+Read 3406114 packets: 10 of 10 file(s) read in full
+sipnab: 3406114 packets captured, 121841 SIP messages, 2846169 RTP packets across 1185 streams
+```
+
+**What it means.** Nine times the packets, nine times the messages — and **fewer
+than twice the streams**. One file holds 648 streams. All ten hold 1,185. The
+arithmetic only works if most streams span several files, which is exactly what
+a 100 MB rotation does to a five-minute call: reading the files one at a time
+counts one stream ten times, each with a truncated duration.
+
+The diagnosis engine reports that truncation as a fault. `trunk.pcap0` alone
+produces 12 duration-asymmetry hints of this shape:
+
+```text
+Duration asymmetry: A leg lasted 0.2s, B leg 7.9s (Δ 7.7s) — one side may have
+hung up or dropped media early.
+```
+
+A 7.7-second delta on a file that covers 11 seconds is the file boundary, not a
+one-sided hangup. Read together, the ring reports 6 hints at 107.1 s and a
+spread of genuine deltas above 40 s — figures that describe calls rather than
+files.
+
+`-I` reads files in capture order, never by filename,
+which matters because a `-C -W` ring wraps: `trunk.pcap7` can hold older traffic
+than `trunk.pcap0`. Sorting by name would interleave two time windows and
+produce stream durations that are worse than truncated.
+
+**What to do next.** Point `-I` at the directory and narrow with
+`--input-name`, as above. The whole 921 MB ring took 3.3 seconds of wall clock
+on one aarch64 host, so the cost of reading everything is not the reason to read
+one file. See [Cookbook recipe 19](examples.md#19-read-a-very-large-capture-faster)
+for the flags that matter on captures too large to hold in memory.
+
+---
+
+## 4. A retransmit storm that ICMP explains
+
+**Situation:** `--problems` on the PBX capture returns 376 dialogs with
+`retransmits` above 3. That reads like a lossy link.
+
+**Command:**
+
+```bash
+sipnab -N -I /var/captures --input-name 'pbx.pcap[0-4]' --portrange 1-65535 \
+       --json-dialogs --no-cli-print --quiet \
+  | jq -r 'select(.timing.retransmits > 3) | "\(.method) \(.state) rt=\(.timing.retransmits)"' \
+  | sort | uniq -c | sort -rn
+```
+
+**Output:**
+
+```text
+    331 OPTIONS Trying rt=10
+     13 OPTIONS Trying rt=6
+     10 OPTIONS Trying rt=8
+      7 OPTIONS Trying rt=5
+      7 OPTIONS Trying rt=4
+      5 OPTIONS Trying rt=7
+      3 OPTIONS Trying rt=9
+```
+
+Not one INVITE, and 331 of the 376 sit on the same figure. Pull the report for a
+single one of them — substitute a Call-ID from your own run:
+
+```bash
+sipnab -N -I pbx.pcap0 --portrange 1-65535 --no-cli-print \
+       --call-report '3b1f0c7a-9d21-4e08-b6ad-2ad4e1f90c11'
+```
+
+```text
+Call Report: 3b1f0c7a-9d21-4e08-b6ad-2ad4e1f90c11
+════════════════════════════════════════
+Time:       2026-07-31 17:35:51 -> 17:36:23 (31s)
+From:       <sip:redacted-user@...>
+To:         -
+Result:     Trying
+Frame:      pbx.pcap0#7498@a1b2c3d4e5f60718
+
+Timing:
+  PDD:        -
+  Setup:      -
+  Ring:       -
+  Teardown:   -
+  Retransmits: 10
+
+SIP Transactions:
+  OPTIONS
+  OPTIONS
+  OPTIONS
+  OPTIONS
+  OPTIONS
+  OPTIONS
+  OPTIONS
+  OPTIONS
+  OPTIONS
+  OPTIONS
+  OPTIONS
+
+Media Streams:
+  None
+
+Issues Detected: None
+
+Signaling Issues:
+  - No response to OPTIONS: 11 transmissions over 31.5s
+    evidence: #0 OPTIONS, #1 OPTIONS, #2 OPTIONS, #3 OPTIONS, #4 OPTIONS, #5 OPTIONS, #6 OPTIONS, #7 OPTIONS, #8 OPTIONS, #9 OPTIONS, #10 OPTIONS
+  - ICMP host unreachable: 203.0.113.75:5080 unreachable (11 times), reported by 203.0.113.181
+    evidence: #0 OPTIONS, #1 OPTIONS, #2 OPTIONS, #3 OPTIONS, #4 OPTIONS, #5 OPTIONS, #6 OPTIONS, #7 OPTIONS, #8 OPTIONS, #9 OPTIONS, #10 OPTIONS
+```
+
+**What it means.** `retransmits: 10` is not a measure of loss. Eleven
+transmissions over 31.5 s is the complete non-INVITE client transaction ladder
+of [RFC 3261 §17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2):
+T1, 2×T1, 4×T1, then T2 (4 s) repeatedly until Timer F fires at 64×T1 = 32 s. A
+transaction that reaches that count did not lose packets — it ran to completion
+against a peer that answered nothing. The number tells you the timer expired,
+and nothing else.
+
+The ICMP line is what turns the inference into a cause, and **which address
+reported it is the diagnosis**. sipnab prints the tally at the end of any run
+over the same file:
+
+```bash
+sipnab -N -I pbx.pcap0 --portrange 1-65535 --no-cli-print
+```
+
+```text
+ICMP: 696 error(s) quoting a SIP request, naming 12 unreachable endpoint(s).
+Busiest: 203.0.113.74:5080 (72, host unreachable), 203.0.113.41:5080 (71, host
+unreachable), 203.0.113.42:5080 (71, host unreachable), 203.0.113.72:5080 (71,
+host unreachable), 203.0.113.71:5080 (69, host unreachable)
+```
+
+Across the whole PBX capture, `--analyze` separates two shapes. Two evidence
+rows out of the 338 under its `ICMP: SIP request undeliverable` finding:
+
+```bash
+sipnab -N -I /var/captures --input-name 'pbx.pcap[0-4]' --portrange 1-65535 \
+       --analyze --no-cli-print
+```
+
+```text
+- 192.0.2.30:5080 -> 203.0.113.72, unreachable 203.0.113.72:5080,
+  reported by 203.0.113.181 | host unreachable (type 3, code 1), quoting a OPTIONS
+- 192.0.2.30:5080 -> 203.0.113.73, unreachable 203.0.113.73:5080,
+  reported by 203.0.113.73 | communication administratively prohibited
+  (type 3, code 13), quoting a OPTIONS
+```
+
+A **router** answered the first one, and the destination host answered the
+second. Type 3 code 1 from a third address means the peer no longer exists on
+that network — a decommissioned gateway, or a route that went away. Type 3 code
+13 from the peer's own address means the peer is alive and its firewall refuses
+you. Same symptom, same retransmit count, two different teams to call.
+
+**What to do next.** Take the 12 unreachable endpoints to the trunk
+configuration and remove the ones that no longer exist. Until then each of them
+burns eleven transmissions every keepalive interval, and — as
+[example 5](#5-the-scanner-detector-flagged-the-pbx-itself) shows — makes the
+PBX look like a scanner to its own monitoring.
+
+---
+
+## 5. The scanner detector flagged the PBX itself
+
+**Situation:** you are about to wire `--fail2ban` to a jail. The
+[cookbook](examples.md#10-detect-sip-scanners-and-auto-block-via-fail2ban) says
+to measure first against a capture of a normal hour. Here is why.
+
+**Command:**
+
+```bash
+sipnab -N -I /var/captures --input-name 'pbx.pcap[0-4]' --portrange 1-65535 \
+       --kill-scanner --fail2ban --no-cli-print \
+  | grep -oE 'src=[^ ]+ ua="[^"]*"' | sort | uniq -c
+```
+
+**Output:**
+
+```text
+   2864 src=192.0.2.30 ua="Asterisk PBX 20.15.2"
+```
+
+The trunk capture, same command against the other corpus:
+
+```bash
+sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
+       --kill-scanner --fail2ban --no-cli-print \
+  | grep -oE 'src=[^ ]+ ua="[^"]*"' | sort | uniq -c
+```
+
+```text
+     21 src=198.51.100.12 ua="sipsak 0.9.8.1"
+```
+
+**What it means.** Across 1.1 million frames of PBX traffic, the detector fired
+2,864 times, every one of them naming the PBX itself. Across 3.4 million frames
+of carrier traffic it fired 21 times, every one naming the operator's own
+monitoring probe. Not one detection in either capture belongs to an outside
+party. A jail reading this file with `maxretry = 5` bans the phone system inside
+the first second.
+
+Neither detection came from a User-Agent signature — `Asterisk` and `sipsak` are
+not on any scanner list. Both came from the **behavioral** rule, which counts
+probe transactions from one source and arms on evidence of probing. The evidence
+here is probes that drew no answer, and the source of those is
+[example 4](#4-a-retransmit-storm-that-icmp-explains): a PBX sending OPTIONS to
+twelve peers that no longer answer looks, to a rule counting unanswered probes,
+exactly like a sweep. The dead trunk peers manufactured the detection.
+
+**What to do next.**
+
+- Run the measurement above against a capture of a normal hour on **your**
+  traffic before the jail exists, and put every address it returns in
+  `ignoreip`. The cookbook recipe carries the jail configuration with the
+  `ignoreip`, `maxretry` and `bantime` values that survive this.
+- Fix the unanswered probes first. The PBX-side detections rest entirely on
+  keepalives to peers that no longer answer, so removing those peers from the
+  trunk configuration removes the reason the rule arms.
+- Read the `src=` values, never the count. A count of 2,864 says "act now" and
+  a single address says "this is your own box".
+
+---
+
+## 6. NAT mismatch is what an SBC looks like from outside
+
+**Situation:** `--problems` flags `nat_mismatch` on a large share of calls, and
+the calls sound fine. The fixture version of this finding is always a fault.
+
+**Command:**
+
+```bash
+sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
+       --json-dialogs --no-cli-print --quiet \
+  | jq -r 'select(.method == "INVITE")
+           | "nat=\(.diagnosis.nat_mismatch) private=\(.diagnosis.private_media_address) oneway=\(.diagnosis.one_way_audio) nomedia=\(.diagnosis.no_media)"' \
+  | sort | uniq -c | sort -rn
+```
+
+**Output:**
+
+```text
+    266 nat=false private=false oneway=false nomedia=false
+    114 nat=false private=false oneway=false nomedia=true
+     45 nat=true private=true oneway=false nomedia=false
+     13 nat=true private=false oneway=false nomedia=false
+      2 nat=false private=false oneway=true nomedia=false
+      1 nat=true private=false oneway=true nomedia=false
+      1 nat=false private=true oneway=true nomedia=false
+```
+
+**What it means.** Of 442 INVITE dialogs, 59 carry `nat_mismatch: true`. **One**
+of those 59 also carries `one_way_audio: true`. The other 58 carried audio in
+both directions for the whole call.
+
+The two hints sipnab attached to one of those 59 dialogs say why, and the two
+halves say different things:
+
+```text
+RTP arrived from 203.0.113.50:11814 at 192.0.2.20:21274, and no SDP in this
+dialog advertised 203.0.113.50 (it offered 10.15.1.147:11814) — the media source
+was rewritten, typically by NAT, so replies sent to 10.15.1.147:11814 never
+reach it.
+
+SDP offered the private media address 10.15.1.147:11814 to a peer on the public
+internet, which cannot route back to it. This is correct only if something
+downstream rewrites the SDP (an SBC, an ALG, or a media proxy); if nothing does,
+the far end sends audio to an address that does not exist and the call is
+one-way while signaling looks healthy.
+```
+
+That is a phone behind NAT advertising 10.15.1.147 and an SBC rewriting the
+media path — the deployment working as designed. sipnab reports the observation
+and refuses to guess whether something downstream fixes it, because from the
+capture point both cases look identical up to the moment media flows.
+
+The port is the tell. Here the advertised port (11814) and the observed port
+(11814) match, so the NAT preserved the port: a static 1:1 mapping, and
+symmetric RTP still works. Compare a case in the same capture where the offer
+named 10.240.91.12:11948 and media arrived from 203.0.113.183:11948 — again the
+same port, again benign. A **different** port on each side means port-address
+translation, and that is where a return pinhole can fail to open.
+
+One row of that table has nothing to do with NAT. 114 answered calls report
+`no_media: true` — a quarter of every call in the capture, and none of them a
+fault. Compare the media addresses those calls negotiated against the ones that
+did carry audio:
+
+```bash
+sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
+       --json-dialogs --no-cli-print --quiet \
+  | jq -r 'select(.diagnosis.no_media == true) | .sdp_timeline[]?.media_addr' \
+  | sort | uniq -c | sort -rn | head -4
+```
+
+```text
+    166 198.51.100.13
+    137 192.0.2.21
+     25 198.51.100.27
+     24 198.51.100.21
+```
+
+```bash
+sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
+       --json-dialogs --no-cli-print --quiet \
+  | jq -r 'select((.streams | length) > 0) | .sdp_timeline[]?.media_addr' \
+  | sort | uniq -c | sort -rn | head -4
+```
+
+```text
+    188 198.51.100.12
+    165 192.0.2.20
+     27 198.51.100.23
+     25 198.51.100.27
+```
+
+Two media relays, and the lists share nothing at the top. Every call that
+carried audio anchored on 198.51.100.12 / 192.0.2.20, and every call reporting
+no media anchored on 198.51.100.13 / 192.0.2.21. The port mirror feeding this
+capture covers one relay of the pair. `no_media` here is a statement about the
+capture point, which is why the finding text tells you to check that the capture
+sees the media path at all before reading it as a fault.
+
+**What to do next.** Never read `nat_mismatch` alone. Combine it with the
+outcome:
+
+```bash
+sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
+       --filter "nat_mismatch == true AND one_way == true" --json-dialogs \
+       --no-cli-print --quiet
+```
+
+On this capture that returns one dialog out of 442, and that one is the ticket.
+[Troubleshooting](troubleshooting.md#the-sdp-offered-a-private-address) covers
+what to change once you have it.
+
+---
+
+## 7. Loss and jitter figures that no interval saw
+
+**Situation:** a stream reports 90.33% packet loss and another reports 13,514 ms
+of jitter. Both figures would justify replacing a circuit, and neither describes
+what the caller heard.
+
+**Command:**
+
+```bash
+sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
+       --json-dialogs --no-cli-print --quiet \
+  | jq -c '.streams[]? | select(.loss_pct > 70)
+           | {packets, loss_pct, jitter_ms, bursts: .burst_gap.burst_count,
+              burst_ms: .burst_gap.burst_duration_ms,
+              gap_loss: .burst_gap.gap_loss_rate, bursty: .burst_gap.is_bursty}'
+```
+
+**Output:**
+
+```json
+{"packets":2775,"loss_pct":78.7486598253944,"jitter_ms":0.07164038823094283,"bursts":2,"burst_ms":530.0,"gap_loss":0.0,"bursty":true}
+{"packets":2775,"loss_pct":78.7486598253944,"jitter_ms":0.07322643861696838,"bursts":2,"burst_ms":530.0,"gap_loss":0.0,"bursty":true}
+{"packets":3310,"loss_pct":90.33124963486593,"jitter_ms":0.3000290927994878,"bursts":3,"burst_ms":540.0,"gap_loss":0.0,"bursty":true}
+{"packets":3310,"loss_pct":90.33124963486593,"jitter_ms":0.3017346830911323,"bursts":3,"burst_ms":540.0,"gap_loss":0.0,"bursty":true}
+```
+
+**What it means.** Two streams, each listed twice — a relay capture sees the
+same audio arriving and leaving, so every stream has a near-identical twin. Read
+one of each pair.
+
+The aggregate on the second says 90.33% loss. The burst-gap model on the same
+stream says three bursts totalling **540 ms**, with a gap loss rate of exactly
+0.0. A 68-second call lost half a second of audio in three pieces and delivered
+everything else. A ticket saying "90% packet loss" sends an engineer to the
+wrong layer.
+
+The interval series settles it:
+
+```bash
+sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
+       --json-dialogs --no-cli-print --quiet \
+  | jq -r '.streams[]? | select(.loss_pct > 90) | .quality_intervals[]
+           | "\(.timestamp)  loss=\(.loss_pct)  packets=\(.packets)"' \
+  | head -13
+```
+
+```text
+2026-07-31T15:44:38.644134+00:00  loss=99.19282222793927  packets=251
+2026-07-31T15:44:43.664087+00:00  loss=19.12350597609562  packets=203
+2026-07-31T15:44:48.664102+00:00  loss=0.0  packets=250
+2026-07-31T15:44:53.684110+00:00  loss=1.593625498007968  packets=247
+2026-07-31T15:44:58.704101+00:00  loss=0.0  packets=251
+2026-07-31T15:45:03.724093+00:00  loss=0.0  packets=251
+2026-07-31T15:45:08.725258+00:00  loss=10.8  packets=223
+2026-07-31T15:45:13.744111+00:00  loss=0.0  packets=251
+2026-07-31T15:45:18.764113+00:00  loss=0.0  packets=251
+2026-07-31T15:45:23.784098+00:00  loss=0.0  packets=251
+2026-07-31T15:45:28.804124+00:00  loss=0.0  packets=251
+2026-07-31T15:45:33.824091+00:00  loss=0.0  packets=251
+2026-07-31T15:45:38.844109+00:00  loss=0.0  packets=251
+```
+
+Ten of the thirteen five-second intervals lost nothing. The first one is the
+figure to read carefully: 99.19% loss while **receiving 251 packets**, which is
+a full interval of 20 ms audio. Receiving everything and reporting 99% loss
+means the sequence space jumped, not that audio vanished. The SDP timeline for
+the same call says what jumped it:
+
+```bash
+sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
+       --json-dialogs --no-cli-print --quiet \
+  | jq -c 'select([.streams[]? | select(.loss_pct > 90)] | length > 0)
+           | .sdp_timeline[] | {timestamp, direction, event, media_addr, media_port}'
+```
+
+```json
+{"timestamp":"2026-07-31T15:44:30.532163+00:00","direction":"offer","event":null,"media_addr":"198.51.100.27","media_port":10084}
+{"timestamp":"2026-07-31T15:44:30.538475+00:00","direction":"offer","event":"MediaAnchorChange","media_addr":"192.0.2.20","media_port":21284}
+{"timestamp":"2026-07-31T15:44:33.608214+00:00","direction":"answer","event":"MediaAnchorChange","media_addr":"203.0.113.148","media_port":26408}
+{"timestamp":"2026-07-31T15:44:33.609530+00:00","direction":"answer","event":"MediaAnchorChange","media_addr":"198.51.100.12","media_port":34450}
+{"timestamp":"2026-07-31T15:44:34.404015+00:00","direction":"answer","event":"MediaAnchorChange","media_addr":"203.0.113.148","media_port":26408}
+{"timestamp":"2026-07-31T15:44:34.406111+00:00","direction":"answer","event":"MediaAnchorChange","media_addr":"198.51.100.12","media_port":34450}
+```
+
+Four `MediaAnchorChange` events inside four seconds, and the stream's first
+packet lands 20 ms after the third of them. The relay re-anchored the media
+while the call was answering. The sequence discontinuity belongs to that
+hand-off, not to the network.
+
+Jitter behaves the same way. Ask the ring for every stream whose aggregate
+jitter passes three seconds, and print the worst interval beside it:
+
+```bash
+sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
+       --json-dialogs --no-cli-print --quiet \
+  | jq -c '.streams[]? | select(.jitter_ms > 3000)
+           | {packets, jitter_ms, loss_pct, intervals: (.quality_intervals | length),
+              worst_interval_jitter_ms: ([.quality_intervals[].jitter_ms] | max)}'
+```
+
+```json
+{"packets":1893,"jitter_ms":3333.136390820093,"loss_pct":0.0,"intervals":7,"worst_interval_jitter_ms":0.16320738588116435}
+{"packets":1893,"jitter_ms":3333.138510299535,"loss_pct":0.0,"intervals":7,"worst_interval_jitter_ms":0.1834566583384629}
+{"packets":4153,"jitter_ms":13514.316250662869,"loss_pct":1.8667296786389416,"intervals":16,"worst_interval_jitter_ms":0.6413230501234052}
+{"packets":4153,"jitter_ms":13514.321777099512,"loss_pct":1.8667296786389416,"intervals":16,"worst_interval_jitter_ms":0.6143676470639956}
+{"packets":4306,"jitter_ms":8236.74992001001,"loss_pct":1.8015963511972637,"intervals":17,"worst_interval_jitter_ms":0.8262424991207276}
+{"packets":4306,"jitter_ms":8236.753047991591,"loss_pct":1.8015963511972637,"intervals":17,"worst_interval_jitter_ms":0.8307203392990805}
+{"packets":4659,"jitter_ms":9330.191903142577,"loss_pct":1.6673701983959477,"intervals":18,"worst_interval_jitter_ms":0.6767651051659166}
+{"packets":4659,"jitter_ms":9330.201241363062,"loss_pct":1.6673701983959477,"intervals":18,"worst_interval_jitter_ms":0.682117122331886}
+```
+
+Four streams and their twins. Aggregates from 3,333 ms to 13,514 ms, and not one
+five-second interval anywhere above 0.83 ms — four orders of magnitude apart.
+
+**What to do next.** Read `burst_gap` and `quality_intervals` before the
+aggregate on any stream whose headline figure looks impossible. The aggregate is
+one running number over the whole stream, so a single discontinuity — a
+re-anchor, a hold and resume, a hand-off that preserves the SSRC — pins it high
+for the rest of the call. `is_bursty: true` beside a `gap_loss_rate` of 0.0 is
+that signature exactly. The schema for both blocks is in
+[Output formats](output-formats.md#one-object-per-dialog), and
+[MOS and codecs](mos-and-codecs.md#mos-comes-from-what-sipnab-measured-never-from-what-the-far-end-claimed)
+covers what the quality score does with them.
+
+---
+
+## 8. Findings that are ordinary behavior
+
+**Situation:** the whole trunk ring produces four one-way-audio findings and one
+codec asymmetry. Chasing all five wastes a day.
+
+**Command:**
+
+```bash
+sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
+       --json-dialogs --no-cli-print --quiet \
+  | jq -r 'select((.diagnosis.hints | join(" ")) | test("RTP flowed|Codec asymmetry"))
+           | "\(.state)  \(.duration_sec)s  \(.diagnosis.hints | join(" / "))"'
+```
+
+**Output:**
+
+```text
+Completed  3.062s  RTP flowed 198.51.100.24:10192 -> 198.51.100.12:31934 only (SSRC 0x7a30ae18). No reverse media flow detected. / SDP offered the private media address 192.168.15.44:12320 to a peer on the public internet, which cannot route back to it. This is correct only if something downstream rewrites the SDP (an SBC, an ALG, or a media proxy); if nothing does, the far end sends audio to an address that does not exist and the call is one-way while signaling looks healthy.
+Completed  0.173s  RTP flowed 203.0.113.82:43880 -> 192.0.2.20:38646 only (SSRC 0x797d72f7). No reverse media flow detected. / RTP arrived from 203.0.113.82:43880 at 192.0.2.20:38646, and no SDP in this dialog advertised 203.0.113.82 (it offered 198.51.100.24:19262) — the media source was rewritten, typically by NAT, so replies sent to 198.51.100.24:19262 never reach it. / One-way audio combined with NAT mismatch — media likely being sent to the wrong address.
+Canceled  23.517s  RTP flowed 203.0.113.145:11048 -> 192.0.2.20:25400 only (SSRC 0x62aaf71c). No reverse media flow detected.
+Completed  11.528s  Codec asymmetry: A leg uses PCMU, B leg uses CN — likely a transcoding B2BUA on the path. / Duration asymmetry: A leg lasted 10.4s, B leg 0.0s (Δ 10.4s) — one side may have hung up or dropped media early.
+Ringing  1.748s  RTP flowed 203.0.113.146:56998 -> 192.0.2.20:27736 only (SSRC 0xf5620096). No reverse media flow detected.
+```
+
+**What it means.** Read the `state` column first.
+
+- The `Canceled` and `Ringing` rows are **early media**. Audio flowing from the
+  callee toward the caller before answer, with nothing coming back, carries the
+  ringing tone or a network announcement, working exactly as it should. Nobody
+  has answered yet, so there is no reverse direction to have. The `Canceled` one
+  ran 23.5 s of that tone before the caller gave up.
+- The first two rows are the ones to open, because a call that answered and
+  carried audio one way is a complaint waiting to arrive. The second names its
+  own cause: one-way audio **and** a NAT mismatch on the same dialog, which is
+  the combination
+  [example 6](#6-nat-mismatch-is-what-an-sbc-looks-like-from-outside) exists to
+  isolate. The first carries a private media address with no NAT rewrite beside
+  it, so the question there is whether anything downstream rewrites that SDP.
+- The fourth row names **CN** on the B leg. CN is comfort noise
+  ([RFC 3389](https://www.rfc-editor.org/rfc/rfc3389), payload type 13) — the
+  packet an endpoint sends instead of silence during a pause. It is not a codec
+  a transcoder produced. The finding fires because the two legs carried
+  different payload types, and the reason they did is that one side stopped
+  talking.
+
+**What to do next.** Filter one-way audio by state before it reaches anyone:
+
+```bash
+sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
+       --filter "one_way == true AND state == 'Completed'" --json-dialogs \
+       --no-cli-print --quiet
+```
+
+For codec findings, check the payload types the streams actually carried before
+believing "transcoding". Across the whole ring the codec census is 692 streams
+of PCMU, 2 of CN and 2 on a dynamic payload type — a single-codec trunk, so any
+report of transcoding on it deserves a second look. Recipe
+[11](examples.md#11-find-why-a-call-sounds-bad-in-one-direction-only) covers the
+asymmetry aliases and what each one compares.
+
+---
+
+## 9. Registration churn worth chasing, and churn that is a rounding error
+
+**Situation:** `--analyze` reports 144 findings under its
+`REGISTER failed or was cut short` heading on a PBX with 177 REGISTER dialogs.
+That reads like a registrar in trouble.
+
+**Command:**
+
+```bash
+sipnab -N -I /var/captures --input-name 'pbx.pcap[0-4]' --portrange 1-65535 \
+       --json-dialogs --no-cli-print --quiet \
+  | jq -r 'select(.method == "REGISTER") | .signaling_diagnosis.registration_failure // empty
+           | if .kind == "rejected" then "rejected \(.code)"
+             elif (.requested_expiry_sec - .granted_expiry_sec) <= 1 then "off-by-one"
+             else "shortened to \(((.granted_expiry_sec / .requested_expiry_sec) * 100 | floor))pct"
+             end' \
+  | sort | uniq -c | sort -rn
+```
+
+**Output:**
+
+```text
+    124 off-by-one
+      5 rejected 403
+      1 shortened to 90pct
+      1 shortened to 85pct
+      1 shortened to 80pct
+      1 shortened to 79pct
+      1 shortened to 77pct
+      1 shortened to 75pct
+      1 shortened to 74pct
+      1 shortened to 72pct
+      1 shortened to 70pct
+      1 shortened to 69pct
+      1 shortened to 64pct
+      1 shortened to 58pct
+      1 shortened to 49pct
+      1 shortened to 27pct
+      1 shortened to 20pct
+```
+
+**What it means.** 124 of the 144 findings are a registrar granting 479 s
+against a requested 480, or 359 against 360, or 239 against 240. That is a
+registrar computing the expiry from a second-granularity clock, and it changes a
+phone's re-registration interval by one part in 480. It is noise, and it is 86%
+of the finding.
+
+Underneath it sit two things that matter:
+
+- **5 rejections with 403 Forbidden.** Those phones are not reachable for
+  inbound calls at all. `--analyze` pairs four of them with an authentication
+  loop: `challenges=3 | the UAC answers each challenge and is challenged again
+  — wrong credentials`, which points at provisioning rather than at the
+  registrar.
+- **15 materially shortened grants**, down to 20% of what the endpoint asked
+  for. A phone that asked for 480 s and got 98 re-registers five times as often
+  as it planned. Fifteen phones doing that is a measurable load, and the ratio —
+  not the count — is what identifies them.
+
+**What to do next.** Treat "shorter than asked" as two findings and separate
+them by ratio, as the `jq` filter above does. Chase the rejections first, the
+sub-50% grants second, and never open a ticket for the off-by-one class.
+[Troubleshooting](troubleshooting.md#registration-failures) covers the
+challenge-loop shapes.
+
+---
+
+## 10. Conformance findings move with the vantage point
+
+**Situation:** `--lint` reports 22 errors of one rule on a proxy capture. The
+proxy is a stock build of well-tested software, and 22 conformance errors in one
+100 MB slice is implausible.
+
+**Command:**
+
+```bash
+sipnab -N -I trunk.pcap0 --portrange 1-65535 --lint --no-cli-print \
+  | grep -oE '^(error|warning|note): [A-Z0-9.-]+' | sort | uniq -c | sort -rn
+```
+
+**Output:**
+
+```text
+     22 error: SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH
+     12 warning: SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING
+      2 error: SDP-7587-7-OPUS-RTPMAP-RATE
+```
+
+Now scope the same file to a single hop with a BPF expression:
+
+```bash
+sipnab -N -I trunk.pcap0 --portrange 1-65535 --lint --no-cli-print 'host 192.0.2.10' \
+  | grep -oE '^(error|warning|note): [A-Z0-9.-]+' | sort | uniq -c | sort -rn
+```
+
+```text
+     38 error: SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED
+     12 warning: SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING
+      2 error: SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH
+      1 error: SDP-7587-7-OPUS-RTPMAP-RATE
+```
+
+And to the other hop:
+
+```bash
+sipnab -N -I trunk.pcap0 --portrange 1-65535 --lint --no-cli-print 'host 198.51.100.14' \
+  | grep -oE '^(error|warning|note): [A-Z0-9.-]+' | sort | uniq -c | sort -rn
+```
+
+```text
+      1 error: SDP-7587-7-OPUS-RTPMAP-RATE
+```
+
+**What it means.** One rule went from 22 to 2 to 0. Another went from 0 to 38.
+Nothing on the wire changed.
+
+The message ladder for one flagged dialog shows why. Substitute a Call-ID the
+lint output named:
+
+```bash
+sipnab -N -I trunk.pcap0 --portrange 1-65535 --quiet \
+       -e '4c8e17b0-2fd5-4a91-9c33-6081ea5f7d24' \
+  | grep -E '^[0-9]{2}:|^(Via|CSeq):'
+```
+
+```text
+15:44:29.029 203.0.113.180:37402 -> 192.0.2.10:5080 INVITE UDP
+Via: SIP/2.0/UDP 192.168.40.35:5060;branch=z9hG4bK5a0c71e2b8934fd10cae4
+CSeq: 1 INVITE
+15:44:29.035 192.0.2.10:5080 -> 203.0.113.180:37402 407 Proxy Authentication Required UDP
+15:44:29.047 203.0.113.180:37402 -> 192.0.2.10:5080 ACK UDP
+15:44:29.048 203.0.113.180:37402 -> 192.0.2.10:5080 INVITE UDP
+Via: SIP/2.0/UDP 192.168.40.35:5060;branch=z9hG4bK4071938265
+CSeq: 2 INVITE
+15:44:29.082 192.0.2.10:5080 -> 203.0.113.180:37402 100 trying -- your call is important to us UDP
+15:44:29.084 198.51.100.12:8090 -> 198.51.100.13:8090 KDMQ UDP
+Via: SIP/2.0/UDP 198.51.100.12:8090;branch=z9hG4bKb809.7c41ad9e000000000000000000000000.0
+CSeq: 10 KDMQ
+15:44:29.084 198.51.100.14:5060 -> 198.51.100.24:5080 INVITE UDP
+Via: SIP/2.0/UDP 198.51.100.14;branch=z9hG4bK4fb4.e08d5c1a7b264f39a1c8074e2dd6b953.0
+Via: SIP/2.0/UDP 192.168.40.35:5060;rport=37402;received=203.0.113.180;branch=z9hG4bK4071938265
+CSeq: 2 INVITE
+15:44:29.085 198.51.100.13:8090 -> 198.51.100.12:8090 200 OK UDP
+15:44:29.104 198.51.100.24:5080 -> 198.51.100.14:5060 401 Unauthorized UDP
+15:44:29.105 198.51.100.14:5060 -> 198.51.100.24:5080 ACK UDP
+15:44:29.127 198.51.100.14:5060 -> 198.51.100.24:5080 INVITE UDP
+Via: SIP/2.0/UDP 198.51.100.14;branch=z9hG4bK4fb4.e08d5c1a7b264f39a1c8074e2dd6b953.1.cs2
+Via: SIP/2.0/UDP 192.168.40.35:5060;rport=37402;received=203.0.113.180;branch=z9hG4bK4071938265
+CSeq: 3 INVITE
+15:44:29.141 198.51.100.24:5080 -> 198.51.100.14:5060 100 Trying UDP
+15:44:31.805 198.51.100.24:5080 -> 198.51.100.14:5060 183 Session Progress UDP
+CSeq: 3 INVITE
+15:44:31.808 192.0.2.10:5080 -> 203.0.113.180:37402 183 Session Progress UDP
+CSeq: 2 INVITE
+15:44:31.995 198.51.100.24:5080 -> 198.51.100.14:5060 183 Session Progress UDP
+CSeq: 3 INVITE
+15:44:31.998 192.0.2.10:5080 -> 203.0.113.180:37402 183 Session Progress UDP
+CSeq: 2 INVITE
+```
+
+One Call-ID, two hops, and nothing in the record separates them. The access hop
+runs a `407` challenge and re-sends at `CSeq: 2`. The core hop runs its own `401`
+challenge and re-sends at `CSeq: 3`, under a top Via the edge proxy added. The
+ACK at 29.105 answers the `401` on the **core** hop and carries that hop's
+branch, while the INVITE branch sipnab recorded came from the **access** hop.
+Each branch is correct on the hop that carried it, and the finding names a real
+disagreement inside one dialog record. The disagreement comes from the vantage
+point.
+
+The `KDMQ` pair at 29.084 belongs to no call at all — it is the cluster
+replication from [example 1](#1-take-the-census-before-you-take-the-ticket),
+interleaved into the ladder because `-e` follows a dialog and the mesh shares
+the capture.
+
+The reverse effect is just as instructive. Narrowing to the access hop hides the
+core-side messages, and 38 `RECORD-ROUTE-NOT-COPIED` errors appear that the
+two-hop reading never produced. A conformance verdict is a statement about where
+you stood as much as about what crossed the wire.
+
+Not everything moved. `MAX-FORWARDS-MISSING` held at 12 across the whole-file
+run and the access-hop run, because it tests one message against itself and needs no
+second hop. The access hop carries all twelve offending requests, so narrowing
+to it changes nothing. Those 12 are real: twelve requests entered the network with
+no [Max-Forwards](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.6) header
+at all. `SDP-7587-7-OPUS-RTPMAP-RATE` is real too — a device declaring
+`opus/48000/1` where [RFC 7587 §7](https://www.rfc-editor.org/rfc/rfc7587#section-7)
+requires `opus/48000/2` — and the whole ring holds 24 of them.
+
+**What to do next.** Lint one hop at a time. Add a BPF expression naming the
+element you want to judge, and read the rules that move between one scope and
+the next as
+questions about the capture rather than as defects. The
+[conformance rule reference](sip-lint-rules.md#why-the-ack-branch-rule-covers-only-non-2xx)
+explains what each transaction rule compares, and
+[Cookbook recipe 15](examples.md#15-check-a-capture-against-the-rfcs) covers
+running the linter in CI.
+
+---
+
+## 11. Reading a toll-fraud probe line by line
+
+**Situation:** `--analyze` reports an authentication loop from an address you do
+not recognize. The whole probe fits on one screen, and every line of it is a
+signature.
+
+**Command:**
+
+```bash
+sipnab -N -I pbx.pcap4 --portrange 1-65535 --quiet \
+       -e '9f4c2a71-3e08-4b6d-a520-71c0d9e4f832'
+```
+
+**Output** (numbers, addresses and the Call-ID replaced, everything else
+verbatim):
+
+```text
+17:40:41.924 203.0.113.66:53168 -> 192.0.2.30:5060 INVITE UDP
+INVITE sip:<redacted-e164>@192.0.2.30 SIP/2.0
+Via: SIP/2.0/UDP 0.0.0.0:53168;branch=z9hG4bK704192338
+Max-Forwards: 70
+From: <sip:<redacted-e164>@192.0.2.30>;tag=51720483
+To: <sip:<redacted-e164>@192.0.2.30>
+Call-ID: 9f4c2a71-3e08-4b6d-a520-71c0d9e4f832
+CSeq: 1 INVITE
+Contact: <sip:<redacted-e164>@203.0.113.77:53168>
+User-Agent: pplsip
+Content-Type: application/sdp
+Content-Length: 206
+
+v=0
+o=<redacted-e164> 16264 18299 IN IP4 0.0.0.0
+s=pplsip
+c=IN IP4 0.0.0.0
+t=0 0
+m=audio 25282 RTP/AVP 100 6 0 8 3 18 5 101
+a=rtpmap:0 pcmu/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-11
+17:40:41.968 192.0.2.30:5060 -> 203.0.113.66:53168 401 Unauthorized UDP
+17:40:42.467 192.0.2.30:5060 -> 203.0.113.66:53168 401 Unauthorized UDP
+17:40:43.468 192.0.2.30:5060 -> 203.0.113.66:53168 401 Unauthorized UDP
+17:40:45.468 192.0.2.30:5060 -> 203.0.113.66:53168 401 Unauthorized UDP
+```
+
+**What it means.** Six things in that message identify it, and none of them
+needs a threat feed:
+
+1. **`c=IN IP4 0.0.0.0` and `o=` on 0.0.0.0.** The sender wants no audio. It is
+   asking one question — does this PBX route the call — and a real media address
+   would cost it a socket it has no use for.
+2. **`Via` on 0.0.0.0 as well**, so no response can ever route back by the Via.
+   A tool that has given up on receiving replies is not placing a call.
+3. **`Contact` names 203.0.113.77 while the packet came from 203.0.113.66.** Two
+   different hosts. The generator hardcodes a Contact and sprays from whatever
+   address it happens to hold.
+4. **`a=rtpmap:0 pcmu/8000` in lowercase.** Every real stack writes `PCMU`. The
+   codec list also declares eight payload types and provides an `rtpmap` for
+   two.
+5. **`User-Agent: pplsip`, echoed in `s=pplsip`.** A session name matching the
+   User-Agent is a template, not a session.
+6. **The dialled digits.** Both `From` and `To` carry a long digit string that
+   opens with the same fixed prefix and ends in an international destination —
+   the shape of a prefix probe looking for a route that bills somewhere
+   expensive.
+
+Now read the four 401s, because sipnab's own summary needs the correction:
+
+```bash
+sipnab -N -I pbx.pcap4 --portrange 1-65535 --json-dialogs --no-cli-print --quiet \
+  | jq -c 'select(.call_id == "9f4c2a71-3e08-4b6d-a520-71c0d9e4f832")
+           | {auth_loop: .signaling_diagnosis.auth_loop,
+              hints: .signaling_diagnosis.hints, timing}'
+```
+
+```json
+{"auth_loop":{"challenges":4,"evidence":[1,2,3,4],"kind":"silent_drop"},"hints":["Authentication loop: 4 challenges and no Authorization header ever sent — the client is not attempting the challenge, or a proxy is stripping it."],"timing":{"retransmits":3}}
+```
+
+Four challenges, and the attacker sent **one** INVITE. The intervals between the
+401s are 0.499 s, 1.001 s and 2.000 s — the INVITE server transaction's Timer G
+ladder from [RFC 3261 §17.2.1](https://www.rfc-editor.org/rfc/rfc3261#section-17.2.1),
+doubling from T1 up to T2. The PBX retransmitted its own final response because
+nothing ever acknowledged it. `timing.retransmits: 3` says so in the same
+record: 4 challenges minus 3 retransmissions is one challenge.
+
+**What to do next.** Match on the properties, not the address — a single source
+address is one rented host. `c=IN IP4 0.0.0.0` on an INVITE from outside your
+network has no legitimate reading, and neither does a Contact whose host differs
+from the source. Both survive the attacker changing address, User-Agent and
+prefix. Block the destination prefix at the trunk as well as the source, because
+the source is disposable and the prefix is what pays.
+[Cookbook recipe 10c](examples.md#10c-detect-toll-fraud-and-wangiri-call-back-bait)
+covers the fraud heuristics that run over this pattern live.
+
+---
+
+## 12. One call, two carrier edge nodes
+
+**Situation:** a wholesale carrier's inbound call rings, gets no answer, and
+then a duplicate INVITE for the same call arrives almost three minutes later
+from a different address. `--analyze` calls the capture clean.
+
+**Command:**
+
+```bash
+sipnab -N -I inbound.pcap --portrange 1-65535 --analyze --no-cli-print
+```
+
+```text
+No problems found in 1 dialog(s) and 0 stream(s) across 60 frame(s). Every frame
+decoded, no port gate discarded SIP, and no retention cap was reached — so this
+is a statement about the capture, not only about what sipnab could read of it.
+```
+
+One dialog, and the ladder shows two sources:
+
+```bash
+sipnab -N -I inbound.pcap --portrange 1-65535 --quiet \
+       -e '708134922_51772608@203.0.113.53' \
+  | grep -E '^[0-9]{2}:|^(Via|Call-ID|CSeq):'
+```
+
+`-e` prints each matching message in full, so the `grep` keeps the timestamp
+line and the three header fields that carry the finding. Header lines belong to
+the message above them:
+
+```text
+15:27:14.693 203.0.113.41:5060 -> 192.0.2.10:5060 INVITE UDP
+Via: SIP/2.0/UDP 203.0.113.41:5060;branch=z9hG4bK4f3e.b7e94c1052d8a3f6417c02be95d3ff81.0
+Via: SIP/2.0/UDP 203.0.113.51:5060;branch=z9hG4bK4f3e.9c0a44b7e1d2650fa839cb7f21e408d6.2
+Via: SIP/2.0/UDP 203.0.113.52:5060;branch=z9hG4bK4f3e.2fb18e05c3947da6b0e572139c4a86ef.0
+Via: SIP/2.0/UDP 203.0.113.53:5060;branch=z9hG4bK00B1a97f38e6dc410b2
+Call-ID: 708134922_51772608@203.0.113.53
+CSeq: 543439 INVITE
+15:27:14.698 192.0.2.10:5060 -> 203.0.113.41:5060 100 trying UDP
+15:27:15.614 192.0.2.10:5060 -> 203.0.113.41:5060 180 Ringing UDP
+15:27:49.170 192.0.2.10:5060 -> 203.0.113.41:5060 BYE UDP
+15:27:49.327 203.0.113.41:5060 -> 192.0.2.10:5060 200 OK UDP
+15:30:14.459 203.0.113.41:5060 -> 192.0.2.10:5060 CANCEL UDP
+15:30:14.460 203.0.113.42:5060 -> 192.0.2.10:5060 INVITE UDP
+Via: SIP/2.0/UDP 203.0.113.42:5060;branch=z9hG4bK4f3e.5d3ab8146fc70e29d5b1938ae0c6274b.0
+Via: SIP/2.0/UDP 203.0.113.51:5060;branch=z9hG4bK4f3e.9c0a44b7e1d2650fa839cb7f21e408d6.3
+Via: SIP/2.0/UDP 203.0.113.52:5060;branch=z9hG4bK4f3e.2fb18e05c3947da6b0e572139c4a86ef.0
+Via: SIP/2.0/UDP 203.0.113.53:5060;branch=z9hG4bK00B1a97f38e6dc410b2
+Call-ID: 708134922_51772608@203.0.113.53
+CSeq: 543439 INVITE
+15:30:14.465 192.0.2.10:5060 -> 203.0.113.42:5060 100 trying UDP
+15:30:14.490 203.0.113.42:5060 -> 192.0.2.10:5060 CANCEL UDP
+15:30:14.493 192.0.2.10:5060 -> 203.0.113.42:5060 200 canceling UDP
+15:30:14.612 192.0.2.10:5060 -> 203.0.113.42:5060 487 Request Terminated UDP
+15:30:14.619 203.0.113.42:5060 -> 192.0.2.10:5060 ACK UDP
+```
+
+**What it means.** Same Call-ID, same CSeq (`543439 INVITE`), same bottom three
+Via entries, three minutes apart, from two different carrier edge nodes. Read
+the Via stack from the bottom up and it names every hop the carrier put the call
+through — and the branch on the second-from-top entry moves from
+`z9hG4bK4f3e.9c0a44b7e1d2650fa839cb7f21e408d6.2` to `z9hG4bK4f3e.9c0a44b7e1d2650fa839cb7f21e408d6.3`. That suffix is the
+carrier's own retry counter. Its core re-fired the same call through a second
+edge node, and neither the Call-ID nor the CSeq changed to say so.
+
+Everything downstream of that reads badly without it. The edge sent `BYE` at
+15:27:49 after 34.5 s of ringing. The carrier's `CANCEL` for the first attempt
+arrived at 15:30:14, two minutes and twenty-five seconds after the edge had
+already given up. The second node's attempt lasted 30 ms before its own CANCEL.
+
+`--lint` names the fork mechanically. Two findings, with the Call-ID and the
+rule's own RFC explanation elided to leave the evidence:
+
+```bash
+sipnab -N -I inbound.pcap --portrange 1-65535 --lint --no-cli-print
+```
+
+```text
+error: SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED [...] observed=request recorded
+["sip:203.0.113.41;lr", "sip:203.0.113.52;lr"], the 2xx returned [] expected=the
+2xx ending with ["sip:203.0.113.41;lr", "sip:203.0.113.52;lr"], in that order
+error: SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH [...] observed=ACK
+branch=z9hG4bK4f3e.5d3ab8146fc70e29d5b1938ae0c6274b.0, INVITE branch=z9hG4bK4f3e.b7e94c1052d8a3f6417c02be95d3ff81.0
+```
+
+The ACK carries the **second** node's branch while the recorded INVITE branch is
+the **first** node's — the same cross-hop shape as
+[example 10](#10-conformance-findings-move-with-the-vantage-point), except that
+here the two branches come from two boxes rather than two hops, which is the
+finding rather than an artifact. The Record-Route error is separate and real: a
+`2xx` that returns an empty Record-Route set when the request recorded two
+entries leaves the caller with no route set, so any in-dialog request afterwards
+has nowhere to go.
+
+**What to do next.** When a duplicate INVITE arrives on an established Call-ID,
+compare the top Via host and its branch suffix against the first attempt before
+treating it as a retransmission. A retransmission repeats the branch exactly. A
+re-fork increments a suffix and changes the sending node. Take the pair to the
+carrier with both timestamps, because the gap between your `BYE` and their
+`CANCEL` is the number that identifies whose timer is wrong.
+
+---
+
+## Where to go next
+
+- [Troubleshooting](troubleshooting.md#find-your-symptom) — symptom to command,
+  when you have a complaint rather than a capture.
+- [Cookbook](examples.md#1-triage-a-pcap-fast) — the recipes these examples
+  apply, including the fail2ban wiring, the audio export and the MCP surface.
+- [Tuning capture](tuning-capture.md#3-capture-less-bpf-filters) — the BPF
+  expressions that scope a capture to one hop, as
+  [example 10](#10-conformance-findings-move-with-the-vantage-point) needs.
+- [Output formats](output-formats.md#one-object-per-dialog) — every field these
+  examples read out of `--json-dialogs`, with its type and meaning.
+- [Attribute media on an rtpengine relay](rtpengine.md#the-problem-on-a-real-capture)
+  — what to do when the media in a capture like these arrives with no call
+  attached to it.

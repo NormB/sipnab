@@ -2181,17 +2181,24 @@ pub fn classify_packet(
 
     // The second arm is the SNIFFED one: a HEP datagram read off the wire,
     // wrapper intact, on its way to somebody else's collector.
+    //
+    // GATED, unlike the delivered arm above. The delivered arm reaches a
+    // socket an operator bound and can put behind `--hep-allow` and
+    // `--hep-auth`; this one reads whatever is on the segment. Nothing
+    // authenticates it, the Call-ID comes verbatim out of the correlation-id
+    // chunk, and the media address comes out of the SDP — so an unbounded
+    // version of this arm let anything that could transmit here name a call
+    // and bind media wherever it liked. `sniffed_ng_sdp_links` holds the
+    // gate, and `docs/rtpengine.md` says plainly what a sniffed assertion is
+    // and is not worth.
     #[cfg(feature = "hep")]
     if pp.transport == TransportProto::Udp
-        && let Ok(hep) = crate::capture::hep::parse_hep(&pp.payload)
-        && crate::rtpengine::is_ng_over_hep(hep.protocol.to_byte(), &hep.payload)
+        && let Some(sdp_links) = crate::rtpengine::sniffed_ng_sdp_links(pp.dst_port, &pp.payload)
     {
-        let sdp_links =
-            crate::rtpengine::sdp_links_from_ng(&hep.payload, hep.correlation_id.as_deref());
         // Consumed either way. A datagram that parsed as HEP and decoded as
         // `ng` is control traffic; that it named no endpoint this time (a
-        // `delete`, a `ping`, a reply to one) is not a reason to reconsider it
-        // as media.
+        // `delete`, a `ping`, a reply to one, or a refusal by the port gate)
+        // is not a reason to reconsider it as media.
         return PacketAction::RelayControl { sdp_links };
     }
 

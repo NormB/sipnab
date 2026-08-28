@@ -753,3 +753,4 @@ zeroized
 zeroizes
 zeroizing
 zsh
+debounce

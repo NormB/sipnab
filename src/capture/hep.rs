@@ -336,11 +336,34 @@ pub fn describe_hep_limiters(global: u64, per_peer: u64) -> String {
 use crate::cli::HepAuthMode;
 
 /// Wire-format version byte of the HMAC auth token.
+///
+/// **2, not 1.** Version 1 computed its MAC over `version || timestamp ||
+/// nonce || payload` and nothing else, which left every HEP chunk carrying
+/// the addressing OUTSIDE the signature. A packet signed by a legitimate
+/// sender could be replayed with extra `0x0003`/`0x0004`/`0x0008` chunks
+/// appended — no key needed, because the payload the MAC covered was
+/// untouched — and the last-wins chunk walk recorded the attacker's
+/// addresses. Those are the fields `--hep-allow-kill` aims a kill response
+/// at, so a forged chunk pointed sipnab at a third party.
+///
+/// Version 2 signs the WHOLE datagram (see `hmac_over_datagram`), so a
+/// v1 token cannot be upgraded in place and a v2 receiver must be able to
+/// tell the two apart. It refuses v1 outright — see
+/// [`HmacAuthError::UnsupportedVersion`] for why there is no compatibility
+/// mode.
 #[cfg(feature = "hep")]
-const HMAC_TOKEN_VERSION: u8 = 1;
+pub const HMAC_TOKEN_VERSION: u8 = 2;
+/// The one superseded token version, refused with a distinct error so the
+/// rejection names the cause instead of looking like a corrupt packet.
+#[cfg(feature = "hep")]
+const HMAC_TOKEN_VERSION_UNBOUND: u8 = 1;
 /// Token length: version(1) + timestamp(8) + nonce(16) + HMAC-SHA256(32).
 #[cfg(feature = "hep")]
-const HMAC_TOKEN_LEN: usize = 1 + 8 + 16 + 32;
+pub const HMAC_TOKEN_LEN: usize = 1 + 8 + 16 + 32;
+/// Offset of the 32-byte MAC field within the token — the only part of the
+/// datagram the MAC does not cover, because it is where the MAC goes.
+#[cfg(feature = "hep")]
+const HMAC_MAC_OFFSET: usize = 1 + 8 + 16;
 /// Default acceptance window (seconds) for a token timestamp, each side of
 /// `now`.
 ///
@@ -363,21 +386,40 @@ pub const DEFAULT_HMAC_WINDOW_SECS: u64 = 30;
 #[cfg(feature = "hep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HmacAuthError {
-    /// Wrong length or unrecognized version byte.
+    /// Wrong length, or a version byte that names no scheme at all.
     BadFormat,
+    /// A token from the superseded version-1 scheme, whose MAC covered only
+    /// the payload and left the addressing chunks forgeable.
+    ///
+    /// Refused, with no compatibility switch. Accepting v1 would recreate the
+    /// exact hole v2 exists to close while the receiver reported HMAC
+    /// authentication as active, and a security mode that silently downgrades
+    /// is worse than one that visibly refuses: the operator of a v1 sender
+    /// sees a named rejection and upgrades, where a silent acceptance would
+    /// have left them believing addresses were authenticated when they were
+    /// not. `--hep-auth-mode hmac` is opt-in and sipnab-to-sipnab, so both
+    /// ends move together.
+    UnsupportedVersion,
     /// Timestamp is further than the acceptance window from now.
     TimestampOutOfWindow,
-    /// HMAC did not match (wrong key, or tampered token/payload).
+    /// HMAC did not match (wrong key, or a tampered datagram — payload,
+    /// addressing chunks, ports, correlation id, anything).
     BadMac,
     /// A token with this nonce was already accepted within the window.
     Replay,
 }
 
-/// Compute HMAC-SHA256 of `data` under `key`, returning the 32-byte tag.
+/// Compute HMAC-SHA256 over the concatenation of `parts` under `key`,
+/// returning the 32-byte tag.
+///
+/// Takes parts rather than one slice so the datagram MAC can skip its own
+/// MAC field without copying the datagram to zero it: the hot path feeds
+/// three borrowed slices and allocates nothing.
+///
 /// Pure; on the impossible key-setup failure it returns an all-zero tag,
 /// which can never match a real MAC, so verification fails closed.
 #[cfg(feature = "hep")]
-fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+fn hmac_sha256_parts(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
     use hmac::{Hmac, KeyInit, Mac};
     // Local alias: HMAC keyed over SHA-256 (the token's MAC algorithm).
     type HmacSha256 = Hmac<sha2::Sha256>;
@@ -386,7 +428,9 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
     // impossible Err path returns a zero tag, which fails closed on verify.
     match HmacSha256::new_from_slice(key) {
         Ok(mut mac) => {
-            mac.update(data);
+            for part in parts {
+                mac.update(part);
+            }
             let tag = mac.finalize().into_bytes();
             let mut out = [0u8; 32];
             out.copy_from_slice(&tag);
@@ -396,46 +440,131 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
     }
 }
 
-/// The byte region the token's MAC is computed over: version, timestamp,
-/// nonce, and the message payload. Binding the payload authenticates the
-/// message content, not merely possession of the key.
-#[cfg(feature = "hep")]
-fn hmac_signed_region(ts: u64, nonce: &[u8; 16], payload: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(1 + 8 + 16 + payload.len());
-    buf.push(HMAC_TOKEN_VERSION);
-    buf.extend_from_slice(&ts.to_be_bytes());
-    buf.extend_from_slice(nonce);
-    buf.extend_from_slice(payload);
-    buf
-}
-
-/// Build the 57-byte HMAC auth token carried in the `0x000e` chunk when
-/// `--hep-auth-mode hmac` is active.
+/// The MAC of a whole HEP datagram: every byte of it except the 32-byte MAC
+/// field itself, which is fed as 32 zeros so both sides compute over the
+/// same bytes.
+///
+/// # What this covers, and why it is the whole datagram
+///
+/// `"HEP3"`, the total-length field, EVERY chunk in wire order — address
+/// family, IP protocol, source and destination address, source and
+/// destination port, timestamps, protocol type, capture id, correlation id,
+/// any unknown chunk, and the payload — plus the token's own version,
+/// timestamp and nonce. Only `datagram[mac_start..mac_start + 32]` is
+/// excluded.
+///
+/// Version 1 signed `version || ts || nonce || payload`. The addressing lived
+/// entirely outside that, so an observed packet could be re-sent with extra
+/// address chunks appended and the receiver, walking chunks last-wins,
+/// recorded whatever the appended ones said — with the payload, and therefore
+/// the MAC, untouched. Signing a hand-picked list of "the fields that matter"
+/// would have left the same shape of hole open for the next chunk type
+/// somebody starts trusting, so the region is the datagram, not a list.
 ///
 /// # Arguments
 ///
 /// * `key` — the shared HMAC secret.
-/// * `ts` — token timestamp, seconds since the Unix epoch.
-/// * `nonce` — 16-byte unique-per-message nonce.
-/// * `payload` — the message bytes the token authenticates.
+/// * `datagram` — the complete HEP datagram, exactly as received or as about
+///   to be sent.
+/// * `mac_start` — offset of the 32-byte MAC field inside `datagram`.
 ///
 /// # Returns
 ///
-/// The wire token: version(1) + timestamp(8, big-endian) + nonce(16) +
-/// HMAC-SHA256 tag(32).
+/// The 32-byte tag, or an all-zero tag if `mac_start + 32` is out of range —
+/// which can never equal a real MAC, so it fails closed.
 #[cfg(feature = "hep")]
-pub fn build_hmac_auth_token(key: &[u8], ts: u64, nonce: &[u8; 16], payload: &[u8]) -> Vec<u8> {
-    let mac = hmac_sha256(key, &hmac_signed_region(ts, nonce, payload));
-    let mut token = Vec::with_capacity(HMAC_TOKEN_LEN);
-    token.push(HMAC_TOKEN_VERSION);
-    token.extend_from_slice(&ts.to_be_bytes());
-    token.extend_from_slice(nonce);
-    token.extend_from_slice(&mac);
-    token
+fn hmac_over_datagram(key: &[u8], datagram: &[u8], mac_start: usize) -> [u8; 32] {
+    let Some(mac_end) = mac_start.checked_add(32) else {
+        return [0u8; 32];
+    };
+    if mac_end > datagram.len() {
+        return [0u8; 32];
+    }
+    const ZERO_MAC: [u8; 32] = [0u8; 32];
+    hmac_sha256_parts(
+        key,
+        &[&datagram[..mac_start], &ZERO_MAC, &datagram[mac_end..]],
+    )
 }
 
-/// Verify a received HMAC auth token against the configured key and the
-/// message payload, rejecting stale timestamps, bad MACs, and replays.
+/// Build a complete HEP v3 datagram whose `0x000e` chunk carries a version-2
+/// HMAC token computed over the finished datagram.
+///
+/// Two passes, because the token cannot be built before the bytes it signs
+/// exist: the packet is assembled with a zero-filled token of the exact final
+/// length, the version/timestamp/nonce are written into it, the MAC is taken
+/// over the whole datagram with the MAC field read as zeros, and the tag is
+/// written into that field. The length never changes between the passes, so
+/// no length field is disturbed.
+///
+/// # Arguments
+///
+/// * `endpoint` — source/destination addresses and ports of the original flow.
+/// * `timestamp` — capture time, encoded as TS_SEC/TS_USEC chunks.
+/// * `protocol` — application protocol type chunk (SIP/RTCP/RTP/...).
+/// * `capture_id` — capture agent ID chunk value.
+/// * `key` — the shared HMAC secret.
+/// * `token_ts` — token timestamp, seconds since the Unix epoch (the replay
+///   window is measured against this, not against `timestamp`).
+/// * `nonce` — 16-byte unique-per-message nonce.
+/// * `payload` — the encapsulated message bytes.
+///
+/// # Returns
+///
+/// The complete wire-format HEP v3 datagram, signed.
+#[cfg(feature = "hep")]
+#[allow(clippy::too_many_arguments)]
+pub fn build_hep_v3_hmac(
+    endpoint: &HepEndpoint,
+    timestamp: DateTime<Utc>,
+    protocol: HepProtocol,
+    capture_id: u32,
+    key: &[u8],
+    token_ts: u64,
+    nonce: &[u8; 16],
+    payload: &[u8],
+) -> Vec<u8> {
+    let placeholder = [0u8; HMAC_TOKEN_LEN];
+    let mut pkt = build_hep_v3_bytes(
+        endpoint,
+        timestamp,
+        protocol,
+        capture_id,
+        Some(&placeholder),
+        payload,
+    );
+    // Locate the token by parsing back what was just built, rather than by
+    // arithmetic over the builder's chunk order. The offset then cannot drift
+    // when a chunk is added, and a builder that somehow emitted no auth chunk
+    // yields an unsigned packet the receiver refuses rather than a signature
+    // over the wrong bytes.
+    let Some((start, end)) = find_auth_chunk_span(&pkt) else {
+        return pkt;
+    };
+    if end.saturating_sub(start) != HMAC_TOKEN_LEN {
+        return pkt;
+    }
+    pkt[start] = HMAC_TOKEN_VERSION;
+    pkt[start + 1..start + 9].copy_from_slice(&token_ts.to_be_bytes());
+    pkt[start + 9..start + HMAC_MAC_OFFSET].copy_from_slice(nonce);
+    let mac_start = start + HMAC_MAC_OFFSET;
+    let mac = hmac_over_datagram(key, &pkt, mac_start);
+    pkt[mac_start..end].copy_from_slice(&mac);
+    pkt
+}
+
+/// The byte span of the `0x000e` auth chunk's DATA in a HEP v3 datagram, or
+/// `None` when there is no such chunk (or the datagram does not parse).
+///
+/// Shared by the builder and the tests; the receiver gets the same span from
+/// [`HepPacket::auth_span`], recorded during the parse it already performs.
+#[cfg(feature = "hep")]
+fn find_auth_chunk_span(datagram: &[u8]) -> Option<(usize, usize)> {
+    parse_hep(datagram).ok()?.auth_span
+}
+
+/// Verify a received version-2 HMAC token against the configured key and the
+/// datagram it arrived in, rejecting stale timestamps, bad MACs, and replays.
 ///
 /// The MAC is checked *before* the replay cache is consulted or updated, so
 /// a forged token can never seed the cache with an attacker-chosen nonce.
@@ -443,18 +572,22 @@ pub fn build_hmac_auth_token(key: &[u8], ts: u64, nonce: &[u8; 16], payload: &[u
 /// # Arguments
 ///
 /// * `key` — the shared HMAC secret.
-/// * `token` — the received 57-byte wire token.
-/// * `payload` — the message bytes the token must authenticate.
+/// * `datagram` — the complete datagram as received, byte for byte. Trailing
+///   bytes past the HEP total-length are inside the MAC too: a datagram is
+///   authenticated as a whole, and anything appended to one is a modification.
+/// * `auth_span` — byte range of the `0x000e` chunk's data within `datagram`,
+///   from [`HepPacket::auth_span`].
 /// * `now` — current time, seconds since the Unix epoch.
 /// * `window` — acceptance window in seconds, applied on each side of `now`.
 /// * `seen` — mutable replay cache of recently accepted nonces.
 ///
 /// # Errors
 ///
-/// `BadFormat` for a wrong length or version byte; `TimestampOutOfWindow`
+/// `BadFormat` for a span of the wrong length or a version byte naming no
+/// scheme; `UnsupportedVersion` for a version-1 token; `TimestampOutOfWindow`
 /// when the token timestamp is more than `window` seconds from `now`;
-/// `BadMac` when the HMAC does not match; `Replay` when the nonce was
-/// already accepted within the window.
+/// `BadMac` when the HMAC does not match anything about the datagram;
+/// `Replay` when the nonce was already accepted within the window.
 ///
 /// # Side effects
 ///
@@ -462,16 +595,23 @@ pub fn build_hmac_auth_token(key: &[u8], ts: u64, nonce: &[u8; 16], payload: &[u
 /// once per second — see `HmacNonceCache::should_prune`), and on success
 /// records the token's nonce there.
 #[cfg(feature = "hep")]
-pub fn verify_hmac_auth_token(
+pub fn verify_hmac_datagram(
     key: &[u8],
-    token: &[u8],
-    payload: &[u8],
+    datagram: &[u8],
+    auth_span: (usize, usize),
     now: u64,
     window: u64,
     seen: &mut HmacNonceCache,
 ) -> Result<(), HmacAuthError> {
-    if token.len() != HMAC_TOKEN_LEN || token[0] != HMAC_TOKEN_VERSION {
+    let (start, end) = auth_span;
+    if end > datagram.len() || start > end || end - start != HMAC_TOKEN_LEN {
         return Err(HmacAuthError::BadFormat);
+    }
+    let token = &datagram[start..end];
+    match token[0] {
+        HMAC_TOKEN_VERSION => {}
+        HMAC_TOKEN_VERSION_UNBOUND => return Err(HmacAuthError::UnsupportedVersion),
+        _ => return Err(HmacAuthError::BadFormat),
     }
     // Length is exactly HMAC_TOKEN_LEN (checked above), so these fixed-size
     // copies cannot panic and need no unwrap/expect.
@@ -482,12 +622,13 @@ pub fn verify_hmac_auth_token(
         return Err(HmacAuthError::TimestampOutOfWindow);
     }
     let mut nonce = [0u8; 16];
-    nonce.copy_from_slice(&token[9..25]);
+    nonce.copy_from_slice(&token[9..HMAC_MAC_OFFSET]);
 
     // Verify the MAC before touching the replay cache, so a forged token
     // cannot record its (attacker-chosen) nonce and lock out a legitimate one.
-    let expected = hmac_sha256(key, &hmac_signed_region(ts, &nonce, payload));
-    if !crate::crypto::constant_time_eq(&expected, &token[25..HMAC_TOKEN_LEN]) {
+    let mac_start = start + HMAC_MAC_OFFSET;
+    let expected = hmac_over_datagram(key, datagram, mac_start);
+    if !crate::crypto::constant_time_eq(&expected, &datagram[mac_start..end]) {
         return Err(HmacAuthError::BadMac);
     }
 
@@ -550,7 +691,7 @@ impl HmacNonceCache {
     ///
     /// Amortizing is safe because pruning is a memory optimization only: an
     /// expired nonce can never pass the timestamp-window check in
-    /// [`verify_hmac_auth_token`], so a not-yet-pruned stale entry cannot be
+    /// [`verify_hmac_datagram`], so a not-yet-pruned stale entry cannot be
     /// replayed.
     fn should_prune(&mut self, now: Instant) -> bool {
         match self.last_prune {
@@ -565,13 +706,15 @@ impl HmacNonceCache {
 
 /// Receiver-side gate for `--hep-auth-mode hmac`. Mirrors [`hep_auth_ok`]'s
 /// contract: with no configured secret every packet passes; otherwise the
-/// packet must carry a valid, fresh, unreplayed HMAC token over its payload.
+/// packet must carry a valid, fresh, unreplayed HMAC token over the WHOLE
+/// datagram — payload, addressing chunks and all.
 ///
 /// # Arguments
 ///
 /// * `expected` — the configured shared HMAC key, if any.
-/// * `token` — the packet's `0x000e` chunk bytes, if present.
-/// * `payload` — the packet payload the token must authenticate.
+/// * `datagram` — the complete datagram as received.
+/// * `auth_span` — byte range of the packet's `0x000e` chunk data, from
+///   [`HepPacket::auth_span`]; `None` when the packet carried no auth chunk.
 /// * `window_secs` — acceptance window each side of now, from
 ///   [`HepListenerOpts::hmac_window_secs`].
 /// * `cache` — mutable per-listener replay cache.
@@ -584,21 +727,24 @@ impl HmacNonceCache {
 /// # Side effects
 ///
 /// Reads the system clock, mutates `cache` (prune/insert) during
-/// verification, and logs a `tracing::debug` line on rejection.
+/// verification, and logs a `tracing::debug` line on rejection — plus a
+/// once-per-process `tracing::warn` for clock skew and for a superseded
+/// version-1 sender, the two rejections that drop every packet from a peer
+/// and so present as "the collector receives nothing".
 #[cfg(feature = "hep")]
 fn hmac_auth_ok(
     expected: Option<&str>,
-    token: Option<&[u8]>,
-    payload: &[u8],
+    datagram: &[u8],
+    auth_span: Option<(usize, usize)>,
     window_secs: u64,
     cache: &mut HmacNonceCache,
 ) -> bool {
-    match (expected, token) {
+    match (expected, auth_span) {
         (None, _) => true,
         (Some(_), None) => false,
-        (Some(key), Some(token)) => {
+        (Some(key), Some(span)) => {
             let now = chrono::Utc::now().timestamp().max(0) as u64;
-            match verify_hmac_auth_token(key.as_bytes(), token, payload, now, window_secs, cache) {
+            match verify_hmac_datagram(key.as_bytes(), datagram, span, now, window_secs, cache) {
                 Ok(()) => true,
                 Err(e) => {
                     // A skew rejection drops EVERY packet from that sender and
@@ -622,6 +768,30 @@ fn hmac_auth_ok(
                                  widen it with --hep-hmac-window. Every packet from \
                                  a clock-drifted peer is dropped, so this looks like \
                                  a collector that receives nothing."
+                            );
+                        }
+                    }
+                    // The same "receives nothing" symptom, from the other
+                    // cause an operator cannot guess: a sender still speaking
+                    // the version-1 token, whose MAC covered only the payload
+                    // and left the addressing chunks forgeable. Refused rather
+                    // than accepted, and SAID rather than merely counted,
+                    // because the alternative is a receiver reporting HMAC
+                    // authentication as active over addresses nothing signed.
+                    if e == HmacAuthError::UnsupportedVersion {
+                        static V1_WARNED: std::sync::atomic::AtomicBool =
+                            std::sync::atomic::AtomicBool::new(false);
+                        if !V1_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            tracing::warn!(
+                                "HEP HMAC auth is REFUSING version-1 tokens: that \
+                                 scheme signed only the payload, so the source and \
+                                 destination chunks a sender asserts were not \
+                                 authenticated and could be appended to a captured \
+                                 packet by anyone. There is no compatibility switch \
+                                 — upgrade the sending sipnab to a build that emits \
+                                 version {HMAC_TOKEN_VERSION} tokens. Every packet \
+                                 from a version-1 sender is dropped, so this looks \
+                                 like a collector that receives nothing."
                             );
                         }
                     }
@@ -708,6 +878,15 @@ pub struct HepPacket {
     /// present (v3 only). Retained so the receiver can authenticate the
     /// sender; compared in constant time via [`hep_auth_ok`].
     pub auth_key: Option<Vec<u8>>,
+    /// Byte range of the `0x000e` chunk's DATA within the datagram this was
+    /// parsed from (v3 only; `None` when there is no such chunk).
+    ///
+    /// The span, not just the bytes, because `--hep-auth-mode hmac` signs the
+    /// WHOLE datagram with the token's own MAC field read as zeros, and the
+    /// verifier therefore has to know where in the received bytes that field
+    /// sits. Recording it during the parse the receiver already performs
+    /// costs two `usize` and saves a second walk.
+    pub auth_span: Option<(usize, usize)>,
 }
 
 // ── Parsing ──────────────────────────────────────────────────────────
@@ -741,6 +920,24 @@ pub fn parse_hep(data: &[u8]) -> Result<HepPacket> {
 /// `TS_USEC` is clamped rather than rejected, and an unrepresentable
 /// timestamp falls back to the current time.
 ///
+/// # One chunk of each known type, or the packet is refused
+///
+/// Every known HEP v3 chunk type is a singleton, and the walk used to take
+/// the LAST one it saw. That made a signed packet forgeable by anyone who
+/// could observe one: append a second `0x0003`/`0x0004`/`0x0007`/`0x0008`
+/// after the originals and the recorded source and destination became the
+/// appended values, while the payload — the only thing the version-1 HMAC
+/// covered — stayed byte-identical, so the packet still authenticated. Those
+/// are the fields `--hep-allow-kill` aims a kill response at.
+///
+/// So a repeat is a hard error rather than an overwrite, in EVERY auth mode
+/// including none, because the sniffed and unwrapped HEP paths read the same
+/// chunks and have no token at all. Source and destination are refused on
+/// their second assertion whichever family carries it: `SRC_IPV4` followed by
+/// `SRC_IPV6` is two different claims about one field, not two fields.
+/// Unknown chunk types are still skipped, repeats included — nothing reads
+/// them, so nothing can be steered by them.
+///
 /// # Arguments
 ///
 /// * `data` — the full received datagram, starting at the `"HEP3"` magic.
@@ -753,7 +950,8 @@ pub fn parse_hep(data: &[u8]) -> Result<HepPacket> {
 ///
 /// Returns an error when the packet or any chunk is truncated, a chunk's
 /// declared length is smaller than its 6-byte header or overflows the
-/// packet, or a required source/destination address chunk is missing.
+/// packet, a known chunk type appears more than once, or a required
+/// source/destination address chunk is missing.
 fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
     ensure!(
         data.len() >= HEP3_HEADER_LEN,
@@ -782,6 +980,17 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
     let mut correlation_id: Option<String> = None;
     let mut capture_id: Option<u32> = None;
     let mut auth_key: Option<Vec<u8>> = None;
+    let mut auth_span: Option<(usize, usize)> = None;
+    // Which known chunk types have already been seen, so a repeat is refused
+    // instead of overwriting what the first one said. A bitmask over the
+    // fifteen defined types rather than a set: no allocation on a path that
+    // runs per datagram.
+    let mut seen_types: u32 = 0;
+    // Source and destination are one field each, asserted by either of two
+    // chunk types. Tracked separately so `SRC_IPV4` then `SRC_IPV6` is
+    // refused as the second claim about the source that it is.
+    let mut seen_src_addr = false;
+    let mut seen_dst_addr = false;
 
     let mut offset = HEP3_HEADER_LEN;
     while offset + CHUNK_HEADER_LEN <= total_len {
@@ -802,6 +1011,17 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
 
         let chunk_data = &data[offset + CHUNK_HEADER_LEN..offset + chunk_len];
 
+        // A known chunk type may appear once. `known_chunk_bit` returns
+        // `None` for anything this parser does not read, so unknown chunks
+        // stay repeatable and forward-compatible.
+        if let Some(bit) = known_chunk_bit(chunk_type) {
+            ensure!(
+                seen_types & bit == 0,
+                "HEP v3 chunk type {chunk_type:#06x} appears more than once;                  a repeated chunk lets an appended copy overwrite what the                  first one asserted",
+            );
+            seen_types |= bit;
+        }
+
         match chunk_type {
             CHUNK_IP_FAMILY => {
                 // 1 byte: 2=IPv4, 10=IPv6 — informational, addresses come
@@ -813,6 +1033,11 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
             }
             CHUNK_SRC_IPV4 => {
                 ensure!(chunk_data.len() >= 4, "SRC_IPV4 chunk too short");
+                ensure!(
+                    !seen_src_addr,
+                    "HEP v3 packet asserts a source address twice"
+                );
+                seen_src_addr = true;
                 src_addr = Some(IpAddr::V4(Ipv4Addr::new(
                     chunk_data[0],
                     chunk_data[1],
@@ -822,6 +1047,11 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
             }
             CHUNK_DST_IPV4 => {
                 ensure!(chunk_data.len() >= 4, "DST_IPV4 chunk too short");
+                ensure!(
+                    !seen_dst_addr,
+                    "HEP v3 packet asserts a destination address twice"
+                );
+                seen_dst_addr = true;
                 dst_addr = Some(IpAddr::V4(Ipv4Addr::new(
                     chunk_data[0],
                     chunk_data[1],
@@ -831,12 +1061,22 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
             }
             CHUNK_SRC_IPV6 => {
                 ensure!(chunk_data.len() >= 16, "SRC_IPV6 chunk too short");
+                ensure!(
+                    !seen_src_addr,
+                    "HEP v3 packet asserts a source address twice"
+                );
+                seen_src_addr = true;
                 let octets: [u8; 16] =
                     chunk_data[..16].try_into().context("SRC_IPV6 conversion")?;
                 src_addr = Some(IpAddr::V6(Ipv6Addr::from(octets)));
             }
             CHUNK_DST_IPV6 => {
                 ensure!(chunk_data.len() >= 16, "DST_IPV6 chunk too short");
+                ensure!(
+                    !seen_dst_addr,
+                    "HEP v3 packet asserts a destination address twice"
+                );
+                seen_dst_addr = true;
                 let octets: [u8; 16] =
                     chunk_data[..16].try_into().context("DST_IPV6 conversion")?;
                 dst_addr = Some(IpAddr::V6(Ipv6Addr::from(octets)));
@@ -882,6 +1122,7 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
             }
             CHUNK_AUTH_KEY => {
                 auth_key = Some(chunk_data.to_vec());
+                auth_span = Some((offset + CHUNK_HEADER_LEN, offset + chunk_len));
             }
             CHUNK_PAYLOAD => {
                 payload = chunk_data.to_vec();
@@ -925,7 +1166,37 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
         correlation_id,
         capture_id,
         auth_key,
+        auth_span,
     })
+}
+
+/// The single-bit mask a known HEP v3 chunk type occupies in the
+/// duplicate-detection set, or `None` for a type this parser does not read.
+///
+/// Only the types whose value is USED get a bit: an unknown chunk steers
+/// nothing, so repeating one is harmless and must stay allowed for forward
+/// compatibility.
+#[cfg(feature = "hep")]
+fn known_chunk_bit(chunk_type: u16) -> Option<u32> {
+    let index = match chunk_type {
+        CHUNK_IP_FAMILY => 0,
+        CHUNK_IP_PROTO => 1,
+        CHUNK_SRC_IPV4 => 2,
+        CHUNK_DST_IPV4 => 3,
+        CHUNK_SRC_IPV6 => 4,
+        CHUNK_DST_IPV6 => 5,
+        CHUNK_SRC_PORT => 6,
+        CHUNK_DST_PORT => 7,
+        CHUNK_TS_SEC => 8,
+        CHUNK_TS_USEC => 9,
+        CHUNK_PROTO_TYPE => 10,
+        CHUNK_CAPTURE_ID => 11,
+        CHUNK_AUTH_KEY => 12,
+        CHUNK_PAYLOAD => 13,
+        CHUNK_CORRELATION_ID => 14,
+        _ => return None,
+    };
+    Some(1u32 << index)
 }
 
 /// Parse a HEP v2 (fixed-header) packet.
@@ -991,6 +1262,7 @@ fn parse_hep_v2(data: &[u8]) -> Result<HepPacket> {
         // HEP v2's fixed header has no auth-key field; receiver-side
         // authentication therefore applies to v3 senders only.
         auth_key: None,
+        auth_span: None,
     })
 }
 
@@ -1741,14 +2013,19 @@ pub fn capture_hep(
         // the sender must prove it via the 0x000e auth-key chunk. This binds
         // the attacker-asserted inner src/dst metadata to a trusted producer.
         // Plain mode compares the secret verbatim; Hmac mode verifies a
-        // per-message token (timestamp + nonce + HMAC over the payload),
-        // which also resists on-path replay.
+        // per-message token (timestamp + nonce + HMAC over the WHOLE
+        // datagram), which also resists on-path replay and an observed
+        // packet being re-sent with address chunks appended to it.
         let auth_pass = match auth_mode {
             HepAuthMode::Plain => hep_auth_ok(auth_key, hep.auth_key.as_deref()),
+            // The DATAGRAM, not the payload: the token authenticates every
+            // byte that reached this socket, so the src/dst chunks feeding
+            // `hep_to_packet` below are inside the signature rather than
+            // beside it.
             HepAuthMode::Hmac => hmac_auth_ok(
                 auth_key,
-                hep.auth_key.as_deref(),
-                &hep.payload,
+                &buf[..n],
+                hep.auth_span,
                 hmac_window_secs,
                 &mut hmac_nonce_cache,
             ),
@@ -2114,33 +2391,24 @@ impl HepSender {
         })
     }
 
-    /// The auth bytes to place in the `0x000e` chunk for `payload`: the key
-    /// verbatim in `Plain` mode, or a fresh per-message HMAC token in `Hmac`
-    /// mode. `None` when no key is configured.
-    fn auth_bytes_for(&self, payload: &[u8]) -> Option<Vec<u8>> {
-        let key = self.auth_key.as_deref()?;
-        match self.auth_mode {
-            HepAuthMode::Plain => Some(key.as_bytes().to_vec()),
-            HepAuthMode::Hmac => Some(self.hmac_token(key, payload)),
-        }
-    }
-
-    /// Build a fresh per-message HMAC token for `payload` under `key`,
-    /// using the current time and a salt+counter nonce. Returns the 57-byte
-    /// wire token.
+    /// The next token nonce: this sender's salt in the high half, its
+    /// monotonic counter in the low half.
+    ///
+    /// The nonce need only be unique (it is what the receiver's replay cache
+    /// keys on), not unpredictable — the MAC provides unforgeability — so a
+    /// salt plus a counter is sufficient and needs no RNG dependency.
     ///
     /// # Side effects
     ///
-    /// Reads the system clock and increments the sender's atomic
-    /// `nonce_counter` (each call consumes one nonce).
-    fn hmac_token(&self, key: &str, payload: &[u8]) -> Vec<u8> {
+    /// Increments the sender's atomic `nonce_counter`; each call consumes one
+    /// nonce.
+    fn next_nonce(&self) -> [u8; 16] {
         use std::sync::atomic::Ordering;
-        let ts = chrono::Utc::now().timestamp().max(0) as u64;
         let counter = self.nonce_counter.fetch_add(1, Ordering::Relaxed);
         let mut nonce = [0u8; 16];
         nonce[..8].copy_from_slice(&self.nonce_salt.to_be_bytes());
         nonce[8..].copy_from_slice(&counter.to_be_bytes());
-        build_hmac_auth_token(key.as_bytes(), ts, &nonce, payload)
+        nonce
     }
 
     /// Encapsulate and send a SIP message as a HEP v3 packet.
@@ -2207,15 +2475,32 @@ impl HepSender {
         protocol: HepProtocol,
         payload: &[u8],
     ) -> Result<()> {
-        let auth_bytes = self.auth_bytes_for(payload);
-        let pkt = build_hep_v3_bytes(
-            endpoint,
-            timestamp,
-            protocol,
-            self.capture_id,
-            auth_bytes.as_deref(),
-            payload,
-        );
+        // `Hmac` builds through its own entry point rather than handing an
+        // auth chunk to the generic builder: the token signs the finished
+        // datagram, so it cannot exist until the datagram does.
+        let pkt = match (self.auth_key.as_deref(), self.auth_mode) {
+            (Some(key), HepAuthMode::Hmac) => {
+                let ts = chrono::Utc::now().timestamp().max(0) as u64;
+                build_hep_v3_hmac(
+                    endpoint,
+                    timestamp,
+                    protocol,
+                    self.capture_id,
+                    key.as_bytes(),
+                    ts,
+                    &self.next_nonce(),
+                    payload,
+                )
+            }
+            (auth, _) => build_hep_v3_bytes(
+                endpoint,
+                timestamp,
+                protocol,
+                self.capture_id,
+                auth.map(str::as_bytes),
+                payload,
+            ),
+        };
 
         self.transmit(&self.permit, &pkt)
     }
@@ -3055,8 +3340,9 @@ mod tests {
         );
     }
 
-    /// Tests for the HMAC auth-token build/verify cycle: format, timestamp
-    /// window, MAC binding, and replay protection.
+    /// Tests for the HMAC datagram build/verify cycle: format, version,
+    /// timestamp window, MAC binding over the whole datagram, and replay
+    /// protection.
     #[cfg(feature = "hep")]
     mod hmac_auth {
         use super::super::*;
@@ -3068,19 +3354,61 @@ mod tests {
         /// Fixed "current time" (epoch seconds) the tests verify against.
         const NOW: u64 = 1_700_000_000;
 
-        /// A freshly built token has the expected length and verifies
-        /// against the same key/payload/time.
+        /// The endpoint every signed datagram in this module asserts.
+        fn endpoint() -> HepEndpoint {
+            HepEndpoint {
+                src_addr: "10.0.0.1"
+                    .parse()
+                    .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
+                dst_addr: "10.0.0.2"
+                    .parse()
+                    .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
+                src_port: 5060,
+                dst_port: 5060,
+                transport: TransportProto::Udp,
+            }
+        }
+
+        /// A signed datagram carrying `payload`, stamped `ts`, nonced `nonce`.
+        fn signed(payload: &[u8], ts: u64, nonce: &[u8; 16]) -> Vec<u8> {
+            build_hep_v3_hmac(
+                &endpoint(),
+                chrono::Utc::now(),
+                HepProtocol::Sip,
+                1,
+                KEY,
+                ts,
+                nonce,
+                payload,
+            )
+        }
+
+        /// The auth-chunk data span of a datagram this module built.
+        fn span(pkt: &[u8]) -> (usize, usize) {
+            parse_hep(pkt)
+                .ok()
+                .and_then(|h| h.auth_span)
+                .unwrap_or((0, 0))
+        }
+
+        /// A freshly built datagram carries a full-length version-2 token and
+        /// verifies against the same key and time.
         #[test]
         fn token_round_trips_and_verifies() {
             let payload = b"REGISTER sip:example.com SIP/2.0\r\n";
-            let token = build_hmac_auth_token(KEY, NOW, &NONCE, payload);
-            assert_eq!(token.len(), 1 + 8 + 16 + 32);
+            let pkt = signed(payload, NOW, &NONCE);
+            let (start, end) = span(&pkt);
+            assert_eq!(end - start, HMAC_TOKEN_LEN, "token is 57 bytes");
+            assert_eq!(
+                pkt[start], HMAC_TOKEN_VERSION,
+                "the sender stamps the current token version"
+            );
             let mut cache = HmacNonceCache::new();
             assert_eq!(
-                verify_hmac_auth_token(
+                verify_hmac_datagram(
                     KEY,
-                    &token,
-                    payload,
+                    &pkt,
+                    (start, end),
                     NOW,
                     DEFAULT_HMAC_WINDOW_SECS,
                     &mut cache
@@ -3089,170 +3417,159 @@ mod tests {
             );
         }
 
-        /// A short token or an unknown version byte fails as `BadFormat`.
+        /// A span of the wrong length, and a version byte naming no scheme,
+        /// are both refused as malformed.
         #[test]
         fn verify_rejects_bad_length_and_version() {
+            let pkt = signed(b"p", NOW, &NONCE);
+            let (start, end) = span(&pkt);
             let mut cache = HmacNonceCache::new();
             assert_eq!(
-                verify_hmac_auth_token(
+                verify_hmac_datagram(
                     KEY,
-                    b"short",
-                    b"p",
+                    &pkt,
+                    (start, end - 1),
                     NOW,
                     DEFAULT_HMAC_WINDOW_SECS,
                     &mut cache
                 ),
-                Err(HmacAuthError::BadFormat)
+                Err(HmacAuthError::BadFormat),
+                "short token rejected"
             );
-            let mut token = build_hmac_auth_token(KEY, NOW, &NONCE, b"p");
-            token[0] = 9; // unknown version
+            let mut bumped = pkt.clone();
+            bumped[start] = 99;
             assert_eq!(
-                verify_hmac_auth_token(
+                verify_hmac_datagram(
                     KEY,
-                    &token,
-                    b"p",
+                    &bumped,
+                    (start, end),
                     NOW,
                     DEFAULT_HMAC_WINDOW_SECS,
                     &mut cache
                 ),
-                Err(HmacAuthError::BadFormat)
+                Err(HmacAuthError::BadFormat),
+                "unknown version rejected"
             );
         }
 
-        /// Timestamps beyond the window — stale or future — fail as
-        /// `TimestampOutOfWindow`.
+        /// The superseded version-1 token is refused by NAME, not lumped in
+        /// with corrupt input — the receiver has to be able to tell an
+        /// out-of-date sender from a broken one, and it must never fall back
+        /// to the payload-only scheme.
+        #[test]
+        fn verify_refuses_the_superseded_version_one_token() {
+            let pkt = signed(b"p", NOW, &NONCE);
+            let (start, end) = span(&pkt);
+            let mut downgraded = pkt.clone();
+            downgraded[start] = 1;
+            let mut cache = HmacNonceCache::new();
+            assert_eq!(
+                verify_hmac_datagram(
+                    KEY,
+                    &downgraded,
+                    (start, end),
+                    NOW,
+                    DEFAULT_HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
+                Err(HmacAuthError::UnsupportedVersion),
+                "a v1 token is refused with its own error, never accepted"
+            );
+        }
+
+        /// Timestamps outside the window, on either side of now, are refused.
         #[test]
         fn verify_rejects_stale_and_future_timestamps() {
-            let payload = b"p";
+            let payload = b"INVITE sip:x SIP/2.0\r\n";
             let mut cache = HmacNonceCache::new();
-            let stale = build_hmac_auth_token(KEY, NOW - 100, &NONCE, payload);
+            let stale = signed(payload, NOW - 100, &NONCE);
+            let sp = span(&stale);
             assert_eq!(
-                verify_hmac_auth_token(
-                    KEY,
-                    &stale,
-                    payload,
-                    NOW,
-                    DEFAULT_HMAC_WINDOW_SECS,
-                    &mut cache
-                ),
-                Err(HmacAuthError::TimestampOutOfWindow)
+                verify_hmac_datagram(KEY, &stale, sp, NOW, 30, &mut cache),
+                Err(HmacAuthError::TimestampOutOfWindow),
+                "100s in the past is outside a 30s window"
             );
-            let future = build_hmac_auth_token(KEY, NOW + 100, &NONCE, payload);
+            let future = signed(payload, NOW + 100, &NONCE);
+            let fp = span(&future);
             assert_eq!(
-                verify_hmac_auth_token(
-                    KEY,
-                    &future,
-                    payload,
-                    NOW,
-                    DEFAULT_HMAC_WINDOW_SECS,
-                    &mut cache
-                ),
-                Err(HmacAuthError::TimestampOutOfWindow)
+                verify_hmac_datagram(KEY, &future, fp, NOW, 30, &mut cache),
+                Err(HmacAuthError::TimestampOutOfWindow),
+                "100s in the future is outside a 30s window"
             );
         }
 
-        /// A tampered payload or a wrong key both fail as `BadMac`,
-        /// proving the MAC binds the payload, not just the key.
+        /// Tampering with the payload, or signing with a different key,
+        /// fails the MAC.
         #[test]
         fn verify_rejects_tampered_payload_and_wrong_key() {
-            let token = build_hmac_auth_token(KEY, NOW, &NONCE, b"original-payload");
+            let pkt = signed(b"original-payload", NOW, &NONCE);
+            let (start, end) = span(&pkt);
             let mut cache = HmacNonceCache::new();
-            // Same token, different payload → MAC mismatch.
+            // Flip one payload byte in place: same length, so every offset in
+            // the datagram is unchanged and only the content differs.
+            let mut tampered = pkt.clone();
+            let last = tampered.len() - 1;
+            tampered[last] ^= 0xff;
             assert_eq!(
-                verify_hmac_auth_token(
+                verify_hmac_datagram(
                     KEY,
-                    &token,
-                    b"tampered-payload",
+                    &tampered,
+                    (start, end),
                     NOW,
                     DEFAULT_HMAC_WINDOW_SECS,
                     &mut cache
                 ),
-                Err(HmacAuthError::BadMac)
+                Err(HmacAuthError::BadMac),
+                "a modified payload no longer verifies"
             );
-            // Right payload, wrong key → MAC mismatch.
             assert_eq!(
-                verify_hmac_auth_token(
-                    b"attacker-key",
-                    &token,
-                    b"original-payload",
+                verify_hmac_datagram(
+                    b"different-key",
+                    &pkt,
+                    (start, end),
                     NOW,
                     DEFAULT_HMAC_WINDOW_SECS,
                     &mut cache
                 ),
-                Err(HmacAuthError::BadMac)
+                Err(HmacAuthError::BadMac),
+                "a different key does not verify"
             );
         }
 
-        /// An identical token replayed within the window fails as `Replay`.
+        /// The same nonce twice inside the window is a replay.
         #[test]
         fn verify_rejects_replayed_nonce() {
-            let payload = b"INVITE";
-            let token = build_hmac_auth_token(KEY, NOW, &NONCE, payload);
+            let pkt = signed(b"BYE sip:x SIP/2.0\r\n", NOW, &NONCE);
+            let sp = span(&pkt);
             let mut cache = HmacNonceCache::new();
             assert_eq!(
-                verify_hmac_auth_token(
-                    KEY,
-                    &token,
-                    payload,
-                    NOW,
-                    DEFAULT_HMAC_WINDOW_SECS,
-                    &mut cache
-                ),
+                verify_hmac_datagram(KEY, &pkt, sp, NOW, DEFAULT_HMAC_WINDOW_SECS, &mut cache),
                 Ok(()),
                 "first use accepted"
             );
             assert_eq!(
-                verify_hmac_auth_token(
-                    KEY,
-                    &token,
-                    payload,
-                    NOW,
-                    DEFAULT_HMAC_WINDOW_SECS,
-                    &mut cache
-                ),
+                verify_hmac_datagram(KEY, &pkt, sp, NOW, DEFAULT_HMAC_WINDOW_SECS, &mut cache),
                 Err(HmacAuthError::Replay),
                 "identical replay rejected"
             );
         }
 
-        /// End to end: token stamped into the `0x000e` chunk survives the
-        /// wire round trip and verifies against the parsed payload.
+        /// End to end: the token stamped into the `0x000e` chunk survives the
+        /// wire round trip, and the parse hands the verifier the span it needs.
         #[test]
         fn hep_v3_round_trips_through_build_parse_verify() {
-            // End to end: a sender stamps the token into the 0x000e chunk, the
-            // wire packet parses back, and the receiver verifies the token
-            // against the parsed payload — proving the on-wire format composes.
-            use std::net::IpAddr;
             let payload = b"OPTIONS sip:probe SIP/2.0\r\n";
-            let token = build_hmac_auth_token(KEY, NOW, &NONCE, payload);
-            let endpoint = HepEndpoint {
-                src_addr: "10.0.0.1".parse::<IpAddr>().unwrap(),
-                dst_addr: "10.0.0.2".parse::<IpAddr>().unwrap(),
-                src_port: 5060,
-                dst_port: 5060,
-                transport: TransportProto::Udp,
-            };
-            let pkt = build_hep_v3_bytes(
-                &endpoint,
-                chrono::Utc::now(),
-                HepProtocol::Sip,
-                1,
-                Some(&token),
-                payload,
-            );
+            let pkt = signed(payload, NOW, &NONCE);
             let parsed = parse_hep(&pkt).expect("valid HEP v3");
-            assert_eq!(parsed.auth_key.as_deref(), Some(token.as_slice()));
             assert_eq!(parsed.payload, payload);
+            assert_eq!(
+                parsed.src_addr,
+                "10.0.0.1".parse::<IpAddr>().expect("literal")
+            );
+            let sp = parsed.auth_span.expect("an auth chunk was emitted");
             let mut cache = HmacNonceCache::new();
             assert_eq!(
-                verify_hmac_auth_token(
-                    KEY,
-                    &token,
-                    &parsed.payload,
-                    NOW,
-                    DEFAULT_HMAC_WINDOW_SECS,
-                    &mut cache
-                ),
+                verify_hmac_datagram(KEY, &pkt, sp, NOW, DEFAULT_HMAC_WINDOW_SECS, &mut cache),
                 Ok(())
             );
         }
@@ -3279,74 +3596,59 @@ mod tests {
             );
             assert!(
                 !cache.should_prune(t0 + Duration::from_millis(1500)),
-                "the gate resets relative to the most recent prune"
+                "and not again until the next second"
             );
         }
 
-        /// An expired nonce that has not yet been pruned still cannot be
-        /// replayed: the timestamp-window check rejects it before the replay
-        /// cache is consulted, so amortized pruning preserves the semantics.
+        /// A nonce old enough to prune but still in the map cannot be
+        /// replayed: the timestamp-window check refuses it first, which is
+        /// what makes the amortized prune safe.
         #[test]
         fn expired_unpruned_nonce_still_rejected_by_window() {
+            let pkt = signed(b"p", NOW, &NONCE);
+            let sp = span(&pkt);
             let mut cache = HmacNonceCache::new();
-            // Accept a token now, seeding its nonce into the cache.
-            let token = build_hmac_auth_token(KEY, NOW, &NONCE, b"p");
             assert_eq!(
-                verify_hmac_auth_token(
-                    KEY,
-                    &token,
-                    b"p",
-                    NOW,
-                    DEFAULT_HMAC_WINDOW_SECS,
-                    &mut cache
-                ),
-                Ok(())
+                verify_hmac_datagram(KEY, &pkt, sp, NOW, 30, &mut cache),
+                Ok(()),
+                "accepted at its own timestamp"
             );
-            // Far in the future the same token is out of window — rejected as
-            // stale regardless of whether its nonce is still cached.
-            let later = NOW + DEFAULT_HMAC_WINDOW_SECS + 100;
             assert_eq!(
-                verify_hmac_auth_token(
-                    KEY,
-                    &token,
-                    b"p",
-                    later,
-                    DEFAULT_HMAC_WINDOW_SECS,
-                    &mut cache
-                ),
-                Err(HmacAuthError::TimestampOutOfWindow)
+                verify_hmac_datagram(KEY, &pkt, sp, NOW + 3600, 30, &mut cache),
+                Err(HmacAuthError::TimestampOutOfWindow),
+                "an hour later the window refuses it before the cache is asked"
             );
         }
 
-        /// A forged (bad-MAC) token must not record its nonce, so a later
-        /// authentic token reusing that nonce still verifies.
+        /// A forged token cannot seed the replay cache with its nonce and so
+        /// cannot lock out the authentic packet that uses the same one.
         #[test]
         fn forged_token_does_not_poison_replay_cache() {
-            // A forged token (valid nonce, bad MAC) must be rejected as BadMac
-            // and must NOT record its nonce, so a later authentic token reusing
-            // that nonce still verifies (MAC-checked-before-replay ordering).
-            let payload = b"OPTIONS";
-            let mut forged = build_hmac_auth_token(b"wrong-key", NOW, &NONCE, payload);
-            let last = forged.len() - 1;
-            forged[last] ^= 0xFF; // ensure MAC is wrong even if keys collide
+            let payload = b"INVITE sip:victim SIP/2.0\r\n";
             let mut cache = HmacNonceCache::new();
-            assert_eq!(
-                verify_hmac_auth_token(
-                    KEY,
-                    &forged,
-                    payload,
-                    NOW,
-                    DEFAULT_HMAC_WINDOW_SECS,
-                    &mut cache
-                ),
-                Err(HmacAuthError::BadMac)
+            let forged = build_hep_v3_hmac(
+                &endpoint(),
+                chrono::Utc::now(),
+                HepProtocol::Sip,
+                1,
+                b"wrong-key",
+                NOW,
+                &NONCE,
+                payload,
             );
-            let authentic = build_hmac_auth_token(KEY, NOW, &NONCE, payload);
+            let fp = span(&forged);
             assert_eq!(
-                verify_hmac_auth_token(
+                verify_hmac_datagram(KEY, &forged, fp, NOW, DEFAULT_HMAC_WINDOW_SECS, &mut cache),
+                Err(HmacAuthError::BadMac),
+                "forged token rejected"
+            );
+            let authentic = signed(payload, NOW, &NONCE);
+            let ap = span(&authentic);
+            assert_eq!(
+                verify_hmac_datagram(
                     KEY,
                     &authentic,
-                    payload,
+                    ap,
                     NOW,
                     DEFAULT_HMAC_WINDOW_SECS,
                     &mut cache
@@ -3518,6 +3820,7 @@ mod tests {
             correlation_id: Some("km-670bd208@sipnab".to_string()),
             capture_id: None,
             auth_key: None,
+            auth_span: None,
             ip_protocol: 17,
         };
         let packet = hep_to_packet(hep, "0.0.0.0:9060");
@@ -3557,6 +3860,7 @@ mod tests {
             correlation_id: None,
             capture_id: None,
             auth_key: None,
+            auth_span: None,
             ip_protocol: 17,
         };
         let packet = hep_to_packet(hep, "0.0.0.0:9060");
@@ -3588,6 +3892,7 @@ mod tests {
             correlation_id: None,
             capture_id: None,
             auth_key: None,
+            auth_span: None,
             ip_protocol: 6,
         };
         let packet = hep_to_packet(hep, "0.0.0.0:9060");

@@ -62,9 +62,6 @@ pub mod net;
 pub mod pipeline;
 pub mod stun;
 
-/// WASM plugin host — third-party dialog detections.
-///
-/// Non-default feature: the stock build carries no interpreter at all.
 #[cfg(feature = "plugins")]
 pub mod plugin;
 pub use error::{CaptureError, Error, ParseError};
@@ -110,7 +107,6 @@ pub mod tui;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
-/// Shared helpers for the test suite (fixtures and builders).
 #[cfg(test)]
 pub mod test_utils;
 

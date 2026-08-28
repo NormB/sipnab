@@ -62,10 +62,20 @@ test.describe('documentation', () => {
 test.describe('search', () => {
   test('the search control exists and accepts input', async ({ page }) => {
     await page.goto('/');
+    // The search field lives inside a modal that the trigger opens. Filling it
+    // without opening the modal only ever worked because an unstyled build --
+    // one whose CSS the CSP blocked -- left the overlay visible. Open it the
+    // way a reader does, so this test fails when the control is really broken
+    // rather than passing because the page lost its stylesheet.
+    const trigger = page.locator('#search-trigger');
+    if ((await trigger.count()) > 0) {
+      await trigger.first().click();
+    }
     const box = page.locator('input[type="search"], input[id*="search"]').first();
     if ((await box.count()) === 0) {
       test.skip(true, 'no search control on this page');
     }
+    await expect(box).toBeVisible();
     await box.fill('dialog');
     await expect(box).toHaveValue('dialog');
   });

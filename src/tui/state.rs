@@ -280,6 +280,16 @@ pub struct TuiOptions {
     /// dialog reads its file through `capture::file::open_offline`, which
     /// compiles no filter at all.
     pub bpf_filter: String,
+    /// Where this session records what the operator did, when
+    /// `--tui-audit-file` asked for a trail. `None` -- the default -- writes
+    /// nothing anywhere.
+    ///
+    /// Arrives already OPEN, and that is the fail-closed half of AUDIT2's
+    /// decision: a path sipnab cannot open stops the run before the terminal
+    /// is taken, where refusing costs nothing. What happens to a write that
+    /// fails LATER is the opposite call, and
+    /// [`crate::tui::action_trail`] states why.
+    pub action_trail: Option<Arc<crate::tui::action_trail::ActionTrail>>,
 }
 
 impl TuiOptions {
@@ -326,6 +336,7 @@ impl TuiOptions {
         app.set_name_mode(self.name_setup.mode);
         app.set_names_save_path(self.name_setup.save_path);
         app.set_names_config_path(self.name_setup.config_path);
+        app.set_action_trail(self.action_trail);
         app
     }
 }

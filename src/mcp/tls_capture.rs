@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The background uprobe capture behind `start_tls_capture`.
+//! Starting and stopping a uprobe TLS capture on an agent's request: the
+//! background capture behind `start_tls_capture`.
 //!
 //! # Why an agent may start this at all
 //!

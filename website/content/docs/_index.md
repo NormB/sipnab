@@ -1,5 +1,14 @@
 +++
 title = "Documentation"
+# The one page in this tree whose description is hand-written rather than
+# generated: `_index.md` is not in `scripts/build-site-pages.py`'s PAGES
+# list, so nothing else supplies one. Without it, `page.html` and
+# `section.html` fall back to `config.description` and this page ships the
+# site-wide blurb as its own `<meta name="description">` and `og:description`
+# -- a duplicate a search engine collapses rather than a summary of what is
+# on it. `every_docs_page_carries_its_own_meta_description` in
+# tests/site_journey_test.rs fails if it is removed.
+description = "Task cards, role-ordered reading paths, and the full reference index for sipnab -- what it captures, what it decodes, what your build includes, and where to go next."
 sort_by = "weight"
 template = "section.html"
 page_template = "page.html"

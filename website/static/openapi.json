@@ -1,0 +1,2981 @@
+{
+  "components": {
+    "schemas": {
+      "CallReport": {
+        "additionalProperties": false,
+        "description": "Serialized form of DialogJson (src/output/json.rs): the `--call-report --json` output and GET /v1/dialogs/{id}. The embedded `streams` items mirror stream.schema.json (kept self-contained, no cross-file $ref).",
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "diagnosis": {
+            "$ref": "#/components/schemas/CallReport_diagnosis"
+          },
+          "duration_sec": {
+            "type": "number"
+          },
+          "final_status_code": {
+            "type": "integer"
+          },
+          "final_status_reason": {
+            "type": "string"
+          },
+          "frame": {
+            "description": "Pointer to the frame this dialog opened in, as `<source>#<ordinal>@<digest>`. Follow it with `sipnab --show-frame`, which checks the digest and refuses when the capture changed since the pointer was made. Optional, and absent rather than null when the dialog has no frame (live capture): absent means unknown, and a value that is present is always a real pointer.",
+            "pattern": "^.+#[0-9]+(@[0-9a-f]{16})?$",
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "from_display": {
+            "type": "string"
+          },
+          "icmp_media": {
+            "$ref": "#/components/schemas/CallReport_icmp_media"
+          },
+          "input_origin": {
+            "description": "Which capture source delivered the message that OPENED this dialog. First, never latest: one process can capture from an interface and a HEP mirror at once, and with no BPF filter excluding the mirrored signaling ports the same message arrives from both, so a field reassigned per message would report whichever spoke last. Absent rather than null when the opening message came from no captured packet.",
+            "enum": [
+              "wire",
+              "hep",
+              "uprobe"
+            ],
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "msg_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1
+          },
+          "sdp_timeline": {
+            "items": {
+              "$ref": "#/components/schemas/CallReport_sdp_exchange"
+            },
+            "type": "array"
+          },
+          "signaling_diagnosis": {
+            "$ref": "#/components/schemas/CallReport_signaling_diagnosis"
+          },
+          "state": {
+            "type": "string"
+          },
+          "streams": {
+            "items": {
+              "$ref": "#/components/schemas/CallReport_stream"
+            },
+            "type": "array"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "timing": {
+            "$ref": "#/components/schemas/CallReport_timing"
+          },
+          "to": {
+            "type": "string"
+          },
+          "to_display": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "call_id",
+          "state",
+          "method",
+          "msg_count",
+          "duration_sec",
+          "timing",
+          "sdp_timeline",
+          "diagnosis",
+          "streams"
+        ],
+        "title": "sipnab call report / full dialog (DialogJson)",
+        "type": "object"
+      },
+      "CallReport_diagnosis": {
+        "additionalProperties": false,
+        "properties": {
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "media_relay": {
+            "additionalProperties": false,
+            "properties": {
+              "channel": {
+                "maximum": 32767,
+                "minimum": 16384,
+                "type": "integer"
+              },
+              "client": {
+                "type": "string"
+              },
+              "lapsed": {
+                "type": "boolean"
+              },
+              "peer": {
+                "type": "string"
+              },
+              "relayed_address": {
+                "type": "string"
+              },
+              "server": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "client",
+              "server",
+              "channel",
+              "lapsed"
+            ],
+            "type": "object"
+          },
+          "nat_mismatch": {
+            "type": "boolean"
+          },
+          "no_media": {
+            "type": "boolean"
+          },
+          "one_way_audio": {
+            "type": "boolean"
+          },
+          "private_media_address": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "one_way_audio",
+          "nat_mismatch",
+          "no_media",
+          "private_media_address",
+          "hints"
+        ],
+        "type": "object"
+      },
+      "CallReport_icmp_media": {
+        "additionalProperties": false,
+        "description": "What ICMP said about this capture's MEDIA. Keyed by the quoted datagram's own 5-tuple, not by Call-ID, because a media datagram carries none — so this is a different question from signaling_diagnosis.icmp_unreachable and the two are never merged. Omitted entirely when the capture drew no ICMP quoting non-SIP traffic. `capture` is capture-wide and travels with every dialog so a reader of one call can see that evidence exists; `findings` holds only the findings whose attribution named THIS dialog.",
+        "properties": {
+          "capture": {
+            "additionalProperties": false,
+            "description": "Run-wide outcome counters. Three separate outcomes, never collapsed: attributed + unattributed == errors, and sum(finding.errors) + unkeyed + untracked_flows == errors.",
+            "properties": {
+              "attributed": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "errors": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "flows": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "media": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unattributed": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unkeyed": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "untallied_endpoints": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "untracked_flows": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "media",
+              "attributed",
+              "unattributed",
+              "unkeyed",
+              "untracked_flows",
+              "untallied_endpoints",
+              "flows"
+            ],
+            "type": "object"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/CallReport_icmp_media_finding"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "capture"
+        ],
+        "type": "object"
+      },
+      "CallReport_icmp_media_finding": {
+        "additionalProperties": false,
+        "description": "One quoted flow the network reported as undeliverable.",
+        "properties": {
+          "attribution": {
+            "description": "Which rule tied this flow to tracked media. REQUIRED and enumerated: the five tiers are not equally strong claims — `flow` is an exact directed 5-tuple match, `none` is no match at all — and a consumer that cannot tell them apart would present a guess with the confidence of a measurement. A finding without this field is worse than no finding.",
+            "enum": [
+              "flow",
+              "ssrc",
+              "endpoint",
+              "sdp_endpoint",
+              "none"
+            ]
+          },
+          "call_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "description": {
+            "type": "string"
+          },
+          "errors": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "icmp_code": {
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "icmp_type": {
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "payload": {
+            "description": "What the router quoted, as opposed to what sipnab tied it to. A quote can be unmistakably RTP and match nothing, or match a stream exactly with no payload left to read.",
+            "enum": [
+              "rtp",
+              "rtcp",
+              "unread",
+              "not_media"
+            ]
+          },
+          "payload_type": {
+            "maximum": 127,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reported_by": {
+            "type": "string"
+          },
+          "rtcp_packet_type": {
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          },
+          "ssrc": {
+            "pattern": "^0x[0-9a-f]{8}$",
+            "type": "string"
+          },
+          "streams": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "transport": {
+            "type": "string"
+          },
+          "unreachable_endpoint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "attribution",
+          "source",
+          "unreachable_endpoint",
+          "reported_by",
+          "transport",
+          "description",
+          "icmp_type",
+          "icmp_code",
+          "errors",
+          "payload",
+          "streams",
+          "hint"
+        ],
+        "type": "object"
+      },
+      "CallReport_sdp_exchange": {
+        "additionalProperties": false,
+        "properties": {
+          "codecs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "direction": {
+            "type": "string"
+          },
+          "event": {
+            "type": "string"
+          },
+          "media_addr": {
+            "type": "string"
+          },
+          "media_port": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timestamp",
+          "direction",
+          "codecs",
+          "mode"
+        ],
+        "type": "object"
+      },
+      "CallReport_signaling_diagnosis": {
+        "additionalProperties": false,
+        "description": "Signaling-side diagnosis. Every detection is optional and absent means checked-and-not-detected; the whole object is omitted when nothing fired.",
+        "properties": {
+          "abandoned": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "elapsed_sec": {
+                    "type": "number"
+                  },
+                  "evidence": {
+                    "items": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "kind": {
+                    "enum": [
+                      "canceled",
+                      "no_final_response"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "elapsed_sec",
+                  "evidence"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ack_missing": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "answer_transmissions": {
+                    "type": "integer"
+                  },
+                  "evidence": {
+                    "items": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "waited_sec": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "waited_sec",
+                  "answer_transmissions",
+                  "evidence"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "auth_loop": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "challenges": {
+                    "type": "integer"
+                  },
+                  "evidence": {
+                    "items": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "kind": {
+                    "enum": [
+                      "credential_failure",
+                      "silent_drop"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "challenges",
+                  "evidence"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "final_failure": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "type": "integer"
+                  },
+                  "evidence": {
+                    "items": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "reason_header": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "reason_phrase": {
+                    "type": "string"
+                  },
+                  "warning": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "code",
+                  "reason_phrase",
+                  "evidence"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "icmp_unreachable": {
+            "description": "An ICMP/ICMPv6 error quoting one of this dialog's requests. Omitted entirely (not null) when absent, because the check can only run on a capture that holds ICMP at all: null would claim it ran. `unreachable_endpoint` is the socket that did not answer; `reported_by` is the router or host that reported it, which is a different address and is not the fault. `truncated` says the quote sipnab read was a prefix of the original datagram, which RFC 792 permits and most routers do.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "description": {
+                    "type": "string"
+                  },
+                  "errors": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "evidence": {
+                    "items": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "icmp_code": {
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "icmp_type": {
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "method": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "reported_by": {
+                    "type": "string"
+                  },
+                  "truncated": {
+                    "type": "boolean"
+                  },
+                  "unreachable_endpoint": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "description",
+                  "icmp_type",
+                  "icmp_code",
+                  "unreachable_endpoint",
+                  "reported_by",
+                  "errors",
+                  "truncated",
+                  "evidence"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "post_dial_delay": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "delay_sec": {
+                    "type": "number"
+                  },
+                  "evidence": {
+                    "items": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "responded_with": {
+                    "type": "integer"
+                  },
+                  "threshold_sec": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "delay_sec",
+                  "threshold_sec",
+                  "responded_with",
+                  "evidence"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "registration_failure": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "type": "integer"
+                  },
+                  "evidence": {
+                    "items": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "granted_expiry_sec": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "kind": {
+                    "enum": [
+                      "rejected",
+                      "shortened_expiry"
+                    ]
+                  },
+                  "requested_expiry_sec": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "code",
+                  "evidence"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retransmissions": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "count": {
+                    "type": "integer"
+                  },
+                  "evidence": {
+                    "items": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "icmp_cause": {
+                    "type": "string"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "span_sec": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "method",
+                  "count",
+                  "span_sec",
+                  "evidence"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_disagreement": {
+            "description": "The run's two capture sources do not tell the same story about this call. A HEP mirror reports what the proxy BELIEVES it did; a local capture reports what actually left the box, so the two are complementary rather than redundant and their disagreement is the finding. Omitted entirely (not null) when absent, because the comparison can only run when BOTH witnesses carried this call: null would claim they were compared and agreed. A call one witness never saw at all is deliberately silent here -- from inside such a call, a proxy that mirrored a phantom cannot be told from a witness that was not watching that call's signaling. A message either capture dropped also looks exactly like one a source never carried, which is why this is a finding to investigate rather than a verdict.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agreed": {
+                    "description": "How many messages both witnesses carried -- the denominator that makes the gap counts mean something.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "evidence": {
+                    "description": "Every message index this finding drew on, sorted and deduplicated.",
+                    "items": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "mirror_only": {
+                    "description": "Messages the HEP mirror reported that the wire never carried: a proxy that believes it sent something this capture never saw leave the box.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "index": {
+                          "description": "Index into this dialog's own message list, the same coordinate every `evidence` array uses.",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "summary": {
+                          "description": "What the message is -- `INVITE`, `200 OK` -- so a report pasted into a ticket says something without the reader joining `index` against a message list they do not have.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "summary",
+                        "index"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "sdp_differs": {
+                    "description": "Messages both witnesses carried whose SDP named different media endpoints -- a rewrite.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "mirror": {
+                          "description": "Media endpoints the HEP mirror's copy advertised, `<media> <addr>:<port>` in `m=` order. Empty when that copy carried no SDP at all, which is itself a disagreement.",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "mirror_index": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "summary": {
+                          "type": "string"
+                        },
+                        "wire": {
+                          "description": "Media endpoints the copy captured on the wire advertised. Reported beside `mirror` and never instead of it: there is no expected/actual pair here, because an SDP rewritten between the proxy's account and the wire is sometimes the SBC doing its job and sometimes the bug.",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "wire_index": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "summary",
+                        "mirror",
+                        "wire",
+                        "mirror_index",
+                        "wire_index"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "wire_only": {
+                    "description": "Messages the wire carried that the mirror never reported: the box did something its own trace does not admit to.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "index": {
+                          "description": "Index into this dialog's own message list, the same coordinate every `evidence` array uses.",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "summary": {
+                          "description": "What the message is -- `INVITE`, `200 OK` -- so a report pasted into a ticket says something without the reader joining `index` against a message list they do not have.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "summary",
+                        "index"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "agreed",
+                  "mirror_only",
+                  "wire_only",
+                  "sdp_differs",
+                  "evidence"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "hints"
+        ],
+        "type": "object"
+      },
+      "CallReport_stream": {
+        "additionalProperties": false,
+        "properties": {
+          "associated_dialog": {
+            "type": "string"
+          },
+          "burst_gap": {
+            "type": "object"
+          },
+          "codec": {
+            "type": "string"
+          },
+          "dialog_assertion": {
+            "description": "WHO asserted the SDP media endpoint that named this stream's dialog: `signaled` (a negotiating party describing its own address) or `media-relay` (an rtpengine relay describing a port it allocated, learned from its `ng` control plane). A different question from `dialog_origin`, which says which capture SOURCE delivered the assertion. A relay's address is authoritative -- it cannot be wrong about which port it opened -- but it names the leg's MIDPOINT rather than either party's endpoint, so the two answers describe different pictures of where the media went. Emitted whenever it is known, `signaled` included: suppressing the common case would make absence mean both 'a party said so' and 'nobody recorded who said so'. Absent therefore means only the latter.",
+            "enum": [
+              "signaled",
+              "media-relay"
+            ],
+            "type": "string"
+          },
+          "dialog_origin": {
+            "description": "Which source delivered the SDP that named this stream's dialog, present ONLY when it differs from `input_origin` — the binding crossed capture sources. A cross-source tie is weaker than a same-source one: the SDP says what the proxy believes it did and the media says what the NIC saw, and the two can disagree. Absent means either a same-source binding or one whose sources nobody recorded, never 'they agree'.",
+            "enum": [
+              "wire",
+              "hep",
+              "uprobe"
+            ],
+            "type": "string"
+          },
+          "dscp": {
+            "description": "DSCP of this stream's FIRST packet (RFC 2474). Absent rather than null when no IP header was observed (a HEP-fed stream), so absent means unknown and 0 means observed best effort.",
+            "maximum": 63,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dscp_last": {
+            "description": "DSCP of this stream's most recent packet, present ONLY when it differs from `dscp` — the stream was re-marked in flight.",
+            "maximum": 63,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dst": {
+            "type": "string"
+          },
+          "first_seen": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "frame": {
+            "description": "Pointer to the frame this stream's first packet arrived in, as `<source>#<ordinal>@<digest>`. Follow it with `sipnab --show-frame`, which checks the digest and refuses when the capture changed since the pointer was made. Optional, and absent rather than null when the stream has no frame (live capture): absent means unknown, and a value that is present is always a real pointer.",
+            "type": "string"
+          },
+          "input_origin": {
+            "description": "Which capture source this stream's MEDIA arrived over. Absent rather than null when the stream came from no captured packet.",
+            "enum": [
+              "wire",
+              "hep",
+              "uprobe"
+            ],
+            "type": "string"
+          },
+          "jitter_ms": {
+            "type": "number"
+          },
+          "last_seen": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "loss_pct": {
+            "type": "number"
+          },
+          "octets": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "orphaned": {
+            "type": "boolean"
+          },
+          "packets": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "payload_type": {
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "quality_intervals": {
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1
+          },
+          "src": {
+            "type": "string"
+          },
+          "ssrc": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "ssrc",
+          "payload_type",
+          "src",
+          "dst",
+          "packets",
+          "octets",
+          "jitter_ms",
+          "loss_pct",
+          "orphaned",
+          "first_seen",
+          "last_seen",
+          "quality_intervals"
+        ],
+        "type": "object"
+      },
+      "CallReport_timing": {
+        "additionalProperties": false,
+        "properties": {
+          "pdd_ms": {
+            "type": "integer"
+          },
+          "retransmits": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ring_ms": {
+            "type": "integer"
+          },
+          "setup_ms": {
+            "type": "integer"
+          },
+          "teardown_ms": {
+            "type": "integer"
+          },
+          "trying_delay_ms": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "retransmits"
+        ],
+        "type": "object"
+      },
+      "CaptureIdentity": {
+        "description": "Which capture an answer came from, and which revision of its stores.\n\nCompare two of these to learn what changed: a different `instance`\nmeans a different capture, and every cursor, index and Call-ID from the\nearlier answer is meaningless; the same instance with a higher\ngeneration means the same capture grew.\n\nThe SAME identity MCP's `capture_status` stamps its answers with, from\nthe same object, so an agent and an HTTP client polling one process can\ntell they are describing one capture.",
+        "properties": {
+          "dialog_generation": {
+            "description": "Dialog-store mutations since it was created or cleared.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "instance": {
+            "description": "Identifies the loaded capture. Opaque — compare it, never parse it.",
+            "type": "string"
+          },
+          "node": {
+            "description": "Which box saw this. Stable for the process; does not rotate with\n`instance`.",
+            "type": "string"
+          },
+          "stream_generation": {
+            "description": "Stream-store mutations since it was created or cleared.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node",
+          "instance",
+          "dialog_generation",
+          "stream_generation"
+        ],
+        "type": "object"
+      },
+      "CaptureReport": {
+        "description": "`GET /v1/report` — the whole-capture analysis.\n\nSerialized from `crate::analysis::CaptureAnalysis` itself, never\nre-parsed out of a rendered report: `print_analysis_report_as` looks\nlike it has a JSON arm and does not, and asking it for JSON is how this\nendpoint once returned 500.",
+        "properties": {
+          "complete": {
+            "description": "Whether the analysis saw the whole capture. `false` means a\nretention cap shed something, and every count above is a floor.",
+            "type": "boolean"
+          },
+          "dialogs_examined": {
+            "description": "Dialogs the analysis looked at.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "findings": {
+            "description": "What the analysis found, across every dialog and stream.",
+            "items": {},
+            "type": "array"
+          },
+          "frames_read": {
+            "description": "Frames the capture read, from the same process-global the\nPrometheus scrape reports — so this denominator is the one every\nother number in the run is read against.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "streams_examined": {
+            "description": "Streams the analysis looked at.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "frames_read",
+          "dialogs_examined",
+          "streams_examined",
+          "complete",
+          "findings"
+        ],
+        "type": "object"
+      },
+      "Dialog": {
+        "description": "`GET /v1/dialogs/{call_id}` — the full dialog.\n\nThe projection `output::json::dialog_to_json` builds, which is a\nSUPERSET of [`DialogSummary`] and not the same shape: it carries the\ndisplay names, the SDP timeline, the media diagnosis and the streams\nthemselves. `tests/openapi_contract_test.rs` reads a real one off a\nrunning server and fails if a key here is missing from it, or one of\nits keys is missing from here.\n\nThe nested objects are left open rather than enumerated. Their\ndefinitions live in `output::json`, and repeating them here would be\nthe drift this document exists to remove; the live check is what holds\nthe top level honest.",
+        "properties": {
+          "call_id": {
+            "description": "Call-ID identifying the dialog.",
+            "type": "string"
+          },
+          "diagnosis": {
+            "description": "The media diagnosis: three booleans plus `hints`. There is no\n`summary` member."
+          },
+          "duration_sec": {
+            "description": "First to last message, seconds.",
+            "format": "double",
+            "type": "number"
+          },
+          "final_status_code": {
+            "description": "Final INVITE response code, once the call reached one.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "final_status_reason": {
+            "description": "Reason phrase that came with `final_status_code`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "frame": {
+            "description": "`<source>#<ordinal>` pointer to the frame this dialog opened in.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from": {
+            "description": "User part of the From URI.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from_display": {
+            "description": "Display name from the From header.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "icmp_media": {
+            "description": "ICMP evidence bearing on the media, when any was seen."
+          },
+          "input_origin": {
+            "description": "Capture source that delivered the opening message.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "method": {
+            "description": "SIP method that opened the dialog.",
+            "type": "string"
+          },
+          "msg_count": {
+            "description": "SIP messages in the dialog.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "description": "Wire-format version of this object.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sdp_timeline": {
+            "description": "Every SDP offer and answer, in order.",
+            "items": {},
+            "type": "array"
+          },
+          "signaling_diagnosis": {
+            "description": "The signaling diagnosis, when one could be made."
+          },
+          "state": {
+            "description": "Current dialog state.",
+            "type": "string"
+          },
+          "streams": {
+            "description": "The RTP streams this dialog claims.",
+            "items": {},
+            "type": "array"
+          },
+          "tags": {
+            "description": "Labels the analysis attached to this dialog. Absent, not empty,\nwhen it attached none.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "timing": {
+            "description": "Transaction timing, with the ring and teardown legs the summary\nomits."
+          },
+          "to": {
+            "description": "User part of the To URI.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to_display": {
+            "description": "Display name from the To header.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "schema_version",
+          "call_id",
+          "state",
+          "method",
+          "msg_count",
+          "duration_sec",
+          "timing",
+          "sdp_timeline",
+          "diagnosis",
+          "streams"
+        ],
+        "type": "object"
+      },
+      "DialogList": {
+        "description": "`GET /v1/dialogs` — one page of dialog summaries.",
+        "properties": {
+          "dialogs": {
+            "description": "The page.",
+            "items": {
+              "$ref": "#/components/schemas/DialogSummary"
+            },
+            "type": "array"
+          },
+          "limit": {
+            "description": "The `limit` actually applied, after clamping to `--api-max-rows`.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "offset": {
+            "description": "The `offset` this page was taken at.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "description": "Wire-format version of this envelope.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total": {
+            "description": "Size of the FILTERED result set — the count the rows are drawn\nfrom, so paging by `total` terminates.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "total",
+          "offset",
+          "limit",
+          "dialogs"
+        ],
+        "type": "object"
+      },
+      "DialogSummary": {
+        "description": "One row of `GET /v1/dialogs`.\n\nMarker only: the component is spliced from\n`tests/schemas/dialog.schema.json`, which\n`tests/openapi_contract_test.rs` also checks against this declaration,\nso the two cannot disagree about a property name.",
+        "properties": {
+          "call_id": {
+            "description": "Call-ID identifying the dialog.",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "RFC 3339 timestamp of the first message.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "duration_sec": {
+            "description": "First to last message, seconds. `0` for a single-message dialog.",
+            "format": "double",
+            "type": "number"
+          },
+          "final_status_code": {
+            "description": "Final INVITE response code, once the call reached one. Absent —\nnever zero — while the call is still in progress.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "final_status_reason": {
+            "description": "Reason phrase that came with `final_status_code`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "frame": {
+            "description": "`<source>#<ordinal>` pointer to the frame this dialog opened in.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from_user": {
+            "description": "User part of the From URI.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input_origin": {
+            "description": "Which capture source delivered the opening message — `wire`, `hep`\nor `uprobe`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "method": {
+            "description": "SIP method that opened the dialog, canonical form.",
+            "type": "string"
+          },
+          "msg_count": {
+            "description": "SIP messages in the dialog.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "description": "Current dialog state, e.g. `InCall`, `Completed`.",
+            "type": "string"
+          },
+          "timing": {
+            "$ref": "#/components/schemas/TimingSummary",
+            "description": "Transaction timing metrics."
+          },
+          "to_user": {
+            "description": "User part of the To URI.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "description": "RFC 3339 timestamp of the most recent message.",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "call_id",
+          "state",
+          "method",
+          "msg_count",
+          "duration_sec",
+          "created_at",
+          "updated_at",
+          "timing"
+        ],
+        "type": "object"
+      },
+      "PersistenceRequest": {
+        "additionalProperties": false,
+        "description": "The body `POST /v1/persistence` accepts.\n\n`deny_unknown_fields` so a caller who misspells the key is told, rather\nthan getting a 200 that moved nothing. The field is required and typed:\nserde refuses a string, a number, and a missing key alike, and every one of\nthose refusals leaves the gate where it was.",
+        "properties": {
+          "enabled": {
+            "description": "What the caller wants the gate to be, narrowed by the command line.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "PersistenceState": {
+        "description": "The body both doors of `/v1/persistence` answer with.",
+        "properties": {
+          "authorized": {
+            "description": "The command line's ceiling. A caller that asked to enable an\nunauthorized run reads `enabled: false, authorized: false` rather\nthan a bare 200 it would take for success.",
+            "type": "boolean"
+          },
+          "enabled": {
+            "description": "Whether content may reach disk on this run right now.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled",
+          "authorized"
+        ],
+        "type": "object"
+      },
+      "Problem": {
+        "description": "An RFC 9457 `application/problem+json` body: what every 4xx and 5xx\ncarries.\n\nSerialized by [`super::Problem`]'s `IntoResponse`, so this is the wire\ntype itself rather than a description of one.",
+        "properties": {
+          "detail": {
+            "description": "What went wrong THIS time. Absent when the kind says it all.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "The HTTP status, repeated so the body survives being logged apart\nfrom its response.",
+            "example": 404,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": {
+            "description": "Short, human-readable summary of that kind.",
+            "example": "Not Found",
+            "type": "string"
+          },
+          "type": {
+            "description": "URI naming the problem KIND. The field a client branches on.",
+            "example": "https://sipnab.com/problems/not-found",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status"
+        ],
+        "type": "object"
+      },
+      "RtpStream": {
+        "additionalProperties": false,
+        "description": "Serialized form of StreamJson (src/output/json.rs); also embedded in a dialog/call-report `streams` array and returned by GET /v1/streams/{id}.",
+        "properties": {
+          "associated_dialog": {
+            "type": "string"
+          },
+          "burst_gap": {
+            "$ref": "#/components/schemas/RtpStream_burst_gap"
+          },
+          "codec": {
+            "type": "string"
+          },
+          "dialog_assertion": {
+            "description": "WHO asserted the SDP media endpoint that named this stream's dialog: `signaled` (a negotiating party describing its own address) or `media-relay` (an rtpengine relay describing a port it allocated, learned from its `ng` control plane). A different question from `dialog_origin`, which says which capture SOURCE delivered the assertion. A relay's address is authoritative -- it cannot be wrong about which port it opened -- but it names the leg's MIDPOINT rather than either party's endpoint, so the two answers describe different pictures of where the media went. Emitted whenever it is known, `signaled` included: suppressing the common case would make absence mean both 'a party said so' and 'nobody recorded who said so'. Absent therefore means only the latter.",
+            "enum": [
+              "signaled",
+              "media-relay"
+            ],
+            "type": "string"
+          },
+          "dialog_origin": {
+            "description": "Which source delivered the SDP that named this stream's dialog, present ONLY when it differs from `input_origin` — the binding crossed capture sources. A cross-source tie is weaker than a same-source one: the SDP says what the proxy believes it did and the media says what the NIC saw, and the two can disagree. Absent means either a same-source binding or one whose sources nobody recorded, never 'they agree'.",
+            "enum": [
+              "wire",
+              "hep",
+              "uprobe"
+            ],
+            "type": "string"
+          },
+          "dscp": {
+            "description": "DSCP of this stream's FIRST packet (RFC 2474), the queue the network was asked to put the media in. Voice is conventionally EF (46); 0 is the default PHB and means the media competes with bulk traffic. Optional, and absent rather than null when no IP header was observed (a HEP-fed stream) — so an absent key means the marking is unknown and 0 means it was observed and is best effort.",
+            "maximum": 63,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dscp_last": {
+            "description": "DSCP of this stream's most recent packet, present ONLY when it differs from `dscp` — a stream re-marked in flight, typically at a policy boundary. Its presence is the finding; a steady stream omits it.",
+            "maximum": 63,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dst": {
+            "type": "string"
+          },
+          "first_seen": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "frame": {
+            "description": "Pointer to the frame this stream's first packet arrived in, as `<source>#<ordinal>@<digest>` — feed it to `sipnab --show-frame` to retrieve the bytes, which either returns the frame or refuses because the capture changed. The media analogue of the dialog and message `frame`, and the only way to check an ORPHANED stream, which has no Call-ID to look a dialog up by. Optional, and absent rather than null when the stream has no frame (live capture). Not in `required` for that reason: an absent key means unknown, and a present one is always a real pointer.",
+            "type": "string"
+          },
+          "input_origin": {
+            "description": "Which capture source this stream's MEDIA arrived over. Absent rather than null when the stream came from no captured packet.",
+            "enum": [
+              "wire",
+              "hep",
+              "uprobe"
+            ],
+            "type": "string"
+          },
+          "jitter_ms": {
+            "type": "number"
+          },
+          "last_seen": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "loss_pct": {
+            "type": "number"
+          },
+          "octets": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "orphaned": {
+            "type": "boolean"
+          },
+          "packets": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "payload_type": {
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "quality_intervals": {
+            "items": {
+              "$ref": "#/components/schemas/RtpStream_quality_interval"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1
+          },
+          "src": {
+            "type": "string"
+          },
+          "ssrc": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "ssrc",
+          "payload_type",
+          "src",
+          "dst",
+          "packets",
+          "octets",
+          "jitter_ms",
+          "loss_pct",
+          "orphaned",
+          "first_seen",
+          "last_seen",
+          "quality_intervals"
+        ],
+        "title": "sipnab RTP stream (StreamJson)",
+        "type": "object"
+      },
+      "RtpStream_burst_gap": {
+        "additionalProperties": false,
+        "properties": {
+          "burst_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "burst_duration_ms": {
+            "type": "number"
+          },
+          "burst_loss_rate": {
+            "type": "number"
+          },
+          "gap_duration_ms": {
+            "type": "number"
+          },
+          "gap_loss_rate": {
+            "type": "number"
+          },
+          "is_bursty": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "burst_count",
+          "burst_duration_ms",
+          "gap_duration_ms",
+          "burst_loss_rate",
+          "gap_loss_rate",
+          "is_bursty"
+        ],
+        "type": "object"
+      },
+      "RtpStream_quality_interval": {
+        "additionalProperties": false,
+        "properties": {
+          "jitter_ms": {
+            "type": "number"
+          },
+          "loss_pct": {
+            "type": "number"
+          },
+          "packets": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timestamp",
+          "jitter_ms",
+          "loss_pct",
+          "packets"
+        ],
+        "type": "object"
+      },
+      "SkippedPort": {
+        "description": "One of the busiest ports the port gate excluded.",
+        "properties": {
+          "messages": {
+            "description": "SIP messages seen on it and set aside.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "port": {
+            "description": "The port.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "port",
+          "messages"
+        ],
+        "type": "object"
+      },
+      "Stats": {
+        "description": "`GET /v1/stats` — the aggregate view.",
+        "properties": {
+          "capture_identity": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture these counts came from, and which revision of its\nstores. `null` when nobody told this server what it is attached to."
+              }
+            ]
+          },
+          "capture_name": {
+            "description": "Human name of the capture, when one is known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "capture_quality": {
+            "$ref": "#/components/schemas/StatsCaptureQuality",
+            "description": "How much of the wire the counts above are drawn from."
+          },
+          "caveats": {
+            "description": "What this capture DECLINED to do, beside what it lost. Always\npresent and always complete: zero is a real answer, and a key that\nshows up only on a bad run is a key no client learns exists."
+          },
+          "dialogs": {
+            "$ref": "#/components/schemas/StatsDialogs",
+            "description": "Dialog counts by state."
+          },
+          "schema_version": {
+            "description": "Wire-format version of this envelope.",
+            "example": 2,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source": {
+            "description": "What the server is attached to. `unknown` is a real answer.",
+            "type": "string"
+          },
+          "source_exhausted": {
+            "description": "Whether a file source has been read to the end.",
+            "type": "boolean"
+          },
+          "streams": {
+            "$ref": "#/components/schemas/StatsStreams",
+            "description": "Stream counts."
+          },
+          "timing": {
+            "$ref": "#/components/schemas/StatsTiming",
+            "description": "Post-dial-delay percentiles."
+          },
+          "unanalysed_busiest_ports": {
+            "description": "The five busiest ports behind `unanalysed_sip_messages`. Widen\n`--portrange` to recover them.",
+            "items": {
+              "$ref": "#/components/schemas/SkippedPort"
+            },
+            "type": "array"
+          },
+          "unanalysed_sip_messages": {
+            "description": "SIP messages the port gate excluded before anything analyzed them.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unanalysed_websocket_messages": {
+            "description": "SIP-over-WebSocket messages excluded by the WS port gate. Counted\napart because widening `--portrange` recovers none of it;\n`--ws-portrange` does.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unanalysed_websocket_ports": {
+            "description": "The five busiest ports behind `unanalysed_websocket_messages`.",
+            "items": {
+              "$ref": "#/components/schemas/SkippedPort"
+            },
+            "type": "array"
+          },
+          "unsaved": {
+            "description": "True only for a LIVE capture with no output file: packets held in\nmemory and nowhere else.",
+            "type": "boolean"
+          },
+          "uptime_sec": {
+            "description": "Seconds since the capture started.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "writing_to": {
+            "description": "Path this capture is writing to, when it is writing.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "schema_version",
+          "dialogs",
+          "streams",
+          "caveats",
+          "source",
+          "source_exhausted",
+          "unsaved",
+          "unanalysed_sip_messages",
+          "unanalysed_busiest_ports",
+          "unanalysed_websocket_messages",
+          "unanalysed_websocket_ports",
+          "timing",
+          "capture_quality"
+        ],
+        "type": "object"
+      },
+      "StatsCaptureQuality": {
+        "description": "How much of the wire every other count in `GET /v1/stats` is drawn\nfrom.\n\nWithout it a total reads as a total when it may be a floor.",
+        "properties": {
+          "degraded": {
+            "description": "Whether any of the above is non-zero.",
+            "type": "boolean"
+          },
+          "ice_role_conflicts": {
+            "description": "ICE role conflicts observed.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "interface_dropped_packets": {
+            "description": "Packets the interface dropped.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "invalid_timestamps": {
+            "description": "Frames carrying a timestamp that could not be believed.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kernel_dropped_packets": {
+            "description": "Packets the kernel dropped before sipnab saw them.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lapsed_turn_allocation_streams": {
+            "description": "Streams affected by a lapsed TURN allocation.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lapsed_turn_allocations": {
+            "description": "TURN allocations observed expiring.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "snapped_frames": {
+            "description": "Frames truncated by the capture snap length.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unanswered_nat_requests": {
+            "description": "NAT-keepalive requests that never drew a response.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "undecodable_frames": {
+            "description": "Frames sipnab could not decode at all.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kernel_dropped_packets",
+          "interface_dropped_packets",
+          "invalid_timestamps",
+          "undecodable_frames",
+          "snapped_frames",
+          "unanswered_nat_requests",
+          "lapsed_turn_allocations",
+          "lapsed_turn_allocation_streams",
+          "ice_role_conflicts",
+          "degraded"
+        ],
+        "type": "object"
+      },
+      "StatsDialogs": {
+        "description": "Dialog counts, by state, from `GET /v1/stats`.",
+        "properties": {
+          "active": {
+            "description": "Dialogs in an active state. Six states, two of them SUBSCRIBE\ndialogs carrying no media — not a count of calls.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "canceled": {
+            "description": "Dialogs that reached `Canceled`.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "completed": {
+            "description": "Dialogs that reached `Completed`.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "failed": {
+            "description": "Dialogs that reached `Failed`.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "in_call": {
+            "description": "Calls that are up: `InCall` only.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total": {
+            "description": "Dialogs tracked.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "active",
+          "in_call",
+          "completed",
+          "failed",
+          "canceled"
+        ],
+        "type": "object"
+      },
+      "StatsStreams": {
+        "description": "Stream counts from `GET /v1/stats`.",
+        "properties": {
+          "orphaned": {
+            "description": "Streams no dialog claims.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total": {
+            "description": "Streams tracked.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "orphaned"
+        ],
+        "type": "object"
+      },
+      "StatsTiming": {
+        "description": "Post-dial-delay percentiles from `GET /v1/stats`.\n\nEvery member is `null` when no dialog has a PDD — an absent\nmeasurement, not a zero one.",
+        "properties": {
+          "pdd_p50_ms": {
+            "description": "Median post-dial delay, milliseconds.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pdd_p95_ms": {
+            "description": "95th-percentile post-dial delay, milliseconds.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pdd_p99_ms": {
+            "description": "99th-percentile post-dial delay, milliseconds.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "StreamList": {
+        "description": "`GET /v1/streams` — one page of stream summaries.",
+        "properties": {
+          "limit": {
+            "description": "The `limit` actually applied.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "offset": {
+            "description": "The `offset` this page was taken at.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "description": "Wire-format version of this envelope.",
+            "example": 2,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "streams": {
+            "description": "The page.",
+            "items": {
+              "$ref": "#/components/schemas/StreamSummary"
+            },
+            "type": "array"
+          },
+          "total": {
+            "description": "Size of the FILTERED result set.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ungrounded_excluded": {
+            "description": "Streams a `mos_below` bound skipped for want of a grounded score.\nAlways `0` when `mos_below` is absent, because nothing was bounded.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "total",
+          "offset",
+          "limit",
+          "ungrounded_excluded",
+          "streams"
+        ],
+        "type": "object"
+      },
+      "StreamSummary": {
+        "description": "One row of `GET /v1/streams`.",
+        "properties": {
+          "associated_dialog": {
+            "description": "Call-ID of the dialog that does claim it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codec": {
+            "description": "Payload codec, when one was identified.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dialog_origin": {
+            "description": "Capture source that delivered the owning dialog.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dst": {
+            "description": "Destination `address:port`.",
+            "type": "string"
+          },
+          "frame": {
+            "description": "`<source>#<ordinal>` pointer to the first frame of the stream.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input_origin": {
+            "description": "Capture source that delivered the first packet.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "jitter_ms": {
+            "description": "Interarrival jitter, milliseconds.",
+            "format": "double",
+            "type": "number"
+          },
+          "loss_pct": {
+            "description": "Loss as a percentage of expected packets.",
+            "format": "double",
+            "type": "number"
+          },
+          "mos": {
+            "description": "Estimated MOS. Read `mos_grounded` before comparing it.",
+            "format": "double",
+            "type": "number"
+          },
+          "mos_grounded": {
+            "description": "Whether `mos` is a measurement or a placeholder standing in for a\ncodec with no published impairment value. `?mos_below=` admits only\ngrounded scores.",
+            "type": "boolean"
+          },
+          "mos_grounding": {
+            "description": "What `mos` was computed from.",
+            "type": "string"
+          },
+          "mos_note": {
+            "description": "Caveat attached to this particular score.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "orphaned": {
+            "description": "No dialog claims this stream.",
+            "type": "boolean"
+          },
+          "packets": {
+            "description": "RTP packets counted on this stream.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "round_trip_ms": {
+            "description": "Round-trip time, milliseconds, when one could be measured.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "round_trip_source": {
+            "description": "What the round trip was measured from.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "src": {
+            "description": "Source `address:port`.",
+            "type": "string"
+          },
+          "ssrc": {
+            "description": "SSRC as a `0x`-prefixed hex string.",
+            "example": "0x1a2b3c4d",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ssrc",
+          "src",
+          "dst",
+          "packets",
+          "jitter_ms",
+          "loss_pct",
+          "orphaned",
+          "mos",
+          "mos_grounded",
+          "mos_grounding"
+        ],
+        "type": "object"
+      },
+      "TimingSummary": {
+        "description": "Transaction timing, as carried by every dialog summary.",
+        "properties": {
+          "duration_ms": {
+            "description": "Answer to BYE, milliseconds. Absent for unanswered or live calls.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pdd_ms": {
+            "description": "Post-dial delay: INVITE to first ringing response, milliseconds.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "retransmits": {
+            "description": "Retransmitted requests and responses seen in this dialog.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "setup_ms": {
+            "description": "INVITE to 200 OK, milliseconds.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "retransmits"
+        ],
+        "type": "object"
+      },
+      "Vcon": {
+        "description": "`GET /v1/dialogs/{call_id}/vcon` — one observed dialog as an unsigned\nOBSERVER vCon container (draft-ietf-vcon-vcon-core).\n\nThe container is serialized as a JSON OBJECT, not as `Vcon::to_json`'s\nstring — a client must not have to parse JSON out of JSON.\n\n`tests/schemas/vcon.schema.json` is the working group's schema and is\ndeliberately NOT reproduced here: it is theirs, it is draft-07, and its\nown text rejects a container shape the working group agreed to at IETF\n124. This describes what sipnab sends.",
+        "properties": {
+          "analysis": {
+            "description": "The analysis bodies, carrying the same completeness caveat.",
+            "items": {},
+            "type": "array"
+          },
+          "attachments": {
+            "description": "Attachments, including the completeness caveat.",
+            "items": {},
+            "type": "array"
+          },
+          "created_at": {
+            "description": "RFC 3339 timestamp the container was built at.",
+            "type": "string"
+          },
+          "dialog": {
+            "description": "The dialog entries. Signaling only.",
+            "items": {},
+            "type": "array"
+          },
+          "extensions": {
+            "description": "vCon extensions this container uses.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "parties": {
+            "description": "The parties, as the `From` and `To` headers said them — not\nidentities anyone established.",
+            "items": {},
+            "type": "array"
+          },
+          "redacted": {
+            "description": "Present only on a container that redacts another."
+          },
+          "subject": {
+            "description": "One-line subject for the conversation.",
+            "type": "string"
+          },
+          "uuid": {
+            "description": "UUIDv8 derived from the capture and the dialog, so one dialog\nexported through two doors carries one identity.",
+            "type": "string"
+          },
+          "vcon": {
+            "description": "Version of the vCon container format.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "vcon",
+          "uuid",
+          "created_at",
+          "subject",
+          "extensions",
+          "parties",
+          "dialog",
+          "attachments",
+          "analysis"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "description": "A self-describing signed `s1.` token (`--api-signing-key`), or the static `--api-key`. `/metrics` also accepts a token scoped to metrics alone, which reaches no other route.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "contact": {
+      "name": "sipnab",
+      "url": "https://sipnab.com"
+    },
+    "description": "Read-only HTTP access to the dialogs, RTP streams, analysis and Prometheus metrics of a running sipnab capture, plus the one write the surface has: closing the persistence gate.\n\nThe server reads the same in-memory stores as the capture pipeline, in the same process. There is no database and no history: every answer describes the capture as it stands.",
+    "license": {
+      "name": "MIT OR Apache-2.0"
+    },
+    "title": "sipnab REST API",
+    "version": "1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "description": "Answers 200 with the literal body `ok`, whatever else is wrong.\n\nDeliberately outside the guard: no credential, no rate limit, and no store access. A liveness probe that a rate limit could starve is a probe that reports an outage it caused, and one that reads the stores answers slowly on the capture that most needs watching.",
+        "operationId": "health_check",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "example": "ok",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The process is up. Deliberately outside the guard: no credential, no rate limit, and no store access, so a liveness probe cannot be starved by one and cannot read anything."
+          }
+        },
+        "summary": "Liveness check",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "description": "The Prometheus text exposition format, over the same stores every other route reads.\n\nThe only route a metrics-scoped bearer token reaches — which is the point of that scope: a scrape credential on a capture tool that can decrypt TLS should not also open `/v1/dialogs`. A full-scope token works here too.",
+        "operationId": "get_metrics",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain; version=0.0.4; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Prometheus text exposition format. The only route a metrics-scoped token reaches; a full-scope token also works."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Prometheus metrics",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/v1/dialogs": {
+      "get": {
+        "description": "One page of dialog summaries, newest store order.\n\n`total` is the size of the FILTERED set — the count the rows are drawn from, after `state` and `from` are applied — so a client paging by `total` terminates instead of asking for empty pages past the end. `limit` is clamped to the operator's `--api-max-rows`, and the response echoes the value actually used.",
+        "operationId": "list_dialogs",
+        "parameters": [
+          {
+            "description": "Pagination offset (default 0).",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum results to return (default 50).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Filter by dialog state (e.g., \"Trying\", \"InCall\", \"Completed\").",
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by From user (regex pattern).",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogList"
+                }
+              }
+            },
+            "description": "One page of dialog summaries. `total` is the size of the FILTERED set, so paging by it terminates."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List dialogs",
+        "tags": [
+          "dialogs"
+        ]
+      }
+    },
+    "/v1/dialogs/{call_id}": {
+      "get": {
+        "description": "The dialog in full: display names, the SDP timeline, the media and asymmetry diagnosis, and the RTP streams it claims.\n\nA superset of the summary the list returns, and freshly diagnosed on each call rather than cached.",
+        "operationId": "get_dialog",
+        "parameters": [
+          {
+            "description": "Call-ID of the dialog, percent-encoded. Call-IDs routinely carry `@` and may carry `;`, `+` or `/`.",
+            "in": "path",
+            "name": "call_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dialog"
+                }
+              }
+            },
+            "description": "The dialog in full, with its streams and a freshly computed media/asymmetry diagnosis."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No dialog carries that Call-ID in this capture."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The dialog would not serialize."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get one dialog",
+        "tags": [
+          "dialogs"
+        ]
+      }
+    },
+    "/v1/dialogs/{call_id}/report": {
+      "get": {
+        "description": "The per-call analysis report — byte for byte the object `--call-report --json` writes, so a report fetched here and one produced offline are comparable.",
+        "operationId": "get_dialog_report",
+        "parameters": [
+          {
+            "description": "Call-ID of the dialog, percent-encoded.",
+            "in": "path",
+            "name": "call_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallReport"
+                }
+              }
+            },
+            "description": "The per-call analysis report — the same object `--call-report --json` writes."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No dialog carries that Call-ID in this capture."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The report would not serialize."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get a call report",
+        "tags": [
+          "dialogs"
+        ]
+      }
+    },
+    "/v1/dialogs/{call_id}/vcon": {
+      "get": {
+        "description": "One observed dialog as an unsigned OBSERVER vCon container (draft-ietf-vcon-vcon-core).\n\nRead the caveat before reading the container: sipnab watched these packets go past. It did not place the call, record it, or obtain anyone's consent to keep it. Nothing here is signed, and the party entries are what the `From` and `To` headers said rather than identities anyone established. The container states all of that itself, twice.\n\nRegistered only in a build carrying the vCon exporter. A build without it has no such route — rather than a route that answers an error, which a client cannot tell from a missing call.",
+        "operationId": "get_dialog_vcon",
+        "parameters": [
+          {
+            "description": "Call-ID of the dialog, percent-encoded.",
+            "in": "path",
+            "name": "call_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Vcon"
+                }
+              }
+            },
+            "description": "One observed dialog as an unsigned OBSERVER vCon container. sipnab watched these packets go past; it did not place the call, record it, or obtain anyone's consent to keep it. The container states that itself, in a completeness caveat it carries twice."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No dialog carries that Call-ID in this capture."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The container would not serialize."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Export a dialog as a vCon",
+        "tags": [
+          "dialogs"
+        ]
+      }
+    },
+    "/v1/persistence": {
+      "get": {
+        "description": "Whether this capture is writing content to disk, and whether the command line allows it to.\n\nBehind the same guard as every other route: what a capture is keeping is not a public fact, and a reader who can see the answer is one step from a writer who can change it.",
+        "operationId": "get_persistence",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersistenceState"
+                }
+              }
+            },
+            "description": "Whether this capture is writing content, and whether the command line allows it to."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Read the persistence gate",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "description": "Close the gate, or open it as far as the command line allows.\n\nAnswers with the same shape `GET` does, carrying both the gate's state and the ceiling. A caller that asked to enable an unauthorized run therefore reads `enabled: false, authorized: false` rather than a bare 200 it would take for success.",
+        "operationId": "set_persistence",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersistenceRequest"
+              }
+            }
+          },
+          "description": "What the caller wants the gate to be. Unknown keys are refused, and so is a JSON array — `[true]` is not `{\"enabled\": true}`.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersistenceState"
+                }
+              }
+            },
+            "description": "The gate as it now stands, narrowed by the command line. A caller that asked to enable an unauthorized run reads `enabled: false, authorized: false` here rather than a bare 200 it would take for success."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body was not a JSON object with exactly an `enabled` boolean. A rejection stays a rejection: the dangerous reading of \"I could not understand this\" is `enabled: true`."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Set the persistence gate",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/v1/report": {
+      "get": {
+        "description": "The capture-level view: findings across every dialog and stream, orphaned media, STUN and ICMP evidence, and what the retention caps shed.\n\n`GET /v1/dialogs/{call_id}/report` answers for one Call-ID; this answers for the capture. `complete: false` means a cap shed something and every count beside it is a floor.",
+        "operationId": "get_capture_report",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureReport"
+                }
+              }
+            },
+            "description": "The whole-capture analysis: findings across every dialog and stream, orphaned media, STUN and ICMP evidence, and what the retention caps shed.                                       `/v1/dialogs/{call_id}/report` answers for one Call-ID; this answers for the capture."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The analysis would not serialize."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Analyze the whole capture",
+        "tags": [
+          "capture"
+        ]
+      }
+    },
+    "/v1/stats": {
+      "get": {
+        "description": "Counts across dialogs and streams, with post-dial-delay percentiles — and, beside them, what they are drawn from.\n\n`capture_quality` says how much of the wire went missing and `unanalysed_sip_messages` how much the port gate set aside before anything analyzed it. Without those two, every total here reads as a total when it may be a floor: measured on one corpus the port gate alone excluded 37.7% of the SIP.",
+        "operationId": "get_stats",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Stats"
+                }
+              }
+            },
+            "description": "Aggregate counts, plus what they are drawn from: `capture_quality` says how much of the wire was lost and `unanalysed_sip_messages` how much the port gate set aside. Without those, every total here reads as a total when it may be a floor."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Aggregate statistics",
+        "tags": [
+          "capture"
+        ]
+      }
+    },
+    "/v1/streams": {
+      "get": {
+        "description": "One page of stream summaries.\n\n`mos_below` admits only streams whose MOS is a measurement. A codec with no published impairment value scores a placeholder that stands in for a missing measurement, and the placeholder is low, so a bound applied without that test would return every unscoreable stream dressed as a bad one. How many were held back is reported in `ungrounded_excluded` rather than hidden.",
+        "operationId": "list_streams",
+        "parameters": [
+          {
+            "description": "Pagination offset (default 0).",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum results to return (default 50).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Filter to show only orphaned streams.",
+            "in": "query",
+            "name": "orphaned",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Filter streams with MOS below this threshold.",
+            "in": "query",
+            "name": "mos_below",
+            "required": false,
+            "schema": {
+              "format": "double",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamList"
+                }
+              }
+            },
+            "description": "One page of stream summaries. `ungrounded_excluded` reports how many streams a `mos_below` bound skipped for want of a grounded score, rather than dropping them silently."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List RTP streams",
+        "tags": [
+          "streams"
+        ]
+      }
+    },
+    "/v1/streams/{id}": {
+      "get": {
+        "description": "The stream in full, including the burst/gap and quality-interval detail the list summary omits.",
+        "operationId": "get_stream",
+        "parameters": [
+          {
+            "description": "SSRC as hex, with or without a `0x` prefix. An SSRC is not unique — the stream key is SSRC plus source plus destination — so the busiest match is returned, deterministically, rather than an arbitrary first one.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RtpStream"
+                }
+              }
+            },
+            "description": "The stream in full."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The id is not hexadecimal."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No stream carries that SSRC in this capture."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The stream would not serialize."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get one RTP stream",
+        "tags": [
+          "streams"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "The default bind, which is loopback on purpose",
+      "url": "http://127.0.0.1:8080"
+    }
+  ],
+  "tags": [
+    {
+      "description": "SIP dialogs the capture is tracking",
+      "name": "dialogs"
+    },
+    {
+      "description": "RTP streams the capture is tracking",
+      "name": "streams"
+    },
+    {
+      "description": "The capture as a whole",
+      "name": "capture"
+    },
+    {
+      "description": "Liveness, metrics, and the persistence gate",
+      "name": "operations"
+    }
+  ]
+}

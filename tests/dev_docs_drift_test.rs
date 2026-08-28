@@ -2165,7 +2165,28 @@ fn line_citations_point_at_the_code_they_name() {
     // four of which name a symbol this checker can resolve -- the other two
     // cite a line without naming anything at it, which is exactly the shape
     // the comment above says gets SKIPPED rather than reported.
-    let expected = 199;
+    // 199 -> 200: the 0.5.131 batch. Attributed by differential measurement,
+    // and the first measurement was WRONG in an instructive way. The obvious
+    // suspect was the new backlog entries, which add line citations of their
+    // own -- but swapping HEAD's backlog.md in and out leaves the count at 200
+    // both ways, and restoring ALL 22 changed docs to HEAD still yields 200.
+    // No doc change moved it.
+    //
+    // The delta is a SOURCE change. This gate counts citations that name a
+    // symbol it can resolve, so adding a symbol makes a citation that already
+    // existed start counting. The batch adds 237 symbols across src/, many
+    // named by citations HEAD's docs already carried. The corpus of resolvable
+    // citations grew without a single new link being written, which is a shape
+    // worth remembering: "attribute the new citations" can have the answer
+    // "there are none, and the count is still right".
+    // 200 -> 201: one citation, added by `scripts/link-repo-paths.py --apply`
+    // rather than by hand. The VAL5 backlog entry named `src/expect.rs:334` as
+    // a bare code span, which `repo_paths_in_docs_are_clickable` correctly
+    // refuses; the fixer turned it into a link, and a link naming a symbol is
+    // what this gate counts. So one gate's fix is another gate's new corpus
+    // entry, and running the two fixers in either order leaves this number to
+    // be moved by hand afterwards.
+    let expected = 201;
     assert_eq!(
         checked, expected,
         "the drift checker examined {checked} citations, not the {expected} \

@@ -308,7 +308,7 @@ pub fn start_servers(
                 },
             ),
         };
-        let state = crate::capture::session::CaptureState::describing(
+        let mut state = crate::capture::session::CaptureState::describing(
             crate::capture::session::CaptureContext {
                 live,
                 name,
@@ -316,6 +316,15 @@ pub fn start_servers(
                 writing_to: cli.capture_args.output.clone(),
             },
         );
+        // The identity the RUN started with, not a fresh one. `describing`
+        // mints its own through `Default`, and that id existed nowhere else --
+        // so the startup provenance record (`--run-provenance-file`) named one
+        // capture and every MCP and REST answer named another, and nothing
+        // could be joined to anything. Seeded here rather than left to
+        // `Default` so both doors and the record agree from the first answer.
+        // A later `open_capture` still rotates THIS copy; see
+        // `provenance::run_identity` for why that divergence is the truth.
+        state.identity = crate::provenance::run_identity();
         Arc::new(parking_lot::RwLock::new(state))
     };
     // One flag, flipped by the capture owner and read by both doors. A copy

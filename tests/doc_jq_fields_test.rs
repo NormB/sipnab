@@ -48,11 +48,15 @@ enum Mode {
 
 /// Fields that are legitimately absent from a flat key scan.
 ///
-/// `jq` reaches into nested objects and arrays, and this gate only compares
-/// top-level keys. A path like `.streams` is a real top-level key; a path like
-/// `.mos` is read from inside an element of it. Rather than half-parse jq,
-/// the nested readers are named here so the gate stays honest about what it
-/// does and does not prove.
+/// `jq` reaches into nested objects and arrays. Since 0.5.131 the harvester
+/// walks objects AND the object elements of arrays to depth 3, so most nested
+/// readers now resolve on their own and this list is much shorter than the
+/// behavior it once compensated for.
+///
+/// What remains is the residue the harvester cannot see from a sample run:
+/// a field that is OPTIONAL and absent from every fixture, or one whose name
+/// differs by surface. Each entry says which, because an unexplained
+/// allowance is indistinguishable from a silenced failure.
 const NESTED_OR_DERIVED: &[&str] = &[
     "mos",               // inside .streams[] / .rtp
     "ssrc",              // inside .streams[]
@@ -64,6 +68,13 @@ const NESTED_OR_DERIVED: &[&str] = &[
     "severity",          // inside .findings[] of --json-analyze, an ARRAY element
     "to_user",           // dialog-scoped
     "state",             // dialog-scoped
+    // OPTIONAL and absent from every fixture: `src/output/json.rs:221`
+    // declares `burst_gap: Option<BurstGapAnalysis>` on a stream, filled at
+    // `:909` from `stream.burst_gap_analysis()`. It appears only when a stream
+    // has enough loss to analyze, and none of the committed captures do — so
+    // the harvester cannot learn it from a sample however deep it walks. The
+    // field is real; verified in the source, and observed on real traffic.
+    "burst_gap",
 ];
 
 /// Pull `sipnab ... --json* ... | jq '...'` pairs out of fenced blocks.
@@ -185,13 +196,42 @@ fn keys_for(mode: Mode) -> BTreeSet<String> {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            if let Some(obj) = v.as_object() {
-                keys.extend(obj.keys().cloned());
-                // One level down, so `.timing.setup_ms` style reads resolve.
-                for nested in obj.values().filter_map(|v| v.as_object()) {
-                    keys.extend(nested.keys().cloned());
+            // Walk objects AND the object elements of arrays, to a bounded
+            // depth. Arrays were the hole: the walk descended one level into
+            // nested OBJECTS only, so `.streams[].loss_pct` — a real field of
+            // a real array — was reported as nonexistent, and any page reading
+            // into an array of objects failed against correct documentation.
+            // `docs/real-world-captures.md` was the first page to do so and is
+            // what exposed it.
+            //
+            // Depth 3 reaches dialog -> streams[] -> quality_intervals[],
+            // which is the deepest shape any documented recipe reads. It is a
+            // deliberate widening: a name valid at one depth now satisfies a
+            // read at another, so this gate proves a field EXISTS somewhere in
+            // the document rather than that a given path resolves. That is
+            // still the failure worth catching — a reader pasting a recipe
+            // that names a field nothing emits gets a confidently empty
+            // answer — and a path-precise version would have to model jq.
+            fn harvest(v: &serde_json::Value, depth: usize, keys: &mut BTreeSet<String>) {
+                if depth == 0 {
+                    return;
+                }
+                match v {
+                    serde_json::Value::Object(obj) => {
+                        keys.extend(obj.keys().cloned());
+                        for child in obj.values() {
+                            harvest(child, depth - 1, keys);
+                        }
+                    }
+                    serde_json::Value::Array(items) => {
+                        for item in items {
+                            harvest(item, depth, keys);
+                        }
+                    }
+                    _ => {}
                 }
             }
+            harvest(&v, 3, &mut keys);
         }
     }
     assert!(

@@ -5,6 +5,7 @@
 {% block description %}{{ page.description | default(value=config.description) }}{% endblock description %}
 {% block og_title %}{{ page.title }} -- {{ config.title }}{% endblock og_title %}
 {% block og_description %}{{ page.description | default(value=config.description) }}{% endblock og_description %}
+{% block og_type %}article{% endblock og_type %}
 
 {# The mermaid bundle is 3.4 MB. Only a page that declares `has_diagrams` in
    its frontmatter pays for it — that flag is set by
@@ -16,13 +17,27 @@
 <script src="{{ get_url(path='js/mermaid.min.js', cachebust=true) }}" defer></script>
 <script src="{{ get_url(path='js/diagram-viewer.js', cachebust=true) }}" defer></script>
 {% endif %}
+{# The Scalar bundle is 3.6 MB, so it is gated exactly like the mermaid one
+   above: a page opts in with `openapi_reference = true` in its [extra] table,
+   and every other page pays nothing. One page opts in today
+   (content/api-reference.md), which is the page that renders
+   static/openapi.json. Both are `defer`, so they execute in order (the bundle
+   first, then the loader that reads `window.Scalar`) before DOMContentLoaded.
+   The configuration lives in js/openapi-reference.js rather than in an inline
+   block because `script-src 'self'` carries no `unsafe-inline`: an inline
+   block would need a sha256 refresh in the Cloudflare rule, and in
+   tests/site_journey_test.rs's PINNED list, on every wording change. #}
+{% if page.extra.openapi_reference %}
+<script src="{{ get_url(path='js/scalar.min.js', cachebust=true) }}" defer></script>
+<script src="{{ get_url(path='js/openapi-reference.js', cachebust=true) }}" defer></script>
+{% endif %}
 {% endblock head_extra %}
 
 {% block content %}
 <div class="doc-layout">
   <aside class="doc-sidebar" aria-label="Documentation navigation" id="doc-sidebar">
     <nav class="doc-nav" aria-label="Docs sections">
-      {{ macros::nav_group(title="Getting started", paths=["install.md", "cookbook.md", "tls-capture.md", "uprobe-walkthrough.md", "troubleshooting.md", "tuning-capture.md", "encapsulations.md", "rtpengine.md"], current_url=page.permalink) }}
+      {{ macros::nav_group(title="Getting started", paths=["install.md", "cookbook.md", "real-world-captures.md", "tls-capture.md", "uprobe-walkthrough.md", "troubleshooting.md", "tuning-capture.md", "encapsulations.md", "rtpengine.md"], current_url=page.permalink) }}
       {{ macros::nav_group(title="Using the TUI", paths=["tui.md", "keybindings.md", "theme.md"], current_url=page.permalink) }}
       {{ macros::nav_group(title="CLI & automation", paths=["cli.md", "filter-dsl.md", "output-formats.md", "sip-response-codes.md", "sip-methods.md", "sip-header-fields.md", "sip-parameters.md", "sip-lint-rules.md", "mos-and-codecs.md"], current_url=page.permalink) }}
       {{ macros::nav_group(title="Configuration", paths=["config.md"], current_url=page.permalink) }}
@@ -32,7 +47,19 @@
     </nav>
   </aside>
 
-  <article class="doc-content">
+  <!-- data-pagefind-body scopes the Pagefind index to the article, not the
+       <body>. Without it every page indexes the docs sidebar too, and the
+       sidebar is the same ~40 link titles on every page — so a search for
+       "keybindings" would match all of them and rank nothing. It sits on
+       <article> rather than on .doc-body because Pagefind takes a result
+       title from the first <h1> INSIDE the indexed region, and the <h1>
+       lives in .doc-header above the body.
+
+       The attribute is opt-in site-wide: once any page carries it,
+       Pagefind indexes only pages that do. That is deliberate — the
+       homepage, /download and /analyze are marketing and app surfaces, and
+       this box searches documentation. -->
+  <article class="doc-content" data-pagefind-body>
     <header class="doc-header">
       <p class="doc-kicker"><a href="{{ get_url(path='@/docs/_index.md') }}">Docs</a> <span aria-hidden="true">/</span> {{ page.title }}</p>
       <h1>{{ page.title }}</h1>
@@ -66,9 +93,11 @@
       {{ page.content | safe }}
     </div>
 
-    <!-- Prev/Next nav -->
+    <!-- Prev/Next nav. data-pagefind-ignore: these two links carry the
+         titles of the NEIGHBOURING pages, so without it every page would
+         match searches for the pages either side of it. -->
     {% if page.lower or page.higher %}
-    <nav class="doc-prevnext" aria-label="Documentation pages">
+    <nav class="doc-prevnext" aria-label="Documentation pages" data-pagefind-ignore>
       {% if page.lower %}
       <a href="{{ page.lower.permalink }}" class="doc-pn doc-prev">
         <span class="doc-pn-dir">&larr; Previous</span>

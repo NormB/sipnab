@@ -314,7 +314,8 @@ impl RateLimiter {
 // ── Query parameter types ───────────────────────────────────────────
 
 /// Query parameters for the `GET /v1/dialogs` endpoint.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct DialogListParams {
     /// Pagination offset (default 0).
     pub offset: Option<usize>,
@@ -327,7 +328,8 @@ pub struct DialogListParams {
 }
 
 /// Query parameters for the `GET /v1/streams` endpoint.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct StreamListParams {
     /// Pagination offset (default 0).
     pub offset: Option<usize>,
@@ -753,6 +755,19 @@ fn guard_scoped(
 // ── Handlers ────────────────────────────────────────────────────────
 
 /// `GET /health` — always returns "ok" (200), no auth or rate limit.
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "operations",
+    summary = "Liveness check",
+    description = "Answers 200 with the literal body `ok`, whatever else is wrong.\n\nDeliberately outside the guard: no credential, no rate limit, and no store access. A liveness probe that a rate limit could starve is a probe that reports an outage it caused, and one that reads the stores answers slowly on the capture that most needs watching.",
+    responses(
+        (status = 200, description = "The process is up. Deliberately outside the guard: no \
+                                      credential, no rate limit, and no store access, so a \
+                                      liveness probe cannot be starved by one and cannot read \
+                                      anything.", body = String, content_type = "text/plain", example = json!("ok"))
+    )
+)]
 async fn health_check() -> &'static str {
     "ok"
 }
@@ -780,6 +795,21 @@ async fn health_check() -> &'static str {
 ///
 /// Holds the dialog-store read lock while filtering; mutates the rate
 /// limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/dialogs",
+    tag = "dialogs",
+    summary = "List dialogs",
+    description = "One page of dialog summaries, newest store order.\n\n`total` is the size of the FILTERED set — the count the rows are drawn from, after `state` and `from` are applied — so a client paging by `total` terminates instead of asking for empty pages past the end. `limit` is clamped to the operator's `--api-max-rows`, and the response echoes the value actually used.",
+    params(DialogListParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "One page of dialog summaries. `total` is the size of the \
+                                      FILTERED set, so paging by it terminates.", body = schema::DialogList),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
 async fn list_dialogs(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -866,6 +896,25 @@ async fn list_dialogs(
 ///
 /// Holds the dialog- and stream-store read locks while building the
 /// response; mutates the rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/dialogs/{call_id}",
+    tag = "dialogs",
+    summary = "Get one dialog",
+    description = "The dialog in full: display names, the SDP timeline, the media and asymmetry diagnosis, and the RTP streams it claims.\n\nA superset of the summary the list returns, and freshly diagnosed on each call rather than cached.",
+    params(("call_id" = String, Path, description = "Call-ID of the dialog, percent-encoded. \
+                                                     Call-IDs routinely carry `@` and may carry \
+                                                     `;`, `+` or `/`.")),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The dialog in full, with its streams and a freshly \
+                                      computed media/asymmetry diagnosis.", body = schema::Dialog),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "No dialog carries that Call-ID in this capture.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 500, description = "The dialog would not serialize.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
 async fn get_dialog(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -918,6 +967,23 @@ async fn get_dialog(
 ///
 /// Holds the dialog- and stream-store read locks while building the
 /// report; mutates the rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/dialogs/{call_id}/report",
+    tag = "dialogs",
+    summary = "Get a call report",
+    description = "The per-call analysis report — byte for byte the object `--call-report --json` writes, so a report fetched here and one produced offline are comparable.",
+    params(("call_id" = String, Path, description = "Call-ID of the dialog, percent-encoded.")),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The per-call analysis report — the same object \
+                                      `--call-report --json` writes.", body = schema::CallReport),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "No dialog carries that Call-ID in this capture.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 500, description = "The report would not serialize.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
 async fn get_dialog_report(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -998,6 +1064,26 @@ async fn get_dialog_report(
 /// `/v1/report` takes, so the two can never deadlock against each other)
 /// while reading the facts and running the analysis; mutates the rate limiter.
 #[cfg(feature = "vcon")]
+#[utoipa::path(
+    get,
+    path = "/v1/dialogs/{call_id}/vcon",
+    tag = "dialogs",
+    summary = "Export a dialog as a vCon",
+    description = "One observed dialog as an unsigned OBSERVER vCon container (draft-ietf-vcon-vcon-core).\n\nRead the caveat before reading the container: sipnab watched these packets go past. It did not place the call, record it, or obtain anyone's consent to keep it. Nothing here is signed, and the party entries are what the `From` and `To` headers said rather than identities anyone established. The container states all of that itself, twice.\n\nRegistered only in a build carrying the vCon exporter. A build without it has no such route — rather than a route that answers an error, which a client cannot tell from a missing call.",
+    params(("call_id" = String, Path, description = "Call-ID of the dialog, percent-encoded.")),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "One observed dialog as an unsigned OBSERVER vCon \
+                                      container. sipnab watched these packets go past; it did \
+                                      not place the call, record it, or obtain anyone's consent \
+                                      to keep it. The container states that itself, in a \
+                                      completeness caveat it carries twice.", body = schema::Vcon),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "No dialog carries that Call-ID in this capture.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 500, description = "The container would not serialize.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
 async fn get_dialog_vcon(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -1061,7 +1147,7 @@ async fn get_dialog_vcon(
 /// than getting a 200 that moved nothing. The field is required and typed:
 /// serde refuses a string, a number, and a missing key alike, and every one of
 /// those refusals leaves the gate where it was.
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct PersistenceRequest {
     /// What the caller wants the gate to be, narrowed by the command line.
@@ -1081,6 +1167,20 @@ fn persistence_body(gate: &crate::output::persistence::PersistenceGate) -> Json<
 /// Behind the same guard as every other route. It reports what a capture is
 /// keeping, which is not a public fact, and a reader who can see the answer is
 /// one step from a writer who can change it.
+#[utoipa::path(
+    get,
+    path = "/v1/persistence",
+    tag = "operations",
+    summary = "Read the persistence gate",
+    description = "Whether this capture is writing content to disk, and whether the command line allows it to.\n\nBehind the same guard as every other route: what a capture is keeping is not a public fact, and a reader who can see the answer is one step from a writer who can change it.",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "Whether this capture is writing content, and whether the \
+                                      command line allows it to.", body = schema::PersistenceState),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
 async fn get_persistence(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -1096,6 +1196,30 @@ async fn get_persistence(
 /// the command line's ceiling. A caller that asked to enable an unauthorized
 /// run therefore reads `enabled: false, authorized: false` rather than a bare
 /// 200 it would take for success.
+#[utoipa::path(
+    post,
+    path = "/v1/persistence",
+    tag = "operations",
+    summary = "Set the persistence gate",
+    description = "Close the gate, or open it as far as the command line allows.\n\nAnswers with the same shape `GET` does, carrying both the gate's state and the ceiling. A caller that asked to enable an unauthorized run therefore reads `enabled: false, authorized: false` rather than a bare 200 it would take for success.",
+    request_body(content = PersistenceRequest, description = "What the caller wants the gate to \
+                                                              be. Unknown keys are refused, and \
+                                                              so is a JSON array — `[true]` is \
+                                                              not `{\"enabled\": true}`."),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The gate as it now stands, narrowed by the command line. \
+                                      A caller that asked to enable an unauthorized run reads \
+                                      `enabled: false, authorized: false` here rather than a \
+                                      bare 200 it would take for success.", body = schema::PersistenceState),
+        (status = 400, description = "The body was not a JSON object with exactly an `enabled` \
+                                      boolean. A rejection stays a rejection: the dangerous \
+                                      reading of \"I could not understand this\" is \
+                                      `enabled: true`.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
 async fn set_persistence(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -1163,6 +1287,23 @@ async fn set_persistence(
 ///
 /// Holds the stream-store read lock while filtering; mutates the rate
 /// limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/streams",
+    tag = "streams",
+    summary = "List RTP streams",
+    description = "One page of stream summaries.\n\n`mos_below` admits only streams whose MOS is a measurement. A codec with no published impairment value scores a placeholder that stands in for a missing measurement, and the placeholder is low, so a bound applied without that test would return every unscoreable stream dressed as a bad one. How many were held back is reported in `ungrounded_excluded` rather than hidden.",
+    params(StreamListParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "One page of stream summaries. `ungrounded_excluded` \
+                                      reports how many streams a `mos_below` bound skipped for \
+                                      want of a grounded score, rather than dropping them \
+                                      silently.", body = schema::StreamList),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
 async fn list_streams(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -1258,6 +1399,27 @@ async fn list_streams(
 ///
 /// Holds the stream-store read lock during lookup; mutates the rate
 /// limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/streams/{id}",
+    tag = "streams",
+    summary = "Get one RTP stream",
+    description = "The stream in full, including the burst/gap and quality-interval detail the list summary omits.",
+    params(("id" = String, Path, description = "SSRC as hex, with or without a `0x` prefix. An \
+                                                SSRC is not unique — the stream key is SSRC plus \
+                                                source plus destination — so the busiest match \
+                                                is returned, deterministically, rather than an \
+                                                arbitrary first one.")),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The stream in full.", body = schema::RtpStream),
+        (status = 400, description = "The id is not hexadecimal.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "No stream carries that SSRC in this capture.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 500, description = "The stream would not serialize.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
 async fn get_stream(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -1316,6 +1478,23 @@ async fn get_stream(
 ///
 /// Holds both store read locks while building the report; mutates the rate
 /// limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/report",
+    tag = "capture",
+    summary = "Analyze the whole capture",
+    description = "The capture-level view: findings across every dialog and stream, orphaned media, STUN and ICMP evidence, and what the retention caps shed.\n\n`GET /v1/dialogs/{call_id}/report` answers for one Call-ID; this answers for the capture. `complete: false` means a cap shed something and every count beside it is a floor.",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The whole-capture analysis: findings across every dialog \
+                                      and stream, orphaned media, STUN and ICMP evidence, and \
+                                      what the retention caps shed.                                       `/v1/dialogs/{call_id}/report` answers for one \
+                                      Call-ID; this answers for the capture.", body = schema::CaptureReport),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 500, description = "The analysis would not serialize.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
 async fn get_capture_report(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -1373,6 +1552,23 @@ async fn get_capture_report(
 ///
 /// Takes the dialog- then stream-store read locks (sequentially, not
 /// overlapping); mutates the rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/stats",
+    tag = "capture",
+    summary = "Aggregate statistics",
+    description = "Counts across dialogs and streams, with post-dial-delay percentiles — and, beside them, what they are drawn from.\n\n`capture_quality` says how much of the wire went missing and `unanalysed_sip_messages` how much the port gate set aside before anything analyzed it. Without those two, every total here reads as a total when it may be a floor: measured on one corpus the port gate alone excluded 37.7% of the SIP.",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "Aggregate counts, plus what they are drawn from: \
+                                      `capture_quality` says how much of the wire was lost and \
+                                      `unanalysed_sip_messages` how much the port gate set \
+                                      aside. Without those, every total here reads as a total \
+                                      when it may be a floor.", body = schema::Stats),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
 async fn get_stats(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -1595,6 +1791,21 @@ async fn get_stats(
 /// Takes the dialog- then stream-store read locks (both held while the
 /// per-dialog diagnosis is computed, in the same order as every other
 /// handler); mutates the rate limiter.
+#[utoipa::path(
+    get,
+    path = "/metrics",
+    tag = "operations",
+    summary = "Prometheus metrics",
+    description = "The Prometheus text exposition format, over the same stores every other route reads.\n\nThe only route a metrics-scoped bearer token reaches — which is the point of that scope: a scrape credential on a capture tool that can decrypt TLS should not also open `/v1/dialogs`. A full-scope token works here too.",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "Prometheus text exposition format. The only route a \
+                                      metrics-scoped token reaches; a full-scope token also \
+                                      works.", body = String, content_type = "text/plain; version=0.0.4; charset=utf-8"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
 async fn get_metrics(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -1737,6 +1948,666 @@ fn percentile(sorted: &[i64], p: u8) -> Option<i64> {
     let idx = ((p as f64 / 100.0) * (sorted.len() as f64 - 1.0)).round() as usize;
     Some(sorted[idx.min(sorted.len() - 1)])
 }
+
+// ── OpenAPI document ────────────────────────────────────────────────
+
+/// The response and request bodies the OpenAPI document names.
+///
+/// # Why these types exist beside the handlers rather than inside them
+///
+/// Most handlers build their body with `json!`, and several of them delegate
+/// the whole body to a serializer that lives in another module
+/// (`output::json`, `output::vcon`, `crate::analysis`). A schema derived from
+/// the Rust type would therefore have to reach across three modules and force
+/// a `ToSchema` derive onto types that have nothing to do with HTTP.
+///
+/// So the schema is declared here, next to the route that serves it, and
+/// `tests/openapi_contract_test.rs` boots the REAL server against a real
+/// capture and checks every documented response against the body that comes
+/// back. A schema that drifts from the handler fails there — which is the only
+/// check worth having, because a schema nobody compares to a response is
+/// prose with a `.json` extension.
+///
+/// Two components are NOT declared here. `CallReport` and `RtpStream` already
+/// have canonical JSON Schemas in `tests/schemas/`; the generator splices those
+/// files in, so each has one definition and not two. The empty marker types
+/// below reserve the component name and the `$ref` that points at it, and
+/// `every_documented_response_matches_what_the_server_sends` is what proves the
+/// spliced schema still describes the live body. (`call_report.schema.json` is
+/// checked a second way, by `tests/json_schema_test.rs` against
+/// `--call-report --json`. `stream.schema.json` was not checked against live
+/// output by anything until that test.)
+///
+/// `DialogSummary` is declared here AND has a schema file, because the two are
+/// read by different tools and neither can be dropped. They are cross-checked
+/// instead: `openapi_dialog_summary_agrees_with_the_shared_schema` fails if
+/// either grows a property the other does not have.
+pub mod schema {
+    use utoipa::ToSchema;
+
+    /// An RFC 9457 `application/problem+json` body: what every 4xx and 5xx
+    /// carries.
+    ///
+    /// Serialized by [`super::Problem`]'s `IntoResponse`, so this is the wire
+    /// type itself rather than a description of one.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    #[schema(as = Problem)]
+    pub struct ProblemJson {
+        /// URI naming the problem KIND. The field a client branches on.
+        #[serde(rename = "type")]
+        #[schema(rename = "type", example = "https://sipnab.com/problems/not-found")]
+        pub kind: String,
+        /// Short, human-readable summary of that kind.
+        #[schema(example = "Not Found")]
+        pub title: String,
+        /// The HTTP status, repeated so the body survives being logged apart
+        /// from its response.
+        #[schema(example = 404)]
+        pub status: u16,
+        /// What went wrong THIS time. Absent when the kind says it all.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub detail: Option<String>,
+    }
+
+    /// Transaction timing, as carried by every dialog summary.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct TimingSummary {
+        /// Post-dial delay: INVITE to first ringing response, milliseconds.
+        pub pdd_ms: Option<i64>,
+        /// INVITE to 200 OK, milliseconds.
+        pub setup_ms: Option<i64>,
+        /// Retransmitted requests and responses seen in this dialog.
+        #[schema(minimum = 0)]
+        pub retransmits: u32,
+        /// Answer to BYE, milliseconds. Absent for unanswered or live calls.
+        pub duration_ms: Option<i64>,
+    }
+
+    /// One row of `GET /v1/dialogs`.
+    ///
+    /// Marker only: the component is spliced from
+    /// `tests/schemas/dialog.schema.json`, which
+    /// `tests/openapi_contract_test.rs` also checks against this declaration,
+    /// so the two cannot disagree about a property name.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct DialogSummary {
+        /// Call-ID identifying the dialog.
+        pub call_id: String,
+        /// Current dialog state, e.g. `InCall`, `Completed`.
+        pub state: String,
+        /// SIP method that opened the dialog, canonical form.
+        pub method: String,
+        /// User part of the From URI.
+        pub from_user: Option<String>,
+        /// User part of the To URI.
+        pub to_user: Option<String>,
+        /// SIP messages in the dialog.
+        #[schema(minimum = 0)]
+        pub msg_count: usize,
+        /// Final INVITE response code, once the call reached one. Absent —
+        /// never zero — while the call is still in progress.
+        pub final_status_code: Option<u16>,
+        /// Reason phrase that came with `final_status_code`.
+        pub final_status_reason: Option<String>,
+        /// First to last message, seconds. `0` for a single-message dialog.
+        pub duration_sec: f64,
+        /// RFC 3339 timestamp of the first message.
+        #[schema(format = DateTime)]
+        pub created_at: String,
+        /// RFC 3339 timestamp of the most recent message.
+        #[schema(format = DateTime)]
+        pub updated_at: String,
+        /// Transaction timing metrics.
+        pub timing: TimingSummary,
+        /// `<source>#<ordinal>` pointer to the frame this dialog opened in.
+        pub frame: Option<String>,
+        /// Which capture source delivered the opening message — `wire`, `hep`
+        /// or `uprobe`.
+        pub input_origin: Option<String>,
+    }
+
+    /// One row of `GET /v1/streams`.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct StreamSummary {
+        /// SSRC as a `0x`-prefixed hex string.
+        #[schema(example = "0x1a2b3c4d")]
+        pub ssrc: String,
+        /// Payload codec, when one was identified.
+        pub codec: Option<String>,
+        /// Source `address:port`.
+        pub src: String,
+        /// Destination `address:port`.
+        pub dst: String,
+        /// RTP packets counted on this stream.
+        #[schema(minimum = 0)]
+        pub packets: u64,
+        /// Interarrival jitter, milliseconds.
+        pub jitter_ms: f64,
+        /// Loss as a percentage of expected packets.
+        pub loss_pct: f64,
+        /// No dialog claims this stream.
+        pub orphaned: bool,
+        /// Call-ID of the dialog that does claim it.
+        pub associated_dialog: Option<String>,
+        /// Estimated MOS. Read `mos_grounded` before comparing it.
+        pub mos: f64,
+        /// Whether `mos` is a measurement or a placeholder standing in for a
+        /// codec with no published impairment value. `?mos_below=` admits only
+        /// grounded scores.
+        pub mos_grounded: bool,
+        /// What `mos` was computed from.
+        pub mos_grounding: String,
+        /// Caveat attached to this particular score.
+        pub mos_note: Option<String>,
+        /// `<source>#<ordinal>` pointer to the first frame of the stream.
+        pub frame: Option<String>,
+        /// Round-trip time, milliseconds, when one could be measured.
+        pub round_trip_ms: Option<f64>,
+        /// What the round trip was measured from.
+        pub round_trip_source: Option<String>,
+        /// Capture source that delivered the first packet.
+        pub input_origin: Option<String>,
+        /// Capture source that delivered the owning dialog.
+        pub dialog_origin: Option<String>,
+    }
+
+    /// `GET /v1/dialogs` — one page of dialog summaries.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct DialogList {
+        /// Wire-format version of this envelope.
+        #[schema(example = 1)]
+        pub schema_version: u32,
+        /// Size of the FILTERED result set — the count the rows are drawn
+        /// from, so paging by `total` terminates.
+        pub total: usize,
+        /// The `offset` this page was taken at.
+        pub offset: usize,
+        /// The `limit` actually applied, after clamping to `--api-max-rows`.
+        pub limit: usize,
+        /// The page.
+        pub dialogs: Vec<DialogSummary>,
+    }
+
+    /// `GET /v1/streams` — one page of stream summaries.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct StreamList {
+        /// Wire-format version of this envelope.
+        #[schema(example = 2)]
+        pub schema_version: u32,
+        /// Size of the FILTERED result set.
+        pub total: usize,
+        /// The `offset` this page was taken at.
+        pub offset: usize,
+        /// The `limit` actually applied.
+        pub limit: usize,
+        /// Streams a `mos_below` bound skipped for want of a grounded score.
+        /// Always `0` when `mos_below` is absent, because nothing was bounded.
+        pub ungrounded_excluded: usize,
+        /// The page.
+        pub streams: Vec<StreamSummary>,
+    }
+
+    /// The body both doors of `/v1/persistence` answer with.
+    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
+    pub struct PersistenceState {
+        /// Whether content may reach disk on this run right now.
+        pub enabled: bool,
+        /// The command line's ceiling. A caller that asked to enable an
+        /// unauthorized run reads `enabled: false, authorized: false` rather
+        /// than a bare 200 it would take for success.
+        pub authorized: bool,
+    }
+
+    /// Dialog counts, by state, from `GET /v1/stats`.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct StatsDialogs {
+        /// Dialogs tracked.
+        pub total: usize,
+        /// Dialogs in an active state. Six states, two of them SUBSCRIBE
+        /// dialogs carrying no media — not a count of calls.
+        pub active: usize,
+        /// Calls that are up: `InCall` only.
+        pub in_call: usize,
+        /// Dialogs that reached `Completed`.
+        pub completed: usize,
+        /// Dialogs that reached `Failed`.
+        pub failed: usize,
+        /// Dialogs that reached `Canceled`.
+        pub canceled: usize,
+    }
+
+    /// Stream counts from `GET /v1/stats`.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct StatsStreams {
+        /// Streams tracked.
+        pub total: usize,
+        /// Streams no dialog claims.
+        pub orphaned: usize,
+    }
+
+    /// Post-dial-delay percentiles from `GET /v1/stats`.
+    ///
+    /// Every member is `null` when no dialog has a PDD — an absent
+    /// measurement, not a zero one.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct StatsTiming {
+        /// Median post-dial delay, milliseconds.
+        pub pdd_p50_ms: Option<i64>,
+        /// 95th-percentile post-dial delay, milliseconds.
+        pub pdd_p95_ms: Option<i64>,
+        /// 99th-percentile post-dial delay, milliseconds.
+        pub pdd_p99_ms: Option<i64>,
+    }
+
+    /// How much of the wire every other count in `GET /v1/stats` is drawn
+    /// from.
+    ///
+    /// Without it a total reads as a total when it may be a floor.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct StatsCaptureQuality {
+        /// Packets the kernel dropped before sipnab saw them.
+        pub kernel_dropped_packets: u64,
+        /// Packets the interface dropped.
+        pub interface_dropped_packets: u64,
+        /// Frames carrying a timestamp that could not be believed.
+        pub invalid_timestamps: u64,
+        /// Frames sipnab could not decode at all.
+        pub undecodable_frames: u64,
+        /// Frames truncated by the capture snap length.
+        pub snapped_frames: u64,
+        /// NAT-keepalive requests that never drew a response.
+        pub unanswered_nat_requests: u64,
+        /// TURN allocations observed expiring.
+        pub lapsed_turn_allocations: u64,
+        /// Streams affected by a lapsed TURN allocation.
+        pub lapsed_turn_allocation_streams: u64,
+        /// ICE role conflicts observed.
+        pub ice_role_conflicts: u64,
+        /// Whether any of the above is non-zero.
+        pub degraded: bool,
+    }
+
+    /// Which capture an answer came from, and which revision of its stores.
+    ///
+    /// Compare two of these to learn what changed: a different `instance`
+    /// means a different capture, and every cursor, index and Call-ID from the
+    /// earlier answer is meaningless; the same instance with a higher
+    /// generation means the same capture grew.
+    ///
+    /// The SAME identity MCP's `capture_status` stamps its answers with, from
+    /// the same object, so an agent and an HTTP client polling one process can
+    /// tell they are describing one capture.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct CaptureIdentity {
+        /// Which box saw this. Stable for the process; does not rotate with
+        /// `instance`.
+        pub node: String,
+        /// Identifies the loaded capture. Opaque — compare it, never parse it.
+        pub instance: String,
+        /// Dialog-store mutations since it was created or cleared.
+        pub dialog_generation: u64,
+        /// Stream-store mutations since it was created or cleared.
+        pub stream_generation: u64,
+    }
+
+    /// One of the busiest ports the port gate excluded.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct SkippedPort {
+        /// The port.
+        pub port: u16,
+        /// SIP messages seen on it and set aside.
+        pub messages: u64,
+    }
+
+    /// `GET /v1/stats` — the aggregate view.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct Stats {
+        /// Wire-format version of this envelope.
+        #[schema(example = 2)]
+        pub schema_version: u32,
+        /// Dialog counts by state.
+        pub dialogs: StatsDialogs,
+        /// Stream counts.
+        pub streams: StatsStreams,
+        /// What this capture DECLINED to do, beside what it lost. Always
+        /// present and always complete: zero is a real answer, and a key that
+        /// shows up only on a bad run is a key no client learns exists.
+        pub caveats: serde_json::Value,
+        /// WHICH capture these counts came from, and which revision of its
+        /// stores. `null` when nobody told this server what it is attached to.
+        pub capture_identity: Option<CaptureIdentity>,
+        /// What the server is attached to. `unknown` is a real answer.
+        pub source: String,
+        /// Human name of the capture, when one is known.
+        pub capture_name: Option<String>,
+        /// Seconds since the capture started.
+        pub uptime_sec: Option<u64>,
+        /// Whether a file source has been read to the end.
+        pub source_exhausted: bool,
+        /// Path this capture is writing to, when it is writing.
+        pub writing_to: Option<String>,
+        /// True only for a LIVE capture with no output file: packets held in
+        /// memory and nowhere else.
+        pub unsaved: bool,
+        /// SIP messages the port gate excluded before anything analyzed them.
+        pub unanalysed_sip_messages: u64,
+        /// The five busiest ports behind `unanalysed_sip_messages`. Widen
+        /// `--portrange` to recover them.
+        pub unanalysed_busiest_ports: Vec<SkippedPort>,
+        /// SIP-over-WebSocket messages excluded by the WS port gate. Counted
+        /// apart because widening `--portrange` recovers none of it;
+        /// `--ws-portrange` does.
+        pub unanalysed_websocket_messages: u64,
+        /// The five busiest ports behind `unanalysed_websocket_messages`.
+        pub unanalysed_websocket_ports: Vec<SkippedPort>,
+        /// Post-dial-delay percentiles.
+        pub timing: StatsTiming,
+        /// How much of the wire the counts above are drawn from.
+        pub capture_quality: StatsCaptureQuality,
+    }
+
+    /// `GET /v1/dialogs/{call_id}` — the full dialog.
+    ///
+    /// The projection `output::json::dialog_to_json` builds, which is a
+    /// SUPERSET of [`DialogSummary`] and not the same shape: it carries the
+    /// display names, the SDP timeline, the media diagnosis and the streams
+    /// themselves. `tests/openapi_contract_test.rs` reads a real one off a
+    /// running server and fails if a key here is missing from it, or one of
+    /// its keys is missing from here.
+    ///
+    /// The nested objects are left open rather than enumerated. Their
+    /// definitions live in `output::json`, and repeating them here would be
+    /// the drift this document exists to remove; the live check is what holds
+    /// the top level honest.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct Dialog {
+        /// Wire-format version of this object.
+        pub schema_version: u32,
+        /// Call-ID identifying the dialog.
+        pub call_id: String,
+        /// User part of the From URI.
+        pub from: Option<String>,
+        /// User part of the To URI.
+        pub to: Option<String>,
+        /// Display name from the From header.
+        pub from_display: Option<String>,
+        /// Display name from the To header.
+        pub to_display: Option<String>,
+        /// Current dialog state.
+        pub state: String,
+        /// Final INVITE response code, once the call reached one.
+        pub final_status_code: Option<u16>,
+        /// Reason phrase that came with `final_status_code`.
+        pub final_status_reason: Option<String>,
+        /// SIP method that opened the dialog.
+        pub method: String,
+        /// SIP messages in the dialog.
+        pub msg_count: usize,
+        /// First to last message, seconds.
+        pub duration_sec: f64,
+        /// Labels the analysis attached to this dialog. Absent, not empty,
+        /// when it attached none.
+        pub tags: Option<Vec<String>>,
+        /// Transaction timing, with the ring and teardown legs the summary
+        /// omits.
+        pub timing: serde_json::Value,
+        /// Every SDP offer and answer, in order.
+        pub sdp_timeline: Vec<serde_json::Value>,
+        /// The media diagnosis: three booleans plus `hints`. There is no
+        /// `summary` member.
+        pub diagnosis: serde_json::Value,
+        /// The signaling diagnosis, when one could be made.
+        pub signaling_diagnosis: Option<serde_json::Value>,
+        /// ICMP evidence bearing on the media, when any was seen.
+        pub icmp_media: Option<serde_json::Value>,
+        /// `<source>#<ordinal>` pointer to the frame this dialog opened in.
+        pub frame: Option<String>,
+        /// Capture source that delivered the opening message.
+        pub input_origin: Option<String>,
+        /// The RTP streams this dialog claims.
+        pub streams: Vec<serde_json::Value>,
+    }
+
+    /// `GET /v1/dialogs/{call_id}/report` — the per-call analysis report.
+    ///
+    /// Marker only: the component is spliced from
+    /// `tests/schemas/call_report.schema.json`, the schema
+    /// `tests/json_schema_test.rs` validates real `--call-report --json`
+    /// output against.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct CallReport {}
+
+    /// `GET /v1/streams/{id}` — the full RTP stream.
+    ///
+    /// Marker only: the component is spliced from
+    /// `tests/schemas/stream.schema.json`.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct RtpStream {}
+
+    /// `GET /v1/report` — the whole-capture analysis.
+    ///
+    /// Serialized from `crate::analysis::CaptureAnalysis` itself, never
+    /// re-parsed out of a rendered report: `print_analysis_report_as` looks
+    /// like it has a JSON arm and does not, and asking it for JSON is how this
+    /// endpoint once returned 500.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct CaptureReport {
+        /// Frames the capture read, from the same process-global the
+        /// Prometheus scrape reports — so this denominator is the one every
+        /// other number in the run is read against.
+        pub frames_read: u64,
+        /// Dialogs the analysis looked at.
+        pub dialogs_examined: usize,
+        /// Streams the analysis looked at.
+        pub streams_examined: usize,
+        /// Whether the analysis saw the whole capture. `false` means a
+        /// retention cap shed something, and every count above is a floor.
+        pub complete: bool,
+        /// What the analysis found, across every dialog and stream.
+        pub findings: Vec<serde_json::Value>,
+    }
+
+    /// `GET /v1/dialogs/{call_id}/vcon` — one observed dialog as an unsigned
+    /// OBSERVER vCon container (draft-ietf-vcon-vcon-core).
+    ///
+    /// The container is serialized as a JSON OBJECT, not as `Vcon::to_json`'s
+    /// string — a client must not have to parse JSON out of JSON.
+    ///
+    /// `tests/schemas/vcon.schema.json` is the working group's schema and is
+    /// deliberately NOT reproduced here: it is theirs, it is draft-07, and its
+    /// own text rejects a container shape the working group agreed to at IETF
+    /// 124. This describes what sipnab sends.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct Vcon {
+        /// Version of the vCon container format.
+        pub vcon: String,
+        /// UUIDv8 derived from the capture and the dialog, so one dialog
+        /// exported through two doors carries one identity.
+        pub uuid: String,
+        /// RFC 3339 timestamp the container was built at.
+        pub created_at: String,
+        /// One-line subject for the conversation.
+        pub subject: String,
+        /// Present only on a container that redacts another.
+        pub redacted: Option<serde_json::Value>,
+        /// vCon extensions this container uses.
+        pub extensions: Vec<String>,
+        /// The parties, as the `From` and `To` headers said them — not
+        /// identities anyone established.
+        pub parties: Vec<serde_json::Value>,
+        /// The dialog entries. Signaling only.
+        pub dialog: Vec<serde_json::Value>,
+        /// Attachments, including the completeness caveat.
+        pub attachments: Vec<serde_json::Value>,
+        /// The analysis bodies, carrying the same completeness caveat.
+        pub analysis: Vec<serde_json::Value>,
+    }
+}
+
+/// Adds the bearer scheme every route but `/health` requires.
+///
+/// A document that describes the routes and not the credential is a document a
+/// reader cannot use: sipnab's API answers 401 to an unauthenticated request
+/// on eleven of its twelve operations, and a reference that does not say so
+/// sends every first-time caller into that 401.
+struct BearerAuth;
+
+impl utoipa::Modify for BearerAuth {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            "bearer",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .description(Some(
+                        "A self-describing signed `s1.` token \
+                         (`--api-signing-key`), or the static `--api-key`. \
+                         `/metrics` also accepts a token scoped to metrics \
+                         alone, which reaches no other route.",
+                    ))
+                    .build(),
+            ),
+        );
+    }
+}
+
+/// The OpenAPI 3.1 document for sipnab's REST surface.
+///
+/// # Why `info.version` is not the crate version
+///
+/// It is `1`, the version in the `/v1` path prefix, and it moves when the wire
+/// contract does. Binding it to `CARGO_PKG_VERSION` would put a second version
+/// marker in the tree that has to move on every release — and this repository
+/// enforces its version markers in ONE place on purpose. A patch release that
+/// changes no endpoint must not invalidate a client's cached contract.
+///
+/// # What is missing from this type alone
+///
+/// Three of the components it names are declared as open objects here and
+/// filled in by the generator from `tests/schemas/`. Call
+/// [`openapi_json`] for the document as this crate can build it; the published
+/// artifact at `website/static/openapi.json` is that document with the shared
+/// schemas spliced in, and `tests/openapi_contract_test.rs` is what keeps the
+/// two in step.
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    info(
+        title = "sipnab REST API",
+        version = "1",
+        description = "Read-only HTTP access to the dialogs, RTP streams, \
+                       analysis and Prometheus metrics of a running sipnab \
+                       capture, plus the one write the surface has: closing \
+                       the persistence gate.\n\nThe server reads the same \
+                       in-memory stores as the capture pipeline, in the same \
+                       process. There is no database and no history: every \
+                       answer describes the capture as it stands.",
+        license(name = "MIT OR Apache-2.0"),
+        contact(name = "sipnab", url = "https://sipnab.com")
+    ),
+    servers((url = "http://127.0.0.1:8080", description = "The default bind, which is loopback on purpose")),
+    modifiers(&BearerAuth),
+    paths(
+        health_check,
+        list_dialogs,
+        get_dialog,
+        get_dialog_report,
+        get_persistence,
+        set_persistence,
+        list_streams,
+        get_stream,
+        get_capture_report,
+        get_stats,
+        get_metrics,
+    ),
+    components(schemas(
+        schema::ProblemJson,
+        schema::DialogList,
+        schema::DialogSummary,
+        schema::TimingSummary,
+        schema::StreamList,
+        schema::StreamSummary,
+        schema::PersistenceState,
+        PersistenceRequest,
+        schema::Stats,
+        schema::StatsDialogs,
+        schema::StatsStreams,
+        schema::StatsTiming,
+        schema::StatsCaptureQuality,
+        schema::SkippedPort,
+        schema::CaptureIdentity,
+        schema::Dialog,
+        schema::CallReport,
+        schema::RtpStream,
+        schema::CaptureReport,
+    )),
+    tags(
+        (name = "dialogs", description = "SIP dialogs the capture is tracking"),
+        (name = "streams", description = "RTP streams the capture is tracking"),
+        (name = "capture", description = "The capture as a whole"),
+        (name = "operations", description = "Liveness, metrics, and the persistence gate")
+    )
+)]
+pub struct ApiDoc;
+
+/// The OpenAPI 3.1 document for the routes THIS BUILD serves, as JSON.
+///
+/// Feature-dependent by construction, and that is the point:
+/// `/v1/dialogs/{call_id}/vcon` is registered by [`build_router`] only where
+/// the exporter exists, and it appears here only under the same `cfg`. A
+/// document that advertised a route the binary does not serve would be worse
+/// than no document.
+///
+/// # Returns
+///
+/// The document, pretty-printed with a trailing newline so it survives a
+/// text-mode diff.
+///
+/// # Panics
+///
+/// Never in practice: the value being serialized is built by `utoipa` out of
+/// owned `String`s and numbers, which `serde_json` cannot fail on. The
+/// `expect` is the honest way to say that — the alternative is a `Result` on
+/// an infallible operation, which every caller would then have to pretend to
+/// handle.
+#[must_use]
+pub fn openapi_json() -> String {
+    use utoipa::OpenApi as _;
+
+    #[cfg_attr(
+        not(feature = "vcon"),
+        expect(
+            unused_mut,
+            reason = "the vcon route is the only mutation, and it is cfg-gated"
+        )
+    )]
+    let mut doc = ApiDoc::openapi();
+    #[cfg(feature = "vcon")]
+    doc.merge(VconDoc::openapi());
+
+    #[expect(
+        clippy::expect_used,
+        reason = "a utoipa::openapi::OpenApi is owned Strings, numbers and \
+                  String-keyed maps, none of which serde_json can fail on. A \
+                  Result here would be an error case every caller has to \
+                  pretend to handle"
+    )]
+    let mut out = serde_json::to_string_pretty(&doc).expect("OpenApi serializes");
+    out.push('\n');
+    out
+}
+
+/// The `vcon` route's half of the document.
+///
+/// A separate derive rather than a `cfg` inside `ApiDoc`'s `paths(...)`: that
+/// list is a macro argument and cannot be gated item by item. [`build_router`]
+/// gates the route itself the same way and for the same reason — a document
+/// advertising a route the binary does not serve is worse than no document.
+#[cfg(feature = "vcon")]
+#[derive(utoipa::OpenApi)]
+#[openapi(paths(get_dialog_vcon), components(schemas(schema::Vcon)))]
+struct VconDoc;
 
 // ── Tests ───────────────────────────────────────────────────────────
 

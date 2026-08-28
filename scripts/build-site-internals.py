@@ -182,6 +182,7 @@ DOCS_TO_SITE = {
     "install.md": "install.md",
     "prometheus-metrics.md": "metrics.md",
     "examples.md": "cookbook.md",
+    "real-world-captures.md": "real-world-captures.md",
     "troubleshooting.md": "troubleshooting.md",
     "rtpengine.md": "rtpengine.md",
     "tui-walkthrough.md": "tui.md",

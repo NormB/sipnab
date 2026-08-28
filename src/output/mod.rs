@@ -15,6 +15,9 @@
 //! - `event_exec` — External command hooks for events
 //! - `api` — REST API daemon mode (feature-gated: `api`)
 //! - `prometheus` — Prometheus exposition-format metric data model/formatting
+//! - `run_integrity` — what this run could not deliver, in a form a machine
+//!   can read: the exit-status predicate and the marker `--json-dialogs` and
+//!   `--report` carry when the input was not read in full
 //! - `redact` — keyed pseudonymization at the serialization boundary
 //!   (feature-gated: available wherever `api`, `mcp` or `vcon` is, which is
 //!   where a container or a response leaves this process)
@@ -49,6 +52,7 @@ pub mod prometheus;
 pub mod prometheus_server;
 #[cfg(any(feature = "api", feature = "mcp", feature = "vcon"))]
 pub mod redact;
+pub mod run_integrity;
 pub mod sink;
 pub mod stun_report;
 pub mod synthetic;

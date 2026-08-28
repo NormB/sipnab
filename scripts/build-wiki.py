@@ -37,6 +37,7 @@ BLOB = f"https://github.com/{REPO}/blob/main"
 PAGES: dict[str, str] = {
     "install.md": "Installation",
     "examples.md": "Cookbook",
+    "real-world-captures.md": "Real-World-Captures",
     "troubleshooting.md": "Troubleshooting",
     "tuning-capture.md": "Tuning-Capture",
     "encapsulations.md": "Encapsulations",
@@ -91,7 +92,7 @@ PAGES: dict[str, str] = {
 # Sidebar grouping: (section title, [source paths]), ordered by user journey —
 # install first, internals last. Order within a group is the reading order.
 GROUPS: list[tuple[str, list[str]]] = [
-    ("Getting started", ["install.md", "examples.md", "troubleshooting.md",
+    ("Getting started", ["install.md", "examples.md", "real-world-captures.md", "troubleshooting.md",
                          "tuning-capture.md", "encapsulations.md",
                          "rtpengine.md",
                          "backers.md"]),

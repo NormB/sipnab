@@ -66,6 +66,13 @@ jobs:
       # checksum manifest, so this hash is recorded from the artifact served at
       # v0.19.2 -- it detects a later swap, it does not attest the first download.
       ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
+      # Pagefind builds the documentation search index from the rendered
+      # site. Pinned by version AND by content hash for the same reason as
+      # Zola directly above: a tag names a release, it does not fix the bytes
+      # behind it, and a release asset can be replaced after publication.
+      # Recorded from the artifact served at v1.5.2.
+      PAGEFIND_VERSION: '1.5.2'
+      PAGEFIND_SHA256: 'afb824a9e7f64905a934900481cea5be679c03975e527329e0e5e6cc70f5feda'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -141,6 +148,39 @@ jobs:
       - name: Build site
         working-directory: website
         run: zola build
+
+      # AFTER the Zola build, and that ordering is a constraint rather than a
+      # style choice: `zola build` recreates its output directory from
+      # scratch, so an index written before it is deleted by it. It runs
+      # BEFORE the artifact upload below for the matching reason -- the
+      # index has to be inside the tree that gets published, not beside it.
+      #
+      # The index is generated here rather than committed, on the same
+      # argument the analyzer build above makes: an index OF a site is a
+      # build product, and a committed one goes stale silently while the
+      # pages it claims to describe move underneath it. That is precisely how
+      # the WASM bundle served eleven releases of stale analysis.
+      #
+      # No CDN is involved and none may be: the site's Content-Security-Policy
+      # is `script-src 'self'` with no 'unsafe-inline', so the search runtime,
+      # its wasm and its index chunks have to be same-origin. This step is what
+      # makes them so -- it writes them into the deployed tree.
+      - name: Index the site for search (Pagefind)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o pagefind.tar.gz \
+            "https://github.com/CloudCannon/pagefind/releases/download/v${PAGEFIND_VERSION}/pagefind-v${PAGEFIND_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "${PAGEFIND_SHA256}  pagefind.tar.gz" | sha256sum -c -
+          tar xzf pagefind.tar.gz
+          sudo install -m 0755 pagefind /usr/local/bin/pagefind
+          rm -f pagefind pagefind.tar.gz
+          pagefind --version
+          pagefind --site website/public
+          # A missing index is invisible from the outside: the page still
+          # returns 200, the search box simply never appears. Fail the build
+          # here instead of shipping a site whose search is silently absent.
+          test -s website/public/pagefind/pagefind.js
+          test -s website/public/pagefind/pagefind-entry.json
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5

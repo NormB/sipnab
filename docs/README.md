@@ -55,6 +55,11 @@ you want.
   Call-ID.
 - **[Troubleshooting](troubleshooting.md)** — symptom → command. Failed calls,
   one-way audio, high loss, NAT issues: what to run and what to look for.
+- **[Worked examples from real captures](real-world-captures.md)** — twelve
+  findings read out of live carrier and PBX traffic, each with the command, the
+  output and what to do next. The retransmit storm that was dead keepalives, the
+  scanner detection that named the operator's own PBX, and the 90% loss figure
+  that was three bursts of half a second.
 - **[Tuning capture](tuning-capture.md)** — are you dropping packets, and what
   to change when you are. Kernel buffer, BPF, snaplen, driver drops, `--cores`.
 - **[Encapsulations](encapsulations.md)** — MPLS, PPPoE, GTP-U or VXLAN wraps

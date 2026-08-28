@@ -93,6 +93,108 @@ pub fn is_ng_over_hep(capture_proto: u8, payload: &[u8]) -> bool {
     capture_proto == NG_HEP_CAPTURE_PROTO || ng::parse(payload).is_ok()
 }
 
+/// UDP destination ports a SNIFFED HEP mirror is believed on.
+///
+/// 9060 is the HEP port: sipnab's own `--hep-listen` default, the value
+/// `docs/rtpengine.md` uses in every `homer =` example, and what both
+/// committed rtpengine fixtures are addressed to.
+///
+/// The gate exists because the sniffed path has no authentication of any
+/// kind. It reads a datagram addressed to somebody else, off a segment
+/// anything can transmit on, and takes the Call-ID verbatim out of the
+/// correlation-id chunk — so before this, ANY UDP datagram whose payload
+/// bencode-decoded named a call and bound media to an address of the
+/// sender's choosing, from any source, to any port. A port gate does not
+/// authenticate anything, and nothing here should be read as claiming it
+/// does; what it does is stop every datagram on the wire from being a
+/// candidate, which is the difference between "one port an operator can
+/// reason about" and "all 65535".
+///
+/// A collector on a non-standard port therefore loses SNIFFED decoding, and
+/// that is the deliberate trade. The delivered path — `--hep-listen`, with
+/// `--hep-auth --hep-auth-mode hmac` — is the one that can actually
+/// authenticate a sender, and it is unaffected.
+pub const HEP_MIRROR_PORTS: &[u16] = &[9060];
+
+/// How many sniffed `ng` datagrams were refused for arriving on a port
+/// outside [`HEP_MIRROR_PORTS`].
+static SNIFFED_NG_OFF_PORT: AtomicU64 = AtomicU64::new(0);
+
+/// Whether a sniffed HEP mirror addressed to `dst_port` is believed.
+#[must_use]
+pub fn sniffed_mirror_port_allowed(dst_port: u16) -> bool {
+    HEP_MIRROR_PORTS.contains(&dst_port)
+}
+
+/// How many sniffed `ng` datagrams this process refused on the port gate.
+#[must_use]
+pub fn sniffed_ng_refused_off_port() -> u64 {
+    SNIFFED_NG_OFF_PORT.load(Ordering::Relaxed)
+}
+
+/// Reset the off-port tally. Test-only: the count is process-global.
+#[cfg(test)]
+pub fn reset_sniffed_ng_off_port_count() {
+    SNIFFED_NG_OFF_PORT.store(0, Ordering::Relaxed);
+}
+
+/// Decode a SNIFFED HEP datagram — one read off the wire on its way to
+/// somebody else's collector, wrapper intact — as rtpengine control plane.
+///
+/// # Returns
+///
+/// * `None` when the datagram is not sniffed rtpengine control plane at all,
+///   so the rest of the pipeline should go on classifying it.
+/// * `Some(links)` when it IS control plane. The list is empty both when the
+///   message named no endpoint (a `delete`, a `ping`, a reply to one) and
+///   when the datagram was refused by the port gate; either way it is control
+///   traffic and must not be reconsidered as media.
+///
+/// # Side effects
+///
+/// On a refusal, bumps the [`sniffed_ng_refused_off_port`] tally and warns
+/// once per process — once, because a mirror aimed at a non-standard port
+/// produces this on every control datagram, and a line per packet is its own
+/// outage.
+#[cfg(feature = "hep")]
+#[must_use]
+pub fn sniffed_ng_sdp_links(
+    dst_port: u16,
+    datagram: &[u8],
+) -> Option<Vec<(std::net::IpAddr, u16, String, crate::sip::sdp::SdpMedia)>> {
+    let hep = crate::capture::hep::parse_hep(datagram).ok()?;
+    if !is_ng_over_hep(hep.protocol.to_byte(), &hep.payload) {
+        return None;
+    }
+    if !sniffed_mirror_port_allowed(dst_port) {
+        SNIFFED_NG_OFF_PORT.fetch_add(1, Ordering::Relaxed);
+        static OFF_PORT_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !OFF_PORT_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(
+                "ignoring a sniffed rtpengine ng datagram addressed to UDP port \
+                 {dst_port}: sniffed control plane is unauthenticated input, so it \
+                 is only believed on the HEP port ({}). Anything may put a \
+                 datagram on this segment, and a believed one names a call and \
+                 binds media to an address of the sender's choosing. If your \
+                 collector really is on {dst_port}, have rtpengine deliver to \
+                 sipnab instead: --hep-listen, with --hep-auth --hep-auth-mode \
+                 hmac.",
+                HEP_MIRROR_PORTS
+                    .iter()
+                    .map(u16::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
+        return Some(Vec::new());
+    }
+    Some(sdp_links_from_ng(
+        &hep.payload,
+        hep.correlation_id.as_deref(),
+    ))
+}
+
 /// The SDP media endpoints an `ng` message asserts, tied to their call.
 ///
 /// `correlation_id` is the HEP correlation-id chunk, which rtpengine fills

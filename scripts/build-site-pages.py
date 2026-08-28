@@ -373,6 +373,21 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "out of, which it cannot, and what it reports when a frame does not "
         "decode.",
     ),
+    (
+        "docs/real-world-captures.md",
+        "real-world-captures.md",
+        "Worked examples from real captures",
+        "Real-World Captures",
+        # 39, the next free weight on the SITE side, which is where
+        # `docs_page_weights_are_unique_and_descriptions_present` reads.
+        # Sidebar order comes from the nav_group path lists, not from this
+        # number.
+        39,
+        "Twelve findings read out of live carrier and PBX traffic, with the "
+        "command, the output and what an operator does next -- the retransmit "
+        "storms, false-positive detections and misleading aggregates that a "
+        "curated fixture cannot show.",
+    ),
 ]
 
 BANNER = (
@@ -575,6 +590,60 @@ def write_llms_txt(root: Path, static_dir: Path) -> None:
     print(f"  llms.txt / llms-full.txt <- {len(sources)} pages")
 
 
+def check_descriptions() -> None:
+    """Refuse to generate a description that would be no description.
+
+    The description in a page's front matter is the ONE string that becomes
+    `<meta name="description">`, the `og:description` a social unfurl renders,
+    the lead paragraph under the H1, the card text on the docs landing index,
+    and the line beside the page in `llms.txt`. `page.html` falls back to
+    `config.description` when it is absent, so none of those surfaces looks
+    broken when it goes missing -- every page just quietly claims to be the
+    whole site.
+
+    The three failures below are the ones that survive a "has a description"
+    check while being worthless to the reader they are written for:
+
+    * EMPTY -- indistinguishable from the fallback.
+    * THE TITLE RESTATED -- "Cookbook." says nothing the `<title>` did not.
+    * DUPLICATED -- a description repeated across URLs is worse than none: a
+      search engine collapses the duplicates and writes its own snippet, so
+      the two pages compete instead of ranking.
+
+    The duplicate check spans BOTH generators. `build-site-internals.py`
+    writes into the same content tree and its entries sit in the same
+    `llms.txt`, so checking this file's PAGES alone would miss a collision
+    across the boundary -- which is the only kind nobody would spot by eye.
+
+    Raises `SystemExit` naming every offender, in the same style as the H1
+    mismatch in `render()`, so the generator stops before writing a page that
+    a Rust gate would then have to reject.
+    """
+    seen: dict[str, str] = {}
+    bad: list[str] = []
+    entries = [(site, title, desc) for _s, site, _h1, title, _w, desc in PAGES]
+    entries += [
+        (f"internals/{site}", title, desc)
+        for _s, site, _w, title, desc in _INT.PAGES
+    ]
+    for site, title, desc in entries:
+        norm = " ".join(desc.split()).rstrip(".").lower()
+        if not norm:
+            bad.append(f"{site}: description is empty")
+            continue
+        if norm == " ".join(title.split()).rstrip(".").lower():
+            bad.append(f"{site}: description is the title restated ({desc!r})")
+        if norm in seen:
+            bad.append(f"{site}: description duplicates {seen[norm]} ({desc!r})")
+        else:
+            seen[norm] = site
+    if bad:
+        raise SystemExit(
+            "refusing to generate: description problems in PAGES\n  "
+            + "\n  ".join(bad)
+        )
+
+
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
     out_dir = (
@@ -593,6 +662,7 @@ def main() -> int:
     )
     static_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
+    check_descriptions()
     _load_anchors(root)
     for src, site_name, want_h1, title, weight, description in PAGES:
         rendered = render(

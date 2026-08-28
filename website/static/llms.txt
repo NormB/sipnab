@@ -35,6 +35,7 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [vCon Capture Stack](https://sipnab.com/docs/vcon-harness/): Build a two-point vCon capture stack -- OpenSIPS, rtpengine, sipnab and a conserver -- then operate it, verify a stored call carries its media, and recognize the failures that look like success.
 - [vCon Export](https://sipnab.com/docs/vcon/): Export one observed dialog as a vCon container: what the format is, how to produce one, and what an observer's record does and does not let a consumer conclude.
 - [Encapsulations](https://sipnab.com/docs/encapsulations/): Which link types, EtherTypes and tunnels sipnab can read a SIP dialog out of, which it cannot, and what it reports when a frame does not decode.
+- [Real-World Captures](https://sipnab.com/docs/real-world-captures/): Twelve findings read out of live carrier and PBX traffic, with the command, the output and what an operator does next -- the retransmit storms, false-positive detections and misleading aggregates that a curated fixture cannot show.
 
 ## Internals
 

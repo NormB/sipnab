@@ -1,5 +1,9 @@
 //! Reading uprobe records through `perf_event_open` rather than `trace_pipe`.
 //!
+//! It needs `libc`, and so is gated on `native` rather than the whole module
+//! being gated: `elf` and `record` are pure byte arithmetic and stay testable
+//! in feature combinations that carry no `libc` at all.
+//!
 //! `trace_pipe` is a **text** interface: the kernel formats every field into
 //! ASCII and userspace parses it back. That is fine for a measurement by hand
 //! and unfit for a host under load, which is where this feature is meant to

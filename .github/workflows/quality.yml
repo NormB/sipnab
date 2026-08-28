@@ -449,6 +449,37 @@ jobs:
         working-directory: website
         run: zola build
 
+      # The same search index pages.yml publishes, built on the same pinned
+      # binary, for one reason: pages.yml runs on push to main, so without this
+      # a change that makes the index unbuildable is discovered by the deploy
+      # rather than by the pull request. This job already renders the site; it
+      # costs one download to also prove the index still builds from it.
+      #
+      # AFTER `zola build`, which recreates its output directory from scratch
+      # and would delete an index written before it.
+      - name: Index the site for search (Pagefind)
+        env:
+          # Identical pin to .github/workflows/pages.yml, and held there by
+          # `a_tool_installed_by_more_than_one_workflow_is_pinned_identically`
+          # -- checking the site with one build of a tool while publishing it
+          # with another is the drift that test exists to catch.
+          PAGEFIND_VERSION: '1.5.2'
+          PAGEFIND_SHA256: 'afb824a9e7f64905a934900481cea5be679c03975e527329e0e5e6cc70f5feda'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o pagefind.tar.gz \
+            "https://github.com/CloudCannon/pagefind/releases/download/v${PAGEFIND_VERSION}/pagefind-v${PAGEFIND_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "${PAGEFIND_SHA256}  pagefind.tar.gz" | sha256sum -c -
+          tar xzf pagefind.tar.gz
+          sudo install -m 0755 pagefind /usr/local/bin/pagefind
+          rm -f pagefind pagefind.tar.gz
+          pagefind --version
+          pagefind --site website/public
+          # An index that did not land is invisible from the outside: the page
+          # returns 200 and the search box simply never appears.
+          test -s website/public/pagefind/pagefind.js
+          test -s website/public/pagefind/pagefind-entry.json
+
       # `--exclude` the site's OWN absolute URLs, in this pass only.
       #
       # Zola renders internal links as absolute https://sipnab.com/... URLs, so
@@ -490,3 +521,250 @@ jobs:
           fail: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # Accessibility: axe-core against the RENDERED site, WCAG 2 Level A and AA.
+  #
+  # The Rust suite already reads website/templates/*.html by regular expression
+  # and asserts on individual attributes. That is the strongest check available
+  # to static analysis and it is structurally unable to make the two findings
+  # this job made on its first real run: a color contrast ratio between a link
+  # and the prose around it (1.79:1, needs 3:1), and a `<code>` block that CSS
+  # turns into a horizontally scrollable region with no way to focus it. Both
+  # are properties of the computed style of a composed document, so a browser
+  # computes them.
+  #
+  # The gate blocks on `serious` and `critical`, over the wcag2a + wcag2aa tag
+  # sets, and on axe's `incomplete` bucket for every rule except color-contrast.
+  # e2e/tests/accessibility.spec.js carries the reasoning for each of those
+  # three choices next to the constant that implements it.
+  # ---------------------------------------------------------------------------
+  accessibility:
+    # Bounds a wedged job: an unbounded one holds its concurrency group
+    # indefinitely. Observed locally: 12s for the nine specs, so this is
+    # bounding a hang rather than the work.
+    timeout-minutes: 20
+    name: Accessibility (axe-core, WCAG 2 A/AA)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. This job only reads the tree.
+          persist-credentials: false
+
+      - name: Install Zola (accessibility)
+        env:
+          ZOLA_VERSION: '0.19.2'
+          # Same pin as the Pages workflow and the Docs job install; see the
+          # comment in pages.yml for why a tag alone is not enough.
+          # `a_tool_installed_by_more_than_one_workflow_is_pinned_identically`
+          # holds all three copies together.
+          ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o zola.tar.gz \
+            "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
+          tar xzf zola.tar.gz
+          sudo install -m 0755 zola /usr/local/bin/zola
+          rm -f zola zola.tar.gz
+          zola --version
+
+      # `--base-url` is not cosmetic here, it is what makes the run mean
+      # anything. Zola renders every internal URL as an absolute config.base_url
+      # URL, and base_url is https://sipnab.com. Served on 127.0.0.1 that page
+      # asks the production site for its own stylesheet, script and images, and
+      # base.html's `default-src 'self'` blocks every one of them as
+      # cross-origin -- so the page renders with NO CSS, and axe reports zero
+      # violations because there are no computed colors to fail a contrast
+      # check and no `overflow-x: auto` to make a region scrollable. That is
+      # exactly what the first run of this gate did, on all five pages, before
+      # anyone looked at why it was so clean.
+      - name: Build the site at the origin it is served from (accessibility)
+        working-directory: website
+        run: zola build --base-url http://127.0.0.1:1111
+
+      # The same trap, asserted rather than trusted. If the built HTML still
+      # points at sipnab.com the scan below is measuring an unstyled page, and
+      # it would pass. The spec carries its own runtime version of this check
+      # ("the site under test serves its own assets"); this one fails a minute
+      # earlier and names the cause.
+      - name: The built site references its own origin, not production
+        run: |
+          set -euo pipefail
+          if grep -q 'https://sipnab\.com/style\.css' website/public/index.html; then
+            echo "::error::website/public was built with the production base_url."
+            echo "Its own CSP blocks every cross-origin asset, so the page renders"
+            echo "unstyled and every accessibility check passes vacuously."
+            exit 1
+          fi
+          if ! grep -q 'http://127\.0\.0\.1:1111/style\.css' website/public/index.html; then
+            echo "Either the build did not take the --base-url, or the template"
+            echo "stopped linking style.css. Either way the page under test is"
+            echo "unstyled, and an unstyled page passes every check below."
+            echo "::error::website/public/index.html links no stylesheet at the origin this job serves it from."
+            exit 1
+          fi
+
+      # `npm ci`, not `npm install`: it installs exactly the tree in
+      # e2e/package-lock.json and fails if package.json disagrees with it. Every
+      # package is fixed by an `integrity` sha512 in that lockfile, which is the
+      # same guarantee the `sha256sum -c` above gives the Zola tarball.
+      - name: Install browser-test dependencies
+        working-directory: e2e
+        run: npm ci
+
+      # Prefer the Chrome already on the runner image over downloading
+      # Playwright's own build. It is the local-first argument
+      # .github/actions/system-deps makes for apt packages: the fetch we do not
+      # make cannot hang, cannot be substituted, and cannot go down. The
+      # fallback is explicit rather than silent, so the log says which one ran.
+      - name: Resolve a Chrome for axe-core
+        working-directory: e2e
+        run: |
+          set -euo pipefail
+          for candidate in google-chrome google-chrome-stable chromium chromium-browser; do
+            if path="$(command -v "$candidate" 2>/dev/null)"; then
+              echo "Using the runner's $candidate at $path"
+              echo "SIPNAB_E2E_CHROME=$path" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "No Chrome on the runner image; falling back to Playwright's own build"
+          npx playwright install chromium
+          resolved="$(node -e 'console.log(require("playwright-core").chromium.executablePath())')"
+          test -x "$resolved"
+          echo "SIPNAB_E2E_CHROME=$resolved" >> "$GITHUB_ENV"
+
+      # No SIPNAB_E2E_BASE_URL: playwright.config.js then starts its own
+      # `python3 -m http.server 1111 --directory ../website/public`, which is
+      # the origin the site was just built for.
+      - name: axe-core (WCAG 2 A/AA, serious + critical)
+        working-directory: e2e
+        # `./tests/...`, not `tests/...`. The path is relative to this step's
+        # working-directory, and site_journey_test's packaging path scan reads a
+        # bare `tests/` prefix in a workflow file as a repository-root path --
+        # correctly, because that is what it looks like, and the spec lives under
+        # e2e/ rather than at the root. The `./` says which tree it means.
+        run: npx playwright test ./tests/accessibility.spec.js
+
+      # A failed accessibility run should say WHICH element on WHICH page, and
+      # the trace is how that is read without reproducing the run locally.
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: axe-playwright-traces
+          path: e2e/test-results
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Lighthouse CI: performance budgets over the built site.
+  #
+  # Scoped to what the Rust suite does NOT already cover. Hero LCP and the
+  # hero-swap layout shift are gated by
+  # site_journey_test::hero_swap_keeps_the_static_frame_as_the_lcp_element,
+  # which reads the template and is a stronger check than a timing measurement:
+  # it fails on the attribute that would cause the shift rather than on the
+  # shift showing up in one sampled run. What no existing gate covers is total
+  # page weight, script weight on ordinary documentation pages, and whether the
+  # analyzer's WebAssembly stays deferred until someone opens the analyzer.
+  #
+  # Every threshold in e2e/lighthouserc.json was MEASURED, not chosen. The file
+  # records the date, the commit and the observed value beside each one.
+  # ---------------------------------------------------------------------------
+  lighthouse:
+    # Bounds a wedged job. Observed locally: five URLs x 3 runs at roughly
+    # 20-25s each, so ~6 min of work.
+    timeout-minutes: 25
+    name: Lighthouse budgets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. This job only reads the tree.
+          persist-credentials: false
+
+      - name: Install Zola (lighthouse)
+        env:
+          ZOLA_VERSION: '0.19.2'
+          # Same pin as the Pages workflow and the Docs job install; see the
+          # comment in pages.yml for why a tag alone is not enough.
+          ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o zola.tar.gz \
+            "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
+          tar xzf zola.tar.gz
+          sudo install -m 0755 zola /usr/local/bin/zola
+          rm -f zola zola.tar.gz
+          zola --version
+
+      # The port matches `collect.url` in e2e/lighthouserc.json, and it has to:
+      # see the long note on the accessibility job's build step for what a
+      # mismatched base_url does to a measurement. A page whose CSS, JS and
+      # images are all blocked scores 100.
+      - name: Build the site at the origin it is served from (lighthouse)
+        working-directory: website
+        run: zola build --base-url http://127.0.0.1:1111
+
+      - name: The built site references its own origin, not production (lighthouse)
+        run: |
+          set -euo pipefail
+          if grep -q 'https://sipnab\.com/style\.css' website/public/index.html; then
+            echo "::error::website/public was built with the production base_url."
+            echo "Its own CSP blocks every cross-origin asset, so Lighthouse would"
+            echo "measure a page with no CSS, no script and no images -- and score it 100."
+            exit 1
+          fi
+          if ! grep -q 'http://127\.0\.0\.1:1111/style\.css' website/public/index.html; then
+            echo "Either the build did not take the --base-url, or the template"
+            echo "stopped linking style.css. Either way the page under test is"
+            echo "unstyled, and an unstyled page passes every check below."
+            echo "::error::website/public/index.html links no stylesheet at the origin this job serves it from."
+            exit 1
+          fi
+
+      - name: Install browser-test dependencies
+        working-directory: e2e
+        run: npm ci
+
+      - name: Resolve a Chrome for Lighthouse
+        working-directory: e2e
+        run: |
+          set -euo pipefail
+          for candidate in google-chrome google-chrome-stable chromium chromium-browser; do
+            if path="$(command -v "$candidate" 2>/dev/null)"; then
+              echo "Using the runner's $candidate at $path"
+              echo "CHROME_PATH=$path" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "No Chrome on the runner image; falling back to Playwright's own build"
+          npx playwright install chromium
+          resolved="$(node -e 'console.log(require("playwright-core").chromium.executablePath())')"
+          test -x "$resolved"
+          echo "CHROME_PATH=$resolved" >> "$GITHUB_ENV"
+
+      # `autorun` = collect + assert. It exits non-zero when a budget is
+      # exceeded, which is the whole point; `--config` names the file so a
+      # renamed or deleted config fails loudly instead of falling back to
+      # lhci's own defaults, which assert nothing.
+      - name: Lighthouse budgets
+        working-directory: e2e
+        run: npx lhci autorun --config=lighthouserc.json
+
+      - name: Upload Lighthouse reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: lighthouse-reports
+          path: e2e/.lighthouseci
+          if-no-files-found: ignore

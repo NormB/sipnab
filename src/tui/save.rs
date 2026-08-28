@@ -21,6 +21,41 @@ use super::*;
 
 // ── Save functionality ─────────────────────────────────────────────
 
+/// Whether an exporter's status message describes a file that was written.
+///
+/// The eleven `save_to_*_path` functions below all answer with a HUMAN
+/// message and nothing else, and the action trail has to say `ok` or `failed`
+/// about the same event. Classified here, beside the functions that produce
+/// the strings, rather than at the call site: a new exporter is one file away
+/// from the rule it has to satisfy, and this is where its message is written.
+///
+/// The rule keys on FAILURE markers, not on a whitelist of success prefixes.
+/// Successes are worded per format ("Saved 12 packets…", "Exported 4.3s of
+/// audio…"), so a whitelist would silently reclassify the next exporter's
+/// wording as a failure; the failure vocabulary is small, closed and stated
+/// in every one of those functions' `# Returns` sections. An unrecognised
+/// message therefore reads as a successful export, which is the direction
+/// that cannot invent a refusal that never happened — the trail's own
+/// `refused` outcome is set by the caller, from the guard that refused.
+///
+/// # Arguments
+///
+/// * `msg` — the string a `save_to_*_path` function returned.
+///
+/// # Returns
+///
+/// `"ok"` or `"failed"`, the action trail's own vocabulary.
+pub(super) fn export_outcome(msg: &str) -> &'static str {
+    // "Save failed", "JSON serialization failed", "WAV export failed";
+    // "Write error after N packets"; "No messages to save", "No dialogs to
+    // save", "No RTP streams captured", "No dialog to export".
+    if msg.contains("failed") || msg.contains("error") || msg.starts_with("No ") {
+        "failed"
+    } else {
+        "ok"
+    }
+}
+
 /// Save all dialogs to a pcap or pcap-ng file.
 ///
 /// Re-synthesizes an Ethernet/IP/UDP-or-TCP packet for every SIP message
@@ -1775,5 +1810,51 @@ mod tests {
         let status = app.status_error.clone().unwrap_or_default();
         assert!(status.contains("Saved"), "got: {status}");
         assert!(out.is_file(), "the legitimate export was not written");
+    }
+
+    /// Every message shape the eleven exporters above document is classified
+    /// the way the action trail needs it.
+    ///
+    /// The strings are quoted from those functions' own `# Returns` sections
+    /// rather than invented here, because that is what makes this a check on
+    /// the classifier and not a restatement of it. An exporter that changes
+    /// its wording without changing this file is the drift the test is for --
+    /// and the two success shapes are deliberately worded differently
+    /// ("Saved…", "Exported…"), which is why the rule keys on failure markers
+    /// instead of a success whitelist.
+    #[test]
+    fn every_documented_exporter_message_is_classified_correctly() {
+        for ok in [
+            "Saved 12 packets (pcap) to /tmp/a.pcap",
+            "Saved 7 messages (txt) to /tmp/a.txt",
+            "Saved Mermaid diagram (7 messages) to /tmp/a.html",
+            "Saved 1 dialogs (JSON) to /tmp/a.json",
+            "Saved SIPp scenario (7 messages) to /tmp/a.xml",
+            "Exported 4.3s of PCMU audio (215 frames, PCMU/8000Hz) to /tmp/a.wav",
+        ] {
+            assert_eq!(
+                export_outcome(ok),
+                "ok",
+                "a completed export read as a failure: {ok:?}"
+            );
+        }
+        for bad in [
+            "Save failed: Permission denied (os error 13)",
+            "JSON serialization failed: something",
+            "WAV export failed: no codec",
+            "Write error after 3 packets: No space left on device",
+            "No messages to save",
+            "No dialogs to save",
+            "No messages to export",
+            "No dialog to export",
+            "No RTP streams captured",
+            "No RTP streams associated with this dialog",
+        ] {
+            assert_eq!(
+                export_outcome(bad),
+                "failed",
+                "an export that did not happen read as one that did: {bad:?}"
+            );
+        }
     }
 }

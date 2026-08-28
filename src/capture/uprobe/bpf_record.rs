@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Turning one BPF record into a packet.
+//! Turning one BPF record into a packet — no kernel, no `aya`, always tested.
 //!
 //! Split from the loader on purpose. The loader needs `aya`, a nightly-built
 //! kernel object and a BTF-carrying kernel, none of which the development host

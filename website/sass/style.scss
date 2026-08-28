@@ -1059,6 +1059,27 @@ input:focus-visible,
     line-height: 1.55;
   }
 
+  // WCAG 1.4.1 (Use of Color): a link sitting INSIDE a sentence must be
+  // distinguishable from the prose around it by something other than color,
+  // unless the two colors differ by at least 3:1. Here they do not. axe-core
+  // measured the eBPF row's "Read the security implications first" link at
+  // 1.79:1 -- $accent #73d0ff against $text-dim #8a93a3 -- and reported
+  // link-in-text-block, serious, on the homepage.
+  //
+  // An underline fixes it without touching the palette, which is the reason it
+  // is here rather than a color change: the accent is used site-wide and
+  // moving it to clear 3:1 against dimmed prose would change every link on
+  // every page to satisfy one row of one table.
+  //
+  // Scoped to td:last-child deliberately. The capability column's link IS the
+  // whole cell, so there is no surrounding text for it to be confused with,
+  // the rule does not apply to it, and underlining it would add noise to fix
+  // nothing.
+  td:last-child a {
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+  }
+
   tr:last-child td { border-bottom: none; }
   tbody tr {
     transition: background 0.12s ease;

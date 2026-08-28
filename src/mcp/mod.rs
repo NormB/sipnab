@@ -45,13 +45,15 @@
 mod findings;
 
 pub mod audit;
+pub mod completeness;
+pub mod completion;
+pub mod live;
 pub mod load;
 // No outer doc comment on a module whose file already carries a `//!` one. The
 // two are concatenated, and rustdoc then resolves the WHOLE block in the parent
 // scope: `metrics`'s own `[`MAX_TOOLS`]` stopped resolving the moment a summary
 // line was added here. Every module below states its own summary in its file.
 pub mod metrics;
-/// Which tools a run registers: the `core` and `full` profiles.
 pub mod profile;
 pub mod progress;
 pub mod prompts;
@@ -59,10 +61,9 @@ pub mod reference;
 pub mod sampling;
 pub mod server;
 pub mod shape;
-/// The release each MCP tool first shipped in, read from the changelog.
 pub mod since;
 pub mod structured;
-/// Starting and stopping a uprobe TLS capture on an agent's request.
+pub mod subscribe;
 pub mod tls_capture;
 pub mod tools;
 pub mod transport;

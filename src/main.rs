@@ -42,8 +42,10 @@ use sipnab::signals;
 ///
 /// Parses CLI arguments, initializes logging, runs the immediate commands
 /// (`--setup-caps`, `--strip-secrets`, `--mint-token`), installs signal and
-/// panic handlers, loads and validates configuration, plans the run, launches
-/// the capture, and dispatches to the TUI or batch runner.
+/// panic handlers, writes the run provenance record when
+/// `--run-provenance-file` asked for one, loads and validates configuration,
+/// plans the run, launches the capture, and dispatches to the TUI or batch
+/// runner.
 ///
 /// # Side effects
 ///
@@ -52,7 +54,8 @@ use sipnab::signals;
 /// installs SIGINT/SIGTERM/SIGUSR1 handlers and the panic hook,
 /// opens capture devices, may drop privileges and chroot, and calls
 /// `std::process::exit` for the immediate commands and on fatal errors
-/// (exit code 2 on argument-validation failure).
+/// (exit code 2 on argument-validation failure, and on a provenance record
+/// `--run-provenance-file` could not write).
 fn main() {
     // 1. Parse CLI arguments and set up logging.
     let cli = Cli::parse_args();
@@ -93,6 +96,21 @@ fn main() {
         tracing::error!("{}", msg);
         std::process::exit(2);
     }
+    // 3b. Record how this run was invoked, when --run-provenance-file named a
+    //     file. Here and not later: everything above this point either exits
+    //     or is a decision about THIS argv, and everything below reads a
+    //     config, opens a device or mints a credential. A record written after
+    //     any of that would be a record of a run already in progress.
+    //
+    //     Fatal on failure, deliberately. A best-effort provenance line would
+    //     leave its own absence ambiguous -- "not enabled" or "the disk was
+    //     full" -- and no reader could tell which. Nothing is lost by stopping
+    //     here: no packet has been read.
+    if let Err(msg) = sipnab::app::run_provenance::write_record(&cli) {
+        tracing::error!("{msg}");
+        std::process::exit(2);
+    }
+
     // 4. --mint-token: mint a signed bearer token and exit.
     if let Some(code) = bootstrap::run_mint_token(&cli) {
         std::process::exit(code);

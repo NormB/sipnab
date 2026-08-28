@@ -205,6 +205,38 @@ impl Default for CaptureIdentity {
     }
 }
 
+/// The identity of the capture this RUN started with, minted once.
+///
+/// # Why a process-global and not another `CaptureIdentity::new()`
+///
+/// AUDIT1 writes one record at startup saying how the run was invoked, and
+/// the only field that lets a reader join that record to a report, a vCon
+/// container or an MCP answer is the capture instance. A second
+/// `CaptureIdentity::new()` would mint a DIFFERENT id — a record that names a
+/// capture nothing else in the process ever named, which answers no question
+/// at all. So the run record and `CaptureState` take the same value from
+/// here: [`crate::app::servers`] seeds the state it builds with this, and the
+/// startup record stamps it.
+///
+/// The clone is what makes the divergence afterwards correct rather than a
+/// bug. `open_capture` rotates the SERVER's identity because a different
+/// capture is loaded; this value does not move, because it answers "which
+/// capture did this invocation start with", and a later swap did not change
+/// that. A reader seeing the run record's instance and a later answer's
+/// different one has learned something true.
+///
+/// # Returns
+///
+/// A clone of the one identity this process minted for its run. Every call
+/// returns the same instance id.
+#[must_use]
+pub fn run_identity() -> CaptureIdentity {
+    /// Minted on the first call and never replaced, so every caller in the
+    /// process agrees on which capture the run began with.
+    static RUN: OnceLock<CaptureIdentity> = OnceLock::new();
+    RUN.get_or_init(CaptureIdentity::new).clone()
+}
+
 /// Which capture an answer came from, and which revision of its stores.
 ///
 /// Compare two of these to learn what changed: a different `instance` means a

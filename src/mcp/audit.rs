@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The append-only sink for the MCP tool-call audit record (PB10).
+//! The append-only sink every audit record in sipnab is written through.
+//!
+//! Three record shapes ride it and there is deliberately only one writer:
+//! the MCP tool call (PB10, the shape this file was written for), the run
+//! provenance record (AUDIT1, `app::run_provenance`) and the TUI operator
+//! action trail (AUDIT2, `tui::action_trail`). Two audit writers for one tool
+//! would be two sets of open flags, two modes, two locking rules and two
+//! numbering schemes to keep true, and the one nobody reads drifts first.
+//! [`AuditSink::append_with`] is the seam the other two enter by; everything
+//! below this line is stated once and holds for all three.
 //!
 //! # Why this exists beside the log line and not instead of it
 //!
@@ -186,6 +195,48 @@ impl AuditSink {
     ///
     /// Writes one line to the file and advances the sequence.
     pub fn append(&self, record: &AuditRecord<'_>) -> std::io::Result<u64> {
+        self.append_with(|seq, ts| record.to_line(seq, ts))
+    }
+
+    /// Append one line this sink numbers and timestamps for the caller.
+    ///
+    /// The seam every other record shape in the tree writes through, so there
+    /// is ONE place that decides the open flags, the mode, the lock, the
+    /// sequence and the single `write_all` — and one mutation to any of them
+    /// fails every surface's tests at once. [`Self::append`] is the tool-call
+    /// caller; `app::run_provenance` (the run record, AUDIT1) and
+    /// `tui::action_trail` (the operator's action trail, AUDIT2) are the
+    /// others. Named as text rather than linked, because neither module
+    /// exists in a build without `native` or without `tui` and this file
+    /// compiles in both.
+    ///
+    /// `render` is handed the sequence and the timestamp rather than choosing
+    /// them, and it runs UNDER the lock. Both halves matter: a record that
+    /// numbered itself could not be ordered against the file, and a record
+    /// rendered before the lock would let two writers stamp sequence numbers
+    /// in the opposite order to the writes that carry them, which is a gap a
+    /// reader would see where none exists.
+    ///
+    /// # Arguments
+    ///
+    /// * `render` — builds the JSON line, WITHOUT a trailing newline, from
+    ///   the sequence and timestamp this sink allocated.
+    ///
+    /// # Errors
+    ///
+    /// The `io::Error` from the write, or a message naming the path when the
+    /// lock was poisoned by a panic in another writer.
+    ///
+    /// # Side effects
+    ///
+    /// Writes one line to the file and advances the sequence. The sequence is
+    /// consumed even when the write fails, which is deliberate: a record that
+    /// could not be written leaves a HOLE in the numbering, and that hole is
+    /// the only evidence of it a reader will ever have.
+    pub fn append_with<F>(&self, render: F) -> std::io::Result<u64>
+    where
+        F: FnOnce(u64, chrono::DateTime<chrono::Utc>) -> String,
+    {
         let mut file = self.file.lock().map_err(|_| {
             std::io::Error::other(format!(
                 "audit sink {} is unusable: a writer panicked while holding it",
@@ -197,7 +248,7 @@ impl AuditSink {
         // opposite order to their numbers and a reader would read a gap that
         // is not one.
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-        let mut line = record.to_line(seq, chrono::Utc::now());
+        let mut line = render(seq, chrono::Utc::now());
         line.push('\n');
         // One call with the newline already attached. Writing the record and
         // the newline separately would let another process's `O_APPEND` write

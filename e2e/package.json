@@ -5,10 +5,14 @@
   "description": "Browser journey and accessibility tests for sipnab.com. Build-time only: nothing here ships to a visitor.",
   "scripts": {
     "test": "playwright test",
-    "install-browser": "playwright install --with-deps chromium"
+    "install-browser": "playwright install --with-deps chromium",
+    "build-site": "cd ../website && zola build --base-url http://127.0.0.1:1111",
+    "test:a11y": "npm run build-site && playwright test tests/accessibility.spec.js",
+    "lighthouse": "npm run build-site && lhci autorun"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
+    "@lhci/cli": "0.15.1",
     "@playwright/test": "1.62.1"
   }
 }

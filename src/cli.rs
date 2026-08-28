@@ -155,7 +155,14 @@ pub fn build_version() -> String {
 /// without the feature, saying the binary does not carry it; until `bpf` was
 /// reported here an operator had no way to find out which build they held
 /// short of rebuilding. `plugins` had the same hole.
-fn compiled_features() -> Vec<&'static str> {
+///
+/// Public because the run provenance record (AUDIT1) writes the same list
+/// into its startup line: which build produced a report is half of what
+/// "which invocation produced it" means, and a second walk over `cfg!` in
+/// another file would be a second answer to that question the day a
+/// feature is added to one and not the other.
+#[must_use]
+pub fn compiled_features() -> Vec<&'static str> {
     let mut out = Vec::new();
     if cfg!(feature = "native") {
         out.push("native");
@@ -1893,6 +1900,61 @@ pub struct SecurityArgs {
     /// format changes. stdout stays reserved for `--json` / MCP.
     #[arg(help_heading = "Security", long)]
     pub alert_json: bool,
+
+    /// Record how this run was invoked, as one JSON line appended to FILE.
+    ///
+    /// A report says what sipnab concluded and nothing says which invocation
+    /// produced it -- which capture, which filter, which port range. The
+    /// record carries the argv, the working directory, the effective user,
+    /// the wall-clock start, the version and feature set, and the capture
+    /// instance every MCP and REST answer is stamped with, so an artefact can
+    /// be joined back to the command that made it.
+    ///
+    /// Written once, at startup, before the config is loaded and before any
+    /// capture device is opened. The file is opened for APPEND and never
+    /// truncated, so successive runs accumulate; created mode 0600 if absent,
+    /// because argv holds capture paths and a path holds a customer name.
+    ///
+    /// **A record that cannot be written stops the run.** A best-effort line
+    /// would be worse than none: its absence would mean either "not enabled"
+    /// or "the disk was full", and nobody could tell which. Nothing is lost by
+    /// stopping here -- no packet has been read yet. Leave the flag off and
+    /// nothing changes.
+    #[arg(
+        help_heading = "Security",
+        long = "run-provenance-file",
+        value_name = "FILE"
+    )]
+    pub run_provenance_file: Option<String>,
+
+    /// Record what the operator DID in the TUI, one JSON line per action
+    /// appended to FILE.
+    ///
+    /// Actions, not keystrokes: the capture opened or swapped, the filter
+    /// applied, what was exported or saved and to where. A keystroke log of
+    /// the TUI's key bindings would be mostly navigation, unreadable at review
+    /// time, and a privacy hazard of its own -- so the search field is never
+    /// recorded, neither the query nor the fact that one was typed.
+    ///
+    /// Same file shape and same writer as `--mcp-audit-file`: append-only,
+    /// never truncated, one sequence number per record so a reader sees a gap,
+    /// created mode 0600. A path that cannot be opened stops the run at
+    /// startup, before the terminal is taken.
+    ///
+    /// **A write that fails mid-session does NOT stop the TUI.** The refusal
+    /// rule that is right for a request/response surface is wrong at a
+    /// terminal: an operator mid-incident holding a live capture that exists
+    /// nowhere else would lose it because a log partition filled. The record's
+    /// sequence number is consumed anyway, so the missing action leaves a
+    /// permanent hole a reader can see, the status line says the trail is
+    /// incomplete, and the next record that does land names how many were
+    /// lost. Leave the flag off and nothing changes.
+    #[arg(
+        help_heading = "Security",
+        long = "tui-audit-file",
+        value_name = "FILE"
+    )]
+    pub tui_audit_file: Option<String>,
 }
 
 /// `Event execution` flags.
@@ -4225,6 +4287,22 @@ impl Cli {
         if let Some(spec) = self.security_args.business_hours.as_deref() {
             crate::config::parse_business_hours(spec)?;
         }
+        // A trail that would record nothing. `--tui-audit-file` records what an
+        // OPERATOR did at the terminal, and there is no operator and no
+        // terminal in `-N` mode -- so accepting it there would create the
+        // exact state the flag exists to prevent: a run that reads as audited
+        // and has no trail. The remedy names the flag that DOES cover a
+        // headless run, because "wrong mode" and "wrong flag" are otherwise
+        // indistinguishable to whoever wrote the command.
+        if self.security_args.tui_audit_file.is_some() && self.mode_args.no_tui {
+            return Err(crate::Error::CliValidation(
+                "--tui-audit-file records what an operator did in the TUI, and \
+                 -N/--no-tui runs no TUI. Use --run-provenance-file to record how \
+                 a headless run was invoked, or drop -N"
+                    .to_string(),
+            ));
+        }
+
         let output_flags_used: Vec<&str> = [
             (self.output_args.json, "--json"),
             (self.output_args.json_dialogs, "--json-dialogs"),

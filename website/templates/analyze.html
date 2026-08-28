@@ -45,8 +45,15 @@
            instead — see captureKind() in analyze.js. -->
       <input type="file" id="file-input" hidden>
       <button class="dropzone-sample" id="load-sample" type="button">No capture handy? Load a sample call &rarr;</button>
-      <div class="dropzone-outcome" aria-label="What you get from an analysis">
-        <span class="dropzone-outcome-label">You'll get</span>
+      <!-- role="group" + aria-labelledby, not a bare aria-label. ARIA prohibits
+           aria-label on a generic div: with no role there is no element to
+           attach the name to, so assistive technology is free to drop it, and
+           axe-core reports it (aria-prohibited-attr, serious). Naming it from
+           the VISIBLE "You'll get" label rather than a second invisible string
+           also removes a phrase that could drift away from what the page
+           shows. -->
+      <div class="dropzone-outcome" role="group" aria-labelledby="dropzone-outcome-label">
+        <span class="dropzone-outcome-label" id="dropzone-outcome-label">You'll get</span>
         <span class="dropzone-outcome-item">call list</span>
         <span class="dropzone-outcome-item">flow ladder</span>
         <span class="dropzone-outcome-item">raw SIP</span>

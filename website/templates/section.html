@@ -10,7 +10,7 @@
 <div class="doc-layout">
   <aside class="doc-sidebar" aria-label="Documentation navigation" id="doc-sidebar">
     <nav class="doc-nav" aria-label="Docs sections">
-      {{ macros::nav_group(title="Getting started", paths=["install.md", "cookbook.md", "tls-capture.md", "uprobe-walkthrough.md", "troubleshooting.md", "tuning-capture.md", "encapsulations.md", "rtpengine.md"], current_url=section.permalink) }}
+      {{ macros::nav_group(title="Getting started", paths=["install.md", "cookbook.md", "real-world-captures.md", "tls-capture.md", "uprobe-walkthrough.md", "troubleshooting.md", "tuning-capture.md", "encapsulations.md", "rtpengine.md"], current_url=section.permalink) }}
       {{ macros::nav_group(title="Using the TUI", paths=["tui.md", "keybindings.md", "theme.md"], current_url=section.permalink) }}
       {{ macros::nav_group(title="CLI & automation", paths=["cli.md", "filter-dsl.md", "output-formats.md", "sip-response-codes.md", "sip-methods.md", "sip-header-fields.md", "sip-parameters.md", "sip-lint-rules.md", "mos-and-codecs.md"], current_url=section.permalink) }}
       {{ macros::nav_group(title="Configuration", paths=["config.md"], current_url=section.permalink) }}
@@ -20,7 +20,10 @@
     </nav>
   </aside>
 
-  <article class="doc-content">
+  <!-- data-pagefind-body: same scoping as page.html, and the same reason —
+       indexing <body> would put the identical docs sidebar into every
+       record. See the comment there. -->
+  <article class="doc-content" data-pagefind-body>
     <header class="doc-header">
       <p class="doc-kicker">Documentation</p>
       <h1>{{ section.title }}</h1>
@@ -28,6 +31,44 @@
       <p class="doc-lead">{{ section.description }}</p>
       {% endif %}
     </header>
+
+    {# Documentation search.
+
+       The engine is Pagefind, which is not part of `zola build`: the
+       "Index the site for search (Pagefind)" step in
+       .github/workflows/pages.yml runs after it and writes /pagefind/ into
+       the built site. That ordering is not a preference — `zola build`
+       recreates its output directory from scratch, so an index written
+       before it is deleted by it.
+
+       Three properties this markup exists to hold:
+
+       1. NO INLINE SCRIPT. The production CSP is `script-src 'self'` with no
+          'unsafe-inline'; inline blocks are allowed only by sha256 hashes
+          that ops/cloudflare/refresh_csp_hashes.py regenerates from the
+          deployed HTML. The behavior lives in an external file instead, so
+          there is no hash to keep in step and nothing to forget.
+
+       2. NO EXTERNAL ORIGIN. Pagefind's runtime, its wasm and its index
+          chunks are all served from this site, so `script-src 'self'` and
+          `connect-src 'self'` already permit them. A CDN would need the
+          policy widened; nothing here does.
+
+       3. IT DEGRADES TO THE INDEX BELOW. The box ships `hidden` and only
+          js/docs-search.js removes that, and only once the engine has
+          loaded. With scripting off, or against a site built without the
+          Pagefind step, the reader sees no search box at all — they see the
+          "Reference" index further down this page, which is the same set of
+          pages a search would have reached. An input that accepts text and
+          can never answer is the failure being avoided.
+    #}
+    <div class="doc-search search-modal" id="doc-search" role="search" hidden>
+      <div class="search-input-wrap">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="search" id="doc-search-input" aria-label="Search the documentation" placeholder="Search the documentation..." autocomplete="off">
+      </div>
+      <div class="search-results" id="doc-search-results" aria-live="polite"></div>
+    </div>
 
     {% if section.extra.tasks %}
     <nav class="doc-tasks" aria-label="Common tasks">
@@ -80,7 +121,11 @@
 
     {% if section.pages | length > 0 %}
     <h2 class="doc-index-title">Reference</h2>
-    <nav class="doc-index" aria-label="Documentation sections">
+    <!-- data-pagefind-ignore: every entry here is the title and
+         description of a page that Pagefind indexes in its own right, so
+         indexing the list as well would make this landing page a
+         duplicate match for every one of them. -->
+    <nav class="doc-index" aria-label="Documentation sections" data-pagefind-ignore>
       {% for page in section.pages %}
       <a href="{{ page.permalink }}" class="doc-index-item">
         <span class="doc-index-text">
@@ -98,4 +143,9 @@
     {% endif %}
   </article>
 </div>
+
+<!-- The search behavior, as an external file: see the CSP note on the
+     #doc-search box above. cachebust=true so an edit to the script can
+     never be served from a cache against new HTML. -->
+<script src="{{ get_url(path='js/docs-search.js', cachebust=true) }}" defer></script>
 {% endblock content %}

@@ -8,9 +8,36 @@
 pub mod batch;
 pub mod bootstrap;
 pub mod relay_reconciler;
+pub mod run_provenance;
 pub mod servers;
 #[cfg(feature = "tui")]
 pub mod tui_mode;
+
+/// The one append-only audit sink, reachable from every build that can write
+/// a record — including the ones that carry no MCP server.
+///
+/// The implementation lives in `src/mcp/audit.rs` because that is where it
+/// was written and where its tests are. It cannot STAY reachable only from
+/// there: `pub mod mcp` is `#[cfg(feature = "mcp")]`, while the run
+/// provenance record and the TUI action trail are wanted in the DEFAULT build
+/// (`native,tui,audio,metrics`), which carries no `mcp` at all. CI compiles
+/// `native,tui,audio` and `native,tui,tls,hep,api` for exactly this class of
+/// break.
+///
+/// So one name, one source file, and exactly one compilation of it per build:
+/// with `mcp` this re-exports the module the MCP server already holds — the
+/// same types, not a copy — and without it the same file is compiled here
+/// instead. A mutation to the sink therefore fails every surface's tests in
+/// every feature combination, which is the property a second implementation
+/// could not have.
+#[cfg(feature = "mcp")]
+pub use crate::mcp::audit;
+
+/// The one append-only audit sink — see the `mcp` arm above for why this
+/// module has two spellings and only ever one compilation.
+#[cfg(not(feature = "mcp"))]
+#[path = "../mcp/audit.rs"]
+pub mod audit;
 
 use std::sync::Arc;
 

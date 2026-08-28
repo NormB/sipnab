@@ -43,6 +43,7 @@ pub(in crate::tui) fn apply_filter_expression(app: &mut App, expr_text: Option<S
         app.status_error = None;
         app.filter_dialog.error = None;
         app.active_popup = None;
+        app.record_action("filter_applied", "(no methods selected)", "", "ok", "");
         return;
     }
     match expr_text {
@@ -52,6 +53,15 @@ pub(in crate::tui) fn apply_filter_expression(app: &mut App, expr_text: Option<S
                 app.active_filter_text = expr_text;
                 app.status_error = None;
                 app.filter_dialog.error = None;
+                // The applied expression IS recorded, unlike the search query
+                // -- see `crate::tui::action_trail` for why the two are not
+                // the same question. A filter decides what the operator could
+                // see and therefore what they could export, so it is part of
+                // the chain the export record belongs to; a search only moves
+                // a cursor inside what is already on screen. Cloned because
+                // the text has just moved onto the app.
+                let applied = app.active_filter_text.clone();
+                app.record_action("filter_applied", &applied, "", "ok", "");
             }
             Err(e) => {
                 app.filter_dialog.error = Some(format!("Filter error: {e}"));
@@ -59,11 +69,14 @@ pub(in crate::tui) fn apply_filter_expression(app: &mut App, expr_text: Option<S
             }
         },
         None => {
-            // All fields empty — clear any active filter
-            app.active_filter = None;
-            app.active_filter_text.clear();
+            // All fields empty — clear any active filter. A cleared filter is
+            // a state change of its own: after it the operator can see and
+            // export everything again, so `clear_active_filter` records it.
+            // Called after `status_error` is cleared, never before -- see that
+            // method.
             app.status_error = None;
             app.filter_dialog.error = None;
+            app.clear_active_filter();
         }
     }
     app.active_popup = None;
@@ -135,10 +148,9 @@ pub(in crate::tui) fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
         KeyCode::F(9) => {
             // F9 clears all fields and the active filter, closes popup
             app.filter_dialog.clear();
-            app.active_filter = None;
-            app.active_filter_text.clear();
             app.status_error = None;
             app.active_popup = None;
+            app.clear_active_filter();
         }
         KeyCode::Char(' ') if app.filter_dialog.is_checkbox_focused() => {
             app.filter_dialog.toggle_checkbox();

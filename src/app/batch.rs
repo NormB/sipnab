@@ -956,7 +956,13 @@ pub fn run_cores_file(
             // stop failing on non-conformant captures and nothing would say so
             // (#147).
             let lint_tripped = run_lint_stage(cli, config, &r.dialog_store);
-            if !reports_ok {
+            // Same rule as the batch path, for the same reason a gate that
+            // silently passes under `--cores` is worse than no gate: a
+            // truncated member of the set or a `--plugin` that would not load
+            // must not exit 0 here while exiting 1 there. Both readers record
+            // through the one `ReadTally::report`, so the two paths cannot
+            // reach different verdicts about the same file set.
+            if !reports_ok || crate::output::run_integrity::run_failed() {
                 std::process::exit(1);
             }
             if lint_tripped {
@@ -3721,7 +3727,18 @@ impl BatchRunner {
         //
         // Reports still print above: a partial capture is worth looking at,
         // it just must not be mistaken for a whole one by a script reading $?.
-        if output_failed || capture_failed {
+        //
+        // `run_integrity::run_failed()` is the FILE path's half of the same
+        // rule the two flags above implement for the live path. Reading a set
+        // of files deliberately continues past a truncated member and returns
+        // Ok, so `capture_failed` never sees it — and a truncated pcap or a
+        // `--plugin` that would not load exited 0 with a whole-looking report.
+        // 1, not a new code: docs/cli-reference.md already assigns 1 to
+        // "capture error, I/O error", and both of these are exactly that. 3 is
+        // reserved for the opposite situation — the tool worked and the
+        // CAPTURE is non-conformant — so spending it here would erase the
+        // distinction it exists to make.
+        if output_failed || capture_failed || crate::output::run_integrity::run_failed() {
             std::process::exit(1);
         }
         // 3, not 1. A pipeline has to tell "sipnab broke" from "the capture is
@@ -4679,39 +4696,24 @@ pub fn generate_reports(
         );
     }
 
-    // --report: dialog summary table
-    if cli.output_args.report && cli.mode_args.no_tui {
-        // Filtered: the matching dialogs and the streams linked to them. With
-        // no filter this is every dialog and every stream, orphans included —
-        // an unfiltered report is unchanged.
-        let selection = crate::sip::dsl::select_dialogs(filter, dialog_store, stream_store);
-        let dialogs: Vec<&crate::sip::dialog::SipDialog> =
-            selection.dialogs.iter().map(|(d, _)| *d).collect();
-        // `--markdown` was read, documented and IGNORED here: the output was
-        // byte-identical with and without it while the help text said "Format
-        // report output as Markdown" (#89).
-        let report = output::print_dialog_report_as(
-            &dialogs,
-            &selection.streams,
-            if cli.output_args.markdown {
-                output::ReportFormat::Markdown
-            } else {
-                output::ReportFormat::Text
-            },
-        );
-        // `print!` PANICS if stdout cannot be written, so `--report > /full/disk`
-        // died with exit 101 and a Rust backtrace instead of an error. A closed
-        // pipe stays fine — `sipnab --report | head` must not fail — but a real
-        // write error makes the report incomplete, which is a failed report.
-        if !write_stdout(&report) {
-            return false;
-        }
-    }
+    // Idle compaction throws away messages sipnab captured, which makes the
+    // ladder for those calls short in every report below. Recorded, not
+    // treated as a failure: see `output::run_integrity` for why a configured
+    // retention policy doing its job is a fact rather than a non-zero exit.
+    // The store's counter is a lifetime total, so it is read here — once, with
+    // the final store in hand — rather than accumulated per sweep.
+    crate::output::run_integrity::record_retention_drops(
+        dialog_store.total_idle_messages_evicted(),
+    );
 
-    // --plugin: load once, before the emit loop. A plugin that cannot load is
-    // reported and skipped rather than failing the run — the capture already
-    // happened, and throwing it away because an optional extension was
-    // misconfigured would lose real data over a configuration error.
+    // --plugin: load BEFORE the first report is rendered, not just before the
+    // emit loop that uses them. A plugin that cannot load is still reported and
+    // skipped rather than aborting — the capture already happened, and throwing
+    // it away because an optional extension was misconfigured would lose real
+    // data over a configuration error. But it is no longer silent: the failure
+    // is recorded, the run exits non-zero, and every report below carries the
+    // marker. That marker has to name the plugin failure, so the load cannot
+    // happen after `--report` has already been written to stdout.
     #[cfg(feature = "plugins")]
     let plugins: Vec<crate::plugin::Plugin> = cli
         .output_args
@@ -4728,6 +4730,49 @@ pub fn generate_reports(
             }
         })
         .collect();
+    // Both numbers, from the one place that knows both: "one plugin failed"
+    // and "the only plugin failed" are different reports.
+    #[cfg(feature = "plugins")]
+    crate::output::run_integrity::record_plugins(crate::output::run_integrity::PluginLoadOutcome {
+        requested: cli.output_args.plugin.len(),
+        failed: cli.output_args.plugin.len().saturating_sub(plugins.len()),
+    });
+
+    // --report: dialog summary table
+    if cli.output_args.report && cli.mode_args.no_tui {
+        // Filtered: the matching dialogs and the streams linked to them. With
+        // no filter this is every dialog and every stream, orphans included —
+        // an unfiltered report is unchanged.
+        let selection = crate::sip::dsl::select_dialogs(filter, dialog_store, stream_store);
+        let dialogs: Vec<&crate::sip::dialog::SipDialog> =
+            selection.dialogs.iter().map(|(d, _)| *d).collect();
+        // `--markdown` was read, documented and IGNORED here: the output was
+        // byte-identical with and without it while the help text said "Format
+        // report output as Markdown" (#89).
+        let mut report = output::print_dialog_report_as(
+            &dialogs,
+            &selection.streams,
+            if cli.output_args.markdown {
+                output::ReportFormat::Markdown
+            } else {
+                output::ReportFormat::Text
+            },
+        );
+        // A report drawn from a partial read must say so IN the report. The
+        // exit status carries the same fact, but a reader looking at this
+        // table has no `$?` in front of them, and the table itself looks
+        // exactly like a whole one.
+        if let Some(notice) = crate::output::run_integrity::report_notice() {
+            report.push_str(&notice);
+        }
+        // `print!` PANICS if stdout cannot be written, so `--report > /full/disk`
+        // died with exit 101 and a Rust backtrace instead of an error. A closed
+        // pipe stays fine — `sipnab --report | head` must not fail — but a real
+        // write error makes the report incomplete, which is a failed report.
+        if !write_stdout(&report) {
+            return false;
+        }
+    }
 
     // --json-dialogs: one NDJSON object per dialog
     if cli.output_args.json_dialogs && cli.mode_args.no_tui {
@@ -4750,6 +4795,19 @@ pub fn generate_reports(
             #[cfg(feature = "plugins")]
             let line = apply_plugins(&plugins, dialog, &line);
 
+            out.push_str(&line);
+        }
+        // The run-integrity trailer, last and only when there is something to
+        // declare. NDJSON has no envelope to put a per-run fact in, so the
+        // fact travels as its own line under a top-level `sipnab_run` key that
+        // no dialog object has — a consumer decides what a line is by looking
+        // at it, and one that assumes every line is a dialog now finds no
+        // `call_id` and fails, which is the right outcome for an answer drawn
+        // from a partial read. Emitted last so a streaming consumer sees the
+        // dialogs first and the verdict on all of them after; absent entirely
+        // on a clean run, so nothing about today's output changes for the runs
+        // that had nothing wrong with them.
+        if let Some(line) = crate::output::run_integrity::ndjson_line() {
             out.push_str(&line);
         }
         // Same write discipline as --report: a real write error means the

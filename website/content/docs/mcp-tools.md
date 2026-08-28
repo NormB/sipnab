@@ -82,7 +82,7 @@ ordinary update.
 
 ### Rules every tool follows
 
-Five rules hold across the whole surface. Each tool section below states only
+Six rules hold across the whole surface. Each tool section below states only
 what it does differently, so read these once and skip them afterwards.
 
 **A required parameter has no default.** Leave one out, or send the wrong JSON
@@ -111,6 +111,34 @@ never right. `search_messages` and `security_findings` carry the
 page fields too. `tail_dialogs` is the one page object with no
 total, because a tail cannot have one. [Response
 bounding](#response-bounding) tabulates it.
+
+**Every answer says how much of the capture is behind it.** Two booleans ride
+on every response object: `source_exhausted`, true once sipnab has read the
+source to its end, and `source_stopped_early`, true when a read ended before the
+source did — a truncated dump file, a file that would not open, a read error
+part-way through. The answer is the WHOLE answer only when `source_exhausted` is
+true and `source_stopped_early` is false, and one response tells you that much,
+so nothing has to call `capture_status` to interpret it.
+
+Until then the response omits `truncated: false` entirely. That value claims
+outright that the page holds every match, and a caller reading only that field
+deserves no claim rather than a wrong one — JSON absence and `false` are
+different values. The response still says `truncated: true` whenever the row cap
+really did keep matches out, because that fact holds whatever the load state.
+`complete`, where a tool has one, likewise never reads `true` over a partial
+read.
+
+A file source loads on a background thread, so an agent's first call lands
+inside a window a human client never sees: on a 921 MB capture, `list_dialogs`
+answered with 6 of 18,241 dialogs. `tail_dialogs` and `capture_status` have
+always carried `source_exhausted`. Now every tool that answers from the capture
+does. The exceptions are the tools whose answer cannot move with the load —
+`explain_response_code`, `explain_rule`, `decode_evidence`, `show_evidence`,
+`list_captures`, `list_tls_libraries`, `server_capabilities` and
+`compare_captures`, which reads two files and never the loaded capture — plus
+the tools that answer with a rendered document rather than an object.
+`timeline`, whose payload is a top-level array with no key to carry a field,
+carries the two booleans in a second content block instead.
 
 **Capture text arrives fenced, and identifiers do not.** Free text an endpoint
 wrote — display names, `User-Agent`, SDP, whole messages — comes wrapped in
@@ -165,7 +193,9 @@ Returns one page of dialog summaries from the live capture store.
 | `dialogs` | `DialogSummary[]` | This page, oldest first (ties broken by Call-ID). |
 | `returned` | usize | Rows in `dialogs`, so counting the array is never necessary. |
 | `total_matched` | usize | Dialogs matching the filter across the **whole store**, whatever `limit` and `cursor` say. This is the number that answers "how many". |
-| `truncated` | bool | `true` when matches remain after this page. |
+| `truncated` | bool | `true` when matches remain after this page. Absent while the answer is not whole — see the sixth rule above. |
+| `source_exhausted` | bool | `true` once sipnab has read the capture source to its end. |
+| `source_stopped_early` | bool | `true` when a source's read ended before the source did. |
 | `next_cursor` | string? | Pass back to continue. `null` on the final page. |
 | `schema_version` | u32 | `1` for this shape. |
 | `capture_identity` | object | Which capture answered — see [`capture_status`](#capture-status). A changed `instance` voids every cursor you hold. |
@@ -617,6 +647,19 @@ itself — `findings`, `dialogs_examined`, `streams_examined`, `frames_read` and
 `complete`. Read `complete` before the findings: it is `false` when the capture
 lost packets, hit a retention cap, or held frames no decoder could read, and a
 findings list from such a capture is a **floor, not a total**.
+
+`complete` also reads `false` while the load runs, and for a source whose read
+stopped before its end. It answers "did sipnab read all of its input", so a file
+still arriving cannot satisfy it. Until this gate landed it ignored the load
+entirely and read backwards during one: on a 100 MB capture the same tool in the same
+session answered `complete: true` at `frames_read: 312` and `complete: false` at
+`frames_read: 365747` — `true` over 0.09% of the file, `false` once the whole
+file had arrived. The field keeps its name and its meaning. What changed is that
+the two facts under it, `source_exhausted` and `source_stopped_early`, now gate
+it and travel beside it.
+
+`markdown` and `text` answer with a rendered document, which has no envelope to
+carry either flag. Call `capture_status` beside them, or ask for `json`.
 
 > Before 0.5.125 this default returned the TEXT rendering. `format` chooses
 > between markdown headings and plain text inside the renderer and never had a
@@ -1264,7 +1307,9 @@ a bare array, plus the provenance note as a second content block:
 | `hits` | object[] | This page of `{ call_id, message_index, snippet }`, ordered by the dialog's `created_at`, then Call-ID, then message index. |
 | `returned` | usize | Rows in `hits`. |
 | `total_matched` | usize | Messages matching the query across the **whole store**, whatever `limit` and `cursor` say. This is the number that answers "how many". |
-| `truncated` | bool | `true` when matches remain after this page. |
+| `truncated` | bool | `true` when matches remain after this page. Absent while the answer is not whole — see the sixth rule above. |
+| `source_exhausted` | bool | `true` once sipnab has read the capture source to its end. |
+| `source_stopped_early` | bool | `true` when a source's read ended before the source did. |
 | `next_cursor` | string? | Pass back to continue. `null` on the final page. |
 | `schema_version` | u32 | `1` for this shape. |
 | `capture_identity` | object | Which capture answered. A changed `instance` voids the cursor. |
@@ -1321,7 +1366,8 @@ Incremental fetch of the dialogs updated after a cursor position.
 | `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339>\|<Call-ID>`). A bare RFC 3339 timestamp also parses, and filters strictly after it. | Starts from the beginning of the store. |
 | `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 rows. |
 
-Returns `{ dialogs, next_cursor, source_exhausted, capture_identity }`, where
+Returns `{ dialogs, next_cursor, source_exhausted, source_stopped_early,
+capture_identity }`, where
 `dialogs` holds the same summary rows [`list_dialogs`](#list-dialogs) returns,
 fencing included. This page object carries no `returned`, `total_matched` or
 `truncated` — "how many are there" is not a question a tail can answer, because
@@ -1371,6 +1417,7 @@ has finished: stop when it turns `true` instead of polling forever.
   ],
   "next_cursor": "2016-11-26T14:53:08.170676+00:00|1-1966@10.0.2.20",
   "source_exhausted": true,
+  "source_stopped_early": false,
   "capture_identity": {
     "node": "capture-01",
     "instance": "1d1a718cb5c33b7c52754-1",
@@ -3645,6 +3692,7 @@ No parameters. Returns:
     "media_creating_commands": 0  // relay commands seen and NOT attributed
   },
   "source_exhausted": false,     // true once a file is read to the end
+  "source_stopped_early": false, // true when a read ended before the file did
   "writing_to": null,            // path packets are being saved to, if any
   "unsaved": true,               // stopping now would lose packets
   "capture_identity": {
@@ -3998,9 +4046,21 @@ Returns:
     "max_error_us": 238000,
     "est_error_us": 0,
     "available": true
-  }
+  },
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
+
+`source_stopped_early` answers the question this tool usually gets: **did the
+whole capture arrive?** It reads `true` when a file's read ended before the file
+did — `libpcap error: truncated dump file`, a file that would not open, a read
+that hit an error part-way through — which is the normal state of a ring
+buffer's newest member and otherwise stays invisible here. Until this field
+landed, that condition reached stderr as `0 of 1 file(s) read in full, 1 stopped
+early` and reached this response not at all, so an agent asking whether a
+capture was sound got no answer either way. Both fields are booleans, so the response type stays
+free of strings.
 
 > **This tool starts no capture.** With `--mcp` attached to a live interface,
 > the counters already accumulate, so a rate costs two reads and a wait. That
@@ -4147,7 +4207,10 @@ it.
 A bound is not a loss. `list_dialogs`, `find_problems`, `search_by_time`,
 `search_messages`, `security_findings` and the capture-wide `rtp_stats` sweep
 each report `total_matched` beside their page, so a caller sees how much of the
-answer it holds. All of those except `security_findings` carry a cursor to the
+answer it holds. That number describes the STORE, not the file: while the
+source is still loading it counts what had arrived by then, which is why every
+one of them also carries `source_exhausted` and why the response omits
+`truncated: false` until the answer is whole. All of those except `security_findings` carry a cursor to the
 rest, as do `tail_dialogs` and `get_dialog`. Asking for a `limit` above the
 ceiling does nothing — the ceiling clamps it — so either raise the ceiling with
 `--mcp-max-rows` or page.

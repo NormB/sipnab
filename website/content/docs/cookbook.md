@@ -491,6 +491,7 @@ changes that: put sipnab's `-d` where the media actually is.
 
 - HEP is UDP — silently drops if the listener can't keep up. The `--hep-rate-limit 50000` default lets you tune.
 - A routable HEP listener needs a guard: sipnab refuses a non-loopback `--hep-listen` bind unless you pass `--hep-allow 192.0.2.0/24` (repeatable) or `--hep-auth`/`--hep-auth-file`. A loopback bind needs neither.
+- `--hep-allow` guards the **listener** and nothing else. HEP that sipnab merely sniffs off the wire — including rtpengine's mirrored control plane — reaches no socket, so no allowlist applies to it. See [rtpengine.md](@/docs/rtpengine.md#how-much-a-media-relay-assertion-is-worth) for what a sniffed assertion is worth.
 - If your central host is reachable by hostname only, set `--mcp-allowed-host` for the MCP transport too (see Recipe 8).
 - `-d` with `--hep-listen` takes exactly one interface and one listener. sipnab refuses `-I` with `--hep-listen` (a file's addresses are historical and belong to third parties, and sipnab keeps them off its active-response path by refusing to transmit for a file run at all); so are `--multi-device` with `--hep-listen`, and `-O` with the pair — the two sources disagree about the link layer, so there is no honest pcap to write. Use `--hep-send` to forward the signaling instead.
 - One sipnab, one mirroring node. The SDP endpoint index keys on address and port with no node dimension, so two nodes advertising the same [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) socket would overwrite each other and a stream would bind to whichever offer arrived last.
@@ -1712,6 +1713,7 @@ Homer authoritative.
 
 - sipnab **refuses** a non-loopback `--hep-listen` unless you pass `--hep-allow` or `--hep-auth`. That is deliberate: an open HEP port accepts forged call records from anyone who can reach it.
 - `--hep-auth` travels in cleartext inside the datagram. It defeats blind spoofing, but it does not survive an on-path sniffer. Tunnel HEP over WireGuard or IPsec on an untrusted path.
+- `--hep-auth-mode hmac` signs the **whole datagram** — every chunk, so the signature covers the source and destination the sender asserts, not only the payload. That is what makes `--hep-allow-kill` safe to pair with it: the kill response targets exactly those fields, and an unsigned assertion could aim it at a third party. Earlier builds signed the payload only, so anyone who observed a packet could re-send it with address chunks appended and it still verified. sipnab now **refuses** those version-1 tokens and logs why. There is no compatibility switch, so upgrade both ends together.
 - Give each agent its own `--hep-id`, or the collector cannot tell your nodes apart.
 
 ---

@@ -1,0 +1,180 @@
+{
+  "_measured": {
+    "date": "2026-08-28",
+    "commit": "e403d1096670ca1ac19942e40822dac7af44ec0c",
+    "commitNote": "plus the two accessibility fixes landed alongside this file (download.html tabindex, style.scss underline); neither changes any number below",
+    "how": [
+      "cd website && zola build --base-url http://127.0.0.1:<port>",
+      "python3 -m http.server <port> --directory website/public",
+      "npx lhci collect --numberOfRuns=3 --settings.preset=desktop --settings.chromeFlags='--no-sandbox --disable-dev-shm-usage'",
+      "Chromium 1223 (the build @playwright/test 1.62.1 pins), aarch64 Linux."
+    ],
+    "why": [
+      "JSON carries no comments, so the provenance for every threshold in `ci`",
+      "lives here as data instead -- and a test reads it. `worst` is the worst",
+      "value observed across the three runs for that URL: the largest for a",
+      "maxNumericValue budget, the smallest for a minScore one. Every threshold",
+      "in `ci.assert` must have an entry here that it clears, which is what",
+      "makes it a MEASURED budget rather than an aspirational one.",
+      "site_journey_test::lighthouse_budgets_are_measured_not_aspirational",
+      "enforces that pairing, so a threshold cannot be added without a",
+      "measurement and cannot be relaxed past the number it was derived from.",
+      "",
+      "BUILD THE SITE WITH --base-url MATCHING THE ORIGIN IT IS SERVED FROM.",
+      "Zola bakes absolute config.base_url URLs into every page, and base.html's",
+      "own `default-src 'self'` then blocks all of them as cross-origin. The",
+      "resulting page has no CSS, no script and no images -- and scores 100 on",
+      "performance with a 0.000 layout shift. That is not a hypothetical: it is",
+      "what the first collection run on this repository produced, on all five",
+      "URLs, before anyone asked why a 19 MB site was loading in 473 ms.",
+      "Both quality.yml jobs assert the built HTML links its own origin before",
+      "they measure anything."
+    ],
+    "knownDefects": [
+      "/download/ shifts layout by ~0.11 CLS, three runs out of three (0.1031,",
+      "0.1154, 0.1115). Lighthouse attributes it to no element, so the cause is",
+      "not yet identified and no fix is claimed here. Its budget is set at 0.15,",
+      "ABOVE the 0.1 that Core Web Vitals calls 'good': that is a ceiling on a",
+      "defect that already exists, not a statement that 0.15 is acceptable.",
+      "Every other page is budgeted at 0.02 against a measured 0.0002-0.0044.",
+      "",
+      "SEO is capped at 0.92 site-wide by the `robots-txt` audit, which rejects",
+      "the `Content-Signal:` line in website/static/robots.txt as an unknown",
+      "directive. The directive is deliberate; Lighthouse does not know it. The",
+      "seo budget is 0.90 for that reason and not because 0.92 is the goal.",
+      "",
+      "The site under measurement is a ZOLA-ONLY build. Two assets that the",
+      "Pages deploy adds afterwards are therefore missing, and both 404 during",
+      "collection (measured 2026-08-28): /analyze/ requests /wasm/sipnab_bg.wasm,",
+      "which pages.yml creates with wasm-pack, and /docs/ requests",
+      "/pagefind/pagefind.js, which pages.yml creates with the pagefind binary.",
+      "The analyzer's 404 was present when the numbers below were taken, so its",
+      "0.96 best-practices score already accounts for it. The Pagefind one was",
+      "NOT: it arrived with the search work landing alongside this file. If the",
+      "docs pages start scoring under the 0.95 best-practices floor, the fix is",
+      "to run the same pagefind index step these two jobs' sibling `docs` job",
+      "already runs, so the measured artifact matches the deployed one -- not to",
+      "lower the floor.",
+      "",
+      "`uses-text-compression` scores 0 and `uses-long-cache-ttl` scores 0.5 in",
+      "every run. Both are properties of `python3 -m http.server`, which sends",
+      "neither gzip nor Cache-Control; GitHub Pages sends both. They are left",
+      "switched ON rather than disabled, because the category scores below were",
+      "measured with them failing -- the budget already accounts for them, and",
+      "disabling an audit is how a gate quietly stops covering something."
+    ],
+    "worst": {
+      "categories:performance": 0.96,
+      "categories:accessibility": 0.96,
+      "categories:best-practices": 0.96,
+      "categories:seo": 0.92,
+      "first-contentful-paint": 644,
+      "largest-contentful-paint": 842,
+      "total-blocking-time": 0,
+      "cumulative-layout-shift": {
+        "/": 0.0019,
+        "/docs/": 0.0002,
+        "/docs/tui/": 0.0044,
+        "/download/": 0.1154,
+        "/analyze/": 0.0002
+      },
+      "resource-summary:script:size": {
+        "/": 18246,
+        "/docs/": 18246,
+        "/docs/tui/": 18246,
+        "/download/": 18246,
+        "/analyze/": 120357
+      },
+      "resource-summary:total:size": {
+        "/": 817571,
+        "/docs/": 285845,
+        "/docs/tui/": 262823,
+        "/download/": 282393,
+        "/analyze/": 342085
+      }
+    }
+  },
+
+  "ci": {
+    "collect": {
+      "startServerCommand": "python3 -u -m http.server 1111 --directory ../website/public",
+      "startServerReadyPattern": "Serving HTTP",
+      "startServerReadyTimeout": 60000,
+      "url": [
+        "http://127.0.0.1:1111/",
+        "http://127.0.0.1:1111/docs/",
+        "http://127.0.0.1:1111/docs/tui/",
+        "http://127.0.0.1:1111/download/",
+        "http://127.0.0.1:1111/analyze/"
+      ],
+      "numberOfRuns": 3,
+      "settings": {
+        "preset": "desktop",
+        "chromeFlags": "--no-sandbox --disable-dev-shm-usage"
+      }
+    },
+
+    "assert": {
+      "assertMatrix": [
+        {
+          "matchingUrlPattern": ".*",
+          "aggregationMethod": "median",
+          "assertions": {
+            "categories:performance": ["error", { "minScore": 0.9 }],
+            "categories:accessibility": ["error", { "minScore": 0.95 }],
+            "categories:best-practices": ["error", { "minScore": 0.95 }],
+            "categories:seo": ["error", { "minScore": 0.9 }],
+            "first-contentful-paint": ["error", { "maxNumericValue": 1500 }],
+            "largest-contentful-paint": ["error", { "maxNumericValue": 2000 }],
+            "total-blocking-time": ["error", { "maxNumericValue": 300 }]
+          }
+        },
+        {
+          "matchingUrlPattern": "^http://127\\.0\\.0\\.1:1111/$",
+          "aggregationMethod": "median",
+          "assertions": {
+            "cumulative-layout-shift": ["error", { "maxNumericValue": 0.02 }],
+            "resource-summary:script:size": ["error", { "maxNumericValue": 40000 }],
+            "resource-summary:total:size": ["error", { "maxNumericValue": 1000000 }]
+          }
+        },
+        {
+          "matchingUrlPattern": "^http://127\\.0\\.0\\.1:1111/docs/$",
+          "aggregationMethod": "median",
+          "assertions": {
+            "cumulative-layout-shift": ["error", { "maxNumericValue": 0.02 }],
+            "resource-summary:script:size": ["error", { "maxNumericValue": 40000 }],
+            "resource-summary:total:size": ["error", { "maxNumericValue": 400000 }]
+          }
+        },
+        {
+          "matchingUrlPattern": "^http://127\\.0\\.0\\.1:1111/docs/tui/$",
+          "aggregationMethod": "median",
+          "assertions": {
+            "cumulative-layout-shift": ["error", { "maxNumericValue": 0.02 }],
+            "resource-summary:script:size": ["error", { "maxNumericValue": 40000 }],
+            "resource-summary:total:size": ["error", { "maxNumericValue": 400000 }]
+          }
+        },
+        {
+          "matchingUrlPattern": "^http://127\\.0\\.0\\.1:1111/download/$",
+          "aggregationMethod": "median",
+          "assertions": {
+            "cumulative-layout-shift": ["error", { "maxNumericValue": 0.15 }],
+            "resource-summary:script:size": ["error", { "maxNumericValue": 40000 }],
+            "resource-summary:total:size": ["error", { "maxNumericValue": 400000 }]
+          }
+        },
+        {
+          "matchingUrlPattern": "^http://127\\.0\\.0\\.1:1111/analyze/$",
+          "aggregationMethod": "median",
+          "assertions": {
+            "cumulative-layout-shift": ["error", { "maxNumericValue": 0.02 }],
+            "resource-summary:script:size": ["error", { "maxNumericValue": 160000 }],
+            "resource-summary:total:size": ["error", { "maxNumericValue": 500000 }]
+          }
+        }
+      ]
+    }
+  }
+}

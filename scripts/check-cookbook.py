@@ -22,12 +22,20 @@ Two modes, because two different things can be checked:
          actually happens to a cookbook: a flag that was renamed or removed.
 
 Nothing is skipped in silence. Every command lands in one of those two modes
-or in UNCOVERED, and UNCOVERED is printed and counted. A checker that quietly
-ignores what it cannot handle reports a clean cookbook by not looking at it,
-which is the same defect the corpus gate has (see RDR2).
+or in UNCOVERED, and UNCOVERED FAILS the run. A checker that quietly ignores
+what it cannot handle reports a clean cookbook by not looking at it, which is
+the same defect the corpus gate has (see RDR2) -- and counting the ones it
+ignored, without failing, is that defect with a number printed beside it.
+
+A command that genuinely cannot be covered goes in `UNCOVERABLE` below, WITH
+the reason it cannot. An entry with no reason is refused, and so is an entry
+that exempts nothing: a skip list outlives the reason nobody wrote down, and
+then outlives the problem too.
 
 Usage:
     scripts/check-cookbook.py [--binary PATH] [--verbose]
+                              [--exempt 'SUBSTRING=REASON' ...]
+    scripts/check-cookbook.py --dump-exemptions
 
 Exits non-zero if any command fails its check.
 """
@@ -70,6 +78,41 @@ NON_TERMINATING = {
 
 # Anything ending in these is a placeholder path the reader substitutes.
 CAPTURE_SUFFIXES = (".pcap", ".pcapng", ".cap")
+
+# Commands this checker genuinely cannot cover, each mapped to the reason.
+#
+# EMPTY, and that is the goal state rather than an accident: every sipnab
+# command in the page is either executed or flag-checked. The table exists so
+# that the next command which cannot be is a decision somebody writes down,
+# not a number that quietly goes from 0 to 1 in a passing run.
+#
+# The key is a literal substring of the `sipnab ...` invocation; the value is
+# the reason. Two rules are enforced in `validate_exemptions` and `main`, and
+# both exist because a bare skip list rots in one of exactly two directions:
+#
+#   * An entry with a blank reason is refused. "Skip this one" outlives the
+#     person who knew why, and the next reader cannot tell a real constraint
+#     from a command somebody could not be bothered to fix.
+#   * An entry that exempts nothing is refused. Once the command is fixed,
+#     renamed or deleted, the entry is a standing permission for a problem
+#     that no longer exists -- and it will be found later, by a command that
+#     happens to contain the same substring.
+# Flags whose VALUE is an artifact the reader builds or brings. A recipe using
+# one cannot execute here, and that is a property of the flag rather than of
+# any particular recipe -- so it is named once, not exempted case by case.
+READER_SUPPLIED_FLAGS: frozenset[str] = frozenset({"--plugin"})
+
+UNCOVERABLE: dict[str, str] = {}
+
+
+def validate_exemptions(table: dict[str, str]) -> str | None:
+    """The first of the two rules: no entry without a stated reason."""
+    for pattern, reason in table.items():
+        if not pattern.strip():
+            return "an exemption with an empty pattern matches every command"
+        if not reason.strip():
+            return f"exemption {pattern!r} states no reason for being exempt"
+    return None
 
 
 def extract_commands(text: str) -> list[tuple[str, str]]:
@@ -189,7 +232,36 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary", default=str(REPO / "target" / "debug" / "sipnab"))
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument(
+        "--exempt",
+        action="append",
+        default=[],
+        metavar="SUBSTRING=REASON",
+        help="exempt one command from the UNCOVERED failure, with its reason. "
+             "Subject to the same two rules as the UNCOVERABLE table: the "
+             "reason may not be empty, and the entry must exempt something.",
+    )
+    ap.add_argument(
+        "--dump-exemptions",
+        action="store_true",
+        help="print the exemption table as `pattern<TAB>reason` lines and "
+             "exit. Read by the Rust gate, so it inspects the table this "
+             "script actually uses rather than re-parsing this file's source.",
+    )
     args = ap.parse_args()
+
+    exemptions = dict(UNCOVERABLE)
+    for spec in args.exempt:
+        pattern, _, reason = spec.partition("=")
+        exemptions[pattern] = reason
+    if (bad := validate_exemptions(exemptions)) is not None:
+        print(f"FATAL: {bad}", file=sys.stderr)
+        return 2
+    if args.dump_exemptions:
+        for pattern, reason in exemptions.items():
+            print(f"{pattern}\t{' '.join(reason.split())}")
+        return 0
+    used: set[str] = set()
 
     binary = Path(args.binary)
     if not binary.exists():
@@ -218,8 +290,30 @@ def main() -> int:
         return 2
 
     commands = extract_commands(COOKBOOK.read_text())
-    ran = flagged = failed = uncovered = 0
+    ran = flagged = failed = uncovered = exempt = 0
     failures: list[str] = []
+
+    def uncover(recipe: str, why: str, shown: str) -> None:
+        """Record one command no mode could check.
+
+        Exempt only if some entry names it AND states why. Otherwise it is a
+        failure: an uncovered command is a line of the page that nothing in
+        this repository has ever run or even spell-checked.
+        """
+        nonlocal uncovered, exempt, failed
+        for pattern, reason in exemptions.items():
+            if pattern in shown:
+                used.add(pattern)
+                exempt += 1
+                print(f"EXEMPT     [{recipe}] {why}: {shown[:60]}\n    {reason}")
+                return
+        uncovered += 1
+        failed += 1
+        failures.append(
+            f"[{recipe}] UNCOVERED -- {why}\n    {shown[:120]}\n    "
+            "Make it checkable, or add it to UNCOVERABLE in this script with "
+            "the reason it cannot be."
+        )
 
     for recipe, cmd in commands:
         inv = sipnab_part(cmd)
@@ -229,12 +323,42 @@ def main() -> int:
         try:
             argv = shlex.split(inv)
         except ValueError:
-            uncovered += 1
-            print(f"UNCOVERED  [{recipe}] unparseable: {cmd[:80]}")
+            uncover(recipe, "unparseable", cmd)
             continue
 
         argv = [a for a in argv if a not in ("sudo", "sipnab")]
         names = set(argv)
+
+        # FLAGS mode: a recipe naming an artifact the READER is expected to
+        # supply. `--plugin ./my-detector.wasm` is the page telling someone to
+        # build a detector; no .wasm ships here and the pinned toolchain
+        # installs no wasm32 target, so executing it asserts only that a
+        # missing file is missing.
+        #
+        # This became visible at 0.5.131 and the reason is worth keeping: until
+        # then a plugin that failed to load exited 0 (backlog VAL2), so this
+        # recipe PASSED while loading no detector at all. The exit-code fix
+        # turned a silently-wrong pass into an honest failure, and the honest
+        # answer is that the command belongs in FLAGS mode.
+        reader_supplied = [
+            argv[i + 1]
+            for i, a in enumerate(argv[:-1])
+            if a in READER_SUPPLIED_FLAGS and not Path(argv[i + 1]).exists()
+        ]
+        if reader_supplied:
+            flagged += 1
+            missing = [f for f in long_flags(inv) if f not in help_text]
+            if missing:
+                failed += 1
+                failures.append(
+                    f"[{recipe}] flags not in --help: {', '.join(missing)}\n    {inv[:120]}"
+                )
+            elif args.verbose:
+                print(
+                    f"FLAGS  ok  [{recipe}] reader supplies "
+                    f"{reader_supplied[0]}: {inv[:60]}"
+                )
+            continue
 
         # FLAGS mode: cannot be executed here.
         if names & NON_TERMINATING:
@@ -247,13 +371,6 @@ def main() -> int:
                 )
             elif args.verbose:
                 print(f"FLAGS  ok  [{recipe}] {inv[:80]}")
-            continue
-
-        # A command using a shell variable is a fragment of a loop the reader
-        # runs, not a command anything can execute standalone.
-        if "$" in inv:
-            uncovered += 1
-            print(f"UNCOVERED  [{recipe}] shell variable: {inv[:80]}")
             continue
 
         # RUN mode: substitute the placeholders and execute.
@@ -297,6 +414,19 @@ def main() -> int:
                     print(f"FLAGS  ok  [{recipe}] {inv[:80]}")
                 continue
 
+            # A shell variable that SURVIVED substitution is a fragment of a
+            # loop the reader runs, and nothing here can execute it standalone.
+            #
+            # Asked after the substitution rather than before, which is the
+            # whole difference: recipe 12's second pass writes
+            # `--call-report "$cid"`, and `$cid` is the same placeholder as the
+            # page's own `abc123@host` -- a real Call-ID read out of the
+            # fixture replaces both. Refusing it on the bare sight of a `$`
+            # left the one command in the cookbook that nothing ever ran.
+            if any("$" in a for a in subbed):
+                uncover(recipe, "shell variable survives substitution", inv)
+                continue
+
             proc = subprocess.run(
                 [str(binary), *subbed],
                 capture_output=True, text=True, timeout=180, cwd=tmp,
@@ -313,11 +443,24 @@ def main() -> int:
         elif args.verbose:
             print(f"RUN    ok  [{recipe}] {inv[:80]}")
 
+    # The second rule: an exemption that exempted nothing is a standing
+    # permission for a problem that no longer exists. Checked here rather than
+    # up front because "did it exempt anything" is only knowable after the run.
+    stale = [p for p in exemptions if p not in used]
+    if stale:
+        print(
+            "FATAL: exemption(s) that exempted nothing -- delete them:\n  "
+            + "\n  ".join(f"{p!r}: {exemptions[p]}" for p in stale),
+            file=sys.stderr,
+        )
+        return 2
+
     print()
     print(f"cookbook commands checked: {ran + flagged}")
     print(f"  executed against a fixture : {ran}")
     print(f"  flag-checked (needs a host): {flagged}")
     print(f"  UNCOVERED                  : {uncovered}")
+    print(f"  exempt, with a reason      : {exempt}")
     print(f"  FAILED                     : {failed}")
     if failures:
         print("\n--- failures ---")
