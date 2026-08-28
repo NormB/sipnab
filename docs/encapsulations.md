@@ -53,7 +53,7 @@ captures were in this repository's own test corpus.
 
 A missed encapsulation is now **counted and named**, with the number that
 identifies it — the link type, the EtherType, the IP protocol. See
-[Troubleshooting](troubleshooting.md) for what each reason means.
+[Troubleshooting](troubleshooting.md#start-here-one-pass-over-everything) for what each reason means.
 
 ## The rule that governs decapsulation
 
@@ -168,7 +168,7 @@ inside VLAN, QinQ, PPPoE and MPLS as well as untagged traffic. **UDP-tunneled
 SIP is not covered by default**: BPF cannot parse a variable-length GTP-U header
 to reach the inner port, so covering those means capturing every packet on those
 ports. Use `--capture-tunnels` to opt in — see the
-[CLI reference](cli-reference.md).
+[CLI reference](cli-reference.md#capture).
 
 The tunnel-aware arm covers `SLL` and `SLL2` — what sipnab opens on Linux when
 you name no interface — as well as Ethernet, so omitting `-d` costs no

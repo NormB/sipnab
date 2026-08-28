@@ -1829,18 +1829,25 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
 #[test]
 fn homepage_mcp_tool_tile_matches_the_server() {
     let idx = read("website/templates/index.html");
-    let server = read("src/mcp/server.rs");
-
-    let registered = regex::Regex::new(r#"(?m)^\s+name = "[a-z0-9_]+","#)
-        .unwrap()
-        .find_iter(&server)
-        .count();
+    let (registered, in_server_rs, files) = registered_mcp_tool_count();
 
     // A parser that matches nothing would agree with any tile.
     assert!(
         registered >= 20,
         "only {registered} MCP tool registrations found — the pattern stopped \
          matching, so this gate is comparing the tile against nothing"
+    );
+    // The walk must actually leave server.rs. `ToolRouter` composes with `+`,
+    // so a tool added in src/mcp/tools/*.rs is registered exactly as much as
+    // one written in server.rs; a counter reading the single file agrees with
+    // a stale tile forever. This gate read only server.rs until 0.5.130, when
+    // 13 tools lived in six submodules and it certified 38 against a server
+    // that answered tools/list with 51.
+    assert!(
+        files >= 2 && registered > in_server_rs,
+        "the MCP tool walk found {registered} registration(s) across {files} \
+         file(s), {in_server_rs} of them in src/mcp/server.rs — it is not \
+         reaching the router submodules, so every count it produces is a floor"
     );
 
     let tile = format!(r#"data-count="{registered}" data-suffix=" MCP tools""#);
@@ -6075,5 +6082,149 @@ fn the_generated_directory_list_is_not_empty() {
         n >= 2,
         "GENERATED holds {n} entries; with fewer than two the paired \
          ignore/track assertions stop covering anything"
+    );
+}
+
+/// Count the MCP tools the server registers, across the whole `src/mcp` tree.
+///
+/// Returns `(total, in_server_rs, files_walked)`. The two extra figures exist
+/// so a caller can prove the walk left `server.rs`: rmcp's `ToolRouter`
+/// composes with `+`, so `#[tool_router]` blocks in submodules register tools
+/// exactly as much as the ones in `server.rs`, and a counter that reads a
+/// single file reports a floor while looking like a total.
+fn registered_mcp_tool_count() -> (usize, usize, usize) {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(std::path::Path::new("src/mcp"), &mut files);
+    files.sort();
+
+    let re = regex::Regex::new(r#"(?m)^\s+name = "[a-z0-9_]+","#).unwrap();
+    let count_in = |p: &std::path::Path| {
+        std::fs::read_to_string(p)
+            .map(|s| re.find_iter(&s).count())
+            .unwrap_or(0)
+    };
+    let total = files.iter().map(|f| count_in(f)).sum();
+    let in_server_rs = count_in(std::path::Path::new("src/mcp/server.rs"));
+    (total, in_server_rs, files.len())
+}
+
+/// Tools registered outside `server.rs` must be counted.
+///
+/// The concrete regression: on 0.5.130 six submodules under `src/mcp/tools/`
+/// held 13 tools, `tools/list` answered 51, and the homepage gate certified a
+/// tile reading 38 because it opened one file. Naming the submodules here
+/// means deleting the walk — or narrowing it back to `server.rs` — fails
+/// rather than quietly returning a smaller number that some tile will match.
+#[test]
+fn mcp_tool_walk_counts_tools_registered_outside_server_rs() {
+    let (total, in_server_rs, files) = registered_mcp_tool_count();
+    assert!(
+        files >= 2,
+        "the walk reached {files} file(s) under src/mcp; it is not recursing"
+    );
+    assert!(
+        total > in_server_rs,
+        "every one of the {total} MCP tool registrations is in server.rs — \
+         either the router submodules were folded back in (update this test) \
+         or the walk stopped recursing and is reporting a floor as a total"
+    );
+
+    // Each submodule that carries a #[tool_router] must contribute.
+    let tools_dir = std::path::Path::new("src/mcp/tools");
+    if tools_dir.is_dir() {
+        let re = regex::Regex::new(r#"(?m)^\s+name = "[a-z0-9_]+","#).unwrap();
+        let mut contributing = 0usize;
+        for e in std::fs::read_dir(tools_dir)
+            .expect("read src/mcp/tools")
+            .flatten()
+        {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "rs") {
+                let src = std::fs::read_to_string(&p).unwrap_or_default();
+                if re.find_iter(&src).count() > 0 {
+                    contributing += 1;
+                }
+            }
+        }
+        assert!(
+            contributing >= 2,
+            "only {contributing} file(s) under src/mcp/tools register a tool; \
+             the pattern that finds them has stopped matching"
+        );
+    }
+}
+
+/// The walk's own floor must be able to fail.
+///
+/// A helper that returns a plausible number when it can read nothing is the
+/// failure this whole gate exists to prevent, so the guard is exercised
+/// against a directory that does not exist rather than trusted.
+#[test]
+fn mcp_tool_walk_reports_nothing_when_it_can_read_nothing() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(std::path::Path::new("src/mcp-does-not-exist"), &mut files);
+    assert_eq!(
+        files.len(),
+        0,
+        "the walk invented files for a path that does not exist"
+    );
+
+    // And the real tree must not be empty, or the comparison above is vacuous.
+    let (total, _, real_files) = registered_mcp_tool_count();
+    assert!(
+        real_files > 0 && total > 0,
+        "src/mcp yielded {real_files} file(s) and {total} tool(s); this test \
+         would pass identically against a deleted source tree"
+    );
+}
+
+/// The homepage tile carries the count twice and both spellings must move.
+///
+/// `data-count` drives the JavaScript odometer; the text node is what a
+/// visitor with JavaScript off reads. They are separate strings in the
+/// template, so one can be updated alone — and the one left behind is the one
+/// served to every crawler and every reader without JS.
+#[test]
+fn homepage_mcp_tile_carries_the_same_count_in_both_spellings() {
+    let idx = read("website/templates/index.html");
+    let attr = regex::Regex::new(r#"data-count="(\d+)" data-suffix=" MCP tools""#)
+        .unwrap()
+        .captures(&idx)
+        .expect("no MCP tools tile with a data-count on the homepage");
+    let text = regex::Regex::new(r">(\d+) MCP tools<")
+        .unwrap()
+        .captures(&idx)
+        .expect("the MCP tools tile has no no-JS fallback text node");
+    assert_eq!(
+        &attr[1], &text[1],
+        "the MCP tile's data-count says {} and its no-JS text says {}; a \
+         reader without JavaScript is served the stale figure",
+        &attr[1], &text[1]
     );
 }

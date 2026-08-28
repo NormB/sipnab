@@ -68,7 +68,7 @@ is missing, playback returns a clear error and WAV export (F2) still works.
 Install `libasound2` for live playback — it is a Debian `Recommends`, not a
 hard dependency. For headless servers, each release also ships a `-noaudio`
 `.deb` with no plugin and no ALSA Recommends at all (see
-[docs/install.md](docs/install.md)).
+[docs/install.md](docs/install.md#debianubuntu-deb)).
 
 ## Build
 
@@ -224,7 +224,9 @@ trying to do. The pages worth knowing by name:
 - [MOS and codecs](docs/mos-and-codecs.md) -- where the quality score comes
   from, and which codecs report a placeholder instead
 - [REST API & Metrics](docs/rest-api.md) -- endpoints, response shapes, Prometheus
-- [MCP Server](docs/mcp.md) -- tools, transports, token bootstrap, systemd unit, troubleshooting
+- [MCP Server](docs/mcp.md) -- what MCP gives an agent, a first working
+  example, and where to go next for deployment, the tool reference and the
+  protocol contract
 - [Library API](docs/library.md) -- using sipnab as a Rust crate; typed `ParseError`/`CaptureError`
 
 **Understanding it**

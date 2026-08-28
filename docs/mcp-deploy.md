@@ -1,8 +1,8 @@
 # MCP walkthrough — every deployment scenario, step by step
 
-[MCP Server](mcp.md) is the reference: every flag, tool, and error code. This
-page walks a **first-time sipnab user** through each deployment scenario,
-command by command, on every machine involved. Each step carries a tag with the
+[MCP server](mcp.md) introduces the surface and points at the tool and protocol
+references. This page walks a **first-time sipnab user** through each deployment
+scenario, command by command, on every machine involved. Each step carries a tag with the
 host they run on: **[server]** (where sipnab runs), **[laptop]** (where
 your MCP client / Claude Code runs), or **[proxy]** (your SIP proxy, in
 the HEP scenario).
@@ -798,8 +798,8 @@ Nothing about MCP requires an interactive session.
 **No LLM at all** — the MCP server is also just a stable JSON-RPC API for
 scripts: [Drive it from a script](#drive-it-from-a-script) has a working
 standard-library client with the transport details spelled out, and the
-Python/TypeScript clients in
-[mcp.md § Client cookbook](mcp-deploy.md#connect-a-specific-client) drive the same tools
+Python/TypeScript clients under
+[Connect a specific client](#connect-a-specific-client) drive the same tools
 through the official MCP SDK (e.g. a nightly job calling `find_problems` and
 opening a ticket when the count is nonzero).
 
@@ -972,8 +972,8 @@ JSON. You can reproduce any of them.
 
 You do not type these calls. You ask your agent the question in the heading and
 it selects the tools. The calls appear here so you can tell whether it picked
-well, and so you can recognize the answer when it comes back. The full
-per-tool reference is in [MCP server](mcp.md).
+well, and so you can recognize the answer when it comes back. The
+[MCP tool reference](mcp-tools.md) documents each one, field by field.
 
 ### Find out why a single call failed
 
@@ -1266,7 +1266,7 @@ HEP mirroring and sipnab lives elsewhere.
 ## Security implications
 
 What the design already gives you (details in
-[mcp.md § Security model](mcp-protocol.md#security-model)):
+[MCP protocol § Security model](mcp-protocol.md#security-model)):
 
 - **No control plane, and no tool sends SIP.** No MCP tool puts a packet on
   the wire, so a compromised or confused agent can disclose data rather than
@@ -1326,8 +1326,8 @@ Work outward from the server. Each layer has a definitive test.
 HTTP status decoder: `401` wrong/missing bearer token · `403` `Host:` not
 in the allowlist (`--mcp-allowed-host`) · `404` the request never reached the MCP route (a proxy rewrite, not a trailing slash) ·
 `406` missing `Accept: application/json, text/event-stream`. More in
-[mcp.md § Troubleshooting](mcp-deploy.md#troubleshooting). The
-[raw HTTP test](mcp-deploy.md#test-the-http-wire-by-hand) there is a working curl carrying every
+[Troubleshooting](#troubleshooting) further down this page. The
+[raw HTTP test](#test-the-http-wire-by-hand) there is a working curl carrying every
 required header.
 
 ## Run the agent on your laptop and sipnab on a server
@@ -1428,9 +1428,9 @@ Each agent session spawns a fresh sipnab, so it starts capturing when the
 session starts. That is right for post-mortems and wrong for accumulating live
 state — for a capture that must keep running between sessions, use HTTP below.
 
-[The MCP walkthrough](mcp-deploy.md) covers this end to end, including an
-SSH-tunnel variant that keeps a persistent capture reachable with nothing
-exposed to the network.
+[Keep a capture running without exposing a port](#keep-a-capture-running-without-exposing-a-port)
+covers the SSH-tunnel variant that keeps a persistent capture reachable with
+nothing exposed to the network.
 
 ## Keep sipnab listening as a service
 
@@ -1727,7 +1727,7 @@ under `dialogs`, so a client indexes `parsed.dialogs[0]` and reads
 `method`, `from_user`, `to_user`, `msg_count`, `duration_sec`, `created_at`,
 `updated_at`, `timing`, `frame`) — the compact projection. The full aggregated
 dialog document is what `get_dialog_report` returns (the
-[REST API](rest-api.md) returns the same shape).
+[REST API](rest-api.md#get-v1-dialogs-call-id-report) returns the same shape).
 
 Fetch one dialog a page at a time, starting at the first message:
 

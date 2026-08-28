@@ -325,7 +325,7 @@ Run it as a daemon. UDP :9060 receives HEP, TCP :9100 serves REST + Prometheus. 
 sipnab -N --hep-listen 0.0.0.0:9060 --hep-allow 192.0.2.0/24 --api 0.0.0.0:9100 --api-signing-key-file /etc/sipnab/signing.key --no-priv-drop --syslog
 ```
 
-A ready-to-deploy systemd unit lives at [`contrib/observability/sipnab-hep.service`](https://github.com/NormB/sipnab/blob/main/contrib/observability/sipnab-hep.service) — see [Remote-sipnab deployment](install.md) in the install guide.
+A ready-to-deploy systemd unit lives at [`contrib/observability/sipnab-hep.service`](https://github.com/NormB/sipnab/blob/main/contrib/observability/sipnab-hep.service). Put sipnab on the collector host first — [the install guide](install.md) covers every channel.
 
 ### 6b. Configure the SIP server to mirror
 
@@ -914,7 +914,7 @@ The `tools/list` response is a standard JSON-RPC envelope with a `result.tools` 
 ```
 
 Every registered tool appears, grouped here by what they do. The table in
-[`docs/mcp.md`](mcp.md) is the authoritative list, and
+[`docs/mcp-tools.md`](mcp-tools.md) is the authoritative list, and
 `mcp_tool_table_lists_every_registered_tool` in [`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs)
 asserts it against the registry — the grouping below is a reading aid, not a
 second source of truth. (This list said "all 25 tools" and enumerated 25 until
@@ -1011,7 +1011,7 @@ histogram_quantile(0.1, rate(sipnab_mos_bucket[5m]))
 
 **Pitfalls:**
 
-- The dashboard ships with the metric names sipnab actually emits. If you wrote a custom panel using older docs, double-check against [the metrics list in the API page](rest-api.md).
+- The dashboard ships with the metric names sipnab actually emits. If you wrote a custom panel using older docs, double-check against [the Prometheus metrics reference](prometheus-metrics.md).
 - Some metrics (`sipnab_responses_total`, `sipnab_security_alerts_total`) exist in name only, with nothing wired — they'll stay empty until upstream populates them. Don't put alerts on them today.
 
 ---
@@ -1488,7 +1488,7 @@ pair, each with private dialog and RTP-stream stores.
 **Pitfalls:**
 
 - It covers reconstruction and `--report`/`--json`. Per-message output ordering, the security detectors and SRTP decryption stay on the single-threaded path regardless — so a run that needs those gains nothing.
-- On a **live** device `--cores` means something different: N capture sockets, which widens capture, not analysis. Processing stays on one thread either way. See [tuning](tuning-capture.md).
+- On a **live** device `--cores` means something different: N capture sockets, which widens capture, not analysis. Processing stays on one thread either way. See [tuning](tuning-capture.md#8-offline---cores).
 - `--cores` and `--metrics` do not combine usefully offline; the run exits before a scrape lands, and sipnab says so.
 
 ---
@@ -1600,7 +1600,7 @@ Live capture on 'eth0' finished: 4821003 packets, no drops
 **Pitfalls:**
 
 - Operators routinely respond to *any* drop by raising `-B`. That does nothing at all for interface drops and wastes memory while the real problem goes unaddressed.
-- Both counters zero does not mean the capture is complete: a frame can arrive intact and still be unreadable, or `--snaplen` can cut it short. `--report` counts those separately. See [tuning](tuning-capture.md).
+- Both counters zero does not mean the capture is complete: a frame can arrive intact and still be unreadable, or `--snaplen` can cut it short. `--report` counts those separately. See [tuning](tuning-capture.md#1-are-you-dropping-packets).
 
 ---
 
@@ -3728,7 +3728,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.129 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.130 sh
 ```
 
 To install somewhere other than `/usr/local/bin` — a directory you already own,
@@ -3826,7 +3826,7 @@ canonical triples deliberately: they match `rustc -vV`, they are what
 script constructs them.
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
-Alpine included. Replace `<version>` with the latest, e.g. 0.5.129:
+Alpine included. Replace `<version>` with the latest, e.g. 0.5.130:
 
 ```bash
 # Run all of these, in order.
@@ -3845,7 +3845,7 @@ sudo install -m 755 sipnab-<version>-aarch64-unknown-linux-musl/sipnab /usr/loca
 ```
 
 Manual download with checksum verification (replace `<version>` with the
-latest, e.g. 0.5.129):
+latest, e.g. 0.5.130):
 
 ```bash
 # Run all of these, in order.
@@ -3887,7 +3887,7 @@ cargo install sipnab --features full
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.36, i.e. Debian 12+ / Ubuntu 23.04+ -- on older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package — replace `<version>` with the
-latest, e.g. 0.5.129:
+latest, e.g. 0.5.130:
 
 ```bash
 # Run all of these, in order.
@@ -3946,26 +3946,26 @@ dependency — for headless servers, mirroring the `.deb` variants).
 The standard package on an x86_64 host:
 
 ```bash
-sudo rpm -i sipnab-0.5.129-1.x86_64.rpm
+sudo rpm -i sipnab-0.5.130-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo rpm -i sipnab-0.5.129-1.x86_64-noaudio.rpm
+sudo rpm -i sipnab-0.5.130-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host — pick the variant matching
 `uname -m`:
 
 ```bash
-sudo rpm -i sipnab-0.5.129-1.aarch64.rpm
+sudo rpm -i sipnab-0.5.130-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo rpm -i sipnab-0.5.129-1.aarch64-noaudio.rpm
+sudo rpm -i sipnab-0.5.130-1.aarch64-noaudio.rpm
 ```
 
 ### Homebrew (macOS)
@@ -5916,7 +5916,7 @@ selected, it saves everything.
 
 Complete keyboard shortcut reference for sipnab's interactive TUI.
 
-You can remap keys marked **(configurable)** in the `[keybindings]` config section. See [config-reference.md](config-reference.md) for details. All other keys are hardcoded.
+You can remap keys marked **(configurable)** in the `[keybindings]` config section. See [config-reference.md](config-reference.md#keybindings) for details. All other keys are hardcoded.
 
 Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at the bottom of this page.
 
@@ -6233,7 +6233,7 @@ gzip-compressed forms (`*.pcap.gz`, …), which sipnab decompresses on the fly.
 If sipnab cannot read the directory — most often because it started with
 `sudo` and dropped privileges to an unprivileged user that can't read your
 home directory — the dialog shows the reason instead of a blank list. Run
-sipnab **without** `sudo` (see [install.md](install.md) for capabilities) to
+sipnab **without** `sudo` (see [install.md](install.md#capture-live-traffic-without-root) for capabilities) to
 browse your own files.
 
 ## Column selector
@@ -6317,8 +6317,8 @@ mappings as a Name Resolution Block, and reads them back when you reopen the fil
 Related flags: `--resolve` (start with resolution on), `--reverse-dns` (enable
 PTR lookups; implies `--resolve`), `--names <FILE>` (preload an
 `/etc/hosts`-format mapping file, repeatable). See
-[cli-reference.md](cli-reference.md) and the `[names]` section of
-[config-reference.md](config-reference.md).
+[cli-reference.md](cli-reference.md#name-resolution) and the `[names]` section of
+[config-reference.md](config-reference.md#names).
 
 ---
 
@@ -6517,7 +6517,7 @@ Toggle display options without leaving the TUI.
 ## See also
 
 - [theme-guide.md](theme-guide.md) — recolor every TUI element via `[theme]`
-- [config-reference.md](config-reference.md) — rebind the 11 configurable keys
+- [config-reference.md](config-reference.md#keybindings) — rebind the 11 configurable keys
   via `[keybindings]`
 - [filter-dsl.md](filter-dsl.md) — the expression language the F7 filter
   dialog compiles down to (and the `--filter` flag exposes directly)
@@ -6946,7 +6946,7 @@ sipnab -I capture.pcap --tshark-filter 'sip.from.user == "1001"'
 
 ### Export call audio as WAV
 
-Audio export is a TUI workflow — see [Keybindings](keybindings.md).
+Audio export is a TUI workflow — see [Keybindings](keybindings.md#rtp-streams).
 
 ### Pipe through jq for custom analysis
 
@@ -7351,7 +7351,7 @@ and DSB TLS secrets back, and decrypts with them. See
 
 ## Diagnostic aliases
 
-Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl.md](filter-dsl.md) for the exact expansion of each alias.
+Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl.md](filter-dsl.md#named-aliases) for the exact expansion of each alias.
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
@@ -7709,7 +7709,7 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--api-max-rows` | `<N>` | `1000` | Rows one list-style REST response returns. The REST counterpart of `--mcp-max-rows`, settable for the same reason: the right ceiling belongs to the consumer, not to sipnab. A batch consumer piping `/v1/dialogs` to a file wants every row; a dashboard drawing a table wants far fewer. A caller may always ask for less with `?limit=`, and nothing it sends asks for more than this. Config: `[limits] api_max_rows` Feature: `api` |
 | `--api-rate-limit-per-peer` | `<N>` | `100` | REST requests one client IP may make per second; `0` disables the cap, the reading `--mcp-rate-limit-per-peer` and `--hep-rate-limit` also give it. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance. A refusal is `503` rather than `429` because the limiter runs before authentication, so it says nothing about the credential. Config: `[limits] api_rate_limit_per_peer` Feature: `api` |
 | `--metrics-max-conn` | `<N>` | `16` | Metrics scrapes served at once before further ones get `503`. The gate stops a burst of slow clients exhausting threads and taking monitoring down, and sixteen suits one Prometheus; an HA pair, a federating parent, a `remote_write` shard, an alertmanager sidecar and one engineer's `curl` reach it without anything unusual happening. A refused scrape leaves a hole in the series that reads as a capture that died rather than as a busy endpoint. Config: `[limits] metrics_max_conn` Feature: `metrics` |
-| `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. Give that run an explicit media-only BPF expression (`sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"`) — without one the interface gets the auto-generated *signaling* filter, captures no media, and sees every mirrored message a second time. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe 6d](examples.md). Feature: `hep` |
+| `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. Give that run an explicit media-only BPF expression (`sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"`) — without one the interface gets the auto-generated *signaling* filter, captures no media, and sees every mirrored message a second time. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe 6d](examples.md#6d-take-signaling-from-hep-and-media-off-the-wire-in-one-process). Feature: `hep` |
 | `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector: SIP as protocol type 1 and RTCP as type 5, so the collector can report media quality and not only call setup. RTP is never forwarded. **On `-I <file>` this forwards the file's contents**: every SIP message and RTCP report sipnab reads out of the capture goes to `<ADDR>` as recorded, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what---hep-send-sends). Feature: `hep` |
 | `--hep-id` | `<ID>` | `1` | Capture-agent id (HEP `0x000c` chunk) stamped on packets sent via `--hep-send`. Feature: `hep` |
 | `--hep-auth` | `<KEY>` | -- | Homer authenticate key (HEP `0x000e` chunk). On `--hep-send` sipnab stamps it on every outgoing packet; on `--hep-listen` it **enables receiver-side authentication** — incoming packets must carry a matching key, which sipnab compares in constant time, or it drops them. Also read from `SIPNAB_HEP_AUTH`. **Security note:** the key travels in cleartext inside the HEP datagram, so it defeats blind/off-path spoofing but an on-path sniffer can capture and replay it. Over an untrusted path, tunnel HEP through WireGuard/IPsec/stunnel (the same posture as terminating API TLS in a reverse proxy) rather than relying on the key alone. Feature: `hep` |
@@ -7829,7 +7829,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--mcp-file-root` | `<DIR>` | -- | Directory the MCP file tools (`export_capture`, `export_audio`, `list_captures`) may read and write. Without it those tools refuse to run. They take a bare FILENAME, never a path — an agent cannot escape this directory. Feature: `mcp` |
 | `--mcp-allow-shutdown` | -- | off | Permit the `shutdown_server` MCP tool to stop this process. Off by default, so an agent cannot stop a stock server. Even enabled, the tool dry-runs unless told otherwise and refuses to discard an unsaved live capture. Feature: `mcp` |
 | `--mcp-allow-open-capture` | -- | off | Permit the `open_capture` MCP tool to load a different capture from `--mcp-file-root`, discarding every dialog and stream held. Off by default, so a stock server keeps the capture the command line named. The tool refuses while the source is live or still filling the stores, loads in the background, and mints a new capture identity every later answer carries. Feature: `mcp` |
-| `--mcp-allow-tls-capture` | -- | off | Let an agent install kernel uprobes and read TLS plaintext ([`start_tls_capture`](mcp.md), `stop_tls_capture`). **The most consequential opt-in on this surface**: it lets an agent read the plaintext of TLS sessions belonging to processes it does not own, needs the server to still be root, and creates kernel state that outlives a crash. `list_tls_libraries` stays available without it, so an agent can always report what a capture WOULD see. Feature: `mcp` |
+| `--mcp-allow-tls-capture` | -- | off | Let an agent install kernel uprobes and read TLS plaintext ([`start_tls_capture`](mcp-tools.md#start_tls_capture), `stop_tls_capture`). **The most consequential opt-in on this surface**: it lets an agent read the plaintext of TLS sessions belonging to processes it does not own, needs the server to still be root, and creates kernel state that outlives a crash. `list_tls_libraries` stays available without it, so an agent can always report what a capture WOULD see. Feature: `mcp` |
 | `--mcp-allow-save-findings` | -- | off | Permit the `save_findings` MCP tool to record an agent's conclusion. The only write verb on sipnab's network surface, and off by default. A finding goes to sipnab's log and nowhere else: no tool reads it back, it appears in no query result, and no analysis consumes it, so it cannot return as evidence in a later answer. Clipped at 500 characters of summary and bounded at 1000 findings per process, both reported rather than silent. Feature: `mcp` |
 | `--retain-audio` | -- | off | Retain RTP audio payload in memory so the `export_audio` MCP tool can decode it. Off by default: call audio is content, not signaling, and holding it is an operator decision rather than a side effect of enabling MCP. Requires `--mcp` — the MCP server is the only batch-mode reader of these buffers. Costs a per-packet payload clone, bounded by `[limits] max_audio_frames` per stream across `--max-streams` streams. Without it `export_audio` refuses and names this flag — a refusal describes what the run kept, never whether the call carried audio. `--cores` honors this flag: the parallel workers used to discard payload regardless, so a run could accept the flag and keep nothing. Feature: `mcp` |
 
@@ -8521,7 +8521,7 @@ jitter or loss sipnab computes. RTCP carries no authentication, and a mid-path
 capture watches a different path segment than the endpoint reports on, so the
 two disagreeing is the finding rather than a conflict to resolve. This is the
 same rule the reception-report figures follow -- see
-[mos-and-codecs.md](mos-and-codecs.md).
+[mos-and-codecs.md](mos-and-codecs.md#mos-comes-from-what-sipnab-measured-never-from-what-the-far-end-claimed).
 
 RFC 3611 reserves the value 127 for "this parameter is unavailable" on the
 R-factor, both MOS fields, the signal and noise levels and the echo return loss.
@@ -8548,7 +8548,7 @@ measurements only. No filter DSL field matches an XR value.
 
 - [cli-reference.md](cli-reference.md) — the `--filter` flag and the
   dedicated diagnostic-alias flags
-- [keybindings.md](keybindings.md) — the TUI filter dialog (F7), which
+- [keybindings.md](keybindings.md#filter-dialog-f7) — the TUI filter dialog (F7), which
   compiles its fields down to this DSL
 - [examples.md](examples.md) — recipes that put these filters to work
 
@@ -9422,7 +9422,8 @@ the R-to-MOS conversion itself — is normative.
 
 ## Using the model in code
 
-[`sipnab::rtp::emodel_wb`](library.md) exposes the wideband model:
+`sipnab::rtp::emodel_wb` exposes the wideband model to anyone
+[using sipnab as a library](library.md#crate-root-surface):
 
 ```rust
 use sipnab::rtp::emodel_wb::{amr_wb_mos, amr_wb_kbps_from_fmtp, ListeningContext};
@@ -9964,7 +9965,7 @@ The same document is what you get from:
 - the REST `GET /v1/dialogs/{call_id}` and
   `GET /v1/dialogs/{call_id}/report` endpoints,
 - MCP tool responses (`get_dialog_report` with `format: "json"` — see the
-  [MCP server](mcp.md) reference), and
+  [MCP tool reference](mcp-tools.md#get_dialog_report)), and
 - `SIPNAB_JSON` in [`--on-dialog-exec`](cli-reference.md#event-execution)
   hooks. Note the dialog hook fills `streams: []` and a default `diagnosis`
   — it fires on a dialog event, when media analysis for that call may not be
@@ -11007,8 +11008,8 @@ sipnab exits.
 
 ## See also
 
-- [Cookbook 7g and 7h](examples.md) — the short recipes
-- [CLI reference](cli-reference.md) — every uprobe flag in one table
+- [Cookbook 7g and 7h](examples.md#7g-read-tls-with-no-keys-at-all) — the short recipes
+- [CLI reference](cli-reference.md#tls--decryption) — every uprobe flag in one table
 - [Internals](internals/uprobe-capture.md) — how it works and why each part
   refuses rather than guesses
 
@@ -11018,9 +11019,9 @@ sipnab exits.
 
 # MCP walkthrough — every deployment scenario, step by step
 
-[MCP Server](mcp.md) is the reference: every flag, tool, and error code. This
-page walks a **first-time sipnab user** through each deployment scenario,
-command by command, on every machine involved. Each step carries a tag with the
+[MCP server](mcp.md) introduces the surface and points at the tool and protocol
+references. This page walks a **first-time sipnab user** through each deployment
+scenario, command by command, on every machine involved. Each step carries a tag with the
 host they run on: **[server]** (where sipnab runs), **[laptop]** (where
 your MCP client / Claude Code runs), or **[proxy]** (your SIP proxy, in
 the HEP scenario).
@@ -11816,8 +11817,8 @@ Nothing about MCP requires an interactive session.
 **No LLM at all** — the MCP server is also just a stable JSON-RPC API for
 scripts: [Drive it from a script](#drive-it-from-a-script) has a working
 standard-library client with the transport details spelled out, and the
-Python/TypeScript clients in
-[mcp.md § Client cookbook](mcp-deploy.md#connect-a-specific-client) drive the same tools
+Python/TypeScript clients under
+[Connect a specific client](#connect-a-specific-client) drive the same tools
 through the official MCP SDK (e.g. a nightly job calling `find_problems` and
 opening a ticket when the count is nonzero).
 
@@ -11990,8 +11991,8 @@ JSON. You can reproduce any of them.
 
 You do not type these calls. You ask your agent the question in the heading and
 it selects the tools. The calls appear here so you can tell whether it picked
-well, and so you can recognize the answer when it comes back. The full
-per-tool reference is in [MCP server](mcp.md).
+well, and so you can recognize the answer when it comes back. The
+[MCP tool reference](mcp-tools.md) documents each one, field by field.
 
 ### Find out why a single call failed
 
@@ -12284,7 +12285,7 @@ HEP mirroring and sipnab lives elsewhere.
 ## Security implications
 
 What the design already gives you (details in
-[mcp.md § Security model](mcp-protocol.md#security-model)):
+[MCP protocol § Security model](mcp-protocol.md#security-model)):
 
 - **No control plane, and no tool sends SIP.** No MCP tool puts a packet on
   the wire, so a compromised or confused agent can disclose data rather than
@@ -12344,8 +12345,8 @@ Work outward from the server. Each layer has a definitive test.
 HTTP status decoder: `401` wrong/missing bearer token · `403` `Host:` not
 in the allowlist (`--mcp-allowed-host`) · `404` the request never reached the MCP route (a proxy rewrite, not a trailing slash) ·
 `406` missing `Accept: application/json, text/event-stream`. More in
-[mcp.md § Troubleshooting](mcp-deploy.md#troubleshooting). The
-[raw HTTP test](mcp-deploy.md#test-the-http-wire-by-hand) there is a working curl carrying every
+[Troubleshooting](#troubleshooting) further down this page. The
+[raw HTTP test](#test-the-http-wire-by-hand) there is a working curl carrying every
 required header.
 
 ## Run the agent on your laptop and sipnab on a server
@@ -12446,9 +12447,9 @@ Each agent session spawns a fresh sipnab, so it starts capturing when the
 session starts. That is right for post-mortems and wrong for accumulating live
 state — for a capture that must keep running between sessions, use HTTP below.
 
-[The MCP walkthrough](mcp-deploy.md) covers this end to end, including an
-SSH-tunnel variant that keeps a persistent capture reachable with nothing
-exposed to the network.
+[Keep a capture running without exposing a port](#keep-a-capture-running-without-exposing-a-port)
+covers the SSH-tunnel variant that keeps a persistent capture reachable with
+nothing exposed to the network.
 
 ## Keep sipnab listening as a service
 
@@ -12745,7 +12746,7 @@ under `dialogs`, so a client indexes `parsed.dialogs[0]` and reads
 `method`, `from_user`, `to_user`, `msg_count`, `duration_sec`, `created_at`,
 `updated_at`, `timing`, `frame`) — the compact projection. The full aggregated
 dialog document is what `get_dialog_report` returns (the
-[REST API](rest-api.md) returns the same shape).
+[REST API](rest-api.md#get-v1-dialogs-call-id-report) returns the same shape).
 
 Fetch one dialog a page at a time, starting at the first message:
 
@@ -12975,9 +12976,9 @@ plumbing from the proxies already exists. Two things to arrange:
   OpenSIPS: add a second `trace_id` and a second `trace()` call;
   Kamailio: a second duplicate destination. If a sender can't dup, put a
   small UDP fan-out (e.g. socat) in front.
-- **Budget**: cap sipnab's footprint with `[limits]`
-  ([below](mcp-deploy.md#understand-the-load-on-a-busy-server)) so the box's primary tenant keeps its
-  headroom.
+- **Budget**: cap sipnab's footprint with `[limits]` (see
+  [Understand the load on a busy server](mcp-deploy.md#understand-the-load-on-a-busy-server))
+  so the box's primary tenant keeps its headroom.
 
 Anything else on the host — an OpenTelemetry collector, Prometheus, etc. —
 is simply a neighbor process. sipnab neither speaks OTLP nor conflicts
@@ -13562,7 +13563,7 @@ sipnab -N --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 \
        -I tests/pcap-samples/sip-rtp-g711.pcap
 ```
 
-Drive either one with the [raw HTTP test](mcp-deploy.md#test-the-http-wire-by-hand) recipe below, or point
+Drive either one with the [raw HTTP test](mcp-deploy.md#test-the-http-wire-by-hand) on the deployment page, or point
 a client at `http://127.0.0.1:8731/mcp`. A loopback bind needs no token.
 
 Numbers in the samples are what those captures produce. Jitter and MOS come out
@@ -18090,8 +18091,8 @@ a reason four directories away.
 Suppression never hides itself. Every `lint_dialog` and `validate_message`
 response names the file it applied and counts what that file silenced, next to
 separate counts for the severity floor and the per-rule cap. A short finding
-list always says why it is short — see [the MCP page](mcp.md) for the exact
-fields.
+list always says why it is short — the
+[MCP tool reference](mcp-tools.md#lint_dialog) names the exact fields.
 
 One further guard rail keeps CI readable: a single rule reports at most 25
 findings per dialog by default. A dialog retransmitting an `INVITE` eleven
@@ -18599,7 +18600,7 @@ that cannot help. Alert on them separately, or the alert cannot say what to do.
 The REST API and MCP report the same pair as `kernel_dropped_packets` and
 `interface_dropped_packets` on the capture-quality object, beside the
 `invalid_timestamps`, `undecodable_frames` and snapped-frame counts that make
-up the rest of a capture's quality — see [output formats](output-formats.md).
+up the rest of a capture's quality — see [`GET /v1/stats`](rest-api.md#get-v1stats).
 
 > **Why a drop is not just "missing packets".** A dropped SIP message means a
 > dialog reconstructs wrong — a missing `BYE` leaves a call that never ends, a
@@ -19051,8 +19052,8 @@ than applying all of them at once.
 
 ## Related
 
-- [CLI reference](cli-reference.md) — every capture flag
-- [Configuration](config-reference.md) — the `[capture]` section
+- [CLI reference](cli-reference.md#capture) — every capture flag
+- [Configuration](config-reference.md#capture) — the `[capture]` section
 - [Benchmarks](benchmarks.md) — measured throughput and method
 - [Troubleshooting](troubleshooting.md)
 
@@ -20375,7 +20376,7 @@ captures were in this repository's own test corpus.
 
 A missed encapsulation is now **counted and named**, with the number that
 identifies it — the link type, the EtherType, the IP protocol. See
-[Troubleshooting](troubleshooting.md) for what each reason means.
+[Troubleshooting](troubleshooting.md#start-here-one-pass-over-everything) for what each reason means.
 
 ## The rule that governs decapsulation
 
@@ -20490,7 +20491,7 @@ inside VLAN, QinQ, PPPoE and MPLS as well as untagged traffic. **UDP-tunneled
 SIP is not covered by default**: BPF cannot parse a variable-length GTP-U header
 to reach the inner port, so covering those means capturing every packet on those
 ports. Use `--capture-tunnels` to opt in — see the
-[CLI reference](cli-reference.md).
+[CLI reference](cli-reference.md#capture).
 
 The tunnel-aware arm covers `SLL` and `SLL2` — what sipnab opens on Linux when
 you name no interface — as well as Ethernet, so omitting `-d` costs no

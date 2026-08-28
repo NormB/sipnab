@@ -113,9 +113,9 @@ plumbing from the proxies already exists. Two things to arrange:
   OpenSIPS: add a second `trace_id` and a second `trace()` call;
   Kamailio: a second duplicate destination. If a sender can't dup, put a
   small UDP fan-out (e.g. socat) in front.
-- **Budget**: cap sipnab's footprint with `[limits]`
-  ([below](mcp-deploy.md#understand-the-load-on-a-busy-server)) so the box's primary tenant keeps its
-  headroom.
+- **Budget**: cap sipnab's footprint with `[limits]` (see
+  [Understand the load on a busy server](mcp-deploy.md#understand-the-load-on-a-busy-server))
+  so the box's primary tenant keeps its headroom.
 
 Anything else on the host — an OpenTelemetry collector, Prometheus, etc. —
 is simply a neighbor process. sipnab neither speaks OTLP nor conflicts

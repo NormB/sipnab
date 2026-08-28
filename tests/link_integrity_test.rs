@@ -1035,6 +1035,533 @@ fn index_audience_paths_point_at_existing_pages() {
 }
 
 // ---------------------------------------------------------------------------
+// 3b. Index links must land where the task they promise is answered
+// ---------------------------------------------------------------------------
+
+/// Words that never decide where a link belongs: articles, prepositions and
+/// pronouns.
+const LINK_STOPWORDS: &[&str] = &[
+    "a", "an", "the", "and", "or", "of", "to", "in", "into", "for", "with", "from", "on", "off",
+    "at", "by", "your", "you", "own", "it", "its", "is", "are", "that", "this", "what", "why",
+    "how", "when", "where", "as", "all", "my", "me", "be", "do", "does", "not", "no", "non",
+    "over", "under", "out", "up",
+];
+
+/// Adverbs, which sharpen a promise without naming it. Nobody routes by
+/// "actually", so it must not decide whether a landing page is the right one.
+const LINK_ADVERBS: &[&str] = &[
+    "actually", "really", "just", "still", "also", "exactly", "simply", "properly", "quickly",
+    "easily", "even", "only",
+];
+
+/// Imperative verbs a task card or an audience step may open with.
+///
+/// Widen this list when a card opens with a verb it does not yet hold. The
+/// list exists so a title cannot dodge the landing rules by turning into a
+/// noun phrase: a noun phrase names a topic, and a topic belongs in the
+/// reference index further down this page, not in an intent-titled card.
+const TASK_VERBS: &[&str] = &[
+    "add", "analyze", "ban", "build", "capture", "chase", "check", "collect", "compare", "decode",
+    "decrypt", "detect", "diagnose", "drive", "emit", "export", "find", "follow", "forward", "get",
+    "graph", "inspect", "install", "let", "lint", "make", "measure", "narrow", "open", "pick",
+    "pipe", "read", "run", "scrape", "set", "size", "stop", "turn", "use", "verify", "watch",
+    "wire", "write",
+];
+
+/// Particles belonging to the leading verb rather than to the subject:
+/// "Turn ON the detectors", "Set UP a HEP capture server".
+const VERB_PARTICLES: &[&str] = &["up", "on", "off", "out", "in", "it"];
+
+/// The lowercased alphanumeric runs of `s`.
+fn link_words(s: &str) -> Vec<String> {
+    s.to_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// A crude suffix stemmer, applied to both sides of every comparison so the
+/// two always agree: `packets`/`packet`, `dropping`/`drops`,
+/// `headlessly`/`headless`.
+fn link_stem(w: &str) -> String {
+    let mut s = w.to_string();
+    for suf in ["ies", "es", "s", "ing", "ed", "ly"] {
+        if s.ends_with(suf) && s.len() - suf.len() >= 4 {
+            s.truncate(s.len() - suf.len());
+            break;
+        }
+    }
+    let b = s.as_bytes();
+    if b.len() >= 4 && b[b.len() - 1] == b[b.len() - 2] && !b"aeiou".contains(&b[b.len() - 1]) {
+        s.truncate(s.len() - 1);
+    }
+    s
+}
+
+/// Whether `text` talks about `term`.
+///
+/// A short term (`sip`, `hep`, `mos`) has to match a whole stemmed word,
+/// because a substring rule makes `ban` match `banner`. A longer one matches
+/// on a five-character prefix, which is what lets `detectors` find
+/// `detection` and `dropping` find `drops` with no synonym table to curate.
+fn text_covers(text: &str, term: &str) -> bool {
+    let k = link_stem(term);
+    let stems: BTreeSet<String> = link_words(text).iter().map(|w| link_stem(w)).collect();
+    if k.len() < 5 {
+        return stems.contains(&k);
+    }
+    stems
+        .iter()
+        .any(|t| t.len() >= 5 && (t.starts_with(&k[..5]) || k.starts_with(&t[..5])))
+}
+
+/// The leading imperative verb of a link title, when it opens with one.
+fn leading_task_verb(title: &str) -> Option<String> {
+    let words = link_words(title);
+    let first = words.first()?;
+    TASK_VERBS.contains(&first.as_str()).then(|| first.clone())
+}
+
+/// What a link title promises, with the leading verb, that verb's particle,
+/// stopwords and adverbs removed.
+///
+/// "Set up a HEP capture server" -> `hep`, `capture`, `server`. The verb says
+/// the link is a task; the rest says which task, and the rest is what has to
+/// be findable where the link lands.
+fn subject_terms(title: &str) -> Vec<String> {
+    let mut words = link_words(title);
+    if leading_task_verb(title).is_some() {
+        words.remove(0);
+        while words.first().is_some_and(|w| {
+            VERB_PARTICLES.contains(&w.as_str()) || LINK_STOPWORDS.contains(&w.as_str())
+        }) {
+            words.remove(0);
+        }
+    }
+    words
+        .into_iter()
+        .filter(|w| !LINK_STOPWORDS.contains(&w.as_str()) && !LINK_ADVERBS.contains(&w.as_str()))
+        .collect()
+}
+
+/// One heading of a content page, with the body underneath it.
+struct DocSection {
+    /// How many `#` the heading carries.
+    level: usize,
+    /// The heading text, as written.
+    heading: String,
+    /// The heading and everything under it, down to the next heading of the
+    /// same or a higher level.
+    body: String,
+}
+
+/// The lead paragraph and the sections of a `website/content/docs` page.
+///
+/// HTML comments go first. Several of these pages carry a generated-file
+/// banner naming the source path, and counting its words as page content let
+/// a page "mention" `file` and `source` while saying nothing a reader sees.
+/// Headings inside fenced blocks are shell comments rather than headings, so
+/// the walk tracks fences the same way `prose` does.
+///
+/// # Arguments
+/// * `rel` - Repo-relative path of the page.
+///
+/// # Returns
+/// The text before the first heading, and every section in document order.
+fn page_lead_and_sections(rel: &Path) -> (String, Vec<DocSection>) {
+    let raw = read(rel);
+    let comment = regex::Regex::new(r"(?s)<!--.*?-->").unwrap();
+    let stripped = comment.replace_all(&raw, "").into_owned();
+    let body = stripped
+        .splitn(3, "+++")
+        .nth(2)
+        .unwrap_or(&stripped)
+        .to_string();
+
+    let head_re = regex::Regex::new(r"^(#{1,6})[ \t]+(.+?)[ \t#]*$").unwrap();
+    let lines: Vec<&str> = body.lines().collect();
+    let mut fenced = false;
+    let mut heads: Vec<(usize, usize, String)> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if let Some(c) = head_re.captures(line) {
+            heads.push((i, c[1].len(), c[2].to_string()));
+        }
+    }
+
+    let lead_end = heads.first().map_or(lines.len(), |h| h.0);
+    let lead = lines[..lead_end].join("\n");
+    let sections = heads
+        .iter()
+        .enumerate()
+        .map(|(n, (i, level, heading))| {
+            let end = heads[n + 1..]
+                .iter()
+                .find(|(_, other, _)| other <= level)
+                .map_or(lines.len(), |(j, _, _)| *j);
+            DocSection {
+                level: *level,
+                heading: heading.clone(),
+                body: lines[*i..end].join("\n"),
+            }
+        })
+        .collect();
+    (lead, sections)
+}
+
+/// A `key = "value"` line from a page's TOML front matter, or an empty string.
+fn front_matter_field(rel: &Path, key: &str) -> String {
+    let text = read(rel);
+    let front = text.split("+++").nth(1).unwrap_or_default().to_string();
+    regex::Regex::new(&format!(r#"(?m)^{key} = "(.*)""#))
+        .unwrap()
+        .captures(&front)
+        .map_or_else(String::new, |c| c[1].to_string())
+}
+
+/// One `{ title = …, href = "/docs/NAME/" }` entry of the docs index.
+struct IndexLink {
+    /// Where the entry is written, for the failure message.
+    origin: String,
+    /// The text a reader clicks.
+    title: String,
+    /// The `NAME` of `/docs/NAME/`.
+    page: String,
+    /// The `#anchor` the href carries, without the `#`.
+    anchor: Option<String>,
+}
+
+/// The body of the TOML array opening at `opener`.
+fn array_body<'a>(haystack: &'a str, opener: &str) -> Option<&'a str> {
+    let start = haystack.find(opener)?;
+    let rest = &haystack[start..];
+    let end = rest.find("\n]")?;
+    Some(&rest[..end])
+}
+
+/// Every task card and audience step of the docs index.
+///
+/// Parsed one entry line at a time, and every line starting with `{` has to
+/// yield both a title and an href. An entry this gate cannot read panics here
+/// rather than silently dropping out of the count, which is how the task-card
+/// gate above once shipped a card pointing at a page that did not exist.
+fn index_links() -> Vec<IndexLink> {
+    let text = read("website/content/docs/_index.md");
+    let front = text
+        .split("+++")
+        .nth(1)
+        .expect("website/content/docs/_index.md has no `+++` front matter")
+        .to_string();
+
+    let mut blocks: Vec<(String, String)> = vec![(
+        "task card".to_string(),
+        array_body(&front, "tasks = [")
+            .expect(
+                "website/content/docs/_index.md has no `tasks = [` array — the task cards \
+                 moved or were renamed, and this gate is reading nothing",
+            )
+            .to_string(),
+    )];
+    let role_re = regex::Regex::new(r#"(?m)^role = "([^"]+)""#).unwrap();
+    for chunk in front.split("[[extra.audiences]]").skip(1) {
+        let role = role_re
+            .captures(chunk)
+            .map_or_else(|| "unnamed".to_string(), |c| c[1].to_string());
+        let steps = array_body(chunk, "steps = [")
+            .unwrap_or_else(|| panic!("audience `{role}` has no `steps = [` array"));
+        blocks.push((format!("audience `{role}` step"), steps.to_string()));
+    }
+
+    let title_re = regex::Regex::new(r#"title = "([^"]+)""#).unwrap();
+    let href_re =
+        regex::Regex::new(r#"href = "/docs/([A-Za-z0-9_-]+)/(#[A-Za-z0-9_.-]+)?""#).unwrap();
+    let mut out = Vec::new();
+    for (origin, array) in &blocks {
+        for line in array.lines().filter(|l| l.trim_start().starts_with('{')) {
+            let title = title_re
+                .captures(line)
+                .unwrap_or_else(|| panic!("{origin} has no `title = \"…\"`: {line}"))[1]
+                .to_string();
+            let href = href_re.captures(line).unwrap_or_else(|| {
+                panic!(
+                    "{origin} `{title}` has no href in the `/docs/NAME/` or \
+                     `/docs/NAME/#anchor` form this gate reads, so it would ship \
+                     unchecked. Fix the href, or widen the regex here: {line}"
+                )
+            });
+            out.push(IndexLink {
+                origin: origin.clone(),
+                title,
+                page: href[1].to_string(),
+                anchor: href.get(2).map(|m| m.as_str()[1..].to_string()),
+            });
+        }
+    }
+    out
+}
+
+/// Every index link has to land where the task it names is answered.
+///
+/// The gates above resolve these links: the page exists, the anchor exists.
+/// Both stay green for a link whose TEXT promises one thing and whose target
+/// delivers another, and that is the defect this catches. "Run it headless"
+/// pointed at `/docs/cli/`, which is titled "CLI Reference" and described as
+/// "Complete flag reference for sipnab, organized by functional group" — the
+/// page's own lead sends a task-shaped reader to the cookbook instead. "Ban a
+/// source with fail2ban" pointed at `/docs/integrations/`, whose first half is
+/// HEP: the fail2ban section is the fourth of eight, so the reader arrives and
+/// scrolls. Neither link was broken. Both were wrong.
+///
+/// Three rules, and the middle one is the load-bearing one:
+///
+///   1. **Intent-titled.** Every card and step opens with an imperative verb
+///      from `TASK_VERBS` and leaves at least one subject word behind. These
+///      two blocks are entry points for a reader who arrives with a problem,
+///      and a title made of stopwords cannot be checked by rule 2 at all.
+///   2. **The landing names the task.** At least one subject word of the title
+///      appears where the link lands — the target section for an anchored
+///      link, and the page's title, description, lead and first section
+///      heading for a bare one. That is everything a reader sees on arrival
+///      without scrolling. "Headless" appears nowhere in any of them on the
+///      CLI page.
+///   3. **Not buried.** A bare link fails when some `##` section OTHER than
+///      the first names the subject at least as well as the page's own
+///      whole-page promise does. That is what "the promise lives in one
+///      section" looks like from outside, and the fix is to anchor at it. A
+///      subject word already in the page TITLE is dropped from this
+///      comparison: it is the page's theme rather than any one section's, and
+///      counting it made every "Output" heading on the output-formats page
+///      look like a better landing than the page itself.
+///
+/// The rules do not compose into a demand for an anchor everywhere.
+/// `/docs/install/`, `/docs/tui/`, `/docs/filter-dsl/`, `/docs/tuning-capture/`
+/// and `/docs/tls-capture/` all pass bare, because on each the whole page is
+/// the answer. Nor is an anchor a way out: rule 2 reads the section the anchor
+/// selects, so anchoring at a section that never mentions the promise fails
+/// exactly as the bare link did.
+///
+/// The matcher is deliberately crude — stem-prefix word overlap, no synonyms.
+/// It cannot see that "Read signaling that is encrypted" and "Capture SIP over
+/// TLS" are the same subject, so it can only ever judge the words an author
+/// actually chose. That is the blind spot: a link retitled into a page's
+/// vocabulary while still promising the wrong thing passes. Rule 1 keeps the
+/// cheapest version of that dodge (dropping the verb) out.
+#[test]
+fn index_links_land_where_the_task_they_promise_is_answered() {
+    let links = index_links();
+    assert!(
+        links.len() >= 10,
+        "only {} index link(s) parsed out of website/content/docs/_index.md — the card \
+         or step format changed and this gate is checking almost nothing",
+        links.len()
+    );
+
+    let mut problems = Vec::new();
+    for link in &links {
+        let rel = PathBuf::from("website/content/docs").join(format!("{}.md", link.page));
+        if !repo().join(&rel).is_file() {
+            // A missing page is the resolution gates' finding, not this one's.
+            continue;
+        }
+        let at = format!("{} \"{}\"", link.origin, link.title);
+
+        if leading_task_verb(&link.title).is_none() {
+            problems.push(format!(
+                "{at}: does not open with an imperative verb. These blocks are \
+                 intent-titled entry points — a noun phrase names a topic, and topics \
+                 belong in the reference index below. Retitle it, or add the verb to \
+                 TASK_VERBS in this test if it is genuinely one"
+            ));
+        }
+        let terms = subject_terms(&link.title);
+        if terms.is_empty() {
+            problems.push(format!(
+                "{at}: nothing but stopwords after the verb, so there is no promise to \
+                 check. Say what the reader gets"
+            ));
+            continue;
+        }
+        let listed = terms.join(", ");
+
+        let (lead, sections) = page_lead_and_sections(&rel);
+        let page_title = front_matter_field(&rel, "title");
+        let page_desc = front_matter_field(&rel, "description");
+
+        let Some(anchor) = link.anchor.as_deref() else {
+            let first_h2 = sections.iter().find(|s| s.level == 2);
+            let top = format!(
+                "{page_title}\n{page_desc}\n{lead}\n{}",
+                first_h2.map_or("", |s| s.heading.as_str())
+            );
+
+            if !terms.iter().any(|t| text_covers(&top, t)) {
+                problems.push(format!(
+                    "{at} -> /docs/{}/ : the title, description, lead and first section \
+                     heading of that page mention none of [{listed}]. A reader who \
+                     clicked that text arrives at a page that never claims to answer \
+                     it. Point the link somewhere that does, or say what this page \
+                     actually gives them",
+                    link.page
+                ));
+            }
+
+            // Rule 3. A word already in the page title is the page's theme, not
+            // any one section's, so it cannot show that the subject is buried.
+            let owned: Vec<String> = terms
+                .iter()
+                .filter(|t| !text_covers(&page_title, t))
+                .cloned()
+                .collect();
+            if owned.is_empty() {
+                continue;
+            }
+            let top_score = owned.iter().filter(|t| text_covers(&top, t)).count();
+            let mut best = 0usize;
+            let mut named: Vec<String> = Vec::new();
+            for section in sections.iter().filter(|s| s.level == 2).skip(1) {
+                let score = owned
+                    .iter()
+                    .filter(|t| text_covers(&section.heading, t))
+                    .count();
+                if score > best {
+                    best = score;
+                    named.clear();
+                }
+                if score == best && score >= 1 {
+                    named.push(format!("#{}", slug_zola(&section.heading)));
+                }
+            }
+            if best >= 1 && best >= top_score {
+                named.truncate(4);
+                problems.push(format!(
+                    "{at} -> /docs/{}/ : that page answers [{listed}] in a section rather \
+                     than as a whole — {} names it at least as well as the page's own \
+                     title and description do, and it is not the first section, so the \
+                     reader lands above it and has to hunt. Anchor the link at the right \
+                     one: {}",
+                    link.page,
+                    if named.len() == 1 {
+                        "one of its sections"
+                    } else {
+                        "sections of it"
+                    },
+                    named.join(" or ")
+                ));
+            }
+            continue;
+        };
+
+        let Some(section) = sections.iter().find(|s| slug_zola(&s.heading) == anchor) else {
+            problems.push(format!(
+                "{at} -> /docs/{}/#{anchor} : no heading in {} slugifies to that anchor \
+                 under Zola's rule, so the link lands at the top of the page and this \
+                 gate cannot read what it promised to show",
+                link.page,
+                rel.display()
+            ));
+            continue;
+        };
+        if !terms.iter().any(|t| text_covers(&section.body, t)) {
+            problems.push(format!(
+                "{at} -> /docs/{}/#{anchor} : lands on \"{}\", which says nothing about \
+                 [{listed}]. An anchor is a promise about where the answer is, so it has \
+                 to point at the section that holds it",
+                link.page, section.heading
+            ));
+            continue;
+        }
+        // ... and it has to point at the BEST one. Reaching a section that
+        // merely mentions a subject word somewhere in its body is a low bar:
+        // `#hep-protocol` on the integrations page clears it for "Ban a source
+        // with fail2ban", because a sentence about a HEP source allowlist
+        // contains "source". No heading may name the task better than the
+        // heading the anchor selects.
+        let landed = terms
+            .iter()
+            .filter(|t| text_covers(&section.heading, t))
+            .count();
+        let better: Vec<String> = sections
+            .iter()
+            .filter(|s| slug_zola(&s.heading) != anchor)
+            .filter(|s| terms.iter().filter(|t| text_covers(&s.heading, t)).count() > landed)
+            .map(|s| format!("#{}", slug_zola(&s.heading)))
+            .collect();
+        if !better.is_empty() {
+            problems.push(format!(
+                "{at} -> /docs/{}/#{anchor} : \"{}\" is not the section that answers \
+                 [{listed}] — {} name(s) it better. An anchor is a claim about where the \
+                 answer is, so it has to be the right section, not merely one that \
+                 mentions a word from the title",
+                link.page,
+                section.heading,
+                better
+                    .iter()
+                    .take(4)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            ));
+        }
+    }
+
+    assert!(
+        problems.is_empty(),
+        "{} index link(s) do not deliver what their text promises:\n  {}",
+        problems.len(),
+        problems.join("\n  ")
+    );
+}
+
+/// The subject extractor and the word matcher behave as the gate above assumes.
+///
+/// Both fail open. A stopword list that swallows the subject leaves every link
+/// with nothing to check, and a matcher that says yes to everything passes
+/// every link — neither shows up anywhere as a failure, so the suite would get
+/// greener as the gate stopped working. These cases pin the behavior the
+/// rules are written against, including the two the design turns on: a
+/// three-letter term must match a word rather than a substring, and a longer
+/// one must survive an English suffix on either side.
+#[test]
+fn link_subject_and_word_matching_behave() {
+    assert_eq!(subject_terms("Run it headless"), ["headless"]);
+    assert_eq!(
+        subject_terms("Set up a HEP capture server"),
+        ["hep", "capture", "server"]
+    );
+    assert_eq!(subject_terms("Turn on the detectors"), ["detectors"]);
+    assert_eq!(
+        subject_terms("Read what a MOS score is worth"),
+        ["mos", "score", "worth"]
+    );
+    assert!(leading_task_verb("Ban a source with fail2ban").is_some());
+    assert!(
+        leading_task_verb("CLI reference").is_none(),
+        "a noun phrase is not an intent title"
+    );
+
+    assert!(text_covers("1. Are you dropping packets?", "packets"));
+    assert!(text_covers("analyze a pcap headlessly", "headless"));
+    assert!(text_covers("scanner detection heuristics", "detectors"));
+    assert!(
+        !text_covers("a banner across the top", "ban"),
+        "a short term matches a word, never a substring"
+    );
+    assert!(!text_covers(
+        "Complete flag reference for sipnab",
+        "headless"
+    ));
+    assert!(!text_covers("Output Formats", "tooling"));
+}
+
+// ---------------------------------------------------------------------------
 // 4. Templates: @/docs links resolve, including any `}}#anchor` suffix
 // ---------------------------------------------------------------------------
 

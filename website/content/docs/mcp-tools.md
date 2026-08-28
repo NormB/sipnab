@@ -140,7 +140,7 @@ sipnab -N --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 \
        -I tests/pcap-samples/sip-rtp-g711.pcap
 ```
 
-Drive either one with the [raw HTTP test](@/docs/mcp-deploy.md#test-the-http-wire-by-hand) recipe below, or point
+Drive either one with the [raw HTTP test](@/docs/mcp-deploy.md#test-the-http-wire-by-hand) on the deployment page, or point
 a client at `http://127.0.0.1:8731/mcp`. A loopback bind needs no token.
 
 Numbers in the samples are what those captures produce. Jitter and MOS come out

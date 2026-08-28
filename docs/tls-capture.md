@@ -120,7 +120,7 @@ nm -D --undefined-only /usr/sbin/opensips | grep -i ssl_write
 sudo sipnab -N --uprobe-tls --uprobe-symbol SSL_write_ex
 ```
 
-Read [the security implications](uprobe-walkthrough.md) before using this on a
+Read [the security implications](uprobe-walkthrough.md#security-implications-stated-plainly) before using this on a
 production host. It reads process memory, so anyone who can run it can read
 every SIP session on that machine, credentials included.
 
@@ -179,8 +179,8 @@ sipnab says which of these happened, with counts. The fix is at capture time
 either way: bounce the connection, or the far end, while capturing, so the
 capture catches the stream from its handshake and its first record.
 
-Cookbook [§7e](examples.md#7-decrypt-siptls-via-sslkeylogfile) has the full
-sequence, and [§7f](examples.md#7-decrypt-siptls-via-sslkeylogfile) shows
+Cookbook [§7e](examples.md#7e-decrypt-traffic-from-a-daemon-you-cannot-restart) has the full
+sequence, and [§7f](examples.md#7f-decrypt-without-writing-the-keys-to-disk) shows
 feeding keys through a pipe so they never reach disk.
 
 ## 6. The old RSA case
@@ -202,7 +202,7 @@ SRTP keys arrive two ways, and sipnab reads both:
 - **SDES** — keys travel in the SDP, so decrypting the signaling decrypts the
   media with it. Nothing extra to do.
 - **DTLS-SRTP** — a DTLS handshake carries the keys, so supply the keylog
-  the same way, cookbook [§7d](examples.md#7-decrypt-siptls-via-sslkeylogfile).
+  the same way, cookbook [§7d](examples.md#7d-decrypt-srtp-from-a-dtls-keylog).
 
 ## When the keys arrive after the call starts
 

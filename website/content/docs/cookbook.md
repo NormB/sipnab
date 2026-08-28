@@ -327,7 +327,7 @@ Run it as a daemon. UDP :9060 receives HEP, TCP :9100 serves REST + Prometheus. 
 sipnab -N --hep-listen 0.0.0.0:9060 --hep-allow 192.0.2.0/24 --api 0.0.0.0:9100 --api-signing-key-file /etc/sipnab/signing.key --no-priv-drop --syslog
 ```
 
-A ready-to-deploy systemd unit lives at [`contrib/observability/sipnab-hep.service`](https://github.com/NormB/sipnab/blob/main/contrib/observability/sipnab-hep.service) — see [Remote-sipnab deployment](@/docs/install.md) in the install guide.
+A ready-to-deploy systemd unit lives at [`contrib/observability/sipnab-hep.service`](https://github.com/NormB/sipnab/blob/main/contrib/observability/sipnab-hep.service). Put sipnab on the collector host first — [the install guide](@/docs/install.md) covers every channel.
 
 ### 6b. Configure the SIP server to mirror
 
@@ -916,7 +916,7 @@ The `tools/list` response is a standard JSON-RPC envelope with a `result.tools` 
 ```
 
 Every registered tool appears, grouped here by what they do. The table in
-[`docs/mcp.md`](@/docs/mcp.md) is the authoritative list, and
+[`docs/mcp-tools.md`](@/docs/mcp-tools.md) is the authoritative list, and
 `mcp_tool_table_lists_every_registered_tool` in [`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs)
 asserts it against the registry — the grouping below is a reading aid, not a
 second source of truth. (This list said "all 25 tools" and enumerated 25 until
@@ -1013,7 +1013,7 @@ histogram_quantile(0.1, rate(sipnab_mos_bucket[5m]))
 
 **Pitfalls:**
 
-- The dashboard ships with the metric names sipnab actually emits. If you wrote a custom panel using older docs, double-check against [the metrics list in the API page](@/docs/api.md).
+- The dashboard ships with the metric names sipnab actually emits. If you wrote a custom panel using older docs, double-check against [the Prometheus metrics reference](@/docs/metrics.md).
 - Some metrics (`sipnab_responses_total`, `sipnab_security_alerts_total`) exist in name only, with nothing wired — they'll stay empty until upstream populates them. Don't put alerts on them today.
 
 ---
@@ -1490,7 +1490,7 @@ pair, each with private dialog and RTP-stream stores.
 **Pitfalls:**
 
 - It covers reconstruction and `--report`/`--json`. Per-message output ordering, the security detectors and SRTP decryption stay on the single-threaded path regardless — so a run that needs those gains nothing.
-- On a **live** device `--cores` means something different: N capture sockets, which widens capture, not analysis. Processing stays on one thread either way. See [tuning](@/docs/tuning-capture.md).
+- On a **live** device `--cores` means something different: N capture sockets, which widens capture, not analysis. Processing stays on one thread either way. See [tuning](@/docs/tuning-capture.md#8-offline-cores).
 - `--cores` and `--metrics` do not combine usefully offline; the run exits before a scrape lands, and sipnab says so.
 
 ---
@@ -1602,7 +1602,7 @@ Live capture on 'eth0' finished: 4821003 packets, no drops
 **Pitfalls:**
 
 - Operators routinely respond to *any* drop by raising `-B`. That does nothing at all for interface drops and wastes memory while the real problem goes unaddressed.
-- Both counters zero does not mean the capture is complete: a frame can arrive intact and still be unreadable, or `--snaplen` can cut it short. `--report` counts those separately. See [tuning](@/docs/tuning-capture.md).
+- Both counters zero does not mean the capture is complete: a frame can arrive intact and still be unreadable, or `--snaplen` can cut it short. `--report` counts those separately. See [tuning](@/docs/tuning-capture.md#1-are-you-dropping-packets).
 
 ---
 

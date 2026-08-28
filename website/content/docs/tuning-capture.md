@@ -70,7 +70,7 @@ that cannot help. Alert on them separately, or the alert cannot say what to do.
 The REST API and MCP report the same pair as `kernel_dropped_packets` and
 `interface_dropped_packets` on the capture-quality object, beside the
 `invalid_timestamps`, `undecodable_frames` and snapped-frame counts that make
-up the rest of a capture's quality — see [output formats](@/docs/output-formats.md).
+up the rest of a capture's quality — see [`GET /v1/stats`](@/docs/api.md#get-v1-stats).
 
 > **Why a drop is not just "missing packets".** A dropped SIP message means a
 > dialog reconstructs wrong — a missing `BYE` leaves a call that never ends, a
@@ -522,7 +522,7 @@ than applying all of them at once.
 
 ## Related
 
-- [CLI reference](@/docs/cli.md) — every capture flag
-- [Configuration](@/docs/config.md) — the `[capture]` section
+- [CLI reference](@/docs/cli.md#capture) — every capture flag
+- [Configuration](@/docs/config.md#capture) — the `[capture]` section
 - [Benchmarks](@/docs/benchmarks.md) — measured throughput and method
 - [Troubleshooting](@/docs/troubleshooting.md)

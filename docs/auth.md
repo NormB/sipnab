@@ -173,7 +173,7 @@ failure is not automatically a `401`:
 
 | Status | What happened |
 |---|---|
-| `503` | The client is over its per-IP rate budget (100 requests/second) or the in-flight cap (`--api-max-conn`). **The rate limiter runs before authentication**, so this answer arrives whether the credential is good, bad, or missing — see [rest-api.md](rest-api.md). |
+| `503` | The client is over its per-IP rate budget (100 requests/second) or the in-flight cap (`--api-max-conn`). **The rate limiter runs before authentication**, so this answer arrives whether the credential is good, bad, or missing — see [rest-api.md](rest-api.md#bind-address--connection-limits). |
 | `401` | Missing, non-Bearer, malformed, expired, revoked, wrong-audience, or wrong-key credential — **or a good credential scoped too narrowly for the route**. A `metrics` token verifies fine and still gets `401` on `/v1/dialogs`, because that route demands `full`. |
 | `404` | The credential passed, but nothing matches: no dialog carries that Call-ID on `/v1/dialogs/{call_id}`, or no stream carries that SSRC on `/v1/streams/{id}`. |
 | `400` | The credential passed, but the request does not parse: `/v1/streams/{id}` got an id that is not hexadecimal. |

@@ -514,7 +514,7 @@ jitter or loss sipnab computes. RTCP carries no authentication, and a mid-path
 capture watches a different path segment than the endpoint reports on, so the
 two disagreeing is the finding rather than a conflict to resolve. This is the
 same rule the reception-report figures follow -- see
-[mos-and-codecs.md](@/docs/mos-and-codecs.md).
+[mos-and-codecs.md](@/docs/mos-and-codecs.md#mos-comes-from-what-sipnab-measured-never-from-what-the-far-end-claimed).
 
 RFC 3611 reserves the value 127 for "this parameter is unavailable" on the
 R-factor, both MOS fields, the signal and noise levels and the echo return loss.
@@ -541,6 +541,6 @@ measurements only. No filter DSL field matches an XR value.
 
 - [cli-reference.md](@/docs/cli.md) — the `--filter` flag and the
   dedicated diagnostic-alias flags
-- [keybindings.md](@/docs/keybindings.md) — the TUI filter dialog (F7), which
+- [keybindings.md](@/docs/keybindings.md#filter-dialog-f7) — the TUI filter dialog (F7), which
   compiles its fields down to this DSL
 - [examples.md](@/docs/cookbook.md) — recipes that put these filters to work

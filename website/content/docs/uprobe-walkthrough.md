@@ -258,7 +258,7 @@ sipnab exits.
 
 ## See also
 
-- [Cookbook 7g and 7h](@/docs/cookbook.md) — the short recipes
-- [CLI reference](@/docs/cli.md) — every uprobe flag in one table
+- [Cookbook 7g and 7h](@/docs/cookbook.md#7g-read-tls-with-no-keys-at-all) — the short recipes
+- [CLI reference](@/docs/cli.md#tls-decryption) — every uprobe flag in one table
 - [Internals](https://github.com/NormB/sipnab/blob/main/docs/internals/uprobe-capture.md) — how it works and why each part
   refuses rather than guesses

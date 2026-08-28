@@ -7,14 +7,20 @@ page_template = "page.html"
 [extra]
 # Task cards rendered by section.html above the reference index: intent-titled
 # entry points for people who arrive with a problem, not a topic.
+#
+# An href carries an anchor unless the whole target page answers the card.
+# `index_links_land_where_the_task_they_promise_is_answered` holds this block
+# and the audience steps below to that rule, because resolving is a different
+# question from delivering: a card that drops the reader above the section they
+# asked for looks correct to every gate that only follows the link.
 tasks = [
-  { title = "Analyze a pcap file", cmd = "sipnab -I capture.pcap", href = "/docs/cookbook/" },
+  { title = "Analyze a pcap file", cmd = "sipnab -I capture.pcap", href = "/docs/cookbook/#1-triage-a-pcap-fast" },
   { title = "Capture live SIP traffic", cmd = "sudo sipnab -d eth0", href = "/docs/cookbook/#2-live-capture-narrow-to-a-single-user" },
-  { title = "Diagnose one-way audio", cmd = "sipnab -I dump.pcap --one-way", href = "/docs/troubleshooting/" },
-  { title = "Find failed calls", cmd = "sipnab -N -I dump.pcap --problems", href = "/docs/troubleshooting/" },
-  { title = "Set up a HEP capture server", cmd = "sipnab --hep-listen 0.0.0.0:9060", href = "/docs/cookbook/" },
-  { title = "Decrypt TLS / SRTP", cmd = "sipnab -I tls.pcap --keylog keys.log", href = "/docs/cookbook/" },
-  { title = "Detect scanners & fraud", cmd = "sudo sipnab -N -d eth0 --fraud-detect", href = "/docs/cookbook/" },
+  { title = "Diagnose one-way audio", cmd = "sipnab -I dump.pcap --one-way", href = "/docs/troubleshooting/#one-way-audio" },
+  { title = "Find failed calls", cmd = "sipnab -N -I dump.pcap --problems", href = "/docs/troubleshooting/#failed-calls" },
+  { title = "Set up a HEP capture server", cmd = "sipnab --hep-listen 0.0.0.0:9060", href = "/docs/cookbook/#6-wire-hep-from-your-sip-stack-to-a-central-sipnab" },
+  { title = "Decrypt TLS / SRTP", cmd = "sipnab -I tls.pcap --keylog keys.log", href = "/docs/cookbook/#7-decrypt-sip-tls-via-sslkeylogfile" },
+  { title = "Detect scanners & fraud", cmd = "sudo sipnab -N -d eth0 --fraud-detect", href = "/docs/cookbook/#10-detect-sip-scanners-and-auto-block-via-fail2ban" },
   { title = "Drive sipnab from an AI agent", cmd = "sipnab --mcp", href = "/docs/mcp/" },
 ]
 
@@ -39,7 +45,7 @@ steps = [
   { title = "Open a capture in the TUI", href = "/docs/tui/" },
   { title = "Follow the recipe for your symptom", href = "/docs/cookbook/" },
   { title = "Chase one-way audio to its cause", href = "/docs/troubleshooting/#one-way-audio" },
-  { title = "Read what a MOS score actually claims", href = "/docs/mos-and-codecs/" },
+  { title = "Read what a MOS score is worth", href = "/docs/mos-and-codecs/" },
 ]
 
 [[extra.audiences]]
@@ -47,7 +53,7 @@ role = "SRE and on-call teams"
 goal = "Get an answer out of a pcap at 3 AM, or a headless run that exits non-zero when the call is not there."
 steps = [
   { title = "Install sipnab", href = "/docs/install/" },
-  { title = "Run it headless", href = "/docs/cli/" },
+  { title = "Run it headless", href = "/docs/cli/#mode" },
   { title = "Narrow the capture with the filter DSL", href = "/docs/filter-dsl/" },
   { title = "Pipe the output into your tooling", href = "/docs/output-formats/" },
   { title = "Scrape the metrics endpoint", href = "/docs/metrics/" },
@@ -62,8 +68,8 @@ steps = [
   { title = "Install sipnab", href = "/docs/install/" },
   { title = "Turn on the detectors", href = "/docs/cli/#security" },
   { title = "Read signaling that is encrypted", href = "/docs/tls-capture/" },
-  { title = "Lint the traffic for conformance", href = "/docs/sip-lint-rules/" },
-  { title = "Ban a source with fail2ban", href = "/docs/integrations/" },
+  { title = "Lint a capture for conformance", href = "/docs/sip-lint-rules/" },
+  { title = "Ban a source with fail2ban", href = "/docs/integrations/#fail2ban-integration" },
   { title = "Write a detection of your own", href = "/docs/plugins/" },
 ]
 +++

@@ -3902,6 +3902,36 @@ fn prose_mcp_tool_counts_match_the_server() {
     // reading the write-verb table got a list that omitted `start_tls_capture`
     // and `stop_tls_capture`, the two that attach uprobes to another process.
     // A stale count in a security section is not a typo, so it is gated.
+    // The HOMEPAGE stat card, which nothing checked until 0.5.130.
+    //
+    // It read "38 MCP tools" while 51 were registered. Every other surface in
+    // this gate is prose in a markdown file; the card is an attribute plus a
+    // text node in a Tera template, so it sat outside the scan and drifted by
+    // thirteen. It is also the FIRST number a visitor sees, which makes it the
+    // worst one to leave unchecked.
+    {
+        let home = include_str!("../website/templates/index.html");
+        let card =
+            regex::Regex::new(r#"data-count="(\d+)" data-suffix=" MCP tools">(\d+) MCP tools"#)
+                .expect("regex")
+                .captures(home)
+                .expect(
+                    "website/templates/index.html has no MCP tool stat card; if the \
+                 card was renamed this gate stopped checking the number a \
+                 visitor reads first",
+                );
+        for half in [1usize, 2] {
+            assert_eq!(
+                card[half].parse::<usize>().unwrap_or(0),
+                registered,
+                "the homepage stat card says {} MCP tools; the server registers \
+                 {registered}. Both the data-count attribute and the text node \
+                 carry the number and both must move",
+                &card[half]
+            );
+        }
+    }
+
     let protocol = include_str!("../docs/mcp-protocol.md");
     let writers = regex::Regex::new(r"read_only_hint = false")
         .unwrap()

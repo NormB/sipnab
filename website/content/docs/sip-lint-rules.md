@@ -126,8 +126,8 @@ a reason four directories away.
 Suppression never hides itself. Every `lint_dialog` and `validate_message`
 response names the file it applied and counts what that file silenced, next to
 separate counts for the severity floor and the per-rule cap. A short finding
-list always says why it is short — see [the MCP page](@/docs/mcp.md) for the exact
-fields.
+list always says why it is short — the
+[MCP tool reference](@/docs/mcp-tools.md#lint-dialog) names the exact fields.
 
 One further guard rail keeps CI readable: a single rule reports at most 25
 findings per dialog by default. A dialog retransmitting an `INVITE` eleven

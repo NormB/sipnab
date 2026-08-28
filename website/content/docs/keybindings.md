@@ -7,7 +7,7 @@ description = "Complete TUI keyboard shortcut reference for all views."
 
 Complete keyboard shortcut reference for sipnab's interactive TUI.
 
-You can remap keys marked **(configurable)** in the `[keybindings]` config section. See [config-reference.md](@/docs/config.md) for details. All other keys are hardcoded.
+You can remap keys marked **(configurable)** in the `[keybindings]` config section. See [config-reference.md](@/docs/config.md#keybindings) for details. All other keys are hardcoded.
 
 Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at the bottom of this page.
 
@@ -324,7 +324,7 @@ gzip-compressed forms (`*.pcap.gz`, …), which sipnab decompresses on the fly.
 If sipnab cannot read the directory — most often because it started with
 `sudo` and dropped privileges to an unprivileged user that can't read your
 home directory — the dialog shows the reason instead of a blank list. Run
-sipnab **without** `sudo` (see [install.md](@/docs/install.md) for capabilities) to
+sipnab **without** `sudo` (see [install.md](@/docs/install.md#capture-live-traffic-without-root) for capabilities) to
 browse your own files.
 
 ## Column selector
@@ -408,8 +408,8 @@ mappings as a Name Resolution Block, and reads them back when you reopen the fil
 Related flags: `--resolve` (start with resolution on), `--reverse-dns` (enable
 PTR lookups; implies `--resolve`), `--names <FILE>` (preload an
 `/etc/hosts`-format mapping file, repeatable). See
-[cli-reference.md](@/docs/cli.md) and the `[names]` section of
-[config-reference.md](@/docs/config.md).
+[cli-reference.md](@/docs/cli.md#name-resolution) and the `[names]` section of
+[config-reference.md](@/docs/config.md#names).
 
 ---
 
@@ -608,7 +608,7 @@ Toggle display options without leaving the TUI.
 ## See also
 
 - [theme-guide.md](@/docs/theme.md) — recolor every TUI element via `[theme]`
-- [config-reference.md](@/docs/config.md) — rebind the 11 configurable keys
+- [config-reference.md](@/docs/config.md#keybindings) — rebind the 11 configurable keys
   via `[keybindings]`
 - [filter-dsl.md](@/docs/filter-dsl.md) — the expression language the F7 filter
   dialog compiles down to (and the `--filter` flag exposes directly)

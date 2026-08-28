@@ -150,4 +150,4 @@ stands behind and which came from third-party code.
   — the ABI in full, the safety model, and why WASM rather than an embedded
   scripting runtime.
 - [CLI reference](cli-reference.md#output) — the `--plugin` flag.
-- [Installation](install.md) — building with `--features plugins`.
+- [Installation](install.md#feature-flags) — building with `--features plugins`.
