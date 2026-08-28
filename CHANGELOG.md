@@ -8,6 +8,48 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.129] - 2026-08-28
+
+No change to the binary. Every source file under `src/` is byte-identical to
+0.5.128, so this release publishes the same program with a new version string.
+What changed is the website, the documentation and the gates that guard them --
+carried in the source tarball and the docs, not in the code.
+
+### Added
+
+- **A gate holding branch protection to what the repository claims it is.**
+  `enforce_admins` on `main` was turned on by hand on 2026-08-23 and was off
+  again by 2026-08-26 with nothing reporting it; the settings page and the
+  documentation went on describing a guarantee that had stopped existing.
+  `tests/branch_protection_drift_test.rs` now checks the live API against the
+  declared state -- the switch, the required `CI success` context, the
+  pull-request rule, and the prose that describes them. It asserts that the
+  claim and the reality AGREE, not that protection is enforced, so it is
+  correct whichever way the repository decides to work. When `gh` cannot
+  answer it proves that rather than passing quietly.
+- **A vCon capture-stack page**, and the notes section reworked into something
+  readable: seven notes, a sidebar grouped by kind with list markers rather
+  than text that runs together, and per-kind labels.
+- **`zola build` as the tenth hard gate in `pre-push`.** Two Pages deploys
+  failed in one afternoon on one feature -- a Tera parse error, and behind it a
+  template calling a macro it never imported. The second is a RENDER error, so
+  only an actual build finds it. The gate reports `NOT CHECKED` when zola is
+  absent and names the `cargo install --git` line that installs it, because
+  zola publishes no aarch64 Linux binary.
+- **Four new test files**, two Python and two Rust, covering the four
+  documentation registries, fenced-content survival through the site
+  transformers, whether those transformers can still see their targets, and
+  release completeness.
+
+### Fixed
+
+- **Gates that passed by looking at nothing.** Several checks were confirming
+  a condition they could not actually observe -- a spelling probe reading an
+  untracked file, a site monitor grepping for markup the generator escapes, a
+  slug pattern excluding digits, and a remedy check matching its own `else`
+  branch. Each is now proven able to fail before being trusted to pass.
+- The notes sidebar, rewritten using only Tera constructs the build accepts.
+
 ## [0.5.128] - 2026-08-27
 
 ### Added
