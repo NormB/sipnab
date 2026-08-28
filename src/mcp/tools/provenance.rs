@@ -154,7 +154,10 @@ impl SipnabMcp {
             ));
         }
         let body = decode_one(self, pointer, params.field.as_deref());
-        Ok(CallToolResult::success(vec![ContentBlock::json(body)?]))
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(body)?,
+            ContentBlock::text(crate::mcp::shape::untrusted_note()),
+        ]))
     }
 }
 
@@ -363,13 +366,24 @@ fn sip_view(
         sip.insert("status_code".to_string(), json!(code));
     }
     if let Some(reason) = &message.reason {
-        sip.insert("reason".to_string(), json!(reason));
+        // The responder wrote this phrase. RFC 3261 fixes the CODE, never the
+        // text beside it, so a proxy is free to answer `486 <anything>`.
+        sip.insert(
+            "reason".to_string(),
+            json!(crate::mcp::shape::fence_field(reason)),
+        );
     }
     if let Some(line) = memchr::memmem::find(raw, b"\r\n")
         .and_then(|end| raw.get(..end))
         .and_then(|line| std::str::from_utf8(line).ok())
     {
-        sip.insert("start_line".to_string(), json!(line));
+        // The request line carries the Request-URI, which the sender chose
+        // in full. Fenced as a FIELD: a start line is one line by definition,
+        // so a line break in this string is something the sender put there.
+        sip.insert(
+            "start_line".to_string(),
+            json!(crate::mcp::shape::fence_field(line)),
+        );
     }
 
     let spans = matched_spans(raw, &message.headers);
@@ -381,8 +395,20 @@ fn sip_view(
             continue;
         }
         let mut row = Map::new();
-        row.insert("name".to_string(), json!(header.name.as_ref()));
-        row.insert("value".to_string(), json!(header.value));
+        // The largest run of sender-authored text this surface returns:
+        // `decode_evidence` exists to show what the bytes actually say, so it
+        // hands back EVERY header verbatim, name and value. The name is
+        // fenced too -- a header name is a `token` the sender chose and an
+        // unknown one is reported rather than dropped, so it is as free-form
+        // as the value beside it.
+        row.insert(
+            "name".to_string(),
+            json!(crate::mcp::shape::fence_field(header.name.as_ref())),
+        );
+        row.insert(
+            "value".to_string(),
+            json!(crate::mcp::shape::fence_field(&header.value)),
+        );
         // The index a lint finding cites, so a caller holding a finding can pair
         // the two without matching on header names.
         row.insert("index".to_string(), json!(index));

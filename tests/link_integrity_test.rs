@@ -877,6 +877,163 @@ fn index_task_cards_point_at_existing_pages() {
     );
 }
 
+/// The `_index.md` audience paths resolve, and name the audiences the page
+/// itself claims to serve.
+///
+/// The task cards above are one axis over the docs ("what do I need to do");
+/// `[[extra.audiences]]` is the other ("who am I"). Both are literal
+/// `/docs/NAME/` strings in TOML frontmatter, so both bypass Zola's `@/docs`
+/// resolution and neither can be caught by the site build — a renamed page
+/// leaves the route pointing at a 404 that renders perfectly.
+///
+/// Three things are checked, and the middle one is the reason this is a test
+/// rather than a glance:
+///
+///   1. every `href` resolves to a `website/content/docs/NAME.md`, and an
+///      `#anchor` on it slugifies from a real heading in that page;
+///   2. the number of hrefs this gate PARSED equals the number of step
+///      entries written, asserted as an equality rather than a floor. A floor
+///      passes when the href shape changes and the regex quietly matches
+///      nothing, which is exactly how the task-card gate above shipped a card
+///      pointing at a page that did not exist;
+///   3. the roles equal the ones the "Who it is for" section of the same file
+///      names. Two places describe the audience, prose is the one people edit,
+///      and a route block addressing a reader the page no longer claims is
+///      worse than no route block — it is confidently wrong.
+#[test]
+fn index_audience_paths_point_at_existing_pages() {
+    let text = read("website/content/docs/_index.md");
+    let mut parts = text.split("+++");
+    parts.next();
+    let front = parts
+        .next()
+        .expect("website/content/docs/_index.md has no `+++` frontmatter");
+    let body = parts
+        .next()
+        .expect("website/content/docs/_index.md has no body after the frontmatter");
+
+    // One chunk per `[[extra.audiences]]` array-of-tables entry.
+    let chunks: Vec<&str> = front.split("[[extra.audiences]]").skip(1).collect();
+    assert!(
+        !chunks.is_empty(),
+        "website/content/docs/_index.md has no `[[extra.audiences]]` entries — the \
+         audience block moved or was renamed, and this gate is reading nothing. \
+         section.html still renders `section.extra.audiences`, so the page would \
+         simply lose the block with no other complaint"
+    );
+
+    let field = regex::Regex::new(r#"(?m)^(role|goal) = "([^"]+)""#).unwrap();
+    let href = regex::Regex::new(r#"href = "/docs/([A-Za-z0-9_-]+)/(#[A-Za-z0-9_.-]+)?""#).unwrap();
+
+    let mut problems = Vec::new();
+    let mut roles: Vec<String> = Vec::new();
+    let mut entries = 0usize;
+    let mut seen = 0usize;
+
+    for chunk in &chunks {
+        let mut role = None;
+        let mut goal = None;
+        for cap in field.captures_iter(chunk) {
+            match &cap[1] {
+                "role" => role = Some(cap[2].to_string()),
+                _ => goal = Some(cap[2].to_string()),
+            }
+        }
+        let role = role
+            .unwrap_or_else(|| panic!("an `[[extra.audiences]]` entry has no `role = \"…\"` line"));
+        assert!(
+            goal.is_some_and(|g| !g.trim().is_empty()),
+            "audience `{role}` has no `goal` — the role alone does not tell a \
+             reader whether this route is theirs"
+        );
+
+        let start = chunk
+            .find("steps = [")
+            .unwrap_or_else(|| panic!("audience `{role}` has no `steps = [` array"));
+        let rest = &chunk[start..];
+        let end = rest
+            .find("\n]")
+            .unwrap_or_else(|| panic!("audience `{role}` has an unterminated `steps = [` array"));
+        let steps = &rest[..end];
+
+        let here = steps
+            .lines()
+            .filter(|l| l.trim_start().starts_with('{'))
+            .count();
+        assert!(
+            here >= 2,
+            "audience `{role}` lists {here} step(s). A one-stop route is a link, \
+             not a path — either give it the pages that come next, or fold it \
+             into the task cards above"
+        );
+        entries += here;
+
+        for cap in href.captures_iter(steps) {
+            seen += 1;
+            let page_rel = PathBuf::from("website/content/docs").join(format!("{}.md", &cap[1]));
+            if !repo().join(&page_rel).is_file() {
+                problems.push(format!(
+                    "audience `{role}`: href /docs/{}/ -> no website/content/docs/{}.md",
+                    &cap[1], &cap[1]
+                ));
+                continue;
+            }
+            if let Some(a) = cap.get(2) {
+                check_anchor(
+                    &page_rel,
+                    a.as_str().trim_start_matches('#'),
+                    &format!("_index.md audience `{role}`"),
+                    &cap[0],
+                    &mut problems,
+                );
+            }
+        }
+        roles.push(role);
+    }
+
+    assert_eq!(
+        seen, entries,
+        "{entries} audience step(s) in website/content/docs/_index.md but {seen} \
+         href(s) parsed — a step's href is not in the `/docs/NAME/` or \
+         `/docs/NAME/#anchor` form this gate reads, so it would ship unchecked. \
+         Fix the href, or widen the regex here to cover the new form"
+    );
+
+    // The prose the block has to agree with: the bolded lead-in of each bullet
+    // under "Who it is for".
+    let section = body
+        .split("## Who it is for")
+        .nth(1)
+        .expect("website/content/docs/_index.md has no `## Who it is for` section")
+        .split("\n## ")
+        .next()
+        .expect("the `Who it is for` section terminates");
+    let bold = regex::Regex::new(r"(?m)^- \*\*([^*]+)\*\*").unwrap();
+    let prose: BTreeSet<String> = bold
+        .captures_iter(section)
+        .map(|c| c[1].trim().to_string())
+        .collect();
+    assert!(
+        !prose.is_empty(),
+        "no bolded audience found under `## Who it is for` — the bullet shape \
+         changed and this half of the gate is comparing against an empty set"
+    );
+    let declared: BTreeSet<String> = roles.iter().cloned().collect();
+    assert_eq!(
+        declared, prose,
+        "the `[[extra.audiences]]` roles and the `Who it is for` bullets name \
+         different audiences. Both are read by someone deciding whether this \
+         page is for them, so they have to be the same list"
+    );
+
+    assert!(
+        problems.is_empty(),
+        "{} broken audience-path link(s):\n  {}",
+        problems.len(),
+        problems.join("\n  ")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 4. Templates: @/docs links resolve, including any `}}#anchor` suffix
 // ---------------------------------------------------------------------------

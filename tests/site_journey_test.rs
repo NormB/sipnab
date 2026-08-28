@@ -451,6 +451,324 @@ fn every_referenced_demo_asset_exists_and_none_are_orphaned() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Homepage entry-point journey: what the page offers a stranger, and in what
+// order. Two guards, both over website/templates/index.html.
+//
+// The site has a zero-install route -- the WASM analyzer at /analyze/, which
+// parses a capture in the visitor's own browser -- and for a long time the
+// homepage mentioned it only in one row of the capability table, below the
+// demos, the features and the comparison. The nav and the footer carried it;
+// the page that has to earn the click did not.
+//
+// And the demo wall led with eleven tabs, seven of them named after a sipnab
+// INTERFACE ("Detail Pane", "Multi-Leg"), which is a question only an existing
+// user knows to ask. The four outcome-titled ones lead; the rest are collapsed
+// behind a disclosure. Collapsed, never deleted --
+// `every_referenced_demo_asset_exists_and_none_are_orphaned` above fails on a
+// shipped-but-unreferenced .webp, so a "tidy-up" that drops a tab breaks the
+// build rather than quietly shrinking the demos.
+// ---------------------------------------------------------------------------
+
+/// The `<a …>` elements inside `haystack`, as (href, inner text) pairs.
+///
+/// `href="…"` holds a Tera call whose own quoting is single (`get_url(path='…')`),
+/// so a double-quoted attribute value is still one capture.
+fn anchors(haystack: &str) -> Vec<(String, String)> {
+    regex::Regex::new(r#"(?s)<a\s[^>]*href="([^"]*)"[^>]*>(.*?)</a>"#)
+        .unwrap()
+        .captures_iter(haystack)
+        .map(|c| (c[1].to_string(), c[2].trim().to_string()))
+        .collect()
+}
+
+/// The homepage hero offers the zero-install browser analyzer, above the fold.
+///
+/// "Above the fold" is read structurally: everything before `<section
+/// class="demos"`, the first thing after the hero. A CTA that slides below
+/// that is a CTA the visitor scrolls past, and the capability-table row that
+/// used to be the page's only mention of /analyze/ lives far below it — so a
+/// move back to that row must fail this, not pass it.
+#[test]
+fn homepage_offers_a_zero_install_path() {
+    let page = read("website/templates/index.html");
+    let fold = page.find("<section class=\"demos\"").expect(
+        "index.html no longer has a `<section class=\"demos\"` — this test locates the fold by it",
+    );
+
+    // The hero ELEMENT, not merely "the bytes before the demos section". Those
+    // differ by the handful of characters between `</section>` and the next
+    // `<section`, and a link parked in that gap is above the fold marker while
+    // being in no section at all — which passed an earlier version of this
+    // test. Asserting the hero closes above the fold keeps the fold marker
+    // meaningful without letting the gap through.
+    let hero_span = element_span(&page, "<section class=\"hero\">", "section");
+    assert!(
+        hero_span.end <= fold,
+        "the hero section no longer closes before `<section class=\"demos\"` — \
+         the page order this test reads has changed"
+    );
+    let hero = &page[hero_span.start..hero_span.end];
+
+    let links = anchors(hero);
+    // Anti-vacuity: the hero really does contain several links (the two RFC
+    // references and the CTA row), so a regex that silently matched nothing
+    // cannot make the assertion below pass by finding zero of zero.
+    assert!(
+        links.len() >= 3,
+        "only {} links parsed out of the homepage hero — the anchor extractor \
+         is broken, so the analyzer check below would be vacuous:\n{hero}",
+        links.len()
+    );
+
+    let cta = links
+        .iter()
+        .find(|(href, _)| href.contains("@/analyze/"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the homepage hero offers no link to the browser analyzer. The \
+                 zero-install path (`@/analyze/_index.md`) must be reachable \
+                 from above the fold, not only from the nav, the footer and a \
+                 capability-table row far below. Links found in the hero: {:?}",
+                links.iter().map(|(h, _)| h).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(
+        !cta.1.is_empty(),
+        "the hero's analyzer link has no visible text: {cta:?}"
+    );
+
+    // A CTA, not a word buried in a sentence: it carries the button styling
+    // the other two hero actions use.
+    let cta_tag_at = hero.find("@/analyze/").expect("checked above");
+    let tag_start = hero[..cta_tag_at]
+        .rfind("<a ")
+        .expect("the analyzer href is inside an <a> element");
+    let tag_end = tag_start
+        + hero[tag_start..]
+            .find('>')
+            .expect("unterminated <a> tag in the hero");
+    let tag = &hero[tag_start..tag_end];
+    assert!(
+        tag.contains("class=\"btn"),
+        "the hero's analyzer link is not styled as a call to action (no `btn` \
+         class): {tag}"
+    );
+
+    // And it must say what the visitor is agreeing to. "Local" is the entire
+    // pitch: a capture is evidence, and a stranger will not drop one into a
+    // web page that might upload it.
+    let lower = hero.to_lowercase();
+    assert!(
+        lower.contains("in your browser") || lower.contains("in the browser"),
+        "the hero offers the analyzer without saying the capture is parsed in \
+         the visitor's own browser — the one fact that makes uploading a \
+         capture an acceptable ask"
+    );
+}
+
+/// The demo wall leads with the four outcome-titled demos; the rest are collapsed.
+///
+/// Three properties, each one careless edit from being lost:
+///
+/// 1. Exactly the outcome set is visible. A twelfth tab appended to the
+///    tablist rather than to the disclosure rebuilds the wall one tab at a
+///    time, and nothing else in the suite would notice.
+/// 2. Every other tab is still IN the tablist, inside `#demo-tabs-more`. They
+///    are hidden, not removed; the orphaned-asset guard above makes removal a
+///    build failure anyway.
+/// 3. Tabs and panels still count the same. A tab whose panel was deleted (or
+///    the reverse) is a control that does nothing.
+///
+/// The arrow-key roving is pinned here too, because it is the part that breaks
+/// silently: it reads a flat `.demo-tab` list, and stepping onto a collapsed
+/// tab focuses nothing (`.focus()` on `display:none` is a no-op) while still
+/// clicking it — the panel changes under a focus ring that never moved.
+#[test]
+fn homepage_demo_wall_leads_with_outcomes() {
+    let page = read("website/templates/index.html");
+
+    // The four the wall leads with. Rewording one is fine; doing it silently
+    // is not — an interface name creeping back to the front is exactly the
+    // regression this pins.
+    const OUTCOMES: [&str; 4] = [
+        "Why did it fail?",
+        "Which RFC?",
+        "Show me the bytes",
+        "Same call?",
+    ];
+
+    let tablist = element_span(&page, "<div class=\"demo-tabs\" role=\"tablist\"", "div");
+    let disclosure = element_span(&page, "<div class=\"demo-tabs-more\"", "div");
+    assert!(
+        tablist.start < disclosure.start && disclosure.end <= tablist.end,
+        "`#demo-tabs-more` must sit INSIDE the tablist: the collapsed demos \
+         stay part of the same tab set, they are merely not painted"
+    );
+
+    let tab = regex::Regex::new(
+        r#"<button class="demo-tab[^"]*"[^>]*id="demo-tab-(\d+)"[^>]*>([^<]*)</button>"#,
+    )
+    .unwrap();
+    let tabs: Vec<(usize, usize, String)> = tab
+        .captures_iter(&page)
+        .map(|c| {
+            let m = c.get(0).expect("whole match");
+            (
+                m.start(),
+                c[1].parse::<usize>().expect("numeric tab id"),
+                c[2].trim().to_string(),
+            )
+        })
+        .collect();
+
+    // Anti-vacuity: a broken extractor must not pass by matching nothing.
+    assert!(
+        tabs.len() >= 8,
+        "only {} demo tabs parsed out of index.html — the extractor is broken, \
+         so every assertion below would be vacuous",
+        tabs.len()
+    );
+
+    for (at, id, label) in &tabs {
+        assert!(
+            tablist.start < *at && *at < tablist.end,
+            "demo tab {id} ({label:?}) is outside the `.demo-tabs` tablist"
+        );
+    }
+
+    let (visible, collapsed): (Vec<_>, Vec<_>) = tabs
+        .iter()
+        .partition(|(at, _, _)| *at < disclosure.start || *at >= disclosure.end);
+
+    let visible_labels: Vec<&str> = visible.iter().map(|(_, _, l)| l.as_str()).collect();
+    assert_eq!(
+        visible_labels, OUTCOMES,
+        "the demo wall must lead with exactly the outcome-titled demos, in \
+         order. Every other tab belongs inside `#demo-tabs-more`. If the \
+         outcome set genuinely changed, update OUTCOMES here — deliberately."
+    );
+    let visible_ids: Vec<usize> = visible.iter().map(|(_, id, _)| *id).collect();
+    assert_eq!(
+        visible_ids,
+        vec![0, 1, 2, 3],
+        "the four visible tabs must be demo-tab-0..3, so they select the first \
+         four panels"
+    );
+    assert!(
+        !collapsed.is_empty(),
+        "no tabs are inside `#demo-tabs-more` — the disclosure has nothing to \
+         disclose, which means the wall is uncollapsed again"
+    );
+
+    // Tabs and panels describe the same set.
+    let panels = page.matches("role=\"tabpanel\"").count();
+    assert_eq!(
+        tabs.len(),
+        panels,
+        "{} demo tabs against {panels} panels — every tab must control a panel \
+         and every panel must be reachable from a tab",
+        tabs.len()
+    );
+    for (_, id, label) in &tabs {
+        assert!(
+            page.contains(&format!("id=\"demo-panel-{id}\"")),
+            "demo tab {id} ({label:?}) controls `demo-panel-{id}`, which does not exist"
+        );
+    }
+
+    // The disclosure must start shut and be driven by a real control.
+    let opener = element_open_tag(&page, "<div class=\"demo-tabs-more\"");
+    assert!(
+        opener.contains(" hidden"),
+        "`#demo-tabs-more` must ship collapsed — otherwise the wall is back on \
+         first paint: {opener}"
+    );
+    assert!(
+        opener.contains("role=\"presentation\""),
+        "`#demo-tabs-more` must carry role=\"presentation\" so the tablist \
+         still owns only tabs: {opener}"
+    );
+    let toggle = element_open_tag(&page, "<button type=\"button\" class=\"demo-more-btn\"");
+    assert!(
+        toggle.contains("aria-controls=\"demo-tabs-more\"")
+            && toggle.contains("aria-expanded=\"false\""),
+        "the disclosure button must name what it controls and start collapsed: {toggle}"
+    );
+    let toggle_at = page
+        .find("<button type=\"button\" class=\"demo-more-btn\"")
+        .expect("checked above");
+    assert!(
+        toggle_at >= tablist.end,
+        "the disclosure button is inside the tablist; a tablist may own only \
+         tabs, so it must sit after `.demo-tabs` closes"
+    );
+    assert!(
+        page.contains("getElementById('demo-tabs-more')"),
+        "nothing in the homepage script opens `#demo-tabs-more` — the \
+         disclosure button would be a dead control (and it cannot use \
+         onclick=, which the CSP blocks)"
+    );
+
+    // The roving must skip collapsed tabs.
+    assert!(
+        page.contains("closest('.demo-tabs-more')"),
+        "the arrow-key roving no longer filters out collapsed tabs. An \
+         unfiltered `.demo-tab` list steps onto a hidden tab: focus stays put \
+         (`.focus()` on display:none does nothing) while the click still \
+         swaps the panel."
+    );
+}
+
+/// Byte range of an element, from `open` to its depth-matched closing tag.
+struct Span {
+    start: usize,
+    end: usize,
+}
+
+/// Locate `open` in `html` and return the span through its matching `</tag>`.
+fn element_span(html: &str, open: &str, tag: &str) -> Span {
+    let start = html
+        .find(open)
+        .unwrap_or_else(|| panic!("index.html has no `{open}`"));
+    let open_pat = format!("<{tag}");
+    let close_pat = format!("</{tag}>");
+    let mut depth = 0usize;
+    let mut i = start;
+    while i < html.len() {
+        let next_open = html[i..].find(&open_pat).map(|n| i + n);
+        let next_close = html[i..].find(&close_pat).map(|n| i + n);
+        match (next_open, next_close) {
+            (Some(o), Some(c)) if o < c => {
+                depth += 1;
+                i = o + open_pat.len();
+            }
+            (_, Some(c)) => {
+                depth -= 1;
+                i = c + close_pat.len();
+                if depth == 0 {
+                    return Span { start, end: i };
+                }
+            }
+            _ => break,
+        }
+    }
+    panic!("`{open}` is never closed in index.html");
+}
+
+/// The full open tag (`<div …>`) beginning at `open`.
+fn element_open_tag(html: &str, open: &str) -> String {
+    let start = html
+        .find(open)
+        .unwrap_or_else(|| panic!("index.html has no `{open}`"));
+    let end = start
+        + html[start..]
+            .find('>')
+            .unwrap_or_else(|| panic!("`{open}` is an unterminated tag"));
+    html[start..=end].to_string()
+}
+
 /// The homepage's four MCP examples must be the answers the tool actually gave.
 ///
 /// The chain is `live binary -> website/data/mcp-examples/*.json -> index.html`.
@@ -2971,8 +3289,16 @@ fn inline_script_edits_require_csp_hash_refresh() {
             // in pages.yml runs refresh_csp_hashes.py against the deployed
             // artifact, so Cloudflare gets the rendered hash. This pin is only
             // an acknowledgment gate for template edits.
+            // Re-pinned again for the demo-wall disclosure: the tab wiring
+            // now derives a tab's panel index from its own id rather than its
+            // position in the NodeList (seven of the eleven tabs moved inside
+            // `#demo-tabs-more`, so position and panel are no longer the same
+            // thing), the arrow-key roving skips collapsed tabs, and the
+            // disclosure button is wired here because the CSP blocks onclick=.
+            // The hero's new /analyze/ CTA is a plain <a> and touched none of
+            // this on purpose.
             "index.html",
-            "sha256-vH2HCfsVXRYrZJIukQtca0VioLi/kTLNQOdw2o2/axU=",
+            "sha256-rhrfc4NhR079Jx9X3GPpGOCRS41UnMh2McLIb6R4ISU=",
         ),
         (
             "page.html",
@@ -3627,8 +3953,12 @@ fn packaging_scripts_reference_existing_paths() {
         ];
         // Directories deliberately not treated as path roots, each with the
         // reason a match inside them would be a false positive.
-        const NOT_PATH_ROOTS: [&str; 9] = [
-            "docker/",  // collides with the docker/* GitHub Actions namespace
+        const NOT_PATH_ROOTS: [&str; 10] = [
+            // Browser journey tests. node_modules/, test-results/ and
+            // playwright-report/ are all gitignored build outputs, so a
+            // packaging script naming a path under e2e/ would be naming
+            // something git does not hold.
+            "e2e/", "docker/",  // collides with the docker/* GitHub Actions namespace
             "fuzz/",    // artifacts/ and corpus growth are gitignored outputs
             "crates/",  // sbom.json and other build outputs are generated
             "src/",     // Rust module paths in prose, not file references
@@ -5510,5 +5840,240 @@ fn the_signing_route_names_this_repository_and_quotes_the_bot_verbatim() {
          The signature lands against whatever project the URL names, so this \
          one records none of it.",
         wrong.join("\n  ")
+    );
+}
+
+/// `website/README.md` describes the deploy that actually happens.
+///
+/// It described a different one for long enough to matter: "The site is
+/// rsync'd to a static-hosting host. There's no GitHub Actions automation",
+/// while `.github/workflows/pages.yml` had been building and publishing
+/// sipnab.com on every push to `main`. It also claimed the repository tracks
+/// `website/public/`, which `.gitignore` excludes, and called the homepage
+/// demos GIFs when `demos/Makefile` converts each one to WebP and deletes the
+/// GIF in the same recipe.
+///
+/// A wrong runbook is worse than a missing one. Someone following it would
+/// have gone looking for SSH credentials to a host that does not serve the
+/// site, and reasoned about a `public/` directory git does not hold.
+///
+/// The `public/` half reads `.gitignore` rather than matching a phrase, so
+/// this cannot be satisfied by rewording. If the ignore rule is ever dropped
+/// and the directory genuinely becomes tracked, the assertion inverts on its
+/// own instead of asserting yesterday's truth.
+#[test]
+fn website_readme_describes_the_real_deploy_path() {
+    let readme = std::fs::read_to_string("website/README.md").expect("website/README.md");
+
+    assert!(
+        readme.contains("pages.yml"),
+        "website/README.md does not name .github/workflows/pages.yml, which is \
+         what actually publishes sipnab.com"
+    );
+    assert!(
+        !readme.contains("no GitHub\nActions automation") && !readme.contains("no GitHub Actions"),
+        "website/README.md still claims there is no GitHub Actions automation. \
+         pages.yml builds the analyzer, runs zola, deploys to Pages and \
+         refreshes the Cloudflare CSP on every push to main"
+    );
+
+    // Read the ignore rule rather than trusting either document.
+    let ignored = std::fs::read_to_string(".gitignore")
+        .expect(".gitignore")
+        .lines()
+        .any(|l| l.trim() == "website/public/" || l.trim() == "website/public");
+    if ignored {
+        // Match the CLAIM, not one phrasing of it. The first version of this
+        // gate forbade the literal "repo tracks `public/`" and passed while a
+        // second sentence forty-five lines further down still annotated the
+        // directory as "committed for deploy stability" -- the same false
+        // claim, worded differently, in the same file. A gate pinned to one
+        // spelling is satisfied by a synonym.
+        for claim in [
+            "tracks `public/`",
+            "committed for deploy",
+            "commits `public/`",
+        ] {
+            assert!(
+                !readme.contains(claim),
+                "website/README.md says {claim:?}, but `.gitignore` excludes \
+                 website/public/ and git holds none of it. A reader would go \
+                 looking for a build artifact the repository does not have"
+            );
+        }
+    }
+
+    assert!(
+        !readme.contains("demo tabs are GIFs"),
+        "the homepage demos are WebP. demos/Makefile converts the VHS output \
+         and deletes the intermediate GIF in the same recipe, so nothing under \
+         static/demos/ is a GIF"
+    );
+}
+
+/// A documented claim about a tracked path is checked against git, not prose.
+///
+/// Debt from a real miss. `website_readme_describes_the_real_deploy_path` was
+/// written to stop `website/README.md` claiming the repository tracks
+/// `website/public/`, and it forbade one literal string. Forty-five lines below
+/// the sentence it policed, the same file annotated the same directory as
+/// "Generated output (committed for deploy stability)" -- the identical false
+/// claim, worded differently, and the gate passed. A reviewer reading the
+/// annotated document found it; the gate could not.
+///
+/// So this asks git rather than matching a phrase. Whatever a document says
+/// about a path, the ignore rules and the index decide the truth.
+#[test]
+fn no_document_claims_git_holds_a_directory_git_ignores() {
+    // Directories the repository generates and does not track. Each is checked
+    // against `.gitignore` below rather than trusted from this list.
+    const GENERATED: [&str; 2] = ["website/public/", "e2e/node_modules/"];
+    let ignore = std::fs::read_to_string(".gitignore").expect(".gitignore");
+
+    let mut checked = 0;
+    for dir in GENERATED {
+        let ignored = ignore
+            .lines()
+            .any(|l| l.trim() == dir || l.trim() == dir.trim_end_matches('/'));
+        assert!(
+            ignored,
+            "{dir} is in this test's generated list but `.gitignore` does not \
+             exclude it. Either the ignore rule was dropped -- in which case the \
+             directory is now tracked and this list is wrong -- or the list is \
+             stale. Both need a human, not a silent pass"
+        );
+        let tracked = std::process::Command::new("git")
+            .args(["ls-files", dir])
+            .output()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(false);
+        assert!(
+            !tracked,
+            "`.gitignore` excludes {dir} yet git holds files under it. A \
+             document describing either state would be wrong about the other"
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked,
+        GENERATED.len(),
+        "not every generated directory was examined"
+    );
+}
+
+/// The README's claims about `public/` agree with each other.
+///
+/// The first fix corrected one sentence and left a contradicting one further
+/// down. A document that says two things about the same directory is worse than
+/// one that says the wrong thing once: a reader believes whichever they reach
+/// first, and neither statement looks provisional.
+#[test]
+fn the_website_readme_does_not_contradict_itself_about_public() {
+    let readme = std::fs::read_to_string("website/README.md").expect("website/README.md");
+    let says_ignored = readme.contains("`.gitignore` excludes");
+    let says_held: Vec<&str> = [
+        "tracks `public/`",
+        "committed for deploy",
+        "commits `public/`",
+    ]
+    .into_iter()
+    .filter(|c| readme.contains(c))
+    .collect();
+    assert!(
+        says_ignored,
+        "website/README.md never states that `.gitignore` excludes public/. \
+         Saying nothing is how the previous wrong claim survived a rewrite"
+    );
+    assert!(
+        says_held.is_empty(),
+        "website/README.md says `.gitignore` excludes public/ AND still claims \
+         git holds it: {says_held:?}. A reader believes whichever they reach \
+         first"
+    );
+}
+
+/// Every tree in `.config/code-trees.txt` is classified by the packaging gate.
+///
+/// Adding `e2e/` turned three gates red one after another --
+/// `code_tree_list_matches_the_repository`, then `NOT_PATH_ROOTS` in this file
+/// -- each correct, each arriving only once the previous was fixed. Three
+/// cycles for one omission.
+///
+/// This does NOT re-derive which directories exist; `code_tree_list_matches_the_repository`
+/// already holds `.config/code-trees.txt` equal to the tracked tree, and a
+/// second implementation of one rule is two things to keep true. It checks the
+/// join instead: every tree that file names must be classified here as either a
+/// path root or explicitly not one. That join is what nothing was checking.
+#[test]
+fn every_code_tree_is_classified_by_the_packaging_gate() {
+    let trees = std::fs::read_to_string(".config/code-trees.txt").expect(".config/code-trees.txt");
+    let named: Vec<String> = trees
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| format!("{}/", l.trim_end_matches('/')))
+        .collect();
+    assert!(
+        named.len() >= 10,
+        "only {} trees parsed from .config/code-trees.txt; the format changed \
+         and this gate is comparing against almost nothing",
+        named.len()
+    );
+
+    // Read this file's own two lists rather than restating them.
+    let body = std::fs::read_to_string("tests/site_journey_test.rs").expect("this file");
+    let listed = |name: &str| -> Vec<String> {
+        let Some(i) = body.find(&format!("const {name}: [&str;")) else {
+            return Vec::new();
+        };
+        let Some(j) = body[i..].find("];") else {
+            return Vec::new();
+        };
+        regex::Regex::new(r#""([a-zA-Z0-9_.-]+/)""#)
+            .expect("regex")
+            .captures_iter(&body[i..i + j])
+            .map(|c| c[1].to_string())
+            .collect()
+    };
+    let mut classified = listed("ROOTS");
+    classified.extend(listed("NOT_PATH_ROOTS"));
+    assert!(
+        classified.len() >= 10,
+        "only {} directories read out of ROOTS/NOT_PATH_ROOTS; the extractor \
+         stopped matching and every comparison below is vacuous",
+        classified.len()
+    );
+
+    let missing: Vec<&String> = named.iter().filter(|d| !classified.contains(d)).collect();
+    assert!(
+        missing.is_empty(),
+        "these trees are in .config/code-trees.txt but classified in neither \
+         ROOTS nor NOT_PATH_ROOTS: {missing:?}. Adding a directory should fail \
+         one gate, not three in sequence"
+    );
+}
+
+/// The generated-directory list this file checks is not empty.
+///
+/// Guards the two tests above from going vacuous. An empty `GENERATED` array
+/// satisfies both by examining nothing, which is the failure mode this
+/// repository keeps finding in its own instruments.
+#[test]
+fn the_generated_directory_list_is_not_empty() {
+    let body = std::fs::read_to_string("tests/site_journey_test.rs").expect("this file");
+    let start = body
+        .find("const GENERATED: [&str;")
+        .expect("the GENERATED list");
+    let decl = &body[start..start + 40];
+    let n: usize = decl
+        .split(';')
+        .nth(1)
+        .and_then(|t| t.split(']').next())
+        .and_then(|t| t.trim().parse().ok())
+        .expect("the array length");
+    assert!(
+        n >= 2,
+        "GENERATED holds {n} entries; with fewer than two the paired \
+         ignore/track assertions stop covering anything"
     );
 }

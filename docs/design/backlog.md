@@ -2652,7 +2652,7 @@ implementation.
   state-changing set: which capture was opened, what filter was applied, what
   was exported and to where, what was saved, when the capture was swapped.
 
-  Reuse `src/mcp/audit.rs` rather than writing a second writer. It already has
+  Reuse [`src/mcp/audit.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/audit.rs) rather than writing a second writer. It already has
   the properties this needs -- append-only, sequence-numbered, `0600`,
   fail-closed -- and two audit formats for one tool would be two things to keep
   true, with the one nobody reads drifting first. What it needs is a caller

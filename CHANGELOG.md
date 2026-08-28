@@ -66,6 +66,29 @@ entry that carries them.
   keyed tokens equal exactly when the originals were equal, and addresses go
   through a prefix-preserving map, so "these forty failures came from one
   subscriber" stays answerable -- masking answers neither.
+- **`top_talkers`**, which ranks PARTICIPANTS rather than dialogs: the busiest
+  addresses, the software banners actually on the wire, or the leading digits
+  of the dialed number. `aggregate_dialogs` puts each dialog in one bucket
+  keyed off the record it opened with, so the address that answered a call it
+  did not open, and the far end's phone, are invisible to it. Here a dialog
+  counts for every talker that took part in it -- so the `ip` and `ua` shares
+  sum above 100%, which the response says rather than hides -- while `prefix`
+  does partition, because a dialog has one dialed number.
+- **Prometheus parity for the MCP surface**:
+  `sipnab_mcp_tool_calls_total{tool,outcome}`,
+  `sipnab_mcp_tool_duration_seconds{tool}` and
+  `sipnab_mcp_tool_response_bytes_total{tool}`. Nothing measured which of the
+  registered tools agents actually call, so the surface could only be pruned by
+  argument. Counted at the one `call_tool` choke point the audit line already
+  uses, so a refusal cannot reach the log and miss the metric. Tool names come
+  from the client, so distinct names are capped with a visible `other` bucket
+  rather than minting a series per probe.
+- **`--mcp-tools core|full`**, which bounds what every session pays before it
+  asks anything: each registered tool's name, description and JSON schema goes
+  out on `tools/list` and stays in the model's context. `core` keeps eight
+  tools that still answer a whole call end to end. `full` remains the default,
+  because shrinking the surface at upgrade time would change what every
+  existing client can do.
 
 ### Fixed
 
@@ -2224,6 +2247,15 @@ carried in the source tarball and the docs, not in the code.
   frame for `prefers-reduced-motion`, and `site_journey_test` refuses a demo
   whose poster is missing — but nothing generated them. All seven had been made
   by hand, so the gate demanded a file the build could not produce.
+- **`media_diagnostics`**, the MCP tool that reports the facts UNDER a MOS:
+  QoS marking read at parse time, whether the jitter figure is grounded in
+  RTCP or interpolated, where the one-way delay came from, silence, and what
+  the far end said about the stream it received. A MOS with no provenance is a
+  number an operator cannot argue with a carrier about.
+  (Recorded here on 2026-08-28: the tool shipped in this release and the entry
+  never named it, which is exactly the gap `mcp_since_version_test` now
+  refuses -- the "Since version" column in the tool reference is derived from
+  these entries, so a tool the notes do not mention has no release to show.)
 
 ### Changed
 

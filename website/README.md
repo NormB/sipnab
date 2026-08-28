@@ -21,22 +21,33 @@ cd website
 zola build
 ```
 
-Output goes to `website/public/`. The repo tracks `public/` so the
-deploy step has a stable artifact to push.
+Output goes to `website/public/`, which `.gitignore` excludes. Every
+build regenerates it, so a stale copy on disk describes whatever was
+last built locally rather than what the site serves.
 
 ## Deploy
 
-The site is rsync'd to a static-hosting host. There's no GitHub
-Actions automation — the deploy runs from a developer machine with
-SSH access to the deploy target.
+`.github/workflows/pages.yml` builds and publishes sipnab.com on every
+push to `main` that touches a path it watches. It builds the WASM
+analyzer with `wasm-pack`, checks the exported symbols, runs
+`zola build`, deploys to GitHub Pages, and then refreshes the
+Cloudflare CSP hashes against the artifact it just published.
+
+That last step is why an inline `<script>` edit is not finished when
+the deploy goes green: the hash refresh runs AFTER the upload, so the
+changed script is blocked for the window between the two. Load the
+deployed page before calling such a change done.
+
+`scripts/deploy-website.sh` is the alternative for anyone self-hosting
+a copy — it builds, rsyncs and chowns to a host over SSH. It is not
+how sipnab.com ships.
 
 ```bash
 DEPLOY_HOST=user@web-host scripts/deploy-website.sh
 ```
 
-The script builds, rsyncs, and chowns. See the comment block at the
-top of `scripts/deploy-website.sh` for the full env-var contract
-(`DEPLOY_PATH`, `DEPLOY_OWNER`, `ZOLA_BIN`, `SKIP_BUILD`).
+See the comment block at the top of that script for the full env-var
+contract (`DEPLOY_PATH`, `DEPLOY_OWNER`, `ZOLA_BIN`, `SKIP_BUILD`).
 
 ## Layout
 
@@ -55,12 +66,12 @@ website/
 │   └── 404.html
 ├── sass/                   # Compiled to public/css/ on build
 ├── static/                 # Verbatim assets
-└── public/                 # Generated output (committed for deploy stability)
+└── public/                 # Generated output. `.gitignore` excludes it; every build regenerates it
 ```
 
 ## Regenerating the animated demos
 
-The homepage demo tabs are GIFs rendered with [VHS](https://github.com/charmbracelet/vhs)
+The homepage demo tabs are WebP animations rendered with [VHS](https://github.com/charmbracelet/vhs)
 from tape scripts in `../demos/`. Every tape `Source`s `demos/common.tape`
 for a single shared look (theme, font, size), so styling lives in one place.
 
@@ -75,7 +86,7 @@ make -C demos
 To re-render a single demo — much faster when you are iterating on one tape:
 
 ```sh
-make -C demos 09-detail.gif
+make -C demos 09-detail.webp
 ```
 
 Run from the repo root so tapes resolve `tests/pcap-samples/*`. Outputs land
@@ -87,8 +98,9 @@ Notes:
   cleanly, so demos use letter/arrow/`Ctrl` keys only (the TUI treats `Esc`
   as quit). F-key-only flows (Save dialog, Filter dialog, Column selector)
   are intentionally not demoed.
-- If `gifsicle` is installed, `gifsicle -O3 --lossy=40` shrinks the larger
-  GIFs (notably the CLI demo) further; it is not required.
+- GIF is only an intermediate. VHS emits one, `demos/Makefile` converts it to
+  WebP and deletes the GIF in the same recipe, so nothing under
+  `static/demos/` is a GIF and none ever reaches a visitor.
 
 ## Updating the test count
 

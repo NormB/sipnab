@@ -2179,6 +2179,30 @@ pub struct McpArgs {
     )]
     pub mcp_token_ttl: i64,
 
+    /// Append every MCP tool call to this file, one JSON record per line.
+    ///
+    /// The tool-call record already rides the normal log under the `mcp_audit`
+    /// target, which is a console view: `SIPNAB_LOG` filters it and `--quiet`
+    /// suppresses it. This is the durable copy for the question the record is
+    /// actually kept for — what did an agent look at in this capture — which
+    /// is asked later, by somebody who did not choose the log level.
+    ///
+    /// The file is opened for APPEND and is never truncated, so restarts and a
+    /// second sipnab on the same path add to it rather than replace it. Each
+    /// record carries a sequence number, so a reader can see a gap. Created
+    /// mode 0600 if absent, because the record carries tool arguments.
+    ///
+    /// **A call that cannot be written is refused.** An audit trail that
+    /// silently skipped the calls it could not record would be worse than
+    /// none, so a full disk stops the answers rather than the recording. Leave
+    /// the flag off and nothing changes.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-audit-file",
+        value_name = "FILE"
+    )]
+    pub mcp_audit_file: Option<String>,
+
     /// Maximum tool calls the MCP server runs at once (`0` = unlimited).
     ///
     /// A call that cannot take a slot immediately is refused with a
@@ -2195,6 +2219,28 @@ pub struct McpArgs {
         default_value = "100"
     )]
     pub mcp_max_concurrent: u32,
+
+    /// Which tools the MCP server registers: `full` (every tool, the default)
+    /// or `core` (a small set that still answers a whole call).
+    ///
+    /// Every registered tool's name, description and JSON schema is sent on
+    /// `tools/list` and then carried in the model's context for the session,
+    /// before the agent has asked anything. On a client with a small context
+    /// window that fixed cost is worth cutting; on a batch client it is not.
+    ///
+    /// A clap `default_value` is right here and wrong on `--mcp-max-rows`,
+    /// because this knob has no config key to be overruled by: the tool set is
+    /// a property of the CLIENT the server is answering, and a config file is
+    /// per host. What `core` holds is documented on
+    /// [`crate::mcp::profile::CORE_TOOLS`].
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-tools",
+        value_name = "PROFILE",
+        value_parser = ["core", "full"],
+        default_value = "full"
+    )]
+    pub mcp_tools: String,
 
     /// One-way network delay of the observed path, in milliseconds.
     ///
@@ -4941,6 +4987,25 @@ mod tests {
         // store evicts the oldest dialog rather than dropping new legitimate
         // calls — a privileged sniffer must bound dialog state safely by default.
         assert!(cli.rotate_enabled(), "rotate must default ON");
+    }
+
+    /// `--mcp-audit-file` parses as a path, and is `None` when absent.
+    ///
+    /// The `None` half is the load-bearing one: the flag changes what a failed
+    /// audit write means (the call is refused), so a run that never asked for
+    /// a file must not acquire that behavior by default.
+    #[test]
+    fn mcp_audit_file_parses_and_defaults_to_off() {
+        let on = Cli::parse_from_args(["sipnab", "--mcp-audit-file", "/var/log/sipnab-mcp.jsonl"]);
+        assert_eq!(
+            on.mcp_args.mcp_audit_file.as_deref(),
+            Some("/var/log/sipnab-mcp.jsonl")
+        );
+        let off = Cli::parse_from_args(["sipnab"]);
+        assert_eq!(
+            off.mcp_args.mcp_audit_file, None,
+            "an unflagged run must not gain the fail-closed audit behavior"
+        );
     }
 
     /// The `--mcp-max-concurrent` cap parses as a number, and `0` is accepted

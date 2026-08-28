@@ -14,8 +14,24 @@
     <p class="hero-sub">One static musl binary, zero dependencies &mdash; reads live traffic, a pcap, or the HEP feed from every proxy in your estate, and shows you the call flow, RTP quality, and security signals.</p>
     <div class="hero-actions">
       <a href="{{ get_url(path='@/docs/install.md') }}" class="btn btn-primary">Get Started &rarr;</a>
+      <a href="{{ get_url(path='@/analyze/_index.md') }}" class="btn btn-secondary">Try a sample capture &rarr;</a>
       <a href="{{ config.extra.github_url }}" class="btn btn-secondary">View on GitHub &rarr;</a>
     </div>
+    {# The zero-install path. It is in the nav and the footer and was, until
+       now, mentioned on the homepage only as one row of the capability table
+       -- so the one route that costs a visitor nothing was the one route the
+       page never offered. A plain anchor, deliberately: the production CSP has
+       no 'unsafe-inline' and pins each inline script block by sha256, so a
+       link that needs no JavaScript also needs no re-pin.
+
+       Do not write a literal script tag in this comment. The pin test and
+       ops/cloudflare/refresh_csp_hashes.py both find script bodies with a
+       regex over the raw bytes, and a Tera comment is raw bytes: an opening
+       tag written here starts a "script body" that runs to the real closing
+       tag, so the pinned hash covers the whole page and every markup edit
+       demands a re-pin. That was written here once, and moving the automated
+       test count re-pinned the CSP. #}
+    <p class="hero-actions-note">No install required &mdash; the capture is parsed locally, in your browser. Nothing is uploaded.</p>
   </div>
 
   <!-- Hero — static screenshot of the TUI -->
@@ -36,13 +52,36 @@
       <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-1" aria-controls="demo-panel-1">Which RFC?</button>
       <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-2" aria-controls="demo-panel-2">Show me the bytes</button>
       <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-3" aria-controls="demo-panel-3">Same call?</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-4" aria-controls="demo-panel-4">Interactive TUI</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-5" aria-controls="demo-panel-5">Detail Pane</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-6" aria-controls="demo-panel-6">Mark + Delta</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-7" aria-controls="demo-panel-7">Search</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-8" aria-controls="demo-panel-8">Multi-Leg</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-9" aria-controls="demo-panel-9">RTP Quality</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-10" aria-controls="demo-panel-10">CLI &amp; JSON</button>
+      {# Everything past here is named after an INTERFACE, not an outcome, so it
+         answers a question only someone who already uses sipnab knows to ask.
+         Eleven tabs made the first four -- the ones a stranger can act on --
+         a quarter of a wall. The rest are collapsed, not deleted: they are
+         still in the tablist, still reachable by arrow key once open, and
+         `every_referenced_demo_asset_exists_and_none_are_orphaned` fails on a
+         shipped-but-unreferenced .webp, so removing one is not an option.
+         role="presentation" keeps the tablist owning only tabs; the
+         stylesheet gives this wrapper `display: contents` so the extra tabs
+         still lay out as part of the one strip. #}
+      <div class="demo-tabs-more" id="demo-tabs-more" role="presentation" hidden>
+        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-4" aria-controls="demo-panel-4">Interactive TUI</button>
+        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-5" aria-controls="demo-panel-5">Detail Pane</button>
+        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-6" aria-controls="demo-panel-6">Mark + Delta</button>
+        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-7" aria-controls="demo-panel-7">Search</button>
+        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-8" aria-controls="demo-panel-8">Multi-Leg</button>
+        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-9" aria-controls="demo-panel-9">RTP Quality</button>
+        <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-10" aria-controls="demo-panel-10">CLI &amp; JSON</button>
+      </div>
+    </div>
+    {# Outside the tablist: a tablist may own only tabs, and this is not one.
+       No onclick= -- the CSP grants neither 'unsafe-inline' nor
+       'unsafe-hashes', so an inline handler is dead on the live site while the
+       page still returns 200. Wired by addEventListener below, like the tabs.
+       The label carries no count: a hand-written "7 more" is a pinned value
+       that goes stale the first time a demo is added. #}
+    <div class="demo-more">
+      <button type="button" class="demo-more-btn" id="demo-more-btn" aria-expanded="false" aria-controls="demo-tabs-more">
+        <span class="demo-more-label">More demos</span><span class="demo-more-caret" aria-hidden="true">&#9662;</span>
+      </button>
     </div>
     <div class="demo-panels">
       <!-- MCP first: the four answers no local capture tool can give an agent.
@@ -287,7 +326,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
           <tr><td><a href="{{ get_url(path='@/docs/metrics.md') }}">Prometheus metrics</a></td><td>Counters and gauges about sipnab itself: what it captured, what it lost, what it could not read.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. 32 tools cover dialogs, RTP, diagnostics, and security findings. 27 are read-only; the five that write — file export, capture swap, findings, shutdown — each stay off until you enable them server-side.</td></tr>
           <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Memory-safe by construction. 6258 automated tests. Under 13 MB static binary.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Memory-safe by construction. 6392 automated tests. Under 13 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -373,7 +412,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
         <span class="arch-label">Headroom to take a whole estate's HEP feed on one box, with no collector tier &mdash; offline reconstruction, four cores (measured v0.5.122)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
-        <span class="arch-stat" data-count="6258" data-suffix="">6258</span>
+        <span class="arch-stat" data-count="6392" data-suffix="">6392</span>
         <span class="arch-label">Automated tests</span>
       </a>
     </div>
@@ -440,9 +479,39 @@ function showDemo(idx, btn) {
 }
 
 // Wire tab + copy buttons here (not via inline onclick=, which the CSP blocks).
-document.querySelectorAll('.demo-tab').forEach(function(tab, i) {
-  tab.addEventListener('click', function() { showDemo(i, tab); });
+//
+// The index comes from the tab's own id, NOT from its position in the
+// NodeList. Seven of the eleven tabs now sit inside the `#demo-tabs-more`
+// disclosure, so "nth `.demo-tab` in the document" and "the panel this tab
+// controls" are one reordering away from disagreeing -- and the failure would
+// be a tab that opens somebody else's demo, which looks like a content bug.
+document.querySelectorAll('.demo-tab').forEach(function(tab) {
+  tab.addEventListener('click', function() {
+    showDemo(tab.id.replace('demo-tab-', ''), tab);
+  });
 });
+
+// The demo disclosure: tabs 0-3 are outcome-titled and always visible; the
+// interface-named rest are collapsed behind this button.
+(function () {
+  var more = document.getElementById('demo-tabs-more');
+  var btn = document.getElementById('demo-more-btn');
+  if (!more || !btn) return;
+  var label = btn.querySelector('.demo-more-label');
+  btn.addEventListener('click', function () {
+    var opening = more.hidden;
+    more.hidden = !opening;
+    btn.setAttribute('aria-expanded', opening ? 'true' : 'false');
+    if (label) label.textContent = opening ? 'Fewer demos' : 'More demos';
+    btn.classList.toggle('open', opening);
+    if (!opening && more.querySelector('.demo-tab.active')) {
+      // Collapsing while a hidden tab is the selected one would leave the
+      // strip with no active tab and a panel nothing on screen points at.
+      var first = document.getElementById('demo-tab-0');
+      if (first) first.click();
+    }
+  });
+})();
 document.querySelectorAll('.copy-btn').forEach(function(btn) {
   btn.addEventListener('click', function() { copyCode(btn); });
 });
@@ -489,10 +558,20 @@ document.querySelectorAll('.copy-btn').forEach(function(btn) {
   });
 })();
 
-// Arrow-key navigation on the demo tablist
+// Arrow-key navigation on the demo tablist.
+//
+// Roving covers every tab the reader can actually see, which is all eleven
+// once the disclosure is open and the leading four while it is shut. Taking
+// the flat `.demo-tab` list unfiltered would step onto a collapsed tab:
+// `.focus()` on a display:none element silently does nothing, so focus would
+// stay put while the following `.click()` swapped the panel underneath it --
+// the arrow key appearing to skip a demo, or to open one with no tab lit.
 document.querySelector('.demo-tabs').addEventListener('keydown', function(e) {
   if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-  var tabs = Array.from(document.querySelectorAll('.demo-tab'));
+  var tabs = Array.from(document.querySelectorAll('.demo-tab')).filter(function(t) {
+    var box = t.closest('.demo-tabs-more');
+    return !box || !box.hidden;
+  });
   var i = tabs.indexOf(document.activeElement);
   if (i === -1) return;
   var next = e.key === 'ArrowRight' ? (i + 1) % tabs.length : (i - 1 + tabs.length) % tabs.length;

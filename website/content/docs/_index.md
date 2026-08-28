@@ -17,6 +17,55 @@ tasks = [
   { title = "Detect scanners & fraud", cmd = "sudo sipnab -N -d eth0 --fraud-detect", href = "/docs/cookbook/" },
   { title = "Drive sipnab from an AI agent", cmd = "sipnab --mcp", href = "/docs/mcp/" },
 ]
+
+# Audience paths rendered by section.html underneath the task cards. The cards
+# above are the TASK axis -- "what do I need to do right now". This is the
+# AUDIENCE axis over the SAME pages: a reader who knows which job they hold,
+# but not which of thirty-odd reference pages is theirs, gets an ordered route
+# through the ones that are.
+#
+# Nothing here is a new page, deliberately. Every href points at a page that
+# already exists, so the grouping costs one array and no registrations. The
+# roles are the ones the "Who it is for" section below names, and
+# `index_audience_paths_point_at_existing_pages` pins them to it -- two places
+# describe the audience and prose is the one people edit, so without that pin
+# this block keeps addressing a reader the page stopped claiming to serve.
+
+[[extra.audiences]]
+role = "VoIP engineers"
+goal = "Work a ticket: a call that will not set up, audio only one way, a codec or NAT problem."
+steps = [
+  { title = "Install sipnab", href = "/docs/install/" },
+  { title = "Open a capture in the TUI", href = "/docs/tui/" },
+  { title = "Follow the recipe for your symptom", href = "/docs/cookbook/" },
+  { title = "Chase one-way audio to its cause", href = "/docs/troubleshooting/#one-way-audio" },
+  { title = "Read what a MOS score actually claims", href = "/docs/mos-and-codecs/" },
+]
+
+[[extra.audiences]]
+role = "SRE and on-call teams"
+goal = "Get an answer out of a pcap at 3 AM, or a headless run that exits non-zero when the call is not there."
+steps = [
+  { title = "Install sipnab", href = "/docs/install/" },
+  { title = "Run it headless", href = "/docs/cli/" },
+  { title = "Narrow the capture with the filter DSL", href = "/docs/filter-dsl/" },
+  { title = "Pipe the output into your tooling", href = "/docs/output-formats/" },
+  { title = "Scrape the metrics endpoint", href = "/docs/metrics/" },
+  { title = "Stop a busy capture dropping packets", href = "/docs/tuning-capture/" },
+  { title = "Let an agent read the capture for you", href = "/docs/mcp/" },
+]
+
+[[extra.audiences]]
+role = "Security teams"
+goal = "Audit SIP-facing infrastructure for scanners, registration floods, toll fraud, and leaked credentials."
+steps = [
+  { title = "Install sipnab", href = "/docs/install/" },
+  { title = "Turn on the detectors", href = "/docs/cli/#security" },
+  { title = "Read signaling that is encrypted", href = "/docs/tls-capture/" },
+  { title = "Lint the traffic for conformance", href = "/docs/sip-lint-rules/" },
+  { title = "Ban a source with fail2ban", href = "/docs/integrations/" },
+  { title = "Write a detection of your own", href = "/docs/plugins/" },
+]
 +++
 
 ## What is sipnab?

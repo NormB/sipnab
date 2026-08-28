@@ -17,7 +17,28 @@ those two, and they differ only in what access each demands.
 
 ## Which method can you use?
 
-Read down the first column and stop at the first row you can satisfy.
+Answer these in order. Each branch ends at one numbered method below, and the
+question that separates two branches is always an access question rather than
+a protocol one.
+
+```mermaid
+flowchart TD
+    S["SIP on 5061, and sipnab decodes nothing"] --> Q1{"Can you set SSLKEYLOGFILE<br/>on an endpoint and restart it?"}
+    Q1 -->|yes| M1["Method 1: --keylog<br/>full decryption, live or from a pcap"]
+    Q1 -->|no| Q2{"Can you get root on the SIP host?"}
+    Q2 -->|no| Q6{"Old TLS 1.2 server on RSA key exchange,<br/>and you hold its private key?"}
+    Q6 -->|yes| M6["Method 6: --tls-key<br/>non-PFS handshakes only"]
+    Q6 -->|no| X["Nothing opens it.<br/>Read What does not work, and why"]
+    Q2 -->|yes| L["Method 2: sudo sipnab --uprobe-list<br/>names the TLS libraries this host runs"]
+    L --> Q3{"Do you want keys you can keep,<br/>or plaintext right now?"}
+    Q3 -->|keys| M5["Method 5: eCapture, then --keylog<br/>daemon untouched, and the pcap stays readable"]
+    Q3 -->|plaintext| Q4{"BTF kernel, and a build<br/>carrying the bpf feature?"}
+    Q4 -->|yes| M4["Method 4: --uprobe-tls --uprobe-backend bpf<br/>plaintext with the real 5-tuple"]
+    Q4 -->|no| M3["Method 3: --uprobe-tls<br/>plaintext, no peer addresses"]
+```
+
+The table says the same thing in rows. Read down the first column and stop at
+the first row you can satisfy.
 
 | If you can… | Use | Needs | Gets you |
 |---|---|---|---|

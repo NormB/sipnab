@@ -61,6 +61,7 @@ ordinary update.
 | [`get_sdp_timeline`](#get-sdp-timeline) | `call_id` | SDP offer/answer exchanges in order: codecs, ptime, direction |
 | [`search_by_time`](#search-by-time) | `start`, `end?`, `filter?`, `limit?`, `cursor?` | Dialogs whose first message falls in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) window |
 | [`describe_endpoint`](#describe-endpoint) | `ip?`, `user?`, `limit?` | Everything one participant did: dialogs by method and state, INVITE outcomes, REGISTER state, banners, streams, findings |
+| [`top_talkers`](#top-talkers) | `by`, `limit?`, `filter?`, `prefix_digits?` | The busiest IPs, user agents or dialled prefixes, ranked, each share stated against the population behind it |
 | [`list_captures`](#list-captures) | -- | Capture files in `--mcp-file-root`, with sizes |
 | [`compare_captures`](#compare-captures) | `a`, `b`, `dimensions?`, `top_n?` | Diffs two capture files in `--mcp-file-root` by aggregate, ranked by how far each bucket MOVED. Neither becomes the loaded capture |
 | [`export_capture`](#export-capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
@@ -2417,6 +2418,49 @@ every row past the 1000-row ceiling out of reach. The cursor is
 the same compound form [`list_dialogs`](#list-dialogs) issues, and it is opaque:
 pass it back exactly as it arrived.
 
+### `top_talkers`
+
+Ranks the busiest participants: IPs, user agents, or dialled prefixes.
+
+`aggregate_dialogs` and `group_dialogs` group DIALOGS, and a dialog has two
+ends. Asking "who is busiest" of a dialog-shaped answer forces the caller to
+pick one end and ignore the other, which reports a trunk's traffic as belonging
+to whichever side the schema happened to name first. This counts PARTICIPANTS
+instead.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `by` | string | `ip`, `ua` or `prefix`. Anything else fails with `invalid_params` naming the legal set. | Required. |
+| `limit` | integer? | Bounded by `--mcp-max-rows`. | The usual row default. |
+| `filter` | string? | Alias or DSL, the same vocabulary every other tool takes. | The whole store. |
+| `prefix_digits` | integer? | How many leading digits make a prefix bucket. | 4. |
+
+```jsonc
+// top_talkers { "by": "ip", "limit": 3 }
+{
+  "by": "ip",
+  "rows": [
+    { "value": "203.0.113.9", "dialogs": 812, "share_pct": 60.9 },
+    { "value": "198.51.100.4", "dialogs": 511, "share_pct": 38.3 },
+    { "value": "192.0.2.77", "dialogs": 44, "share_pct": 3.3 }
+  ],
+  "counts": "participants"
+}
+```
+
+**The shares deliberately sum above 100%.** One dialog counts for every talker
+in it, so a two-ended call adds to two rows. The response says `counts:
+"participants"` rather than leaving a reader to discover it from arithmetic that
+looks broken. `by: "prefix"` is the exception and does partition, because a call
+has one dialled number.
+
+`ip` reads senders off the MESSAGES, not off the dialog's opening addresses: a
+proxy that re-originates mid-dialog is invisible in the dialog record and would
+otherwise never appear. `ua` reads `User-Agent` from requests and `Server` from
+responses, both sender-written and therefore fenced. `prefix` strips a leading
+`+` before taking digits, so `+15551234` and `15551234` are one destination
+rather than two.
+
 ### `describe_endpoint`
 
 Everything the capture holds about one participant.
@@ -2930,7 +2974,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.129 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.130 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -3723,7 +3767,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.129",
+  "version": "0.5.130",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep

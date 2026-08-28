@@ -2143,6 +2143,10 @@ fn line_citations_point_at_the_code_they_name() {
     // citing its definition is what makes the claim checkable from here on: the
     // corpus grew by one because a citation stopped being invisible, not
     // because a page did.
+    // 198 -> 199: the PB batch. One added citation names a symbol this checker
+    // resolves; the rest of the batch's new links point at files or line
+    // numbers rather than at a resolvable symbol, which this gate deliberately
+    // does not count.
     // 197 -> 198: closing SRC1, SRC2 and REL1 in the backlog. Attributed by
     // differential measurement, not by counting links: with HEAD's backlog.md
     // in place the checker examines 197 and with the new one 198, and removing
@@ -2161,7 +2165,7 @@ fn line_citations_point_at_the_code_they_name() {
     // four of which name a symbol this checker can resolve -- the other two
     // cite a line without naming anything at it, which is exactly the shape
     // the comment above says gets SKIPPED rather than reported.
-    let expected = 198;
+    let expected = 199;
     assert_eq!(
         checked, expected,
         "the drift checker examined {checked} citations, not the {expected} \

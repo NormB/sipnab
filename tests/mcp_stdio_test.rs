@@ -699,10 +699,17 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         .collect();
     names.sort();
     let mut expected = vec![
+        "aggregate_dialogs",
+        "build_evidence_package",
         "capture_health",
+        "capture_status",
         "check_codec_negotiation",
+        "compare_captures",
         "compare_dialogs",
+        "decode_evidence",
+        "describe_endpoint",
         "diagnose_registration",
+        "evaluate_expectations",
         "explain_response_code",
         "explain_rule",
         "export_audio",
@@ -710,14 +717,18 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "export_vcon",
         "find_correlated",
         "find_problems",
-        "get_sdp_timeline",
-        "list_captures",
-        "aggregate_dialogs",
+        "generate_fail2ban_rule",
+        "generate_repro",
+        "generate_wireshark_filter",
+        "get_call_tree",
         "get_capture_report",
         "get_dialog",
         "get_dialog_report",
         "get_message",
+        "get_sdp_timeline",
+        "group_dialogs",
         "lint_dialog",
+        "list_captures",
         "list_dialogs",
         "list_tls_libraries",
         "media_diagnostics",
@@ -733,15 +744,16 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "shutdown_server",
         "start_tls_capture",
         "stop_tls_capture",
-        "capture_status",
         "tail_dialogs",
         "timeline",
+        "top_talkers",
         "triage_call",
+        "validate_filter",
         "validate_message",
     ];
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    assert_eq!(names.len(), 39, "expected exactly 39 MCP tools");
+    assert_eq!(names.len(), 51, "expected exactly 51 MCP tools");
 
     // find_problems with default kinds (['problems']) → JSON array, no error.
     send(

@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::tool::{Extension, schema_for_output};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::schemars::JsonSchema;
@@ -187,6 +188,15 @@ pub struct SipnabMcp {
     /// that copied with it would reset every time the server was cloned --
     /// an hourly ceiling anything can reset is not a ceiling.
     sampling: Arc<parking_lot::Mutex<super::sampling::Governor>>,
+    /// The append-only file every tool call is recorded to, or `None` when the
+    /// operator asked for no such file.
+    ///
+    /// **Shared, not per-session**, for the same reason `call_limiter` is:
+    /// `SipnabMcp` is cloned per HTTP session, and a per-clone sink would open
+    /// the same path N times and hand out N independent sequence counters —
+    /// so the numbering that lets a reader detect a gap would repeat instead,
+    /// and every session's record would look like the only one.
+    audit_sink: Option<Arc<super::audit::AuditSink>>,
 }
 
 /// The identity a per-peer MCP rate limit counts against.
@@ -245,6 +255,7 @@ impl SipnabMcp {
             sampling: Arc::new(parking_lot::Mutex::new(
                 super::sampling::Governor::disabled(),
             )),
+            audit_sink: None,
             tool_router: Self::tool_router()
                 + Self::aggregation_router()
                 + Self::expectations_router()
@@ -253,6 +264,37 @@ impl SipnabMcp {
                 + Self::compare_router()
                 + Self::endpoints_router(),
         }
+    }
+
+    /// Every tool name this server currently registers, sorted.
+    ///
+    /// The router is the only honest answer to "what does this server offer".
+    /// A count taken from the profile flag, or from a list written beside it,
+    /// describes what was ASKED for; this describes what a client will
+    /// actually see in `tools/list`.
+    #[must_use]
+    pub fn registered_tool_names(&self) -> Vec<String> {
+        self.tool_router
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect()
+    }
+
+    /// Restrict the registered tool set to a profile.
+    ///
+    /// Routes are REMOVED rather than hidden, so a `core` server does not
+    /// carry the schema it declined to advertise and a call to a removed tool
+    /// fails as an unknown tool rather than as a refusal — which is what a
+    /// client that never saw it in `tools/list` should get.
+    ///
+    /// See [`crate::mcp::profile`] for what `core` holds and why.
+    #[must_use]
+    pub fn with_tool_profile(mut self, profile: super::profile::ToolProfile) -> Self {
+        for name in super::profile::excluded(profile, &self.registered_tool_names()) {
+            self.tool_router.remove_route(&name);
+        }
+        self
     }
 
     /// Cap the number of tool calls this server runs at once. `max == 0`
@@ -352,6 +394,22 @@ impl SipnabMcp {
                 ),
             ))
         });
+        self
+    }
+
+    /// Record every tool call to an already-opened append-only sink.
+    ///
+    /// The sink is opened by the caller rather than here, so a bad path fails
+    /// at startup with the operator watching instead of at the first tool call
+    /// with nobody watching.
+    ///
+    /// Installing one changes what a failed WRITE means: see `call_tool`,
+    /// where an append that fails turns the call into an error. That is the
+    /// whole reason to ask for a file — a run that cannot record what it
+    /// answered must not answer.
+    #[must_use]
+    pub fn with_audit_sink(mut self, sink: Arc<super::audit::AuditSink>) -> Self {
+        self.audit_sink = Some(sink);
         self
     }
 
@@ -902,17 +960,27 @@ pub(crate) fn dialog_group_value(
             .unwrap_or_else(|| "(none)".to_string()),
         _ => return None,
     };
-    // Three of these keys carry text the packet's SENDER wrote --
+    // Four of these keys carry text the packet's SENDER wrote --
     // `from.user`, `to.user` and `ua` are attacker-controlled on a public
-    // interface. They reach a language model here exactly as they would in a
-    // row, so they are fenced exactly as a row fences them (#139). The rest
-    // are values sipnab derived: a state name, a status code, an IP, a codec
-    // from a payload type table.
-    Some(if matches!(key, "from.user" | "to.user" | "ua") {
-        super::shape::fence(&value)
-    } else {
-        value
-    })
+    // interface, and so is `rtp.codec`. They reach a language model here
+    // exactly as they would in a row, so they are fenced exactly as a row
+    // fences them (#139). The rest are values sipnab derived: a state name, a
+    // status code, an IP.
+    //
+    // `rtp.codec` was excluded on a premise this comment used to state and
+    // that the code does not hold: "a codec from a payload type table" is true
+    // only for the STATIC payload types. For a dynamic one,
+    // `RtpStream::codec` is assigned the `a=rtpmap` encoding name straight out
+    // of the SDP (`crate::rtp::stream_store`), so the sender chooses the
+    // string — and a bucket label is read as a category name, which is a
+    // better disguise for injected text than a header value is.
+    Some(
+        if matches!(key, "from.user" | "to.user" | "ua" | "rtp.codec") {
+            super::shape::fence_field(&value)
+        } else {
+            value
+        },
+    )
 }
 
 /// One bucket of an [`AggregateDialogsParams`] answer.
@@ -1497,14 +1565,29 @@ fn findings_with_refs(
         .iter()
         .map(|f| {
             let mut v = serde_json::to_value(f).unwrap_or_else(|_| serde_json::json!({}));
-            if let Some(obj) = v.as_object_mut()
-                && let Some(reference) =
+            if let Some(obj) = v.as_object_mut() {
+                // `observed` is the one field on a lint finding defined as
+                // wire text -- "what the capture actually holds" -- and the
+                // rules build it by interpolating header values (a
+                // Record-Route URI, a Via branch, a Session-Expires value).
+                // `expected` and `explanation` are NOT fenced: both are
+                // composed from sipnab's own vocabulary (rule metadata, RFC
+                // ABNF, a fixed parameter allowlist), and fencing sipnab's
+                // reading of the RFC would tell the agent to distrust the
+                // analysis rather than the evidence.
+                if let Some(observed) = obj.get_mut("observed")
+                    && let Some(text) = observed.as_str()
+                {
+                    *observed = serde_json::Value::String(super::shape::fence_field(text));
+                }
+                if let Some(reference) =
                     messages.get(f.message_index).and_then(|m| m.frame.as_ref())
-            {
-                obj.insert(
-                    "frame_ref".to_string(),
-                    serde_json::Value::String(reference.to_string()),
-                );
+                {
+                    obj.insert(
+                        "frame_ref".to_string(),
+                        serde_json::Value::String(reference.to_string()),
+                    );
+                }
             }
             v
         })
@@ -3631,7 +3714,10 @@ impl SipnabMcp {
         let mut page = serde_json::to_value(page)
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
         Self::project_page_fields(&mut page, params.fields.as_deref())?;
-        Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(page)?,
+            ContentBlock::text(super::shape::untrusted_note()),
+        ]))
     }
 
     /// Count dialogs by one field, inside the store.
@@ -3661,6 +3747,7 @@ impl SipnabMcp {
                        largest-first plus other_count, so the buckets and the \
                        remainder always account for total_matched. Use this \
                        instead of paging rows and counting them.",
+        output_schema = schema_for_output::<AggregateDialogsResponse>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn aggregate_dialogs(
@@ -4106,7 +4193,10 @@ impl SipnabMcp {
         let mut page = serde_json::to_value(page)
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
         Self::project_page_fields(&mut page, params.fields.as_deref())?;
-        Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(page)?,
+            ContentBlock::text(super::shape::untrusted_note()),
+        ]))
     }
 
     // ── Dialog-inspection and monitoring tools ──────────────────────
@@ -4153,12 +4243,24 @@ impl SipnabMcp {
             };
             let total = dialog.messages.len();
             let end = (cursor + max).min(total);
-            let slice = if cursor >= total {
+            let slice: Vec<serde_json::Value> = if cursor >= total {
                 Vec::new()
             } else {
                 dialog.messages[cursor..end]
                     .iter()
-                    .map(crate::output::json::message_to_json_value)
+                    .map(|m| {
+                        let mut v = crate::output::json::message_to_json_value(m);
+                        // The hole this closes was documented rather than
+                        // fixed: this array is the LARGEST run of
+                        // sender-written text the MCP surface returns, and it
+                        // used to arrive with no markers at all beside a
+                        // `dialog` summary that was fenced. One response
+                        // saying two different things about the same
+                        // provenance teaches an agent the markers are
+                        // decorative.
+                        super::shape::fence_message_json(&mut v, self.body_cap);
+                        v
+                    })
                     .collect()
             };
             let summary = super::shape::fenced_dialog_summary(dialog);
@@ -4173,7 +4275,10 @@ impl SipnabMcp {
             })
         };
 
-        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(payload)?,
+            ContentBlock::text(super::shape::untrusted_note()),
+        ]))
     }
 
     /// Returns a single SIP message at the given index, serialized as the
@@ -4222,7 +4327,7 @@ impl SipnabMcp {
             let mut v = crate::output::json::message_to_json_value(msg);
             // Free-text headers fenced here, at the boundary — not in the
             // shared serializer, which also feeds `--json` on the CLI.
-            super::shape::fence_message_json(&mut v);
+            super::shape::fence_message_json(&mut v, self.body_cap);
             v
         };
         Ok(CallToolResult::success(vec![
@@ -4796,7 +4901,21 @@ impl SipnabMcp {
                     .map(|f| FindingJson {
                         rule_name: f.rule_name.clone(),
                         src_ip: f.src_ip.to_string(),
-                        detail: super::shape::truncate_string(&f.detail, self.body_cap),
+                        // Fenced for the reason `generate_fail2ban_rule`
+                        // fences the SAME field: a detail line is built as
+                        // `method=… ua=… detection=…`, and the `ua=` half is
+                        // the scanner's own banner. Two of the three tools
+                        // serving this string fenced it and this one did not,
+                        // which made the omission look considered.
+                        // `fence`, not `fence_field`, matching the sibling
+                        // tool: the detail is already bounded by `body_cap`
+                        // here, and the tighter per-field cap would cut a
+                        // legitimately long line that the operator's own
+                        // ceiling had already admitted.
+                        detail: super::shape::fence(&super::shape::truncate_string(
+                            &f.detail,
+                            self.body_cap,
+                        )),
                         timestamp: f.timestamp.to_rfc3339(),
                     })
                     .collect::<Vec<_>>();
@@ -4823,7 +4942,10 @@ impl SipnabMcp {
                     .to_string()
             }),
         };
-        Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(page)?,
+            ContentBlock::text(super::shape::untrusted_note()),
+        ]))
     }
 
     /// What this server is attached to: live interface or file, for how long,
@@ -4835,6 +4957,7 @@ impl SipnabMcp {
                        streams are held, whether a file source is exhausted, and \
                        whether stopping now would lose unsaved packets. Call this \
                        before reasoning about stopping or restarting a capture.",
+        output_schema = schema_for_output::<CaptureStatusResponse>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn capture_status(&self) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -4956,6 +5079,7 @@ impl SipnabMcp {
                        this before asking for decryption, HEP, a file export or \
                        a capture swap: a build or a server without them fails \
                        confusingly otherwise.",
+        output_schema = schema_for_output::<CapabilitiesResponse>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn server_capabilities(&self) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -5241,6 +5365,7 @@ impl SipnabMcp {
                        unprivileged, this sees only the caller's own processes, \
                        so an empty or short list may mean insufficient \
                        privilege rather than no TLS.",
+        output_schema = schema_for_output::<TlsLibrariesResponse>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn list_tls_libraries(&self) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -5396,9 +5521,23 @@ impl SipnabMcp {
                             crate::sip::sdp_timeline::OfferAnswer::Offer => "offer",
                             crate::sip::sdp_timeline::OfferAnswer::Answer => "answer",
                         },
-                        "codecs": ex.codecs,
+                        // An `a=rtpmap` encoding name is a token the OFFERER
+                        // typed, not a lookup in a payload-type table: for a
+                        // dynamic payload type sipnab reports the SDP's own
+                        // spelling. It arrives labeled like a category sipnab
+                        // computed, which is what makes an instruction hidden
+                        // in one worth fencing.
+                        "codecs": ex.codecs.iter().map(|c| super::shape::fence_field(c))
+                            .collect::<Vec<_>>(),
+                        // An address is an identifier an agent correlates on,
+                        // so it stays verbatim like every other address --
+                        // covered by the response note instead.
                         "media_addr": ex.media_addr,
                         "media_port": ex.media_port,
+                        // NOT fenced, and it looks like it should be: `mode`
+                        // reads like an SDP attribute value but is rendered
+                        // from `MediaMode`, a sipnab enum, so no sender can
+                        // choose the string.
                         "mode": ex.mode,
                         "event": ex.event.as_ref().map(|e| format!("{e:?}")),
                     })
@@ -5410,7 +5549,10 @@ impl SipnabMcp {
                 "exchanges": exchanges,
             })
         };
-        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(payload)?,
+            ContentBlock::text(super::shape::untrusted_note()),
+        ]))
     }
 
     /// Dialogs that started inside a time window, optionally filtered.
@@ -5700,15 +5842,27 @@ impl SipnabMcp {
             serde_json::json!({
                 "schema_version": 1,
                 "call_id": dialog.call_id,
-                "offered": offered,
-                "answered": answered,
-                "common": common,
+                // Fenced for the reason the comment above gives for keeping
+                // them: these deliberately carry "each side's own spelling",
+                // which is exactly what makes them sender-authored text. The
+                // fence preserves the spelling -- it marks the run, it does
+                // not rewrite the token -- so the evidence the comment is
+                // protecting survives intact.
+                "offered": offered.iter().map(|c| super::shape::fence_field(c))
+                    .collect::<Vec<_>>(),
+                "answered": answered.iter().map(|c| super::shape::fence_field(c))
+                    .collect::<Vec<_>>(),
+                "common": common.iter().map(|c| super::shape::fence_field(c))
+                    .collect::<Vec<_>>(),
                 "result": negotiated,
                 "sdp_exchange_count": dialog.sdp_timeline.len(),
                 "final_status_code": dialog.final_status_code(),
             })
         };
-        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(payload)?,
+            ContentBlock::text(super::shape::untrusted_note()),
+        ]))
     }
 
     /// Registration health for one endpoint.
@@ -6683,6 +6837,7 @@ impl SipnabMcp {
                        unrelated calls. charging_vector_related_icid crosses a \
                        B2BUA; charging_vector_icid does NOT, because an RFC \
                        7315 ICID identifies one dialog and a B2BUA is two.",
+        output_schema = schema_for_output::<FindCorrelatedResponse>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn find_correlated(
@@ -6771,6 +6926,7 @@ impl SipnabMcp {
                        read; it is not readable through any tool, does not \
                        appear in any query result, and no analysis consumes it, \
                        so it cannot affect a later answer.",
+        output_schema = schema_for_output::<SaveFindingsResponse>(),
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -7007,11 +7163,13 @@ impl SipnabMcp {
                        attached. Starts no capture. Every value is a number: \
                        the response type carries no text from any packet. \
                        sample_seconds is clamped to 30 and zero is refused.",
+        output_schema = schema_for_output::<CaptureHealth>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn capture_health(
         &self,
         Parameters(params): Parameters<CaptureHealthParams>,
+        Extension(progress): Extension<super::progress::Progress>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let applied_seconds = resolve_sample_seconds(params.sample_seconds)?;
 
@@ -7027,7 +7185,17 @@ impl SipnabMcp {
 
         let before = HealthSample::read();
         let started = std::time::Instant::now();
-        tokio::time::sleep(std::time::Duration::from_secs(u64::from(applied_seconds))).await;
+        // The only wait on this whole tool surface, and therefore the only
+        // place a progress notification has anything to say (PB5). A caller
+        // that sent no `progressToken` gets the single sleep this always was;
+        // one that did is told each second how far through the window it is,
+        // instead of watching a request that could equally be a hung server.
+        progress
+            .sleep_reporting(
+                std::time::Duration::from_secs(u64::from(applied_seconds)),
+                "sampling capture counters",
+            )
+            .await;
         // What the clock says, not what was asked for. A runtime under load
         // wakes the handler late, and a rate divided by the requested window
         // is then wrong by the difference.
@@ -7537,13 +7705,65 @@ impl ServerHandler for SipnabMcp {
         // used to be two refusals and a tail that could drift apart field by
         // field, and an audit trail whose lines do not share a shape is one
         // nobody can grep.
-        let audit = |outcome: &str, error: &str| {
-            let elapsed_ms = started.elapsed().as_millis() as u64;
+        let audit = |outcome: &str, error: &str| -> Result<(), rmcp::ErrorData> {
+            let elapsed = started.elapsed();
+            let elapsed_ms = elapsed.as_millis() as u64;
             tracing::info!(
                 target: "mcp_audit",
                 "tool={tool} id={request_id} caller=\"{caller}\" outcome={outcome} \
                  elapsed_ms={elapsed_ms} args={args}{error}"
             );
+            // Counted HERE rather than beside each return, so the scrape and
+            // the audit trail are the same observation seen twice: a refusal
+            // that skipped the counter would leave a metric no operator could
+            // reconcile against the log.
+            super::metrics::record_tool_call(&tool, outcome, elapsed);
+
+            // The durable half. The tracing line above is a console view an
+            // operator's `SIPNAB_LOG` and `--quiet` decide the fate of; this
+            // is the record somebody produces later, and it is written
+            // unconditionally or the call fails.
+            let Some(sink) = self.audit_sink.as_ref() else {
+                return Ok(());
+            };
+            // The console line spells the error as a leading " error=…" so it
+            // can be concatenated; the record wants the message alone.
+            let reason = error.strip_prefix(" error=").unwrap_or(error);
+            let record = super::audit::AuditRecord {
+                tool: &tool,
+                request_id: &request_id.to_string(),
+                caller: &caller,
+                outcome,
+                elapsed_ms,
+                args: &args,
+                error: reason,
+            };
+            match sink.append(&record) {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    // Loud, and then fatal to this call. An audit sink that
+                    // failed quietly would leave the run answering questions
+                    // it has no record of having answered, which is the exact
+                    // state `--mcp-audit-file` was passed to prevent. The
+                    // side effects of a call that already ran are not undone
+                    // -- an export is still on disk -- but the caller is told
+                    // the call is unrecorded rather than being handed a
+                    // result that never happened as far as the file knows.
+                    tracing::error!(
+                        target: "mcp_audit",
+                        "audit sink {} failed: {e}; refusing tool={tool} to avoid \
+                         answering a call this run cannot account for",
+                        sink.path().display()
+                    );
+                    Err(rmcp::ErrorData::internal_error(
+                        format!(
+                            "the tool call could not be written to the audit log \
+                             ({e}); sipnab refuses a call it cannot record"
+                        ),
+                        None,
+                    ))
+                }
+            }
         };
 
         // Arrival rate first, ahead of the concurrency permit: a peer past its
@@ -7561,7 +7781,7 @@ impl ServerHandler for SipnabMcp {
                     " error=rate limited ({} refused since start)",
                     self.rate_limit_refusals()
                 ),
-            );
+            )?;
             return Err(refusal);
         }
 
@@ -7572,18 +7792,44 @@ impl ServerHandler for SipnabMcp {
         let _permit = match acquire_call_permit(&self.call_limiter) {
             Ok(permit) => permit,
             Err(refusal) => {
-                audit("refused", " error=at capacity");
+                audit("refused", " error=at capacity")?;
                 return Err(refusal);
             }
         };
 
-        let result = match scope_refusal(&scope, &tool, self.tool_router.get(&tool)) {
+        let mut result = match scope_refusal(&scope, &tool, self.tool_router.get(&tool)) {
             Some(refusal) => Err(refusal),
             None => {
+                // The caller's own progress token, reachable to the handler as
+                // an `Extension<Progress>`. It is inserted for EVERY call,
+                // including the ones that carry no token: a handler that has to
+                // ask whether the extension is there would be asking a question
+                // with two answers that mean the same thing, and the extractor
+                // would fail the call rather than fall back.
+                //
+                // Read from the CONTEXT, not from `request`. The service loop
+                // swaps `_meta` out of the request into the context before the
+                // handler runs, so the request's copy is empty here and a token
+                // read from it would silently never be found.
+                let mut context = context;
+                let progress = super::progress::Progress::to(
+                    context.peer.clone(),
+                    context.meta.get_progress_token(),
+                );
+                context.extensions.insert(progress);
                 let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
                 self.tool_router.call(tcc).await
             }
         };
+
+        // PB1, applied to every tool at once. See `super::structured`: the
+        // payload every tool already returns as JSON text is republished as
+        // `structuredContent`, so no client has to parse a string out of a
+        // parsed envelope. Here rather than in the tools because this is the
+        // point that cannot be forgotten by the next one registered.
+        if let Ok(rmcp::model::CallToolResponse::Complete(complete)) = &mut result {
+            super::structured::attach(complete);
+        }
 
         let outcome = match &result {
             Ok(rmcp::model::CallToolResponse::Complete(r)) if r.is_error == Some(true) => {
@@ -7596,7 +7842,16 @@ impl ServerHandler for SipnabMcp {
             Err(e) => format!(" error={}", e.message),
             Ok(_) => String::new(),
         };
-        audit(outcome, &error);
+        // After `structured::attach`, so the figure describes what actually
+        // goes back rather than what the tool handed over.
+        if let Ok(response) = &result {
+            super::metrics::record_response_bytes(&tool, super::metrics::response_bytes(response));
+        }
+        // `?`, not a discard: when a sink is configured and the append fails,
+        // the answer is replaced by the audit error rather than returned
+        // unrecorded. That is the invariant `--mcp-audit-file` buys — no
+        // result leaves this method that is not in the file.
+        audit(outcome, &error)?;
         result
     }
     /// Advertise server capabilities (tools only) and the human-readable
@@ -11088,7 +11343,10 @@ mod tests {
                 // One second, the smallest window the tool accepts: this test
                 // is about the response SHAPE, and the window only decides how
                 // long it sleeps first.
-                .capture_health(Parameters(CaptureHealthParams { sample_seconds: 1 }))
+                .capture_health(
+                    Parameters(CaptureHealthParams { sample_seconds: 1 }),
+                    Extension(crate::mcp::progress::Progress::silent()),
+                )
                 .await
                 .expect("health"),
         ))
@@ -12178,7 +12436,10 @@ mod tests {
     async fn capture_health_refuses_a_zero_second_window() {
         let server = empty_server();
         let err = server
-            .capture_health(Parameters(CaptureHealthParams { sample_seconds: 0 }))
+            .capture_health(
+                Parameters(CaptureHealthParams { sample_seconds: 0 }),
+                Extension(crate::mcp::progress::Progress::silent()),
+            )
             .await
             .expect_err("a zero-second window must be refused");
         assert_eq!(
@@ -12198,7 +12459,10 @@ mod tests {
         let server = empty_server();
         let started = std::time::Instant::now();
         let result = server
-            .capture_health(Parameters(CaptureHealthParams { sample_seconds: 1 }))
+            .capture_health(
+                Parameters(CaptureHealthParams { sample_seconds: 1 }),
+                Extension(crate::mcp::progress::Progress::silent()),
+            )
             .await
             .expect("capture_health");
         let elapsed = started.elapsed();
@@ -13311,7 +13575,10 @@ mod tests {
         let server = server_with_dialog("clk@x");
         let v: serde_json::Value = serde_json::from_str(&text_of(
             &server
-                .capture_health(Parameters(CaptureHealthParams { sample_seconds: 1 }))
+                .capture_health(
+                    Parameters(CaptureHealthParams { sample_seconds: 1 }),
+                    Extension(crate::mcp::progress::Progress::silent()),
+                )
                 .await
                 .expect("health"),
         ))

@@ -399,6 +399,25 @@ pub fn start_servers(
             &[],
             cli.capture_args.recursive,
         );
+        // Opened ONCE, here, and shared by every server this closure builds.
+        // Opening it inside `new_server` would give the stdio and HTTP arms
+        // separate handles with separate sequence counters, so the numbering a
+        // reader uses to detect a dropped record would restart mid-file.
+        //
+        // Opened BEFORE the servers are built, so a bad path is a startup
+        // error the operator sees rather than a first-tool-call error nobody
+        // is watching for.
+        let audit_sink = match cli.mcp_args.mcp_audit_file.as_ref() {
+            Some(path) => Some(Arc::new(
+                crate::mcp::audit::AuditSink::open(std::path::Path::new(path)).map_err(|e| {
+                    anyhow::anyhow!(
+                        "--mcp-audit-file {path}: {e}. sipnab refuses to serve MCP without \
+                         the audit trail it was asked for"
+                    )
+                })?,
+            )),
+            None => None,
+        };
         let new_server = || {
             let s = crate::mcp::SipnabMcp::new(Arc::clone(dialog_store), Arc::clone(stream_store))
                 .with_source_exhausted(Arc::clone(&exhausted))
@@ -408,6 +427,15 @@ pub fn start_servers(
                 .with_capture_state(Arc::clone(&capture_state))
                 .with_protected_inputs(protected_inputs.clone())
                 .with_max_concurrent(cli.mcp_args.mcp_max_concurrent as usize)
+                // Clap has already refused any spelling but `core` and
+                // `full`, so the fallback here is unreachable rather than a
+                // second policy: taking `full` silently for an unknown name
+                // would hand the largest surface to an operator who asked for
+                // a smaller one.
+                .with_tool_profile(
+                    crate::mcp::profile::ToolProfile::parse(&cli.mcp_args.mcp_tools)
+                        .unwrap_or_default(),
+                )
                 .with_rate_limit_per_peer(
                     cli.mcp_args.mcp_rate_limit_per_peer,
                     selection.max_tracked_peers,
@@ -422,6 +450,10 @@ pub fn start_servers(
                 )
                 .with_body_cap(selection.mcp_body_cap)
                 .with_findings_cap(selection.mcp_max_findings);
+            let s = match audit_sink.as_ref() {
+                Some(sink) => s.with_audit_sink(Arc::clone(sink)),
+                None => s,
+            };
             let s = match cli.mcp_args.mcp_file_root.as_ref() {
                 Some(dir) => s.with_file_root(dir),
                 None => s,

@@ -9,7 +9,7 @@
 //! (`super::api`, feature `api`) and by the standalone
 //! `super::prometheus_server`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 
 // ── Public types ─────────────────────────────────────────────────────
@@ -161,6 +161,95 @@ pub fn configured_buckets() -> HistogramBuckets {
     CONFIGURED_BUCKETS.get().cloned().unwrap_or_default()
 }
 
+/// The `le` boundaries `sipnab_mcp_tool_duration_seconds` publishes.
+///
+/// Fixed rather than derived, unlike [`HistogramBuckets`]: those four families
+/// measure the CALL, whose acceptable range an operator configures, and this
+/// one measures sipnab answering a question, which no sipnab setting bounds.
+/// The ladder spans the range a tool call actually occupies — a store lookup
+/// answers in well under a millisecond, a whole-capture sweep takes seconds —
+/// so both ends of it are distinguishable rather than piled into one bucket.
+///
+/// Published in SECONDS, not the milliseconds the audit line uses, because the
+/// Prometheus convention is base units and a histogram named `_seconds`
+/// carrying milliseconds is a metric every dashboard reads wrong.
+pub const MCP_TOOL_LATENCY_BUCKETS_SECONDS: &[f64] = &[
+    0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+];
+
+/// What one MCP tool was asked to do since the process started.
+///
+/// Bucket COUNTS rather than the raw observations the four capture histograms
+/// keep: this one accumulates for the life of the process across every tool
+/// call an agent makes, and retaining an f64 per call is an unbounded
+/// allocation driven by a remote caller.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpToolTally {
+    /// Calls by the audit line's outcome word (`ok`, `tool_error`,
+    /// `refused`), which is where `sipnab_mcp_tool_calls_total{tool,outcome}`
+    /// gets its second label.
+    pub calls_by_outcome: BTreeMap<String, u64>,
+    /// Observations per [`MCP_TOOL_LATENCY_BUCKETS_SECONDS`] interval, NOT
+    /// cumulative: entry `i` counts the calls that fell above boundary `i-1`
+    /// and at or below boundary `i`. The exposition accumulates them, which is
+    /// the same shape `format_histogram` produces from raw observations, so
+    /// the two histogram styles publish identically.
+    ///
+    /// Calls past the last boundary appear in no entry here and in
+    /// [`Self::latency_count`], which is exactly the `+Inf` bucket.
+    pub latency_buckets: Vec<u64>,
+    /// Calls timed, which is the histogram's `_count` and its `+Inf` bucket.
+    pub latency_count: u64,
+    /// Total seconds across those calls, which is the histogram's `_sum`.
+    pub latency_sum_seconds: f64,
+    /// Content bytes this tool has returned, the source of
+    /// `sipnab_mcp_tool_response_bytes_total{tool}`.
+    pub response_bytes: u64,
+}
+
+impl Default for McpToolTally {
+    /// A tally whose bucket vector already matches
+    /// [`MCP_TOOL_LATENCY_BUCKETS_SECONDS`].
+    ///
+    /// Hand-written rather than derived because a derived `Default` gives an
+    /// EMPTY vector, and every observation would then land past the last
+    /// boundary — a histogram reporting that every call sipnab ever answered
+    /// took longer than ten seconds.
+    fn default() -> Self {
+        Self {
+            calls_by_outcome: BTreeMap::new(),
+            latency_buckets: vec![0; MCP_TOOL_LATENCY_BUCKETS_SECONDS.len()],
+            latency_count: 0,
+            latency_sum_seconds: 0.0,
+            response_bytes: 0,
+        }
+    }
+}
+
+impl McpToolTally {
+    /// Record one call's duration.
+    ///
+    /// # Arguments
+    ///
+    /// * `seconds` — how long the call took.
+    ///
+    /// # Side effects
+    ///
+    /// Bumps the matching bucket (none, when the observation is past the last
+    /// boundary), the count and the sum.
+    pub fn observe_latency(&mut self, seconds: f64) {
+        if let Some(i) = MCP_TOOL_LATENCY_BUCKETS_SECONDS
+            .iter()
+            .position(|&le| seconds <= le)
+            && let Some(bucket) = self.latency_buckets.get_mut(i)
+        {
+            *bucket = bucket.saturating_add(1);
+        }
+        self.latency_count = self.latency_count.saturating_add(1);
+        self.latency_sum_seconds += seconds;
+    }
+}
+
 /// Collected metrics for Prometheus exposition.
 ///
 /// All counters use monotonically increasing values. Histograms store
@@ -223,6 +312,13 @@ pub struct PrometheusMetrics {
     /// the formatter, so `format_metrics` stays a pure function of its input
     /// and a test can publish any boundaries it likes.
     pub buckets: HistogramBuckets,
+    /// What each MCP tool was asked to do, keyed by tool name.
+    ///
+    /// Empty on a build without the `mcp` feature and on one that has it but
+    /// has served no tool call — the two are indistinguishable here on
+    /// purpose, because both mean "no MCP work has happened" and neither is
+    /// something to publish a zero series about.
+    pub mcp_tool_calls: BTreeMap<String, McpToolTally>,
     /// TCP/SIP reassembly timeout count.
     pub reassembly_timeouts_total: u64,
     /// Media diagnosis counts by type (e.g., `"one_way_audio"`, `"nat_mismatch"`).
@@ -468,6 +564,15 @@ impl PrometheusMetrics {
         }
         for (kind, count) in crate::security::alerts_by_type() {
             m.security_alerts_total.insert(kind, count);
+        }
+        // Read here rather than in the collectors, for the reason this whole
+        // method exists: the MCP server runs on its own thread and neither
+        // store knows it happened, so a collector building from `default()`
+        // would publish a zero for a server that had answered thousands of
+        // calls.
+        #[cfg(feature = "mcp")]
+        {
+            m.mcp_tool_calls = crate::mcp::metrics::tallies();
         }
         m
     }
@@ -917,6 +1022,8 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
         &metrics.diagnosis_total,
     );
 
+    format_mcp_tool_metrics(&mut out, &metrics.mcp_tool_calls);
+
     // ── Histograms ───────────────────────────────────────────────
     format_histogram(
         &mut out,
@@ -1009,6 +1116,107 @@ fn escape_label_value(s: &str) -> String {
     out
 }
 
+/// Format the three per-tool MCP families: the call counter, the latency
+/// histogram and the response-byte counter.
+///
+/// Appends nothing when no tool call has been made — the rule
+/// [`format_labeled_counter`] follows, and it matters more here: a build with
+/// no MCP server at all would otherwise publish three empty families claiming
+/// a surface it does not have.
+///
+/// The three are written together rather than through the generic helpers
+/// above because each carries a `tool` label those helpers cannot express, and
+/// because a reader asking "what did the agents do" wants them adjacent.
+fn format_mcp_tool_metrics(out: &mut String, tools: &BTreeMap<String, McpToolTally>) {
+    if tools.is_empty() {
+        return;
+    }
+
+    write_help_type(
+        out,
+        "sipnab_mcp_tool_calls_total",
+        "MCP tool calls by tool and outcome (ok, tool_error, refused). A name \
+         no tool answers to still counts: an unknown tool is the probing this \
+         counter exists to show",
+        "counter",
+    );
+    for (tool, tally) in tools {
+        let tool_label = escape_label_value(tool);
+        for (outcome, count) in &tally.calls_by_outcome {
+            let outcome_label = escape_label_value(outcome);
+            let _ = writeln!(
+                out,
+                "sipnab_mcp_tool_calls_total{{tool=\"{tool_label}\",outcome=\"{outcome_label}\"}} {count}"
+            );
+        }
+    }
+    out.push('\n');
+
+    // The suffixed forms are built from this rather than written out, the way
+    // `format_histogram` builds its own: `metrics_docs_drift_test` scans this
+    // file for `sipnab_` literals and treats each as a family an operator must
+    // be told about, and `_bucket` / `_count` / `_sum` are suffixes of one
+    // family rather than three of them.
+    const DURATION: &str = "sipnab_mcp_tool_duration_seconds";
+    write_help_type(
+        out,
+        DURATION,
+        "How long each MCP tool takes to answer, in seconds. Timed at the same \
+         point the audit line's elapsed_ms is, so a slow tool reads the same on \
+         both surfaces",
+        "histogram",
+    );
+    for (tool, tally) in tools {
+        let tool_label = escape_label_value(tool);
+        // Cumulative on the way out, from the per-interval counts held in the
+        // tally: Prometheus `le` means "at or below", so each line carries
+        // everything under it.
+        let mut cumulative: u64 = 0;
+        for (i, le) in MCP_TOOL_LATENCY_BUCKETS_SECONDS.iter().enumerate() {
+            cumulative =
+                cumulative.saturating_add(tally.latency_buckets.get(i).copied().unwrap_or(0));
+            let _ = writeln!(
+                out,
+                "{DURATION}_bucket{{tool=\"{tool_label}\",le=\"{le}\"}} {cumulative}"
+            );
+        }
+        let _ = writeln!(
+            out,
+            "{DURATION}_bucket{{tool=\"{tool_label}\",le=\"+Inf\"}} {}",
+            tally.latency_count
+        );
+        let _ = writeln!(
+            out,
+            "{DURATION}_count{{tool=\"{tool_label}\"}} {}",
+            tally.latency_count
+        );
+        let _ = writeln!(
+            out,
+            "{DURATION}_sum{{tool=\"{tool_label}\"}} {}",
+            tally.latency_sum_seconds
+        );
+    }
+    out.push('\n');
+
+    write_help_type(
+        out,
+        "sipnab_mcp_tool_response_bytes_total",
+        "Text content bytes each MCP tool has returned. The payload an agent \
+         reads, not the framed wire size: the JSON-RPC envelope and its \
+         escaping are not counted",
+        "counter",
+    );
+    for (tool, tally) in tools {
+        let tool_label = escape_label_value(tool);
+        let _ = writeln!(
+            out,
+            "sipnab_mcp_tool_response_bytes_total{{tool=\"{tool_label}\"}} {}",
+            tally.response_bytes
+        );
+    }
+    out.push('\n');
+}
+
 /// Format a histogram with cumulative buckets, `_count`, and `_sum`.
 ///
 /// Each `le` bucket counts observations `<= le` (cumulative); the `+Inf`
@@ -1068,6 +1276,142 @@ mod tests {
         m.jitter_histogram = vec![5.0, 12.0, 3.0, 25.0, 8.0, 45.0, 2.0, 15.0];
         m.loss_histogram = vec![0.0, 0.5, 1.2, 0.0, 3.5, 0.1, 0.0, 0.8];
         m
+    }
+
+    /// A tally with one call at `seconds`, `bytes` returned, under `outcome`.
+    fn tool_tally(outcome: &str, seconds: f64, bytes: u64) -> McpToolTally {
+        let mut t = McpToolTally::default();
+        t.calls_by_outcome.insert(outcome.to_string(), 1);
+        t.observe_latency(seconds);
+        t.response_bytes = bytes;
+        t
+    }
+
+    /// The MCP families carry both labels and the histogram's three parts.
+    #[test]
+    fn mcp_tool_metrics_carry_tool_and_outcome() {
+        let mut m = sample_metrics();
+        m.mcp_tool_calls
+            .insert("list_dialogs".to_string(), tool_tally("ok", 0.004, 2048));
+        let out = format_metrics(&m);
+
+        assert!(
+            out.contains(r#"sipnab_mcp_tool_calls_total{tool="list_dialogs",outcome="ok"} 1"#),
+            "missing the two-label counter:\n{out}"
+        );
+        assert!(
+            out.contains(r#"sipnab_mcp_tool_response_bytes_total{tool="list_dialogs"} 2048"#),
+            "missing the per-tool byte counter:\n{out}"
+        );
+        assert!(
+            out.contains(r#"sipnab_mcp_tool_duration_seconds_count{tool="list_dialogs"} 1"#),
+            "missing the histogram count:\n{out}"
+        );
+        assert!(
+            out.contains(
+                r#"sipnab_mcp_tool_duration_seconds_bucket{tool="list_dialogs",le="+Inf"} 1"#
+            ),
+            "missing the +Inf bucket:\n{out}"
+        );
+        assert!(
+            out.contains("# TYPE sipnab_mcp_tool_duration_seconds histogram"),
+            "the latency family must be typed as a histogram:\n{out}"
+        );
+    }
+
+    /// Latency buckets are cumulative on the way out: a 4 ms call appears in
+    /// the 5 ms bucket and in every bucket above it, and in none below.
+    #[test]
+    fn mcp_latency_buckets_are_cumulative() {
+        let mut m = PrometheusMetrics::default();
+        m.mcp_tool_calls
+            .insert("t".to_string(), tool_tally("ok", 0.004, 0));
+        let out = format_metrics(&m);
+
+        assert!(
+            out.contains(r#"sipnab_mcp_tool_duration_seconds_bucket{tool="t",le="0.001"} 0"#),
+            "a 4 ms call must not appear in the 1 ms bucket:\n{out}"
+        );
+        assert!(
+            out.contains(r#"sipnab_mcp_tool_duration_seconds_bucket{tool="t",le="0.005"} 1"#),
+            "a 4 ms call belongs in the 5 ms bucket:\n{out}"
+        );
+        assert!(
+            out.contains(r#"sipnab_mcp_tool_duration_seconds_bucket{tool="t",le="10"} 1"#),
+            "and in every bucket above it -- `le` means at-or-below:\n{out}"
+        );
+    }
+
+    /// A call slower than the last boundary reaches `+Inf` and `_count`
+    /// alone, which is what a Prometheus histogram means by unbounded.
+    #[test]
+    fn a_call_past_the_last_boundary_lands_only_in_inf() {
+        let last = MCP_TOOL_LATENCY_BUCKETS_SECONDS
+            .last()
+            .copied()
+            .unwrap_or_default();
+        let mut m = PrometheusMetrics::default();
+        m.mcp_tool_calls
+            .insert("slow".to_string(), tool_tally("ok", last + 1.0, 0));
+        let out = format_metrics(&m);
+
+        assert!(
+            out.contains(&format!(
+                r#"sipnab_mcp_tool_duration_seconds_bucket{{tool="slow",le="{last}"}} 0"#
+            )),
+            "the last finite bucket must not hold it:\n{out}"
+        );
+        assert!(
+            out.contains(r#"sipnab_mcp_tool_duration_seconds_bucket{tool="slow",le="+Inf"} 1"#),
+            "+Inf must:\n{out}"
+        );
+    }
+
+    /// A build that has served no tool call publishes no MCP series at all,
+    /// rather than three empty families claiming a surface it may not have.
+    #[test]
+    fn no_tool_calls_publishes_no_mcp_families() {
+        let out = format_metrics(&sample_metrics());
+        assert!(
+            !out.contains("sipnab_mcp_tool"),
+            "an empty tally must publish nothing:\n{out}"
+        );
+    }
+
+    /// A tool name carrying a quote cannot close the label and forge a second
+    /// one. The name comes from the client, so this is the same escaping
+    /// question `escape_label_value` answers for every other family.
+    #[test]
+    fn a_tool_name_cannot_forge_a_label() {
+        let mut m = PrometheusMetrics::default();
+        m.mcp_tool_calls.insert(
+            "evil\",outcome=\"ok".to_string(),
+            tool_tally("refused", 0.001, 0),
+        );
+        let out = format_metrics(&m);
+
+        assert!(
+            out.contains(r#"tool="evil\",outcome=\"ok",outcome="refused""#),
+            "the quote must be escaped rather than closing the label:\n{out}"
+        );
+    }
+
+    /// Every observation counts toward `_sum` in seconds, so a dashboard
+    /// dividing `_sum` by `_count` gets an average in the unit the name
+    /// promises.
+    #[test]
+    fn the_latency_sum_is_in_seconds() {
+        let mut tally = McpToolTally::default();
+        tally.observe_latency(0.25);
+        tally.observe_latency(0.75);
+        let mut m = PrometheusMetrics::default();
+        m.mcp_tool_calls.insert("t".to_string(), tally);
+        let out = format_metrics(&m);
+
+        assert!(
+            out.contains(r#"sipnab_mcp_tool_duration_seconds_sum{tool="t"} 1"#),
+            "two calls of 250 ms and 750 ms sum to one second:\n{out}"
+        );
     }
 
     /// Every non-empty line is a comment or a `sipnab_` metric line.

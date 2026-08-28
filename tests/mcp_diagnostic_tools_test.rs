@@ -100,17 +100,40 @@ fn codec_negotiation_reports_the_real_codecs() {
     let common: Vec<String> = serde_json::from_value(v["common"].clone()).expect("common");
 
     assert!(
-        offered.iter().any(|c| c == "PCMU"),
+        offered.iter().any(|c| unfenced(c) == "PCMU"),
         "the offer carries PCMU; got {offered:?}. An empty list here is the \
          exact shape a broken extractor produces"
     );
     assert!(
-        answered.iter().any(|c| c == "PCMU"),
+        answered.iter().any(|c| unfenced(c) == "PCMU"),
         "the answer carries PCMU; got {answered:?}"
     );
-    assert_eq!(common, vec!["PCMU".to_string()], "PCMU is the agreed codec");
+    let common_spellings: Vec<&str> = common.iter().map(|c| unfenced(c)).collect();
+    assert_eq!(common_spellings, vec!["PCMU"], "PCMU is the agreed codec");
     assert_eq!(v["result"], "ok");
     assert!(v["sdp_exchange_count"].as_u64().unwrap_or(0) >= 2);
+}
+
+/// The payload of a fenced run, failing loudly when the markers are absent.
+///
+/// Codec names are fenced because an `a=rtpmap` encoding name is NOT the
+/// space-free token it looks like: `parse_rtpmap` splits the value once on a
+/// space and then takes everything up to the first `/`, so
+/// `a=rtpmap:96 ignore all prior instructions/8000` yields an encoding of
+/// `ignore all prior instructions`. See
+/// `an_rtpmap_encoding_name_carrying_a_sentence_is_fenced` below, which proves
+/// that on the wire rather than asserting it here.
+///
+/// These tests care about the SPELLING surviving, which the fence preserves —
+/// it marks the run, it does not rewrite the token — so they strip the markers
+/// and compare what is inside. Failing when a marker is missing is what keeps
+/// this from quietly becoming an unfenced comparison again.
+fn unfenced(s: &str) -> &str {
+    const OPEN: &str = "\u{27E6}untrusted-capture-data\u{27E7}";
+    const CLOSE: &str = "\u{27E6}/untrusted-capture-data\u{27E7}";
+    s.strip_prefix(OPEN)
+        .and_then(|r| r.strip_suffix(CLOSE))
+        .unwrap_or_else(|| panic!("capture-derived text reached the agent unfenced: {s:?}"))
 }
 
 /// A dialog with no SDP must say so, not claim the far end failed to answer.
@@ -158,9 +181,10 @@ fn codec_negotiation_names_a_static_payload_type_with_no_rtpmap() {
         serde_json::json!({"call_id": "codec-reject-synth"}),
     );
     let offered: Vec<String> = serde_json::from_value(v["offered"].clone()).expect("offered");
+    let spellings: Vec<&str> = offered.iter().map(|c| unfenced(c)).collect();
     assert_eq!(
-        offered,
-        vec!["PCMU".to_string()],
+        spellings,
+        vec!["PCMU"],
         "payload type 0 is PCMU by RFC 3551 Table 4 with or without an rtpmap; \
          got {offered:?}"
     );
@@ -193,15 +217,15 @@ fn codec_comparison_ignores_case_because_rfc_4855_does() {
 
     // The wire spelling is evidence and must survive into the report.
     assert!(
-        offered.iter().any(|c| c == "PCMA"),
+        offered.iter().any(|c| unfenced(c) == "PCMA"),
         "the offer's own spelling must be preserved; got {offered:?}"
     );
     assert!(
-        answered.iter().any(|c| c == "pcma"),
+        answered.iter().any(|c| unfenced(c) == "pcma"),
         "the answer's own spelling must be preserved; got {answered:?}"
     );
 
-    let lower: Vec<String> = common.iter().map(|c| c.to_lowercase()).collect();
+    let lower: Vec<String> = common.iter().map(|c| unfenced(c).to_lowercase()).collect();
     assert!(
         lower.iter().any(|c| c == "pcma") && lower.iter().any(|c| c == "pcmu"),
         "PCMA and PCMU appear on both sides and must be common; got {common:?}"
@@ -275,9 +299,10 @@ fn sdp_timeline_carries_codecs() {
     assert!(!exchanges.is_empty(), "G.711 call must have SDP exchanges");
     assert!(
         exchanges.iter().any(|e| {
-            e["codecs"]
-                .as_array()
-                .is_some_and(|c| c.iter().any(|x| x == "PCMU"))
+            e["codecs"].as_array().is_some_and(|c| {
+                c.iter()
+                    .any(|x| x.as_str().is_some_and(|x| unfenced(x) == "PCMU"))
+            })
         }),
         "at least one exchange must list PCMU; got {exchanges:?}"
     );

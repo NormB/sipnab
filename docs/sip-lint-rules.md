@@ -84,6 +84,33 @@ OBS-*
 Patterns separate on commas, spaces or newlines, and `#` starts a comment.
 
 Put them in a `.sipnablint` and check it in beside the config it belongs to.
+Both surfaces read the same file: the MCP lint tools take a `suppress_file`
+parameter, and the binary takes `--lint-suppress-file`. In the ordinary case you
+need not tell either one where the file is — see the discovery rule below.
+
+Discovery honors the `.sipnablint` beside `calls.pcap`, and reports which file
+it applied and how many findings it silenced:
+
+```sh
+sipnab -N -I calls.pcap --lint --lint-fail-on error
+```
+
+An explicit list, for a CI job whose suppressions differ from the tree's:
+
+```sh
+sipnab -N -I calls.pcap --lint --lint-suppress-file ci.sipnablint
+```
+
+Everything, including what the project has agreed to live with:
+
+```sh
+sipnab -N -I calls.pcap --lint --lint-no-suppress
+```
+
+A file named with `--lint-suppress-file` that sipnab cannot open is a hard error
+rather than a full-catalog run: pointing at a suppression list states an intent,
+and linting with every rule on would read as "my suppressions matched nothing".
+
 sipnab looks for one next to the capture, then climbs toward the project root —
 the nearest ancestor holding a `.git` — and stops there. A capture living
 outside any project, such as a corpus mount or a shared drop, picks up nothing
@@ -172,6 +199,9 @@ These read one message on its own.
 | `SIP-7989-5-SESSION-ID-MALFORMED` | error | must | [RFC 7989 §5](https://www.rfc-editor.org/rfc/rfc7989#section-5) | A `Session-ID` half is not 32 characters of `[0-9a-f]`, so it is not a `sess-uuid` at all. Correlation drops the half, and across a B2BUA there may be nothing well formed left to match one leg to the other. |
 | `SIP-7989-5-SESSION-ID-UPPERCASE` | warning | must | [RFC 7989 §5](https://www.rfc-editor.org/rfc/rfc7989#section-5) | A `Session-ID` UUID arrives in uppercase hexadecimal. sipnab compares case-insensitively and still correlates on it; any peer, SBC or log pipeline comparing the header byte for byte sees two identifiers for one session. |
 | `SIP-7989-11-SESSION-ID-LEGACY-FORM` | notice | interop | [RFC 7989 §11](https://www.rfc-editor.org/rfc/rfc7989#section-11) | A `Session-ID` carries no `remote` parameter, the obsoleted [RFC 7329](https://www.rfc-editor.org/rfc/rfc7329) single-UUID form. §5 makes `remote` a MUST with a §11 exception for interworking with that older form, which one message cannot confirm — so this names the peer as an interop observation rather than asserting a violation. Correlation then works in one direction only. |
+| `SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED` | error | must | [RFC 3261 §7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) | A header field whose value is not defined as a comma-separated list arrives on more than one row. §7.3.1 names `WWW-Authenticate`, `Authorization`, `Proxy-Authenticate` and `Proxy-Authorization` as its own exception, so the rule skips those four. |
+| `SIP-3261-16.6-RECORD-ROUTE-NOT-LOOSE` | error | must | [RFC 3261 §16.6](https://www.rfc-editor.org/rfc/rfc3261#section-16.6) | A `Record-Route` URI carries no `lr` parameter, so the hop it records is a strict route. |
+| `SIP-3261-8.1.1.7-VIA-BRANCH-DUPLICATE` | error | must | [RFC 3261 §8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) | Two `Via` header field values in one request carry the same `branch`. Requests only: a response copies the request's stack verbatim (§8.2.6.2). |
 
 ### What the corpus can and cannot vouch for
 
@@ -252,6 +282,12 @@ These read a dialog's messages against each other.
 | `SDP-3264-6.1-ANSWER-DIRECTION-ILLEGAL` | error | must | [RFC 3264 §6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | The answer's direction attribute contradicts what the offer's admits. |
 | `SIP-3262-4-PRACK-MISSING` | warning | must | [RFC 3262 §4](https://www.rfc-editor.org/rfc/rfc3262#section-4) | A reliable provisional went unacknowledged in a dialog whose `INVITE` reached a final response, so the `PRACK` is absent rather than merely off the end of the capture. |
 | `SDP-3264-8.4-HOLD-CONNECTION-ZERO` | warning | should | [RFC 3264 §8.4](https://www.rfc-editor.org/rfc/rfc3264#section-8.4) | A re-offer blanks the connection address to signal hold. |
+| `SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH` | error | must | [RFC 3261 §17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) | An `ACK` to a **non-2xx** carries a `branch` other than its `INVITE`'s. A 2xx `ACK` is exempt and must be — see below. |
+| `SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED` | error | must | [RFC 3261 §12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1) | A 2xx to the dialog-forming request drops or reorders a `Record-Route` value the request carried. |
+| `SDP-3264-8.3.2-DYNAMIC-PT-REBOUND` | error | must | [RFC 3264 §8.3.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.3.2) | A dynamic payload type (96-127) means one codec in one body and a different codec in a later body of the same `m=` line. |
+| `SDP-3264-7-TELEPHONE-EVENT-ONE-WAY` | warning | interop | [RFC 3264 §7](https://www.rfc-editor.org/rfc/rfc3264#section-7) | An offer declares `telephone-event` on an audio stream the answer accepted and shares a codec with, and the answer omits it. |
+| `SDP-3264-8.2-REJECTED-STREAM-ATTRIBUTES` | notice | interop | [RFC 3264 §8.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.2) | A stream the answer declined with port zero still carries `a=rtpmap`, `a=fmtp`, `a=crypto`, `a=candidate`, `a=ptime`, `a=rtcp-mux` or `a=rtcp`. |
+| `SDP-7587-7-OPUS-RTPMAP-RATE` | error | must | [RFC 7587 §7](https://www.rfc-editor.org/rfc/rfc7587#section-7) | An `a=rtpmap` names `opus` at a clock rate other than 48000, or with a channel count other than 2. |
 
 ### An answer listing an extra codec stays legal
 
@@ -295,6 +331,196 @@ cause was not subscriptions. A `SUBSCRIBE` dialog carries `NOTIFY` requests in
 the reverse direction, and a response to a `NOTIFY` correctly carries the
 subscriber's tag, which is not the tag the `SUBSCRIBE` addressed. Matching on
 the transaction took the count to zero.
+
+### What the corpus says about the nine newest rules
+
+Measured against the local validation corpus: 62 readable captures, 39,239
+dialogs, 3,371 of them carrying SDP and 272 with RTP linked to them.
+
+| Rule | Dialogs | Reading |
+|---|---|---|
+| `SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH` | 129 (0.3%) | Real hits, and the rate is the one that matters: a rule that read every `ACK` rather than only the non-2xx ones would have fired on a large share of the 39,239. |
+| `SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED` | 55 (0.1%) | Real hits. |
+| `SDP-7587-7-OPUS-RTPMAP-RATE` | 16 | Real hits. |
+| `SDP-3264-8.3.2-DYNAMIC-PT-REBOUND` | 2 | Real hits, and rare, which is what a rule about a re-`INVITE` changing a codec binding should be. |
+| `SIP-3261-16.6-RECORD-ROUTE-NOT-LOOSE` | 0 | **Exercised and declined.** `RECORD-ROUTE-NOT-COPIED` fires 55 times on the same corpus, and it only reaches its own body when a request carries a bracketed `Record-Route` — the exact values this rule reads. So the corpus does hold recorded routes, and every one of them carries `lr`. |
+| `SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED` | 0 | Not exercised. Its silence rests on its unit tests, not on this traffic. |
+| `SIP-3261-8.1.1.7-VIA-BRANCH-DUPLICATE` | 0 | Not exercised, and a corpus with no looping request is the expected shape of one. |
+| `SDP-3264-7-TELEPHONE-EVENT-ONE-WAY` | 0 | Not exercised. |
+| `SDP-3264-8.2-REJECTED-STREAM-ATTRIBUTES` | 0 | Not exercised. |
+
+The distinction in that last column is the point. An unexercised rule and a rule
+with nothing to find produce the same row, and only this note tells them apart —
+see the same caveat for the RFC 3262 rules above.
+
+### Why the ACK branch rule covers only non-2xx
+
+[RFC 3261 §17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) says an `ACK` "MUST contain a single Via header field,
+and this MUST be equal to the top Via header field of the original request".
+Reused verbatim, that sentence would report the correct behavior on every
+answered call in every capture ever taken — because the same section opens by
+sending the 2xx case somewhere else: "A UAC core that generates an ACK for 2xx
+MUST instead follow the rules described in Section 13."
+
+An `ACK` to a 2xx is a **new transaction**. [§13.2.2.4](https://www.rfc-editor.org/rfc/rfc3261#section-13.2.2.4) builds it from the dialog's
+route set, and [§8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) requires a new branch for it. An `ACK` to a non-2xx is
+hop-by-hop, absorbed by the same INVITE server transaction, and shares that
+transaction's branch — which §8.1.1.7 names as one of exactly two exceptions to
+branch uniqueness, alongside `CANCEL`.
+
+So the rule reports only where the capture has already shown a final response
+between 300 and 699 for that `CSeq`. An `ACK` whose `INVITE` the capture never
+carried settles nothing, so sipnab skips it.
+
+### Why the Record-Route rule compares a suffix and not a list
+
+[RFC 3261 §12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1) makes the UAS "copy all Record-Route header field values from
+the request into the response" and "MUST maintain the order of those values",
+and [§12.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.2) has the caller build its route set from the *response*, in
+reverse. A value the response dropped is a proxy removed from a path it recorded
+itself into. A value reordered sends every in-dialog request through the hops
+backwards. Both fail after the call is up, which is why they arrive as a network
+ticket rather than a signaling one.
+
+The rule does **not** report a response carrying *more* values than the request.
+A capture taken anywhere but at the UAS sees the request before the last
+recording proxy inserted its value and the response after — so "the response has
+one extra" is the ordinary shape of a proxy-side capture, and an equality
+comparison would fire on most of them. The rule reports only the request's own
+list going missing from the tail of the response's.
+
+### The telephone-event rule is not in [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733)
+
+The widely held belief is that [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733) requires both ends to agree a
+`telephone-event` payload type. It does not. RFC 4733 contains no offer/answer
+rule at all: §2.5.1.1 says negotiation happens "by out-of-band means, using SDP,
+for example" and never says what an omitted `telephone-event` means. This
+rule's author read the document end to end, and the only sender-side obligation
+in it is about the `events` parameter.
+
+<!-- The paragraph below quotes [RFC 3264 §7](https://www.rfc-editor.org/rfc/rfc3264#section-7) verbatim. Rewording "that were
+     listed in the initial offer" to satisfy the passive-voice rule would
+     misquote the standard this rule cites. -->
+<!-- vale Google.Passive = NO -->
+
+The binding text is [RFC 3264 §7](https://www.rfc-editor.org/rfc/rfc3264#section-7): "The offerer MAY immediately cease listening
+for media formats that were listed in the initial offer, but not present in the
+answer." A **MAY**, so nothing here breaks — which is why the rule reports as
+`interop` and not as a MUST violation, and why it cites RFC 3264.
+
+<!-- vale Google.Passive = YES -->
+
+What makes it a *one-way* fault rather than simply no DTMF is that equipment
+sends the event anyway on the payload type it offered. The far end receives a
+payload type it never agreed to and either drops it or decodes it as audio,
+while DTMF in the other direction works — which is the whole of every "the IVR
+cannot hear our digits" ticket.
+
+The rule needs the stream accepted (port non-zero) and sharing at least one
+audio format. A declined stream negotiated nothing, and a stream with no common
+format is already `SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT`.
+
+### A declined stream that kept its attributes cites §8.2, not §6
+
+<!-- The paragraph below reproduces §6's whole statement about a rejected
+     stream verbatim, which is the point being made about it. Rewording "MUST be
+     set to zero" or "are ignored" would misquote the standard. -->
+<!-- vale Google.Passive = NO -->
+
+[RFC 3264 §6](https://www.rfc-editor.org/rfc/rfc3264#section-6) is where this is usually attributed, and §6 does not say it. Its
+whole statement about a rejected stream is: "To reject an offered stream, the
+port number in the corresponding stream in the answer MUST be set to zero. Any
+media formats listed are ignored. At least one MUST be present, as specified by
+SDP." Nothing about attributes.
+
+<!-- vale Google.Passive = YES -->
+
+The attribute sentence is in [§8.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.2): "the answer MAY omit all attributes present
+previously, and MAY list just a single media format." A **MAY** — so keeping
+them is legal, and the rule reports at `notice` under `interop`.
+
+It is still worth a line, for two reasons the finding names in its `observed`
+field. An `a=crypto` on a declined stream is SRTP key material published for a
+stream that never carries a packet. And equipment that reads attributes before
+it reads the port allocates a relay leg and a transcoder for a stream nobody
+answered.
+
+A stream the *offer* already removed at port zero is exempt: that is §8.2's own
+mechanism for tearing a stream down, and the answer marking it zero too is what
+§8.2 requires.
+
+### Opus: the decidable half, and the half that is not
+
+[RFC 7587 §7](https://www.rfc-editor.org/rfc/rfc7587#section-7) is unambiguous: "The RTP clock rate in `a=rtpmap` MUST be 48000,
+and the number of channels MUST be 2." Every example in the RFC writes
+`opus/48000/2`, including the one titled "16000 Hz clock rate" — an endpoint
+signals the narrower band with `maxplaybackrate` in `a=fmtp`, never in the
+rtpmap. An `a=rtpmap` carrying no channel count is `opus/48000/1` by [RFC 4566 §6](https://www.rfc-editor.org/rfc/rfc4566#section-6)'s default,
+and §7 admits neither.
+
+<!-- The paragraph below quotes [RFC 7587 §4.1](https://www.rfc-editor.org/rfc/rfc7587#section-4.1) verbatim, and the exact wording is
+     the argument: §4.1 is a statement of fact, not [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) language. Rewording
+     it would destroy the distinction the rule turns on. -->
+<!-- vale Google.Passive = NO -->
+
+The rule cites §7 and not §4.1. §4.1 states the same 48 kHz clock as a fact
+about the wire — "The RTP timestamp is incremented with a 48000 Hz clock rate
+for all modes of Opus and all sampling rates" — and it is not RFC 2119 language.
+§7's SDP bullet is the only place the requirement is a MUST.
+
+<!-- vale Google.Passive = YES -->
+
+**The observation half is deliberately absent.** "Opus negotiated, and the wire
+carries 160-octet packets at an 8 kHz cadence" is not decidable from what a
+stream records. 160 octets per 20 ms is 64 kbit/s, which is exactly G.711 and is
+also a legal Opus CBR configuration. Separating the two needs the RTP timestamp
+cadence, and the stream store keeps a last timestamp and no first one, so
+nothing in it yields a clock rate. A rule that reported legal Opus CBR as a
+defect would not survive week one, and this one is decidable from the SDP alone.
+
+### The four header fields §7.3.1 exempts
+
+<!-- The paragraph below quotes [RFC 3261 §7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) verbatim; the rule is named for
+     that sentence, so rewording "is defined as a comma-separated list" would
+     misquote the clause the rule implements. -->
+<!-- vale Google.Passive = NO -->
+
+`SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED` reads the rule the section actually
+states: "Multiple header field rows with the same field-name MAY be present in a
+message **if and only if** the entire field-value for that header field is
+defined as a comma-separated list."
+
+<!-- vale Google.Passive = YES -->
+
+The same paragraph writes down its own exception: `WWW-Authenticate`,
+`Authorization`, `Proxy-Authenticate` and `Proxy-Authorization` may appear on
+several rows, and no sender may combine them with commas. A `407` carrying two
+challenges is ordinary traffic, so the rule's list omits all four.
+
+The compact forms count. The parser expands them at parse ([§7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3)), so `i:`
+beside `Call-ID:` is two rows of one field — which is exactly the shape a
+header-smuggling attempt takes, because a parser that reads only one spelling
+sees a message with one `Call-ID`.
+
+### Two branches, one stack
+
+<!-- The paragraph below quotes [RFC 3261 §16.6](https://www.rfc-editor.org/rfc/rfc3261#section-16.6) item 8 verbatim; "will be
+     different" is the standard's own wording, not a future tense this file
+     chose. -->
+<!-- vale Google.Will = NO -->
+
+[RFC 3261 §8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) makes a branch "unique across space and time", and §16.6
+item 8 spells out what that means for a proxy: "the branch parameter will be
+different for different instances of a spiraled or looped request through a
+proxy." Two identical branches in one `Via` stack therefore say the request
+returned to an element that failed to re-derive its own value — the loop
+[§16.3](https://www.rfc-editor.org/rfc/rfc3261#section-16.3)'s loop-detection step exists to catch, running unbounded until
+`Max-Forwards` stops it.
+
+<!-- vale Google.Will = YES -->
+
+The rule reports a repeated value once however many times it repeats, and reads
+requests only.
 
 ## Validating a rule against real traffic
 

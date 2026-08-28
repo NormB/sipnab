@@ -2286,9 +2286,12 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // now reads the whole of src/mcp/ rather than server.rs -- eleven of the
     // twelve live outside it, and a scanner reading one file reported 39 while
     // 50 answered calls.
+    // 50 -> 51 by `top_talkers` (PB15), which ranks participants rather than
+    // dialogs -- a dialog has two ends, and grouping dialogs forces a caller to
+    // pick one and ignore the other.
     assert_eq!(
         registered.len(),
-        50,
+        51,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -2859,6 +2862,12 @@ fn no_documentation_table_repeats_a_row() {
     // measurement: that file carries exactly two table separators and no other
     // page gained one. It is not a published page, so it costs no second entry
     // for a site mirror.
+    // 733 -> 737: the audit-record field table in docs/mcp-protocol.md (PB10)
+    // and `top_talkers`' parameter table in docs/mcp-tools.md (PB15). TWO
+    // tables written, four counted: build-site-pages.py mirrors both pages, so
+    // every documented table costs two here. An earlier attempt at this number
+    // said 735 by counting each table once, which is the arithmetic this
+    // comment exists to stop the next reader repeating.
     // 697 -> 733: the twelve PA tools documented in docs/mcp-tools.md. Each
     // carries one parameter table, and several carry a second for their metric
     // or response vocabulary; scripts/build-site-pages.py mirrors the page, so
@@ -2892,7 +2901,7 @@ fn no_documentation_table_repeats_a_row() {
     // `docs/vcon-harness.md` and ten in its generated site mirror, counted
     // with `grep -c '^|---'` on each before the number moved. Twenty is the
     // whole delta, and a published page always costs this counter double.
-    const EXPECTED_TABLES: usize = 733;
+    const EXPECTED_TABLES: usize = 737;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

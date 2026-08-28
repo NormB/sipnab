@@ -38,7 +38,7 @@ not observe this" — an absent field, never a null.
 | `uuid` | the dialog's `Call-ID` and clock, the capture id, the node name | [`dialog_uuid()`](../../src/output/vcon.rs) |
 | `created_at` | the caller's clock, not the dialog's | the `exported_at` argument |
 | `parties[0]`, `parties[1]` | `SipDialog`'s `from_*`/`to_*` fields, the opening message, the first response | [`observed_parties()`](../../src/output/vcon.rs) |
-| `parties[].tel` | the SIP user part, only when it is an RFC 3966 global number | [`tel_uri()`](../../src/output/vcon.rs) |
+| `parties[].tel` | the SIP user part, only when it is an [RFC 3966](https://www.rfc-editor.org/rfc/rfc3966) global number | [`tel_uri()`](../../src/output/vcon.rs) |
 | `parties[last]` | [`node_name()`](../../src/provenance.rs) and the crate version | [`observer_party()`](../../src/output/vcon.rs) |
 | `dialog[0]` | the `Call-ID`, the observed tags, and [`final_status_code()`](../../src/sip/dialog.rs) | [`dialog_object()`](../../src/output/vcon.rs) |
 | `attachments[0]` | the message ladder, through [`message_to_json_value()`](../../src/output/json.rs) | [`message_trace_attachment()`](../../src/output/vcon.rs) |
@@ -261,7 +261,7 @@ The separator byte matters: a bare concatenation collides `("ab", "c")` with
 `("a", "bc")`.
 
 Version bits go in the high nibble of octet 6 and the variant `10` in the two
-high bits of octet 8, per RFC 9562. `rand_b` shifts **down** by two rather than
+high bits of octet 8, per [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562). `rand_b` shifts **down** by two rather than
 masking its top bits off, so the variant bits overwrite nothing the draft asked
 for.
 

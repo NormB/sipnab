@@ -1,0 +1,14 @@
+{
+  "name": "sipnab-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Browser journey and accessibility tests for sipnab.com. Build-time only: nothing here ships to a visitor.",
+  "scripts": {
+    "test": "playwright test",
+    "install-browser": "playwright install --with-deps chromium"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.62.1"
+  }
+}

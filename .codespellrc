@@ -7,7 +7,7 @@
 # have no prose to check and will never be edited by hand, so the signal only
 # appears once they are out.
 #
-# skip = build output, vendored/minified assets, binary fixtures, and the two
+# skip = */node_modules/*,*/e2e/test-results/*,package-lock.json,build output, vendored/minified assets, binary fixtures, and the two
 # kinds of file whose content is deliberately truncated:
 #   tests/snapshots/  insta snapshots of TUI frames, clipped to terminal width,
 #                     so "FAILE" and "fo" are the rendered output, not typos

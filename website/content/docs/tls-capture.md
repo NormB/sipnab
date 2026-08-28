@@ -2,6 +2,9 @@
 title = "Capture SIP over TLS"
 weight = 29
 description = "Pick the right method for reading SIP over TLS: a key log from the endpoint, plaintext read out of the process with no keys at all, eBPF with peer addresses, or eCapture — chosen by what access you have, plus what does not work and why."
+
+[extra]
+has_diagrams = true
 +++
 
 You have SIP on port 5061, sipnab shows you nothing useful, and you want to
@@ -21,7 +24,28 @@ those two, and they differ only in what access each demands.
 
 ## Which method can you use?
 
-Read down the first column and stop at the first row you can satisfy.
+Answer these in order. Each branch ends at one numbered method below, and the
+question that separates two branches is always an access question rather than
+a protocol one.
+
+<pre class="mermaid">
+flowchart TD
+    S["SIP on 5061, and sipnab decodes nothing"] --&gt; Q1{"Can you set SSLKEYLOGFILE&lt;br/&gt;on an endpoint and restart it?"}
+    Q1 --&gt;|yes| M1["Method 1: --keylog&lt;br/&gt;full decryption, live or from a pcap"]
+    Q1 --&gt;|no| Q2{"Can you get root on the SIP host?"}
+    Q2 --&gt;|no| Q6{"Old TLS 1.2 server on RSA key exchange,&lt;br/&gt;and you hold its private key?"}
+    Q6 --&gt;|yes| M6["Method 6: --tls-key&lt;br/&gt;non-PFS handshakes only"]
+    Q6 --&gt;|no| X["Nothing opens it.&lt;br/&gt;Read What does not work, and why"]
+    Q2 --&gt;|yes| L["Method 2: sudo sipnab --uprobe-list&lt;br/&gt;names the TLS libraries this host runs"]
+    L --&gt; Q3{"Do you want keys you can keep,&lt;br/&gt;or plaintext right now?"}
+    Q3 --&gt;|keys| M5["Method 5: eCapture, then --keylog&lt;br/&gt;daemon untouched, and the pcap stays readable"]
+    Q3 --&gt;|plaintext| Q4{"BTF kernel, and a build&lt;br/&gt;carrying the bpf feature?"}
+    Q4 --&gt;|yes| M4["Method 4: --uprobe-tls --uprobe-backend bpf&lt;br/&gt;plaintext with the real 5-tuple"]
+    Q4 --&gt;|no| M3["Method 3: --uprobe-tls&lt;br/&gt;plaintext, no peer addresses"]
+</pre>
+
+The table says the same thing in rows. Read down the first column and stop at
+the first row you can satisfy.
 
 | If you can… | Use | Needs | Gets you |
 |---|---|---|---|

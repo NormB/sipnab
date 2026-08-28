@@ -71,3 +71,10 @@ website/static/wasm/sipnab_bg.wasm
 # Gate transcripts: one run on one machine, absolute paths and all.
 .git-docsgate.log
 *.log
+
+# Browser journey tests (e2e/). Build-time only: nothing here ships to a
+# visitor, and node_modules is 22 MB of dependency tree that git should never
+# hold. The lockfile IS tracked -- it is what makes a CI run reproducible.
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/

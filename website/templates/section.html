@@ -43,6 +43,32 @@
     </nav>
     {% endif %}
 
+    {# The second axis over the same pages. The cards above ask what the reader
+       needs to DO; this asks who they ARE, and answers with an ordered route
+       through pages that already exist. No entry here introduces a page --
+       `index_audience_paths_point_at_existing_pages` in
+       tests/link_integrity_test.rs resolves every href, and its anchors,
+       against website/content/docs/, because these hrefs are literal strings
+       and bypass Zola's @/docs resolution exactly as the task cards do. #}
+    {% if section.extra.audiences %}
+    <nav class="doc-audiences" aria-label="Reading paths by role">
+      <h2 class="doc-audiences-title">Which one are you?</h2>
+      <div class="doc-audiences-grid">
+        {% for audience in section.extra.audiences %}
+        <div class="doc-audience">
+          <h3 class="doc-audience-role">{{ audience.role }}</h3>
+          <p class="doc-audience-goal">{{ audience.goal }}</p>
+          <ol class="doc-audience-path">
+            {% for step in audience.steps %}
+            <li><a href="{{ step.href }}">{{ step.title }}</a></li>
+            {% endfor %}
+          </ol>
+        </div>
+        {% endfor %}
+      </div>
+    </nav>
+    {% endif %}
+
     <div class="doc-body">
       <!-- Same bypass, same justification as page.html: `section.content` is
            HTML Zola rendered from a committed _index.md, so escaping it would

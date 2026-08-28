@@ -1,32 +1,27 @@
-# Top-level repository trees a documentation link may point into.
 #
-# ONE list, four consumers. It used to be five hand-kept copies:
-#
-#   tests/support/markdown.rs        derived it from `git ls-files`
-#   tests/doc_link_hygiene_test.rs   a 21-entry Rust array
-#   scripts/build-wiki.py            a regex alternation
-#   scripts/build-site-pages.py      the same alternation, pasted
-#   scripts/build-site-internals.py  the same alternation, pasted
-#   scripts/link-repo-paths.py       an 18-entry ROOTS tuple, and no idea
 #                                    the other four existed
-#
+#   scripts/build-site-internals.py  the same alternation, pasted
+#   scripts/build-site-pages.py      the same alternation, pasted
+#   scripts/build-wiki.py            a regex alternation
+#   scripts/link-repo-paths.py       an 18-entry ROOTS tuple, and no idea
+#   tests/doc_link_hygiene_test.rs   a 21-entry Rust array
+#   tests/support/markdown.rs        derived it from `git ls-files`
+# ONE list, four consumers. It used to be five hand-kept copies:
+# One tree per line. Blank lines and `#` comments are ignored.
 # They disagreed, and the disagreement was not cosmetic. `link-repo-paths.py`
-# is the fixer that `repo_paths_in_docs_are_clickable` tells a failing
-# contributor to run, and running it produced 33 links the gate had never
-# asked for -- branch-pinned `blob/main/` URLs in `docs/internals/`, which is
-# the one tree where the gate demands the opposite. A gate and its fixer must
-# derive from one rule; this file is that rule.
-#
+# Top-level repository trees a documentation link may point into.
+# `code_tree_list_matches_the_repository` holds this file equal to the
 # `docs/` is deliberately ABSENT. A link into docs/ is a link to another
+# asked for -- branch-pinned `blob/main/` URLs in `docs/internals/`, which is
+# contributor to run, and running it produced 33 links the gate had never
+# derive from one rule; this file is that rule.
 # document -- the generators map it to a wiki page or a site page, and must
+# fails until it is named here.
+# is the fixer that `repo_paths_in_docs_are_clickable` tells a failing
 # never rewrite it into a blob URL. Everything listed here is code, and a
 # relative link into it is rewritten to an absolute repo URL on publish.
-#
-# `code_tree_list_matches_the_repository` holds this file equal to the
 # repository's actual tracked top-level directories, so adding a directory
-# fails until it is named here.
-#
-# One tree per line. Blank lines and `#` comments are ignored.
+# the one tree where the gate demands the opposite. A gate and its fixer must
 .cargo
 .config
 .githooks
@@ -40,6 +35,7 @@ contrib
 crates
 demos
 docker
+e2e
 examples
 fuzz
 harness
