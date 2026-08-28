@@ -255,9 +255,7 @@ behind them.
 | `--mcp-signing-key-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_rotation_test.rs` |  |  |
 | `--mcp-revoked-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
 | `--mcp-token-ttl` |  | `SECS` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
-| `--mcp-audit-file` |  | `FILE` | MCP (Model Context Protocol) | referenced | `src/app/servers.rs` |  |  |
 | `--mcp-max-concurrent` |  | `N` | MCP (Model Context Protocol) | parsed | `src/cli.rs` |  |  |
-| `--mcp-tools` |  | `PROFILE` | MCP (Model Context Protocol) | none | -- |  |  |
 | `--mcp-max-rows` |  | `N` | MCP (Model Context Protocol) | parsed | `tests/mcp_row_cap_test.rs` |  |  |
 | `--mcp-max-body-bytes` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs` | **behavior** | via config key: probe_mcp_max_body_bytes changes the search_messages snippet length |
 | `--mcp-max-findings` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs` | **behavior** | via config key: probe_mcp_max_findings changes the remaining budget in save_findings |

@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**33 open, 354 done** across 20 sections.
+**34 open, 355 done** across 20 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -56,7 +56,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | P3 | 0 | 64 | `##########` |
 | P4 | 0 | 39 | `##########` |
 | PA | 2 | 11 | `########..` |
-| PB | 13 | 5 | `###.......` |
+| PB | 14 | 6 | `###.......` |
 | TK | 4 | 6 | `######....` |
 | RE | 3 | 4 | `######....` |
 | BA | 3 | 1 | `##........` |
@@ -122,7 +122,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   block with a `degraded` flag. **Corrected 2026-08-06:** this used to read
   *"all three counters travel together … with a single `degraded` flag"*, and
   there are four counters now. `CaptureQuality`
-  ([`src/output/prometheus.rs:250`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L250)) gained `undecodable_frames` — frames that
+  ([`src/output/prometheus.rs:356`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L356)) gained `undecodable_frames` — frames that
   arrived intact and produced nothing because no decoder here could read them —
   and its doc comment says it is deliberately **not** part of `degraded`. So the
   rollup no longer covers every counter in the block, and a dashboard reading
@@ -631,8 +631,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:4723`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4723)) currently takes
-  nowhere; `security_findings` ([`src/mcp/server.rs:4723`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4723)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:4848`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4848)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:4848`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4848)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -1089,8 +1089,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:4820`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4820),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:4820`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4820),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:4963`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4963),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:4963`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4963),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -1099,7 +1099,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   corrupt timestamp — with one `degraded` flag rolling them up for a dashboard.
   **Corrected 2026-08-06:** a fourth counter, `undecodable_frames`, has since
   joined the same `capture_quality` block and is deliberately outside
-  `degraded` ([`src/output/prometheus.rs:403`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L403) lists what the flag actually
+  `degraded` ([`src/output/prometheus.rs:501`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L501) lists what the flag actually
   covers). The prose above describes three because three is what this pass
   shipped; the block is no longer three wide, and `degraded` is no longer a
   rollup of all of it. See CT1.
@@ -1431,7 +1431,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 - [x] src/app/bootstrap.rs:807,869 — [design] build_filter_expr/build_capture_config call process::exit inside PlanError-based plan(); should return PlanError. **Done:** `build_filter_expr`/`build_capture_config` return `Err(PlanError)` instead of `process::exit(2)`, making `plan()` testable/composable (same exit code and messages via the caller).
 - [x] src/app/batch.rs:1464 — [missed-edge-case] DTMF hardcodes PT 101 instead of SDP-negotiated payload type. **Done:** DTMF extraction uses the SDP-negotiated telephone-event payload type (and clock rate via `extract_dtmf_with_clock`) from the stream, falling back to 101/8000 without SDP.
 - [x] src/app/batch.rs:988 — [missed-edge-case] custom --tshark-filter without -I references placeholder capture.pcap. **Done:** a new `tshark_input_file` helper resolves the tshark input as `-I` then the saved live pcap (`-O`), else a clear error — no more referencing the nonexistent `capture.pcap` placeholder.
-- [x] src/mcp/server.rs:688 — [efficiency] search_messages allocates format!+to_lowercase per message per call. **Done:** `search_messages` lowercases the needle once and scans each SIP field in place via `ascii_contains_ci` (short-circuit), eliminating the per-message `format!`+`to_lowercase` allocations.
+- [x] src/mcp/server.rs:746 — [efficiency] search_messages allocates format!+to_lowercase per message per call. **Done:** `search_messages` lowercases the needle once and scans each SIP field in place via `ascii_contains_ci` (short-circuit), eliminating the per-message `format!`+`to_lowercase` allocations.
 - [x] src/app/tui_mode.rs:246 — [missed-edge-case] pause still counts/writes packets; --count can stop capture mid-pause with packets never processed. **Done:** paused packets are still written/reassembled but no longer counted toward `--count` (via `count_and_check_limit`), so `--count N` can't stop capture mid-pause with packets unprocessed.
 - [x] src/auth.rs:73 — [dead-code+latent-bug] infallible-serialization fallback builds JSON by hand without escaping id. **Done:** the hand-built JSON fallback (unescaped `id`) is removed — serialization of the concrete payload is provably infallible, so `unwrap_or_default` handles the impossible error fail-closed with no hand-interpolation.
 - [x] src/process_isolation.rs:432 — [efficiency] PerDstRateLimiter::cleanup O(n) on every send. **Done:** `PerDstRateLimiter` cleanup is gated to at most once/second (`cleanup_if_due`, injected clock) like the HEP nonce-prune; the 60s window in `allow()` still governs limiting so a not-yet-swept bucket never mis-limits.
@@ -1936,16 +1936,16 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:377`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L377)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:6131`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6131), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:6305`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6305), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1492`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1492)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1560`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1560)), which attaches `frame_ref`
     (`#[tool(` at [`src/mcp/server.rs:4528`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4528), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1492`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1492)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1560`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1560)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -2097,7 +2097,7 @@ output path.
     `SUPPRESSION_FILENAME` ([`src/sip/lint/mod.rs:70`](https://github.com/NormB/sipnab/blob/main/src/sip/lint/mod.rs#L70)),
     `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
     exist, and the MCP lint tools consume them through `resolve_suppressions`
-    ([`src/mcp/server.rs:688`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L688)), which takes an explicit filename or walks up from
+    ([`src/mcp/server.rs:746`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L746)), which takes an explicit filename or walks up from
     the capture's directory to a project root. **What is still missing is the
     suppression half of the CLI, and the evidence this line cited for that is
     now false too. Corrected 2026-08-06:** it read *"`grep -n lint src/cli.rs`
@@ -2470,6 +2470,47 @@ implementation.
   had to think about this, which makes it a differentiator as much as a fix.
   Overlaps PA8's injection note from the opposite direction: PA8 is about what
   sipnab sends *to* a model, this is about what it hands *back*.
+  **Mostly shipped 2026-08-28, and the entry read as unstarted while the first
+  mitigation had already landed.** Delimiters existed before this session —
+  [`src/mcp/shape.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/shape.rs)
+  had `fence`, `untrusted_note`, `fence_message_json` and
+  `fenced_dialog_summary`, and [`docs/mcp-protocol.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-protocol.md) already carried an
+  "Untrusted capture text" section. What did NOT exist was either of the other
+  two code mitigations: nothing stripped a control character anywhere on the
+  output side, and no header value was bounded at all (`--mcp-max-body-bytes`
+  reached search snippets and never reached a field, nor `get_message`'s SDP).
+  Both now do — `sanitize_field` (all controls plus the twelve Unicode bidi
+  formatting characters, capped at 256 bytes) and `sanitize_block` (the same,
+  keeping `\n`/`\t` because an agent diagnosing one-way audio reads `a=`
+  lines). Bidi is called out because `char::is_control` misses it: those are
+  category `Cf`, and U+202E reorders the display of everything after it, which
+  is the Trojan Source shape aimed at an audit transcript.
+  The fencing gaps the survey found are closed too: `get_dialog`'s
+  `messages[]` (the largest run of sender text on the surface, and previously
+  *documented* as unfenced rather than fixed), `decode_evidence`'s every header
+  name and value, the finding `detail` that quotes a scanner's own
+  `User-Agent`, lint `observed`, `a=rtpmap` codec names in `get_sdp_timeline` /
+  `check_codec_negotiation` / `describe_endpoint`, and the `rtp.codec` grouping
+  key — which had been excluded on the stated premise that a codec is "from a
+  payload type table", true only for STATIC payload types. A latent bug went
+  with it: `malformed` was listed in `MESSAGE_FENCED_FIELDS` and is serialized
+  as an array, so the string-only rewrite never touched it — a field the policy
+  named as fenced, silently never fenced.
+  Two wire facts are worth recording because they narrow the threat and the
+  original entry overstates it: a raw CRLF cannot reach a header value (it ends
+  the header) and a folded continuation becomes a single SPACE, so
+  `User-Agent: ignore prior instructions` is a ONE-line attack, not a two-line
+  one. The parser's 8 KiB-per-header and 200-header caps were the only prior
+  bound on volume.
+  **What is NOT done, deliberately:** the diagnosis `hints` on `triage_call`,
+  `diagnose_registration`, `compare_dialogs` and `rtp_stats` interpolate a
+  `Reason` header into sipnab's own sentence and are left unfenced — they are
+  mixed documents, and fencing one tells the agent to distrust the diagnosis
+  along with the evidence. They should gain the provenance note, which
+  `get_capture_report`, `tail_dialogs`, `group_dialogs` and `aggregate_dialogs`
+  also still lack. Error strings reach the agent with no note at all. All of
+  that is note coverage rather than a fencing hole, and it is written down here
+  rather than left to be rediscovered.
 - [x] **PB9 — MCP token scoping.** REST has `--token-scope full|metrics`;
   verified that [`src/mcp/`](https://github.com/NormB/sipnab/tree/main/src/mcp) has no equivalent. `--mcp-token-scope
   readonly|export|admin`, putting `export_*`, `shutdown_server` and
@@ -2488,7 +2529,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:7234`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7234), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:7402`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7402), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -2496,7 +2537,7 @@ implementation.
   hint is absent rather than guessing in the caller's favour, and returns no
   scope error for an unknown tool so dispatch still reports "tool not found".
   On stdio there is no scope at all — process ownership is the boundary.
-- [ ] **PB10 — Tool-call audit log.** Append-only: tool, arguments, caller
+- [x] **PB10 — Tool-call audit log.** Append-only: tool, arguments, caller
   token id, timestamp. Needed the first time somebody asks what an agent looked
   at in a capture under legal hold.
   **Mostly shipped 2026-08-06** — one line per call under the `mcp_audit`
@@ -2531,9 +2572,99 @@ implementation.
   than a blank one. Ids are percent-encoded and capped at 64 characters so an
   id cannot forge a field or a line in the record. Gated end to end over real
   HTTP and real stdio, and mutation-proved at each hop.
-  **ONE thing still keeps this open:** the record rides the normal log rather
-  than an append-only sink. Untouched here on purpose — that needs the sink
-  decision, which is the operator's call and not a code change to guess at.
+  **The sink shipped 2026-08-28, and this entry is now done.** The last thing
+  keeping it open was that the record rode the normal log, so `--quiet` without
+  `SIPNAB_LOG=mcp_audit=info` suppressed it. `--mcp-audit-file <FILE>`
+  ([`src/mcp/audit.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/audit.rs))
+  writes the same facts unconditionally, one JSON object per line — the
+  `alert_json_line` shape, chosen for the reason that function gives: serde_json
+  escapes every value, so a crafted header reaching the record through `args`
+  cannot end the line or forge a field, which the `key=value` console line
+  cannot promise. The tracing line KEEPS its shape and its audience; this is a
+  second destination, not a replacement.
+  The operator decision the entry was waiting on was resolved this way: the sink
+  is opt-in, `O_APPEND` and never truncated, mode 0600 on create, one
+  `write_all` per record under a mutex to an unbuffered file, and each record
+  carries a per-run `seq` so a gap is DETECTABLE — nothing else about a record
+  makes a missing one visible. **A call whose record cannot be written is
+  refused rather than answered**, so no result leaves the server that is not in
+  the file; a path that cannot be opened stops the run at startup rather than at
+  the first tool call. Records are written to the kernel and not `fsync`ed: that
+  survives the process dying by any means, which is the realistic threat, and
+  avoids a disk round trip per tool call for machine-crash durability.
+  Mutation-proved at each hop — truncating open, console-format record,
+  sequence allocated outside the lock, buffered writer, swallowed write error,
+  and sink opened but not attached each fail a test.
+  Still NOT covered, and it is the same gap the tracing line has:
+  `resources/list` and `resources/read` are not tool calls and never reach the
+  audit point, so neither the log nor the file records them.
+
+- [ ] **AUDIT1 — nothing records how a run was invoked, so a report cannot be
+  traced back to the command that produced it.** `--mcp-audit-file` records an
+  AGENT's tool calls, and records them well: append-only, sequence-numbered so a
+  reader sees a gap, `0600` because arguments are sensitive, and a call that
+  cannot be written is REFUSED rather than silently unrecorded. A human running
+  the binary gets none of that. Verified 2026-08-28: nothing in `src/app/` or
+  [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) reads `std::env::args`, so a run's own arguments reach no log,
+  no report and no export.
+
+  The consequence is narrow and real. A JSON report, a vCon container or an
+  exported pcap says what sipnab CONCLUDED, and nothing says which invocation
+  produced it -- which capture, which filter, which port range, which retention
+  caps. `--portrange` alone changes what a run can see, and a report produced
+  under a narrow range is indistinguishable afterwards from one that examined
+  everything. Anyone reconciling two reports of the same traffic has no way to
+  ask why they differ.
+
+  **Do:** record, once at startup, the argv, working directory, effective user,
+  wall-clock start, sipnab version and feature set, and the capture identity.
+  The last one already exists -- `crate::provenance::CaptureEtag`
+  ([`src/provenance.rs:217`](https://github.com/NormB/sipnab/blob/main/src/provenance.rs#L217)) carries `node`, an opaque `instance` and the store
+  generations, and the MCP surface already stamps it on answers. Reuse it rather
+  than inventing a second notion of which capture this was.
+
+  Inherit `--mcp-audit-file`'s fail-closed rule: a provenance record that cannot
+  be written stops the run. A best-effort provenance line is worse than none,
+  because its absence then means either "not enabled" or "the disk was full",
+  and nobody can tell which. Off by default; it names a file, like the MCP one.
+
+  **The privacy question has to be answered, not assumed.** argv routinely holds
+  a capture path, and a path routinely holds a customer name. The MCP audit file
+  is already `0600` for the same reason and that precedent should carry.
+
+- [ ] **AUDIT2 — the TUI leaves no trail of what an operator did.** No
+  keystroke, filter change, export or capture swap is recorded anywhere:
+  verified 2026-08-28, `src/tui/` contains no audit or action-log path at all,
+  while the TUI binds 38 distinct keys. An operator can open a capture, narrow
+  it, export a subset and quit, and nothing afterwards says any of it happened.
+
+  This matters where sipnab already gets used. A passive capture tool in a
+  carrier or regulated environment is handling other people's calls, and
+  "who exported which calls, when" is the question an incident review opens
+  with. `--mcp-audit-file` answers it for an agent and not for the person
+  sitting at the terminal, which is the wrong way round: the human has strictly
+  more authority than the agent does.
+
+  **Do: record ACTIONS, not keystrokes.** The distinction is the whole design.
+  A keystroke log of 38 bindings is mostly navigation, it is unreadable at
+  review time, and it is a privacy hazard of its own -- the TUI has a search
+  field, and search terms are phone numbers. What a review needs is the
+  state-changing set: which capture was opened, what filter was applied, what
+  was exported and to where, what was saved, when the capture was swapped.
+
+  Reuse `src/mcp/audit.rs` rather than writing a second writer. It already has
+  the properties this needs -- append-only, sequence-numbered, `0600`,
+  fail-closed -- and two audit formats for one tool would be two things to keep
+  true, with the one nobody reads drifting first. What it needs is a caller
+  identity that is not an MCP peer.
+
+  **One thing to decide before building:** whether a refused write should stop
+  the TUI. The MCP rule (refuse the call) is right for a request/response
+  surface and is hostile in an interactive one -- an operator mid-incident does
+  not want the tool to stop because a log partition filled. The honest options
+  are to fail closed and say so loudly, or to fail open and mark the trail as
+  incomplete at that point so a reader knows. Silently dropping records is not
+  an option; that is the failure `--mcp-audit-file` was built to avoid.
 - [x] **PB11 — Rate limiting and concurrency caps for MCP.** HEP had per-peer
   limits and REST had `--api-max-conn`; MCP HTTP had neither, so a looping
   agent could pin a capture host.
@@ -3446,7 +3577,7 @@ neither visible to `--features full`:**
    that has either.
 2. `TK6`'s `ebpf` feature sits **outside `full`**, and
    `no_test_hides_behind_a_feature_outside_full`
-   ([`tests/site_journey_test.rs:4986`](https://github.com/NormB/sipnab/blob/main/tests/site_journey_test.rs#L4986)) fails on any `#[test]` or
+   ([`tests/site_journey_test.rs:5312`](https://github.com/NormB/sipnab/blob/main/tests/site_journey_test.rs#L5312)) fails on any `#[test]` or
    `mod tests` gated on such a feature. So the offset table and version parsing
    are **ungated** pure logic and only the aya attachment is gated. This is
    architecture, not style.
