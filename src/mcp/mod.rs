@@ -49,6 +49,7 @@ pub mod server;
 pub mod shape;
 /// Starting and stopping a uprobe TLS capture on an agent's request.
 pub mod tls_capture;
+pub mod tools;
 pub mod transport;
 
 pub use server::{CaptureContext, CaptureState, SipnabMcp};

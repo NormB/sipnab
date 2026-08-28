@@ -735,12 +735,13 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "stop_tls_capture",
         "capture_status",
         "tail_dialogs",
+        "timeline",
         "triage_call",
         "validate_message",
     ];
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    assert_eq!(names.len(), 38, "expected exactly 38 MCP tools");
+    assert_eq!(names.len(), 39, "expected exactly 39 MCP tools");
 
     // find_problems with default kinds (['problems']) → JSON array, no error.
     send(

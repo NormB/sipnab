@@ -231,7 +231,15 @@ impl SipnabMcp {
             capture: Arc::new(RwLock::new(CaptureState::default())),
             call_limiter: None,
             rate_limiter: None,
-            tool_router: Self::tool_router(),
+            // Tool groups compose. `server.rs` held every tool in one impl
+            // block, so a batch of additions all edited the same region; a
+            // group in its own file merges here instead, and this line is the
+            // only one they share.
+            tool_router: Self::tool_router()
+                + Self::aggregation_router()
+                + Self::expectations_router()
+                + Self::inspect_router()
+                + Self::provenance_router(),
         }
     }
 
@@ -690,6 +698,18 @@ fn withheld_json(withheld: crate::sip::lint::WithheldCounts) -> serde_json::Valu
 }
 
 // ── Tool parameter structs ──────────────────────────────────────────
+
+/// One interval of the `timeline` series.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct TimelineBucket {
+    /// Start of the interval, inclusive.
+    pub start: chrono::DateTime<chrono::Utc>,
+    /// Width of the interval, echoed so a row is readable on its own.
+    pub bucket_seconds: u64,
+    /// Dialogs whose first message fell in this interval.
+    pub dialogs: u64,
+}
 
 /// Filter and pagination parameters for `list_dialogs`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -3123,6 +3143,41 @@ impl SipnabMcp {
             }
         }
         Ok(())
+    }
+
+    /// Dialog starts bucketed into fixed-width intervals.
+    ///
+    /// Buckets are aligned to the epoch rather than to the first dialog, so two
+    /// captures of the same window produce the same bucket boundaries and can
+    /// be laid side by side. Aligning to the earliest dialog would shift every
+    /// boundary whenever the first call changed, which makes two runs of the
+    /// same traffic incomparable.
+    ///
+    /// Empty buckets are EMITTED. A gap is a finding -- it is what a trunk
+    /// outage looks like -- and a series that silently skips it renders as
+    /// continuous traffic with a shorter x-axis.
+    pub(crate) fn timeline_buckets(&self, width_seconds: u64) -> Vec<TimelineBucket> {
+        debug_assert!(width_seconds > 0, "callers reject zero before calling");
+        let ds = self.dialog_store.read();
+        let width = i64::try_from(width_seconds).unwrap_or(i64::MAX).max(1);
+
+        let mut counts: std::collections::BTreeMap<i64, u64> = std::collections::BTreeMap::new();
+        for d in ds.iter() {
+            let bucket = d.created_at.timestamp().div_euclid(width);
+            *counts.entry(bucket).or_insert(0) += 1;
+        }
+        let (Some(&first), Some(&last)) = (counts.keys().next(), counts.keys().next_back()) else {
+            return Vec::new();
+        };
+
+        (first..=last)
+            .map(|b| TimelineBucket {
+                start: chrono::DateTime::from_timestamp(b.saturating_mul(width), 0)
+                    .unwrap_or_default(),
+                bucket_seconds: width_seconds,
+                dialogs: counts.get(&b).copied().unwrap_or(0),
+            })
+            .collect()
     }
 
     /// Build one bounded page of dialogs from a predicate over the store.

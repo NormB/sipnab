@@ -2202,10 +2202,47 @@ fn third_party_notices_cover_system_libraries() {
 /// would not have learned they exist. (`stats` was missing from both copies of
 /// the page until the merge.)
 ///
+/// Every `#[tool(name = "…")]` registered anywhere under `src/mcp/`.
+///
+/// NOT `server.rs` alone. Tool groups moved into their own modules once the
+/// `rmcp` router became composable, and a scanner reading only `server.rs`
+/// reports the old total while the new tools are live, undocumented and
+/// unannotated. That is the exact shape of the defect these gates exist for --
+/// a count derived from a narrower source than the surface it describes.
+fn registered_mcp_sources() -> String {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(std::path::Path::new("src/mcp"), &mut files);
+    files.sort();
+    assert!(
+        files.len() >= 2,
+        "only {} file(s) under src/mcp; the walk is not reaching the module and \
+         every count derived from it would be a floor rather than a total",
+        files.len()
+    );
+    files
+        .iter()
+        .filter_map(|f| std::fs::read_to_string(f).ok())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Ground truth is the `#[tool(name = "…")]` attributes, not a second list.
 #[test]
 fn mcp_tool_table_lists_every_registered_tool() {
-    let server = std::fs::read_to_string("src/mcp/server.rs").expect("src/mcp/server.rs");
+    let server = registered_mcp_sources();
     let registered: BTreeSet<String> = regex::Regex::new(r#"name = "([a-z_]+)""#)
         .expect("regex")
         .captures_iter(&server)
@@ -2239,10 +2276,15 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // Raised 37 -> 38 by `export_vcon` (VCON3), which hands one observed dialog
     // to a conversation-data pipeline in the interchange format that pipeline
     // already reads, rather than in a sipnab-shaped JSON nobody else parses.
+    //
+    // Raised 38 -> 39 by `timeline` (PA2), the first tool to live outside
+    // `server.rs`. Its arrival is why this count and every prose count now read
+    // the whole of `src/mcp/` through `registered_mcp_sources` -- reading one
+    // file would have reported 38 while a 39th tool answered calls.
     assert_eq!(
         registered.len(),
-        38,
-        "found only {} #[tool(name = ...)] entries in src/mcp/server.rs — the \
+        39,
+        "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
         registered.len()
@@ -2812,6 +2854,10 @@ fn no_documentation_table_repeats_a_row() {
     // measurement: that file carries exactly two table separators and no other
     // page gained one. It is not a published page, so it costs no second entry
     // for a site mirror.
+    // 695 -> 697: the `timeline` tool's parameter table in docs/mcp-tools.md,
+    // plus the generated copy of that page under website/content/docs/. One
+    // table written once moves this by TWO, because scripts/build-site-pages.py
+    // mirrors the page -- so every documented tool costs two rows here.
     // 694 -> 695: closing PERF1. One table, three rows, one per core count
     // measured (2, 4, 8) with the before and after throughput and the change.
     // A table because the CLAIM is the SHAPE across core counts -- large at
@@ -2835,7 +2881,7 @@ fn no_documentation_table_repeats_a_row() {
     // `docs/vcon-harness.md` and ten in its generated site mirror, counted
     // with `grep -c '^|---'` on each before the number moved. Twenty is the
     // whole delta, and a published page always costs this counter double.
-    const EXPECTED_TABLES: usize = 695;
+    const EXPECTED_TABLES: usize = 697;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -3798,7 +3844,8 @@ fn the_benchmarks_page_names_one_measured_release_throughout() {
 /// place that states it is checked here against the registrations themselves.
 #[test]
 fn prose_mcp_tool_counts_match_the_server() {
-    let server = include_str!("../src/mcp/server.rs");
+    let server = registered_mcp_sources();
+    let server = server.as_str();
     let registered = regex::Regex::new(r#"(?m)^\s+name = "[a-z_]+","#)
         .unwrap()
         .find_iter(server)
@@ -3838,7 +3885,7 @@ fn prose_mcp_tool_counts_match_the_server() {
     let protocol = include_str!("../docs/mcp-protocol.md");
     let writers = regex::Regex::new(r"read_only_hint = false")
         .unwrap()
-        .find_iter(include_str!("../src/mcp/server.rs"))
+        .find_iter(server)
         .count();
     assert!(
         protocol.contains(&format!("All {registered} carry MCP annotations")),

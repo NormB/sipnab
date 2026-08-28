@@ -344,7 +344,14 @@ def api_routes():
 
 
 def mcp_tools():
-    text = (ROOT / "src" / "mcp" / "server.rs").read_text()
+    # Every file under src/mcp/, not just server.rs. Tool groups live in their
+    # own modules since the router became composable, and a scanner that reads
+    # only server.rs reports the old count while the new tools are live and
+    # undocumented -- the parity gate would certify a surface it cannot see.
+    text = "\n".join(
+        f.read_text()
+        for f in sorted((ROOT / "src" / "mcp").rglob("*.rs"))
+    )
     return sorted(set(re.findall(r'#\[tool\(\s*name\s*=\s*"([^"]+)"', text)))
 
 

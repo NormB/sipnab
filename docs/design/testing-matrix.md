@@ -51,7 +51,7 @@ was driving all of them.
 |---|---|---|---|---|---|
 | CLI flags | 238 | 114 | 43 | 80 | 1 |
 | HTTP routes | 11 | 11 | -- | 0 | 0 |
-| MCP tools | 38 | 38 | -- | 0 | 0 |
+| MCP tools | 39 | 39 | -- | 0 | 0 |
 
 **Flags with no occurrence at all:** `--syslog`
 
@@ -84,7 +84,7 @@ behind them.
 | Flag | Short | Value | Group | Detected | Where | Audited | What a person found |
 |---|---|---|---|---|---|---|---|
 | `--help` | `-h` |  | Options | e2e | `tests/cli_test.rs` |  |  |
-| `--version` | `-V` |  | Options | e2e | `tests/cli_test.rs`, `tests/multi_input_test.rs` +1 |  |  |
+| `--version` | `-V` |  | Options | e2e | `tests/branch_protection_drift_test.rs`, `tests/cli_test.rs` +2 |  |  |
 | `--device` | `-d` | `IFACE` | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/hep_test.rs` +1 |  |  |
 | `--input` | `-I` |  | Capture | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +35 |  |  |
 | `--recursive` |  |  | Capture | e2e | `tests/input_set_accounting_test.rs`, `tests/multi_input_test.rs` |  |  |
@@ -378,5 +378,6 @@ behind them.
 | `start_tls_capture` | exercised | `tests/mcp_stdio_test.rs` |
 | `stop_tls_capture` | exercised | `tests/mcp_stdio_test.rs` |
 | `tail_dialogs` | exercised | `tests/mcp_open_capture_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
+| `timeline` | exercised | `tests/mcp_stdio_test.rs` |
 | `triage_call` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_operator_flows_test.rs` +1 |
 | `validate_message` | exercised | `tests/mcp_lint_tools_test.rs`, `tests/mcp_stdio_test.rs` |

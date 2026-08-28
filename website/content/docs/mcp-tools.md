@@ -31,6 +31,7 @@ ordinary update.
 | [`list_dialogs`](#list-dialogs) | `filter?`, `limit?`, `cursor?` | A page of dialog summaries, with the total behind it |
 | [`get_dialog_report`](#get-dialog-report) | `call_id`, `format?` | Structured per-call report (JSON / Markdown / text) |
 | [`aggregate_dialogs`](#aggregate-dialogs) | `group_by`, `filter?`, `top_n?` | Counts dialogs grouped by ONE field, in the store rather than in the model |
+| [`timeline`](#timeline) | `bucket_seconds?` | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
 | [`get_capture_report`](#get-capture-report) | `format?` | Whole-capture analysis: findings, orphaned media, STUN/ICMP evidence, what the caps shed |
 | [`find_problems`](#find-problems) | `kinds?`, `filter?`, `limit?`, `cursor?` | A page of dialogs matching one or more diagnostic alias names |
 | [`get_dialog`](#get-dialog) | `call_id`, `max_messages?`, `cursor?` | Paginated dialog with full SIP messages |
@@ -323,6 +324,37 @@ text the packet's sender wrote, and they reach a model here exactly as they
 would in a row. A state name, a status code, an IP or a codec is sipnab's own
 derivation and comes back verbatim — fencing those would tell the agent to
 distrust the analysis.
+
+### `timeline`
+
+Call volume over time, in fixed-width buckets.
+
+`aggregate_dialogs` answers "how many, grouped by what" and is blind to WHEN.
+A trunk that failed for ninety seconds and a trunk that fails one call in
+forty produce the same bucket counts, and only the shape over time separates
+them. This returns one row per interval so the shape is readable without
+fetching every dialog and bucketing them in the model's head -- the counting
+task language models get wrong most reliably.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `bucket_seconds` | integer? | Greater than zero. A zero-width bucket describes no interval and every dialog would fall into all of them at once, so it fails with `invalid_params` rather than dividing by zero. | 60. |
+
+```jsonc
+// timeline { "bucket_seconds": 60 }
+[
+  { "start": "2026-08-28T04:00:00Z", "bucket_seconds": 60, "dialogs": 412 },
+  { "start": "2026-08-28T04:01:00Z", "bucket_seconds": 60, "dialogs": 0 },
+  { "start": "2026-08-28T04:02:00Z", "bucket_seconds": 60, "dialogs": 377 }
+]
+```
+
+Two properties are deliberate. Buckets align to the **epoch**, not to the
+first dialog, so two captures of the same window produce identical boundaries
+and line up against each other. Aligning to the earliest call would instead
+shift every boundary whenever that call changed. The series also **keeps empty
+buckets**, as the middle row above shows -- a gap is a finding, and a series
+that silently drops it renders as continuous traffic on a shorter axis.
 
 ### `get_capture_report`
 
