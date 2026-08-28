@@ -2812,11 +2812,17 @@ fn no_documentation_table_repeats_a_row() {
     // measurement: that file carries exactly two table separators and no other
     // page gained one. It is not a published page, so it costs no second entry
     // for a site mirror.
+    // 692 -> 693: the REL1 closure in the backlog. One table, four rows, one
+    // per external host the release build reaches -- netmap, libpcap,
+    // bpf-linker and the apt archives -- recording how each is pinned,
+    // verified and bounded. It is the whole evidence for the entry being
+    // closed, so it is a table rather than prose: the claim is per-input and a
+    // paragraph would let one of the four go unstated without looking wrong.
     // 672 -> 692: the vCon capture-stack page. Ten tables in
     // `docs/vcon-harness.md` and ten in its generated site mirror, counted
     // with `grep -c '^|---'` on each before the number moved. Twenty is the
     // whole delta, and a published page always costs this counter double.
-    const EXPECTED_TABLES: usize = 692;
+    const EXPECTED_TABLES: usize = 693;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

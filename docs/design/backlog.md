@@ -44,15 +44,15 @@ Tiers:
 
 ## Status
 
-**50 open, 337 done** across 20 sections.
+**47 open, 340 done** across 20 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
 |---|---:|---:|---|
 | P0 | 0 | 18 | `##########` |
-| P1 | 2 | 53 | `##########` |
+| P1 | 0 | 55 | `##########` |
 | PV | 0 | 13 | `##########` |
-| P2 | 1 | 108 | `##########` |
+| P2 | 0 | 109 | `##########` |
 | P3 | 1 | 63 | `##########` |
 | P4 | 0 | 39 | `##########` |
 | PA | 13 | 0 | `..........` |
@@ -506,7 +506,17 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   file and say so where the fixture is defined. Either closes the gap; leaving
   it means the next packaging regression is found the same way #244 was, by a
   user.
-- [ ] **SRC1 — `-d <iface>` and `-L <hep-listen>` can never both be active, so
+- [x] **SRC1 — `-d <iface>` and `-L <hep-listen>` now run in one process. DONE.**
+  Verified 2026-08-27 against the code rather than the checkbox: `plan()` builds
+  `CaptureSource::Composite(vec![live, hep])` at
+  [`src/app/bootstrap.rs:539`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L539)
+  when a Live source and `--hep-listen` are both present, and
+  [`tests/composite_source_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/composite_source_test.rs)
+  carries 20 passing tests over it. Only the Live arm composes: `-I` is a
+  security refusal, and a uprobe read carries no addressing to place against
+  the other member's traffic. The original text follows, for the reasoning.
+
+  ORIGINAL: `-d <iface>` and `-L <hep-listen>` can never both be active, so
   an operator must choose between reliable signaling and any media at all.**
   `plan()` in [`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs) resolves the capture source as a single
   if/else chain — File > Live > Uprobe > Hep > None — so one process gets
@@ -525,7 +535,24 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   locally-captured stream belong to the same call — which overlaps the
   provenance work in the leg-correlation thread. Worth designing rather than
   bolting on.
-- [ ] **SRC2 — the two witnesses are not compared, so the disagreement that
+- [x] **SRC2 — the two witnesses are compared and their disagreement is
+  reported. DONE.** Verified 2026-08-27. `SourceDisagreement` in
+  [`src/sip/diagnosis.rs:443`](https://github.com/NormB/sipnab/blob/main/src/sip/diagnosis.rs#L443)
+  carries all four members the entry asks for -- `agreed`, `mirror_only`,
+  `wire_only`, `sdp_differs` -- `detect_source_disagreement` runs from the
+  diagnosis path, and [`src/output/call_report.rs:209`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L209) renders it.
+  The ordering concern is met rather than sidestepped: the detector pairs
+  `mirror_copies[k]` against `wire_copies[k]` and reports the divergence, so
+  neither account overwrites the other and no "first SDP wins" lets the proxy
+  define the truth the wire is there to check. Surplus copies on either side
+  become mirror-only or wire-only by COUNT, so three mirrored transmissions
+  against two on the wire is one unwitnessed message rather than three.
+  Tests: `a_message_only_the_mirror_reported_reaches_the_report_and_the_json`,
+  `an_sdp_rewritten_between_the_two_witnesses_reaches_the_dialog_json`,
+  `a_whole_call_only_the_mirror_saw_is_not_reported_as_a_disagreement`,
+  `a_single_source_run_carries_no_source_disagreement`.
+
+  ORIGINAL: the two witnesses are not compared, so the disagreement that
   makes them worth having is never surfaced.** SRC1 shipped composition:
   `-d` and `-L` now run in one process. It was sold as redundancy — HEP as the
   robust path when eCapture keylog extraction proves fragile. Dan Jenkins
@@ -936,8 +963,39 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   of restating each other -- a message naming a bound the code does not
   enforce is worse than no message.
 
-- [ ] **REL1 — the release build fetches from four external hosts and a
-  failure at any of them costs a re-run of the whole tag.** Measured over one
+- [x] **REL1 — every release-time fetch is pinned, verified, retried and
+  bounded. DONE.** Verified 2026-08-27 against the workflow and the images
+  rather than the checkbox. Each of the four inputs the entry names is now
+  fetched by `fetch-pinned` (in both
+  [`docker/cross/Dockerfile.*-unknown-linux-musl`](https://github.com/NormB/sipnab/tree/main/docker/cross))
+  or by an equivalent guarded `curl`:
+
+  | input | pinned by | verified | bounded + retried |
+  | --- | --- | --- | --- |
+  | netmap headers | commit `6d3a0093` | 3 × sha256 | `timeout 300`, `--tries=5` |
+  | libpcap | release 1.10.6 | sha256 | `timeout 300`, `--tries=5` |
+  | bpf-linker | tag + `BPF_LINKER_SHA256` | `sha256sum -c` | `--max-time 300`, `--retry 5` |
+  | apt archives | distro | n/a | `timeout 600`, `Acquire::Retries=5` |
+
+  The entry's second requirement -- that a failed fetch not read as a failed
+  BUILD -- is met by message rather than by convention: every failure path
+  prints `FETCH failure, not a build failure` and says whether to re-run. A
+  checksum mismatch says do NOT re-run, because a host serving bytes other
+  than the pinned ones is not a transient.
+
+  It is also ENFORCED, which is what keeps it closed:
+  `every_package_install_in_the_release_workflow_is_bounded` and
+  `every_direct_download_in_the_release_workflow_retries_and_is_checksummed`
+  in [`tests/ci_local_fetch_gate_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/ci_local_fetch_gate_test.rs),
+  alongside `every_download_in_the_cross_images_is_pinned_by_a_checksum` and
+  `..._is_bounded_and_retried`. The first carries a mutation-testing note: a
+  narrower version of it scanned only lines reading `apt-get install`, so
+  deleting the `timeout` from the bounded wrapper left every install unbounded
+  with the gate still green. It now scans every line invoking `apt-get`,
+  exempting only `command -v apt-get`.
+
+  ORIGINAL: the release build fetches from four external hosts and a
+  failure at any of them costs a re-run of the whole tag. Measured over one
   session on 2026-08-21, four separate builds failed on a fetch and none on
   the code: `apt-get install libpcap-dev` hung fifteen minutes against the
   Ubuntu archives and was canceled, taking the aggregate CI gate with it;
@@ -1561,6 +1619,35 @@ holds anything to it.
   2026-08-23 by turning `enforce_admins` on, and the API now returns
   `enforce_admins.enabled: false` again, so the condition below holds once more.
   A push to `main` on 2026-08-26 reported both rule violations and succeeded. Every push to `main` reports:
+
+  **2026-08-27 — the silent half is now closed; the decision half is not.**
+  Nothing was watching this. The 2026-08-23 fix was applied by hand in the
+  GitHub UI, and when it came off three days later no test, hook or workflow
+  reported it; the reopening above happened because a human happened to look.
+  A setting held only by hand is a setting that reverts silently, and the
+  documentation goes on describing a guarantee that stopped existing.
+
+  [`tests/branch_protection_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/branch_protection_drift_test.rs)
+  now holds the declared state and the live API state together: four gates over
+  `enforce_admins`, the `CI success` context, the pull-request requirement, and
+  the prose in [`docs/internals/build-ci-release.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/build-ci-release.md). It deliberately does NOT
+  assert that protection is enforced -- it asserts that whatever is true is
+  also what the repository SAYS. Flipping the switch in the UI without editing
+  the docs fails it, and so does editing the docs to claim a protection the API
+  does not report. All six mutations fire, including the two doc-side ones.
+  When `gh` cannot answer it proves that rather than skipping, so an absent
+  token cannot turn into a pass.
+
+  **What remains is one decision, and it is the owner's, because it changes how
+  this repository is worked rather than what the code does.** With
+  `enforce_admins` on, every change to `main` needs a pull request -- a
+  required status check cannot gate a direct push, since the push creates the
+  commit and its status together. That collides with the standing preference
+  for no PRs on this one-maintainer repository. The two coherent end states:
+  turn `enforce_admins` on and land work through PRs, or leave it off and treat
+  the local [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) run as the real gate, with the settings page
+  documented as advisory. The drift gate is correct under either, which is why
+  it landed without waiting for the answer.
 
   - `Required status check "CI success" is expected` — the rule wants CI green
     *before* the push, and admin bypass waves it through. So the check that is

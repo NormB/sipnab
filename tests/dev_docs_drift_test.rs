@@ -2143,6 +2143,17 @@ fn line_citations_point_at_the_code_they_name() {
     // citing its definition is what makes the claim checkable from here on: the
     // corpus grew by one because a citation stopped being invisible, not
     // because a page did.
+    // 197 -> 198: closing SRC1, SRC2 and REL1 in the backlog. Attributed by
+    // differential measurement, not by counting links: with HEAD's backlog.md
+    // in place the checker examines 197 and with the new one 198, and removing
+    // each candidate citation in turn identifies the single one that moved it.
+    // Three line citations were added -- `src/app/bootstrap.rs:539`,
+    // `src/sip/diagnosis.rs:443` and `src/output/call_report.rs:209` -- and
+    // exactly ONE counts. Line 443 is `pub agreed: usize`, a field this checker
+    // resolves; the other two name local bindings inside function bodies
+    // (`let composite = ...` and `if let Some(s) = ...`), which it deliberately
+    // does not resolve. So the delta is +1, not +3, and a +3 here would have
+    // meant the symbol extraction had WIDENED rather than that the corpus grew.
     // 193 -> 197: the conditional-content-persistence design. Attributed by
     // measurement rather than by counting links: with that file moved aside
     // this gate passes at 193 and with it present it examines 197, so the
@@ -2150,7 +2161,7 @@ fn line_citations_point_at_the_code_they_name() {
     // four of which name a symbol this checker can resolve -- the other two
     // cite a line without naming anything at it, which is exactly the shape
     // the comment above says gets SKIPPED rather than reported.
-    let expected = 197;
+    let expected = 198;
     assert_eq!(
         checked, expected,
         "the drift checker examined {checked} citations, not the {expected} \
