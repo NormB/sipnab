@@ -233,10 +233,25 @@ fn the_advertised_version_has_a_changelog_entry() {
     );
 }
 
-/// 6. A dated changelog entry means a tag exists for it.
+/// 6. A dated changelog entry means a tag exists for it — except the one
+///    being cut right now.
 ///
 /// Catches the opposite slip: renaming `## [Unreleased]` to a dated version and
 /// then never tagging. The changelog says a release happened; nothing published.
+///
+/// **The exemption is not a softening; without it this gate forbade the
+/// repository's own release procedure.** `docs/internals/build-ci-release.md`
+/// says to land the release commit, wait for CI, then tag the commit that
+/// passed — so between the cut and the tag there is always exactly one dated
+/// entry with no tag, and the first version of this test failed every release
+/// commit at the moment it was created. A gate that demands output its own
+/// documented fixer can never produce is unfixable by design, so the rule is
+/// stated properly instead: an entry may be dated-but-untagged only while it
+/// names the version in `Cargo.toml`, which is the release in flight.
+///
+/// That keeps the hole exactly one release wide. The moment `Cargo.toml` moves
+/// on, the previously exempt entry must have a tag or this fails — so
+/// forgetting to tag is caught by the NEXT cut rather than never.
 #[test]
 fn every_dated_changelog_entry_names_a_real_tag() {
     let changelog = read("CHANGELOG.md");
@@ -244,10 +259,17 @@ fn every_dated_changelog_entry_names_a_real_tag() {
     let tags = release_tags();
     assert!(tags.len() >= 5, "shallow clone: {} tags", tags.len());
     let newest_five: Vec<(u32, u32, u32)> = tags.iter().rev().take(5).copied().collect();
+    let crate_v = release_tag(&format!("v{}", env!("CARGO_PKG_VERSION")))
+        .expect("Cargo.toml version is x.y.z");
 
     let mut checked = 0;
+    let mut exempted = 0;
     for cap in re.captures_iter(&changelog).take(5) {
         let v = release_tag(&format!("v{}", &cap[1])).expect("x.y.z");
+        if v == crate_v && !newest_five.contains(&v) {
+            exempted += 1;
+            continue;
+        }
         checked += 1;
         assert!(
             newest_five.contains(&v),
@@ -259,8 +281,59 @@ fn every_dated_changelog_entry_names_a_real_tag() {
         );
     }
     assert!(
+        exempted <= 1,
+        "{exempted} dated entries are exempt, and at most one can be: the \
+         exemption is only for the version in Cargo.toml. More than one means \
+         the matching is wrong, not that more releases are in flight."
+    );
+    assert!(
         checked > 0,
-        "no dated changelog entries matched — the format changed"
+        "no dated changelog entries were CHECKED — either the format changed \
+         or every entry took the in-flight exemption, which would make this \
+         gate vacuous"
+    );
+}
+
+/// 7. The in-flight exemption applies to the crate version and nothing else.
+///
+/// Guards the shape of gate 6 rather than its data. The exemption exists for
+/// one commit's worth of window; if it ever widened to "the newest entry" or
+/// "any untagged entry", a changelog could accumulate dated releases nobody
+/// published and gate 6 would keep passing.
+#[test]
+fn only_the_crate_version_may_be_dated_without_a_tag() {
+    let changelog = read("CHANGELOG.md");
+    let re = regex::Regex::new(r"(?m)^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}").unwrap();
+    let tags = release_tags();
+    let newest_five: Vec<(u32, u32, u32)> = tags.iter().rev().take(5).copied().collect();
+    let crate_v = release_tag(&format!("v{}", env!("CARGO_PKG_VERSION")))
+        .expect("Cargo.toml version is x.y.z");
+
+    let untagged: Vec<String> = re
+        .captures_iter(&changelog)
+        .take(5)
+        .filter_map(|c| {
+            let v = release_tag(&format!("v{}", &c[1])).expect("x.y.z");
+            (!newest_five.contains(&v)).then(|| c[1].to_string())
+        })
+        .collect();
+
+    for v in &untagged {
+        let parsed = release_tag(&format!("v{v}")).expect("x.y.z");
+        assert_eq!(
+            parsed,
+            crate_v,
+            "CHANGELOG.md dates {v} with no tag, and {v} is not the version in \
+             Cargo.toml ({}). Only the release being cut may be dated ahead of \
+             its tag; anything else is a release that was written up and never \
+             published.",
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+    assert!(
+        untagged.len() <= 1,
+        "more than one dated entry has no tag: {untagged:?}. At most the \
+         in-flight release can be in that state."
     );
 }
 
