@@ -70,6 +70,13 @@ entry that carries them.
 
 ### Fixed
 
+- **CI ran out of disk linking test binaries.** The Linux leg moved to GitHub's
+  hosted `ubuntu-24.04-arm` (~14 GB), and adding two test files was enough to
+  reach `ld: final link failed: No space left on device`. Measured: a debug
+  test binary is 422 MB, of which 315 MB (75%) is `.debug_*`. `[profile.dev]`
+  now builds with `debug = "line-tables-only"`, which keeps the file and line
+  a backtrace needs and drops the variable and type information only an
+  interactive debugger reads.
 - A string continuation in `scanner_calibration_test` began a physical line
   with `#[test]`, which arms the line-oriented extractor every duplicate and
   exactly-once rule is built on. It produced no phantom only because the next

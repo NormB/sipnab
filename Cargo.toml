@@ -296,6 +296,19 @@ bench = false
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
 
+# Test binaries link the whole dependency tree, and this repository has a lot
+# of them. Measured on 0.5.133: a debug test binary is 422 MB, of which 315 MB
+# (75%) is `.debug_*`. The Linux CI leg runs on GitHub's hosted
+# `ubuntu-24.04-arm`, which has roughly 14 GB of disk, and adding two test
+# files was enough to reach `ld: final link failed: No space left on device`.
+#
+# `line-tables-only` keeps what a test run actually reads -- file and line in a
+# backtrace -- and drops the variable and type information only an interactive
+# debugger uses. Reverse it locally with `CARGO_PROFILE_DEV_DEBUG=full` when
+# stepping through something under a debugger.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 lto = true
 codegen-units = 1
