@@ -183,6 +183,70 @@ fn published_version() -> (u32, u32, u32) {
     parse_version(raw).unwrap_or_else(|| panic!("unparseable published_version {raw:?}"))
 }
 
+/// Files the SECOND phase of a release touches, and nothing else.
+///
+/// `reference_sipnab_release_flow` is deliberately two-phase: tag and publish
+/// artifacts first, then move `published_version` so the site advertises a
+/// release a visitor can actually download. That second commit necessarily
+/// lands AFTER the tag, and it is part of shipping that version rather than
+/// new work waiting to ship.
+///
+/// Without this, the delivery gates below make the documented flow impossible
+/// to complete: they demand a CHANGELOG entry for the very commit whose only
+/// job is to advertise the entry that already exists. That is not
+/// hypothetical -- it turned `main` red on 0.5.131's advertisement commit, and
+/// this list is the fix.
+const ADVERTISEMENT_PATHS: &[&str] = &[
+    "website/config.toml",
+    "docs/install.md",
+    "website/content/", // the generated mirrors of the above
+    "website/static/",  // llms.txt and friends, regenerated with them
+    "CHANGELOG.md",     // redating the entry to the day it published
+];
+
+/// Whether every change since the newest tag is that tag's own advertisement.
+///
+/// Returns `None` when git cannot answer, which callers must treat as "cannot
+/// tell" rather than as "yes".
+fn only_advertises_the_newest_tag() -> Option<bool> {
+    let changed = changed_since_newest_tag()?;
+    Some(is_advertisement(
+        &changed,
+        published_version(),
+        newest_tag()?,
+    ))
+}
+
+/// The decision itself, over values rather than over the working tree.
+///
+/// Pure on purpose. The first version read git and the filesystem inline, and
+/// two mutations survived because this tree cannot exercise the branches: the
+/// changeset is never empty here, and `published_version` already equals the
+/// newest tag, so deleting either check changed nothing observable. A gate
+/// whose logic can only be run against one state is a gate whose logic is
+/// mostly untested.
+fn is_advertisement(
+    changed: &[String],
+    published: (u32, u32, u32),
+    newest_tag: (u32, u32, u32),
+) -> bool {
+    // An empty changeset advertises nothing. Saying `true` here would exempt
+    // the case where git reported nothing at all.
+    if changed.is_empty() {
+        return false;
+    }
+    if !changed
+        .iter()
+        .all(|f| ADVERTISEMENT_PATHS.iter().any(|p| f.starts_with(p)))
+    {
+        return false;
+    }
+    // It must advertise THIS tag, not merely touch those files: a commit that
+    // edits config.toml while leaving the site behind the newest release is
+    // ordinary work wearing the release flow's clothes.
+    published == newest_tag
+}
+
 // ── A. Unreleased work must declare itself ──────────────────────────
 
 /// Code changed since the last tag must be declared in the changelog.
@@ -200,6 +264,9 @@ fn code_changed_since_the_last_tag_is_declared_in_the_changelog() {
         return;
     };
     if !unreleased_code {
+        return;
+    }
+    if only_advertises_the_newest_tag() == Some(true) {
         return;
     }
     let (_, has_unreleased_heading) = changelog_sections();
@@ -310,6 +377,9 @@ fn a_security_relevant_change_since_the_tag_is_declared() {
         .filter(|f| SECURITY_PATHS.iter().any(|p| f.starts_with(p)))
         .collect();
     if touched.is_empty() {
+        return;
+    }
+    if only_advertises_the_newest_tag() == Some(true) {
         return;
     }
     let (_, has_unreleased) = changelog_sections();
@@ -674,6 +744,10 @@ fn a_p0_marked_done_is_released_or_declared() {
     if n == 0 {
         return;
     }
+    if only_advertises_the_newest_tag() == Some(true) {
+        // Phase two of this very release. Nothing is waiting to ship.
+        return;
+    }
     let (_, has_unreleased) = changelog_sections();
     let newest_changelog = {
         let mut v = changelog_sections().0;
@@ -705,5 +779,86 @@ fn the_advertised_version_carries_a_date() {
         line.contains(" - 2"),
         "the advertised version's changelog heading carries no date: {line:?}. \
          An undated entry cannot be checked against the release."
+    );
+}
+
+/// The advertisement exemption must not swallow ordinary work.
+///
+/// It exists so the release flow's own second phase — moving
+/// `published_version` after the artifacts exist — does not read as
+/// undeclared work. An exemption that also covered a `src/` change would
+/// silence the gates this file is entirely about, and it would do so
+/// invisibly, because the tree would simply go quiet.
+#[test]
+fn the_advertisement_exemption_stays_narrow() {
+    // Nothing under src/ or tests/ may be reachable through it.
+    for forbidden in [
+        "src/main.rs",
+        "src/mcp/server.rs",
+        "tests/foo.rs",
+        "Cargo.toml",
+    ] {
+        assert!(
+            !ADVERTISEMENT_PATHS.iter().any(|p| forbidden.starts_with(p)),
+            "{forbidden} is reachable through ADVERTISEMENT_PATHS; a code \
+             change would then count as advertising a release"
+        );
+    }
+    // And every path it does name must exist, or the exemption is describing
+    // a tree that is not this one.
+    for p in ADVERTISEMENT_PATHS {
+        let target = repo().join(p.trim_end_matches('/'));
+        assert!(
+            target.exists(),
+            "ADVERTISEMENT_PATHS names {p}, which does not exist here"
+        );
+    }
+    assert!(
+        ADVERTISEMENT_PATHS.len() <= 6,
+        "the exemption has grown to {} paths; each one is a place undeclared \
+         work can hide, so widening it should be deliberate rather than \
+         incremental",
+        ADVERTISEMENT_PATHS.len()
+    );
+}
+
+/// The exemption applies only when the site actually names the newest tag.
+///
+/// Touching `website/config.toml` is not the same as advertising a release. A
+/// commit that edits it while leaving `published_version` behind the newest
+/// tag is ordinary work wearing the release flow's clothes, and must still be
+/// declared.
+#[test]
+fn the_advertisement_exemption_requires_the_site_to_name_the_newest_tag() {
+    let Some(tag) = newest_tag() else {
+        eprintln!("SKIP: no tags in this checkout");
+        return;
+    };
+    let ads: Vec<String> = vec!["website/config.toml".into(), "docs/install.md".into()];
+
+    // The shape the exemption exists for: only advertisement files, and the
+    // site naming the tag.
+    assert!(
+        is_advertisement(&ads, tag, tag),
+        "the exemption must fire for the release flow's own second phase"
+    );
+    // Same files, but the site is a release behind: ordinary work.
+    let behind = (tag.0, tag.1, tag.2.saturating_sub(1));
+    assert!(
+        !is_advertisement(&ads, behind, tag),
+        "a commit touching the advertisement files while the site still names \
+         {behind:?} against a newest tag of {tag:?} is not advertising it"
+    );
+    // Advertisement files plus one code file: not an advertisement.
+    let mixed: Vec<String> = vec!["website/config.toml".into(), "src/main.rs".into()];
+    assert!(
+        !is_advertisement(&mixed, tag, tag),
+        "a changeset containing code is never merely an advertisement"
+    );
+    // Nothing changed: nothing advertised.
+    assert!(
+        !is_advertisement(&[], tag, tag),
+        "an empty changeset advertises nothing; returning true here would \
+         exempt the case where git reported nothing at all"
     );
 }
