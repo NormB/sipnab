@@ -8,7 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.133] - 2026-08-29
 
 ### Added
 
@@ -47,6 +47,23 @@ entry that carries them.
   along with the structural rule that every test-marker line be bare.
 - `split_raw_strings` in the shared test predicates, so line-oriented scanners
   can be asked what is inside a string rather than guessing from indentation.
+- **Discriminating power, checked** (`tests/discriminator_test.rs`). Two rules
+  in the previous commit claimed a power they did not have: the
+  marker/definition equality does not catch raw-string poisoning, and an
+  indentation rule for ratchets reported eight pins that were all genuine
+  `const`s inside their own test function. Both are kept with the disproof
+  beside them, and the general form is asserted -- a candidate discriminator
+  must put its two cases on opposite sides.
+- The same two-direction analysis applied to the other counters this
+  repository trusts. The **MCP tool counter** is a regex over raw source, so a
+  registration-shaped line inside a raw string inflates the number on the
+  homepage; that is demonstrated and then gated. The **unwrap ban** is the
+  counter-example and is pinned as such: it lexes Rust and strips comments and
+  every string form before searching, and it refuses to run against a corpus
+  it cannot see.
+- Vacuity guards on every tree-walking rule, with the threshold asserted
+  rather than the shape -- `files.len() >= 0` matched the shape and asserted
+  nothing.
 - The pre-push hook prints the phase-two step after a tag is pushed. Not a
   gate: at tag time the site should still name the previous release, because
   the artifacts do not exist yet.

@@ -2838,7 +2838,7 @@ per SIP message and grows with the call):
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.132 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.133 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -4289,7 +4289,7 @@ sipnab -D
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```text
-sipnab 0.5.132 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+sipnab 0.5.133 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
 ```
 
 This is the fastest way to confirm a build carries the feature set
@@ -11214,7 +11214,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.132 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.133 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -12293,7 +12293,7 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
-  "version": "0.5.132",
+  "version": "0.5.133",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -12743,7 +12743,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.132"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.133"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -16522,7 +16522,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.132 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.133 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -17316,7 +17316,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.132",
+  "version": "0.5.133",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -20281,7 +20281,7 @@ and a consumer parses it before indexing into it.
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.132 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.133 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -24295,6 +24295,14 @@ turns one missing optional tool into running no checks at all.
 It exists because the manual version failed once already. The 0.5.61 release
 commit went red in `Features (tls)`, and the only thing between that and a
 published broken release was somebody happening to look.
+
+Once that gate passes, the hook prints the phase-two step. A tag is phase one:
+it builds the artifacts. The release is not finished until `published_version`
+names it and a visitor is actually offered it, and between the tag going up and
+the next commit no suite runs, so nothing is watching that window. It stayed a
+prompt rather than becoming an eleventh gate because at tag time the site
+*should* still advertise the previous release — the new artifacts do not exist
+yet — and a refusal there would block the correct state.
 
 A release is a pushed `v*` tag. `release.yml` then runs a matrix of eight
 builds: `x86_64` and `aarch64` for `linux-gnu` (each also in a `noaudio`

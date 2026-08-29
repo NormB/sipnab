@@ -118,8 +118,15 @@ fn a_crate_import_is_not_a_cross_reference() {
     );
 
     // And the exclusion is exercised: the raw scan really does surface it.
+    let files = test_files();
+    assert!(
+        files.len() >= 40,
+        "the walk reached only {} file(s) under tests/; an empty or truncated \
+         corpus satisfies every rule that reads it",
+        files.len()
+    );
     let mut excluded = 0usize;
-    for path in test_files() {
+    for path in files {
         for token in candidate_tokens(&read(&path)) {
             if token
                 .split_once("::")

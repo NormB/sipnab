@@ -501,6 +501,12 @@ fn no_scanner_predicate_exempts_a_file_by_name() {
 #[test]
 fn the_scanners_read_the_files_that_test_them() {
     let files = test_files();
+    assert!(
+        files.len() >= 40,
+        "the walk reached only {} file(s) under tests/; every tree-wide rule \
+         in this file is vacuous on a corpus that size",
+        files.len()
+    );
     for required in [
         "scanner_calibration_test.rs",
         "claims_of_absence_test.rs",
