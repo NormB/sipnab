@@ -37,12 +37,27 @@ entry that carries them.
   fixed by narrowing until green -- a move indistinguishable from narrowing
   until blind. All four narrowings are now driven from both sides: the case
   each was written to exclude, and a case each must still catch.
+- **Fixture isolation** (`tests/fixture_isolation_test.rs`). A gate that reads
+  the repository cannot tell an example from an assertion -- both are text in a
+  file it walks. The loud direction (a fixture that looks like a violation) had
+  already fired five times; the silent direction (a fixture that looks like a
+  gate being satisfied) had never been looked at, and is reachable: a
+  `#[test] fn` inside a raw string is counted as a definition, and a
+  `const EXPECTED_X = 756;` inside one as a ratchet pin. Both are now gated,
+  along with the structural rule that every test-marker line be bare.
+- `split_raw_strings` in the shared test predicates, so line-oriented scanners
+  can be asked what is inside a string rather than guessing from indentation.
 - The pre-push hook prints the phase-two step after a tag is pushed. Not a
   gate: at tag time the site should still name the previous release, because
   the artifacts do not exist yet.
 
 ### Fixed
 
+- A string continuation in `scanner_calibration_test` began a physical line
+  with `#[test]`, which arms the line-oriented extractor every duplicate and
+  exactly-once rule is built on. It produced no phantom only because the next
+  line happened to start with `assert_eq!`. It was in the file written to guard
+  against exactly that class.
 - The duplicate-test rule documented "five" legitimate shared names. Nothing
   had counted them; there are eight. The count is no longer pinned in prose --
   the property is asserted instead.

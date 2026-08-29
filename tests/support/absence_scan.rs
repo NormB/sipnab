@@ -218,3 +218,63 @@ pub fn ratchet_pins(src: &str) -> Vec<(String, String)> {
 pub fn implausible_coincidence(value: &str) -> bool {
     value.parse::<u64>().is_ok_and(|v| v > COINCIDENCE_CEILING) || value.parse::<u64>().is_err()
 }
+
+/// Rust raw strings removed from a source, and their contents returned.
+///
+/// Returns `(source with raw strings blanked, contents of each)`. Newlines are
+/// preserved in the blanked copy so line-oriented scanners keep their numbering.
+///
+/// # Why this exists
+///
+/// Every scanner above is line-oriented, which is deliberate — the tree is
+/// read the way a person greps it. The cost is that quoting is invisible: a
+/// `#[test] fn phantom()` written inside a raw string is counted as a
+/// definition, and a `const EXPECTED_X = 756;` inside one is counted as a
+/// ratchet pin.
+///
+/// The marker/definition equality does NOT catch that, and I claimed it did. A
+/// phantom inside a raw string sits on its own physical line, so it brings a
+/// marker along with it and the two counts move together. Separating them
+/// needs an actual understanding of where the strings are, which is this.
+///
+/// The `r` must not follow an identifier character or a backslash, or `"a\r"`
+/// and `for"` would each open a raw string that never closes.
+#[must_use]
+pub fn split_raw_strings(src: &str) -> (String, Vec<String>) {
+    let b = src.as_bytes();
+    let mut kept = String::with_capacity(src.len());
+    let mut inner = Vec::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        let boundary = i == 0 || {
+            let p = b[i - 1];
+            !(p.is_ascii_alphanumeric() || p == b'_' || p == b'\\')
+        };
+        if b[i] == b'r' && boundary {
+            let mut j = i + 1;
+            while j < b.len() && b[j] == b'#' {
+                j += 1;
+            }
+            let hashes = j - i - 1;
+            if j < b.len() && b[j] == b'"' {
+                let mut close = String::from('"');
+                for _ in 0..hashes {
+                    close.push('#');
+                }
+                if let Some(rel) = src[j + 1..].find(&close) {
+                    let end = j + 1 + rel;
+                    inner.push(src[j + 1..end].to_string());
+                    for c in src[i..end + close.len()].chars() {
+                        kept.push(if c == '\n' { '\n' } else { ' ' });
+                    }
+                    i = end + close.len();
+                    continue;
+                }
+            }
+        }
+        let ch = src[i..].chars().next().unwrap_or(' ');
+        kept.push(ch);
+        i += ch.len_utf8();
+    }
+    (kept, inner)
+}

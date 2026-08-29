@@ -403,8 +403,14 @@ fn the_definition_counter_still_finds_a_second_definition() {
     let one = "#[test]\nfn the_gate_holds() {\n    assert!(true);\n}\n";
     assert_eq!(defines(one, "the_gate_holds"), 1, "a single definition");
 
-    let two = "#[test]\nfn the_gate_holds() {\n    assert!(true);\n}\n\n\
-               #[test]\nfn the_gate_holds() {\n    assert!(false);\n}\n";
+    // Concatenated rather than written as a string continuation. Spelled out,
+    // the second physical line of that literal BEGINS with `#[test]`, which
+    // arms the very extractor under test -- fixture text a line-oriented
+    // scanner cannot tell from a real definition. It was in this file, the one
+    // written to guard against exactly that. `fixture_isolation_test` now gates
+    // it across the tree.
+    let two = format!("{one}\n{}", one.replace("true", "false"));
+    let two = two.as_str();
     assert_eq!(
         defines(two, "the_gate_holds"),
         2,
