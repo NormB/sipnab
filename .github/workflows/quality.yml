@@ -49,6 +49,22 @@ jobs:
           # third-party actions to read. Nothing here pushes with it:
           # wiki-sync and release pass the token explicitly via GH_TOKEN.
           persist-credentials: false
+
+      # Same step the Coverage job has carried for a while, for the same
+      # reason. `cargo bench --profile profiling --all-features` builds a
+      # release-optimized tree with `debug = true` and `strip = false`, and on
+      # 0.5.131 that stopped fitting: the step was SIGTERMed at 5m44s while
+      # still compiling, having produced no benchmark output, on a job whose
+      # own timeout is 40 minutes. It passed on the commit before that batch
+      # and failed on every one after.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /usr/local/share/boost /usr/share/swift \
+                      /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune --all --force || true
+          df -h /
+
       - name: Install system deps
         uses: ./.github/actions/system-deps
         with:

@@ -25,6 +25,14 @@
 //! the private capture corpus is deliberately not used and no capture is committed:
 //! the corpus is real customer traffic.
 
+// Gated on `full`: this file drives the whole tool surface, and the surface
+// is FEATURE-DEPENDENT. Under `native,hep,api,mcp,mcp-http` the probe of
+// `export_vcon` is answered with "this sipnab was built without the 'vcon'
+// Cargo feature" -- a correct refusal, not a missing envelope, but the probe
+// reads it as a tool that failed to carry its completeness fields. The
+// documentation and the tool inventory both describe the full binary, so
+// that is the only build this comparison means anything against.
+#![cfg(feature = "full")]
 #![cfg(all(unix, feature = "mcp"))]
 
 use std::io::{BufRead, BufReader, Write};
