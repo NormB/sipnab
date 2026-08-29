@@ -318,10 +318,18 @@ fn partial_capture_lifecycle() {
         "a page computed while the file is still being read must say so: \
          {early_dialogs}"
     );
-    assert!(
-        early_dialogs.get("truncated").is_none(),
-        "`truncated: false` claims nothing was withheld. Mid-load that claim is \
-         unearned and must be absent, not false: {early_dialogs}"
+    // Absent OR `true` -- never `false`. The rule is that an UNEARNED
+    // completeness claim must not be made; a row cap that really bit is a
+    // fact and ships whatever the load state. Asserting absence instead was a
+    // timing bug: with `limit: 5`, whether `truncated` appears at all depends
+    // on how many dialogs happen to have loaded when the call lands. It held
+    // on a loaded developer machine, where fewer than five were in by then,
+    // and failed on a CI runner that got there first.
+    assert_ne!(
+        early_dialogs.get("truncated"),
+        Some(&json!(false)),
+        "`truncated: false` claims nothing was withheld, and mid-load that \
+         claim is unearned: {early_dialogs}"
     );
     assert_eq!(early_problems[EXHAUSTED], json!(false), "{early_problems}");
     assert_ne!(
