@@ -378,6 +378,80 @@ fn unsubscribe_then_change_yields_no_notification() {
 /// down, because what the debounce promises is a RATE — at most one
 /// notification per window, plus one for the tail — and a fixed number would
 /// be a different promise that happened to hold on this machine.
+/// The most notifications a correctly debouncing server may send for a burst
+/// of changes lasting `burst`.
+///
+/// One per debounce window, plus one for the change still pending when the
+/// burst ended -- that last one is delivered after the burst, which is why the
+/// drain that collects it must NOT be added to `burst` here. Doing so was a
+/// real defect: the drain inflated the ceiling while the change count stopped
+/// growing, so on a runner where each capture swap is slow the two met (6
+/// changes, ceiling 6) and the fixture guard fired. It held on a fast machine
+/// and failed on CI.
+///
+/// Extracted from the test body so the arithmetic can be checked directly.
+/// Inline, the only way to learn it was wrong was to run the whole fixture on
+/// a machine slow enough to expose it.
+fn debounce_ceiling(burst: Duration) -> usize {
+    (burst.as_secs_f64() / DEBOUNCE.as_secs_f64()).ceil() as usize + 1
+}
+
+/// The ceiling counts the burst, never the drain that follows it.
+///
+/// Pins the defect directly: a two-second burst drained for two more seconds
+/// must still be judged against the burst.
+#[test]
+fn the_debounce_ceiling_excludes_the_drain_that_follows_the_burst() {
+    let burst = DEBOUNCE * 2;
+    let with_drain = burst + DEBOUNCE * 2;
+    assert_eq!(
+        debounce_ceiling(burst),
+        3,
+        "two windows of changes plus the one still pending is three"
+    );
+    assert!(
+        debounce_ceiling(with_drain) > debounce_ceiling(burst),
+        "this test is anchored on the drain inflating the ceiling; if that is \
+         no longer true the defect it guards cannot recur and the anchor needs \
+         rewriting rather than deleting"
+    );
+    assert_eq!(
+        debounce_ceiling(burst),
+        3,
+        "the ceiling must not depend on how long the caller drains afterwards"
+    );
+}
+
+/// The ceiling must leave a fixture room to fail.
+///
+/// A ceiling at or above the number of changes makes the test vacuous -- a
+/// server notifying on every single change would pass it -- which is what the
+/// fixture guard in the burst test refuses. This checks the arithmetic admits
+/// a failing server across the range of burst lengths a slow or fast runner
+/// actually produces, so the guard fires on a real defect rather than on the
+/// machine it happened to run on.
+#[test]
+fn the_ceiling_leaves_room_for_a_fixture_that_can_fail() {
+    // A change every 100ms is the burst test's spacing; even at a tenth of
+    // that rate the fixture must still be able to fail.
+    for secs in [2u64, 3, 5, 10, 20] {
+        let burst = Duration::from_secs(secs);
+        let ceiling = debounce_ceiling(burst);
+        let slow_changes = secs as usize * 2; // one change every 500ms
+        assert!(
+            slow_changes > ceiling,
+            "over {secs}s a server changing twice a second makes \
+             {slow_changes} change(s) against a ceiling of {ceiling}; the \
+             fixture could not fail and the test would prove nothing"
+        );
+    }
+    assert_eq!(
+        debounce_ceiling(Duration::from_millis(1)),
+        2,
+        "a burst shorter than one window still allows the pending flush"
+    );
+}
+
 #[test]
 fn a_burst_of_changes_collapses_into_fewer_notifications() {
     /// Gap between changes, comfortably longer than the watcher's look
@@ -398,13 +472,20 @@ fn a_burst_of_changes_collapses_into_fewer_notifications() {
         changes += 1;
         std::thread::sleep(SPACING);
     }
+    // Measured BEFORE the drain. The ceiling must cover the window in which
+    // changes were made, and the `+ 1` below already covers the one still
+    // pending when that window closed -- which is what the drain collects.
+    // Including the drain in this figure inflated the ceiling while `changes`
+    // stopped growing, so on a runner where each swap is slow the two met and
+    // the fixture guard fired: 6 changes against a ceiling of 6. It held on a
+    // fast machine and failed on CI, which is the shape of every timing bug
+    // in this file.
+    let burst = started.elapsed();
     wire.drain_for(DEBOUNCE * 2);
     let observed = started.elapsed();
     let updates = wire.updates().len();
 
-    // One per window, plus one for the change still pending when the window
-    // closed. Anything above that is the debounce not debouncing.
-    let ceiling = (observed.as_secs_f64() / DEBOUNCE.as_secs_f64()).ceil() as usize + 1;
+    let ceiling = debounce_ceiling(burst);
     assert!(
         changes > ceiling,
         "the fixture cannot fail: {changes} change(s) against a ceiling of \

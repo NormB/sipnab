@@ -8,6 +8,19 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The MCP subscription debounce test computed its ceiling over the drain as
+  well as the burst**, so on a runner where each capture swap is slow the
+  change count and the ceiling met and the test's own fixture guard fired --
+  correctly refusing to pass vacuously, since a server notifying on every
+  change would have satisfied it. The ceiling now covers the burst alone; the
+  allowance for the change still pending when a burst ends is what the drain
+  collects. Extracted as `debounce_ceiling` so the arithmetic can be checked
+  without running the fixture on a machine slow enough to expose it.
+
 ## [0.5.131] - 2026-08-29
 
 ### Fixed
