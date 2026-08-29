@@ -2186,7 +2186,14 @@ fn line_citations_point_at_the_code_they_name() {
     // what this gate counts. So one gate's fix is another gate's new corpus
     // entry, and running the two fixers in either order leaves this number to
     // be moved by hand afterwards.
-    let expected = 201;
+    // 201 -> 203: two citations written by hand into the DOC section, both
+    // naming a symbol this checker resolves — `src/output/api.rs:1118`
+    // (`decode_dialog_audio`, the call that contradicts the "no media" promise
+    // on the REST page) and `src/privilege.rs:44` (`is_root`, the precondition
+    // that makes `--user` a no-op). Unlike the 199 -> 200 move, these really
+    // are new citations: the DOC entries cite the source lines that contradict
+    // the documentation, which is the whole point of the entries.
+    let expected = 203;
     assert_eq!(
         checked, expected,
         "the drift checker examined {checked} citations, not the {expected} \

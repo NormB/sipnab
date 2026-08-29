@@ -248,7 +248,25 @@ impl RunIntegrity {
     /// today.
     #[must_use]
     pub fn ndjson_line(&self) -> Option<String> {
-        if !self.is_degraded() {
+        // Gated on `input_complete()`, NOT on `is_degraded()`. The two differ
+        // on retention: idle compaction is a configured policy doing its job,
+        // which is why it deliberately does not move the exit status -- and by
+        // the same argument it must not inject a line into an otherwise-clean
+        // NDJSON stream. It fires on essentially every long capture, so the
+        // difference is most real runs rather than an edge case.
+        //
+        // This was caught by the corpus gate and by nothing else: a healthy
+        // 3 MB capture emitted the trailer for 15 compacted messages, and
+        // `tests/filter_corpus_test.rs` -- which reads every `--json-dialogs`
+        // line as a dialog, exactly as a consumer would -- saw 335 dialogs
+        // where there are 334, with the extra one appearing in both a filter's
+        // results and its negation's. Any downstream reader iterating lines
+        // would have hit the same thing.
+        //
+        // Retention still travels INSIDE the trailer when a partial read fires
+        // it, and is still reported on stderr and in `--report` regardless. It
+        // is only the machine-readable dialog stream that stays clean.
+        if self.input_complete() {
             return None;
         }
         let mut line = serde_json::to_string(&self.to_json()).unwrap_or_else(|_| {
@@ -477,13 +495,75 @@ mod tests {
         // The distinction the exit status rests on: reported, not a failure.
         assert!(r.input_complete(), "retention must not fail the run");
         assert!(r.is_degraded(), "retention must still be declared");
-        assert!(r.ndjson_line().is_some());
+        // ...but declared to a HUMAN, not injected into the dialog stream.
+        // Retention fires on most long captures, and a consumer reading each
+        // `--json-dialogs` line as a dialog would count the trailer as one.
+        assert!(
+            r.ndjson_line().is_none(),
+            "a complete read must leave the NDJSON stream pure, whatever else \
+             it has to declare"
+        );
+        assert!(
+            r.report_notice().is_some(),
+            "retention must still reach the human-readable report"
+        );
         let v = r.to_json();
         assert_eq!(
             v["sipnab_run"]["retention"]["messages_dropped"],
             serde_json::json!(2)
         );
         assert_eq!(v["sipnab_run"]["input_complete"], serde_json::json!(true));
+    }
+
+    /// A partial read still emits the trailer, and retention rides along.
+    ///
+    /// The pair with `retention_is_reported_without_failing_the_run`: gating
+    /// the trailer on `input_complete` must not lose the retention figure when
+    /// the trailer fires for a real reason.
+    #[test]
+    fn a_partial_read_emits_the_trailer_and_carries_retention_inside_it() {
+        let r = RunIntegrity {
+            files_given: 2,
+            files_read_in_full: 1,
+            files_stopped_early: 1,
+            // `input_complete()` reads this flag, not the file counters: the
+            // counters describe the set, and this says whether anything was
+            // lost from it.
+            input_lost: true,
+            retention_messages_dropped: 7,
+            ..RunIntegrity::default()
+        };
+        assert!(
+            !r.input_complete(),
+            "a stopped-early file is a partial read"
+        );
+        let line = r
+            .ndjson_line()
+            .expect("a partial read must declare itself in the stream");
+        assert!(
+            line.contains("\"sipnab_run\""),
+            "the trailer must be keyed so a reader can tell it from a dialog: {line}"
+        );
+        let v = r.to_json();
+        assert_eq!(
+            v["sipnab_run"]["retention"]["messages_dropped"],
+            serde_json::json!(7),
+            "retention must survive inside the trailer it no longer triggers"
+        );
+    }
+
+    /// A clean run declares nothing at all, in either channel.
+    #[test]
+    fn a_clean_run_emits_no_trailer_and_no_notice() {
+        let r = RunIntegrity {
+            files_given: 1,
+            files_read_in_full: 1,
+            ..RunIntegrity::default()
+        };
+        assert!(r.input_complete());
+        assert!(!r.is_degraded());
+        assert!(r.ndjson_line().is_none());
+        assert!(r.report_notice().is_none());
     }
 
     #[test]

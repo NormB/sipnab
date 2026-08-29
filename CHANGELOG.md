@@ -8,6 +8,82 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.131] - 2026-08-28
+
+### Fixed
+
+- **A single well-formed filter aborted the process, over stdio and over
+  authenticated HTTP.** A chain of binary `or` operators built a parse tree as
+  deep as nested parentheses without using one, and the depth guard counted
+  only grouping, so it walked straight past. There were TWO recursions, not
+  one -- evaluation and `Drop` -- so a node cap alone would not have fixed it,
+  because refusing an oversized expression means dropping it first.
+  Expressions are now bounded at 1024 nodes, 31x the largest sipnab itself
+  builds, and the tree is dismantled through a heap worklist at constant stack
+  depth. Reachable by accident rather than only by an attacker: an agent asked
+  to check a list of call-ids naturally emits `a or b or c or ...`.
+- **`--hep-auth-mode hmac` did not authenticate the addresses a packet
+  asserts.** The signed region was `version || ts || nonce || payload`, so the
+  chunks carrying source and destination sat outside the MAC and no key was
+  needed to forge them: append chunks to an observed packet and last-wins
+  parsing honored them. The MAC now covers the whole datagram with only its own
+  tag field zeroed, duplicate known chunks are refused in every mode, and a
+  version 1 token is refused by name rather than silently accepted. **This is a
+  wire-format change**: a 0.5.130 sender against a 0.5.131 collector has every
+  packet refused, which is deliberate -- accepting v1 would report HMAC auth as
+  active over addresses nothing signed.
+- **Sniffed rtpengine NG control was accepted from any source on any port**
+  while `docs/rtpengine.md` called a relay assertion "authoritative about the
+  port". `--hep-allow` gates only the listener, never the sniffed path, and the
+  Call-ID was taken verbatim from the datagram. Now gated on the destination
+  port, with the refused datagram still consumed as control traffic so it
+  cannot reappear as a phantom stream. The residual -- the source is still not
+  authenticated -- is written into the docs and pinned by a test rather than
+  left implicit.
+- **A run that could not do what was asked exited 0.** A truncated pcap, a
+  `--plugin` that would not load, and idle compaction dropping messages each
+  logged the fact and returned success, so `sipnab ... || alert` never fired.
+  `docs/fault-model.md` already stated the rule for the live path; the file
+  path now implements it. Exit `1`, plus a `sipnab_run` NDJSON trailer that is
+  absent from a complete read, and an `INCOMPLETE RUN` block in `--report`.
+- **MCP tools answered from a half-loaded capture and called the answer
+  complete.** `list_dialogs` returned 13 of 334 dialogs with
+  `truncated: false`, and `get_capture_report.complete` read `true` over 0.09%
+  of a file and `false` once it had read the whole thing. All 43
+  capture-derived tools now carry `source_exhausted` and `source_stopped_early`
+  in their own envelope, and `truncated: false` is withheld rather than
+  falsified while a source is undrained -- a caller gets no claim instead of a
+  wrong one.
+
+### Added
+
+- **Run provenance** (`--run-provenance-file`) records argv, working directory,
+  effective user, start time, version, feature set and capture identity, `0600`
+  and fail-closed: a record that cannot be written stops the run.
+- **A TUI action trail** (`--tui-audit-file`) records state-changing actions --
+  captures opened, filters applied, exports and their destinations -- never
+  keystrokes and never search terms. It fails OPEN, because an operator
+  mid-incident may hold a live capture that exists nowhere else; a lost record
+  leaves a permanent gap in the sequence numbers, and the session-end record
+  names what was offered and what was lost.
+- **MCP argument completions and resource subscriptions**, both declared at
+  `initialize`, with completions drawn from live capture state and
+  subscriptions debounced at one second per URI.
+- **An OpenAPI 3.1 document and a rendered API reference**, vendored under the
+  site's strict CSP with Scalar's telemetry, proxy and remote fonts disabled.
+- **Client-side documentation search**, per-page social metadata, and
+  accessibility and performance gates in CI with measured budgets.
+- **`docs/real-world-captures.md`**: twelve worked examples drawn from real
+  traffic and redacted -- among them a default port range that discarded 76% of
+  a trunk, a `--fail2ban` run whose every alert named the operator's own PBX,
+  and a 90% loss figure that is three bursts totalling 540 ms.
+
+### Changed
+
+- Documentation link destinations were audited exhaustively rather than
+  sampled: 51 of 243 cross-page links landed somewhere that did not answer the
+  link text, and two gates now hold relevance as well as resolution.
+
 ## [0.5.130] - 2026-08-28
 
 ### Added

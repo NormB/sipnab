@@ -587,3 +587,116 @@ fn the_exit_code_table_documents_the_partial_read() {
         "and that a --plugin that would not load lands here: {row}"
     );
 }
+
+/// Every line of a clean `--json-dialogs` run must be a dialog.
+///
+/// The invariant a consumer actually relies on, and the one the run trailer
+/// broke. `tests/filter_corpus_test.rs` reads each line as a dialog — as any
+/// downstream reader would — so a run-scoped object in the stream counted as
+/// an extra dialog, and it appeared in both a filter's results and its
+/// negation's, which is logically impossible for a real row.
+///
+/// Caught only by the corpus gate: the trailer fired for 15 messages dropped
+/// by idle compaction on a healthy 3 MB capture, and retention fires on most
+/// long captures. No fixture here is large enough to compact, which is exactly
+/// why this test pins the INVARIANT rather than the retention case — it fails
+/// for any future line that is not a dialog, whatever puts it there.
+///
+/// Be clear about what that does NOT cover, because the mutation says so:
+/// reverting `ndjson_line` to its old `is_degraded()` gate — the actual
+/// defect — leaves THIS test green and is caught only by
+/// `run_integrity::tests::retention_is_reported_without_failing_the_run`.
+/// Forcing compaction end to end would need `[limits] idle_compact_after_secs`
+/// from a config file, and there is no `--config` flag: it is discovered from
+/// a path, so planting one is the shared-state poisoning this suite has been
+/// bitten by before. The unit test guards the retention case; this one guards
+/// the invariant. Emitting the trailer unconditionally fails four tests here,
+/// so the pair does hold the ground between them.
+#[test]
+fn every_line_of_a_clean_json_dialogs_run_is_a_dialog() {
+    let out = sipnab(&[
+        "-N",
+        "-I",
+        "tests/pcap-samples/sip-rtp-g711.pcap",
+        "--json-dialogs",
+        "--no-cli-print",
+        "--quiet",
+    ]);
+    assert_eq!(out.status.code(), Some(0), "the control run must be clean");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with('{')).collect();
+    assert!(
+        !lines.is_empty(),
+        "no JSON emitted at all — this test would pass vacuously"
+    );
+    for line in &lines {
+        let v: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("unparseable line: {e}\n{line}"));
+        assert!(
+            v.get("call_id").is_some(),
+            "a clean run put a line in the dialog stream that is not a dialog. \
+             A consumer iterating lines counts it as one:\n{line}"
+        );
+        assert!(
+            v.get("sipnab_run").is_none(),
+            "the run trailer must not appear on a complete read:\n{line}"
+        );
+    }
+}
+
+/// A partial read adds exactly one line, and it is unmistakably not a dialog.
+///
+/// The other half: withholding the trailer from clean runs must not withhold
+/// it when the answer really is partial. It carries a key no dialog has, so a
+/// consumer that checks can tell them apart rather than guessing.
+#[test]
+fn a_partial_read_adds_exactly_one_line_and_it_is_not_a_dialog() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src = Path::new("tests/pcap-samples/sip-rtp-g711.pcap");
+    let whole = std::fs::read(src).expect("read fixture");
+    let cut = dir.path().join("truncated.pcap");
+    std::fs::write(&cut, &whole[..whole.len() * 60 / 100]).expect("write truncated");
+
+    let clean = sipnab(&[
+        "-N",
+        "-I",
+        &src.to_string_lossy(),
+        "--json-dialogs",
+        "--no-cli-print",
+        "--quiet",
+    ]);
+    let partial = sipnab(&[
+        "-N",
+        "-I",
+        &cut.to_string_lossy(),
+        "--json-dialogs",
+        "--no-cli-print",
+        "--quiet",
+    ]);
+    assert_eq!(partial.status.code(), Some(1), "a partial read exits 1");
+
+    let count = |o: &Output| -> (usize, usize) {
+        let s = String::from_utf8_lossy(&o.stdout);
+        let mut dialogs = 0;
+        let mut trailers = 0;
+        for line in s.lines().filter(|l| l.starts_with('{')) {
+            let v: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if v.get("sipnab_run").is_some() {
+                trailers += 1;
+            } else if v.get("call_id").is_some() {
+                dialogs += 1;
+            }
+        }
+        (dialogs, trailers)
+    };
+    let (_, clean_trailers) = count(&clean);
+    let (_, partial_trailers) = count(&partial);
+    assert_eq!(clean_trailers, 0, "a complete read declares nothing");
+    assert_eq!(
+        partial_trailers, 1,
+        "a partial read must declare itself exactly once"
+    );
+}

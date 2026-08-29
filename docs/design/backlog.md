@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**56 open, 371 done** across 24 sections.
+**71 open, 371 done** across 25 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -65,6 +65,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | RP | 4 | 0 | `..........` |
 | HX | 3 | 0 | `..........` |
 | AS | 6 | 0 | `..........` |
+| DOC | 15 | 0 | `..........` |
 | MCPX | 1 | 6 | `#########.` |
 | P5 | 7 | 13 | `######....` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
@@ -5154,6 +5155,140 @@ as the one above:
   every other B2BUA.
 - **A `find_asterisk_calls` umbrella tool.** Restates `list_dialogs` plus a
   filter.
+
+## DOC — documentation that does not match the program (added 2026-08-28)
+
+A two-direction audit: what the docs describe that does not exist, and what the
+program does that no doc mentions. Denominators, so a small number cannot be
+mistaken for an incomplete scan: **249 CLI flags** (248 documented), **123
+config keys** (123), **34 environment variables** (19), **51 MCP tools and 111
+arguments** (all documented), **12 REST routes and 8 query parameters** (all),
+**9 reachable REST status codes** (5 documented), **369 live MCP response keys**
+(352). Verdicts: 9 PHANTOM, 14 DRIFTED, 5 STALE.
+
+**Ranked by consequence, and the first four are false guarantees.** A page that
+promises an absence is acted on; a missing feature is merely absent.
+
+- [ ] **DOC1 — [`docs/rest-api.md:832`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L832) promises the vCon endpoint returns no
+  media, and it can return the call audio.** Under "What you must not
+  conclude": *"**No media, and no `url` pointing at media.** The container
+  carries signaling only."* [`src/output/api.rs:1118`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1118) calls
+  `decode_dialog_audio` and passes the result into the export, which emits it
+  inline as base64 up to 5 MiB. Gated on `--retain-audio`, so it is deliberate
+  — and [`docs/vcon.md:15`](https://github.com/NormB/sipnab/blob/main/docs/vcon.md#L15) documents it correctly, which means two published
+  pages contradict each other and the API page carries the unsafe version.
+  **Verified at the source by the coordinator.**
+
+  Audio is call CONTENT. An operator who reads this page before forwarding
+  containers to a conserver is making a disclosure decision on a false premise.
+  Fix the page, and say plainly which flag makes media travel.
+
+- [ ] **DOC2 — `--user` is a silent no-op unless the process is root, and the
+  recommended install path is not root.** [`src/privilege.rs:44`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L44):
+  `if !is_root() { ... return Ok(()) }`, announced at `debug`. The install guide
+  recommends `--setup-caps` and then running WITHOUT sudo — exactly the case
+  where the drop never arms. [`docs/cli-reference.md:1108`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md#L1108) states no
+  precondition, and [`SECURITY.md:31`](https://github.com/NormB/sipnab/blob/main/SECURITY.md#L31) treats a `--user` bypass as reportable for
+  a configuration in which it was never armed. macOS differs again (root skips
+  the drop without `--user`) and nothing says the platforms diverge.
+  **Verified at the source by the coordinator.**
+
+- [ ] **DOC3 — two pages disagree about whether MCP fences untrusted message
+  fields.** [`docs/mcp-tools.md:825`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md#L825) says the tool "does not fence" and that
+  `from`, `to`, `contact` and `sdp` come back verbatim, with a sample showing
+  them unfenced; [`src/mcp/server.rs:4593`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4593) fences every message and appends the
+  provenance note, and [`docs/mcp-protocol.md:373`](https://github.com/NormB/sipnab/blob/main/docs/mcp-protocol.md#L373) says so. A client written from
+  the tools page fails every comparison on those fields — and the disagreement
+  is on a prompt-injection boundary, which is the worst place for a reader to
+  have to guess which page is current.
+
+- [ ] **DOC4 — [`docs/mcp-deploy.md:248`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L248) opens the remote-access section by
+  promising no tool mutates the stores.** `open_capture` calls `ds.clear()` and
+  `ss.clear()` ([`src/mcp/server.rs:6987`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6987)). The code already knows: a note at
+  `:8377` records that the wire `instructions` string was corrected for exactly
+  this. The page was not. [`SECURITY.md:35`](https://github.com/NormB/sipnab/blob/main/SECURITY.md#L35) scopes reports to "any MCP tool that
+  mutates dialog/stream/alert state", so a good-faith reporter is told the scope
+  is out of date.
+
+- [ ] **DOC5 — the program tells operators to use flags that do not exist.**
+  [`src/analysis.rs:281`](https://github.com/NormB/sipnab/blob/main/src/analysis.rs#L281), `:1371` and [`src/app/batch.rs:1131`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1131) print *"Raise
+  `--limit`, `--max-dialogs` or `--max-streams`"*. Neither `--max-dialogs` nor
+  `--max-streams` is a flag; `max_streams` is a `[limits]` config key. This
+  reaches the operator through `--analyze`, the end-of-run retention notice,
+  **and as a structured evidence note in JSON and MCP output**.
+
+  [`src/output/vcon.rs:1582`](https://github.com/NormB/sipnab/blob/main/src/output/vcon.rs#L1582) is worse: *"export it beside this file with
+  `--export-audio`"* is written into the emitted container's `refusal` field, so
+  a phantom flag persists into a delivered artifact. The flag is
+  `--retain-audio` plus the `export_vcon` tool.
+
+  **Why every flag gate missed these: all of them scan `.md` only.** The
+  extractor in [`tests/documented_flag_claims_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/documented_flag_claims_test.rs) already exists — widening
+  its corpus to string literals in `src/**/*.rs` closes the class, and that is
+  the fix worth doing rather than correcting three strings.
+
+- [ ] **DOC6 — the HEP HMAC token version went 1 to 2 with no changelog entry
+  and no compatibility note.** `HMAC_TOKEN_VERSION` is `1` at the `v0.5.130`
+  tag and `2` at HEAD; v1 is refused by name. Two consequences, neither
+  written: a 0.5.130 sender against a newer collector has every packet refused,
+  with a symptom the code itself warns gets misattributed to the network; and
+  v1's MAC did not cover the addressing chunks, so a published 0.5.130
+  `--hep-allow-kill` can be aimed at a third party. [`SECURITY.md`](https://github.com/NormB/sipnab/blob/main/SECURITY.md)'s scope list
+  does not name the HEP surface at all.
+
+- [ ] **DOC7 — the filter node cap is not in "Parser constraints".**
+  [`docs/filter-dsl.md:526`](https://github.com/NormB/sipnab/blob/main/docs/filter-dsl.md#L526) has a section by that name listing the depth-50 and
+  1 MB regex bounds, and does not mention `MAX_EXPRESSION_NODES = 1024`
+  ([`src/sip/dsl.rs:70`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L70)) — the bound added to stop a process abort, and the one a
+  caller is most likely to hit. It exists in prose only in this file.
+
+- [ ] **DOC8 — exec hooks inherit every credential in the environment, and 8 of
+  11 hook variables are undocumented.** [`src/output/event_exec.rs:365`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs#L365) sets
+  `SIPNAB_FROM/TO/STATE/METHOD/SSRC/MOS/JITTER/LOSS`, none documented. No exec
+  path calls `env_clear()`, so a `sh -c` hook inherits
+  `SIPNAB_API_SIGNING_KEY`, `SIPNAB_MCP_TOKEN` and `SIPNAB_HEP_AUTH` — the
+  credential-by-environment pattern [`docs/auth.md`](https://github.com/NormB/sipnab/blob/main/docs/auth.md) itself recommends. Decide
+  whether that is intended, then write it down either way.
+
+- [ ] **DOC9 — smaller contradictions, each doc:line against source:line.**
+  [`docs/rest-api.md:1520`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L1520) claims rate limiting on all listener endpoints —
+  `/health` is outside the guard and `--api-rate-limit-per-peer 0` disables it
+  entirely, a flag that page never names. [`docs/rest-api.md:3`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L3) says the API
+  "never mutates capture state" — [`src/output/api.rs:1251`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1251) sets the persistence
+  gate, so a token can stop the recording. [`docs/mcp-tools.md:599`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md#L599) says a codec
+  comes back verbatim as sipnab's own derivation — [`src/mcp/server.rs:1011`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1011)
+  fences it, and the comment above explains the premise was retracted.
+  [`docs/architecture.md:172`](https://github.com/NormB/sipnab/blob/main/docs/architecture.md#L172) says core dumps are disabled whenever keys are
+  resident — [`src/app/bootstrap.rs:1545`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1545) honors `--allow-coredump`.
+  [`docs/mcp-tools.md:2480`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md#L2480)'s `top_talkers` example documents `rows`, `value` and
+  `counts`, none of which the response type has.
+  [`docs/mcp-protocol.md:57`](https://github.com/NormB/sipnab/blob/main/docs/mcp-protocol.md#L57) tells host authors there are five write verbs;
+  there are ten, and line 320 of the same page says ten.
+
+**The gate gaps are worth more than the instances**, because each one lets the
+class recur:
+
+- [ ] **DOC10 — nothing gates environment variables.** 34 read, 19 documented.
+  The highest-yield missing gate, and `flag_coverage_test`'s ratchet shape
+  transfers directly.
+- [ ] **DOC11 — nothing gates numeric policy ceilings.** `MAX_EXPRESSION_NODES`,
+  `MAX_REQUEST_BODY_BYTES` and `REQUEST_TIMEOUT` all shipped with a test proving
+  the bound and no doc naming it; roughly 30 of 65 are undocumented.
+- [ ] **DOC12 — the MCP docs gate reads one file.** `docs_drift_test.rs:3627`
+  opens [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) alone while its sibling walks the tree, so all 13
+  tools under `src/mcp/tools/` are invisible to it — which is how a fabricated
+  `top_talkers` example shipped green. One-line fix, and the same blind-counter
+  shape already fixed twice this release.
+- [ ] **DOC13 — clap aliases are ungated.** All three flag gates call
+  `get_long()`; nothing calls `get_all_aliases()`, so `--uprobe-flavour` is
+  accepted and documented nowhere.
+- [ ] **DOC14 — REST schemas are one-directional.** 17 of 30 OpenAPI components
+  leave `additionalProperties` unset, so the contract test passes bodies
+  carrying `input_origin`, `evidence_omitted` and `snapped_frames`. The
+  bidirectional check already exists — for `DialogSummary` alone.
+- [ ] **DOC15 — 44 of 51 MCP tools declare no `outputSchema`**, and 17 live
+  response keys are undocumented. Config keys outside `[limits]` are also
+  ungated: the `[limits]` gate is a working template covering 26 of 123.
 
 ## MCPX — gaps found by surveying the VoIP MCP field (added 2026-08-21)
 
