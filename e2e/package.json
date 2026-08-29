@@ -14,5 +14,8 @@
     "@axe-core/playwright": "4.13.0",
     "@lhci/cli": "0.15.1",
     "@playwright/test": "1.62.1"
+  },
+  "overrides": {
+    "tmp": "^0.2.7"
   }
 }
