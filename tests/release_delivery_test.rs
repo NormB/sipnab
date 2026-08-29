@@ -28,6 +28,11 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[path = "support/release_logic.rs"]
+mod release_logic;
+
+use release_logic::{ADVERTISEMENT_PATHS, is_advertisement, parse_version};
+
 /// The repository root.
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -56,19 +61,6 @@ fn git(args: &[&str]) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-/// A semantic version triple parsed from `0.5.130` or `v0.5.130`.
-fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
-    let s = s.trim().trim_start_matches('v');
-    let mut it = s.split('.');
-    let a = it.next()?.parse().ok()?;
-    let b = it.next()?.parse().ok()?;
-    let c = it.next()?.parse().ok()?;
-    if it.next().is_some() {
-        return None;
-    }
-    Some((a, b, c))
 }
 
 /// The version in `Cargo.toml`.
@@ -183,27 +175,6 @@ fn published_version() -> (u32, u32, u32) {
     parse_version(raw).unwrap_or_else(|| panic!("unparseable published_version {raw:?}"))
 }
 
-/// Files the SECOND phase of a release touches, and nothing else.
-///
-/// `reference_sipnab_release_flow` is deliberately two-phase: tag and publish
-/// artifacts first, then move `published_version` so the site advertises a
-/// release a visitor can actually download. That second commit necessarily
-/// lands AFTER the tag, and it is part of shipping that version rather than
-/// new work waiting to ship.
-///
-/// Without this, the delivery gates below make the documented flow impossible
-/// to complete: they demand a CHANGELOG entry for the very commit whose only
-/// job is to advertise the entry that already exists. That is not
-/// hypothetical -- it turned `main` red on 0.5.131's advertisement commit, and
-/// this list is the fix.
-const ADVERTISEMENT_PATHS: &[&str] = &[
-    "website/config.toml",
-    "docs/install.md",
-    "website/content/", // the generated mirrors of the above
-    "website/static/",  // llms.txt and friends, regenerated with them
-    "CHANGELOG.md",     // redating the entry to the day it published
-];
-
 /// Whether every change since the newest tag is that tag's own advertisement.
 ///
 /// Returns `None` when git cannot answer, which callers must treat as "cannot
@@ -215,36 +186,6 @@ fn only_advertises_the_newest_tag() -> Option<bool> {
         published_version(),
         newest_tag()?,
     ))
-}
-
-/// The decision itself, over values rather than over the working tree.
-///
-/// Pure on purpose. The first version read git and the filesystem inline, and
-/// two mutations survived because this tree cannot exercise the branches: the
-/// changeset is never empty here, and `published_version` already equals the
-/// newest tag, so deleting either check changed nothing observable. A gate
-/// whose logic can only be run against one state is a gate whose logic is
-/// mostly untested.
-fn is_advertisement(
-    changed: &[String],
-    published: (u32, u32, u32),
-    newest_tag: (u32, u32, u32),
-) -> bool {
-    // An empty changeset advertises nothing. Saying `true` here would exempt
-    // the case where git reported nothing at all.
-    if changed.is_empty() {
-        return false;
-    }
-    if !changed
-        .iter()
-        .all(|f| ADVERTISEMENT_PATHS.iter().any(|p| f.starts_with(p)))
-    {
-        return false;
-    }
-    // It must advertise THIS tag, not merely touch those files: a commit that
-    // edits config.toml while leaving the site behind the newest release is
-    // ordinary work wearing the release flow's clothes.
-    published == newest_tag
 }
 
 // ── A. Unreleased work must declare itself ──────────────────────────

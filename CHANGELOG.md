@@ -12,6 +12,15 @@ entry that carries them.
 
 ### Fixed
 
+- **The release-advertisement exemption matched any filename beginning with an
+  advertisement file's name**, so `docs/install.md.bak`, `CHANGELOG.md.orig`,
+  `website/config.toml.tmp` and `website/config.tomlx` all read as "just
+  advertising a release" — meaning a commit carrying one of those beside real
+  work would have skipped every delivery gate. A trailing `/` now means a
+  directory and matches children; everything else is an exact path. Found by
+  driving the rule with filenames the working tree cannot contain, which is
+  the only way it could have been found.
+
 - **The MCP subscription debounce test computed its ceiling over the drain as
   well as the burst**, so on a runner where each capture swap is slow the
   change count and the ceiling met and the test's own fixture guard fired --
