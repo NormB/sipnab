@@ -12,21 +12,6 @@ entry that carries them.
 
 ### Added
 
-- **A guard for claims of absence.** `tests/claims_of_absence_test.rs` requires
-  a cross-reference to another test to resolve, refuses two tests that share a
-  name AND a body, refuses a written claim that something is ungated when it
-  names a gate that exists, and pins the tagged-but-unadvertised gate as
-  covered exactly once.
-- **The pre-push hook prints the phase-two step after a tag pushes.** Not a
-  gate: at tag time the site SHOULD still name the previous release, because
-  the artifacts do not exist yet. `release_completeness_test` already catches
-  the state afterwards; what was missing was anything reminding the operator
-  between the tag going up and the next suite run.
-
-## [Unreleased]
-
-### Added
-
 - **A guard for claims of absence** (`tests/claims_of_absence_test.rs`). A
   cross-reference to another test must resolve, no two tests may share a name
   AND a body, a written claim that something is ungated may not name a gate
