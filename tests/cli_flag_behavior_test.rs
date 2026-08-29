@@ -1198,6 +1198,11 @@ fn json_dialogs_emits_one_object_per_dialog() {
     );
 }
 
+// Mints and inspects an MCP token, so it needs the surface that
+// issues one. The file is gated on `api`, which does not imply `mcp`:
+// under `native,tui,tls,hep,api` the mint refuses and the assertion
+// reads that correct refusal as a wrong claim.
+#[cfg(feature = "mcp")]
 #[test]
 fn token_scope_metrics_is_refused_for_the_mcp_surface() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1264,6 +1269,11 @@ fn token_scope_read_is_refused_for_the_api_surface() {
 /// Same wiring concern as the metrics case above: a flag that never reached
 /// `auth::mint` would mint `full` tokens while the operator believed they
 /// were confining a diagnostic agent, and that failure is silent and open.
+// Mints and inspects an MCP token, so it needs the surface that
+// issues one. The file is gated on `api`, which does not imply `mcp`:
+// under `native,tui,tls,hep,api` the mint refuses and the assertion
+// reads that correct refusal as a wrong claim.
+#[cfg(feature = "mcp")]
 #[test]
 fn token_scope_read_mints_an_mcp_token_carrying_the_read_claim() {
     let dir = tempfile::tempdir().expect("tempdir");

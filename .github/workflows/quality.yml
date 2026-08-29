@@ -50,21 +50,6 @@ jobs:
           # wiki-sync and release pass the token explicitly via GH_TOKEN.
           persist-credentials: false
 
-      # Same step the Coverage job has carried for a while, for the same
-      # reason. `cargo bench --profile profiling --all-features` builds a
-      # release-optimized tree with `debug = true` and `strip = false`, and on
-      # 0.5.131 that stopped fitting: the step was SIGTERMed at 5m44s while
-      # still compiling, having produced no benchmark output, on a job whose
-      # own timeout is 40 minutes. It passed on the commit before that batch
-      # and failed on every one after.
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
-                      /usr/local/share/boost /usr/share/swift \
-                      /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
-          sudo docker image prune --all --force || true
-          df -h /
-
       - name: Install system deps
         uses: ./.github/actions/system-deps
         with:
@@ -84,7 +69,21 @@ jobs:
 
       # --profile profiling is what CONTRIBUTING mandates for benchmarks:
       # release codegen with full symbols and no stripping.
+      # `debug = line-tables-only` for CI only. The profiling profile carries
+      # `debug = true` and `strip = false` because callgrind needs full
+      # symbols, and that is right for a local profiling run. This step only
+      # asks "does every benchmark still build and execute once", and on
+      # 0.5.131 the full-symbol build stopped fitting: the step was SIGTERMed
+      # at ~6 minutes while still compiling, on a job whose own timeout is 40
+      # minutes, and it passed on the commit before this batch and failed on
+      # every one after.
+      #
+      # Disk was measured and ruled out -- 113 GB free at the point of failure.
+      # The profile override cuts rustc's peak memory and the artifact size
+      # without changing which benchmarks run.
       - name: Run every benchmark once
+        env:
+          CARGO_PROFILE_PROFILING_DEBUG: line-tables-only
         run: cargo bench --profile profiling --all-features -- --test
 
   # ---------------------------------------------------------------------------
