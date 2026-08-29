@@ -667,6 +667,14 @@ It exists because the manual version failed once already. The 0.5.61 release
 commit went red in `Features (tls)`, and the only thing between that and a
 published broken release was somebody happening to look.
 
+Once that gate passes, the hook prints the phase-two step. A tag is phase one:
+it builds the artifacts. The release is not finished until `published_version`
+names it and a visitor is actually offered it, and between the tag going up and
+the next commit no suite runs, so nothing is watching that window. It stayed a
+prompt rather than becoming an eleventh gate because at tag time the site
+*should* still advertise the previous release — the new artifacts do not exist
+yet — and a refusal there would block the correct state.
+
 A release is a pushed `v*` tag. `release.yml` then runs a matrix of eight
 builds: `x86_64` and `aarch64` for `linux-gnu` (each also in a `noaudio`
 packages-only variant, shipping a `.deb` and an `.rpm` but no tarball, since the

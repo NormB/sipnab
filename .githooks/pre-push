@@ -480,6 +480,30 @@ for commit in $tag_commits; do
 		exit 1
 	fi
 	printf '%bOK%b\n' "$GREEN" "$NC"
+
+	# A tag starts phase ONE of a two-phase release. Phase two -- moving
+	# `published_version` so a visitor is offered the thing -- lands in a
+	# later commit, and until it does the site advertises the previous
+	# build.
+	#
+	# `release_completeness_test::the_site_advertises_the_newest_release_whose_assets_exist`
+	# already catches that state and says so well. It is a TEST, though, so it
+	# fires when a suite runs, and between a tag going up and the next commit
+	# nothing runs it. That window is exactly where 0.5.128 shipped to nobody
+	# and where 0.5.132 sat with 23 assets published and the site still on
+	# 0.5.131.
+	#
+	# So this is a prompt rather than a gate, and it is deliberately not a
+	# refusal: at tag time the site SHOULD still name the previous release,
+	# because the artifacts do not exist yet. Refusing here would block the
+	# correct state.
+	printf '%b  next: %s is phase ONE. Assets build from this tag; the release\n' "$YELLOW" "$short"
+	printf '  is not finished until published_version names it and a visitor is\n'
+	printf '  offered it. Watch the release, then land the follow-up commit:\n'
+	printf '    website/config.toml  published_version + release_date\n'
+	printf '    docs/install.md      the download markers\n'
+	printf '  Verify from the live page, not from a green deploy:\n'
+	printf '    curl -s https://sipnab.com/download/ | grep -c <version>%b\n' "$NC"
 done
 
 # -- Conditional gate: the real capture corpus --------------------------------

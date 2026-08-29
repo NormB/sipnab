@@ -8,6 +8,45 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **A guard for claims of absence.** `tests/claims_of_absence_test.rs` requires
+  a cross-reference to another test to resolve, refuses two tests that share a
+  name AND a body, refuses a written claim that something is ungated when it
+  names a gate that exists, and pins the tagged-but-unadvertised gate as
+  covered exactly once.
+- **The pre-push hook prints the phase-two step after a tag pushes.** Not a
+  gate: at tag time the site SHOULD still name the previous release, because
+  the artifacts do not exist yet. `release_completeness_test` already catches
+  the state afterwards; what was missing was anything reminding the operator
+  between the tag going up and the next suite run.
+
+## [Unreleased]
+
+### Added
+
+- **A guard for claims of absence** (`tests/claims_of_absence_test.rs`). A
+  cross-reference to another test must resolve, no two tests may share a name
+  AND a body, a written claim that something is ungated may not name a gate
+  that exists, and the tagged-but-unadvertised state is pinned as covered
+  exactly once.
+- **Calibration for that scanner** (`tests/scanner_calibration_test.rs`). Its
+  first run went red four times and every one was a bug in the scanner, each
+  fixed by narrowing until green -- a move indistinguishable from narrowing
+  until blind. All four narrowings are now driven from both sides: the case
+  each was written to exclude, and a case each must still catch.
+- The pre-push hook prints the phase-two step after a tag is pushed. Not a
+  gate: at tag time the site should still name the previous release, because
+  the artifacts do not exist yet.
+
+### Fixed
+
+- The duplicate-test rule documented "five" legitimate shared names. Nothing
+  had counted them; there are eight. The count is no longer pinned in prose --
+  the property is asserted instead.
+
 ## [0.5.132] - 2026-08-29
 
 ### Security
