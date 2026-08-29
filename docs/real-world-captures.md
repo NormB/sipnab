@@ -1,4 +1,4 @@
-# Worked examples from real captures
+# Examples from real traffic
 
 Every other page on this site demonstrates sipnab against a fixture: a capture
 built to hold exactly one fault, with two parties, one codec and nothing else

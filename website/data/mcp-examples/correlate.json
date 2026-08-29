@@ -1,27 +1,29 @@
 {
-  "schema_version": 1,
-  "source_call_id": "b2bua-caller-synth@203.0.113.1",
+  "capture_identity": {
+    "dialog_generation": 64,
+    "instance": "3990fa18d04ed7cf971eae-2",
+    "node": "sbc-edge-1",
+    "stream_generation": 2
+  },
+  "heuristic_only": true,
   "legs": [
     {
       "call_id": "b2bua-leg-synth@203.0.113.101:5060",
-      "score": 50,
-      "strategy": "timing_heuristic",
       "identifier_match": false,
-      "observed_gap_ms": 3
+      "observed_gap_ms": 3,
+      "score": 50,
+      "strategy": "timing_heuristic"
     }
   ],
-  "total_matched": 1,
-  "heuristic_only": true,
-  "capture_identity": {
-    "node": "sbc-edge-1",
-    "instance": "2e04f318cb8a43d2e9585d-1",
-    "dialog_generation": 64,
-    "stream_generation": 2
-  },
+  "schema_version": 1,
+  "source_call_id": "b2bua-caller-synth@203.0.113.1",
+  "source_exhausted": true,
+  "source_stopped_early": false,
   "timing_clock": {
-    "synchronized": true,
-    "max_error_us": 643000,
+    "available": true,
     "est_error_us": 0,
-    "available": true
-  }
+    "max_error_us": 524000,
+    "synchronized": true
+  },
+  "total_matched": 1
 }

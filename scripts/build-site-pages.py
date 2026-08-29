@@ -38,13 +38,16 @@ from lib_markdown import code_link_re, sub_outside_code  # noqa: E402
 PAGES: list[tuple[str, str, str, str, int, str]] = [
     (
         "docs/examples.md",
+        # URL deliberately unchanged. `/docs/cookbook/` is linked from 51
+        # places that were just repaired, and from the wiki; renaming it to
+        # match the title would break every one of them to fix a word.
         "cookbook.md",
-        "Cookbook",
-        "Cookbook",
+        "Examples & Recipes",
+        "Examples & Recipes",
         2,
-        "Step-by-step recipes for every major sipnab feature: triage, "
-        "filtering, HEP, TLS decryption, MCP, observability, security, audio "
-        "export.",
+        "Worked examples with real output: triage, filtering, HEP, TLS "
+        "decryption, MCP, observability, security and audio export, each one "
+        "a command you can paste and the result it produces.",
     ),
     (
         "docs/prometheus-metrics.md",
@@ -376,8 +379,8 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
     (
         "docs/real-world-captures.md",
         "real-world-captures.md",
-        "Worked examples from real captures",
-        "Real-World Captures",
+        "Examples from real traffic",
+        "Examples from real traffic",
         # 39, the next free weight on the SITE side, which is where
         # `docs_page_weights_are_unique_and_descriptions_present` reads.
         # Sidebar order comes from the nav_group path lists, not from this

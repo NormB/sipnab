@@ -1,4 +1,4 @@
-# Cookbook
+# Examples & Recipes
 
 Recipe-style walkthroughs for the things people actually want to do. Each recipe states the problem, gives exact commands, tells you what to look for in the output, and flags common pitfalls.
 

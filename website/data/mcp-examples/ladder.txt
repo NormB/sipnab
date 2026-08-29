@@ -1,0 +1,20 @@
+Result:     Completed (BYE)
+SIP Transactions:
+  INVITE -> 401
+  ACK
+  INVITE -> 100 (7ms) -> 180 (30ms) -> 200 (7650ms)
+  ACK
+  INVITE -> 200 (23624ms)
+  ACK
+  BYE -> 200 (23712ms)
+
+Media Streams:
+  RTP 192.168.10.40->192.168.10.41 PCMU SSRC=0xb72a7104 pkts=790 jitter=1ms loss=0.1%
+    Loss pattern: random (not bursty)
+  RTP 192.168.10.41->192.168.10.40 PCMU SSRC=0xbee0f2ed pkts=205 jitter=0ms loss=64.3%
+    Loss pattern: BURSTY (3 bursts, avg duration 2473ms) — perceptually worse than random loss
+  RTP 192.168.10.41->192.168.10.2 PCMU SSRC=0xbee0f2ed pkts=2 jitter=0ms loss=0.0%
+
+Issues Detected:
+  - Duration asymmetry: A leg lasted 15.8s, B leg 11.5s (Δ 4.4s) — one side may have hung up or dropped media early.
+

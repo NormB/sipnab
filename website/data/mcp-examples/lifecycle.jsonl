@@ -1,0 +1,5 @@
+{"method":"REGISTER","state":"Registered","msg_count":4,"duration_sec":0.01}
+{"method":"OPTIONS","state":"Completed","msg_count":2,"duration_sec":0.008}
+{"method":"SUBSCRIBE","state":"Terminated","msg_count":4,"duration_sec":0.018}
+{"method":"SUBSCRIBE","state":"Terminated","msg_count":4,"duration_sec":0.015}
+{"method":"INVITE","state":"Completed","msg_count":13,"duration_sec":23.712}

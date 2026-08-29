@@ -8,9 +8,40 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.132] - 2026-08-29
+
+### Security
+
+- **`uuid` and `tmp` pinned past their advisories** through npm `overrides` in
+  `e2e/` — CVE-2026-41907 (missing buffer bounds check) and the `tmp` symlink
+  write. Both arrived with `@lhci/cli`, added for the Lighthouse gate.
+- **`extract-zip` (CVE-2026-56876) accepted in writing rather than silently.**
+  Its newest published version IS the vulnerable one, so no upgrade closes it.
+  It is dev-only, reached solely to extract a Chrome download from Google's CDN
+  onto an ephemeral CI runner. The acceptance names the exact version checked
+  and `tests/dependency_security_test.rs` fails the moment the tree moves off
+  it, so the reasoning cannot outlive the version it was written about.
+- **The docs-search excerpt sanitizer strips to a fixed point.** CodeQL
+  reported `js/incomplete-multi-character-sanitization`; measured against nine
+  adversarial inputs the single pass and the fixed point agree on all nine, so
+  the report is a pattern match rather than a demonstrated bug. The loop went
+  in anyway because it closes a standing high alert and survives a future edit
+  that narrows the pattern. What actually bounds the severity — that the file
+  never assigns `innerHTML` — was never asserted and now is.
+
 
 ### Fixed
+
+- **The published MCP examples were generated from a half-loaded capture.**
+  `demos/mcp-stdio.sh` sent `initialize`, the initialized notification and the
+  tool call in one write and slept afterwards to hold stdin open, but sipnab
+  parses a capture in the BACKGROUND while the MCP server is already
+  answering. Three runs out of three over `Asterisk_ZFONE_XLITE.pcap` rendered
+  its INVITE as `Result: In Progress` with 8 of 13 messages, no 200 and no BYE
+  -- an answer that is wrong rather than merely short, and entirely plausible
+  on a page. The script now polls `capture_status.source_exhausted` and
+  refuses to make the real call until the source has been read to its end.
+  Sleeping longer was not the fix; it is the same race with a bigger constant.
 
 - **The release-advertisement exemption matched any filename beginning with an
   advertisement file's name**, so `docs/install.md.bak`, `CHANGELOG.md.orig`,
@@ -29,6 +60,17 @@ entry that carries them.
   allowance for the change still pending when a burst ends is what the drain
   collects. Extracted as `debounce_ceiling` so the arithmetic can be checked
   without running the fixture on a machine slow enough to expose it.
+
+### Added
+
+- **The homepage leads with a whole call.** The first demo panel was one
+  failed INVITE with `stream_count: 0`; it is now one capture read end to end
+  -- the REGISTER, the OPTIONS keepalive, the INVITE with its three RTP
+  streams and the BYE -- published as two generated examples rather than one.
+  `demos/gen-mcp-examples.sh` takes an extension and a post-filter per example
+  so a JSON-lines dialog list and a drawn ladder can be checked against a live
+  run the same way the JSON answers already were, and its HTML sync enumerates
+  the example directory instead of a list repeated in the script.
 
 ## [0.5.131] - 2026-08-29
 

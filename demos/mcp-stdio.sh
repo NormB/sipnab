@@ -49,26 +49,76 @@ NODEFLAG=()
 
 [ -r "$CAPTURE" ] || { echo "no capture at $CAPTURE" >&2; exit 1; }
 
+# A coprocess rather than a pipe, because this has to READ before it writes.
+#
+# The capture loads in the BACKGROUND while the server is already answering
+# tool calls, so a call issued straight after `initialize` is answered from
+# whatever has been parsed so far. Measured on Asterisk_ZFONE_XLITE.pcap
+# (256 KiB): three runs out of three of the previous write-only pipe — which
+# sent all three messages at once and slept afterwards to hold stdin open —
+# rendered the INVITE as `Result: In Progress`, with the 200 and the BYE
+# missing from a call that had both. Sleeping LONGER is not the fix; it is the
+# same race with a bigger constant, and a bigger capture puts it back.
+#
+# `capture_status.source_exhausted` flips false to true exactly when the source
+# has been read to its end, so this polls it and refuses to make the real call
+# until it is true. `MCP_MAX_POLLS` bounds the wait so a genuine hang fails
+# instead of running forever.
+coproc SRV { sipnab --mcp -N -I "$CAPTURE" "${ROOTFLAG[@]}" "${NODEFLAG[@]}" --quiet 2>/dev/null; }
+SRV_PID=$!
+trap '[ -n "${SRV_PID:-}" ] && kill "$SRV_PID" 2>/dev/null' EXIT
+
+send() { printf '%s\n' "$1" >&"${SRV[1]}"; }
+
+# Replies to earlier polls, and any notification the server sends, share the
+# one stream, so reading "the next line" is never reading "the answer". Each
+# request carries its own id and this keeps the line that quotes it back.
+#
+# The reply lands in a VARIABLE rather than on stdout because bash closes the
+# coprocess file descriptors inside a subshell, and `await 2 | jq ...` puts
+# `await` in one: the read then fails with EBADF on a descriptor the parent
+# still holds open. That failure was silent in every earlier stage of this
+# script and only bit the final call.
+REPLY_LINE=""
+await() {
+    local want="$1" line got
+    REPLY_LINE=""
+    while IFS= read -r -t "${MCP_TIMEOUT:-20}" -u "${SRV[0]}" line; do
+        got="$(jq -r '.id // empty' 2>/dev/null <<< "$line")"
+        if [ "$got" = "$want" ]; then REPLY_LINE="$line"; return 0; fi
+    done
+    return 1
+}
+
+status_call() { printf '{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"capture_status","arguments":{}}}' "$1"; }
+
+# The two messages an MCP session needs before any tool call.
+send '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"sipnab-demo","version":"0"}}}'
+await 1 || { echo "mcp-stdio: no initialize reply from sipnab" >&2; exit 1; }
+send '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+
+id=2
+loaded=0
+limit=$(( 2 + ${MCP_MAX_POLLS:-400} ))
+while [ "$id" -le "$limit" ]; do
+    send "$(status_call "$id")"
+    await "$id" || break
+    exhausted="$(jq -r '.result.content[0].text // empty' <<< "$REPLY_LINE" \
+        | jq -r '.source_exhausted // empty' 2>/dev/null)"
+    if [ "$exhausted" = "true" ]; then loaded=1; break; fi
+    sleep 0.05
+    id=$((id + 1))
+done
+[ "$loaded" = 1 ] || { echo "mcp-stdio: $CAPTURE never finished loading" >&2; exit 1; }
+
 OUT="$(mktemp)"
-trap 'rm -f "$OUT"' EXIT
+trap 'rm -f "$OUT"; [ -n "${SRV_PID:-}" ] && kill "$SRV_PID" 2>/dev/null' EXIT
 
-# The three messages an MCP session needs before a tool call: initialize, the
-# initialized notification, then the call itself. Ids 1 and 2 distinguish the
-# initialize reply from the answer we want.
-init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"sipnab-demo","version":"0"}}}'
-ready='{"jsonrpc":"2.0","method":"notifications/initialized"}'
-call=$(printf '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"%s","arguments":%s}}' "$TOOL" "$ARGS")
-
-# Hold stdin open past the last request: the server reads to EOF, and closing
-# immediately after the write races the reply out of the pipe. The sleep is the
-# whole reason this is a block rather than three printfs.
-{
-    printf '%s\n%s\n%s\n' "$init" "$ready" "$call"
-    sleep "${MCP_SETTLE:-3}"
-} | sipnab --mcp -N -I "$CAPTURE" "${ROOTFLAG[@]}" "${NODEFLAG[@]}" --quiet 2>/dev/null \
-  | jq -r 'select(.id == 2)
-           | .result.content[0].text // (.error.message | "error: " + .) // "no content"' \
-  > "$OUT"
+id=$((id + 1))
+send "$(printf '{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"%s","arguments":%s}}' "$id" "$TOOL" "$ARGS")"
+await "$id" || { echo "mcp-stdio: no reply to $TOOL" >&2; exit 1; }
+jq -r '.result.content[0].text // (.error.message | "error: " + .) // "no content"' \
+  <<< "$REPLY_LINE" > "$OUT"
 
 # Pretty-print when the answer is JSON, pass it through when it is not.
 #

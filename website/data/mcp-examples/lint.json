@@ -4,7 +4,7 @@
   "explanation": "§12.1.1 makes the UAS add a Contact to the response. It is the remote target for the dialog the 2xx creates, so without it the caller has nowhere to send the ACK and nowhere to send the BYE. The call answers and then cannot be hung up cleanly.",
   "frame_ref": "tests/pcap-samples/sip-lint-findings.pcap#1@ad0e14efbbab6ffa",
   "message_index": 1,
-  "observed": "2xx to INVITE with no Contact header field",
+  "observed": "⟦untrusted-capture-data⟧2xx to INVITE with no Contact header field⟦/untrusted-capture-data⟧",
   "rfc": 3261,
   "rule_id": "SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX",
   "section": "12.1.1",

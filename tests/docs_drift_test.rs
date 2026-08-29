@@ -2925,7 +2925,11 @@ fn no_documentation_table_repeats_a_row() {
     // those separators evidently continue a table rather than opening one.
     // Recorded rather than smoothed over: an attribution that does not quite
     // add up is worth saying so about.
-    const EXPECTED_TABLES: usize = 755;
+    // 755 -> 756: one table, the eight-group tool taxonomy in DOC16. A design
+    // doc has no site mirror, so it counts once rather than twice -- which is
+    // itself the check: a +2 here would mean the entry landed somewhere that
+    // IS mirrored, and belonged in a different section.
+    const EXPECTED_TABLES: usize = 756;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

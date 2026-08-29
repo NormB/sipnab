@@ -38,7 +38,7 @@ nothing and they tell you what you should see at each step.
 Goal-oriented. Each answers "how do I …?" and assumes you already know what
 you want.
 
-- **[Cookbook](examples.md)** — recipes for triage, filtering, HEP, TLS
+- **[Examples & recipes](examples.md)** — worked examples with real output: triage, filtering, HEP, TLS
   decryption, MCP, observability, scanner blocking, and audio export, plus a
   quick-reference of one-liners. Includes cross-checking a HEP mirror against
   the wire, where the DISAGREEMENT between the two is the finding.

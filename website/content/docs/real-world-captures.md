@@ -1,5 +1,5 @@
 +++
-title = "Real-World Captures"
+title = "Examples from real traffic"
 weight = 39
 description = "Twelve findings read out of live carrier and PBX traffic, with the command, the output and what an operator does next -- the retransmit storms, false-positive detections and misleading aggregates that a curated fixture cannot show."
 +++

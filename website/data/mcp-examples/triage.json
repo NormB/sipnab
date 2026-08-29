@@ -16,6 +16,8 @@
     ],
     "problem": true
   },
+  "source_exhausted": true,
+  "source_stopped_early": false,
   "state": "Failed",
   "verdict": "signaling"
 }

@@ -592,7 +592,8 @@ fn homepage_demo_wall_leads_with_outcomes() {
     // The four the wall leads with. Rewording one is fine; doing it silently
     // is not — an interface name creeping back to the front is exactly the
     // regression this pins.
-    const OUTCOMES: [&str; 4] = [
+    const OUTCOMES: [&str; 5] = [
+        "Show me the whole call",
         "Why did it fail?",
         "Which RFC?",
         "Show me the bytes",
@@ -652,9 +653,9 @@ fn homepage_demo_wall_leads_with_outcomes() {
     let visible_ids: Vec<usize> = visible.iter().map(|(_, id, _)| *id).collect();
     assert_eq!(
         visible_ids,
-        vec![0, 1, 2, 3],
-        "the four visible tabs must be demo-tab-0..3, so they select the first \
-         four panels"
+        (0..OUTCOMES.len()).collect::<Vec<_>>(),
+        "the visible tabs must be demo-tab-0 upward with no gap, so they \
+         select the first panels in the same order"
     );
     assert!(
         !collapsed.is_empty(),
@@ -769,9 +770,14 @@ fn element_open_tag(html: &str, open: &str) -> String {
     html[start..=end].to_string()
 }
 
-/// The homepage's four MCP examples must be the answers the tool actually gave.
+/// The homepage's JSON MCP examples must be the answers the tool actually gave.
 ///
-/// The chain is `live binary -> website/data/mcp-examples/*.json -> index.html`.
+/// The examples that are NOT a single JSON document -- the JSON-lines dialog
+/// list and the drawn ladder the lead panel publishes -- are covered by
+/// `every_published_mcp_example_comes_from_its_generated_file` at the end of
+/// this file, which enumerates the directory instead of naming files.
+///
+/// The chain is `live binary -> website/data/mcp-examples/* -> index.html`.
 /// `demos/gen-mcp-examples.sh --check` proves the first link and needs a built
 /// binary to do it; this proves the second, and needs nothing, so it runs in
 /// every CI job. Without it the page could be hand-edited to claim an answer no
@@ -3304,8 +3310,15 @@ fn inline_script_edits_require_csp_hash_refresh() {
             // disclosure button is wired here because the CSP blocks onclick=.
             // The hero's new /analyze/ CTA is a plain <a> and touched none of
             // this on purpose.
+            // Re-pinned again for the lifecycle lead panel: a twelfth tab and
+            // panel joined the wall, so the three comments here that counted
+            // the tabs ("seven of the eleven", "all eleven", "tabs 0-3") each
+            // named a number that had moved. No executable line changed --
+            // the wiring already derives a tab's panel from its own id -- but
+            // a comment edit changes the hash exactly as much as a code edit
+            // does, and shipping the old hash would blank the whole script.
             "index.html",
-            "sha256-rhrfc4NhR079Jx9X3GPpGOCRS41UnMh2McLIb6R4ISU=",
+            "sha256-5OKR8JyQ4j6wxspQeVUe7ezImucMEP9DdTPuVvetsU4=",
         ),
         (
             "page.html",
@@ -7528,4 +7541,336 @@ fn website_gates_measure_a_page_that_actually_rendered() {
              and the four page tests would stay green while covering less"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The lead demo panel: one capture, read end to end.
+//
+// The homepage used to open on a single failed INVITE — `stream_count: 0`, no
+// media, no registration, no hangup — which is a poor first frame for a tool
+// whose whole claim is seeing a call end to end. The lead panel now publishes
+// two answers from one capture: the dialog list (the REGISTER, the OPTIONS
+// keepalive, the subscriptions and the call) and the INVITE's ladder (three
+// RTP streams, and the BYE that ended it).
+//
+// Two failure modes are worth a gate of their own:
+//
+// 1. A regenerated example that quietly lost one of the four things the panel
+//    is FOR. The prose promises a lifecycle; a capture swap that drops the
+//    OPTIONS leaves the prose lying and every file agreeing with every other.
+// 2. A half-loaded answer. sipnab loads a capture in the BACKGROUND while the
+//    MCP server is already answering, so a call issued straight after
+//    `initialize` is answered from whatever has been parsed so far. Measured
+//    on this capture: three runs out of three of the pre-poll
+//    `demos/mcp-stdio.sh` rendered the INVITE as `Result: In Progress` with
+//    the 200 and the BYE missing from a call that had both. That answer is
+//    WRONG rather than merely short, and it looks entirely plausible on a
+//    page.
+// ---------------------------------------------------------------------------
+
+/// One published example block: where it sits on the page, and what it says.
+///
+/// Returns the byte range of the whole marker pair together with the block's
+/// content, HTML-unescaped so it can be compared against the generated file.
+/// `&amp;` is undone LAST: doing it first would turn a literal `&amp;lt;` in
+/// the data into `<` and compare equal to the wrong thing.
+fn published_example_block(page: &str, name: &str) -> (Span, String) {
+    let begin = format!("<!-- mcp-example:{name} BEGIN -->");
+    let end = format!("<!-- mcp-example:{name} END -->");
+    let open = page
+        .find(&begin)
+        .unwrap_or_else(|| panic!("index.html has no {begin} — run demos/gen-mcp-examples.sh"));
+    let close = page
+        .find(&end)
+        .unwrap_or_else(|| panic!("index.html has no {end} — run demos/gen-mcp-examples.sh"));
+    assert!(
+        close > open,
+        "{name}: END marker precedes BEGIN in index.html"
+    );
+    let body = page[open + begin.len()..close]
+        .trim_matches('\n')
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
+    (
+        Span {
+            start: open,
+            end: close + end.len(),
+        },
+        body,
+    )
+}
+
+/// Every example block on the page is spliced in from a generated file, and
+/// every generated file reaches the page.
+///
+/// The equality test earlier in this file names four files by hand and parses
+/// each block as one JSON document. Neither holds for the lead panel: the
+/// dialog list is a JSON-LINES stream (`jq -c`, one object per line, five
+/// lines instead of sixty) and the ladder is a drawn report. This enumerates
+/// the DIRECTORY instead, so an example added without a marker pair fails
+/// here rather than generating happily into a file the page never reads.
+///
+/// Both directions matter. File-without-marker is an example that reports "ok"
+/// from `demos/gen-mcp-examples.sh --check` while the page shows whatever it
+/// showed before; marker-without-file is a hand-written block, which is the
+/// marketing-screenshot failure the whole chain exists to prevent.
+#[test]
+fn every_published_mcp_example_comes_from_its_generated_file() {
+    let page = read("website/templates/index.html");
+    let dir = repo().join("website/data/mcp-examples");
+
+    let mut on_disk: BTreeSet<String> = BTreeSet::new();
+    for entry in std::fs::read_dir(&dir).expect("website/data/mcp-examples must exist") {
+        let path = entry.expect("dir entry").path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .expect("file stem")
+            .to_string_lossy()
+            .to_string();
+        let generated = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let (_, published) = published_example_block(&page, &name);
+        assert_eq!(
+            published,
+            generated.trim_end_matches('\n'),
+            "the {name} block on the homepage is not {}. Regenerate with \
+             `demos/gen-mcp-examples.sh` rather than editing the page.",
+            path.display()
+        );
+        on_disk.insert(name);
+    }
+
+    // Anti-vacuity: an empty directory would make the loop above prove nothing.
+    // The two the lead panel is built from are named because losing either one
+    // is the regression this whole section exists to catch.
+    for want in ["lifecycle", "ladder"] {
+        assert!(
+            on_disk.contains(want),
+            "website/data/mcp-examples has no {want} example, so the lead \
+             demo panel has no generated source: found {on_disk:?}"
+        );
+    }
+
+    let marker = regex::Regex::new(r"<!-- mcp-example:([a-z0-9-]+) BEGIN -->").unwrap();
+    let on_page: BTreeSet<String> = marker
+        .captures_iter(&page)
+        .map(|c| c[1].to_string())
+        .collect();
+    assert_eq!(
+        on_page, on_disk,
+        "the example blocks on the homepage and the files in \
+         website/data/mcp-examples name different sets. A block with no file \
+         is hand-written; a file with no block never reaches a reader."
+    );
+}
+
+/// The lead panel shows all four stages of a call's life, without a click.
+///
+/// Each fact is taken from the PUBLISHED DATA rather than from a string
+/// spelled out here, so regenerating the examples from a capture that lacks a
+/// registration, a keepalive, media or a hangup fails this test instead of
+/// quietly shipping a lifecycle panel with no lifecycle in it. The method
+/// names below are the requirement, not the data: they are what the panel
+/// promises a reader.
+#[test]
+fn the_lead_demo_panel_shows_a_whole_call_lifecycle() {
+    let page = read("website/templates/index.html");
+    let lead = element_span(&page, "<div class=\"demo-panel active\"", "div");
+
+    let (dialog_span, dialogs) = published_example_block(&page, "lifecycle");
+    let (ladder_span, ladder) = published_example_block(&page, "ladder");
+    for (what, span) in [("lifecycle", &dialog_span), ("ladder", &ladder_span)] {
+        assert!(
+            lead.start < span.start && span.end <= lead.end,
+            "the {what} example is published outside the lead demo panel, so a \
+             visitor has to click to reach it"
+        );
+    }
+
+    // The fleet view: one row per dialog, keyed by the method it carries.
+    let mut rows: BTreeMap<String, String> = BTreeMap::new();
+    for line in dialogs.lines().filter(|l| !l.trim().is_empty()) {
+        let row: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("published dialog row is not JSON: {e}\n{line}"));
+        let method = row["method"]
+            .as_str()
+            .unwrap_or_else(|| panic!("published dialog row has no method: {line}"))
+            .to_string();
+        rows.entry(method).or_insert_with(|| line.to_string());
+    }
+    for method in ["REGISTER", "OPTIONS", "INVITE"] {
+        assert!(
+            rows.contains_key(method),
+            "the published dialog list has no {method}, which the lead panel's \
+             prose promises. Regenerate from a capture that contains one, or \
+             change the prose — found {:?}",
+            rows.keys().collect::<Vec<_>>()
+        );
+    }
+    let invite = &rows["INVITE"];
+    let invite_row: serde_json::Value = serde_json::from_str(invite).expect("checked above");
+    assert!(
+        invite_row["msg_count"].as_u64().unwrap_or(0) > 2,
+        "the published INVITE carries {} messages — an INVITE and one reply is \
+         not a call anyone can follow: {invite}",
+        invite_row["msg_count"]
+    );
+
+    // The call itself: media beside the signaling, and the hangup.
+    let streams: Vec<&str> = ladder
+        .lines()
+        .filter(|l| l.trim_start().starts_with("RTP "))
+        .collect();
+    assert!(
+        !streams.is_empty(),
+        "the published ladder shows no RTP stream, so the lead panel's INVITE \
+         has no media on it:\n{ladder}"
+    );
+    assert!(
+        ladder.lines().any(|l| l.trim_start().starts_with("BYE ->")),
+        "the published ladder shows no BYE transaction, so the call the lead \
+         panel shows never ends:\n{ladder}"
+    );
+}
+
+/// The lifecycle panel is the one a visitor sees first — no click, no arrow key.
+///
+/// `homepage_demo_wall_leads_with_outcomes` pins WHICH tabs are visible and in
+/// what order. This pins which panel is actually PAINTED on first load, which
+/// is a different fact carried by different markup: `class="demo-panel active"`
+/// and `class="demo-tab active"`, either of which can be left on the wrong
+/// element by an edit that reorders the wall.
+#[test]
+fn the_lifecycle_panel_is_the_one_a_visitor_sees_first() {
+    let page = read("website/templates/index.html");
+
+    let actives = page.matches("class=\"demo-panel active\"").count();
+    assert_eq!(
+        actives, 1,
+        "exactly one demo panel may ship active; {actives} do, so first paint \
+         shows either nothing or two panels at once"
+    );
+    let lead = element_span(&page, "<div class=\"demo-panel active\"", "div");
+    // `[ "]` and not a bare prefix: the panels sit inside `<div
+    // class="demo-panels">`, whose open tag matches `<div class="demo-panel`
+    // and is 500 bytes earlier than any panel.
+    let first_panel = regex::Regex::new(r#"<div class="demo-panel[ "]"#)
+        .unwrap()
+        .find(&page)
+        .expect("index.html has no demo panels at all")
+        .start();
+    assert_eq!(
+        first_panel, lead.start,
+        "the active demo panel is not the first one in the document; a reader \
+         with CSS off, or a crawler, gets the wall in the wrong order"
+    );
+    let lead_markup = &page[lead.start..lead.end];
+    assert!(
+        lead_markup.contains("id=\"demo-panel-0\""),
+        "the active panel is not demo-panel-0, so the tab wiring (which reads \
+         a tab's index off its own id) selects a different panel than the one \
+         painted on load"
+    );
+    for name in ["lifecycle", "ladder"] {
+        assert!(
+            lead_markup.contains(&format!("<!-- mcp-example:{name} BEGIN -->")),
+            "the panel a visitor sees first no longer carries the {name} \
+             example — the whole-call demo is not what leads any more"
+        );
+    }
+
+    let first_tab_at = page
+        .find("<button class=\"demo-tab")
+        .expect("index.html has no demo tabs at all");
+    let first_tab = element_open_tag(&page[first_tab_at..], "<button class=\"demo-tab");
+    assert!(
+        first_tab.contains("class=\"demo-tab active\"")
+            && first_tab.contains("aria-selected=\"true\"")
+            && first_tab.contains("aria-controls=\"demo-panel-0\""),
+        "the first tab must be the selected one and must control the panel \
+         that ships active, or the strip lights one demo while showing \
+         another: {first_tab}"
+    );
+}
+
+/// The published ladder came from a capture that had FINISHED loading.
+///
+/// This is the guard against the load race, and the most valuable of the four.
+/// sipnab parses a capture in the background while the MCP server answers, so
+/// an answer taken too early is complete-looking and wrong: measured three
+/// times out of three on this capture, the INVITE rendered `Result: In
+/// Progress` with 8 of its 13 messages, no 200 and no BYE.
+/// `demos/mcp-stdio.sh` now polls `capture_status.source_exhausted` before it
+/// makes the real call; this proves the output on the page came from after
+/// that poll.
+///
+/// The two blocks are generated by two SEPARATE runs of the server, which is
+/// what makes the last assertion worth making: the dialog list's
+/// `duration_sec` and the ladder's final transaction offset are the same
+/// measurement taken twice, so a run that raced disagrees with one that did
+/// not.
+#[test]
+fn the_published_ladder_shows_a_settled_capture() {
+    let page = read("website/templates/index.html");
+    let (_, dialogs) = published_example_block(&page, "lifecycle");
+    let (_, ladder) = published_example_block(&page, "ladder");
+
+    let result = ladder
+        .lines()
+        .find(|l| l.starts_with("Result:"))
+        .unwrap_or_else(|| panic!("the published ladder has no Result line:\n{ladder}"));
+    for in_flight in ["In Progress", "InCall", "Ringing", "Trying", "Proceeding"] {
+        assert!(
+            !result.contains(in_flight),
+            "the published ladder reads {result:?} — that is a call still in \
+             flight, which means the answer was taken before the capture had \
+             been read to its end. Regenerate; do not hand-edit."
+        );
+    }
+
+    let invite: serde_json::Value = dialogs
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|row| row["method"] == "INVITE")
+        .unwrap_or_else(|| panic!("the published dialog list has no INVITE:\n{dialogs}"));
+    let state = invite["state"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the published INVITE has no state: {invite}"));
+    assert_eq!(
+        state, "Completed",
+        "the published INVITE is {state:?}, not Completed — the fleet view was \
+         taken from a half-loaded capture"
+    );
+    assert!(
+        result.contains(state),
+        "the dialog list calls the INVITE {state:?} and the ladder says \
+         {result:?}. Two runs of the same tool over the same file disagree, \
+         which is what a load race looks like."
+    );
+    assert!(
+        result.contains("BYE"),
+        "the published ladder's verdict is {result:?} — a settled read of this \
+         call ends on its BYE"
+    );
+
+    let offsets = regex::Regex::new(r"\((\d+)ms\)").unwrap();
+    let last_ms = offsets
+        .captures_iter(&ladder)
+        .filter_map(|c| c[1].parse::<f64>().ok())
+        .fold(f64::MIN, f64::max);
+    let duration_ms = invite["duration_sec"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("the published INVITE has no duration_sec: {invite}"))
+        * 1000.0;
+    assert!(
+        (last_ms - duration_ms).abs() < 1.0,
+        "the ladder's last transaction lands at {last_ms}ms and the dialog \
+         list calls the call {duration_ms}ms long. The two blocks come from \
+         separate runs of the server, so they only agree when both read the \
+         whole capture."
+    );
 }

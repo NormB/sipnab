@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**71 open, 371 done** across 25 sections.
+**72 open, 371 done** across 25 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -65,7 +65,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | RP | 4 | 0 | `..........` |
 | HX | 3 | 0 | `..........` |
 | AS | 6 | 0 | `..........` |
-| DOC | 15 | 0 | `..........` |
+| DOC | 16 | 0 | `..........` |
 | MCPX | 1 | 6 | `#########.` |
 | P5 | 7 | 13 | `######....` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
@@ -5267,6 +5267,59 @@ promises an absence is acted on; a missing feature is merely absent.
 
 **The gate gaps are worth more than the instances**, because each one lets the
 class recur:
+
+- [ ] **DOC16 — [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) is a flat list of 51 tools, and the
+  rtpengine and vCon gap shows worst there.** Measured 2026-08-29: the page has
+  **58 `###` sections under 4 `##` headings**, and three of those four
+  (`## Summary`, `## Timing`, `## Media Streams`) are inside a rendered code
+  sample rather than organizing anything. So the reference an agent author
+  reads to learn the surface presents it as one undifferentiated run of tool
+  entries, alphabetical-ish by accident of when each was added.
+
+  A reader arriving with a task — "which tool tells me why this call failed",
+  "how do I get the bytes back" — has to read all 58 to find out. The tools
+  themselves are well documented individually; nothing tells you which one to
+  reach for.
+
+  **Do: group them by the question the reader has, not by subsystem.** These
+  eight cover all 51 with no tool in two places, derived from the live
+  `tools/list` rather than from the page's current order:
+
+  | Group | Tools |
+  |---|---|
+  | Survey — what is in this capture | `capture_status`, `capture_health`, `get_capture_report`, `list_captures`, `list_dialogs`, `timeline`, `top_talkers`, `aggregate_dialogs`, `group_dialogs`, `server_capabilities` |
+  | Find — narrow to the calls that matter | `find_problems`, `search_messages`, `search_by_time`, `validate_filter`, `describe_endpoint`, `tail_dialogs`, `find_correlated`, `get_call_tree`, `compare_dialogs`, `compare_captures` |
+  | Diagnose one call | `triage_call`, `get_dialog`, `get_dialog_report`, `get_message`, `render_ladder`, `get_sdp_timeline`, `check_codec_negotiation`, `diagnose_registration`, `media_diagnostics`, `rtp_stats` |
+  | Conformance and rules | `lint_dialog`, `validate_message`, `explain_rule`, `explain_response_code`, `evaluate_expectations` |
+  | Security | `security_findings`, `generate_fail2ban_rule` |
+  | Evidence and provenance | `show_evidence`, `decode_evidence`, `build_evidence_package`, `save_findings` |
+  | Export and handoff | `export_capture`, `export_audio`, `export_vcon`, `generate_repro`, `generate_wireshark_filter` |
+  | Capture control (opt-in, off by default) | `open_capture`, `shutdown_server`, `start_tls_capture`, `stop_tls_capture`, `list_tls_libraries` |
+
+  **The grouping is what makes the gap legible, which is the second half of
+  this entry.** Read that table and two rows are conspicuous: *Export and
+  handoff* carries exactly one vCon tool, taking a single `call_id` and nothing
+  else, against six vCon flags on the CLI. And **no group contains a media-relay
+  tool at all** — there is no row for the relay because there is nothing to put
+  in one, while `src/rtpengine/` carries `Reconciler`, `Attribution`,
+  `RelayLink`, `RelaySnapshot` and `OrphanSink`, and `EndpointAssertion`
+  distinguishes signaled from relay-asserted endpoints that `rtp_stats` never
+  reports.
+
+  Flat, that absence is invisible: a missing tool looks like every other tool
+  that is not there. Grouped, it is an empty shelf. `RV1`-`RV7` are the tools
+  that would fill it and `RP1`-`RP4` extend the same seam to rtpengine's
+  sibling; this entry is the reason a reader would notice they are missing.
+
+  **Do NOT invent a category per subsystem.** "HEP tools", "RTP tools", "vCon
+  tools" describes sipnab's internals rather than the reader's question, and it
+  is how a reference becomes a table of contents for the code. The eight above
+  are phrased as tasks on purpose.
+
+  Whatever grouping ships must be GENERATED or gated. `docs_drift_test` already
+  pins the page against the registered tool set, but nothing would notice a
+  tool landing in no group at all, which is the failure this entry is
+  preventing a second time.
 
 - [ ] **DOC10 — nothing gates environment variables.** 34 read, 19 documented.
   The highest-yield missing gate, and `flag_coverage_test`'s ratchet shape

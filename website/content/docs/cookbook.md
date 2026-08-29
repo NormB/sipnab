@@ -1,7 +1,7 @@
 +++
-title = "Cookbook"
+title = "Examples & Recipes"
 weight = 2
-description = "Step-by-step recipes for every major sipnab feature: triage, filtering, HEP, TLS decryption, MCP, observability, security, audio export."
+description = "Worked examples with real output: triage, filtering, HEP, TLS decryption, MCP, observability, security and audio export, each one a command you can paste and the result it produces."
 
 [extra]
 has_diagrams = true

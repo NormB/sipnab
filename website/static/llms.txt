@@ -6,7 +6,7 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 
 ## Docs
 
-- [Cookbook](https://sipnab.com/docs/cookbook/): Step-by-step recipes for every major sipnab feature: triage, filtering, HEP, TLS decryption, MCP, observability, security, audio export.
+- [Examples & Recipes](https://sipnab.com/docs/cookbook/): Worked examples with real output: triage, filtering, HEP, TLS decryption, MCP, observability, security and audio export, each one a command you can paste and the result it produces.
 - [Prometheus Metrics](https://sipnab.com/docs/metrics/): Every metric family sipnab emits, what each one means, which are counters and which are gauges, and the scrape config -- split out of the REST API page, which a scrape target's reader never needs.
 - [REST API](https://sipnab.com/docs/api/): sipnab's REST API: authentication, every endpoint with its response shape, status codes, curl recipes, and the security model. Metric names and their meaning are on the Prometheus metrics page.
 - [MCP Server](https://sipnab.com/docs/mcp/): Drive sipnab from an AI agent over the Model Context Protocol: what it is, a first working example, and where to go for deployment, the tool reference, and the protocol contract.
@@ -35,7 +35,7 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [vCon Capture Stack](https://sipnab.com/docs/vcon-harness/): Build a two-point vCon capture stack -- OpenSIPS, rtpengine, sipnab and a conserver -- then operate it, verify a stored call carries its media, and recognize the failures that look like success.
 - [vCon Export](https://sipnab.com/docs/vcon/): Export one observed dialog as a vCon container: what the format is, how to produce one, and what an observer's record does and does not let a consumer conclude.
 - [Encapsulations](https://sipnab.com/docs/encapsulations/): Which link types, EtherTypes and tunnels sipnab can read a SIP dialog out of, which it cannot, and what it reports when a frame does not decode.
-- [Real-World Captures](https://sipnab.com/docs/real-world-captures/): Twelve findings read out of live carrier and PBX traffic, with the command, the output and what an operator does next -- the retransmit storms, false-positive detections and misleading aggregates that a curated fixture cannot show.
+- [Examples from real traffic](https://sipnab.com/docs/real-world-captures/): Twelve findings read out of live carrier and PBX traffic, with the command, the output and what an operator does next -- the retransmit storms, false-positive detections and misleading aggregates that a curated fixture cannot show.
 
 ## Internals
 

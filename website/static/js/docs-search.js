@@ -61,7 +61,33 @@
   // markup is dropped rather than inserted: nothing here ever assigns
   // innerHTML, so no build-time string can become an element on the page.
   function plain(html) {
-    return String(html || "").replace(/<[^>]*>/g, "");
+    // Repeat until stable, and be honest about why.
+    //
+    // CodeQL reports js/incomplete-multi-character-sanitization here. For THIS
+    // regex the report is a pattern match rather than a demonstrated bug: `<`
+    // to the first `>` is greedy, so a pass cannot join a leftover `<` to a
+    // later `>` and manufacture a tag. Measured against nine adversarial
+    // inputs -- `<<a>script>alert(1)<</a>/script>`, `<scr<a>ipt>`, `<a<b>c>`
+    // among them -- one pass and the fixed point agree on all nine.
+    //
+    // The loop is kept anyway, for two reasons that do not depend on that
+    // measurement holding: it closes a standing high alert, and it makes the
+    // function robust to a future edit that narrows the pattern to something
+    // removal-based like /<script>/g, where a single pass IS incomplete. The
+    // strip is not load-bearing for safety either way -- nothing in this file
+    // assigns innerHTML, and `the_search_script_never_assigns_inner_html`
+    // holds that line.
+    //
+    // Bounded so a pathological input cannot spin.
+    var out = String(html || "");
+    for (var i = 0; i < 16; i++) {
+      var next = out.replace(/<[^>]*>/g, "");
+      if (next === out) {
+        return next;
+      }
+      out = next;
+    }
+    return out.replace(/[<>]/g, "");
   }
 
   function render(items) {
