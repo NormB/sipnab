@@ -385,6 +385,14 @@ mod tests {
         // Not asserted non-empty: a container uid with no passwd entry is a
         // legitimate answer, and this must not fail there. What it must never
         // do is return a name for a uid that has none.
+        // Linux only. macOS Open Directory synthesizes a passwd record for an
+        // arbitrary uid, so `getpwuid` answers where glibc reports nothing --
+        // and a name that the OS itself supplies is not sipnab guessing, which
+        // is the property under test. Asserted at the call site rather than by
+        // making `user_name` portable, because the difference belongs to the
+        // platform and hiding it in the function would make both readings
+        // wrong somewhere.
+        #[cfg(target_os = "linux")]
         assert!(
             user_name(u32::MAX - 1).is_empty(),
             "a uid with no password entry must report no name, not a guess"

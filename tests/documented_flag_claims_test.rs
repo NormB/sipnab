@@ -16,10 +16,15 @@
 //! [`a_flag_reference_is_matched_as_a_whole_word_not_a_prefix`] exists as a
 //! test of the matcher rather than as a comment about it.
 
-// `sipnab::cli::Cli` lives behind `native` (clap is a `native` dep), and this
-// gate is entirely about the flags clap declares. Gated at the file level
-// rather than per item because every test here derives from that one call.
-#![cfg(feature = "native")]
+// Gated on `full`, matching `coverage_matrix_test`, and the reason is the
+// defect that put it here: clap's flag set is FEATURE-DEPENDENT. Under
+// `native,hep,api,mcp,mcp-http` the flags behind `tls`, `vcon`, `plugins` and
+// `audio` do not exist, so every document naming one was reported as a phantom
+// claim. The documentation describes the full-featured binary, so that is the
+// only build this gate can judge it against. `native` alone was the first fix
+// -- it made the file COMPILE under a narrow combo, which is a different
+// question from whether its comparison MEANS anything there.
+#![cfg(feature = "full")]
 
 use clap::CommandFactory;
 use std::collections::BTreeSet;
