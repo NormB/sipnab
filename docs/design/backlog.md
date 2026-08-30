@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**72 open, 371 done** across 25 sections.
+**71 open, 372 done** across 25 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -65,7 +65,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | RP | 4 | 0 | `..........` |
 | HX | 3 | 0 | `..........` |
 | AS | 6 | 0 | `..........` |
-| DOC | 16 | 0 | `..........` |
+| DOC | 15 | 1 | `#.........` |
 | MCPX | 1 | 6 | `#########.` |
 | P5 | 7 | 13 | `######....` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
@@ -5268,7 +5268,7 @@ promises an absence is acted on; a missing feature is merely absent.
 **The gate gaps are worth more than the instances**, because each one lets the
 class recur:
 
-- [ ] **DOC16 — [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) is a flat list of 51 tools, and the
+- [x] **DOC16 (done 2026-08-30) — [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) is a flat list of 51 tools, and the
   rtpengine and vCon gap shows worst there.** Measured 2026-08-29: the page has
   **58 `###` sections under 4 `##` headings**, and three of those four
   (`## Summary`, `## Timing`, `## Media Streams`) are inside a rendered code

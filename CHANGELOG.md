@@ -8,6 +8,35 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **`docs/mcp-tools.md` is grouped by the reader's question.** It was a flat
+  run of 51 tool sections under no organizing heading, ordered by the accident
+  of when each tool was added; someone arriving with a task had to read all of
+  them to find out which tool answered it. The eight groups are Survey, Find,
+  Diagnose one call, Conformance and rules, Security, Evidence and provenance,
+  Export and handoff, and Capture control. Deliberately not "HEP tools" /
+  "RTP tools" / "vCon tools" -- that describes sipnab's internals rather than
+  the reader's question.
+- **The one-click sample capture shows a phone's whole life.** It held a single
+  INVITE dialog, and its SIP sat on port 5080, outside the default
+  `--portrange 5060-5061` -- so `sipnab -I sample-call.pcap` reported zero SIP
+  messages. It now carries a challenged-then-authenticated REGISTER, an OPTIONS
+  probe, an INVITE answered with two-way PCMU, and a BYE, on port 5060 with RFC
+  5737 addresses. `demos/gen-sample-call.py` regenerates it.
+
+### Added
+
+- `tests/mcp_tool_grouping_test.rs` -- every registered tool sits under exactly
+  one group, no group is named after a subsystem, and the group set is pinned
+  so deleting a heading fails rather than silently merging its tools upward.
+- `tests/sample_capture_test.rs` -- the sample parses under DEFAULT arguments
+  and shows a registration, a probe, a call and a hangup. The previous gate
+  asserted the file existed, which stayed green the whole time the capture was
+  empty under the settings a reader uses.
+
 ## [0.5.133] - 2026-08-29
 
 ### Added
