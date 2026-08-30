@@ -26,59 +26,106 @@ the analysis outright — `open_capture`, off unless you enable it — and it mi
 a new capture identity so the replacement cannot reach a consumer as an
 ordinary update.
 
+
+**[Survey — what is in this capture](#survey-what-is-in-this-capture)**
+
+
 | Tool | Parameters | Returns |
 |---|---|---|
-| [`list_dialogs`](#list-dialogs) | `filter?`, `limit?`, `cursor?` | A page of dialog summaries, with the total behind it |
-| [`validate_filter`](#validate-filter) | `expr` | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
-| [`get_dialog_report`](#get-dialog-report) | `call_id`, `format?` | Structured per-call report (JSON / Markdown / text) |
-| [`aggregate_dialogs`](#aggregate-dialogs) | `group_by`, `filter?`, `top_n?` | Counts dialogs grouped by ONE field, in the store rather than in the model |
-| [`timeline`](#timeline) | `bucket_seconds?` | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
-| [`group_dialogs`](#group-dialogs) | `by`, `metrics?`, `filter?`, `top_n?` | Carrier metrics per group — ASR, NER, ACD, post-dial delay, MOS, retransmissions — each beside the population it rests on |
-| [`get_capture_report`](#get-capture-report) | `format?` | Whole-capture analysis: findings, orphaned media, STUN/ICMP evidence, what the caps shed |
-| [`find_problems`](#find-problems) | `kinds?`, `filter?`, `limit?`, `cursor?` | A page of dialogs matching one or more diagnostic alias names |
-| [`get_dialog`](#get-dialog) | `call_id`, `max_messages?`, `cursor?` | Paginated dialog with full SIP messages |
-| [`get_message`](#get-message) | `call_id`, `index` | Single SIP message at a given index |
-| [`render_ladder`](#render-ladder) | `call_id`, `format?` | Call-flow ladder (Markdown / text) |
-| [`rtp_stats`](#rtp-stats) | `call_id?`, `min_mos?`, `max_mos?`, `limit?`, `cursor?` | One call's RTP quality and diagnosis, or a capture-wide stream sweep |
-| [`media_diagnostics`](#media-diagnostics) | `call_id` | The facts under the MOS: QoS marking, jitter grounding, delay provenance, silence, and what the far end reported |
-| [`search_messages`](#search-messages) | `query`, `limit?`, `cursor?` | A page of substring matches across method/From/To/UA/body, with the total behind it |
-| [`tail_dialogs`](#tail-dialogs) | `cursor?`, `limit?` | Cursor-based incremental dialog fetch |
-| [`security_findings`](#security-findings) | `kinds?`, `since?`, `limit?` | Recent `scanner` / `fraud` / `digest` / `reg_flood` findings, plus the detectors this server runs |
 | [`capture_status`](#capture-status) | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
 | [`capture_health`](#capture-health) | `sample_seconds` | Capture-path counters read twice: run totals, deltas across the window, `undecoded_fraction`, and undecodable frames by reason |
+| [`get_capture_report`](#get-capture-report) | `format?` | Whole-capture analysis: findings, orphaned media, STUN/ICMP evidence, what the caps shed |
+| [`list_captures`](#list-captures) | -- | Capture files in `--mcp-file-root`, with sizes |
+| [`list_dialogs`](#list-dialogs) | `filter?`, `limit?`, `cursor?` | A page of dialog summaries, with the total behind it |
+| [`timeline`](#timeline) | `bucket_seconds?` | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
+| [`top_talkers`](#top-talkers) | `by`, `limit?`, `filter?`, `prefix_digits?` | The busiest IPs, user agents or dialled prefixes, ranked, each share stated against the population behind it |
+| [`aggregate_dialogs`](#aggregate-dialogs) | `group_by`, `filter?`, `top_n?` | Counts dialogs grouped by ONE field, in the store rather than in the model |
+| [`group_dialogs`](#group-dialogs) | `by`, `metrics?`, `filter?`, `top_n?` | Carrier metrics per group — ASR, NER, ACD, post-dial delay, MOS, retransmissions — each beside the population it rests on |
+| [`server_capabilities`](#server-capabilities) | -- | sipnab version and the optional features this binary carries |
+
+**[Find — narrow to the calls that matter](#find-narrow-to-the-calls-that-matter)**
+
+
+| Tool | Parameters | Returns |
+|---|---|---|
+| [`find_problems`](#find-problems) | `kinds?`, `filter?`, `limit?`, `cursor?` | A page of dialogs matching one or more diagnostic alias names |
+| [`search_messages`](#search-messages) | `query`, `limit?`, `cursor?` | A page of substring matches across method/From/To/UA/body, with the total behind it |
+| [`search_by_time`](#search-by-time) | `start`, `end?`, `filter?`, `limit?`, `cursor?` | Dialogs whose first message falls in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) window |
+| [`validate_filter`](#validate-filter) | `expr` | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
+| [`describe_endpoint`](#describe-endpoint) | `ip?`, `user?`, `limit?` | Everything one participant did: dialogs by method and state, INVITE outcomes, REGISTER state, banners, streams, findings |
+| [`tail_dialogs`](#tail-dialogs) | `cursor?`, `limit?` | Cursor-based incremental dialog fetch |
+| [`find_correlated`](#find-correlated) | `call_id`, `limit?` | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
+| [`get_call_tree`](#get-call-tree) | `call_id`, `limit?` | Every leg of one call as a tree, each edge carrying its parent, depth, score, strategy and whether the walk went through it |
+| [`compare_dialogs`](#compare-dialogs) | `call_id_a`, `call_id_b` | Two calls side by side, with the differences named |
+| [`compare_captures`](#compare-captures) | `a`, `b`, `dimensions?`, `top_n?` | Diffs two capture files in `--mcp-file-root` by aggregate, ranked by how far each bucket MOVED. Neither becomes the loaded capture |
+
+**[Diagnose one call](#diagnose-one-call)**
+
+
+| Tool | Parameters | Returns |
+|---|---|---|
 | [`triage_call`](#triage-call) | `call_id` | First-pass verdict: signaling problem, media problem, both, or none, with evidence |
+| [`get_dialog`](#get-dialog) | `call_id`, `max_messages?`, `cursor?` | Paginated dialog with full SIP messages |
+| [`get_dialog_report`](#get-dialog-report) | `call_id`, `format?` | Structured per-call report (JSON / Markdown / text) |
+| [`get_message`](#get-message) | `call_id`, `index` | Single SIP message at a given index |
+| [`render_ladder`](#render-ladder) | `call_id`, `format?` | Call-flow ladder (Markdown / text) |
+| [`get_sdp_timeline`](#get-sdp-timeline) | `call_id` | SDP offer/answer exchanges in order: codecs, ptime, direction |
+| [`check_codec_negotiation`](#check-codec-negotiation) | `call_id` | Codecs offered vs answered and whether they intersect — for 488s |
+| [`diagnose_registration`](#diagnose-registration) | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
+| [`media_diagnostics`](#media-diagnostics) | `call_id` | The facts under the MOS: QoS marking, jitter grounding, delay provenance, silence, and what the far end reported |
+| [`rtp_stats`](#rtp-stats) | `call_id?`, `min_mos?`, `max_mos?`, `limit?`, `cursor?` | One call's RTP quality and diagnosis, or a capture-wide stream sweep |
+
+**[Conformance and rules](#conformance-and-rules)**
+
+
+| Tool | Parameters | Returns |
+|---|---|---|
 | [`lint_dialog`](#lint-dialog) | `call_id`, `rulesets?`, `severity_min?`, `suppression_file?` | Conformance findings for one call, declaration against observation included, each with its RFC and section |
 | [`validate_message`](#validate-message) | `call_id`, `index`, `suppression_file?` | Conformance findings for one message, read alone |
 | [`explain_rule`](#explain-rule) | `rule_id` | The catalog entry behind one rule identifier: citation, basis, scope, selectors |
+| [`explain_response_code`](#explain-response-code) | `code` | IANA registry meaning and class for a SIP status code |
+| [`evaluate_expectations`](#evaluate-expectations) | `rules?`, `rules_toml?`, `suppression_file?` | A pass/fail verdict per rule plus an exit code for a build. A rule whose population is empty fails rather than passing quietly |
+
+**[Security](#security)**
+
+
+| Tool | Parameters | Returns |
+|---|---|---|
+| [`security_findings`](#security-findings) | `kinds?`, `since?`, `limit?` | Recent `scanner` / `fraud` / `digest` / `reg_flood` findings, plus the detectors this server runs |
+| [`generate_fail2ban_rule`](#generate-fail2ban-rule) | `finding_id` | A fail2ban filter and jail derived from ONE recorded finding, with that finding attached as the evidence |
+
+**[Evidence and provenance](#evidence-and-provenance)**
+
+
+| Tool | Parameters | Returns |
+|---|---|---|
 | [`show_evidence`](#show-evidence) | `refs`, `max_bytes?` | Follows frame pointers back to the captured bytes: verified, unverified, or unresolvable with a reason |
 | [`decode_evidence`](#decode-evidence) | `frame_ref`, `field?` | Decodes the frame one pointer names: link type, addressing, and each SIP header's byte range inside the message and the frame |
-| [`check_codec_negotiation`](#check-codec-negotiation) | `call_id` | Codecs offered vs answered and whether they intersect — for 488s |
-| [`diagnose_registration`](#diagnose-registration) | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
-| [`explain_response_code`](#explain-response-code) | `code` | IANA registry meaning and class for a SIP status code |
-| [`compare_dialogs`](#compare-dialogs) | `call_id_a`, `call_id_b` | Two calls side by side, with the differences named |
-| [`find_correlated`](#find-correlated) | `call_id`, `limit?` | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
-| [`get_call_tree`](#get-call-tree) | `call_id`, `limit?` | Every leg of one call as a tree, each edge carrying its parent, depth, score, strategy and whether the walk went through it |
-| [`get_sdp_timeline`](#get-sdp-timeline) | `call_id` | SDP offer/answer exchanges in order: codecs, ptime, direction |
-| [`search_by_time`](#search-by-time) | `start`, `end?`, `filter?`, `limit?`, `cursor?` | Dialogs whose first message falls in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) window |
-| [`describe_endpoint`](#describe-endpoint) | `ip?`, `user?`, `limit?` | Everything one participant did: dialogs by method and state, INVITE outcomes, REGISTER state, banners, streams, findings |
-| [`top_talkers`](#top-talkers) | `by`, `limit?`, `filter?`, `prefix_digits?` | The busiest IPs, user agents or dialled prefixes, ranked, each share stated against the population behind it |
-| [`list_captures`](#list-captures) | -- | Capture files in `--mcp-file-root`, with sizes |
-| [`compare_captures`](#compare-captures) | `a`, `b`, `dimensions?`, `top_n?` | Diffs two capture files in `--mcp-file-root` by aggregate, ranked by how far each bucket MOVED. Neither becomes the loaded capture |
+| [`build_evidence_package`](#build-evidence-package) | `call_ids`, `filename` | **Write.** One directory of escalation artifacts in `--mcp-file-root`: pcapng, ladder and RTP stats per call, manifest, and the rebuilt-frames README |
+| [`save_findings`](#save-findings) | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
+
+**[Export and handoff](#export-and-handoff)**
+
+
+| Tool | Parameters | Returns |
+|---|---|---|
 | [`export_capture`](#export-capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
 | [`export_audio`](#export-audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
 | [`export_vcon`](#export-vcon) | `call_id` | One dialog as a vCon conversation container, structured JSON. Unsigned, retained audio inline, and it carries what the capture missed |
-| [`build_evidence_package`](#build-evidence-package) | `call_ids`, `filename` | **Write.** One directory of escalation artifacts in `--mcp-file-root`: pcapng, ladder and RTP stats per call, manifest, and the rebuilt-frames README |
-| [`evaluate_expectations`](#evaluate-expectations) | `rules?`, `rules_toml?`, `suppression_file?` | A pass/fail verdict per rule plus an exit code for a build. A rule whose population is empty fails rather than passing quietly |
 | [`generate_repro`](#generate-repro) | `call_id`, `format?`, `pin?`, `vary?`, `filename?` | A SIPp scenario replaying one call, with the hypothesis as an input: `pin` holds the suspected cause fixed, `vary` regenerates identity |
 | [`generate_wireshark_filter`](#generate-wireshark-filter) | `call_id`, `include_media?` | A Wireshark display filter selecting one call's signaling and its RTP by SSRC, plus the tshark line that applies it |
-| [`generate_fail2ban_rule`](#generate-fail2ban-rule) | `finding_id` | A fail2ban filter and jail derived from ONE recorded finding, with that finding attached as the evidence |
-| [`shutdown_server`](#shutdown-server) | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
+
+**[Capture control (opt-in, off by default)](#capture-control-opt-in-off-by-default)**
+
+
+| Tool | Parameters | Returns |
+|---|---|---|
 | [`open_capture`](#open-capture) | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
-| [`save_findings`](#save-findings) | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
-| [`server_capabilities`](#server-capabilities) | -- | sipnab version and the optional features this binary carries |
-| [`list_tls_libraries`](#list-tls-libraries) | -- | which TLS libraries this host runs, and whether sipnab could read their plaintext without keys |
+| [`shutdown_server`](#shutdown-server) | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
 | [`start_tls_capture`](#start-tls-capture) | `flavors`, `libraries` | installs kernel uprobes and reads SIP plaintext with no key; needs `--mcp-allow-tls-capture` |
 | [`stop_tls_capture`](#stop-tls-capture) | -- | stops that capture and removes its kernel probes |
+| [`list_tls_libraries`](#list-tls-libraries) | -- | which TLS libraries this host runs, and whether sipnab could read their plaintext without keys |
+
 
 ### Rules every tool follows
 
@@ -1026,7 +1073,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.134",
+  "version": "0.5.135",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -3763,7 +3810,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.134 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.135 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",

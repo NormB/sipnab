@@ -99,6 +99,13 @@ pub(crate) enum Arrival<'a> {
         /// The status code, classified through
         /// [`response_class`](super::response_codes::response_class).
         code: u16,
+        /// The registration interval this response GRANTS, when it states one.
+        ///
+        /// RFC 3261 §10.3 step 8 has the registrar list the resulting bindings
+        /// in its 2xx with their expiry, so the answer says how long the
+        /// binding it just created will live -- and `0` says it created none.
+        /// Only `Family::Register` reads it.
+        granted_expiry: Option<u32>,
     },
 }
 
@@ -222,9 +229,11 @@ pub(crate) fn transition(family: Family, arrival: &Arrival<'_>, state: &DialogSt
             method,
             subscription_state,
         } => request_cell(family, method, *subscription_state, state),
-        Arrival::Response { cseq_method, code } => {
-            response_cell(family, *cseq_method, *code, state)
-        }
+        Arrival::Response {
+            cseq_method,
+            code,
+            granted_expiry,
+        } => response_cell(family, *cseq_method, *code, *granted_expiry, state),
     }
 }
 
@@ -283,9 +292,25 @@ fn request_cell(
             "a REGISTER dialog is decided by the registrar's answer, not by asking again",
         ),
         Family::Subscribe => match method {
-            // RFC 6665 §4.1.2: a NOTIFY proves the subscription exists, and
-            // may arrive before the 200 that would otherwise establish it.
-            SipMethod::Notify => Cell::To(DialogState::Active),
+            // RFC 6665 §4.1.3: the `Subscription-State` header decides, not
+            // the method. It carries one of three values, and mapping every
+            // NOTIFY to `Active` reported a subscription the notifier had not
+            // authorized yet -- and one it had just torn down -- as active.
+            // `Pending` was a documented state nothing could reach.
+            //
+            // The value is compared after stripping parameters, because
+            // `terminated;reason=timeout` is `terminated` and a `starts_with`
+            // would also match `terminatedfoo`.
+            SipMethod::Notify => {
+                match subscription_state.map(|v| v.split(';').next().unwrap_or("").trim()) {
+                    Some("pending") => Cell::To(DialogState::Pending),
+                    Some("terminated") => Cell::To(DialogState::Terminated),
+                    // `active`, an unknown token, or no header at all. RFC 6665
+                    // §4.1.2 lets a NOTIFY arrive before the 200 that would
+                    // establish the subscription, so its existence is the claim.
+                    _ => Cell::To(DialogState::Active),
+                }
+            }
             SipMethod::Subscribe
             | SipMethod::Invite
             | SipMethod::Ack
@@ -314,6 +339,7 @@ fn response_cell(
     family: Family,
     cseq_method: Option<&SipMethod>,
     code: u16,
+    granted_expiry: Option<u32>,
     state: &DialogState,
 ) -> Cell {
     let class = response_class(code);
@@ -345,6 +371,14 @@ fn response_cell(
             None => Cell::Stay("a response with no CSeq names no transaction to attribute it to"),
         },
         Family::Register => match class {
+            // A 2xx to a REGISTER does not always mean "registered". RFC 3261
+            // §10.2.2 removes a binding by re-registering it with a zero
+            // interval, and the registrar confirms that with a 200 whose
+            // Contact carries `expires=0`. Reading only the class reported a
+            // phone that had just unregistered as `Registered`, and
+            // `DialogState::Expired` -- documented as "registration expired or
+            // de-registered" -- was a state nothing in the tree could reach.
+            ResponseClass::Success if granted_expiry == Some(0) => Cell::To(DialogState::Expired),
             ResponseClass::Success => Cell::To(DialogState::Registered),
             ResponseClass::Redirect => Cell::To(DialogState::Redirected),
             ResponseClass::Declined | ResponseClass::Failure => Cell::To(DialogState::Failed),
@@ -357,6 +391,13 @@ fn response_cell(
             }
         },
         Family::Subscribe => match class {
+            // RFC 6665 §4.2.1: an un-SUBSCRIBE is a SUBSCRIBE with `Expires: 0`,
+            // and the 200 answering it confirms the subscription is gone. The
+            // registrar analogue of the REGISTER case below; reading only the
+            // class reported a torn-down subscription as freshly active.
+            ResponseClass::Success if granted_expiry == Some(0) => {
+                Cell::To(DialogState::Terminated)
+            }
             ResponseClass::Success => Cell::To(DialogState::Active),
             ResponseClass::Redirect => Cell::To(DialogState::Redirected),
             ResponseClass::Declined | ResponseClass::Failure => Cell::To(DialogState::Terminated),
@@ -532,6 +573,13 @@ mod tests {
     /// Call `visit` once per declared cell, with the coordinate that produced
     /// it. One enumerator, so no property can silently sweep a narrower space
     /// than another.
+    /// The registration/subscription intervals the sweep walks.
+    ///
+    /// `None` (the response states no interval), a real one, and zero -- the
+    /// value RFC 3261 §10.2.2 and RFC 6665 §4.2.1 both give the meaning
+    /// "remove this binding" rather than "renew it".
+    const EXPIRIES: [Option<u32>; 3] = [None, Some(3600), Some(0)];
+
     fn for_every_cell(mut visit: impl FnMut(Family, &Arrival<'_>, &DialogState, &Cell)) {
         let methods = methods();
         for family in FAMILIES {
@@ -546,18 +594,27 @@ mod tests {
                         visit(family, &arrival, state, &cell);
                     }
                     for code in CODES {
-                        let arrival = Arrival::Response {
-                            cseq_method: Some(method),
-                            code,
-                        };
-                        let cell = transition(family, &arrival, state);
-                        visit(family, &arrival, state, &cell);
+                        // The granted interval is a coordinate of the table
+                        // now, so the sweep has to walk it. Without this the
+                        // sweep reported `Expired` and the terminated
+                        // subscription as unreachable while both had cells --
+                        // a dimension the machine reads and the sweep did not.
+                        for granted_expiry in EXPIRIES {
+                            let arrival = Arrival::Response {
+                                cseq_method: Some(method),
+                                code,
+                                granted_expiry,
+                            };
+                            let cell = transition(family, &arrival, state);
+                            visit(family, &arrival, state, &cell);
+                        }
                     }
                 }
                 for code in CODES {
                     let arrival = Arrival::Response {
                         cseq_method: None,
                         code,
+                        granted_expiry: None,
                     };
                     let cell = transition(family, &arrival, state);
                     visit(family, &arrival, state, &cell);
@@ -572,7 +629,12 @@ mod tests {
     fn the_sweep_covers_every_declared_cell() {
         let mut cells = 0usize;
         for_every_cell(|_, _, _, _| cells += 1);
-        let per_state = methods().len() * (SUB_STATES.len() + CODES.len()) + CODES.len();
+        // Derived, so adding a coordinate to the machine forces this line to
+        // change rather than a constant to be bumped. The response arm now
+        // walks EXPIRIES as well; the no-CSeq arm does not, because a response
+        // naming no transaction cannot have granted an interval for one.
+        let per_state =
+            methods().len() * (SUB_STATES.len() + CODES.len() * EXPIRIES.len()) + CODES.len();
         assert_eq!(
             cells,
             FAMILIES.len() * STATES.len() * per_state,
@@ -607,25 +669,39 @@ mod tests {
             started.len(),
             STATES.len()
         );
-        // Nine of the thirteen states are destinations. `Expired` has no
-        // transition into it yet (nothing parses a REGISTER expiry), `Trying`
-        // and `Pending` are only ever initial states set by `SipDialog::new`,
-        // and no arrival moves a dialog back into either.
-        for want in [
-            DialogState::Ringing,
-            DialogState::InCall,
-            DialogState::Completed,
-            DialogState::Canceled,
-            DialogState::Failed,
-            DialogState::Redirected,
-            DialogState::Registered,
-            DialogState::Active,
-            DialogState::Terminated,
-            DialogState::Transferring,
-        ] {
+        // Derived, never enumerated. This asserted a hardcoded list of nine
+        // and its comment recorded the rest as accepted:
+        //
+        //   "`Expired` has no transition into it yet (nothing parses a
+        //    REGISTER expiry), `Trying` and `Pending` are only ever initial
+        //    states set by `SipDialog::new`"
+        //
+        // The first clause was a known defect written down as an exemption,
+        // where it stopped being visible: a phone that unregistered reported
+        // `Registered` for as long as the list had ten entries instead of
+        // eleven. `Pending` was the same -- RFC 6665 §4.1.3 gives NOTIFY a
+        // `pending` value, so it was always a destination and nothing produced
+        // it.
+        //
+        // Only `Trying` is genuinely initial-only: it is what an INVITE dialog
+        // starts as, and no arrival returns a dialog to it. Naming that one
+        // exception costs a line; enumerating the reachable ones hid two bugs.
+        const INITIAL_ONLY: &[DialogState] = &[DialogState::Trying];
+        for want in &STATES {
+            if INITIAL_ONLY.contains(want) {
+                assert!(
+                    !reached.contains(want),
+                    "{want:?} is listed as initial-only and something now \
+                     produces it. That may be correct -- remove it from \
+                     INITIAL_ONLY rather than leaving the list lying."
+                );
+                continue;
+            }
             assert!(
-                reached.contains(&want),
-                "no cell in the table ever produces {want:?}"
+                reached.contains(want),
+                "no cell in the table ever produces {want:?}. A declared state \
+                 nothing can reach is indistinguishable from a typo, and it \
+                 reads as covered in every list that names it."
             );
         }
     }
@@ -677,6 +753,7 @@ mod tests {
                     let arrival = Arrival::Response {
                         cseq_method: Some(method),
                         code,
+                        granted_expiry: None,
                     };
                     let cell = transition(Family::Invite, &arrival, state);
                     let Cell::To(next) = cell else { continue };
@@ -751,6 +828,7 @@ mod tests {
                         let arrival = Arrival::Response {
                             cseq_method: Some(method),
                             code,
+                            granted_expiry: None,
                         };
                         let cell = transition(family, &arrival, state);
                         let Cell::To(next) = cell else { continue };
@@ -780,6 +858,7 @@ mod tests {
                     &Arrival::Response {
                         cseq_method: Some(&SipMethod::Invite),
                         code,
+                        granted_expiry: None,
                     },
                     &DialogState::Canceled,
                 ),
@@ -794,6 +873,7 @@ mod tests {
                     &Arrival::Response {
                         cseq_method: Some(&SipMethod::Invite),
                         code: 487,
+                        granted_expiry: None,
                     },
                     &DialogState::InCall,
                 ),
@@ -809,6 +889,139 @@ mod tests {
     /// The mid-dialog defect in one assertion: these two requests are the ones
     /// a capture of a busy server sees first, and both were reaching a handler
     /// with no rule for them.
+    /// RFC 6665 §4.1.3: `Subscription-State` decides, not the method.
+    ///
+    /// A NOTIFY carries one of three values -- `pending`, `active`,
+    /// `terminated` -- and the arm mapped every NOTIFY to `Active` without
+    /// reading it. So a subscription the notifier had not authorized yet, and
+    /// one it had just torn down, both reported as active. `Pending` was a
+    /// documented state nothing in the tree could reach.
+    ///
+    /// The same shape as the REGISTER defect beside it: the state was decided
+    /// by method and response class while the RFC puts the meaning in a header.
+    #[test]
+    fn a_notify_reports_the_subscription_state_it_carries() {
+        for (value, want) in [
+            ("pending", DialogState::Pending),
+            ("active", DialogState::Active),
+            ("terminated", DialogState::Terminated),
+        ] {
+            assert_eq!(
+                transition(
+                    Family::Subscribe,
+                    &Arrival::Request {
+                        method: &SipMethod::Notify,
+                        subscription_state: Some(value),
+                    },
+                    &DialogState::Active,
+                ),
+                Cell::To(want.clone()),
+                "a NOTIFY carrying `Subscription-State: {value}` must report {want:?}"
+            );
+        }
+        // No header at all: the NOTIFY still proves the subscription exists.
+        // RFC 6665 §4.1.2 lets it arrive before the 200 that would establish
+        // it, so this must not regress to Stay.
+        assert_eq!(
+            transition(
+                Family::Subscribe,
+                &Arrival::Request {
+                    method: &SipMethod::Notify,
+                    subscription_state: None,
+                },
+                &DialogState::Pending,
+            ),
+            Cell::To(DialogState::Active),
+            "a NOTIFY with no Subscription-State still proves the subscription"
+        );
+    }
+
+    /// RFC 6665 §4.2.1: an un-SUBSCRIBE is a SUBSCRIBE with `Expires: 0`.
+    ///
+    /// The registrar analogue of the REGISTER case. A 200 answering a
+    /// zero-interval SUBSCRIBE confirms the subscription is gone, and reading
+    /// only the class reported it as freshly `Active`.
+    #[test]
+    fn a_success_to_a_zero_interval_subscribe_terminates_the_subscription() {
+        assert_eq!(
+            transition(
+                Family::Subscribe,
+                &Arrival::Response {
+                    cseq_method: Some(&SipMethod::Subscribe),
+                    code: 200,
+                    granted_expiry: Some(0),
+                },
+                &DialogState::Active,
+            ),
+            Cell::To(DialogState::Terminated),
+            "a 200 to an un-SUBSCRIBE must end the subscription, not renew it"
+        );
+        assert_eq!(
+            transition(
+                Family::Subscribe,
+                &Arrival::Response {
+                    cseq_method: Some(&SipMethod::Subscribe),
+                    code: 200,
+                    granted_expiry: Some(3600),
+                },
+                &DialogState::Pending,
+            ),
+            Cell::To(DialogState::Active),
+            "a 200 granting a real interval must still activate"
+        );
+    }
+
+    /// RFC 3261 §10.2.2: a zero-interval REGISTER removes the binding.
+    ///
+    /// `DialogState::Expired` is documented as "registration expired or
+    /// de-registered" and nothing could reach it: every 2xx to a REGISTER
+    /// reported `Registered`, including the one confirming a phone had just
+    /// unregistered.
+    #[test]
+    fn a_success_to_a_zero_interval_register_expires_the_binding() {
+        assert_eq!(
+            transition(
+                Family::Register,
+                &Arrival::Response {
+                    cseq_method: Some(&SipMethod::Register),
+                    code: 200,
+                    granted_expiry: Some(0),
+                },
+                &DialogState::Registered,
+            ),
+            Cell::To(DialogState::Expired),
+            "a 200 to an un-REGISTER must expire the binding"
+        );
+        assert_eq!(
+            transition(
+                Family::Register,
+                &Arrival::Response {
+                    cseq_method: Some(&SipMethod::Register),
+                    code: 200,
+                    granted_expiry: Some(3600),
+                },
+                &DialogState::Trying,
+            ),
+            Cell::To(DialogState::Registered),
+            "a 200 granting a real interval must still register"
+        );
+        // No interval stated: the registrar granted its own default, which is
+        // a registration. Absence is not zero.
+        assert_eq!(
+            transition(
+                Family::Register,
+                &Arrival::Response {
+                    cseq_method: Some(&SipMethod::Register),
+                    code: 200,
+                    granted_expiry: None,
+                },
+                &DialogState::Trying,
+            ),
+            Cell::To(DialogState::Registered),
+            "a 200 stating no interval is a registration, not a removal"
+        );
+    }
+
     #[test]
     fn a_bye_completes_and_a_cancel_cancels_from_every_state() {
         for state in &STATES {
@@ -894,8 +1107,25 @@ mod tests {
             Cell::Stay("a NOTIFY in an INVITE dialog reports event state, not call state"),
             "a NOTIFY must not move an established call"
         );
+        // In its OWN family the same NOTIFY says the subscription is over.
+        // This asserted `Active` with the rationale "a NOTIFY proves the
+        // subscription exists" -- true of a NOTIFY in general, and not of this
+        // one. RFC 6665 §4.1.3 gives `terminated` exactly one meaning, and the
+        // fixture chosen to demonstrate the general claim was the one case that
+        // contradicts it.
         assert_eq!(
             transition(Family::Subscribe, &terminated, &DialogState::Pending),
+            Cell::To(DialogState::Terminated),
+            "a NOTIFY reporting `terminated` ends its own subscription"
+        );
+        // The general claim, with a fixture that actually shows it: a NOTIFY
+        // carrying no state still proves the subscription exists.
+        let bare = Arrival::Request {
+            method: &SipMethod::Notify,
+            subscription_state: None,
+        };
+        assert_eq!(
+            transition(Family::Subscribe, &bare, &DialogState::Pending),
             Cell::To(DialogState::Active),
             "a NOTIFY proves the subscription exists"
         );

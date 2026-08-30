@@ -71,6 +71,37 @@ pub fn is_sip_message(data: &[u8]) -> bool {
 }
 
 /// Tests for the `is_sip_message` first-line sniffer.
+/// The `Expires` value a REGISTER or its response is asking for or granting.
+///
+/// Shared: the diagnosis layer reads it to report a shortened grant, and the
+/// dialog state machine reads it to tell a registration from a de-registration.
+/// One reader would have been enough until `Expired` turned out to be a state
+/// nothing could reach.
+///
+/// RFC 3261 §10.2.1.1 allows the interval to arrive two ways: an `Expires`
+/// header, or an `expires` parameter on the `Contact`. The parameter wins where
+/// both appear, because it is the per-binding value and the header is only the
+/// default for bindings that do not carry one.
+pub(crate) fn registration_expiry(msg: &SipMessage) -> Option<u32> {
+    if let Some(contact) = msg.contact() {
+        for param in contact.split(';').skip(1) {
+            // A Contact carries valueless parameters as often as not -- `;ob`
+            // from an outbound registration, `;lr`, `;isfocus`. This used `?`,
+            // which returned None from the WHOLE function on the first one, so
+            // the `Expires` header fallback below never ran and an unregister
+            // from a pjsip phone read as no expiry at all. Both spellings have
+            // to work; skipping is what makes the fallback reachable.
+            let Some((name, value)) = param.split_once('=') else {
+                continue;
+            };
+            if name.trim().eq_ignore_ascii_case("expires") {
+                return value.trim().trim_matches('"').parse().ok();
+            }
+        }
+    }
+    msg.header("Expires")?.trim().parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

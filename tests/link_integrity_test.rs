@@ -663,7 +663,14 @@ fn wiki_intra_docs_links_resolve() {
     // recorded that an exec hook inherits sipnab's whole environment,
     // credentials included, and auth.md is the page that recommends putting
     // them there.
-    const EXPECTED_WIKI_LINKS: usize = 595;
+    //
+    // 595 -> 603: exactly eight, attributed per file against HEAD. The MCP
+    // tool index gained one bold link per group, pointing at that group's
+    // section. They are links rather than `####` headings because a heading
+    // repeating the section title mints a second anchor that slugifies the
+    // same way, and GitHub then suffixes one of them by document order --
+    // `no_page_mints_a_positional_anchor` caught exactly that.
+    const EXPECTED_WIKI_LINKS: usize = 603;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

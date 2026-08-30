@@ -2299,11 +2299,17 @@ fn mcp_tool_table_lists_every_registered_tool() {
     );
 
     let doc = std::fs::read_to_string("docs/mcp-tools.md").expect("docs/mcp-tools.md");
-    let table = doc
-        .split_once("| Tool | Parameters | Returns |")
-        .expect("docs/mcp-tools.md has no tool table")
-        .1;
-    let table = &table[..table.find("\n\n").unwrap_or(table.len())];
+    // The index is EIGHT tables now, one per group, so the old slice -- from
+    // the first header to the first blank line -- read the first group and
+    // reported the other 41 tools missing. The index runs from the first table
+    // header to the first `## ` section heading; take all of it.
+    let table_start = doc
+        .find("| Tool | Parameters | Returns |")
+        .expect("docs/mcp-tools.md has no tool table");
+    let table_end = doc[table_start..]
+        .find("\n## ")
+        .map_or(doc.len(), |i| table_start + i);
+    let table = &doc[table_start..table_end];
     // The name may be plain (`get_message`) or a link into its own section
     // ([`get_message`](#get_message)) — the table became a real index on
     // 2026-08-10, when every row gained a link to the tool's documentation
@@ -2929,7 +2935,12 @@ fn no_documentation_table_repeats_a_row() {
     // doc has no site mirror, so it counts once rather than twice -- which is
     // itself the check: a +2 here would mean the entry landed somewhere that
     // IS mirrored, and belonged in a different section.
-    const EXPECTED_TABLES: usize = 756;
+    // 756 -> 770: fourteen, attributed per file against HEAD. The MCP tool
+    // index became eight tables instead of one -- a flat list of 51 rows was
+    // the first thing a reader met, and grouping the sections while leaving
+    // the index flat fixed the half nobody looks at. That is +7 in
+    // docs/mcp-tools.md and the same +7 in its website/content mirror.
+    const EXPECTED_TABLES: usize = 770;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -3562,14 +3573,17 @@ fn sip_parameter_claims_match_the_parser() {
     let page = std::fs::read_to_string(repo.join("docs/sip-parameters.md"))
         .expect("read docs/sip-parameters.md");
     let msg = std::fs::read_to_string(repo.join("src/sip/message.rs")).expect("read message.rs");
-    let diag =
-        std::fs::read_to_string(repo.join("src/sip/diagnosis.rs")).expect("read diagnosis.rs");
+    // `registration_expiry` moved out of diagnosis.rs into the module root
+    // when it gained a second reader: the dialog state machine needs it to
+    // tell a registration from a de-registration, which is what made
+    // `DialogState::Expired` reachable.
+    let sip_mod = std::fs::read_to_string(repo.join("src/sip/mod.rs")).expect("read sip/mod.rs");
 
     // (parameter, the accessor that justifies the claim, where it lives)
     for (param, accessor, source) in [
         ("branch", "fn top_via_branch", &msg),
         ("tag", "fn from_tag", &msg),
-        ("expires", "fn expiry_of", &diag),
+        ("expires", "fn registration_expiry", &sip_mod),
     ] {
         assert!(
             source.contains(accessor),

@@ -5,12 +5,19 @@ This is the first capture most visitors ever open in sipnab, from the browser
 analyzer's "Load a sample call" button and the homepage's "Try a sample
 capture" link. It should therefore show a phone's whole life, not one call:
 
-    REGISTER  -> 401 -> REGISTER (authenticated) -> 200
-    OPTIONS   -> 200                     (the PBX probing the phone)
+    REGISTER  alice -> 401 -> REGISTER (authenticated) -> 200   [stays up]
+    REGISTER  bob   -> 401 -> REGISTER (authenticated) -> 200
+    OPTIONS   -> 200                     (the PBX probing alice)
     INVITE    -> 100 -> 180 -> 200 -> ACK
     RTP       both directions, PCMU, 20 ms packets
     BYE       -> 200
-    REGISTER  Expires: 0 -> 200            (the phone unregistering)
+    REGISTER  bob, Expires: 0 -> 200          (bob unregistering)
+
+Two registrations on purpose, and only one of them comes off. Alice is still
+bound when the capture ends; bob registers, takes the call, and removes his
+binding. A reader sees the two side by side, which is the only way to notice
+that sipnab reports BOTH as `Registered` -- there is no `Unregistered` state
+(backlog REG1). One registration alone hides that; two make it a question.
 
 The file this replaces held a single INVITE dialog and nothing else, and its
 SIP sat on port 5080 -- outside the default `--portrange 5060-5061` -- so
@@ -29,7 +36,8 @@ Usage: python3 demos/gen-sample-call.py website/static/demos/sample-call.pcap
 import struct
 import sys
 
-PHONE = "192.0.2.10"
+PHONE = "192.0.2.10"   # alice
+BOB = "192.0.2.30"     # bob
 PBX = "192.0.2.20"
 SIP_PORT = 5060
 RTP_PHONE, RTP_PBX = 10000, 10002
@@ -66,33 +74,50 @@ def rtp(ts, src, dst, sport, dport, seq, stamp, ssrc):
 
 
 # ── REGISTER, challenged then authenticated ─────────────────────────
-CID_REG = "reg-4f2a19@192.0.2.10"
-REG_HDRS = (
-    f"Via: SIP/2.0/UDP {PHONE}:5060;branch=z9hG4bK-reg-{{n}}\n"
-    f"Max-Forwards: 70\n"
-    f'From: "Alice" <sip:alice@example.com>;tag=reg1\n'
-    f"To: <sip:alice@example.com>\n"
-    f"Call-ID: {CID_REG}\n"
-)
-sip(0.000, PHONE, PBX,
-    f"REGISTER sip:example.com SIP/2.0\n{REG_HDRS.format(n=1)}CSeq: 1 REGISTER\n"
-    f"Contact: <sip:alice@{PHONE}:5060>\nExpires: 3600\n"
-    f"User-Agent: sipnab-demo/1.0\nContent-Length: 0\n\n")
-sip(0.004, PBX, PHONE,
-    f"SIP/2.0 401 Unauthorized\n{REG_HDRS.format(n=1)}CSeq: 1 REGISTER\n"
-    f'WWW-Authenticate: Digest realm="example.com", '
-    f'nonce="4f2a19c8b3e07d51", algorithm=MD5\n'
-    f"Content-Length: 0\n\n")
-sip(0.011, PHONE, PBX,
-    f"REGISTER sip:example.com SIP/2.0\n{REG_HDRS.format(n=2)}CSeq: 2 REGISTER\n"
-    f"Contact: <sip:alice@{PHONE}:5060>\nExpires: 3600\n"
-    f'Authorization: Digest username="alice", realm="example.com", '
-    f'nonce="4f2a19c8b3e07d51", uri="sip:example.com", '
-    f'response="6629fae49393a05397450978507c4ef1", algorithm=MD5\n'
-    f"User-Agent: sipnab-demo/1.0\nContent-Length: 0\n\n")
-sip(0.017, PBX, PHONE,
-    f"SIP/2.0 200 OK\n{REG_HDRS.format(n=2)}CSeq: 2 REGISTER\n"
-    f"Contact: <sip:alice@{PHONE}:5060>;expires=3600\nContent-Length: 0\n\n")
+def registration(t0, user, ip, cid, nonce, expires, cseq_base=1):
+    """One challenged-then-authenticated REGISTER exchange.
+
+    `expires=0` makes it an un-REGISTER: RFC 3261 SS10.2.2 removes a binding by
+    re-registering it with a zero interval, and both spellings are sent --
+    `Expires: 0` and `;expires=0` on the Contact -- because a registrar reads
+    the Contact parameter first and real phones send both.
+    """
+    hdrs = (
+        f"Via: SIP/2.0/UDP {ip}:5060;branch=z9hG4bK-reg-{{n}}\n"
+        f"Max-Forwards: 70\n"
+        f'From: "{user.title()}" <sip:{user}@example.com>;tag=reg-{user}\n'
+        f"To: <sip:{user}@example.com>\n"
+        f"Call-ID: {cid}\n"
+    )
+    auth = (
+        f'Authorization: Digest username="{user}", realm="example.com", '
+        f'nonce="{nonce}", uri="sip:example.com", '
+        f'response="6629fae49393a05397450978507c4ef1", algorithm=MD5\n'
+    )
+    contact = f"<sip:{user}@{ip}:5060>" + (";expires=0" if expires == 0 else "")
+    n1, n2 = cseq_base, cseq_base + 1
+    sip(t0 + 0.000, ip, PBX,
+        f"REGISTER sip:example.com SIP/2.0\n{hdrs.format(n=n1)}CSeq: {n1} REGISTER\n"
+        f"Contact: {contact}\nExpires: {expires}\n"
+        f"User-Agent: sipnab-demo/1.0\nContent-Length: 0\n\n")
+    sip(t0 + 0.004, PBX, ip,
+        f"SIP/2.0 401 Unauthorized\n{hdrs.format(n=n1)}CSeq: {n1} REGISTER\n"
+        f'WWW-Authenticate: Digest realm="example.com", '
+        f'nonce="{nonce}", algorithm=MD5\n'
+        f"Content-Length: 0\n\n")
+    sip(t0 + 0.011, ip, PBX,
+        f"REGISTER sip:example.com SIP/2.0\n{hdrs.format(n=n2)}CSeq: {n2} REGISTER\n"
+        f"Contact: {contact}\nExpires: {expires}\n{auth}"
+        f"User-Agent: sipnab-demo/1.0\nContent-Length: 0\n\n")
+    sip(t0 + 0.017, PBX, ip,
+        f"SIP/2.0 200 OK\n{hdrs.format(n=n2)}CSeq: {n2} REGISTER\n"
+        f"Contact: <sip:{user}@{ip}:5060>;expires={expires}\nContent-Length: 0\n\n")
+
+
+# alice registers and STAYS registered for the whole capture.
+registration(0.000, "alice", PHONE, "reg-alice-4f2a19@192.0.2.10", "4f2a19c8b3e07d51", 3600)
+# bob registers, takes the call, and unregisters at the end.
+registration(0.500, "bob", BOB, "reg-bob-7c3d02@192.0.2.30", "7c3d02a19b4e6f88", 3600)
 
 # ── OPTIONS: the PBX probing the phone it just registered ───────────
 CID_OPT = "opt-8b7c02@192.0.2.20"
@@ -155,27 +180,18 @@ for i in range(300):
 sip(13.460, PHONE, PBX, f"BYE sip:bob@{PBX} SIP/2.0\n{inv_hdrs('2 BYE', 'inv9')}Content-Length: 0\n\n")
 sip(13.468, PBX, PHONE, f"SIP/2.0 200 OK\n{inv_hdrs('2 BYE', 'inv9')}Content-Length: 0\n\n")
 
-# ── The phone unregisters: REGISTER with Expires: 0 ─────────────────
+# ── bob unregisters: the same registration, zero interval ───────────
 #
-# RFC 3261 SS10.2.2. A registration is a binding with a lifetime, and the way
-# to remove one is to re-register it with a zero expiry rather than to send
-# anything called UNREGISTER -- there is no such method. The capture ends here
-# on purpose: a phone's life is bounded at both ends, and a reader who has just
-# watched the REGISTER at the top should see the binding come back off.
+# RFC 3261 SS10.2.2. A registration is a binding with a lifetime, and the way to
+# remove one is to re-register it with a zero expiry rather than to send
+# anything called UNREGISTER -- there is no such method.
 #
-# `Expires: 0` in the header AND `expires=0` on the Contact. A registrar reads
-# the Contact parameter first and falls back to the header, and real phones
-# send both.
-sip(15.000, PHONE, PBX,
-    f"REGISTER sip:example.com SIP/2.0\n{REG_HDRS.format(n=3)}CSeq: 3 REGISTER\n"
-    f"Contact: <sip:alice@{PHONE}:5060>;expires=0\nExpires: 0\n"
-    f'Authorization: Digest username="alice", realm="example.com", '
-    f'nonce="4f2a19c8b3e07d51", uri="sip:example.com", '
-    f'response="6629fae49393a05397450978507c4ef1", algorithm=MD5\n'
-    f"User-Agent: sipnab-demo/1.0\nContent-Length: 0\n\n")
-sip(15.006, PBX, PHONE,
-    f"SIP/2.0 200 OK\n{REG_HDRS.format(n=3)}CSeq: 3 REGISTER\n"
-    f"Content-Length: 0\n\n")
+# Same Call-ID as bob's original registration, which is what RFC 3261 SS10.2.4
+# tells a UA to reuse for refreshes of the same binding. That is also why this
+# is worth showing next to alice: both dialogs report `Registered` when the
+# capture ends, and only alice still is.
+registration(15.000, "bob", BOB, "reg-bob-7c3d02@192.0.2.30", "7c3d02a19b4e6f88", 0,
+             cseq_base=3)
 
 
 def main(path):

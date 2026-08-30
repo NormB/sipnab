@@ -3536,6 +3536,41 @@ mod tests {
             );
         }
 
+        /// Two DIFFERENT senders' packets are both accepted.
+        ///
+        /// The liveness half of replay protection, and it was missing. Every
+        /// nonce test sent one packet or the same packet twice, so nothing
+        /// noticed if the verifier stopped reading the nonce from the token at
+        /// all: hard-coding it makes every packet carry the same nonce, the
+        /// first is accepted, and the SECOND is refused as a replay. HEP ingest
+        /// dies after one datagram and every existing test still passes.
+        ///
+        /// Found triaging CodeQL alert #339, `rust/hard-coded-cryptographic-
+        /// value`, which flags `let mut nonce = [0u8; 16];` on the line before
+        /// `copy_from_slice` overwrites it. The alert is a false positive -- the
+        /// nonce comes from the token -- but making it TRUE broke no test,
+        /// which is the part worth fixing. An alert being wrong about today
+        /// says nothing about whether tomorrow is guarded.
+        #[test]
+        fn two_packets_with_different_nonces_are_both_accepted() {
+            let a = signed(b"INVITE sip:a SIP/2.0\r\n", NOW, &[1u8; 16]);
+            let b = signed(b"INVITE sip:b SIP/2.0\r\n", NOW, &[2u8; 16]);
+            let mut cache = HmacNonceCache::new();
+            assert_eq!(
+                verify_hmac_datagram(KEY, &a, span(&a), NOW, DEFAULT_HMAC_WINDOW_SECS, &mut cache),
+                Ok(()),
+                "the first packet must verify"
+            );
+            assert_eq!(
+                verify_hmac_datagram(KEY, &b, span(&b), NOW, DEFAULT_HMAC_WINDOW_SECS, &mut cache),
+                Ok(()),
+                "a second packet carrying a DIFFERENT nonce must also verify. \
+                 If this fails, the verifier is not reading the nonce out of \
+                 the token -- every packet looks like a replay of the first and \
+                 ingest stops after one datagram."
+            );
+        }
+
         /// The same nonce twice inside the window is a replay.
         #[test]
         fn verify_rejects_replayed_nonce() {

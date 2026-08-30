@@ -8,6 +8,46 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.135] - 2026-08-30
+
+### Fixed
+
+- **Four RFC-defined dialog transitions were missing, and two states were
+  unreachable.** `DialogState::Expired` ("registration expired or
+  de-registered") and `DialogState::Pending` were declared and nothing in the
+  tree could produce them.
+  - RFC 3261 §10.2.2 — a 2xx to a REGISTER carrying `Expires: 0` now reports
+    `Expired`. A phone that had just removed its binding read as `Registered`.
+  - RFC 6665 §4.1.3 — a NOTIFY now reports the `Subscription-State` it carries:
+    `pending` and `terminated` were both reported as `Active`.
+  - RFC 6665 §4.2.1 — a 2xx to a zero-interval SUBSCRIBE now terminates the
+    subscription instead of activating it.
+- **The reachability test hid the gap it was named for.**
+  `every_declared_destination_is_reachable_and_every_state_is_swept` asserted a
+  hardcoded list of nine states, and its own comment recorded the rest as
+  accepted: "`Expired` has no transition into it yet (nothing parses a REGISTER
+  expiry)". It now derives from the enum with one named exception, and the
+  sweep walks the granted-interval dimension it had gained.
+- **A valueless `Contact` parameter hid the registration expiry.** `expiry_of`
+  used `?` on `split_once('=')`, so `;ob` — what pjsip and Asterisk send by
+  default — returned `None` from the whole function and the `Expires` header
+  fallback never ran.
+
+### Changed
+
+- The MCP tool index is grouped by category, not just the sections. A flat list
+  of 51 rows was the first thing a reader met.
+- The sample capture carries two registrations: alice stays bound, bob
+  registers and removes his binding, so the two states are visible side by side.
+
+### Added
+
+- 24 tests across four files pinning defect classes from this session's own
+  failures: vacuous success, stale-artifact measurement, extraction
+  correctness, and gate coupling.
+- `SIPNAB_BIN` in `demos/mcp-stdio.sh`, so a measurement names its binary
+  rather than taking whatever PATH resolves.
+
 ## [0.5.134] - 2026-08-30
 
 ### Fixed

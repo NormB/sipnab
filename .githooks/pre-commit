@@ -179,7 +179,17 @@ fi
 # ── 1. Clippy must pass ────────────────────────────────────────────
 # `--color never` so the greps below key on the diagnostic and not on whatever
 # CARGO_TERM_COLOR wrapped it in.
-echo -n "  Clippy... "
+# NARROWER THAN CI ON PURPOSE, and it says so below. This is
+# `--features full` on the default targets; CI and `.githooks/pre-push` both run
+# `--workspace --all-features --all-targets`, which additionally lints every
+# test binary. `--all-targets` roughly doubles the wall clock, and this hook
+# runs on every commit, so the expensive form lives in pre-push.
+#
+# The cost of the split is real and was paid on 0.5.135: a `needless_splitn` in
+# a test file and an `items_after_test_module` in `src/sip/mod.rs` both passed
+# here and failed CI's exact command. Printing the scope is what stops a green
+# line from reading as a green push.
+echo -n "  Clippy (default targets; pre-push covers --all-targets)... "
 set +e
 CLIPPY_OUTPUT=$(cargo clippy --features full --color never -- -D warnings 2>&1)
 CLIPPY_RC=$?

@@ -1078,32 +1078,6 @@ fn elapsed_sec(messages: &[SipMessage], from: usize, to: usize) -> f64 {
     (messages[to].timestamp - messages[from].timestamp).num_milliseconds() as f64 / 1000.0
 }
 
-/// The `Expires` value a REGISTER or its response is asking for or granting.
-///
-/// RFC 3261 §10.2.1.1 allows the interval to arrive two ways: an `Expires`
-/// header, or an `expires` parameter on the `Contact`. The parameter wins where
-/// both appear, because it is the per-binding value and the header is only the
-/// default for bindings that do not carry one.
-fn expiry_of(msg: &SipMessage) -> Option<u32> {
-    if let Some(contact) = msg.contact() {
-        for param in contact.split(';').skip(1) {
-            // A Contact carries valueless parameters as often as not -- `;ob`
-            // from an outbound registration, `;lr`, `;isfocus`. This used `?`,
-            // which returned None from the WHOLE function on the first one, so
-            // the `Expires` header fallback below never ran and an unregister
-            // from a pjsip phone read as no expiry at all. Both spellings have
-            // to work; skipping is what makes the fallback reachable.
-            let Some((name, value)) = param.split_once('=') else {
-                continue;
-            };
-            if name.trim().eq_ignore_ascii_case("expires") {
-                return value.trim().trim_matches('"').parse().ok();
-            }
-        }
-    }
-    msg.header("Expires")?.trim().parse().ok()
-}
-
 /// Detection 4 — a `2xx` to an `INVITE` that was never acknowledged.
 ///
 /// RFC 3261 §17.1.1.3 makes the `ACK` to a `2xx` the UAC's responsibility, and
@@ -1339,7 +1313,7 @@ fn detect_registration_failure(messages: &[SipMessage], diag: &mut SignalingDiag
         return;
     };
 
-    let requested_expiry_sec = expiry_of(&messages[register]);
+    let requested_expiry_sec = crate::sip::registration_expiry(&messages[register]);
     // A de-registration is not a failure, and neither is a rejected one worth
     // reporting under this detection: the phone is going away on purpose.
     if requested_expiry_sec == Some(0) {
@@ -1371,7 +1345,7 @@ fn detect_registration_failure(messages: &[SipMessage], diag: &mut SignalingDiag
         return;
     }
 
-    let granted_expiry_sec = expiry_of(msg);
+    let granted_expiry_sec = crate::sip::registration_expiry(msg);
     let (Some(requested), Some(granted)) = (requested_expiry_sec, granted_expiry_sec) else {
         return;
     };
@@ -2661,7 +2635,7 @@ mod tests {
             "Contact: <sip:a@10.0.0.1>;ob;expires=0",
         ));
         assert_eq!(
-            super::expiry_of(&m),
+            crate::sip::registration_expiry(&m),
             Some(0),
             "`;ob` before `expires=0` hid the parameter"
         );
@@ -2670,7 +2644,7 @@ mod tests {
         let m = msg(&register("Expires: 0\n")
             .replace("Contact: <sip:a@10.0.0.1>", "Contact: <sip:a@10.0.0.1>;ob"));
         assert_eq!(
-            super::expiry_of(&m),
+            crate::sip::registration_expiry(&m),
             Some(0),
             "`;ob` on the Contact stopped the `Expires` header from being read, \
              so an unregister from a pjsip phone looks like no expiry at all"
@@ -2687,14 +2661,22 @@ mod tests {
     fn both_spellings_of_the_registration_interval_are_read() {
         // Header only.
         let m = msg(&register("Expires: 600\n"));
-        assert_eq!(super::expiry_of(&m), Some(600), "the Expires header");
+        assert_eq!(
+            crate::sip::registration_expiry(&m),
+            Some(600),
+            "the Expires header"
+        );
 
         // Parameter only.
         let m = msg(&register("").replace(
             "Contact: <sip:a@10.0.0.1>",
             "Contact: <sip:a@10.0.0.1>;expires=600",
         ));
-        assert_eq!(super::expiry_of(&m), Some(600), "the Contact parameter");
+        assert_eq!(
+            crate::sip::registration_expiry(&m),
+            Some(600),
+            "the Contact parameter"
+        );
 
         // Both, disagreeing: the parameter is the per-binding value and wins.
         let m = msg(&register("Expires: 3600\n").replace(
@@ -2702,7 +2684,7 @@ mod tests {
             "Contact: <sip:a@10.0.0.1>;expires=0",
         ));
         assert_eq!(
-            super::expiry_of(&m),
+            crate::sip::registration_expiry(&m),
             Some(0),
             "the Contact parameter must win over the header, or an unregister \
              that carries a stale refresh interval in the header reads as a \
@@ -2711,7 +2693,11 @@ mod tests {
 
         // Neither: nothing to report, rather than a default invented here.
         let m = msg(&register(""));
-        assert_eq!(super::expiry_of(&m), None, "no interval stated anywhere");
+        assert_eq!(
+            crate::sip::registration_expiry(&m),
+            None,
+            "no interval stated anywhere"
+        );
     }
 
     /// The parameter scan tolerates the shapes real Contacts carry.
@@ -2752,7 +2738,11 @@ mod tests {
             let m =
                 msg(&register("")
                     .replace("Contact: <sip:a@10.0.0.1>", &format!("Contact: {contact}")));
-            assert_eq!(super::expiry_of(&m), want, "{why}: {contact}");
+            assert_eq!(
+                crate::sip::registration_expiry(&m),
+                want,
+                "{why}: {contact}"
+            );
         }
     }
 

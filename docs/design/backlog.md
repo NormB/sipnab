@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**57 open, 387 done** across 25 sections.
+**57 open, 388 done** across 25 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -61,10 +61,10 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | RE | 3 | 4 | `######....` |
 | BA | 3 | 1 | `##........` |
 | NAT | 0 | 4 | `##########` |
-| RV | 7 | 0 | `..........` |
+| RV | 8 | 0 | `..........` |
 | RP | 4 | 0 | `..........` |
 | HX | 3 | 0 | `..........` |
-| AS | 7 | 0 | `..........` |
+| AS | 6 | 1 | `#.........` |
 | DOC | 0 | 16 | `##########` |
 | MCPX | 1 | 6 | `#########.` |
 | P5 | 7 | 13 | `######....` |
@@ -4724,6 +4724,18 @@ must be *operated* — the same test that had PB4 declined. RV2 is the one that
 transmits, and it is written to inherit `--mcp-allow-open-capture`'s shape for
 exactly that reason.
 
+- [ ] **GATE1 — `pre-commit` clippy is narrower than CI and the gap costs a
+  cycle.** The hook runs `cargo clippy --features full -- -D warnings`; CI and
+  `pre-push` run `--workspace --all-features --all-targets`. Test binaries are
+  therefore unlinted at commit time. Measured 2026-08-30: a `needless_splitn`
+  in [`tests/sample_capture_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/sample_capture_test.rs) and an `items_after_test_module` in
+  [`src/sip/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/mod.rs) both passed the commit gate and failed CI's exact command.
+
+  The scope is now printed rather than implied, which is the cheap half. The
+  open question is whether `--all-targets` belongs in pre-commit: it roughly
+  doubles the hook's wall clock on every commit to catch a class pre-push
+  already catches before anything leaves the machine.
+
 - [ ] **RV1 — `explain_attribution`: how was this stream's endpoint learned,
   and was that path authenticated?** Ranked first because VAL8 and VAL9 turned
   attribution provenance into a security question and the fix does not fully
@@ -5017,15 +5029,18 @@ runs `Asterisk PBX 20.15.2`, two FreePBX builds and four Grandstream UCM models
 behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
 **373 are OPTIONS** — 73.6% of the dialog store is qualify churn.
 
-- [ ] **REG1 — a phone that unregistered still reads `Registered`.** There is
-  no `Unregistered` state: `DialogState::Registered` is the only terminal state
-  a REGISTER dialog reaches ([`src/sip/dialog.rs:72`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L72)). A phone that registers,
+- [x] **REG1 (done 2026-08-30) — a phone that unregistered still reads `Registered`.** The
+  entry's premise was wrong: `DialogState::Expired` exists and is documented as
+  "registration expired or de-registered". Nothing could REACH it ([`src/sip/dialog.rs:72`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L72)). A phone that registers,
   works, then removes its binding with `Expires: 0` produces one dialog — same
   Call-ID, which is what [RFC 3261 §10.2.4](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.4) tells it to reuse — and that dialog
   reports `Registered` after the binding is gone.
 
-  Found 2026-08-30 building the site's sample capture, which now ends with an
-  unregister. The messages are all there and `expiry_of` reads the interval
+  Found 2026-08-30 building the site's sample capture, which now carries two
+  registrations for exactly this reason: alice registers and stays bound, bob
+  registers and removes his binding at the end. `list_dialogs` reports both as
+  `Registered`, side by side, which is the cheapest possible demonstration --
+  load the sample and the two rows are indistinguishable. The messages are all there and `expiry_of` reads the interval
   correctly from both spellings; it is the dialog-level state that has nowhere
   to put "the binding came off". An operator scanning a dialog list for
   registration health sees a phone that is registered and is not.

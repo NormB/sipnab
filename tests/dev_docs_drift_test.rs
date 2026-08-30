@@ -2194,12 +2194,12 @@ fn line_citations_point_at_the_code_they_name() {
     // are new citations: the DOC entries cite the source lines that contradict
     // the documentation, which is the whole point of the entries.
     //
-    // 203 -> 204: exactly one, from the REG1 backlog entry —
-    // `src/sip/dialog.rs:72` (`DialogState::Registered`, the only terminal
-    // state a REGISTER dialog reaches, which is why a phone that unregistered
-    // still reads as registered). Attributed against HEAD before the number
-    // moved: no other file in the change adds a citation this checker resolves.
-    let expected = 204;
+    // 203 -> 204 -> 203: REG1 added `src/sip/dialog.rs:72` when it was filed,
+    // and closing it removed the citation again — the entry no longer needs to
+    // point at `DialogState::Registered` because the premise it rested on was
+    // wrong. `Expired` existed all along; nothing could reach it. Attributed
+    // against HEAD both times.
+    let expected = 203;
     assert_eq!(
         checked, expected,
         "the drift checker examined {checked} citations, not the {expected} \

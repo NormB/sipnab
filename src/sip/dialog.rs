@@ -402,6 +402,7 @@ pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
                 &Arrival::Response {
                     cseq_method: cseq_method.as_ref(),
                     code,
+                    granted_expiry: crate::sip::registration_expiry(msg),
                 },
                 dialog.state(),
             )

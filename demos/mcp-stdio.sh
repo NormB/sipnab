@@ -20,11 +20,27 @@
 # escapes. This unwraps it once, so a viewer sees the answer rather than the
 # envelope.
 #
-# The sipnab this runs is whatever PATH resolves; demos/Makefile prepends the
-# binary built FROM THIS TREE for every render, and refuses to render when that
-# binary disagrees with Cargo.toml. Run through the Makefile, not by hand, when
-# the output is going to be published.
+# SIPNAB_BIN=<path> names the binary this drives. It defaults to `sipnab`,
+# which is PATH RESOLUTION, and PATH resolution is how a measurement ends up
+# describing a program nobody is working on.
+#
+# That is not hypothetical. Run by hand on a box with a packaged sipnab in
+# /usr/local/sbin, this script answered from 0.5.78 while the tree said 0.5.134
+# -- fifty-five releases apart. The MCP untrusted-capture-data fencing the run
+# was checking for did not exist in 0.5.78, so the absence looked like a
+# defect in the tree and was reported as one. The retraction cost more than the
+# check did.
+#
+# So: name the binary, or accept that the answer describes whatever PATH found.
+#
+#     SIPNAB_BIN=target/debug/sipnab demos/mcp-stdio.sh <capture> <tool>
+#
+# demos/Makefile passes SIPNAB_BIN for every render and refuses to render when
+# that binary disagrees with Cargo.toml. Run through the Makefile, not by hand,
+# when the output is going to be published.
 set -uo pipefail
+
+SIPNAB_BIN="${SIPNAB_BIN:-sipnab}"
 
 CAPTURE="${1:?usage: mcp-stdio.sh <capture> <tool> [json-arguments]}"
 TOOL="${2:?usage: mcp-stdio.sh <capture> <tool> [json-arguments]}"
@@ -64,7 +80,7 @@ NODEFLAG=()
 # has been read to its end, so this polls it and refuses to make the real call
 # until it is true. `MCP_MAX_POLLS` bounds the wait so a genuine hang fails
 # instead of running forever.
-coproc SRV { sipnab --mcp -N -I "$CAPTURE" "${ROOTFLAG[@]}" "${NODEFLAG[@]}" --quiet 2>/dev/null; }
+coproc SRV { "$SIPNAB_BIN" --mcp -N -I "$CAPTURE" "${ROOTFLAG[@]}" "${NODEFLAG[@]}" --quiet 2>/dev/null; }
 SRV_PID=$!
 trap '[ -n "${SRV_PID:-}" ] && kill "$SRV_PID" 2>/dev/null' EXIT
 
@@ -94,7 +110,7 @@ status_call() { printf '{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":
 
 # The two messages an MCP session needs before any tool call.
 send '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"sipnab-demo","version":"0"}}}'
-await 1 || { echo "mcp-stdio: no initialize reply from sipnab" >&2; exit 1; }
+await 1 || { echo "mcp-stdio: no initialize reply from $SIPNAB_BIN" >&2; exit 1; }
 send '{"jsonrpc":"2.0","method":"notifications/initialized"}'
 
 id=2

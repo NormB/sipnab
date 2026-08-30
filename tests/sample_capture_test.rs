@@ -194,39 +194,67 @@ fn the_sample_uses_documentation_addresses_only() {
     );
 }
 
-/// The capture ends with the phone unregistering.
+/// Two registrations, and only one of them comes off.
 ///
 /// RFC 3261 §10.2.2: a binding is removed by re-registering it with a zero
-/// expiry, not by any method called UNREGISTER — there is no such method. A
-/// reader who watched the REGISTER at the top should see the binding come back
-/// off at the bottom, which is what makes the sample a phone's whole life
-/// rather than a phone's morning.
+/// expiry, not by any method called UNREGISTER — there is no such method.
 ///
-/// Both spellings are asserted because registrars read them in that order: the
-/// `expires=0` Contact parameter first, the `Expires: 0` header as the
-/// fallback. Real phones send both, so a sample that sends one is teaching a
-/// reader half the shape.
+/// The sample carries two registrations on purpose. Alice registers and is
+/// still bound when the capture ends; bob registers, takes the call, and
+/// removes his binding. Side by side they are the only way to see that sipnab
+/// reports BOTH as `Registered` — there is no `Unregistered` state, which is
+/// backlog REG1. One registration alone hides that; two make it a question a
+/// reader can ask.
+///
+/// Both spellings of the zero interval are asserted because registrars read
+/// them in that order: the `expires=0` Contact parameter first, the
+/// `Expires: 0` header as the fallback. Real phones send both, and sipnab
+/// reads both — a Contact parameter with no value used to hide the header from
+/// the parser entirely.
 #[test]
-fn the_sample_ends_with_an_unregister() {
+fn the_sample_has_one_registration_that_stays_and_one_that_comes_off() {
     let bytes = std::fs::read(sample()).expect("readable");
     let text = String::from_utf8_lossy(&bytes);
+
     assert!(
         text.contains("Expires: 0\r\n"),
-        "no `Expires: 0` header in the sample; the phone never gives up its \
-         binding and the capture stops mid-life"
+        "no `Expires: 0` header in the sample; nothing gives up a binding"
     );
     assert!(
-        text.contains("expires=0"),
-        "no `expires=0` Contact parameter in the sample. A registrar reads that \
-         before the header, so a sample carrying only the header shows a shape \
-         real phones do not send."
+        text.contains(";expires=0"),
+        "no `expires=0` Contact parameter. A registrar reads that before the \
+         header, so a sample carrying only the header shows a shape real \
+         phones do not send."
     );
-    // And it is the LAST thing in the capture, not an aside in the middle.
+
+    // Alice stays. If she ever unregisters, the capture no longer shows the
+    // contrast it exists for.
+    let alice_unregisters = text.match_indices("sip:alice@").any(|(i, _)| {
+        text[i..]
+            .split("\r\n")
+            .next()
+            .is_some_and(|l| l.contains("expires=0"))
+    });
+    assert!(
+        !alice_unregisters,
+        "alice unregisters. She is the control: the sample needs one binding \
+         still up at the end, or both rows read the same and there is nothing \
+         to notice."
+    );
+
+    // Bob does. Both his REGISTERs share a Call-ID, which is what RFC 3261
+    // §10.2.4 tells a UA to reuse for the same binding.
+    assert!(
+        text.contains("sip:bob@") && text.contains(";expires=0"),
+        "bob never removes his binding"
+    );
+
+    // And the removal is the LAST thing in the capture, not an aside.
     let last_register = text.rfind("REGISTER sip:").expect("a REGISTER exists");
     let last_invite = text.rfind("INVITE sip:").expect("an INVITE exists");
     assert!(
         last_register > last_invite,
         "the final REGISTER comes before the call rather than after it, so the \
-         capture does not end on the phone going away"
+         capture does not end on a phone going away"
     );
 }
