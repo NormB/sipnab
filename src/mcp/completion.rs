@@ -189,7 +189,7 @@ impl Completion {
 ///
 /// Public because the server applies it while READING a large vocabulary
 /// rather than after materialising it — the dialog store holds up to
-/// `--max-dialogs` entries, and cloning all of them to discard most is work
+/// `--limit` entries, and cloning all of them to discard most is work
 /// nobody asked for. Two copies of this predicate would let a value one side
 /// offered be dropped by the other, and the symptom would be a completion
 /// count that disagrees with itself.

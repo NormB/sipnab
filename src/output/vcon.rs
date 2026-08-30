@@ -1579,7 +1579,7 @@ fn media_objects(
                  REFUSED to carry it: base64url of the {} byte WAV is {} bytes, over the {} byte \
                  budget this emitter enforces because one probed vCon store answers 204 and drops \
                  the payload without telling the producer. The audio was NOT truncated and is not \
-                 in this container; export it beside this file with --export-audio.",
+                 in this container; export it beside this file with the export_audio MCP tool.",
                 decoded.duration_secs,
                 decoded.wav.len(),
                 body.len(),
@@ -1692,7 +1692,7 @@ fn recording_set_object(dialog: &SipDialog, audio: &DialogAudio, member: usize) 
 /// `sha512-` followed by the base64url SHA-512 of the media bytes, per §2.2.
 ///
 /// Over the WAV, never over its base64url text. An operator who exported the
-/// same call with `--export-audio` can run `sha512sum` on the file and get a
+/// same call with the `export_audio` MCP tool can run `sha512sum` on the file and get a
 /// value that maps to this one; a digest of the encoded text is a number
 /// nothing outside this container could reproduce.
 fn content_hash(media: &[u8]) -> String {

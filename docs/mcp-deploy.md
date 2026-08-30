@@ -245,10 +245,15 @@ it with `claude mcp add --transport http sipnab http://127.0.0.1:8731/mcp`.
 
 ## Use Claude Code on your laptop against a remote server
 
-A designed-for use case, not a workaround: **no tool alters the analysis**
-(none sends SIP, none mutates the dialog, stream and alert stores), every
+A designed-for use case, not a workaround: **no tool sends SIP**, every
 response has a ceiling, and non-loopback HTTP binds refuse to start without a
-bearer token. Three wirings, in increasing order of setup.
+bearer token.
+
+One tool does mutate the stores, and it is off by default. `open_capture`
+swaps the capture the server is answering about, which clears the dialog and
+stream stores — every prior answer stops being reproducible from that point on.
+It stays off until you enable it server-side, along with the rest of the
+capture-control group. Three wirings, in increasing order of setup.
 
 ### Connect Claude Code on your laptop to sipnab on a server
 

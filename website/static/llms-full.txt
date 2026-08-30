@@ -2029,7 +2029,7 @@ The metrics endpoint is lightweight and suitable for 5–15 second scrape interv
 
 # REST API & metrics
 
-sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs as a thread inside the sipnab process, reading the same in-memory dialog/stream stores as the capture pipeline — read-only, and it never mutates capture state.
+sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs as a thread inside the sipnab process, reading the same in-memory dialog/stream stores as the capture pipeline. Reads never alter the capture, with one deliberate exception: `POST /v1/persistence` sets the persistence gate, so a bearer token can stop and start recording to disk. Every other route only reads.
 
 [CLI Reference](cli-reference.md#network-listeners) catalogs every API flag.
 
@@ -2858,9 +2858,15 @@ A sipnab vCon records an **observation**, never a recording. sipnab watched
 these packets go past. It did not place the call, record it, or ask anyone for
 permission to keep the result, and four absences follow from that:
 
-- **No media, and no `url` pointing at media.** The container carries signaling
-  only. An empty `streams` list elsewhere in this API means "no RTP reached
-  this capture", but a vCon says nothing at all about audio.
+- **No media by default — but `--retain-audio` changes that.** Without it the
+  container carries signaling only, and an empty `streams` list elsewhere in
+  this API means "no RTP reached this capture" while a vCon says nothing at all
+  about audio. With `--retain-audio` the export decodes the dialog's RTP and
+  emits the WAV **inline as base64**, up to a 5 MiB budget, refusing with a
+  note above it rather than truncating. That is call CONTENT, not metadata, and
+  the operator opted into it: treat such a container as a recording for every
+  retention and disclosure purpose. [vCon](vcon.md) documents the same
+  behavior.
 - **No signature.** Nothing here carries a JWS. A signature would say sipnab
   vouches for the contents of the conversation, and sipnab vouches only for
   what it saw.
@@ -3546,7 +3552,7 @@ Full end-to-end clients (bearer auth, pagination, `/metrics` scraping, error han
 
 - The API thread only reads dialog/stream metadata: no capture fd access, no key material exposure
 - All network listeners bind to localhost by default
-- Rate limiting on all listener endpoints (100 RPS per source IP)
+- Rate limiting on every guarded endpoint (100 RPS per source IP by default). Two exceptions worth knowing: `/health` sits outside the guard entirely — no auth, no rate limit — and `--api-rate-limit-per-peer 0` turns the cap off altogether
 - Bearer token authentication required on every REST endpoint except `/health` — `/metrics` on the `--api` server sits on the same guarded router and takes the same credential (the *standalone* `--metrics` server is the one that uses HTTP Basic instead)
 - Constant-time key comparison prevents timing attacks
 - TLS not terminated in-process; run behind a reverse proxy (see [API TLS](#api-tls))
@@ -7725,6 +7731,24 @@ report a healthy network in the middle of an outage.
 | `--exec-rate-limit` | `<N>` | `10` | Maximum exec invocations per second |
 | `--exec-queue-depth` | `<N>` | `100` | Hook commands allowed to be running at once before sipnab drops `--on-dialog-exec` and `--on-quality-exec` events. The second ceiling above `--exec-rate-limit`, and the binding one for any hook that takes longer than a second: its slot is still occupied when the next second's budget arrives, so on a busy trunk this is what events actually meet. Config: `[limits] exec_queue_depth` |
 
+**What a hook receives.** Every command gets the event as environment
+variables. `--on-dialog-exec` sets `SIPNAB_CALL_ID`, `SIPNAB_FROM`,
+`SIPNAB_TO`, `SIPNAB_STATE`, `SIPNAB_METHOD` and `SIPNAB_JSON` (the whole
+dialog). `--on-quality-exec` sets `SIPNAB_SSRC`, `SIPNAB_SRC`, `SIPNAB_MOS`,
+`SIPNAB_JITTER`, `SIPNAB_LOSS` and `SIPNAB_STREAM_JSON` — the stream object
+under its own name, never `SIPNAB_JSON`. Rule hooks add `SIPNAB_RULE`,
+`SIPNAB_DETAIL` and `SIPNAB_VARIABLE`.
+
+**A hook inherits sipnab's whole environment, credentials included.** sipnab
+does not clear the environment before spawning, so a hook sees
+`SIPNAB_API_SIGNING_KEY`, `SIPNAB_MCP_TOKEN` and `SIPNAB_HEP_AUTH` if you set
+them there — and [Authentication](auth.md) recommends exactly that. This is
+deliberate: a hook that must call back into the API needs the credential, and
+stripping the environment would break that without making anything safer,
+since a hook already runs as you. It does mean a hook command is as trusted as
+the process: do not pass one a string built from capture data, and do not run
+one you would not run by hand with your keys exported.
+
 **Hooks cannot gain privileges.** sipnab sets `PR_SET_NO_NEW_PRIVS` at startup
 on Linux, on every run and whether or not it is root, and every command it
 spawns inherits that flag. A hook may run anything you can already run. What it
@@ -7900,7 +7924,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--uprobe-tls` | -- | off | Read SIP plaintext straight out of the TLS libraries this host is running, using kernel uprobes. **No certificate, no private key, no keylog and no restart** of the process it observes. Probes **every** mapped TLS library rather than one, because an ordinary host runs OpenSSL and wolfSSL together. Needs root (or `CAP_SYS_ADMIN` + `CAP_PERFMON`) and a mounted `tracefs`. Linux only. **Read [the walkthrough](uprobe-walkthrough.md) before using this**: it reads the plaintext of every SIP session on the host, and states what that means. Feature: `native` |
 | `--uprobe-library` | `<PATH>` | discovered | Probe this library instead of discovering them; repeatable. Bypasses discovery, so it also reaches a library nothing has mapped **yet**. For a process inside a container, give the path as sipnab sees it: `/proc/<pid>/root/usr/lib/libssl.so.3`. Feature: `native` |
 | `--uprobe-symbol` | `<NAME>` | per flavor | Write symbol to probe. Defaults to the one the library's flavor exports — `SSL_write` for OpenSSL, `wolfSSL_write` for wolfSSL — so you need it only for a library sipnab cannot classify by name. Feature: `native` |
-| `--uprobe-flavor` | `<NAME>` | all | Probe only these flavors (`openssl`, `wolfssl`); repeatable. Feature: `native` |
+| `--uprobe-flavor` | `<NAME>` | all | Probe only these flavors (`openssl`, `wolfssl`); repeatable. Feature: `native`. Accepts `--uprobe-flavour` as an alias: the flag shipped with the British spelling through 0.5.104, and a released flag is a contract rather than a spelling choice |
 | `--uprobe-list` | -- | off | List the TLS libraries sipnab would probe, then exit **without installing anything in the kernel**. Run this first: it answers the question that decides whether the capture is worth starting. Exits `1` when nothing is visible, so a health check does not read "no TLS library" as success. Feature: `native` |
 | `--uprobe-backend` | `<NAME>` | `tracefs` | Which machinery reads the plaintext. `tracefs` works on any Linux with tracefs mounted and sees **no socket**, so its dialogs name a process rather than a peer. `bpf` pairs each write with its `tcp_sendmsg` and so recovers the **real addresses** — but needs a sipnab built with `--features bpf` and a kernel with `CONFIG_DEBUG_INFO_BTF` (BTF is the BPF Type Format, which tells sipnab where the socket's fields sit on *this* kernel). sipnab refuses `bpf` without those rather than quietly downgrading: the addresses are the only reason to ask for it. Feature: `native` |
 
@@ -7957,10 +7981,22 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--user` | `<USER>` | -- | Drop privileges to this user after opening capture devices |
+| `--user` | `<USER>` | -- | Drop privileges to this user after opening capture devices. **Only takes effect when the process is root** — see the note below |
 | `--no-priv-drop` | -- | off | Do not drop privileges after opening capture devices |
 | `--chroot` | `<DIR>` | -- | Chroot to this directory after initialization |
 | `--setup-caps` | -- | off | Grant this binary the Linux capabilities for live capture (`cap_net_raw,cap_net_admin+ep` via `setcap`) so it runs without `sudo`, then exit. Re-invokes through `sudo` when not already root. Linux only. |
+
+**`--user` does nothing unless the process is root.** sipnab skips the drop
+when `geteuid() != 0` and says so only at `debug` — so under the recommended
+install (`--setup-caps`, then run without `sudo`) clap parses the flag, the log
+line goes where nobody watches, and the drop never arms. That is the intended
+behavior: an unprivileged process has nothing to drop. This note exists because
+the flag's presence otherwise reads as a guarantee.
+
+The platforms also differ. On Linux, root plus `--user` drops to that user. On
+macOS, sipnab skips the drop even as root unless you pass `--user`: dropping to
+`nobody` strands the process without a per-user login session, which crashes
+CoreAudio the moment anything touches it.
 
 **Examples**
 
@@ -8615,6 +8651,12 @@ measurements only. No filter DSL field matches an XR value.
 
 ## Parser constraints
 
+
+- **Expression nodes: 1024** (`MAX_EXPRESSION_NODES`). The bound a caller is
+  most likely to reach, and the reason it exists is not tidiness: without it a
+  deeply repetitive expression drove the parser into a stack overflow that
+  aborts the process rather than returning an error. A filter over the cap is
+  refused by `validate_filter` and by every flag that takes one.
 - Maximum parenthesis nesting depth: **50 levels**
 - Maximum regex pattern size: **1 MB** (1,000,000 bytes)
 - Empty expressions produce a parse error
@@ -10373,6 +10415,20 @@ Security detection defaults.
 | `findings_history` | integer | `1000` | Security findings kept in memory for later retrieval. `0` keeps none, which is a real setting rather than a mistake. `--findings-history` overrides it |
 | `hep_hmac_window_secs` | integer | `30` | Seconds either side of now within which sipnab still honors a `--hep-auth-mode hmac` token's timestamp. On an agent/collector pair with poor NTP sipnab turns every packet away as out-of-window, and what the operator sees is a collector receiving NOTHING -- a symptom they attribute to routing, a firewall, or a dead agent long before a clock. Widening it is a security trade rather than a convenience: the window is exactly how long a packet an on-path attacker captured stays acceptable, and it is how far back the receiver's nonce cache must remember. Range 1-300. Past 300 the sender has no working time daemon, which is what to repair, so sipnab refuses the value and names the key. `--hep-hmac-window` overrides it |
 
+**HEP HMAC token version 2, and what a mixed fleet sees.** sipnab 0.5.131
+moved `HMAC_TOKEN_VERSION` from 1 to 2 and refuses v1 by name. Two things
+follow. A sender still on 0.5.130 or earlier against a newer collector has
+**every packet refused**, and the symptom is a collector receiving nothing --
+which operators reliably attribute to routing, a firewall, or a dead agent
+long before they suspect a token version. Upgrade the collector last, or
+upgrade both together.
+
+The reason it is not a compatible change is the second thing: v1's MAC did not
+cover the addressing chunks, so an attacker who captured a v1 token from one
+sender could replay it against a third party, and could point a published
+`--hep-allow-kill` control somewhere nobody issued it for. v2 covers them. There is no
+flag to accept v1 again, deliberately.
+
 Every `scanner_*` key above rejects `0` and names the key. A zero count reports
 the first probe of any kind as a scanner, a zero window resets the counters on
 every packet so nothing ever accumulates, and a zero grace restores the very
@@ -11342,10 +11398,15 @@ it with `claude mcp add --transport http sipnab http://127.0.0.1:8731/mcp`.
 
 ## Use Claude Code on your laptop against a remote server
 
-A designed-for use case, not a workaround: **no tool alters the analysis**
-(none sends SIP, none mutates the dialog, stream and alert stores), every
+A designed-for use case, not a workaround: **no tool sends SIP**, every
 response has a ceiling, and non-loopback HTTP binds refuse to start without a
-bearer token. Three wirings, in increasing order of setup.
+bearer token.
+
+One tool does mutate the stores, and it is off by default. `open_capture`
+swaps the capture the server is answering about, which clears the dialog and
+stream stores — every prior answer stops being reproducible from that point on.
+It stays off until you enable it server-side, along with the rest of the
+capture-control group. Three wirings, in increasing order of setup.
 
 ### Connect Claude Code on your laptop to sipnab on a server
 
@@ -15391,13 +15452,18 @@ so branch on `is_request` rather than expecting one shape:
 - **A response** adds `status_code`, `reason`, `response_context` and `ua`, and
   carries no `method` — read `cseq.method` for the transaction it answers.
 
-> **This tool does not fence, and it is the one that returns the most capture
-> text.** `from`, `to`, `contact` and `sdp` in `messages[]` come back verbatim,
-> with no provenance note on the response, while
-> [`get_message`](#get_message) returns the same fields wrapped in
-> `⟦untrusted-capture-data⟧` markers. Treat every string in `messages[]` as
-> attacker-written regardless. Reach for `get_message` when the text is going
-> into a model's context.
+> **This tool fences, and it is the one that returns the most capture text.**
+> `reason`, `from`, `to`, `contact`, `ua`, `sdp` and `malformed` in `messages[]`
+> come back wrapped in `⟦untrusted-capture-data⟧` markers, the same treatment
+> [`get_message`](#get_message) gives them. The SDP body keeps its line
+> structure, `--mcp-max-body-bytes` bounds it, and the header values arrive
+> capped with every control character removed.
+>
+> This page said the opposite until 0.5.134 — that the fields came back
+> verbatim and that a reader should reach for `get_message` instead. Both tools
+> fenced the whole time. Treat every string in `messages[]` as attacker-written
+> regardless: the markers say where the text came from, they do not make it
+> safe.
 
 The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
 

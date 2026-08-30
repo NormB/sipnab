@@ -873,6 +873,24 @@ report a healthy network in the middle of an outage.
 | `--exec-rate-limit` | `<N>` | `10` | Maximum exec invocations per second |
 | `--exec-queue-depth` | `<N>` | `100` | Hook commands allowed to be running at once before sipnab drops `--on-dialog-exec` and `--on-quality-exec` events. The second ceiling above `--exec-rate-limit`, and the binding one for any hook that takes longer than a second: its slot is still occupied when the next second's budget arrives, so on a busy trunk this is what events actually meet. Config: `[limits] exec_queue_depth` |
 
+**What a hook receives.** Every command gets the event as environment
+variables. `--on-dialog-exec` sets `SIPNAB_CALL_ID`, `SIPNAB_FROM`,
+`SIPNAB_TO`, `SIPNAB_STATE`, `SIPNAB_METHOD` and `SIPNAB_JSON` (the whole
+dialog). `--on-quality-exec` sets `SIPNAB_SSRC`, `SIPNAB_SRC`, `SIPNAB_MOS`,
+`SIPNAB_JITTER`, `SIPNAB_LOSS` and `SIPNAB_STREAM_JSON` — the stream object
+under its own name, never `SIPNAB_JSON`. Rule hooks add `SIPNAB_RULE`,
+`SIPNAB_DETAIL` and `SIPNAB_VARIABLE`.
+
+**A hook inherits sipnab's whole environment, credentials included.** sipnab
+does not clear the environment before spawning, so a hook sees
+`SIPNAB_API_SIGNING_KEY`, `SIPNAB_MCP_TOKEN` and `SIPNAB_HEP_AUTH` if you set
+them there — and [Authentication](auth.md) recommends exactly that. This is
+deliberate: a hook that must call back into the API needs the credential, and
+stripping the environment would break that without making anything safer,
+since a hook already runs as you. It does mean a hook command is as trusted as
+the process: do not pass one a string built from capture data, and do not run
+one you would not run by hand with your keys exported.
+
 **Hooks cannot gain privileges.** sipnab sets `PR_SET_NO_NEW_PRIVS` at startup
 on Linux, on every run and whether or not it is root, and every command it
 spawns inherits that flag. A hook may run anything you can already run. What it
@@ -1048,7 +1066,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--uprobe-tls` | -- | off | Read SIP plaintext straight out of the TLS libraries this host is running, using kernel uprobes. **No certificate, no private key, no keylog and no restart** of the process it observes. Probes **every** mapped TLS library rather than one, because an ordinary host runs OpenSSL and wolfSSL together. Needs root (or `CAP_SYS_ADMIN` + `CAP_PERFMON`) and a mounted `tracefs`. Linux only. **Read [the walkthrough](uprobe-walkthrough.md) before using this**: it reads the plaintext of every SIP session on the host, and states what that means. Feature: `native` |
 | `--uprobe-library` | `<PATH>` | discovered | Probe this library instead of discovering them; repeatable. Bypasses discovery, so it also reaches a library nothing has mapped **yet**. For a process inside a container, give the path as sipnab sees it: `/proc/<pid>/root/usr/lib/libssl.so.3`. Feature: `native` |
 | `--uprobe-symbol` | `<NAME>` | per flavor | Write symbol to probe. Defaults to the one the library's flavor exports — `SSL_write` for OpenSSL, `wolfSSL_write` for wolfSSL — so you need it only for a library sipnab cannot classify by name. Feature: `native` |
-| `--uprobe-flavor` | `<NAME>` | all | Probe only these flavors (`openssl`, `wolfssl`); repeatable. Feature: `native` |
+| `--uprobe-flavor` | `<NAME>` | all | Probe only these flavors (`openssl`, `wolfssl`); repeatable. Feature: `native`. Accepts `--uprobe-flavour` as an alias: the flag shipped with the British spelling through 0.5.104, and a released flag is a contract rather than a spelling choice |
 | `--uprobe-list` | -- | off | List the TLS libraries sipnab would probe, then exit **without installing anything in the kernel**. Run this first: it answers the question that decides whether the capture is worth starting. Exits `1` when nothing is visible, so a health check does not read "no TLS library" as success. Feature: `native` |
 | `--uprobe-backend` | `<NAME>` | `tracefs` | Which machinery reads the plaintext. `tracefs` works on any Linux with tracefs mounted and sees **no socket**, so its dialogs name a process rather than a peer. `bpf` pairs each write with its `tcp_sendmsg` and so recovers the **real addresses** — but needs a sipnab built with `--features bpf` and a kernel with `CONFIG_DEBUG_INFO_BTF` (BTF is the BPF Type Format, which tells sipnab where the socket's fields sit on *this* kernel). sipnab refuses `bpf` without those rather than quietly downgrading: the addresses are the only reason to ask for it. Feature: `native` |
 
@@ -1105,10 +1123,22 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--user` | `<USER>` | -- | Drop privileges to this user after opening capture devices |
+| `--user` | `<USER>` | -- | Drop privileges to this user after opening capture devices. **Only takes effect when the process is root** — see the note below |
 | `--no-priv-drop` | -- | off | Do not drop privileges after opening capture devices |
 | `--chroot` | `<DIR>` | -- | Chroot to this directory after initialization |
 | `--setup-caps` | -- | off | Grant this binary the Linux capabilities for live capture (`cap_net_raw,cap_net_admin+ep` via `setcap`) so it runs without `sudo`, then exit. Re-invokes through `sudo` when not already root. Linux only. |
+
+**`--user` does nothing unless the process is root.** sipnab skips the drop
+when `geteuid() != 0` and says so only at `debug` — so under the recommended
+install (`--setup-caps`, then run without `sudo`) clap parses the flag, the log
+line goes where nobody watches, and the drop never arms. That is the intended
+behavior: an unprivileged process has nothing to drop. This note exists because
+the flag's presence otherwise reads as a guarantee.
+
+The platforms also differ. On Linux, root plus `--user` drops to that user. On
+macOS, sipnab skips the drop even as root unless you pass `--user`: dropping to
+`nobody` strands the process without a per-user login session, which crashes
+CoreAudio the moment anything touches it.
 
 **Examples**
 

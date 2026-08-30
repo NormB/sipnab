@@ -1128,7 +1128,7 @@ fn retention_summary(dialogs: &DialogStore) -> Option<String> {
 
     Some(format!(
         "retention: {}. The message and packet counts above are what sipnab READ, \
-         not what it kept — raise --limit, or --max-dialogs, to keep more.",
+         not what it kept — raise --limit, or --max-streams, to keep more.",
         parts.join("; ")
     ))
 }

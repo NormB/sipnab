@@ -653,7 +653,17 @@ fn wiki_intra_docs_links_resolve() {
     // added across the batch's doc edits, including the ones
     // `scripts/link-repo-paths.py --apply` created when it made bare repo
     // paths clickable.
-    const EXPECTED_WIKI_LINKS: usize = 593;
+    //
+    // 593 -> 595: attributed per file against HEAD before the number moved.
+    // Exactly two links, both from the DOC batch. docs/rest-api.md gained
+    // `[vCon](vcon.md)` where DOC1 corrected the claim that a vCon carries no
+    // media -- the two pages had contradicted each other and the API page held
+    // the unsafe version, so it now points at the one that was right.
+    // docs/cli-reference.md gained `[Authentication](auth.md)` where DOC8
+    // recorded that an exec hook inherits sipnab's whole environment,
+    // credentials included, and auth.md is the page that recommends putting
+    // them there.
+    const EXPECTED_WIKI_LINKS: usize = 595;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -3627,8 +3627,29 @@ fn sip_parameter_claims_match_the_parser() {
 #[test]
 fn every_mcp_tool_has_a_documented_section_with_an_example() {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let server =
-        std::fs::read_to_string(repo.join("src/mcp/server.rs")).expect("read src/mcp/server.rs");
+    // WALK src/mcp, never `server.rs` alone. Reading one file made the 13
+    // tools under `src/mcp/tools/` invisible to this gate, which is how a
+    // fabricated `top_talkers` example shipped green: the tool was not in the
+    // set, so nothing asked whether its section was real. The sibling gate
+    // walks; this one did not, and the two disagreed silently.
+    let mut server = String::new();
+    let mut stack = vec![repo.join("src/mcp")];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                server.push_str(&std::fs::read_to_string(&p).unwrap_or_default());
+                server.push('\n');
+            }
+        }
+    }
+    assert!(
+        !server.is_empty(),
+        "the walk over src/mcp read nothing; this gate would then certify a \
+         page against an empty tool set"
+    );
     let page =
         std::fs::read_to_string(repo.join("docs/mcp-tools.md")).expect("read docs/mcp-tools.md");
 

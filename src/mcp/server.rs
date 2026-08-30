@@ -3542,13 +3542,13 @@ impl SipnabMcp {
     /// [`narrow`](super::completion::narrow), through the same
     /// [`matches`](super::completion::matches) rule, so a Call-ID that will not
     /// be offered is never cloned. The dialog store holds up to
-    /// `--max-dialogs` entries — 100,000 by default — and materialising all of
+    /// `--limit` entries — 100,000 by default — and materialising all of
     /// them to discard most is work nobody asked for. Comparing them all is
     /// not: it is strictly less than `list_dialogs` already does under the
     /// same lock on every call.
     ///
     /// Bounded by what the source itself is bounded by: the dialog store by
-    /// `--max-dialogs`, the rule catalog and the reference set by the binary,
+    /// `--limit`, the rule catalog and the reference set by the binary,
     /// and the file root by its directory.
     fn completion_values(&self, source: super::completion::Source, typed: &str) -> Vec<String> {
         match source {

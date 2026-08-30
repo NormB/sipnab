@@ -169,6 +169,20 @@ Security detection defaults.
 | `findings_history` | integer | `1000` | Security findings kept in memory for later retrieval. `0` keeps none, which is a real setting rather than a mistake. `--findings-history` overrides it |
 | `hep_hmac_window_secs` | integer | `30` | Seconds either side of now within which sipnab still honors a `--hep-auth-mode hmac` token's timestamp. On an agent/collector pair with poor NTP sipnab turns every packet away as out-of-window, and what the operator sees is a collector receiving NOTHING -- a symptom they attribute to routing, a firewall, or a dead agent long before a clock. Widening it is a security trade rather than a convenience: the window is exactly how long a packet an on-path attacker captured stays acceptable, and it is how far back the receiver's nonce cache must remember. Range 1-300. Past 300 the sender has no working time daemon, which is what to repair, so sipnab refuses the value and names the key. `--hep-hmac-window` overrides it |
 
+**HEP HMAC token version 2, and what a mixed fleet sees.** sipnab 0.5.131
+moved `HMAC_TOKEN_VERSION` from 1 to 2 and refuses v1 by name. Two things
+follow. A sender still on 0.5.130 or earlier against a newer collector has
+**every packet refused**, and the symptom is a collector receiving nothing --
+which operators reliably attribute to routing, a firewall, or a dead agent
+long before they suspect a token version. Upgrade the collector last, or
+upgrade both together.
+
+The reason it is not a compatible change is the second thing: v1's MAC did not
+cover the addressing chunks, so an attacker who captured a v1 token from one
+sender could replay it against a third party, and could point a published
+`--hep-allow-kill` control somewhere nobody issued it for. v2 covers them. There is no
+flag to accept v1 again, deliberately.
+
 Every `scanner_*` key above rejects `0` and names the key. A zero count reports
 the first probe of any kind as a scanner, a zero window resets the counters on
 every packet so nothing ever accumulates, and a zero grace restores the very

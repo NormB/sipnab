@@ -1,6 +1,6 @@
 # REST API & metrics
 
-sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs as a thread inside the sipnab process, reading the same in-memory dialog/stream stores as the capture pipeline — read-only, and it never mutates capture state.
+sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs as a thread inside the sipnab process, reading the same in-memory dialog/stream stores as the capture pipeline. Reads never alter the capture, with one deliberate exception: `POST /v1/persistence` sets the persistence gate, so a bearer token can stop and start recording to disk. Every other route only reads.
 
 [CLI Reference](cli-reference.md#network-listeners) catalogs every API flag.
 
@@ -829,9 +829,15 @@ A sipnab vCon records an **observation**, never a recording. sipnab watched
 these packets go past. It did not place the call, record it, or ask anyone for
 permission to keep the result, and four absences follow from that:
 
-- **No media, and no `url` pointing at media.** The container carries signaling
-  only. An empty `streams` list elsewhere in this API means "no RTP reached
-  this capture", but a vCon says nothing at all about audio.
+- **No media by default — but `--retain-audio` changes that.** Without it the
+  container carries signaling only, and an empty `streams` list elsewhere in
+  this API means "no RTP reached this capture" while a vCon says nothing at all
+  about audio. With `--retain-audio` the export decodes the dialog's RTP and
+  emits the WAV **inline as base64**, up to a 5 MiB budget, refusing with a
+  note above it rather than truncating. That is call CONTENT, not metadata, and
+  the operator opted into it: treat such a container as a recording for every
+  retention and disclosure purpose. [vCon](vcon.md) documents the same
+  behavior.
 - **No signature.** Nothing here carries a JWS. A signature would say sipnab
   vouches for the contents of the conversation, and sipnab vouches only for
   what it saw.
@@ -1517,7 +1523,7 @@ Full end-to-end clients (bearer auth, pagination, `/metrics` scraping, error han
 
 - The API thread only reads dialog/stream metadata: no capture fd access, no key material exposure
 - All network listeners bind to localhost by default
-- Rate limiting on all listener endpoints (100 RPS per source IP)
+- Rate limiting on every guarded endpoint (100 RPS per source IP by default). Two exceptions worth knowing: `/health` sits outside the guard entirely — no auth, no rate limit — and `--api-rate-limit-per-peer 0` turns the cap off altogether
 - Bearer token authentication required on every REST endpoint except `/health` — `/metrics` on the `--api` server sits on the same guarded router and takes the same credential (the *standalone* `--metrics` server is the one that uses HTTP Basic instead)
 - Constant-time key comparison prevents timing attacks
 - TLS not terminated in-process; run behind a reverse proxy (see [API TLS](#api-tls))

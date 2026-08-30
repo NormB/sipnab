@@ -278,7 +278,7 @@ impl FindingKind {
                 "record",
                 "sipnab read these and then dropped them to stay inside a size limit, so the \
                  counts in this report are what it KEPT rather than what it read. Raise \
-                 --limit, --max-dialogs or --max-streams and run it again.",
+                 --limit or --max-streams and run it again.",
             ),
             Self::NoMedia => m(
                 "no_media",
@@ -1368,7 +1368,7 @@ fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
             rotated,
             Evidence::default()
                 .count("dialogs", rotated)
-                .note("oldest dialogs discarded at capacity by rotation (--max-dialogs)"),
+                .note("oldest dialogs discarded at capacity by rotation (--limit)"),
         );
     }
     if facts.stun.dropped > 0 {

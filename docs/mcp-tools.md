@@ -1885,13 +1885,18 @@ so branch on `is_request` rather than expecting one shape:
 - **A response** adds `status_code`, `reason`, `response_context` and `ua`, and
   carries no `method` — read `cseq.method` for the transaction it answers.
 
-> **This tool does not fence, and it is the one that returns the most capture
-> text.** `from`, `to`, `contact` and `sdp` in `messages[]` come back verbatim,
-> with no provenance note on the response, while
-> [`get_message`](#get_message) returns the same fields wrapped in
-> `⟦untrusted-capture-data⟧` markers. Treat every string in `messages[]` as
-> attacker-written regardless. Reach for `get_message` when the text is going
-> into a model's context.
+> **This tool fences, and it is the one that returns the most capture text.**
+> `reason`, `from`, `to`, `contact`, `ua`, `sdp` and `malformed` in `messages[]`
+> come back wrapped in `⟦untrusted-capture-data⟧` markers, the same treatment
+> [`get_message`](#get_message) gives them. The SDP body keeps its line
+> structure, `--mcp-max-body-bytes` bounds it, and the header values arrive
+> capped with every control character removed.
+>
+> This page said the opposite until 0.5.134 — that the fields came back
+> verbatim and that a reader should reach for `get_message` instead. Both tools
+> fenced the whole time. Treat every string in `messages[]` as attacker-written
+> regardless: the markers say where the text came from, they do not make it
+> safe.
 
 The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
 

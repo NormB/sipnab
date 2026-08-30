@@ -10,6 +10,46 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **DOC1: `docs/rest-api.md` said a vCon carries no media. It can.** With
+  `--retain-audio` the export decodes the dialog's RTP and emits the WAV inline
+  as base64. `docs/vcon.md` documented that correctly, so two published pages
+  contradicted each other and the API page carried the unsafe version.
+- **DOC3: the MCP page had the fencing boundary backwards.** It said `get_dialog`
+  returns `from`, `to`, `contact` and `sdp` verbatim and told readers to reach
+  for `get_message` when text goes into a model's context. Both tools fence, and
+  have all along. Measured against the current build.
+- **DOC4: `docs/mcp-deploy.md` promised no tool mutates the stores.**
+  `open_capture` clears the dialog and stream stores. `SECURITY.md`'s scope told
+  a good-faith reporter otherwise.
+- **DOC5: the program named flags that do not exist.** `--max-dialogs` and
+  `--export-audio` reached operators through `--analyze`, the retention notice,
+  JSON, MCP evidence notes, and -- worst -- the `refusal` field of an emitted
+  vCon, where a phantom flag persisted into a delivered artifact. The backlog
+  entry also claimed `--max-streams` does not exist; it does, verified against
+  `--help` and by invocation.
+- **DOC2, DOC6, DOC7, DOC8, DOC9**: `--user` is a no-op unless the process is
+  root and the platforms diverge; the HEP HMAC token version moved 1 to 2 and
+  refuses v1 by name; the 1024-node filter cap joined "Parser constraints"; exec
+  hooks inherit every credential in the environment and 8 of 11 hook variables
+  were undocumented; `/health` sits outside the rate limiter,
+  `--api-rate-limit-per-peer 0` disables it, and `POST /v1/persistence` mutates
+  capture state.
+- **DOC12: the MCP docs gate read one file.** It opened `src/mcp/server.rs`
+  alone while its sibling walked the tree, so all 13 tools under
+  `src/mcp/tools/` were invisible to it -- which is how a fabricated
+  `top_talkers` example shipped green.
+
+### Added
+
+- **DOC10, DOC11, DOC13, DOC14, DOC15 -- coverage gates**
+  (`tests/doc_coverage_ratchets_test.rs`). Environment variables and clap
+  aliases are now fully documented and gated outright; numeric policy ceilings,
+  permissive REST schema components, and MCP tools without an `outputSchema`
+  are pinned as ratchets that may only move down. `--uprobe-flavour` was
+  accepted and named nowhere.
+
 ### Changed
 
 - **`docs/mcp-tools.md` is grouped by the reader's question.** It was a flat
