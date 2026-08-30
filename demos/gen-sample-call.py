@@ -11,7 +11,19 @@ capture" link. It should therefore show a phone's whole life, not one call:
     INVITE    -> 100 -> 180 -> 200 -> ACK
     RTP       both directions, PCMU, 20 ms packets
     BYE       -> 200
+    SUBSCRIBE alice, message-summary -> 200 -> NOTIFY active      [stays up]
+    SUBSCRIBE bob,   dialog-info     -> 202 -> NOTIFY pending  [awaiting auth]
+    SUBSCRIBE alice, presence -> 200 -> NOTIFY active
+              -> SUBSCRIBE Expires: 0 -> 200 -> NOTIFY terminated
     REGISTER  bob, Expires: 0 -> 200          (bob unregistering)
+
+Three subscriptions on purpose, ending in three different states, for the same
+reason the two registrations do. RFC 6665 §4.1.3 gives `Subscription-State`
+three values and sipnab reported all of them as `active` until 0.5.135 --
+`Pending` was a declared state nothing could reach. A capture that only ever
+shows a healthy subscription cannot demonstrate that, and a state with unit
+tests and no worked example is the state `Expired` was in when it was silently
+wrong.
 
 Two registrations on purpose, and only one of them comes off. Alice is still
 bound when the capture ends; bob registers, takes the call, and removes his
@@ -179,6 +191,54 @@ for i in range(300):
 
 sip(13.460, PHONE, PBX, f"BYE sip:bob@{PBX} SIP/2.0\n{inv_hdrs('2 BYE', 'inv9')}Content-Length: 0\n\n")
 sip(13.468, PBX, PHONE, f"SIP/2.0 200 OK\n{inv_hdrs('2 BYE', 'inv9')}Content-Length: 0\n\n")
+
+# ── Subscriptions: the three states RFC 6665 §4.1.3 defines ────────
+def subscription(t0, user, ip, cid, event, code, sub_state, expires=3600, cseq=1):
+    """One SUBSCRIBE and the NOTIFY that reports what became of it.
+
+    `code` is the answer to the SUBSCRIBE -- 200 for an accepted subscription,
+    202 for one the notifier has taken but not yet authorized. `sub_state` is
+    the `Subscription-State` value the NOTIFY carries, which is what actually
+    decides the state: RFC 6665 §4.1.3 gives it `pending`, `active` and
+    `terminated`, and the method alone says none of them.
+    """
+    hdrs = (
+        f"Via: SIP/2.0/UDP {ip}:5060;branch=z9hG4bK-sub-{event[:3]}-{{n}}\n"
+        f"Max-Forwards: 70\n"
+        f'From: "{user.title()}" <sip:{user}@example.com>;tag=sub-{user}-{event[:3]}\n'
+        f"To: <sip:{user}@example.com>\n"
+        f"Call-ID: {cid}\n"
+    )
+    sip(t0 + 0.000, ip, PBX,
+        f"SUBSCRIBE sip:{user}@example.com SIP/2.0\n{hdrs.format(n=cseq)}"
+        f"CSeq: {cseq} SUBSCRIBE\nEvent: {event}\nExpires: {expires}\n"
+        f"Contact: <sip:{user}@{ip}:5060>\nAccept: application/simple-message-summary\n"
+        f"User-Agent: sipnab-demo/1.0\nContent-Length: 0\n\n")
+    reason = "OK" if code == 200 else "Accepted"
+    sip(t0 + 0.006, PBX, ip,
+        f"SIP/2.0 {code} {reason}\n{hdrs.format(n=cseq)}CSeq: {cseq} SUBSCRIBE\n"
+        f"Expires: {expires}\nContent-Length: 0\n\n")
+    sip(t0 + 0.030, PBX, ip,
+        f"NOTIFY sip:{user}@{ip}:5060 SIP/2.0\n{hdrs.format(n=cseq + 1)}"
+        f"CSeq: {cseq + 1} NOTIFY\nEvent: {event}\n"
+        f"Subscription-State: {sub_state}\n"
+        f"Contact: <sip:pbx@{PBX}:5060>\nContent-Length: 0\n\n")
+
+
+# alice keeps a message-waiting subscription for the whole capture.
+subscription(1.200, "alice", PHONE, "sub-alice-mwi-2b81@192.0.2.10",
+             "message-summary", 200, "active;expires=3600")
+# bob's busy-lamp subscription is taken but not authorized; the capture ends
+# with it still pending, which is the only way a reader sees that state.
+subscription(1.400, "bob", BOB, "sub-bob-blf-9e42@192.0.2.30",
+             "dialog-info", 202, "pending;expires=3600")
+# alice's presence subscription runs and is then removed the RFC 6665 §4.2.1
+# way: a SUBSCRIBE with a zero interval, confirmed by a terminated NOTIFY.
+subscription(1.600, "alice", PHONE, "sub-alice-pres-5c07@192.0.2.10",
+             "presence", 200, "active;expires=3600")
+subscription(16.000, "alice", PHONE, "sub-alice-pres-5c07@192.0.2.10",
+             "presence", 200, "terminated;reason=timeout", expires=0, cseq=3)
+
 
 # ── bob unregisters: the same registration, zero interval ───────────
 #

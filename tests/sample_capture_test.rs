@@ -258,3 +258,60 @@ fn the_sample_has_one_registration_that_stays_and_one_that_comes_off() {
          capture does not end on a phone going away"
     );
 }
+
+/// The sample reaches every state the RFCs define for its dialogs.
+///
+/// Five dialogs, five states, chosen so each of 0.5.135's four restored
+/// transitions has a worked example rather than only a unit test:
+///
+/// | dialog | state | why it is here |
+/// |---|---|---|
+/// | REGISTER alice | `Registered` | the control for `Expired` |
+/// | REGISTER bob | `Expired` | RFC 3261 §10.2.2, zero interval |
+/// | SUBSCRIBE alice (message-summary) | `Active` | the control for the other two |
+/// | SUBSCRIBE bob (dialog-info) | `Pending` | RFC 6665 §4.1.3, awaiting authorization |
+/// | SUBSCRIBE alice (presence) | `Terminated` | RFC 6665 §4.2.1, un-SUBSCRIBE |
+///
+/// `Pending` and `Expired` were both DECLARED AND UNREACHABLE before 0.5.135,
+/// and the test named for reachability was green the whole time because it
+/// asserted a hardcoded list. A state with unit tests and no worked example is
+/// exactly the state those two were in when they were silently wrong, so the
+/// sample carries one of each and this gate keeps them there.
+#[test]
+fn the_sample_reaches_every_state_its_dialogs_can_have() {
+    let bytes = std::fs::read(sample()).expect("readable");
+    let text = String::from_utf8_lossy(&bytes);
+
+    // The wire evidence for each. The states themselves are asserted by
+    // `dialog_state_machine`'s own tests; what this pins is that the SAMPLE
+    // still contains the traffic that produces them.
+    for (needle, why) in [
+        (
+            "Subscription-State: active",
+            "the healthy subscription, the control",
+        ),
+        (
+            "Subscription-State: pending",
+            "RFC 6665 §4.1.3 pending -- a subscription taken but not authorized.              This state was unreachable before 0.5.135 and reported as active.",
+        ),
+        (
+            "Subscription-State: terminated",
+            "RFC 6665 §4.1.3 terminated -- reported as active before 0.5.135",
+        ),
+        ("Event: message-summary", "alice's MWI subscription"),
+        ("Event: dialog-info", "bob's busy-lamp subscription"),
+        ("Event: presence", "the subscription that gets removed"),
+    ] {
+        assert!(
+            text.contains(needle),
+            "the sample no longer carries {needle:?}: {why}"
+        );
+    }
+
+    // A 202 as well as a 200: RFC 6665 §4.1.2 lets a notifier accept a
+    // subscription it has not authorized, and that is what leaves one pending.
+    assert!(
+        text.contains("SIP/2.0 202 Accepted"),
+        "no 202 in the sample, so nothing shows a subscription accepted but          not yet authorized"
+    );
+}

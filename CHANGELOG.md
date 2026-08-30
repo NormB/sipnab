@@ -37,8 +37,11 @@ entry that carries them.
 
 - The MCP tool index is grouped by category, not just the sections. A flat list
   of 51 rows was the first thing a reader met.
-- The sample capture carries two registrations: alice stays bound, bob
-  registers and removes his binding, so the two states are visible side by side.
+- The sample capture carries two registrations and three subscriptions, ending
+  in five different states: `Registered`, `Expired`, `Active`, `Pending` and
+  `Terminated`. Each of the four transitions restored above now has a worked
+  example rather than only a unit test -- which is the state `Expired` and
+  `Pending` were both in while they were silently wrong.
 
 ### Added
 
