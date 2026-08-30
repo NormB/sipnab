@@ -1087,7 +1087,15 @@ fn elapsed_sec(messages: &[SipMessage], from: usize, to: usize) -> f64 {
 fn expiry_of(msg: &SipMessage) -> Option<u32> {
     if let Some(contact) = msg.contact() {
         for param in contact.split(';').skip(1) {
-            let (name, value) = param.split_once('=')?;
+            // A Contact carries valueless parameters as often as not -- `;ob`
+            // from an outbound registration, `;lr`, `;isfocus`. This used `?`,
+            // which returned None from the WHOLE function on the first one, so
+            // the `Expires` header fallback below never ran and an unregister
+            // from a pjsip phone read as no expiry at all. Both spellings have
+            // to work; skipping is what makes the fallback reachable.
+            let Some((name, value)) = param.split_once('=') else {
+                continue;
+            };
             if name.trim().eq_ignore_ascii_case("expires") {
                 return value.trim().trim_matches('"').parse().ok();
             }
@@ -2632,6 +2640,120 @@ mod tests {
         };
         let head = registration_rejection_headline(&failure, &[]);
         assert!(head.contains("404"), "{head}");
+    }
+
+    /// A valueless Contact parameter must not hide the expiry.
+    ///
+    /// RFC 3261 §10.2.1.1 puts the interval in either an `Expires` header or an
+    /// `expires` Contact parameter, and both have to work. A Contact may also
+    /// carry parameters with no value at all — `;ob` from an outbound
+    /// registration, `;lr`, `;isfocus` — and `;ob` in particular is what pjsip
+    /// and Asterisk send by default.
+    ///
+    /// The scan used `?` on `split_once('=')`, so the FIRST valueless parameter
+    /// returned `None` from the whole function and the `Expires` header fallback
+    /// never ran. An unregister from such a phone read as no expiry at all.
+    #[test]
+    fn a_valueless_contact_parameter_does_not_hide_the_expiry() {
+        // `;ob` before the value-bearing parameter: the parameter form.
+        let m = msg(&register("Expires: 3600\n").replace(
+            "Contact: <sip:a@10.0.0.1>",
+            "Contact: <sip:a@10.0.0.1>;ob;expires=0",
+        ));
+        assert_eq!(
+            super::expiry_of(&m),
+            Some(0),
+            "`;ob` before `expires=0` hid the parameter"
+        );
+
+        // `;ob` with no expires parameter at all: the header must still be read.
+        let m = msg(&register("Expires: 0\n")
+            .replace("Contact: <sip:a@10.0.0.1>", "Contact: <sip:a@10.0.0.1>;ob"));
+        assert_eq!(
+            super::expiry_of(&m),
+            Some(0),
+            "`;ob` on the Contact stopped the `Expires` header from being read, \
+             so an unregister from a pjsip phone looks like no expiry at all"
+        );
+    }
+
+    /// Both spellings of the interval work, and the parameter wins.
+    ///
+    /// RFC 3261 §10.2.1.1 allows either, and the per-binding parameter takes
+    /// precedence over the header default. Written out because "both must be
+    /// supported" is the requirement, and one of the two was unreachable behind
+    /// any valueless parameter.
+    #[test]
+    fn both_spellings_of_the_registration_interval_are_read() {
+        // Header only.
+        let m = msg(&register("Expires: 600\n"));
+        assert_eq!(super::expiry_of(&m), Some(600), "the Expires header");
+
+        // Parameter only.
+        let m = msg(&register("").replace(
+            "Contact: <sip:a@10.0.0.1>",
+            "Contact: <sip:a@10.0.0.1>;expires=600",
+        ));
+        assert_eq!(super::expiry_of(&m), Some(600), "the Contact parameter");
+
+        // Both, disagreeing: the parameter is the per-binding value and wins.
+        let m = msg(&register("Expires: 3600\n").replace(
+            "Contact: <sip:a@10.0.0.1>",
+            "Contact: <sip:a@10.0.0.1>;expires=0",
+        ));
+        assert_eq!(
+            super::expiry_of(&m),
+            Some(0),
+            "the Contact parameter must win over the header, or an unregister \
+             that carries a stale refresh interval in the header reads as a \
+             refresh"
+        );
+
+        // Neither: nothing to report, rather than a default invented here.
+        let m = msg(&register(""));
+        assert_eq!(super::expiry_of(&m), None, "no interval stated anywhere");
+    }
+
+    /// The parameter scan tolerates the shapes real Contacts carry.
+    ///
+    /// Case, surrounding whitespace, quoting, and a valueless parameter AFTER
+    /// the one that matters. Each is a way the scan could stop early and fall
+    /// back to a header that may not be there.
+    #[test]
+    fn the_expiry_parameter_scan_tolerates_real_contact_shapes() {
+        for (contact, want, why) in [
+            (
+                "<sip:a@10.0.0.1>;EXPIRES=0",
+                Some(0),
+                "parameter names are case-insensitive",
+            ),
+            (
+                "<sip:a@10.0.0.1>; expires=0",
+                Some(0),
+                "space after the semicolon",
+            ),
+            ("<sip:a@10.0.0.1>;expires=\"0\"", Some(0), "a quoted value"),
+            (
+                "<sip:a@10.0.0.1>;expires=0;ob",
+                Some(0),
+                "a valueless parameter after it",
+            ),
+            (
+                "<sip:a@10.0.0.1>;ob;lr;expires=0",
+                Some(0),
+                "two valueless parameters before it",
+            ),
+            (
+                "<sip:a@10.0.0.1>;ob",
+                None,
+                "no interval at all once the header is absent",
+            ),
+        ] {
+            let m =
+                msg(&register("")
+                    .replace("Contact: <sip:a@10.0.0.1>", &format!("Contact: {contact}")));
+            assert_eq!(super::expiry_of(&m), want, "{why}: {contact}");
+        }
     }
 
     #[test]

@@ -8,10 +8,17 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.134] - 2026-08-30
 
 ### Fixed
 
+- **A valueless `Contact` parameter hid the registration expiry.**
+  `expiry_of` used `?` on `split_once('=')`, so the first parameter without a
+  value -- `;ob` from an outbound registration, `;lr`, `;isfocus` -- returned
+  `None` from the whole function and the `Expires` header fallback never ran.
+  RFC 3261 10.2.1.1 allows the interval in either place and both must work; a
+  phone sending `Contact: <sip:a@host>;ob` with `Expires: 0` had its unregister
+  read as no expiry at all. `;ob` is what pjsip and Asterisk send by default.
 - **DOC1: `docs/rest-api.md` said a vCon carries no media. It can.** With
   `--retain-audio` the export decodes the dialog's RTP and emits the WAV inline
   as base64. `docs/vcon.md` documented that correctly, so two published pages

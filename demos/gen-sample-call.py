@@ -10,6 +10,7 @@ capture" link. It should therefore show a phone's whole life, not one call:
     INVITE    -> 100 -> 180 -> 200 -> ACK
     RTP       both directions, PCMU, 20 ms packets
     BYE       -> 200
+    REGISTER  Expires: 0 -> 200            (the phone unregistering)
 
 The file this replaces held a single INVITE dialog and nothing else, and its
 SIP sat on port 5080 -- outside the default `--portrange 5060-5061` -- so
@@ -153,6 +154,28 @@ for i in range(300):
 
 sip(13.460, PHONE, PBX, f"BYE sip:bob@{PBX} SIP/2.0\n{inv_hdrs('2 BYE', 'inv9')}Content-Length: 0\n\n")
 sip(13.468, PBX, PHONE, f"SIP/2.0 200 OK\n{inv_hdrs('2 BYE', 'inv9')}Content-Length: 0\n\n")
+
+# ── The phone unregisters: REGISTER with Expires: 0 ─────────────────
+#
+# RFC 3261 SS10.2.2. A registration is a binding with a lifetime, and the way
+# to remove one is to re-register it with a zero expiry rather than to send
+# anything called UNREGISTER -- there is no such method. The capture ends here
+# on purpose: a phone's life is bounded at both ends, and a reader who has just
+# watched the REGISTER at the top should see the binding come back off.
+#
+# `Expires: 0` in the header AND `expires=0` on the Contact. A registrar reads
+# the Contact parameter first and falls back to the header, and real phones
+# send both.
+sip(15.000, PHONE, PBX,
+    f"REGISTER sip:example.com SIP/2.0\n{REG_HDRS.format(n=3)}CSeq: 3 REGISTER\n"
+    f"Contact: <sip:alice@{PHONE}:5060>;expires=0\nExpires: 0\n"
+    f'Authorization: Digest username="alice", realm="example.com", '
+    f'nonce="4f2a19c8b3e07d51", uri="sip:example.com", '
+    f'response="6629fae49393a05397450978507c4ef1", algorithm=MD5\n'
+    f"User-Agent: sipnab-demo/1.0\nContent-Length: 0\n\n")
+sip(15.006, PBX, PHONE,
+    f"SIP/2.0 200 OK\n{REG_HDRS.format(n=3)}CSeq: 3 REGISTER\n"
+    f"Content-Length: 0\n\n")
 
 
 def main(path):

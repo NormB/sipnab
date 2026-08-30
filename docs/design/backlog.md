@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**56 open, 387 done** across 25 sections.
+**57 open, 387 done** across 25 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -64,7 +64,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | RV | 7 | 0 | `..........` |
 | RP | 4 | 0 | `..........` |
 | HX | 3 | 0 | `..........` |
-| AS | 6 | 0 | `..........` |
+| AS | 7 | 0 | `..........` |
 | DOC | 0 | 16 | `##########` |
 | MCPX | 1 | 6 | `#########.` |
 | P5 | 7 | 13 | `######....` |
@@ -5017,6 +5017,22 @@ runs `Asterisk PBX 20.15.2`, two FreePBX builds and four Grandstream UCM models
 behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
 **373 are OPTIONS** — 73.6% of the dialog store is qualify churn.
 
+- [ ] **REG1 — a phone that unregistered still reads `Registered`.** There is
+  no `Unregistered` state: `DialogState::Registered` is the only terminal state
+  a REGISTER dialog reaches ([`src/sip/dialog.rs:72`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L72)). A phone that registers,
+  works, then removes its binding with `Expires: 0` produces one dialog — same
+  Call-ID, which is what [RFC 3261 §10.2.4](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.4) tells it to reuse — and that dialog
+  reports `Registered` after the binding is gone.
+
+  Found 2026-08-30 building the site's sample capture, which now ends with an
+  unregister. The messages are all there and `expiry_of` reads the interval
+  correctly from both spellings; it is the dialog-level state that has nowhere
+  to put "the binding came off". An operator scanning a dialog list for
+  registration health sees a phone that is registered and is not.
+
+  **Do:** add the state, and decide what a re-register after it does — a phone
+  that unregisters and comes back is one binding history, not two.
+
 - [ ] **AS1 — expose extension headers on `get_dialog` / `get_message`.**
   `build_message_json` has a closed field list (timestamp, addresses, method,
   status, call_id, from, to, contact, ua, sdp, cseq, frame, dscp, …). Every
@@ -5073,7 +5089,7 @@ behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
   `X-Asterisk-HangupCauseCode: 38 / Network out of order`. `Reason` is read in
   exactly one place and only on the final failure response, so a `Reason:` or
   `X-Asterisk-HangupCause` on a BYE is never reached. The corpus carries 16
-  such frames plus RFC 3326 `Reason: Q.850;cause=` values.
+  such frames plus [RFC 3326](https://www.rfc-editor.org/rfc/rfc3326) `Reason: Q.850;cause=` values.
 
   "The call ended" and "the call ended because the far end was out of order"
   are different answers, and only the second closes a ticket.

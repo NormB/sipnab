@@ -100,8 +100,8 @@ fn the_sample_parses_under_default_arguments() {
 /// It shows a phone's whole life, not one call.
 ///
 /// The property the sample is for. A single INVITE demonstrates that sipnab
-/// parses an INVITE; a registration, a probe, a call and a hangup demonstrate
-/// what the tool is for.
+/// parses an INVITE; a registration, a probe, a call, a hangup and the binding
+/// coming back off demonstrate what the tool is for.
 #[test]
 fn the_sample_shows_a_registration_a_probe_a_call_and_a_hangup() {
     let out = analyze_with_defaults();
@@ -191,5 +191,42 @@ fn the_sample_uses_documentation_addresses_only() {
     assert!(
         out.contains("192.0.2."),
         "the sample no longer uses documentation addresses at all:\n\n{out}"
+    );
+}
+
+/// The capture ends with the phone unregistering.
+///
+/// RFC 3261 §10.2.2: a binding is removed by re-registering it with a zero
+/// expiry, not by any method called UNREGISTER — there is no such method. A
+/// reader who watched the REGISTER at the top should see the binding come back
+/// off at the bottom, which is what makes the sample a phone's whole life
+/// rather than a phone's morning.
+///
+/// Both spellings are asserted because registrars read them in that order: the
+/// `expires=0` Contact parameter first, the `Expires: 0` header as the
+/// fallback. Real phones send both, so a sample that sends one is teaching a
+/// reader half the shape.
+#[test]
+fn the_sample_ends_with_an_unregister() {
+    let bytes = std::fs::read(sample()).expect("readable");
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        text.contains("Expires: 0\r\n"),
+        "no `Expires: 0` header in the sample; the phone never gives up its \
+         binding and the capture stops mid-life"
+    );
+    assert!(
+        text.contains("expires=0"),
+        "no `expires=0` Contact parameter in the sample. A registrar reads that \
+         before the header, so a sample carrying only the header shows a shape \
+         real phones do not send."
+    );
+    // And it is the LAST thing in the capture, not an aside in the middle.
+    let last_register = text.rfind("REGISTER sip:").expect("a REGISTER exists");
+    let last_invite = text.rfind("INVITE sip:").expect("an INVITE exists");
+    assert!(
+        last_register > last_invite,
+        "the final REGISTER comes before the call rather than after it, so the \
+         capture does not end on the phone going away"
     );
 }
