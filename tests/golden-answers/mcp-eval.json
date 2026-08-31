@@ -26,11 +26,13 @@
       "answer": "/total_matched",
       "expected": 1334,
       "derivation": "Distinct Call-ID header values in the capture. tshark -r <pcap> -Y sip -T fields -e sip.Call-ID | sort -u | wc -l => 1334. The byte scan agrees: 1334 distinct `Call-ID:` header values in the file.",
-      "oracle": { "kind": "distinct_call_ids" },
+      "oracle": {
+        "kind": "distinct_call_ids"
+      },
       "naive": {
         "answer": "/returned",
         "value": 50,
-        "note": "an agent that counts the rows it was handed answers 50 and is short by 1284 — the exact failure PB13 was opened for"
+        "note": "an agent that counts the rows it was handed answers 50 and is short by 1284 \u2014 the exact failure PB13 was opened for"
       }
     },
     {
@@ -38,47 +40,70 @@
       "capture": "tests/pcap-samples/sipp-branch-scenario.pcapng",
       "question": "How many REGISTER requests are in this capture?",
       "tool": "search_messages",
-      "arguments": { "query": "REGISTER" },
+      "arguments": {
+        "query": "REGISTER sip:"
+      },
       "answer": "/total_matched",
       "expected": 1334,
       "derivation": "tshark -r <pcap> -Y sip.Request-Line -T fields -e sip.Method | sort | uniq -c => 1334 REGISTER. The byte scan agrees: the literal `REGISTER sip:` occurs 1334 times.",
-      "oracle": { "kind": "byte_literal", "literal": "REGISTER sip:" },
+      "oracle": {
+        "kind": "byte_literal",
+        "literal": "REGISTER sip:"
+      },
       "naive": {
         "answer": "/returned",
         "value": 50,
         "note": "the page holds 50 rows; the answer to the question is 1334"
-      }
+      },
+      "query_note": "search_messages reads the WHOLE message as of 0.5.137, so a bare method name also matches the CSeq of every response answering it -- 'REGISTER' returns 2668, twice the request count. The query is the request-line literal this entry's own oracle already declares, which is what asks the question the entry poses. The expected value is unchanged."
     },
     {
       "id": "branch/how-many-byes",
       "capture": "tests/pcap-samples/sipp-branch-scenario.pcapng",
       "question": "How many BYE requests are in this capture?",
       "tool": "search_messages",
-      "arguments": { "query": "BYE" },
+      "arguments": {
+        "query": "BYE sip:"
+      },
       "answer": "/total_matched",
       "expected": 1135,
       "derivation": "tshark -r <pcap> -Y sip.Request-Line -T fields -e sip.Method | sort | uniq -c => 1135 BYE. The byte scan agrees: the literal `BYE sip:` occurs 1135 times. A second method on the same tool as the REGISTER case, with a DIFFERENT number: a search wired to return the dialog count would satisfy the REGISTER case and fail this one.",
-      "oracle": { "kind": "byte_literal", "literal": "BYE sip:" },
+      "oracle": {
+        "kind": "byte_literal",
+        "literal": "BYE sip:"
+      },
       "naive": {
         "answer": "/returned",
         "value": 50,
         "note": "again 50 rows, and again not the answer"
-      }
+      },
+      "query_note": "search_messages reads the WHOLE message as of 0.5.137, so a bare method name also matches the CSeq of every response answering it -- 'REGISTER' returns 2668, twice the request count. The query is the request-line literal this entry's own oracle already declares, which is what asks the question the entry poses. The expected value is unchanged."
     },
     {
       "id": "branch/how-many-403",
       "capture": "tests/pcap-samples/sipp-branch-scenario.pcapng",
       "question": "How many calls in this capture ended 403 Forbidden?",
       "tool": "aggregate_dialogs",
-      "arguments": { "group_by": "response_code" },
-      "answer": { "array": "/buckets", "find": { "value": "403" }, "field": "count" },
+      "arguments": {
+        "group_by": "response_code"
+      },
+      "answer": {
+        "array": "/buckets",
+        "find": {
+          "value": "403"
+        },
+        "field": "count"
+      },
       "expected": 1148,
       "derivation": "Every 403 in this capture is the final response to an INVITE, and no Call-ID carries two of them: tshark -r <pcap> -Y 'sip.Status-Code == 403' -T fields -e sip.Call-ID | sort -u | wc -l => 1148, against 1148 total 403 responses. So 403 messages and 403-ending calls are the same number here. The byte scan agrees: the literal `SIP/2.0 403 ` occurs 1148 times.",
-      "oracle": { "kind": "byte_literal", "literal": "SIP/2.0 403 " },
+      "oracle": {
+        "kind": "byte_literal",
+        "literal": "SIP/2.0 403 "
+      },
       "naive": {
         "answer": "/total_matched",
         "value": 1334,
-        "note": "an agent that reads the response's total answers 1334 — that is how many calls were GROUPED, not how many ended 403"
+        "note": "an agent that reads the response's total answers 1334 \u2014 that is how many calls were GROUPED, not how many ended 403"
       }
     },
     {
@@ -86,11 +111,21 @@
       "capture": "tests/pcap-samples/sipp-branch-scenario.pcapng",
       "question": "How many calls never reached a final INVITE status at all?",
       "tool": "aggregate_dialogs",
-      "arguments": { "group_by": "response_code" },
-      "answer": { "array": "/buckets", "find": { "value": "(none)" }, "field": "count" },
+      "arguments": {
+        "group_by": "response_code"
+      },
+      "answer": {
+        "array": "/buckets",
+        "find": {
+          "value": "(none)"
+        },
+        "field": "count"
+      },
       "expected": 84,
       "derivation": "The last final (>=200) response to the INVITE transaction, per Call-ID: tshark -r <pcap> -Y sip.Status-Code -T fields -e sip.Call-ID -e sip.Status-Code -e sip.CSeq.method | awk -F'\\t' '$3==\"INVITE\"{last[$1]=$2} END {for (k in last) print last[k]}' | sort -n | uniq -c => 8x100, 1x180, 102x200, 1148x403, i.e. 1259 Call-IDs saw any INVITE response. 1334 - 1259 = 75 saw none. 75 + 8 (stopped at 100) + 1 (stopped at 180) = 84. The arithmetic closes exactly against the 1334 total and the other two buckets (1148 + 102 + 84 = 1334).",
-      "oracle": { "kind": "recorded" }
+      "oracle": {
+        "kind": "recorded"
+      }
     },
     {
       "id": "branch/how-big-is-the-capture",
@@ -104,14 +139,38 @@
       "oracle": {
         "kind": "sum",
         "of": [
-          { "kind": "byte_literal", "literal": "REGISTER sip:" },
-          { "kind": "byte_literal", "literal": "INVITE sip:" },
-          { "kind": "byte_literal", "literal": "BYE sip:" },
-          { "kind": "byte_literal", "literal": "ACK sip:" },
-          { "kind": "byte_literal", "literal": "SIP/2.0 100 " },
-          { "kind": "byte_literal", "literal": "SIP/2.0 180 " },
-          { "kind": "byte_literal", "literal": "SIP/2.0 200 " },
-          { "kind": "byte_literal", "literal": "SIP/2.0 403 " }
+          {
+            "kind": "byte_literal",
+            "literal": "REGISTER sip:"
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "INVITE sip:"
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "BYE sip:"
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "ACK sip:"
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 100 "
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 180 "
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 200 "
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 403 "
+          }
         ]
       }
     },
@@ -120,17 +179,37 @@
       "capture": "tests/pcap-samples/sipp-branch-scenario.pcapng",
       "question": "How many SIP messages did the server 192.0.2.20 send or take part in?",
       "tool": "top_talkers",
-      "arguments": { "by": "ip" },
-      "answer": { "array": "/talkers", "find": { "key": "192.0.2.20" }, "field": "messages" },
+      "arguments": {
+        "by": "ip"
+      },
+      "answer": {
+        "array": "/talkers",
+        "find": {
+          "key": "192.0.2.20"
+        },
+        "field": "messages"
+      },
       "expected": 5082,
       "derivation": "192.0.2.20 is the only responder in this capture, so its message count is every response: tshark -r <pcap> -Y sip.Status-Code -T fields -e sip.Status-Code | sort -n | uniq -c => 110 + 1259 + 2565 + 1148 = 5082. The byte scan sums the same four status-line literals.",
       "oracle": {
         "kind": "sum",
         "of": [
-          { "kind": "byte_literal", "literal": "SIP/2.0 100 " },
-          { "kind": "byte_literal", "literal": "SIP/2.0 180 " },
-          { "kind": "byte_literal", "literal": "SIP/2.0 200 " },
-          { "kind": "byte_literal", "literal": "SIP/2.0 403 " }
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 100 "
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 180 "
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 200 "
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 403 "
+          }
         ]
       }
     },
@@ -139,17 +218,37 @@
       "capture": "tests/pcap-samples/sipp-branch-scenario.pcapng",
       "question": "How many SIP messages did the client 192.0.2.10 send or take part in?",
       "tool": "top_talkers",
-      "arguments": { "by": "ip" },
-      "answer": { "array": "/talkers", "find": { "key": "192.0.2.10" }, "field": "messages" },
+      "arguments": {
+        "by": "ip"
+      },
+      "answer": {
+        "array": "/talkers",
+        "find": {
+          "key": "192.0.2.10"
+        },
+        "field": "messages"
+      },
       "expected": 3907,
       "derivation": "192.0.2.10 is the only requester, so its message count is every request: tshark -r <pcap> -Y sip.Request-Line -T fields -e sip.Method | sort | uniq -c => 104 ACK + 1135 BYE + 1334 INVITE + 1334 REGISTER = 3907. Paired with the server case on purpose: 5082 + 3907 = 8989, so an attribution that moved a message from one endpoint to the other fails one of the two.",
       "oracle": {
         "kind": "sum",
         "of": [
-          { "kind": "byte_literal", "literal": "REGISTER sip:" },
-          { "kind": "byte_literal", "literal": "INVITE sip:" },
-          { "kind": "byte_literal", "literal": "BYE sip:" },
-          { "kind": "byte_literal", "literal": "ACK sip:" }
+          {
+            "kind": "byte_literal",
+            "literal": "REGISTER sip:"
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "INVITE sip:"
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "BYE sip:"
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "ACK sip:"
+          }
         ]
       }
     },
@@ -162,7 +261,9 @@
       "answer": "/total_matched",
       "expected": 5,
       "derivation": "tshark -r <pcap> -Y sip -T fields -e sip.Call-ID | sort -u => busy-3a2b1c@192.0.2.30, completed-9f8e7d@192.0.2.10, decline-7c6d5e@198.51.100.30, notfound-1b2c3d@203.0.113.30, unavail-4e5f60@192.0.2.50. The byte scan agrees: 5 distinct `Call-ID:` values.",
-      "oracle": { "kind": "distinct_call_ids" }
+      "oracle": {
+        "kind": "distinct_call_ids"
+      }
     },
     {
       "id": "problem/how-many-failed",
@@ -176,10 +277,22 @@
       "oracle": {
         "kind": "sum",
         "of": [
-          { "kind": "byte_literal", "literal": "SIP/2.0 404 " },
-          { "kind": "byte_literal", "literal": "SIP/2.0 486 " },
-          { "kind": "byte_literal", "literal": "SIP/2.0 503 " },
-          { "kind": "byte_literal", "literal": "SIP/2.0 603 " }
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 404 "
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 486 "
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 503 "
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 603 "
+          }
         ]
       }
     },
@@ -195,16 +308,46 @@
       "oracle": {
         "kind": "sum",
         "of": [
-          { "kind": "byte_literal", "literal": "INVITE sip:" },
-          { "kind": "byte_literal", "literal": "ACK sip:" },
-          { "kind": "byte_literal", "literal": "BYE sip:" },
-          { "kind": "byte_literal", "literal": "SIP/2.0 100 " },
-          { "kind": "byte_literal", "literal": "SIP/2.0 180 " },
-          { "kind": "byte_literal", "literal": "SIP/2.0 200 " },
-          { "kind": "byte_literal", "literal": "SIP/2.0 404 " },
-          { "kind": "byte_literal", "literal": "SIP/2.0 486 " },
-          { "kind": "byte_literal", "literal": "SIP/2.0 503 " },
-          { "kind": "byte_literal", "literal": "SIP/2.0 603 " }
+          {
+            "kind": "byte_literal",
+            "literal": "INVITE sip:"
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "ACK sip:"
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "BYE sip:"
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 100 "
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 180 "
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 200 "
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 404 "
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 486 "
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 503 "
+          },
+          {
+            "kind": "byte_literal",
+            "literal": "SIP/2.0 603 "
+          }
         ]
       }
     },
@@ -213,123 +356,171 @@
       "capture": "tests/pcap-samples/sip-problem-call.pcap",
       "question": "Why did call notfound-1b2c3d@203.0.113.30 fail?",
       "tool": "triage_call",
-      "arguments": { "call_id": "notfound-1b2c3d@203.0.113.30" },
+      "arguments": {
+        "call_id": "notfound-1b2c3d@203.0.113.30"
+      },
       "answer": "/final_status_code",
       "expected": 404,
       "derivation": "tshark -r <pcap> -Y 'sip.Status-Code >= 200' -T fields -e sip.Call-ID -e sip.Status-Code -e sip.CSeq.method => this Call-ID's only final response is 404 to its INVITE. The byte scan can prove the capture holds exactly one `SIP/2.0 404 ` but cannot tie it to a Call-ID without parsing, so this stays a recorded value with the command above.",
-      "oracle": { "kind": "recorded" }
+      "oracle": {
+        "kind": "recorded"
+      }
     },
     {
       "id": "problem/notfound-signaling-hint",
       "capture": "tests/pcap-samples/sip-problem-call.pcap",
       "question": "In one sentence, what should an operator be told about notfound-1b2c3d@203.0.113.30?",
       "tool": "triage_call",
-      "arguments": { "call_id": "notfound-1b2c3d@203.0.113.30" },
+      "arguments": {
+        "call_id": "notfound-1b2c3d@203.0.113.30"
+      },
       "answer": "/signaling/hints/0",
       "expected": "404 Not Found",
       "match": "contains",
       "derivation": "The status line in the capture is `SIP/2.0 404 Not Found` and RFC 3261 section 21.4.5 gives that code that reason phrase. The prose around it is free to change; naming the code and its phrase is not.",
-      "oracle": { "kind": "recorded" }
+      "oracle": {
+        "kind": "recorded"
+      }
     },
     {
       "id": "problem/what-does-486-mean",
       "capture": "tests/pcap-samples/sip-problem-call.pcap",
       "question": "One call here ended 486. What does that mean?",
       "tool": "explain_response_code",
-      "arguments": { "code": 486 },
+      "arguments": {
+        "code": 486
+      },
       "answer": "/explanation",
       "expected": "486 Busy Here",
       "match": "contains",
       "derivation": "RFC 3261 section 21.4.24 names 486 `Busy Here`. Derived from the RFC rather than the capture, which is why only the code and the reason phrase are pinned and not the sentence that follows.",
-      "oracle": { "kind": "recorded" }
+      "oracle": {
+        "kind": "recorded"
+      }
     },
     {
       "id": "problem/no-rtp-is-not-a-media-failure",
       "capture": "tests/pcap-samples/sip-problem-call.pcap",
       "question": "Did the completed call have a media problem?",
       "tool": "rtp_stats",
-      "arguments": { "call_id": "completed-9f8e7d@192.0.2.10" },
+      "arguments": {
+        "call_id": "completed-9f8e7d@192.0.2.10"
+      },
       "answer": "/diagnosis/no_media",
       "expected": false,
-      "derivation": "The capture is signaling only: tshark -r <pcap> | wc -l => 23 and tshark -r <pcap> -Y sip | wc -l => 23, so every frame is a SIP message and the file holds no RTP anywhere (see problem/how-big-is-the-capture, which re-derives the same 23 by byte scan). `no_media: true` would be a claim this capture cannot support — the media was not recorded, which is not the same as media that never flowed. The right answer is that the question is unanswerable from this file, and the tool says so by withholding the flag rather than asserting a zero.",
-      "oracle": { "kind": "recorded" }
+      "derivation": "The capture is signaling only: tshark -r <pcap> | wc -l => 23 and tshark -r <pcap> -Y sip | wc -l => 23, so every frame is a SIP message and the file holds no RTP anywhere (see problem/how-big-is-the-capture, which re-derives the same 23 by byte scan). `no_media: true` would be a claim this capture cannot support \u2014 the media was not recorded, which is not the same as media that never flowed. The right answer is that the question is unanswerable from this file, and the tool says so by withholding the flag rather than asserting a zero.",
+      "oracle": {
+        "kind": "recorded"
+      }
     },
     {
       "id": "problem/no-rtp-stream-count",
       "capture": "tests/pcap-samples/sip-problem-call.pcap",
       "question": "How many RTP streams belong to the completed call?",
       "tool": "rtp_stats",
-      "arguments": { "call_id": "completed-9f8e7d@192.0.2.10" },
-      "answer": { "len": "/streams" },
+      "arguments": {
+        "call_id": "completed-9f8e7d@192.0.2.10"
+      },
+      "answer": {
+        "len": "/streams"
+      },
       "expected": 0,
-      "derivation": "Zero, for the same reason: tshark -r <pcap> -Y rtp | wc -l => 0, because all 23 frames are SIP. Paired with the case above so that `no_media: false` cannot be read as `media was fine` — an empty stream list beside it is what makes the withheld claim legible.",
-      "oracle": { "kind": "recorded" }
+      "derivation": "Zero, for the same reason: tshark -r <pcap> -Y rtp | wc -l => 0, because all 23 frames are SIP. Paired with the case above so that `no_media: false` cannot be read as `media was fine` \u2014 an empty stream list beside it is what makes the withheld claim legible.",
+      "oracle": {
+        "kind": "recorded"
+      }
     },
     {
       "id": "g711/first-call-packet-count",
       "capture": "tests/pcap-samples/sip-rtp-g711.pcap",
       "question": "How many RTP packets did call 1-1966@10.0.2.20 carry?",
       "tool": "rtp_stats",
-      "arguments": { "call_id": "1-1966@10.0.2.20" },
+      "arguments": {
+        "call_id": "1-1966@10.0.2.20"
+      },
       "answer": "/streams/0/packets",
       "expected": 425,
       "derivation": "tshark -r <pcap> -Y rtp -T fields -e rtp.ssrc | sort | uniq -c => 425 for SSRC 0x343da99b. The byte scan agrees: an RTP header carries its SSRC once, and the four bytes 34 3d a9 9b occur 425 times in the file.",
-      "oracle": { "kind": "byte_hex", "hex": "343da99b" }
+      "oracle": {
+        "kind": "byte_hex",
+        "hex": "343da99b"
+      }
     },
     {
       "id": "g711/second-call-packet-count",
       "capture": "tests/pcap-samples/sip-rtp-g711.pcap",
       "question": "How many RTP packets did call 1-1968@10.0.2.20 carry?",
       "tool": "rtp_stats",
-      "arguments": { "call_id": "1-1968@10.0.2.20" },
+      "arguments": {
+        "call_id": "1-1968@10.0.2.20"
+      },
       "answer": "/streams/0/packets",
       "expected": 414,
       "derivation": "tshark -r <pcap> -Y rtp -T fields -e rtp.ssrc | sort | uniq -c => 414 for SSRC 0x343ffa34. The byte scan agrees: the four bytes 34 3f fa 34 occur 414 times. Paired with the first call so a per-call figure wired to the capture total fails one of the two.",
-      "oracle": { "kind": "byte_hex", "hex": "343ffa34" }
+      "oracle": {
+        "kind": "byte_hex",
+        "hex": "343ffa34"
+      }
     },
     {
       "id": "g711/first-call-codec",
       "capture": "tests/pcap-samples/sip-rtp-g711.pcap",
       "question": "What codec did call 1-1966@10.0.2.20 carry?",
       "tool": "rtp_stats",
-      "arguments": { "call_id": "1-1966@10.0.2.20" },
+      "arguments": {
+        "call_id": "1-1966@10.0.2.20"
+      },
       "answer": "/streams/0/codec",
       "expected": "PCMU",
       "derivation": "tshark -r <pcap> -Y rtp -T fields -e rtp.ssrc -e rtp.p_type => payload type 0 on SSRC 0x343da99b, and RFC 3551 Table 4 assigns static payload type 0 to PCMU.",
-      "oracle": { "kind": "recorded" }
+      "oracle": {
+        "kind": "recorded"
+      }
     },
     {
       "id": "g711/second-call-codec",
       "capture": "tests/pcap-samples/sip-rtp-g711.pcap",
       "question": "What codec did call 1-1968@10.0.2.20 carry?",
       "tool": "rtp_stats",
-      "arguments": { "call_id": "1-1968@10.0.2.20" },
+      "arguments": {
+        "call_id": "1-1968@10.0.2.20"
+      },
       "answer": "/streams/0/codec",
       "expected": "PCMA",
       "derivation": "tshark -r <pcap> -Y rtp -T fields -e rtp.ssrc -e rtp.p_type => payload type 8 on SSRC 0x343ffa34, and RFC 3551 Table 4 assigns static payload type 8 to PCMA. The two calls in this file use DIFFERENT codecs despite the file's name, which is the point of asking both: a tool that reported one codec for the capture would answer this one wrongly.",
-      "oracle": { "kind": "recorded" }
+      "oracle": {
+        "kind": "recorded"
+      }
     },
     {
       "id": "g711/first-call-octets",
       "capture": "tests/pcap-samples/sip-rtp-g711.pcap",
       "question": "How many payload bytes did call 1-1966@10.0.2.20 carry?",
       "tool": "rtp_stats",
-      "arguments": { "call_id": "1-1966@10.0.2.20" },
+      "arguments": {
+        "call_id": "1-1966@10.0.2.20"
+      },
       "answer": "/streams/0/octets",
       "expected": 68000,
       "derivation": "425 packets (see g711/first-call-packet-count) x 160 payload bytes. G.711 at the 20 ms packetization this stream uses is 160 samples of one byte each, so 425 x 160 = 68000. tshark's conversation table reports 90 kB for the same stream, which is the 68000 payload bytes plus 425 x (12 RTP + 8 UDP + 20 IP + 14 Ethernet) = 22950 bytes of headers.",
-      "oracle": { "kind": "recorded" }
+      "oracle": {
+        "kind": "recorded"
+      }
     },
     {
       "id": "g711/one-way-audio",
       "capture": "tests/pcap-samples/sip-rtp-g711.pcap",
       "question": "Was the audio on call 1-1966@10.0.2.20 two-way?",
       "tool": "rtp_stats",
-      "arguments": { "call_id": "1-1966@10.0.2.20" },
+      "arguments": {
+        "call_id": "1-1966@10.0.2.20"
+      },
       "answer": "/diagnosis/one_way_audio",
       "expected": true,
       "derivation": "No, it was one-way. tshark -r <pcap> -q -z conv,udp reports 10.0.2.15:27942 <-> 10.0.2.20:6000 with 425 frames in one direction and 0 frames in the other. Unlike the sip-problem-call case, the capture DOES hold RTP, so the absence of a reverse stream is a finding rather than a gap in the recording.",
-      "oracle": { "kind": "recorded" }
+      "oracle": {
+        "kind": "recorded"
+      }
     }
   ],
   "unanswerable": [
@@ -341,7 +532,7 @@
     {
       "question": "How many RTP packets were lost on call completed-9f8e7d@192.0.2.10?",
       "capture": "tests/pcap-samples/sip-problem-call.pcap",
-      "reason": "The capture is signaling only — all 23 frames are SIP. There is no RTP to lose, and a golden 0 here would read as `no loss` when the truth is `not recorded`. The two rtp_stats cases on this capture assert that the tool declines to answer instead."
+      "reason": "The capture is signaling only \u2014 all 23 frames are SIP. There is no RTP to lose, and a golden 0 here would read as `no loss` when the truth is `not recorded`. The two rtp_stats cases on this capture assert that the tool declines to answer instead."
     },
     {
       "question": "Does search_messages page every hit exactly once across the whole capture?",

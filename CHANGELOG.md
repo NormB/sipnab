@@ -8,6 +8,41 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.137] - 2026-08-31
+
+### Fixed
+
+- **VAL15: `get_capture_report.frames_read` described a different capture.** It
+  read the process-wide captured-packet counter, which the background
+  `open_capture` loader never advances, so after a swap it reported the STARTUP
+  capture's number while `dialogs_examined` and `streams_examined` correctly
+  followed the new one. Measured: a server started on an 852-packet capture
+  reported `frames_read: 852, dialogs_examined: 2`; after opening a 633-packet
+  capture it reported `frames_read: 852, dialogs_examined: 7`. The number was
+  not stale by a little -- it belonged to another file, and it is worse than an
+  absent field because it is present, plausible and precise. Any agent deriving
+  coverage from it computed the answer from a different capture's size. It now
+  reads the count the loader already keeps for the capture being reported.
+- **VAL18: `search_messages` could not see what the filter DSL can.** It matched
+  method, status, `From`, `To`, `User-Agent` and body, so anything in any other
+  header was invisible. Measured on the site's own sample capture:
+  `total_matched: 0` for `Subscription-State`, `dialog-info` and `z9hG4bK-sub`,
+  while `list_dialogs` with `payload =~` found 3, 1 and 3 dialogs in the same
+  store at the same instant. An agent that reaches for a tool called "search",
+  gets zero, and concludes the header is absent has a wrong answer in the most
+  convincing form. It now scans the whole message, the same bytes the DSL's
+  `payload` field reads, so the two surfaces cannot disagree about what a
+  capture contains.
+
+### Changed
+
+- **`search_messages` matches more than it did, deliberately.** A bare method
+  name now also matches the `CSeq` of every response answering it -- `REGISTER`
+  returns 2668 on the branch-scenario capture, twice the request count. To count
+  requests, search the request line (`REGISTER sip:`), which is what the golden
+  answers for that capture already declared as their oracle. Their expected
+  values are unchanged.
+
 ## [0.5.136] - 2026-08-30
 
 ### Fixed

@@ -1228,14 +1228,33 @@ fn hit_identity(call_id: &str, index: usize) -> String {
 /// lets each SIP field be scanned in place — no per-message combined-string
 /// `format!` and no whole-message `to_lowercase` allocation.
 fn ascii_contains_ci(haystack: &str, needle: &[u8]) -> bool {
+    ascii_contains_ci_bytes(haystack.as_bytes(), needle)
+}
+
+/// The same scan over raw bytes.
+///
+/// `search_messages` reads the whole message, not a chosen set of fields. It
+/// used to look at method, status, `From`, `To`, `User-Agent` and body only, so
+/// anything in any other header was invisible: measured on the site's own
+/// sample capture, `search_messages` answered `total_matched: 0` for
+/// `Subscription-State`, `dialog-info` and `z9hG4bK-sub` while `list_dialogs`
+/// with `payload =~` found 3, 1 and 3 dialogs in the same store at the same
+/// instant.
+///
+/// An agent that reaches for a tool called "search", gets zero, and concludes
+/// the header is absent has been handed a wrong answer in the most convincing
+/// possible form. The filter DSL's `payload` field already scans `m.raw`; this
+/// scans the same bytes so the two surfaces cannot disagree about what the
+/// capture contains.
+fn ascii_contains_ci_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
         return true;
     }
-    let h = haystack.as_bytes();
-    if needle.len() > h.len() {
+    if needle.len() > haystack.len() {
         return false;
     }
-    h.windows(needle.len())
+    haystack
+        .windows(needle.len())
         .any(|w| w.iter().zip(needle).all(|(a, b)| a.eq_ignore_ascii_case(b)))
 }
 
@@ -4207,12 +4226,39 @@ impl SipnabMcp {
             }
         };
 
+        // The frame count for THE CAPTURE BEING REPORTED, not the process.
+        //
+        // `captured_packets()` is process-wide and the background `open_capture`
+        // loader never advances it, so after a swap this reported the STARTUP
+        // capture's number while `dialogs_examined` and `streams_examined`
+        // followed the new one correctly. Measured: a server started on an
+        // 852-packet capture reported `frames_read: 852, dialogs_examined: 2`,
+        // and after opening a 633-packet capture reported `frames_read: 852,
+        // dialogs_examined: 7`. The number was not stale by a little -- it
+        // belonged to a different file, and it is worse than an absent field
+        // because it is present, plausible and precise. Any agent deriving
+        // coverage from it (frames per dialog, "did we read enough of this
+        // file") computed an answer from another capture's size.
+        //
+        // The loader already counts its own packets; this just asks it rather
+        // than the process. With no load in flight -- the startup capture, or a
+        // live interface -- the process-wide counter IS the right answer.
+        let frames_read = {
+            let state = self.capture.read();
+            state
+                .load
+                .as_ref()
+                .map_or_else(crate::capture::captured_packets, |l| {
+                    l.packets.load(std::sync::atomic::Ordering::Relaxed)
+                })
+        };
+
         let analysis = {
             // Dialogs then streams, the order `CaptureState` documents, so the
             // two halves of the analysis describe one store revision.
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
-            crate::analysis::analyze(&ds, &ss, None, crate::capture::captured_packets())
+            crate::analysis::analyze(&ds, &ss, None, frames_read)
         };
 
         let content = if format == ReportFormat::Json {
@@ -4937,9 +4983,10 @@ impl SipnabMcp {
     /// timestamp half is not RFC 3339.
     #[tool(
         name = "search_messages",
-        description = "Case-insensitive substring search over SIP method, \
-                       status, From, To, User-Agent, and body across all \
-                       dialogs in the active store. Returns a page of \
+        description = "Case-insensitive substring search over the WHOLE SIP \
+                       message -- every header, the request line, and the body \
+                       -- across all dialogs in the active store. Matches what \
+                       the filter DSL's `payload` field matches. Returns a page of \
                        (call_id, message_index, snippet) hits carrying \
                        total_matched, a truncated flag, and next_cursor for \
                        the remaining matches.",
@@ -5003,7 +5050,11 @@ impl SipnabMcp {
                         || ascii_contains_ci(msg.from_header().unwrap_or(""), needle_bytes)
                         || ascii_contains_ci(msg.to_header().unwrap_or(""), needle_bytes)
                         || ascii_contains_ci(msg.user_agent().unwrap_or(""), needle_bytes)
-                        || ascii_contains_ci(&body, needle_bytes);
+                        || ascii_contains_ci(&body, needle_bytes)
+                        // The WHOLE message last: the borrowed fields above are
+                        // cheaper and hit most queries, and this is what makes
+                        // the answer agree with the filter DSL's `payload`.
+                        || ascii_contains_ci_bytes(&msg.raw, needle_bytes);
                     if hit {
                         matched.push((d, idx, hit_identity(&d.call_id, idx)));
                     }
@@ -10435,9 +10486,16 @@ mod tests {
             for n in 0..5i64 {
                 // Distinct creation instants: the page order is
                 // (created_at, Call-ID, index), and a fixture that ties every
-                // row would not exercise the primary key at all. The 200 OK
-                // carries no INVITE token, so each dialog contributes exactly
-                // one hit and a lost row is visible as a lost dialog.
+                // row would not exercise the primary key at all.
+                //
+                // TWO hits per dialog, not one. This comment used to say "the
+                // 200 OK carries no INVITE token", which was true only while
+                // the search read a chosen list of fields: a 200 answering an
+                // INVITE carries `CSeq: 1 INVITE`, and the search now reads the
+                // whole message, so the response matches too. That is the point
+                // of the change -- `list_dialogs` with `payload =~ 'INVITE'`
+                // always counted those responses, and the two surfaces
+                // disagreeing about what a capture contains is the defect.
                 let at = base_ts() + chrono::Duration::seconds(n);
                 ds.process_message(invite(&format!("page-{n}@x"), at));
                 ds.process_message(ok200(&format!("page-{n}@x"), at));
@@ -10446,7 +10504,7 @@ mod tests {
 
         let mut seen: Vec<(String, u64)> = Vec::new();
         let mut cursor: Option<String> = None;
-        for _ in 0..10 {
+        for _ in 0..12 {
             let result = server
                 .search_messages(Parameters(SearchMessagesParams {
                     query: "INVITE".to_string(),
@@ -10457,7 +10515,7 @@ mod tests {
                 .expect("search should succeed");
             let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
             assert_eq!(
-                v["total_matched"], 5,
+                v["total_matched"], 10,
                 "every page must report the STORE's match count, not the \
                  page's: {v}"
             );
@@ -10476,11 +10534,11 @@ mod tests {
             assert_eq!(v["truncated"], true, "a cursor means more remain");
         }
 
-        assert_eq!(seen.len(), 5, "paging must reach every hit: {seen:?}");
+        assert_eq!(seen.len(), 10, "paging must reach every hit: {seen:?}");
         let mut unique = seen.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!(unique.len(), 5, "a hit was returned twice: {seen:?}");
+        assert_eq!(unique.len(), 10, "a hit was returned twice: {seen:?}");
     }
 
     /// A malformed cursor is an error, not a silent restart from the top.
@@ -10533,6 +10591,67 @@ mod tests {
         assert!(ascii_contains_ci("anything", b""));
         assert!(!ascii_contains_ci("abc", b"abcd"));
         assert!(!ascii_contains_ci("hello", b"xyz"));
+    }
+
+    /// The raw scan finds a header the field list never looked at.
+    ///
+    /// `search_messages` matched method, status, `From`, `To`, `User-Agent` and
+    /// body, so anything in any other header was invisible. Measured on the
+    /// site's sample capture: `total_matched: 0` for `Subscription-State`,
+    /// `dialog-info` and `z9hG4bK-sub`, while `list_dialogs` with `payload =~`
+    /// found 3, 1 and 3 dialogs in the same store at the same instant.
+    ///
+    /// An empty result is a wrong answer in its most convincing form. An agent
+    /// reaching for a tool called "search", getting zero, and concluding the
+    /// header is absent is worse off than one handed a refusal.
+    ///
+    /// The bytes here are what a real message carries in the headers the old
+    /// field list skipped.
+    #[test]
+    fn the_raw_scan_reaches_headers_the_field_list_skipped() {
+        let msg = b"NOTIFY sip:a@example.com SIP/2.0\r\n\
+                    Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-sub-mes-1\r\n\
+                    Event: dialog-info\r\n\
+                    Subscription-State: pending;expires=3600\r\n\
+                    Content-Length: 0\r\n\r\n";
+        for needle in [
+            b"subscription-state".as_slice(),
+            b"dialog-info".as_slice(),
+            b"z9hg4bk-sub".as_slice(),
+            b"Event".as_slice(),
+        ] {
+            assert!(
+                ascii_contains_ci_bytes(msg, needle),
+                "the raw scan missed {:?}, which is in the message",
+                String::from_utf8_lossy(needle)
+            );
+        }
+        assert!(
+            !ascii_contains_ci_bytes(msg, b"terminated"),
+            "the raw scan reports a value the message does not carry"
+        );
+    }
+
+    /// The byte scan and the string scan agree.
+    ///
+    /// `ascii_contains_ci` delegates to the byte version now, so a divergence
+    /// would mean the two surfaces answer differently for the same text.
+    #[test]
+    fn the_byte_scan_and_the_string_scan_agree() {
+        for (hay, needle) in [
+            ("INVITE", b"invite".as_slice()),
+            ("User-Agent: TestUA/1.0", b"testua".as_slice()),
+            ("anything", b"".as_slice()),
+            ("abc", b"abcd".as_slice()),
+            ("hello", b"xyz".as_slice()),
+        ] {
+            assert_eq!(
+                ascii_contains_ci(hay, needle),
+                ascii_contains_ci_bytes(hay.as_bytes(), needle),
+                "the two scans disagree on {hay:?} / {:?}",
+                String::from_utf8_lossy(needle)
+            );
+        }
     }
 
     // ── tail_dialogs ─────────────────────────────────────────────────
