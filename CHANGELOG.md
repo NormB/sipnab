@@ -8,6 +8,39 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.136] - 2026-08-30
+
+### Fixed
+
+- **VAL5: `evaluate_expectations` published the wrong unit for `asr`, so a 95%
+  gate passed a 20% capture.** The tool description -- the only syntax
+  documentation an LLM client is handed -- called it "a RATIO from 0.0 to 1.0";
+  the evaluator reports PERCENT. Measured: `asr >= 0.95` returned
+  `observed: 20.0, verdict: "pass", exit_code: 0`. The alarm was installed and
+  switched off, and a gate that always passes looks like a healthy system. The
+  `unit()` doc comment was wrong in the same direction, three lines above the
+  code contradicting it. A test now pins the description against what the
+  evaluator reports.
+- **VAL7: `get_dialog max_messages: 0` returned a full page.** It shared a match
+  arm with `None` and became the default 100; measured, `0` returned all 6
+  messages. The one parameter whose job is to bound the response was unbounded
+  by the value a computed budget most often collapses to. Now refused with a
+  message saying what to send instead.
+- **VAL10: three published pages promised no party `name` is ever emitted.** One
+  is, deliberately, with `validation` unconditionally `"none"`. A display name is
+  personal data and a container is a thing operators forward, so an operator
+  writing a redaction step from those pages would have covered
+  `sip_display_name` and missed `name`.
+- A macOS-only CI flake in `mcp_output_injection_test`: it called a tool
+  immediately after starting the server, and replay ingestion is asynchronous.
+  `mcp_stdio_test` already carried the same fix.
+
+### Notes
+
+- **VAL6 needed no fix.** Measured this session: `sample_seconds: 4294967295`
+  returns in 31 seconds, clamped by `MAX_SAMPLE_SECONDS = 30`. The backlog entry
+  was measured on 0.5.130 and the fix landed since.
+
 ## [0.5.135] - 2026-08-30
 
 ### Fixed
