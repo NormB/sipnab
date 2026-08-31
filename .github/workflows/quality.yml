@@ -160,7 +160,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2
+        uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d # v2
         with:
           tool: cargo-llvm-cov
 
@@ -284,7 +284,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Install clippy-sarif tooling
-        uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2
+        uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d # v2
         with:
           tool: clippy-sarif,sarif-fmt
 
@@ -297,7 +297,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload SARIF to Code Scanning
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           sarif_file: clippy.sarif
           category: clippy
