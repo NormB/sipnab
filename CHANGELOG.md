@@ -60,6 +60,17 @@ entry that carries them.
   longer lives inside the one implementation that happens to satisfy it today.
   No operator-facing string in the seam names a relay vendor.
 
+- **The published static-binary ceiling is 14 MB, not 13.** Measured from both
+  released artifacts rather than estimated: the x86_64-musl binary was
+  13,551,816 bytes at 0.5.138 and is 13,666,504 at 0.5.139, so the two new tools
+  -- six response types carrying derived JSON schemas, plus the seam's trait
+  objects -- cost 114,688 bytes against 79,672 bytes of headroom. This is the
+  release that tipped, not one that grew unusually. Shrinking was considered and
+  rejected: the release profile already runs `lto`, `codegen-units = 1`, `strip`
+  and `panic = "abort"`, and the only lever left is `opt-level = "z"`, which
+  trades the throughput the benchmarks page publishes. A claim that is no longer
+  true is worse than a larger one that is.
+
 ### Fixed
 
 - **`RelayStream` rendered with `ControlClient`'s documentation.** The module

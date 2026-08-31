@@ -294,7 +294,7 @@ fn every_published_linux_gnu_binary_carries_the_bpf_uprobe_backend() {
 /// 12,252,424 bytes, with `bpf` costing +589,952. Under the 12 MB
 /// (12,582,912-byte) ceiling that left 330,488 bytes of headroom and enabling
 /// `bpf` there turned every release red at the size gate. The ceiling
-/// `release.yml` reads from `website/config.toml` is 13 MB now, so size is no
+/// `release.yml` reads from `website/config.toml` is 14 MB now, so size is no
 /// longer the reason: musl stays without it because changing what a static
 /// artifact carries is a decision nobody has made, not because the bytes
 /// refuse to fit. macOS is excluded for a different reason: `aya` is declared

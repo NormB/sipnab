@@ -44,7 +44,7 @@ same + wasmi engine, module instantiated      1.88 MB
                                         delta +1.56 MB
 
 sipnab release binary today                   5.00 MB
-public claim on the homepage             "Under 13 MB static binary"
+public claim on the homepage             "Under 14 MB static binary"
 wasmi transitive crates                       15
 sipnab dependency count (--all-features)     352
 ```
@@ -152,7 +152,7 @@ normal way plugins arrive.
 This is the point that keeps the whole proposal honest against D7. Someone who
 does not want an interpreter in their capture tool does not get one: no wasmi,
 no 15 crates, no +1.56 MB, no `--plugin` flag. The default build is byte-for-byte
-what it is today, and the homepage's "under 13 MB" claim is unaffected because
+what it is today, and the homepage's "under 14 MB" claim is unaffected because
 the default binary does not change at all.
 
 ## ABI

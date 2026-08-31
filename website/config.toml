@@ -95,7 +95,19 @@ macos_floor_intel = "10.12"
 # and in the build docs, and enforced against the real artifact by the "Enforce
 # published binary size" step in release.yml. A ceiling rather than the exact
 # size so it does not need editing every time the binary moves by a hundred KB.
-binary_size_ceiling_mb = "13"
+#
+# 13 -> 14 at 0.5.139, attributed by measuring both released artifacts rather
+# than estimated: x86_64-musl was 13,551,816 bytes at 0.5.138 and 13,666,504 at
+# 0.5.139, so `query_relay` and `decode_ng` -- six response types carrying
+# derived JSON schemas, plus the seam's trait objects -- cost 114,688 bytes.
+# 0.5.138 had only 79,672 bytes of headroom, so this was the release that
+# tipped rather than the one that grew unusually.
+#
+# Shrinking was considered and rejected: `[profile.release]` already runs `lto`,
+# `codegen-units = 1`, `strip` and `panic = "abort"`, and the only lever left is
+# `opt-level = "z"`, which trades the throughput the benchmarks page publishes.
+# Raising a claim that is no longer true beats keeping a claim that is.
+binary_size_ceiling_mb = "14"
 github_url = "https://github.com/NormB/sipnab"
 # `owner/repo`, for the places a bare slug is what the command wants rather than
 # a URL: `gh attestation verify --repo`, the releases API path. These were
