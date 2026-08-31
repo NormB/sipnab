@@ -266,6 +266,43 @@ impl Server {
             .unwrap_or_else(|| panic!("no response to {method}"))
     }
 
+    /// Call one tool, retrying while the capture is still being ingested.
+    ///
+    /// Replay is ASYNCHRONOUS: `Server::start` returns as soon as the process
+    /// is up, and the dialog the test asks about may not have reached the store
+    /// yet. Calling once and asserting made this a macOS-only flake --
+    /// `call_id 'big-header@example.com' not found` on a run whose Linux leg
+    /// passed, from a commit that touched only documentation. `mcp_stdio_test`
+    /// already carries the same fix under the name
+    /// `list_dialogs_until_nonempty`, with its own CI run number in the comment.
+    ///
+    /// Retries only `-32602 ... not found`, which is the ingestion race. Any
+    /// other error is a real failure and is returned immediately rather than
+    /// waited out.
+    fn call_until_found(&mut self, tool: &str, arguments: serde_json::Value) -> serde_json::Value {
+        let deadline = std::time::Instant::now() + test_timeout(20);
+        loop {
+            let resp = self.request(
+                "tools/call",
+                serde_json::json!({"name": tool, "arguments": arguments}),
+            );
+            if resp["result"].is_object() {
+                return resp["result"].clone();
+            }
+            let msg = resp["error"]["message"].as_str().unwrap_or_default();
+            assert!(
+                msg.contains("not found"),
+                "{tool} failed for a reason that is not the ingestion race: {resp}"
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{tool} still reports the dialog missing after waiting for \
+                 ingestion: {resp}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
     /// Call one tool and return the whole `result`.
     fn call(&mut self, tool: &str, arguments: serde_json::Value) -> serde_json::Value {
         let resp = self.request(
@@ -548,7 +585,7 @@ fn oversized_header_response_in(stem: &str) -> (serde_json::Value, tempfile::Tem
         )],
     );
     let mut server = Server::start(&path);
-    let result = server.call(
+    let result = server.call_until_found(
         "get_message",
         serde_json::json!({"call_id": "big-header@example.com", "index": 0}),
     );
@@ -595,7 +632,7 @@ fn an_oversized_header_is_bounded_in_the_response() {
     );
 
     let mut server = Server::start(&path);
-    let result = server.call(
+    let result = server.call_until_found(
         "get_message",
         serde_json::json!({"call_id": "big-header@example.com", "index": 0}),
     );

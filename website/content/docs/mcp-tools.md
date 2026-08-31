@@ -3704,9 +3704,12 @@ four things are absent by design, and their absence is the message:
   sign is *these bytes are what sipnab observed*, and no signature algorithm
   carries that distinction. A verifier would check it, get back "authentic",
   and draw the wrong conclusion.
-- **No party `name`, ever, and `validation` is always `"none"`.** `From` and
-  `To` are a claim the sender made about itself. The display name travels under
-  `sip_display_name` instead, so a reader sees it as what a header said.
+- **No party name sipnab vouches for, and `validation` is always `"none"`.**
+  `From` and `To` are a claim the sender made about itself. sipnab EMITS a `name`
+  when the wire carried a display name -- beside `sip_display_name`, not
+  instead of it -- so a generic vCon reader shows a named party. What sipnab
+  refuses is the claim, not the field. Treat the name as personal data: a
+  redaction step must cover `name` as well as `sip_display_name`.
 - **No consent and no lawful-basis attachment.** An empty consent field reads
   as "nobody recorded consent", a statement about the CALL. The truth is a
   statement about the producer: sipnab was never in a position to record one.

@@ -1114,6 +1114,9 @@ pub struct GetDialogParams {
     /// Call-ID identifying the dialog.
     pub call_id: String,
     /// Maximum messages to return per page (default 100, max 1000).
+    ///
+    /// Must be at least 1 when given. `0` is refused rather than treated as
+    /// "unset": it is the value a computed budget most often collapses to.
     pub max_messages: Option<u32>,
     /// Cursor — index of the first message to return. Default 0.
     pub cursor: Option<u32>,
@@ -4557,8 +4560,22 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<GetDialogParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        // `0` is REFUSED, not silently defaulted. It used to share an arm with
+        // `None` and become 100, so a caller computing a budget as
+        // `max(0, remaining)` asked for nothing and was handed a full page --
+        // the one parameter whose job is to bound the response was unbounded
+        // by the one value that most clearly means "none". Returning an empty
+        // page instead would be honest about the request and misread as "this
+        // dialog has no messages", so the refusal says which it is.
         let max = match params.max_messages {
-            None | Some(0) => 100usize,
+            Some(0) => {
+                return Err(rmcp::ErrorData::invalid_params(
+                    "max_messages must be at least 1; it bounds the page and 0                      bounds nothing. Omit it for the default of 100."
+                        .to_string(),
+                    None,
+                ));
+            }
+            None => 100usize,
             Some(n) => (n as usize).min(self.row_cap),
         };
         let cursor = params.cursor.unwrap_or(0) as usize;

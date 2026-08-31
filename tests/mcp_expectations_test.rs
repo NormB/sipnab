@@ -335,3 +335,65 @@ fn the_gate_and_the_generators_are_registered() {
         );
     }
 }
+
+/// The published unit for a metric matches the unit the evaluator reports.
+///
+/// # The defect
+///
+/// `evaluate_expectations`'s tool description -- the only syntax documentation
+/// an LLM client is ever handed -- described `asr` as "a RATIO from 0.0 to
+/// 1.0". The evaluator reports `unit: "percent"`. Measured on
+/// `sip-problem-call.pcap`: a rule of `asr >= 0.95` returned
+/// `observed: 20.0, unit: "percent", verdict: "pass", exit_code: 0`, with the
+/// reason reading "20 is >= 0.9500".
+///
+/// An agent following the description writes `0.95`, means 95%, and installs a
+/// gate that passes any capture whose ASR is above 0.95 PERCENT. That is the
+/// worst shape a defect can take in a monitoring tool: the alarm is installed
+/// and switched off, and a gate that always passes is indistinguishable from a
+/// healthy system. `exit_code: 0` carries it into CI.
+///
+/// The `unit()` doc comment was wrong in the same direction and three lines
+/// above the code contradicting it -- it claimed `asr` is "a RATIO here and a
+/// PERCENT in `group_dialogs`" while the match arm returned `"percent"`.
+///
+/// This pins the agreement rather than the wording: whatever unit the
+/// evaluator reports for a metric, the description must not name a different
+/// one.
+#[test]
+fn the_published_metric_units_match_what_the_evaluator_reports() {
+    let src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/mcp/tools/expectations.rs"
+    ))
+    .expect("read expectations.rs");
+    let start = src
+        .find("name = \"evaluate_expectations\"")
+        .expect("the tool is still registered");
+    let description = &src[start
+        ..src[start..]
+            .find("annotations(")
+            .map_or(src.len(), |i| start + i)];
+    assert!(
+        description.contains("asr"),
+        "the description no longer mentions asr; this gate is reading the \
+         wrong text"
+    );
+
+    // `asr` is reported in PERCENT. The description must say so, and must not
+    // say ratio -- the two readings differ by a factor of 100, which is the
+    // whole defect.
+    assert!(
+        !description.to_ascii_uppercase().contains("RATIO"),
+        "the evaluate_expectations description calls a metric a RATIO. The \
+         evaluator reports asr in PERCENT, and a client that believes the \
+         description writes 0.95 for a 95% gate -- which passes at 0.95 \
+         percent. Description text:\n{description}"
+    );
+    assert!(
+        description.contains("PERCENT") || description.contains("percent"),
+        "the description states no unit for asr. It is a percent; saying \
+         nothing leaves a client to guess, and the guess that reads naturally \
+         from a 0.0-1.0 habit is off by a hundred."
+    );
+}

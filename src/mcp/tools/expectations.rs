@@ -165,7 +165,8 @@ impl SipnabMcp {
                        for a build. A rule is {metric, op, value} with an \
                        optional scope, min_sample and grounded_only. Metrics: \
                        count (dialogs matching the scope), asr (answered over \
-                       seized, as a RATIO from 0.0 to 1.0), lint_errors \
+                       seized, as a PERCENT from 0 to 100 -- a 95% gate is \
+                       value 95, NOT 0.95), lint_errors \
                        (conformance findings at or above a severity floor), and \
                        mos_p<N> (a percentile of estimated MOS, mos_p0 worst to \
                        mos_p100 best). Scopes are 'filter:<alias-or-DSL>' or \

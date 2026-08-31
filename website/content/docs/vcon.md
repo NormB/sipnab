@@ -499,11 +499,23 @@ Each refusal has an argument behind it in
 | JWE encryption | it asserts a custody relationship sipnab does not have |
 | consent attachments | sipnab obtained no consent, and an empty consent field reads as "none recorded" |
 | lawful-basis attachments | the same, with a named regulatory reader on the other end |
-| a party `name` | `From` and `To` are the caller's claim about the caller, trivially spoofed |
+| a party `name` **that sipnab vouches for** | `From` and `To` are the caller's claim about the caller, trivially spoofed |
 | hosted artefacts by `url` | sipnab hosts nothing, so it cannot promise where a file lives |
 
-The party `name` refusal has a structural form worth knowing about: the Rust
-type has no `name` field at all, so no later edit can populate one by accident.
+**sipnab EMITS a party `name` when the wire carried one.** This page previously
+said the Rust type has no `name` field, which was wrong: `Party::name` exists
+and carries the display name from `From` or `To`, alongside — never instead of
+— `sip_display_name`. It travels under the declared key so a generic vCon
+reader shows a named party rather than an anonymous one.
+
+What sipnab refuses is not the field but the *claim*: `validation` is
+unconditionally `"none"`, which says a header asserted this name and nobody
+checked it.
+
+**Treat it as personal data.** A display name is the caller's own words about
+who they are, and a container is a thing operators forward. If you are writing
+a redaction step, key it on `name` AND `sip_display_name` — an earlier version
+of this page would have led you to redact only the second.
 
 ### The message trace carries the headers, and strips the credentials
 

@@ -330,10 +330,18 @@ impl Metric {
 
     /// The unit the observed value is expressed in.
     ///
-    /// Published on every outcome rather than left to documentation, because
-    /// `asr` is a RATIO here and a PERCENT in `group_dialogs`, and a threshold
-    /// of `0.99` means "99%" under one reading and "1%" under the other. A unit
-    /// beside the number is what stops that being a silent misconfiguration.
+    /// Published on every outcome rather than left to documentation, because a
+    /// threshold of `0.99` means "99%" under one reading and "1%" under the
+    /// other, and a unit beside the number is what stops that being a silent
+    /// misconfiguration.
+    ///
+    /// This comment used to say `asr` is "a RATIO here and a PERCENT in
+    /// `group_dialogs`", three lines above the match arm returning `"percent"`.
+    /// The tool description repeated the same error, so a client was told to
+    /// write `0.95` for a 95% gate -- which passes at 0.95 percent. Measured on
+    /// `sip-problem-call.pcap`: `asr >= 0.95` returned `observed: 20.0,
+    /// verdict: "pass", exit_code: 0`. **`asr` is a PERCENT, here and
+    /// everywhere.**
     fn unit(self) -> &'static str {
         match self {
             Self::Count => "dialogs",

@@ -846,9 +846,12 @@ permission to keep the result, and four absences follow from that:
 - **No signature.** Nothing here carries a JWS. A signature would say sipnab
   vouches for the contents of the conversation, and sipnab vouches only for
   what it saw.
-- **No party `name`, ever.** Each party carries `validation: "none"` and a
-  `sip_display_name` at most. What the `From` and `To` headers said is a claim
-  by whoever sent the request, not an identity anyone checked.
+- **No party name sipnab vouches for.** sipnab EMITS a `name` when the wire
+  carried a display name, beside `sip_display_name`, and every party carries
+  `validation: "none"` — a claim by whoever sent the request, not an identity
+  anyone checked. This entry used to read "No party `name`, ever", which was
+  wrong in the direction that matters: a display name is personal data, so a
+  redaction step must cover `name` as well as `sip_display_name`.
 - **No consent record.** Nobody gave sipnab permission for anything, and an
   empty consent field would read as "none recorded" rather than "never asked".
 

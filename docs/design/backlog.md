@@ -44,13 +44,13 @@ Tiers:
 
 ## Status
 
-**57 open, 388 done** across 25 sections.
+**53 open, 392 done** across 25 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
 |---|---:|---:|---|
 | P0 | 0 | 21 | `##########` |
-| P1 | 12 | 58 | `########..` |
+| P1 | 8 | 62 | `#########.` |
 | PV | 0 | 13 | `##########` |
 | P2 | 0 | 109 | `##########` |
 | P3 | 0 | 64 | `##########` |
@@ -1065,7 +1065,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   drained AND the read reached the end of it. `get_dialog.complete` — "this page
   holds every message" — gets the same gate for the same reason.
 
-- [ ] **VAL5 — `evaluate_expectations` ships the wrong unit for `asr`, so a
+- [x] **VAL5 (done 2026-08-31) — `evaluate_expectations` ships the wrong unit for `asr`, so a
   95% gate passes a 57% capture.** The tool description in `tools/list` — the
   only syntax documentation an LLM client is ever handed — says `asr` is *"a
   RATIO from 0.0 to 1.0"*. The runtime unit is `percent`. Measured on a real
@@ -1092,7 +1092,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   'asr >= 0.95' rests on nothing... a gate does not pass on data it never
   judged."*
 
-- [ ] **VAL6 — `capture_health(sample_seconds)` has no upper bound, so a
+- [x] **VAL6 (already fixed by 0.5.135; verified 2026-08-31 -- requested 4294967295 returned in 31s, clamped by MAX_SAMPLE_SECONDS = 30) — `capture_health(sample_seconds)` has no upper bound, so a
   handful of calls wedge the server permanently.** `sample_seconds: 2` returns
   in 2.0 s — it really sleeps. `sample_seconds: 4294967295` is accepted with no
   validation error and never returns (~136 years), holding one of
@@ -1105,7 +1105,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   **Do:** bound `sample_seconds`, and put a ceiling on how long any single tool
   call may hold a concurrency slot.
 
-- [ ] **VAL7 — `get_dialog max_messages: 0` returns every message.** Measured:
+- [x] **VAL7 (done 2026-08-31) — `get_dialog max_messages: 0` returns every message.** Measured:
   `0` → all 7, `1` → 1, `2` → 2. `0` means "unbounded" in the one parameter
   whose job is to bound the response, and the schema permits it. An agent
   computing a budget as `max(0, remaining)` asks for nothing and is handed
@@ -1114,7 +1114,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   **Do:** reject `0`, or make it mean zero.
 
 
-- [ ] **VAL10 — the vCon docs promise no party `name` is ever emitted, and one
+- [x] **VAL10 (done 2026-08-31) — the vCon docs promise no party `name` is ever emitted, and one
   is, on 42% of real containers.** Verified at the source by the coordinator:
   [`src/output/vcon.rs`](https://github.com/NormB/sipnab/blob/main/src/output/vcon.rs) declares `pub name: Option<String>` with a doc comment
   explaining why it is emitted — *"§4.2 `name` — the display name the wire
@@ -3059,7 +3059,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:7714`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7714), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:7731`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7731), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
