@@ -158,6 +158,21 @@ pub fn dependency_path(f: &str) -> bool {
 /// Deliberately NARROW. A commit that edits `Cargo.toml` alongside `src/` is
 /// not a bump, and a version bump touches the site config and the man page too,
 /// so neither is exempted here.
+///
+/// # The one entry that is wider than its name
+///
+/// `.github/workflows/` is a DIRECTORY, so a workflow-only commit skips the
+/// gate whether it pins a new action version or rewrites the CI logic by hand.
+/// That is a decision rather than an oversight, and it is written down because
+/// the list is called "dependency paths" and this entry is not only that:
+/// Dependabot's `github_actions` group edits nothing else, so refusing the
+/// directory would block those pull requests for the exact reason the whole
+/// exemption exists. The gate asks whether USER-FACING work sits past the tag
+/// undeclared, and a CI workflow ships nothing to a user.
+///
+/// If that trade ever stops being worth it, the narrowing is to require the
+/// diff to touch only `uses:` lines — which needs the diff, not the path list,
+/// and is why it is not done here.
 #[must_use]
 pub fn is_dependency_bump(changed: &[String]) -> bool {
     if changed.is_empty() {

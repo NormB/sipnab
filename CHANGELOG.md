@@ -34,6 +34,14 @@ entry that carries them.
   `payload` field reads, so the two surfaces cannot disagree about what a
   capture contains.
 
+### Added
+
+- 14 tests across three files pinning defect classes from this session's own
+  failures: merge/CI discipline (merging without diagnosing the failing check),
+  behavior-change dependents (widening a tool without checking what relied on
+  the old scope), and verification hygiene (a `cargo test` filter written as a
+  regex selects nothing and prints `ok`).
+
 ### Changed
 
 - **The delivery gate now recognizes a dependency bump.**
