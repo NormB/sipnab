@@ -12,6 +12,19 @@ entry that carries them.
 
 ### Changed
 
+- The call-flow ladder's arrowheads on the browser analyze page are 14px, not
+  8px. They were smaller than the 11px label beside them, which reads as a
+  hairline with a dot on the end; on a ladder the direction is the information.
+
+### Added
+
+- 6 tests (`tests/generated_artifact_currency_test.rs`) pinning the class behind
+  that staleness: an artifact generated from the dependency graph, a batch of
+  individually-green pull requests, and a delivery-gate exemption that must not
+  reach the artifact a bump invalidates.
+
+### Fixed
+
 - `THIRD-PARTY-NOTICES.md` regenerated after five dependency bumps merged
   together. Each pull request's CI ran against a graph without the other four,
   so none of them saw the combined result and the staleness only appeared on

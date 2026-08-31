@@ -1006,19 +1006,29 @@
   transform: translateX(-50%);
 }
 
-/* Arrow head -- Unicode triangles */
+/* Arrow head -- Unicode triangles.
+ *
+ * 14px, not the 8px this shipped with. The head was SMALLER than the 11px
+ * label it belongs to, which reads as a hairline with a dot on the end rather
+ * than an arrow: on a ladder the direction IS the information, and at 8px a
+ * reader has to infer it from the label's position instead of seeing it. The
+ * row is 22px, so there is room.
+ *
+ * The negative margin closes the seam between the 1px line and the glyph's own
+ * side bearing, and it scales with the glyph -- at 14px a -2px pull leaves a
+ * visible gap. */
 .flow-head {
   flex-shrink: 0;
-  font-size: 8px;
+  font-size: 14px;
   line-height: 1;
 }
 
 .flow-arrow.right .flow-head {
-  margin-left: -2px;
+  margin-left: -4px;
 }
 
 .flow-arrow.left .flow-head {
-  margin-right: -2px;
+  margin-right: -4px;
 }
 
 /* Method/status colors for labels */
