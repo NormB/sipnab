@@ -8,7 +8,48 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.138] - 2026-08-31
+
+### Changed
+
+- **The README leads with what the tool does.** GitHub traffic says the repo
+  landing page is where people arrive -- 139 views and 17 uniques in 14 days,
+  the top path by six times, with sipnab.com as its own top referrer. It opened
+  with seven badges, two of them asking for money, then prose, then a feature
+  list, then build-from-source and cross-compilation, before a "Quick start"
+  whose first command needed root, a live interface, and a binary the page had
+  not said how to install. It carried no images at all, on the landing page of
+  a tool whose job is showing you a call flow.
+
+  Now: one sentence, the hero screenshot, one install line, and four commands
+  starting with the one that needs neither root nor a wire. Build and
+  prerequisites move below; the funding and CLA badges move to a "Support the
+  project" section, which is where an ask belongs once something has been
+  offered.
+- The call-flow ladder's arrowheads on the browser analyze page are 14px rather
+  than 8px -- they were smaller than the label beside them.
+
+### Fixed
+
+- **VAL15 and VAL18** shipped in 0.5.137 and are listed there; this release
+  carries no code change to the analysis path.
+- `itu.int` excluded from the dead-link gate. It answered 500 for its own
+  Recommendation pages -- G.107, G.114, E.411, from two networks -- and failed
+  Quality on four commits. Excluded by host rather than by admitting 500
+  globally, which would blind every host to a real server-side failure.
+
+### Notes
+
+- **PA8 (MCP sampling) closed as overtaken by the protocol.** The capability
+  negotiation is wired: `on_initialized` reads `capabilities.sampling` from the
+  handshake, retiring a setter named `with_client_sampling_for_test` because
+  nothing negotiated it, and `AlertEngine` gained a sink so a narrator can be
+  installed without `src/security/` depending on `src/mcp/`. The live narration
+  loop was deliberately not built: SEP-2577 deprecates MCP sampling, and in
+  `rmcp` 3.1.4 the three types a send path needs all carry `#[deprecated]`, so
+  it cannot compile under `-D warnings` without an `#[allow]`. The injection
+  hardening is kept -- it was never sampling-specific.
+
 
 ### Changed
 
