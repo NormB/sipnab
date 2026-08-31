@@ -65,9 +65,7 @@ fn the_budget_builder_reaches_the_governor() {
 /// would bound nothing: a caller reconnecting mints a fresh allowance.
 #[test]
 fn cloning_the_server_does_not_mint_a_fresh_budget() {
-    let a = server()
-        .with_sampling_budget(1)
-        .with_client_sampling_for_test(true);
+    let a = server().with_sampling_budget(1).with_client_sampling(true);
     let b = a.clone();
     assert!(
         a.may_sample("first").is_ok(),
@@ -84,9 +82,7 @@ fn cloning_the_server_does_not_mint_a_fresh_budget() {
 /// A zero budget refuses, and says the budget is what refused it.
 #[test]
 fn a_zero_budget_is_none_rather_than_unlimited() {
-    let s = server()
-        .with_sampling_budget(0)
-        .with_client_sampling_for_test(true);
+    let s = server().with_sampling_budget(0).with_client_sampling(true);
     assert_eq!(
         s.may_sample("anything"),
         Err(Refusal::BudgetSpent { limit: 0 }),

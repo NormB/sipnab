@@ -557,21 +557,18 @@ impl SipnabMcp {
 
     /// Record that the peer advertised the sampling capability.
     ///
-    /// Named for tests because nothing negotiates it yet: the live path that
-    /// would read this from the initialize handshake is not wired, and a
-    /// builder that looked general-purpose would imply otherwise. Renaming it
-    /// is the one-line change when the narration loop lands.
+    /// No longer test-only. `on_initialized` reads the capability out of the
+    /// handshake and calls the same setter, so this is the construction-time
+    /// spelling of a thing the live path now does for itself. It was named
+    /// `with_client_sampling_for_test` while nothing negotiated it, because a
+    /// builder that looked general-purpose would have implied otherwise.
+    ///
+    /// Mutates in place rather than rebuilding: the governor is shared behind
+    /// an `Arc<Mutex<..>>` across every clone rmcp makes per connection, and a
+    /// rebuild would drop the spend and dedupe state.
     #[must_use]
-    pub fn with_client_sampling_for_test(self, advertised: bool) -> Self {
-        {
-            let mut g = self.sampling.lock();
-            let budget = g.budget_per_hour();
-            *g = super::sampling::Governor::disabled().with_client_sampling(advertised);
-            if let Some(b) = budget {
-                *g = std::mem::replace(&mut *g, super::sampling::Governor::disabled())
-                    .with_budget(b);
-            }
-        }
+    pub fn with_client_sampling(self, advertised: bool) -> Self {
+        self.sampling.lock().set_client_sampling(advertised);
         self
     }
 
@@ -7963,6 +7960,48 @@ impl ServerHandler for SipnabMcp {
     /// Delegates to `resource_list` so the logic is testable without
     /// fabricating a `RequestContext`, and so the sandbox has exactly one
     /// implementation.
+    /// Read what the peer advertised at `initialize`.
+    ///
+    /// The client's capabilities exist only after the handshake, which is why
+    /// this is the one place that can know them. It retires a setter that was
+    /// named `with_client_sampling_for_test` precisely because nothing
+    /// negotiated it.
+    ///
+    /// # What deliberately does NOT happen here
+    ///
+    /// The live narration loop is not armed, and will not be.
+    /// [SEP-2577](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577)
+    /// deprecates MCP sampling: in `rmcp` 3.1.4 `CreateMessageRequestParams`,
+    /// `SamplingMessage` and `Peer::create_message` all carry
+    /// `#[deprecated(..., note = "will be removed in a future release")]`, so a
+    /// send path cannot compile under this project's
+    /// `cargo clippy -- -D warnings` without an `#[allow(deprecated)]` over it.
+    ///
+    /// Building a loop onto a protocol feature with a scheduled removal buys a
+    /// maintenance burden and a migration. The governor, its budget, its dedupe
+    /// and — the part worth keeping — the injection hardening in
+    /// [`super::sampling`] stay: a preamble stating every value is untrusted
+    /// observation, only named fields, control characters removed, clamped on a
+    /// character boundary. None of that is sampling-specific. It is how this
+    /// codebase forwards attacker-written capture text to any model, and the
+    /// next surface that needs it will not have to invent it again.
+    ///
+    /// The capability is still read and still recorded, so `may_sample` gives a
+    /// truthful answer to anything that asks.
+    async fn on_initialized(&self, context: rmcp::service::NotificationContext<rmcp::RoleServer>) {
+        let advertised = context
+            .peer
+            .peer_info()
+            .is_some_and(|i| i.capabilities.sampling.is_some());
+        self.sampling.lock().set_client_sampling(advertised);
+        tracing::debug!(
+            target: "sipnab::mcp",
+            client_can_sample = advertised,
+            budget_per_hour = ?self.sampling.lock().budget_per_hour(),
+            "sampling capability negotiated"
+        );
+    }
+
     /// The workflows this server suggests, and the order inside each.
     async fn list_prompts(
         &self,

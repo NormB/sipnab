@@ -88,6 +88,24 @@ exclude = [
   # which would blind the whole run to real authorization failures for the sake
   # of one sponsor link. This is the failure mode that gets link checkers
   # deleted, so it is written down instead of tuned away.
+  # itu.int answers 500 Internal Server Error for its own Recommendation pages.
+  # Measured 2026-08-31 from two networks: three URLs the docs cite --
+  # T-REC-G.107, T-REC-G.114, T-REC-E.411 -- all 500, three attempts each, from
+  # a GitHub Actions runner and from a residential connection within the same
+  # hour. One of them, E.411, answered 200 from here earlier the same day, so
+  # this is their service degrading rather than a path that was ever wrong.
+  #
+  # Excluded rather than adding 500 to `accept`. The note above that list draws
+  # a deliberate line -- 502/503/504 mean an intermediary never reached the
+  # origin, 500 means the origin answered and failed -- and admitting 500
+  # globally would blind every host to a real server-side failure for the sake
+  # of one. This is the same shape as the patreon and linkedin entries below: a
+  # named host that misbehaves, excluded with its evidence.
+  #
+  # The cost is small and worth stating: these are ITU Recommendation numbers,
+  # canonical and stable, so a link rotting is close to impossible. Revisit when
+  # itu.int serves again -- the exclusion is for their outage, not forever.
+  'itu\.int',
   'patreon\.com',
   # LinkedIn answers non-browser user agents with HTTP 999 "Request Denied",
   # their long-standing anti-scraping response, and rejects HEAD with 405 even

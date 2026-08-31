@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**51 open, 394 done** across 25 sections.
+**50 open, 395 done** across 25 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -55,7 +55,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | P2 | 0 | 109 | `##########` |
 | P3 | 0 | 64 | `##########` |
 | P4 | 0 | 39 | `##########` |
-| PA | 2 | 11 | `########..` |
+| PA | 1 | 12 | `#########.` |
 | PB | 4 | 16 | `########..` |
 | TK | 4 | 6 | `######....` |
 | RE | 3 | 4 | `######....` |
@@ -2767,7 +2767,34 @@ output path.
     is a different liability class, and the first time an agent-authored route
     block drops calls it is this project's name on it.
 
-- [ ] **PA8 — MCP sampling. PARTIAL 2026-08-28: the safety machinery is built
+- [x] **PA8 (closed 2026-08-31 — overtaken by the protocol) — MCP sampling.**
+  The capability negotiation IS now wired: `on_initialized` reads
+  `capabilities.sampling` out of the handshake and records it, retiring the
+  setter that was named `with_client_sampling_for_test` because nothing
+  negotiated it. `AlertEngine` gained a `FindingSink` so a narrator can be
+  installed without `src/security/` knowing anything about `src/mcp/`.
+
+  **The live narration loop was deliberately not built.**
+  [SEP-2577](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577)
+  deprecates MCP sampling. In `rmcp` 3.1.4 `CreateMessageRequestParams`,
+  `SamplingMessage` and `Peer::create_message` all carry `#[deprecated(...
+  will be removed in a future release)]`, so a send path cannot compile under
+  `cargo clippy -- -D warnings` without an `#[allow(deprecated)]` over it.
+  Measured 2026-08-31: three clippy errors, one per deprecated item.
+
+  The entry originally ranked this last because "client support is thin and
+  uneven". The protocol has now gone further than thin, and building a loop
+  onto a feature with a scheduled removal buys a maintenance burden and a
+  migration.
+
+  **Kept, and worth keeping regardless:** the injection hardening in
+  [`src/mcp/sampling.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/sampling.rs). A preamble stating every value is untrusted
+  observation, only named fields forwarded, control characters removed, clamped
+  on a character boundary. None of that is sampling-specific — it is how this
+  codebase forwards attacker-written capture text to any model, and the next
+  surface that needs it will not have to invent it again.
+
+  **(superseded) PA8 — MCP sampling. PARTIAL 2026-08-28: the safety machinery is built
   and tested, the callers are not wired.**
 
   **Shipped** in [`src/mcp/sampling.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/sampling.rs), with `--mcp-sampling-budget` reaching a

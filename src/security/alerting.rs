@@ -401,10 +401,26 @@ type AlertKey = (IpAddr, String);
 /// Recent event times for one key, newest last, with its LRU tick.
 type EventWindow = (std::collections::VecDeque<DateTime<Utc>>, u64);
 
+/// A sink handed each finding as it fires, for optional narration.
+///
+/// Boxed rather than a generic parameter because `AlertEngine` is stored behind
+/// an `Arc<RwLock<..>>` in half a dozen places and making it generic would
+/// spread a type parameter across all of them for one optional consumer.
+///
+/// The engine knows nothing about what narrates. That is deliberate: the MCP
+/// server installs a sink that asks its own governor and talks to its own peer,
+/// and `src/security/` has no business depending on `src/mcp/`.
+pub type FindingSink = Box<dyn Fn(&Finding) + Send + Sync>;
+
 /// Alerting engine that manages rules, cooldowns, and command execution.
 pub struct AlertEngine {
     /// Configured alert rules.
     rules: Vec<AlertRule>,
+    /// Optional sink notified for every finding this engine records.
+    ///
+    /// `None` on every run that has not installed one, which is the default and
+    /// the common case.
+    narrator: Option<FindingSink>,
     /// Per (source IP, rule name) cooldown tracking, in CAPTURE time.
     ///
     /// Packet time, not `Instant::now()`. Offline a whole capture elapses in
@@ -484,6 +500,7 @@ impl AlertEngine {
     pub fn new(rules: Vec<AlertRule>, exec_cmd: Option<String>) -> Self {
         Self {
             rules,
+            narrator: None,
             cooldowns: HashMap::new(),
             events: HashMap::new(),
             lru: 0,
@@ -507,6 +524,19 @@ impl AlertEngine {
 
     /// Override the default findings-history capacity. Setting 0 disables
     /// retention. Existing entries above the new cap are evicted oldest-first.
+    /// Install a sink called for every finding this engine records.
+    ///
+    /// One sink, replaced rather than appended: two narrators is two budgets,
+    /// and the one that drifts is the one nobody reads.
+    ///
+    /// Called with the finding AFTER it is recorded, so a sink that panics or
+    /// blocks cannot cost the finding itself. The sink is expected to be cheap
+    /// and non-blocking -- the MCP one asks a governor and spawns.
+    pub fn set_narrator(&mut self, sink: Option<FindingSink>) {
+        self.narrator = sink;
+    }
+
+    /// How many findings this engine retains for later retrieval.
     pub fn set_findings_capacity(&mut self, cap: usize) {
         self.findings_capacity = cap;
         while self.findings.len() > cap {
@@ -666,6 +696,18 @@ impl AlertEngine {
                 self.findings.pop_front();
             }
             self.findings.push_back(Finding {
+                rule_name: alert_type.to_string(),
+                src_ip,
+                detail: sanitized_detail.clone(),
+                timestamp: fired_at,
+            });
+        }
+
+        // The narrator sees the finding whether or not it was RETAINED: a
+        // `findings_capacity` of zero is a retention setting, not a statement
+        // that the finding did not happen, and narrating is not retention.
+        if let Some(sink) = &self.narrator {
+            sink(&Finding {
                 rule_name: alert_type.to_string(),
                 src_ip,
                 detail: sanitized_detail.clone(),

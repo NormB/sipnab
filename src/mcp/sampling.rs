@@ -209,6 +209,23 @@ impl Governor {
         self
     }
 
+    /// Record what the peer advertised, on a governor that already exists.
+    ///
+    /// The builder form consumes `self`, which suited construction and not the
+    /// live path: the capability arrives in `initialize`, AFTER the governor is
+    /// built and shared behind an `Arc<Mutex<..>>` by every clone rmcp makes
+    /// per connection. Rebuilding it there would drop the spend and dedupe
+    /// state of whatever connection came before.
+    pub fn set_client_sampling(&mut self, advertised: bool) {
+        self.client_can_sample = advertised;
+    }
+
+    /// Whether the peer advertised sampling.
+    #[must_use]
+    pub fn client_can_sample(&self) -> bool {
+        self.client_can_sample
+    }
+
     /// The configured hourly budget, if sampling is on.
     #[must_use]
     pub fn budget_per_hour(&self) -> Option<u32> {
