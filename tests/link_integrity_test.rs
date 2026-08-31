@@ -754,7 +754,18 @@ fn root_community_file_links_resolve() {
     /// attributing the delta per file: the count exists so a link that stops
     /// being extracted -- a heading renamed, a list reformatted -- shows up as
     /// a shortfall rather than as fewer links quietly going unchecked.
-    const EXPECTED_COMMUNITY_LINKS: usize = 46;
+    ///
+    /// 46 -> 49: three, all in README.md, attributed against HEAD. The repo
+    /// landing page took 139 views in 14 days -- the top path by six times,
+    /// with sipnab.com as its own top referrer -- and opened with seven badges,
+    /// then prose, then build-from-source, before a "Quick start" whose first
+    /// command assumed the binary was already installed. It now leads with what
+    /// the tool does, a picture of it doing that, and one install line, which
+    /// added `website/static/demos/hero-static.webp` (the first image the page
+    /// has ever carried, on a visual analysis tool), `docs/install.md` and
+    /// `docs/examples.md`. The moved funding badges are a wash: removed from
+    /// the header, re-added under "Support the project".
+    const EXPECTED_COMMUNITY_LINKS: usize = 49;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

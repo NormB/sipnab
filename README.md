@@ -3,17 +3,65 @@
 [![CI](https://github.com/NormB/sipnab/actions/workflows/ci.yml/badge.svg)](https://github.com/NormB/sipnab/actions/workflows/ci.yml)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13931/badge)](https://www.bestpractices.dev/projects/13931)
 [![codecov](https://codecov.io/gh/NormB/sipnab/graph/badge.svg)](https://codecov.io/gh/NormB/sipnab)
-[![Patreon](https://img.shields.io/badge/Patreon-support-f96854?logo=patreon&logoColor=white)](https://www.patreon.com/c/NormB975)
-[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/NormB)
-[![CLA assistant](https://cla-assistant.io/readme/badge/NormB/sipnab)](https://cla-assistant.io/NormB/sipnab)
 
-SIP & RTP capture, analysis, and security tool.
+**Read a SIP call and see why it failed.** One static binary — live traffic, a
+pcap, or the HEP feed from every proxy in your estate — showing the call flow,
+the RTP quality underneath it, and the security signals around it.
 
-**One static binary that reads a whole estate.** Kamailio, OpenSIPS and
-Asterisk already speak HEP, so they mirror their signaling to a single sipnab
-listener and that one process answers for every node — nothing goes on the
-production hosts, and there is no collector, no database and no web UI to
-operate.
+![The sipnab TUI: a call-flow ladder of a complete SIP lifecycle — REGISTER, then INVITE / 180 Ringing / 200 OK / ACK, an in-dialog re-INVITE, and BYE — with the decoded INVITE in the detail pane](website/static/demos/hero-static.webp)
+
+Documentation and a browser-based analyzer that needs no install:
+**[sipnab.com](https://sipnab.com)**
+
+## Install
+
+```bash
+curl -fsSL https://sipnab.com/install.sh | sh
+```
+
+macOS: `brew install NormB/tap/sipnab`. Packages, checksums and the
+capabilities needed for live capture are in
+[Installation](docs/install.md). Building from source is
+[below](#build).
+
+## First run
+
+Start with a capture file — no root, no interface, and the fastest way to see
+whether sipnab tells you something you did not already know:
+
+```bash
+sipnab -I capture.pcap
+```
+
+Just the calls sipnab considers problematic, as JSON, which is the shape most
+people want first:
+
+```bash
+sipnab -N --json -I capture.pcap --problems
+```
+
+One call, explained:
+
+```bash
+sipnab -N -I capture.pcap --call-report <call-id> --no-cli-print
+```
+
+Live capture needs privileges on the interface. This is the TUI, which puts
+the terminal in raw mode — anything pasted after it arrives as keystrokes
+rather than as a second command (`i` clears non-matching dialogs, `q` quits):
+
+```bash
+sudo sipnab -d eth0
+```
+
+More recipes below, and a full set in [Examples](docs/examples.md).
+
+## One listener for a whole estate
+
+Kamailio, OpenSIPS and Asterisk already speak HEP, so they mirror their
+signaling to a single sipnab listener and that one process answers for every
+node — nothing goes on the production hosts, and there is no collector, no
+database and no web UI to operate.
 
 On one box it still does what you expect. sipnab honors every
 [sngrep](https://github.com/irontec/sngrep) keybinding and accepts the
@@ -21,12 +69,13 @@ On one box it still does what you expect. sipnab honors every
 adds first-class RTP quality monitoring, VoIP diagnostic aliases, security
 analysis, and an MCP server an AI agent can drive.
 
-## Features
+## What it does
+
 
 - **Four output modes** -- interactive TUI, non-interactive CLI, JSON, MCP server (drive sipnab from an AI agent)
 - **SIP header matching** -- From, To, Contact, User-Agent, filter DSL
 - **RTP quality monitoring** -- jitter, loss, MOS scoring, one-way audio detection
-- **Per-call asymmetry signals** -- codec, ptime, payload-type, duration, late-media (Phase 8.7)
+- **Per-call asymmetry signals** -- codec, ptime, payload-type, duration, late-media
 - **Diagnostic aliases** -- `--problems`, `--slow-setup`, `--short-calls`, `--one-way`, `--nat-issues` as flags; `codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media` via `--filter` (e.g. `sipnab -N -I capture.pcap --filter codec-asym`)
 - **Security analysis** -- scanner detection, registration flood, digest leak, STIR/SHAKEN, fraud heuristics
 - **Event execution** -- run commands on dialog state changes or quality drops
@@ -35,6 +84,44 @@ analysis, and an MCP server an AI agent can drive.
 - **Privilege separation** -- drop to unprivileged user after capture device open
 - **pcap I/O** -- read/write pcap and pcapng, file rotation and splitting
 - **MCP server mode** -- expose analysis (dialogs, streams, RTP, security findings) as 51 Model Context Protocol tools an AI agent can call. No tool edits the analysis in place; file export, capture swapping and shutdown stay off unless you enable them. Stdio + HTTP transports. See [`docs/mcp.md`](./docs/mcp.md).
+
+## More recipes
+
+Filter on the From header, in CLI mode rather than the TUI:
+
+```bash
+sudo sipnab -N -d eth0 --from 1001
+```
+
+Emit JSON and pipe it to jq:
+
+```bash
+sudo sipnab -N -d eth0 --json | jq .
+```
+
+Detect SIP scanners and report them to syslog:
+
+```bash
+sudo sipnab -N -d eth0 --kill-scanner --alert syslog
+```
+
+## TUI
+
+The default interactive mode is a full terminal interface for reading SIP and
+RTP as they happen:
+
+- **Call list** with sortable columns, multi-select, inline search, filter DSL
+- **Call flow ladder** with color-coded arrows, SDP codec display, PDD annotation
+- **Four timestamp modes** -- absolute (`HH:MM:SS.mmm`), delta from previous
+  message (color-coded by latency), delta from first message, and scaled, which
+  stretches the ladder with time-proportional spacer rows
+- **Split view** -- raw SIP detail panel alongside the ladder diagram, resizable
+  with `9`/`0` or `+`/`-`
+- **Message diff** -- select two messages with Space to compare side-by-side
+- **Extended flow** -- merge correlated dialog legs into a single ladder (`F4`/`x`)
+- **RTP stream list** -- jitter, loss, MOS scores (Tab to switch)
+
+sipnab honors every sngrep keybinding. Press `F1` for the full shortcut reference.
 
 ## Prerequisites
 
@@ -99,65 +186,6 @@ cross build --release --target aarch64-unknown-linux-gnu
 
 Cross-compilation requires Docker (via [Colima](https://github.com/abiosoft/colima),
 Docker Desktop, or similar) and `cross` (`cargo install cross`).
-
-## Quick start
-
-The default mode is the TUI -- an interactive call list. It puts the terminal in
-raw mode, so anything pasted after it arrives as keystrokes rather than as a
-second command (`i` clears non-matching dialogs, `q` quits). Run it on its own:
-
-```bash
-sudo sipnab -d eth0
-```
-
-CLI mode instead of the TUI, filtering on the From header:
-
-```bash
-sudo sipnab -N -d eth0 --from 1001
-```
-
-Diagnose a specific call from a pcap. `--no-cli-print` keeps the whole capture's
-message dump out of the way, so the report is all you get:
-
-```bash
-sipnab -N -I capture.pcap --call-report <call-id> --no-cli-print
-```
-
-Show only the calls sipnab considers problematic:
-
-```bash
-sudo sipnab -N -d eth0 --problems
-```
-
-Emit JSON and pipe it to jq:
-
-```bash
-sudo sipnab -N -d eth0 --json | jq .
-```
-
-Detect SIP scanners and report them to syslog:
-
-```bash
-sudo sipnab -N -d eth0 --kill-scanner --alert syslog
-```
-
-## TUI
-
-The default interactive mode is a full terminal interface for reading SIP and
-RTP as they happen:
-
-- **Call list** with sortable columns, multi-select, inline search, filter DSL
-- **Call flow ladder** with color-coded arrows, SDP codec display, PDD annotation
-- **Four timestamp modes** -- absolute (`HH:MM:SS.mmm`), delta from previous
-  message (color-coded by latency), delta from first message, and scaled, which
-  stretches the ladder with time-proportional spacer rows
-- **Split view** -- raw SIP detail panel alongside the ladder diagram, resizable
-  with `9`/`0` or `+`/`-`
-- **Message diff** -- select two messages with Space to compare side-by-side
-- **Extended flow** -- merge correlated dialog legs into a single ladder (`F4`/`x`)
-- **RTP stream list** -- jitter, loss, MOS scores (Tab to switch)
-
-sipnab honors every sngrep keybinding. Press `F1` for the full shortcut reference.
 
 ## Feature flags
 
@@ -256,6 +284,12 @@ Found a vulnerability? **Do not open a public issue.** See
 timeline, and what is in scope -- parser crashes, key-material leakage,
 privilege-drop and chroot escapes, API/MCP authentication bypass, and command
 injection through the `--alert-exec` family.
+
+## Support the project
+
+[![Patreon](https://img.shields.io/badge/Patreon-support-f96854?logo=patreon&logoColor=white)](https://www.patreon.com/c/NormB975)
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/NormB)
+[![CLA assistant](https://cla-assistant.io/readme/badge/NormB/sipnab)](https://cla-assistant.io/NormB/sipnab)
 
 ## License
 
