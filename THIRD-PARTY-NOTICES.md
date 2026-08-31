@@ -39,7 +39,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | r-efi | MIT OR Apache-2.0 OR LGPL-2.1-or-later | **Apache-2.0** |
 | termina | MIT OR MPL-2.0 | **MIT** |
 
-## Rust crates (400)
+## Rust crates (401)
 
 | Crate | Version | License |
 |---|---|---|
@@ -151,7 +151,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | find-msvc-tools | 0.1.9 | MIT OR Apache-2.0 |
 | finl_unicode | 1.4.0 | (MIT OR Apache-2.0) AND Unicode-DFS-2016 |
 | fixedbitset | 0.4.2 | MIT/Apache-2.0 |
-| flate2 | 1.1.9 | MIT OR Apache-2.0 |
+| flate2 | 1.1.10 | MIT OR Apache-2.0 |
 | fnv | 1.0.7 | Apache-2.0 / MIT |
 | foldhash | 0.1.5 | Zlib |
 | foldhash | 0.2.0 | Zlib |
@@ -214,7 +214,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | litrs | 1.0.0 | MIT OR Apache-2.0 |
 | lock_api | 0.4.14 | MIT OR Apache-2.0 |
-| log | 0.4.33 | MIT OR Apache-2.0 |
+| log | 0.4.34 | MIT OR Apache-2.0 |
 | lru | 0.18.2 | MIT |
 | mac_address | 1.1.8 | MIT OR Apache-2.0 |
 | matchers | 0.2.0 | MIT |
@@ -226,7 +226,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | mimalloc | 0.1.52 | MIT |
 | mime | 0.3.17 | MIT OR Apache-2.0 |
 | minimal-lexical | 0.2.1 | MIT/Apache-2.0 |
-| miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
+| miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
 | mio | 1.2.0 | MIT |
 | nix | 0.29.0 | MIT |
 | nom | 7.1.3 | MIT |
@@ -293,7 +293,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | regex-automata | 0.4.16 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
-| rmcp | 3.1.3 | Apache-2.0 |
+| rmcp | 3.1.4 | Apache-2.0 |
 | rmcp-macros | 3.1.4 | Apache-2.0 |
 | rsa | 0.9.10 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
@@ -394,15 +394,15 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | wasm-bindgen-macro | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-macro-support | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-shared | 0.2.117 | MIT OR Apache-2.0 |
-| wasm-encoder | 0.257.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasm-encoder | 0.258.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasmi | 1.1.0 | MIT/Apache-2.0 |
 | wasmi_collections | 1.1.0 | MIT/Apache-2.0 |
 | wasmi_core | 1.1.0 | MIT/Apache-2.0 |
 | wasmi_ir | 1.1.0 | MIT/Apache-2.0 |
 | wasmparser | 0.239.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wasmparser | 0.257.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wast | 257.0.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wat | 1.257.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasmparser | 0.258.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wast | 258.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wat | 1.258.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wezterm-bidi | 0.2.3 | MIT AND Unicode-DFS-2016 |
 | wezterm-blob-leases | 0.1.1 | MIT |
 | wezterm-color-types | 0.3.0 | MIT |
@@ -442,4 +442,5 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | zerocopy-derive | 0.8.48 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zeroize | 1.9.0 | Apache-2.0 OR MIT |
 | zeroize_derive | 1.5.0 | Apache-2.0 OR MIT |
-| zmij | 1.0.21 | MIT |
+| zlib-rs | 0.6.7 | Zlib |
+| zmij | 1.0.23 | MIT |

@@ -8,6 +8,15 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- `THIRD-PARTY-NOTICES.md` regenerated after five dependency bumps merged
+  together. Each pull request's CI ran against a graph without the other four,
+  so none of them saw the combined result and the staleness only appeared on
+  `main`. 401 crates and 3 system libraries.
+
 ## [0.5.137] - 2026-08-31
 
 ### Fixed
