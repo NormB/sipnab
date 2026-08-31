@@ -1,15 +1,27 @@
 Output demos/.hero-tmp.gif
 Source demos/common.tape
 
-# Hero still: a complete REGISTER -> INVITE -> re-INVITE(hold) -> BYE lifecycle
-# with real bidirectional G.711 media (PII-free: alice/bob @ example.com,
-# loopback SDP). The port range spans SIP (5080/5082) + RTP (5084-5099) so the
-# media streams associate with the call. Land on the list, drill into the
-# call-flow ladder, reveal the RTP media line, and screenshot.
+# Hero still: THE SAME capture /analyze offers behind "Load a sample call", so a
+# visitor who watches this and then clicks through sees the call they were just
+# shown rather than a different one. It is also the richer capture: seven
+# dialogs covering Registered, Expired (an unregister), Active, Pending and
+# Terminated subscriptions, an OPTIONS ping and the call itself, with 600 RTP
+# packets. PII-free by construction -- TEST-NET-1 addresses, alice/bob at
+# example.com.
+#
+# The call is the SEVENTH dialog, so six Downs reach it. That count is the
+# whole reason this tape and the capture generator must move together: adding a
+# dialog to demos/gen-sample-call.py silently retargets this screenshot at
+# whatever now sits in seventh place.
 Hide
-Type "sipnab -I tests/pcap-samples/register-invite-reinvite-bye.pcap --portrange 5080-5099"
+Type "sipnab -I website/static/demos/sample-call.pcap"
 Enter
 Sleep 4s
+Down
+Down
+Down
+Down
+Down
 Down
 Sleep 0.5s
 Enter
