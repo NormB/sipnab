@@ -111,3 +111,57 @@ pub fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
 pub fn debounce_ceiling(burst_secs: f64, window_secs: f64) -> usize {
     (burst_secs / window_secs).ceil() as usize + 1
 }
+
+/// Files a DEPENDENCY BUMP touches, and nothing else.
+///
+/// Same shape as [`ADVERTISEMENT_PATHS`]: a trailing `/` is a directory, every
+/// other entry is an exact file.
+pub const DEPENDENCY_PATHS: &[&str] = &[
+    "Cargo.toml",
+    "Cargo.lock",
+    "fuzz/Cargo.toml",
+    "fuzz/Cargo.lock",
+    "e2e/package.json",
+    "e2e/package-lock.json",
+    "Dockerfile",
+    "bench/Dockerfile",
+    ".github/workflows/",
+];
+
+/// Whether one path is a dependency-manifest file.
+#[must_use]
+pub fn dependency_path(f: &str) -> bool {
+    DEPENDENCY_PATHS.iter().any(|p| {
+        if let Some(dir) = p.strip_suffix('/') {
+            f.starts_with(dir) && f.as_bytes().get(dir.len()) == Some(&b'/')
+        } else {
+            f == *p
+        }
+    })
+}
+
+/// Whether a changeset is nothing but a dependency bump.
+///
+/// # Why this exists
+///
+/// `a_p0_marked_done_is_released_or_declared` fires on any post-tag commit that
+/// does not declare itself in the CHANGELOG. That is right for feature work and
+/// wrong for a Dependabot bump: a lockfile update ships nothing a reader needs
+/// told about, and the bot cannot write a changelog entry.
+///
+/// The cost was not theoretical. Six Dependabot pull requests sat unmergeable
+/// against a branch protection requiring `CI success`, and the failing test was
+/// this repository's own delivery gate reporting a bump as an undeclared
+/// release. The gate was working exactly as written; what it lacked was a name
+/// for the one kind of post-tag commit that legitimately says nothing.
+///
+/// Deliberately NARROW. A commit that edits `Cargo.toml` alongside `src/` is
+/// not a bump, and a version bump touches the site config and the man page too,
+/// so neither is exempted here.
+#[must_use]
+pub fn is_dependency_bump(changed: &[String]) -> bool {
+    if changed.is_empty() {
+        return false;
+    }
+    changed.iter().all(|f| dependency_path(f))
+}

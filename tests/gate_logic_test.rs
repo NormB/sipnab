@@ -46,7 +46,8 @@ use std::path::PathBuf;
 mod release_logic;
 
 use release_logic::{
-    ADVERTISEMENT_PATHS, advertisement_path, debounce_ceiling, is_advertisement, parse_version,
+    ADVERTISEMENT_PATHS, advertisement_path, debounce_ceiling, dependency_path, is_advertisement,
+    is_dependency_bump, parse_version,
 };
 
 /// The repository root.
@@ -476,4 +477,80 @@ fn this_suite_exercises_states_this_checkout_is_not_in() {
              observing the tree, which is the defect it exists to prevent"
         );
     }
+}
+
+/// A dependency bump is a post-tag commit that legitimately declares nothing.
+///
+/// The delivery gate fires on any commit past the newest tag with no CHANGELOG
+/// entry. Correct for feature work; wrong for a lockfile bump, which ships
+/// nothing a reader needs told about and is authored by a bot that cannot write
+/// an entry. Six Dependabot pull requests sat unmergeable on exactly this.
+#[test]
+fn a_lockfile_bump_is_recognized_as_declaring_nothing() {
+    for paths in [
+        vec!["Cargo.lock"],
+        vec!["Cargo.toml", "Cargo.lock"],
+        vec!["fuzz/Cargo.lock"],
+        vec!["e2e/package-lock.json", "e2e/package.json"],
+        vec![".github/workflows/ci.yml"],
+        vec!["Dockerfile"],
+        vec!["bench/Dockerfile"],
+    ] {
+        let v: Vec<String> = paths.iter().map(|s| (*s).to_string()).collect();
+        assert!(
+            is_dependency_bump(&v),
+            "{paths:?} is a dependency bump and must not demand a changelog entry"
+        );
+    }
+}
+
+/// Real work is not a dependency bump, however few files it touches.
+///
+/// The exemption has to stay narrow or it swallows the gate: a commit that
+/// edits `Cargo.toml` beside `src/` is a feature, and a version bump touches
+/// the site config and the man page as well.
+#[test]
+fn real_work_is_not_mistaken_for_a_dependency_bump() {
+    for paths in [
+        vec!["Cargo.toml", "src/lib.rs"],
+        vec!["src/mcp/server.rs"],
+        vec!["Cargo.toml", "website/config.toml", "man/sipnab.1"],
+        vec!["Cargo.lock", "docs/install.md"],
+        vec!["CHANGELOG.md"],
+    ] {
+        let v: Vec<String> = paths.iter().map(|s| (*s).to_string()).collect();
+        assert!(
+            !is_dependency_bump(&v),
+            "{paths:?} is not a dependency bump; exempting it would let real \
+             work past the delivery gate unannounced"
+        );
+    }
+    assert!(
+        !is_dependency_bump(&[]),
+        "an empty changeset bumps nothing -- treating 'cannot look' as \
+         'nothing to see' is the failure the sibling predicate documents"
+    );
+}
+
+/// The prefix rule is exact, the same way the advertisement one is.
+///
+/// `Cargo.lock.bak` and `Cargo.tomlx` are not dependency manifests, and a
+/// `starts_with` over the same list would exempt both.
+#[test]
+fn a_name_that_merely_begins_like_a_manifest_is_not_one() {
+    for f in [
+        "Cargo.lock.bak",
+        "Cargo.tomlx",
+        "fuzz/Cargo.lock.orig",
+        "Dockerfile.dev",
+        ".github/workflows-old/ci.yml",
+    ] {
+        assert!(
+            !dependency_path(f),
+            "{f} is not a dependency manifest; exempting it lets a commit \
+             carrying real work past the gate beside a plausible name"
+        );
+    }
+    assert!(dependency_path(".github/workflows/ci.yml"));
+    assert!(dependency_path("Cargo.lock"));
 }

@@ -31,7 +31,7 @@ use std::process::Command;
 #[path = "support/release_logic.rs"]
 mod release_logic;
 
-use release_logic::{ADVERTISEMENT_PATHS, is_advertisement, parse_version};
+use release_logic::{ADVERTISEMENT_PATHS, is_advertisement, is_dependency_bump, parse_version};
 
 /// The repository root.
 fn repo() -> PathBuf {
@@ -186,6 +186,17 @@ fn only_advertises_the_newest_tag() -> Option<bool> {
         published_version(),
         newest_tag()?,
     ))
+}
+
+/// Whether every commit past the newest tag is a dependency bump.
+///
+/// The one kind of post-tag commit that legitimately declares nothing: a
+/// lockfile update ships nothing a reader needs told about, and the bot that
+/// authors it cannot write a changelog entry. Six Dependabot pull requests sat
+/// unmergeable because the gate below had no name for this.
+fn only_bumps_dependencies() -> Option<bool> {
+    let changed = changed_since_newest_tag()?;
+    Some(is_dependency_bump(&changed))
 }
 
 // ── A. Unreleased work must declare itself ──────────────────────────
@@ -687,6 +698,14 @@ fn a_p0_marked_done_is_released_or_declared() {
     }
     if only_advertises_the_newest_tag() == Some(true) {
         // Phase two of this very release. Nothing is waiting to ship.
+        return;
+    }
+    if only_bumps_dependencies() == Some(true) {
+        // A dependency bump ships nothing a reader needs told about, and the
+        // bot that authors it cannot write a changelog entry. Without this arm
+        // the gate reported every Dependabot pull request as an undeclared
+        // release and made all six unmergeable against a branch protection
+        // requiring `CI success`.
         return;
     }
     let (_, has_unreleased) = changelog_sections();

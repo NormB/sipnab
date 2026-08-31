@@ -36,6 +36,16 @@ entry that carries them.
 
 ### Changed
 
+- **The delivery gate now recognizes a dependency bump.**
+  `a_p0_marked_done_is_released_or_declared` fires on any post-tag commit that
+  declares nothing in the CHANGELOG, which is right for feature work and wrong
+  for a lockfile update: it ships nothing a reader needs told about, and the bot
+  that authors it cannot write an entry. Six Dependabot pull requests were
+  unmergeable against a branch protection requiring `CI success`, and the
+  failing test was this repository's own gate reporting a bump as an undeclared
+  release. The exemption is deliberately narrow -- a commit touching
+  `Cargo.toml` beside `src/` is not a bump, and `Cargo.lock.bak` is not a
+  manifest.
 - **`search_messages` matches more than it did, deliberately.** A bare method
   name now also matches the `CSeq` of every response answering it -- `REGISTER`
   returns 2668 on the branch-scenario capture, twice the request count. To count
