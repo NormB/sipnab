@@ -98,6 +98,7 @@ ordinary update.
 | [`explain_attribution`](#explain_attribution) | `call_id` | Where each of a call's media endpoints came from and how much that path is worth — asked directly, HMAC-verified, plain secret, port-gated only, or the parties' own SDP |
 | [`show_evidence`](#show_evidence) | `refs`, `max_bytes?` | Follows frame pointers back to the captured bytes: verified, unverified, or unresolvable with a reason |
 | [`decode_evidence`](#decode_evidence) | `frame_ref`, `field?` | Decodes the frame one pointer names: link type, addressing, and each SIP header's byte range inside the message and the frame |
+| [`decode_ng`](#decode_ng) | `frame_ref` | Decodes the relay control message one pointer names: the command, the call, whether it carries SDP, and which delivery path carried it |
 | [`build_evidence_package`](#build_evidence_package) | `call_ids`, `filename` | **Write.** One directory of escalation artifacts in `--mcp-file-root`: pcapng, ladder and RTP stats per call, manifest, and the rebuilt-frames README |
 | [`save_findings`](#save_findings) | `summary`, `call_id?`, `detail?` | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
 
@@ -117,6 +118,7 @@ ordinary update.
 
 | Tool | Parameters | Returns |
 |---|---|---|
+| [`query_relay`](#query_relay) | `call_id?`, `max_calls?` | **Transmits.** Asks the configured relay what it holds right now. Needs `--mcp-allow-relay-query` and a live source; the destination comes from operator configuration only |
 | [`open_capture`](#open_capture) | `filename` | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
 | [`shutdown_server`](#shutdown_server) | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
 | [`start_tls_capture`](#start_tls_capture) | `flavors`, `libraries` | installs kernel uprobes and reads SIP plaintext with no key; needs `--mcp-allow-tls-capture` |
@@ -3634,6 +3636,47 @@ is worth must not round up in the absence of information.
 }
 ```
 
+### `decode_ng`
+
+`decode_evidence` decodes a SIP frame. This decodes a relay control message,
+and adds the question no other surface answers: **which path carried it, and did
+that path authenticate whoever sent it.**
+
+That distinction decides what the message is worth. Anything on the segment can put a
+control message on the HEP port, and landing there is the whole reason sipnab
+credits it -- whereupon it names a call and binds media to an address its sender
+chose. One delivered to an
+HMAC-authenticated listener is a different claim entirely. Both decode to the
+same bytes.
+
+`delivery` is `hep` or `sniffed-udp`. `delivery_trust` uses the same scale as
+[`explain_attribution`](#explain_attribution). `on_believed_mirror_port` stands
+apart because it is the ONLY reason anything believes a sniffed message at all,
+and a reader should see the whole of that reason rather than its conclusion.
+
+Status is `verified`, `unverified` or `unresolvable`, as in
+[`decode_evidence`](#decode_evidence), and a pointer leading nowhere returns
+a reason rather than failing the call.
+
+```jsonc
+// decode_ng { "frame_ref": "relay.pcap#412@9f2c1a" }
+{
+  "pointer": "relay.pcap#412@9f2c1a",
+  "status": "verified",
+  "source": "relay.pcap",
+  "ordinal": 412,
+  "delivery": "hep",
+  "delivery_trust": "port-gated-only",
+  "delivery_note": "accepted because it arrived on the expected port and for no other reason: the source is not authenticated",
+  "on_believed_mirror_port": true,
+  "command": "offer",
+  "call_id": "call-2c9d47@192.0.2.10",
+  "has_sdp": true,
+  "sdp_bytes": 231,
+  "schema_version": 1
+}
+```
+
 ## Export and handoff
 
 Getting the result out of sipnab and into the next tool, the next team, or a bug report someone else can reproduce.
@@ -4090,6 +4133,64 @@ A filter that quietly selects the wrong packets is worse than no filter:
 ## Capture control (opt-in, off by default)
 
 The tools that change server state rather than read it. Every one stays off until you turn it on server-side.
+
+### `query_relay`
+
+**This is the only tool that transmits.** Every other one answers from bytes
+sipnab already holds. This one puts a packet on the network.
+
+It closes a gap a passive decoder cannot. A call already in progress when
+sipnab started has no control exchange left to read, so the relay's own view is
+the only way to learn which ports belong to it -- and incident response usually
+begins mid-call, which is exactly when that gap is worst.
+
+The tool needs three things, and says which one is missing:
+
+| requirement | why |
+|---|---|
+| `--mcp-allow-relay-query` | transmitting is a larger act than reading, so an operator opts in |
+| the relay control flag | names which relay to ask |
+| a live source | a run reading a file can obtain no transmit permit |
+
+**There is no address parameter, deliberately.** The destination comes from
+operator configuration and from nowhere else. A tool argument naming the
+destination would turn this surface into a way to make sipnab send packets to a
+host the caller chose, and an address sipnab could otherwise infer is one it
+learned from packets -- a host that served as a relay during the capture, and
+may be somebody's laptop now.
+
+Omit `call_id` to enumerate. `truncated` reports that the relay held more than
+it returned, because "the relay holds these 32 calls" and "the relay returned
+the first 32 of an unknown number" are different statements.
+
+```jsonc
+// query_relay { "call_id": "call-2c9d47@192.0.2.10" }
+{
+  "asked": "query",
+  "relay_address": "127.0.0.1:22222",
+  "outcome": "call",
+  "call_id": "call-2c9d47@192.0.2.10",
+  "tags": [
+    {
+      "tag": "from-tag-9a1c",
+      "in_dialogue_with": ["to-tag-4b7e"],
+      "codec": "PCMU",
+      "streams": [
+        {
+          "local_address": "192.0.2.10",
+          "local_port": 30000,
+          "endpoint": "198.51.100.4:16388",
+          "is_rtcp": false,
+          "ssrcs": [305419896]
+        }
+      ]
+    }
+  ],
+  "delivery_trust": "asked",
+  "delivery_note": "sipnab asked the relay over its control socket; no third party could answer",
+  "schema_version": 1
+}
+```
 
 ### `open_capture`
 

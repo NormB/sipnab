@@ -2363,6 +2363,13 @@ impl BatchRunner {
         // store records the sockets of streams nothing explains only when
         // there is a reconciler to offer them to, and the reconciler asks on
         // its own thread so this loop never waits on a relay.
+        // Captured BEFORE the take below moves the reconciler onto its own
+        // thread. `query_relay` needs only the PERMIT, which is `Copy`, and a
+        // separate client of its own -- sharing the live reconciler would put
+        // an agent's question in line behind RE4's orphan work, and RE4's rule
+        // is that it never polls.
+        #[cfg(feature = "mcp")]
+        let relay_query_permit = batch.relay.ready.as_ref().map(|r| r.permit);
         let (relay_orphans, relay_thread) = match batch.relay.ready.take() {
             Some(ready) => {
                 let (sink, orphan_rx) = crate::relay::reconcile::orphan_channel();
@@ -2785,6 +2792,11 @@ impl BatchRunner {
                 // traffic was clean".
                 armed_detections: engines.armed_kinds(),
             },
+            // Captured above, before the reconciler moved to its own thread.
+            // `None` here is what makes `query_relay` refuse: on a file-backed
+            // run no permit exists to capture.
+            #[cfg(feature = "mcp")]
+            relay_query_permit,
             // The meter travels from `run`, where the receiver lives. Passing
             // `None` here would not omit `sipnab_capture_queue_depth_packets`
             // — that gauge is written unconditionally — it would publish a

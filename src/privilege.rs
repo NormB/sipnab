@@ -193,34 +193,6 @@ pub fn is_root() -> bool {
     unsafe { libc::getuid() == 0 }
 }
 
-/// Disable core dumps to protect sensitive key material in memory.
-///
-/// When decryption keys (TLS, SRTP, DTLS) are loaded, a core dump could
-/// expose them. This function prevents that by disabling dumpability on
-/// Linux (`PR_SET_DUMPABLE`) or zeroing the core file size limit on macOS
-/// (`RLIMIT_CORE`).
-///
-/// # Why a failure here is fatal
-///
-/// It used to warn and return `Ok(())`, and then log "Core dumps disabled
-/// (decryption active)" whether or not the syscall had done anything — so a
-/// refused `PR_SET_DUMPABLE` produced a warning AND a confident success line,
-/// and the caller's `exit(1)` could never be reached. An operator reading that
-/// log could not tell hardening from its absence.
-///
-/// The caller already treats an error as fatal, and that is the right reading:
-/// this runs only when TLS/SRTP/DTLS key material has been loaded into this
-/// process, and only when the operator did NOT pass `--allow-coredump`. Both
-/// halves of that condition are explicit requests. Continuing anyway means a
-/// later crash writes those keys to a file on disk that any local user with
-/// the right permissions can read — silently, long after the run that failed
-/// to harden itself has been forgotten. `--allow-coredump` is the escape hatch
-/// for anyone who has decided that trade is fine.
-///
-/// # Errors
-///
-/// The `prctl` (Linux) or `setrlimit` (macOS) failing, or being built for a
-/// platform with neither.
 /// Whether key material is resident in unswappable memory, and why not.
 ///
 /// Reported rather than assumed: the limit that governs this (`RLIMIT_MEMLOCK`)
@@ -275,6 +247,34 @@ pub fn lock_key_memory() -> MemoryLock {
     }
 }
 
+/// Disable core dumps to protect sensitive key material in memory.
+///
+/// When decryption keys (TLS, SRTP, DTLS) are loaded, a core dump could
+/// expose them. This function prevents that by disabling dumpability on
+/// Linux (`PR_SET_DUMPABLE`) or zeroing the core file size limit on macOS
+/// (`RLIMIT_CORE`).
+///
+/// # Why a failure here is fatal
+///
+/// It used to warn and return `Ok(())`, and then log "Core dumps disabled
+/// (decryption active)" whether or not the syscall had done anything — so a
+/// refused `PR_SET_DUMPABLE` produced a warning AND a confident success line,
+/// and the caller's `exit(1)` could never be reached. An operator reading that
+/// log could not tell hardening from its absence.
+///
+/// The caller already treats an error as fatal, and that is the right reading:
+/// this runs only when TLS/SRTP/DTLS key material has been loaded into this
+/// process, and only when the operator did NOT pass `--allow-coredump`. Both
+/// halves of that condition are explicit requests. Continuing anyway means a
+/// later crash writes those keys to a file on disk that any local user with
+/// the right permissions can read — silently, long after the run that failed
+/// to harden itself has been forgotten. `--allow-coredump` is the escape hatch
+/// for anyone who has decided that trade is fine.
+///
+/// # Errors
+///
+/// The `prctl` (Linux) or `setrlimit` (macOS) failing, or being built for a
+/// platform with neither.
 pub fn disable_core_dumps() -> Result<()> {
     #[cfg(target_os = "linux")]
     {

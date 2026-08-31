@@ -112,9 +112,17 @@ const COMPLETE_KEY: &str = "complete";
 pub const SOURCE_INDEPENDENT_TOOLS: &[&str] = &[
     "compare_captures",
     "decode_evidence",
+    // Answers about ONE frame on disk, reached by pointer. Its answer does not
+    // move with how much of the capture has been read, so a completeness stamp
+    // about the capture would describe something the caller did not ask about.
+    "decode_ng",
     "explain_response_code",
     "explain_rule",
     "list_captures",
+    // Answers from the RELAY, not from the capture store. Stamping it with how
+    // much of the capture has been read would attach a fact about sipnab's
+    // reading to a statement made by another process.
+    "query_relay",
     "list_tls_libraries",
     "server_capabilities",
     "show_evidence",

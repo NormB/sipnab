@@ -111,9 +111,12 @@ with that cost stated.
 | [`src/rtpengine/bencode.rs`](../../src/rtpengine/bencode.rs) | Bencode decoder. Borrowed values, depth-limited, hostile-input facing |
 | [`src/rtpengine/ng.rs`](../../src/rtpengine/ng.rs) | Cookie/body split, command classification, field extraction |
 | [`src/rtpengine/control.rs`](../../src/rtpengine/control.rs) | `list` and `query`, their reply parsers, and the UDP client that carries them |
+| [`src/relay/mod.rs`](../../src/relay/mod.rs) | The seam's declarations: `ControlDecoder`, `ControlMessage`, `DecodedControl`, and the media-creating tally. Declares only -- it imports no implementation, so a second relay can satisfy it |
+| [`src/relay/types.rs`](../../src/relay/types.rs) | The vocabulary a caller programs against: commands, replies, and the views of a call the relay returns |
 | [`src/relay/reconcile.rs`](../../src/relay/reconcile.rs) | The two moments sipnab asks, the port index, the bounds that keep asking from becoming polling, and the hand-off the capture path offers to |
-| [`src/rtpengine/mod.rs`](../../src/rtpengine/mod.rs) | `sdp_links_from_ng`, the bridge into the existing SDP linking |
+| [`src/rtpengine/mod.rs`](../../src/rtpengine/mod.rs) | `sdp_links_from_ng`, the bridge into the existing SDP linking, and `NgControlDecoder` -- the `ng` implementation of the seam above, reaching UP to satisfy it |
 | [`src/app/relay_reconciler.rs`](../../src/app/relay_reconciler.rs) | The thread that drains the hand-off and does the asking |
+| [`src/app/servers.rs`](../../src/app/servers.rs) | The composition root: chooses which implementation satisfies the seam and hands it to the MCP surface, so no consuming layer names one |
 
 The decoder is hostile-input facing on both delivery paths, so every length is
 bounds-checked before use, `bencode::MAX_DEPTH` bounds the recursion, and

@@ -619,7 +619,11 @@ fn linked_code_targets_exist() {
     // Both branches bumped this and the values conflicted, so NEITHER side was
     // right: the merged tree carries both sets of links. The number below came
     // from re-running the gate on the merged tree, not from adding the two.
-    const EXPECTED_CODE_LINKS: usize = 404;
+    // 404 -> 407: exactly three, all rows added to the file table in
+    // `rtpengine-control-plane.md` -- `src/relay/mod.rs`, `src/relay/types.rs`
+    // and `src/app/servers.rs`, the seam's declaration, vocabulary and
+    // composition root.
+    const EXPECTED_CODE_LINKS: usize = 407;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

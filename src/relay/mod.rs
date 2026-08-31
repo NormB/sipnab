@@ -58,3 +58,58 @@ pub fn media_creating_commands_seen() -> u64 {
 pub fn reset_media_creating_count() {
     MEDIA_CREATING_SEEN.store(0, Ordering::Relaxed);
 }
+
+/// Decodes a captured datagram as a relay control message.
+///
+/// Declared here and implemented BELOW, which is the direction the seam
+/// requires: an implementation reaches up to satisfy this, and the composition
+/// root chooses which one. A factory living here would make the seam import its
+/// own implementation, and a seam that does that cannot take a second one.
+pub trait ControlDecoder: Send + Sync {
+    /// Decode one datagram, or `None` when it is not a control message.
+    ///
+    /// `dst_port` is passed because whether a sniffed message is believed at
+    /// all can depend on where it landed -- a question only the implementation
+    /// can answer, and one the caller must not have to know to ask.
+    fn decode(&self, payload: &[u8], dst_port: u16) -> Option<DecodedControl>;
+}
+
+/// How a control message reached the capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlDelivery {
+    /// Wrapped in a transport that can carry authentication.
+    Encapsulated,
+    /// A bare datagram, read off the wire and authenticated by nothing.
+    BareDatagram,
+}
+
+/// One decoded control message, described without naming who speaks it.
+///
+/// The fields are the questions an analyst asks of a control message -- what
+/// was commanded, about which call, carrying how much SDP. Every relay protocol
+/// answers those; none of them is a property of one implementation.
+#[derive(Debug, Clone)]
+pub struct ControlMessage {
+    /// The verb, as the relay spells it.
+    pub command: Option<String>,
+    /// The call the message names, where it names one.
+    pub call_id: Option<String>,
+    /// How much SDP the message carries, where it carries any.
+    pub sdp_bytes: Option<usize>,
+}
+
+/// A decoded control datagram and everything known about how it arrived.
+#[derive(Debug, Clone)]
+pub struct DecodedControl {
+    /// Which path carried it.
+    pub delivery: ControlDelivery,
+    /// What it said.
+    pub message: ControlMessage,
+    /// The correlation identifier, which names the call on a REPLY.
+    pub correlation_id: Option<String>,
+    /// Whether it landed on a port a sniffed mirror is believed on.
+    ///
+    /// `None` where the question does not apply, which is not the same as
+    /// `Some(false)`: a bare datagram is not believed on any port.
+    pub on_believed_mirror_port: Option<bool>,
+}

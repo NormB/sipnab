@@ -674,7 +674,11 @@ fn wiki_intra_docs_links_resolve() {
     // 603 -> 605: exactly two, both in `docs/mcp-tools.md` -- the index rows
     // for `reconcile_orphans` and `explain_attribution`, each linking to its
     // own section by the same anchor convention as every other row.
-    const EXPECTED_WIKI_LINKS: usize = 605;
+    //
+    // 605 -> 609: exactly four, all in `docs/mcp-tools.md` -- the index rows
+    // for `decode_ng` and `query_relay`, plus the two cross-links their
+    // sections make to `decode_evidence` and `explain_attribution`.
+    const EXPECTED_WIKI_LINKS: usize = 609;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

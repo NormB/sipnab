@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**50 open, 395 done** across 25 sections.
+**46 open, 399 done** across 25 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -61,7 +61,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | RE | 3 | 4 | `######....` |
 | BA | 3 | 1 | `##........` |
 | NAT | 0 | 4 | `##########` |
-| RV | 8 | 0 | `..........` |
+| RV | 4 | 4 | `#####.....` |
 | RP | 4 | 0 | `..........` |
 | HX | 3 | 0 | `..........` |
 | AS | 6 | 1 | `#.........` |
@@ -844,8 +844,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:5278`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5278)) currently takes
-  nowhere; `security_findings` ([`src/mcp/server.rs:5278`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5278)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5336`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5336)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5336`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5336)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -1613,8 +1613,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5393`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5393),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5393`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5393),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5451`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5451),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5451`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5451),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -2460,16 +2460,16 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:377`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L377)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:6685`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6685), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:6771`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6771), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1643`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1643)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1701`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1701)), which attaches `frame_ref`
     (`#[tool(` at [`src/mcp/server.rs:4528`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4528), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1643`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1643)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1701`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1701)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -2621,7 +2621,7 @@ output path.
     `SUPPRESSION_FILENAME` ([`src/sip/lint/mod.rs:70`](https://github.com/NormB/sipnab/blob/main/src/sip/lint/mod.rs#L70)),
     `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
     exist, and the MCP lint tools consume them through `resolve_suppressions`
-    ([`src/mcp/server.rs:807`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L807)), which takes an explicit filename or walks up from
+    ([`src/mcp/server.rs:865`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L865)), which takes an explicit filename or walks up from
     the capture's directory to a project root. **What is still missing is the
     suppression half of the CLI, and the evidence this line cited for that is
     now false too. Corrected 2026-08-06:** it read *"`grep -n lint src/cli.rs`
@@ -3086,7 +3086,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:7810`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7810), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:7868`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7868), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -4155,7 +4155,8 @@ host. The packaged instance is untouched.
   Verified rather than assumed: a minimal `aya-ebpf` kprobe built there with
   `cargo +nightly build --target bpfel-unknown-none -Z build-std=core` and
   produced `ELF 64-bit LSB relocatable, eBPF` carrying a `kprobe` section.
-  Only Rust was added, user-local under `~gator`; no system package changed.
+  Only Rust was added, user-local under the build account's `$HOME`; no
+  system package changed.
 
   Note the docker container of the same name, on the aarch64 host, is a
   different machine and shares that host's kernel — so it has no BTF either. The
@@ -4763,7 +4764,7 @@ exactly that reason.
   doubles the hook's wall clock on every commit to catch a class pre-push
   already catches before anything leaves the machine.
 
-- [ ] **RV1 — `explain_attribution`: how was this stream's endpoint learned,
+- [x] **RV1 (done 2026-08-31, 0.5.139) — `explain_attribution`: how was this stream's endpoint learned,
   and was that path authenticated?** Ranked first because VAL8 and VAL9 turned
   attribution provenance into a security question and the fix does not fully
   close it: sniffed rtpengine NG is now gated on the destination port but the
@@ -4780,7 +4781,7 @@ exactly that reason.
   verified, port-gated only, or unauthenticated). The vocabulary already
   exists; this exposes it rather than inventing it.
 
-- [ ] **RV2 — `query_relay`: the agent counterpart of `--rtpengine-control`.**
+- [x] **RV2 (done 2026-08-31, 0.5.139) — `query_relay`: the agent counterpart of `--rtpengine-control`.**
   The flag's own help states the case: *"A passive decoder sees the `offer`
   that created a stream, or it sees nothing: a call already in progress when
   sipnab started has no control exchange left to read... Incident response
@@ -4797,7 +4798,7 @@ exactly that reason.
   or the agent surface becomes a way to make sipnab send packets to an
   attacker-chosen host.
 
-- [ ] **RV3 — `reconcile_orphans`: explain an orphan, do not merely count it.**
+- [x] **RV3 (done 2026-08-31, 0.5.139) — `reconcile_orphans`: explain an orphan, do not merely count it.**
   `rtp_stats { "orphaned": true }` lists orphaned streams and nothing says why
   any of them is orphaned or what it might belong to. `Reconciler`,
   `Attribution` and `Unattributed` already compute exactly that.
@@ -4809,7 +4810,7 @@ exactly that reason.
   conclusion reached by hand-comparing SDP addresses across calls, which is the
   work this tool would do.
 
-- [ ] **RV4 — `decode_ng`: decode a captured relay control message.** The
+- [x] **RV4 (done 2026-08-31, 0.5.139) — `decode_ng`: decode a captured relay control message.** The
   bencode decoder exists, is `pub`, and is now hardened (a 20,000-round
   malformed sweep over a 70-datagram corpus, bounded at ≤0.8 MB RSS growth).
   An agent reading a relay exchange gets raw bytes today, while
@@ -5262,7 +5263,7 @@ promises an absence is acted on; a missing feature is merely absent.
 
 - [x] **DOC4 (done 2026-08-30) — [`docs/mcp-deploy.md:248`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L248) opens the remote-access section by
   promising no tool mutates the stores.** `open_capture` calls `ds.clear()` and
-  `ss.clear()` ([`src/mcp/server.rs:7055`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7055)). The code already knows: a note at
+  `ss.clear()` ([`src/mcp/server.rs:7141`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7141)). The code already knows: a note at
   `:8377` records that the wire `instructions` string was corrected for exactly
   this. The page was not. [`SECURITY.md:35`](https://github.com/NormB/sipnab/blob/main/SECURITY.md#L35) scopes reports to "any MCP tool that
   mutates dialog/stream/alert state", so a good-faith reporter is told the scope

@@ -495,6 +495,49 @@ The first four are gaps in what sipnab learned. Reporting any of them as
 the fifth would turn a run that never reached the relay into a run that
 asked and heard the stream belongs to nobody.
 
+## Let an agent ask the relay
+
+Everything above is a person at a terminal. `query_relay` gives an AI agent the
+same reach, and `decode_ng` lets it read a control message it finds in the
+capture.
+
+`query_relay` transmits, so it stays off until you say otherwise. It needs three
+things, and refuses with a message naming whichever one is missing:
+
+```bash
+# Off by default: this server has the relay address but no opt-in, so
+# query_relay refuses and every other tool works as usual.
+sudo sipnab --mcp -N -d eth0 --rtpengine-control 127.0.0.1:22222
+```
+
+Add the opt-in to enable it:
+
+```bash
+# Now an agent can ask the relay directly. The destination is THIS address --
+# there is no tool argument that can change it.
+sudo sipnab --mcp -N -d eth0 --rtpengine-control 127.0.0.1:22222 \
+  --mcp-allow-relay-query
+```
+
+The third requirement is a live source, and it is structural rather than a
+policy check. A run reading a capture file cannot obtain a transmit permit, so
+`--mcp-allow-relay-query` on an offline run leaves the tool refusing:
+
+```bash
+# Refuses: -I is a file, so no transmit permit exists to send with.
+sipnab --mcp -N -I capture.pcap --rtpengine-control 127.0.0.1:22222 \
+  --mcp-allow-relay-query
+```
+
+That matters more than it looks. An analyst opening a capture from another
+organization must not be able to make sipnab talk to the addresses inside it -- a host that served
+as a relay during the capture may be somebody's laptop now.
+
+`decode_ng` needs none of this. It reads a control message already in the
+capture and reports which path delivered it, so an agent can tell "the relay
+told us" from "something claiming to be the relay told us". Those are the same
+bytes and very different claims.
+
 ## What rtpengine's forwarding mode changes
 
 Nothing, and a measurement says so rather than an assumption.

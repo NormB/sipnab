@@ -216,3 +216,53 @@ pub fn sdp_links_from_ng(
     };
     crate::pipeline::extract_sdp_links(&sdp, &call_id)
 }
+
+/// The `ng` implementation of the relay control seam.
+///
+/// Reaches UP to `crate::relay`, never the other way: the seam declares what a
+/// control message is, and this satisfies that declaration for one protocol.
+/// A second relay adds a sibling here and changes nothing above.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NgControlDecoder;
+
+impl crate::relay::ControlDecoder for NgControlDecoder {
+    fn decode(&self, payload: &[u8], dst_port: u16) -> Option<crate::relay::DecodedControl> {
+        // Encapsulation is tried FIRST: a mirrored control message is wrapped,
+        // and asking the bare parser first would read the envelope as a
+        // malformed message rather than recognizing it.
+        #[cfg(feature = "hep")]
+        if let Ok(hep) = crate::capture::hep::parse_hep(payload)
+            && is_ng_over_hep(hep.protocol.to_byte(), &hep.payload)
+        {
+            return Some(crate::relay::DecodedControl {
+                delivery: crate::relay::ControlDelivery::Encapsulated,
+                message: describe_ng_message(&hep.payload)?,
+                correlation_id: hep.correlation_id.clone(),
+                on_believed_mirror_port: Some(sniffed_mirror_port_allowed(dst_port)),
+            });
+        }
+        let _ = dst_port;
+        Some(crate::relay::DecodedControl {
+            delivery: crate::relay::ControlDelivery::BareDatagram,
+            message: describe_ng_message(payload)?,
+            correlation_id: None,
+            on_believed_mirror_port: None,
+        })
+    }
+}
+
+/// Describe one `ng` payload in the seam's vocabulary.
+fn describe_ng_message(payload: &[u8]) -> Option<crate::relay::ControlMessage> {
+    use ng::NgCommand;
+    let msg = ng::parse(payload).ok()?;
+    Some(crate::relay::ControlMessage {
+        command: msg.command.map(|c| match c {
+            NgCommand::Offer => "offer".to_string(),
+            NgCommand::Answer => "answer".to_string(),
+            NgCommand::Delete => "delete".to_string(),
+            NgCommand::MediaCreating(name) | NgCommand::Other(name) => name.to_string(),
+        }),
+        call_id: msg.call_id.map(|b| String::from_utf8_lossy(b).into_owned()),
+        sdp_bytes: msg.sdp.map(<[u8]>::len),
+    })
+}

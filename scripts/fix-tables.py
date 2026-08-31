@@ -23,8 +23,8 @@ import pathlib, re, sys
 # Derived from this file's location, like every sibling script
 # (`check-line-drift.py` and `rfc-links.py` both use the same `parents[1]`).
 # It was an absolute `/srv/sipnab`, which exists on exactly
-# one machine. Measured 2026-08-19 on macOS/aarch64 at
-# /Users/gator/Development/sipnab: the first `read_text()` raised
+# one machine. Measured 2026-08-19 on macOS/aarch64, in a checkout under a
+# different $HOME: the first `read_text()` raised
 # `FileNotFoundError: '/srv/sipnab/docs/sip-header-fields.md'`.
 # `tests/doc_link_hygiene_test.rs:380` fails with "Run scripts/fix-tables.py
 # --apply", so the gate's only remedy was a script that could not start

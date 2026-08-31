@@ -257,14 +257,52 @@ mod rule {
     /// E. Accounts on the machines this project is developed on.
     pub const PRIVATE_ACCOUNTS: &[&str] = &["gator"];
 
+    /// E. Where a home directory lives, on the systems this is developed on.
+    ///
+    /// Lowercase, because [`account_path`] matches against a lowercased line:
+    /// `corpus_path` hands it one, and `/Users` is the macOS spelling.
+    pub const HOME_ROOTS: &[&str] = &["/home", "/users", "/var/home", "/export/home"];
+
     /// E. A path under a real account's home directory.
     ///
     /// The rule is the ACCOUNT, not the shape: `/home/user/capture.pcap` in a
     /// synopsis is a placeholder every reader substitutes.
+    ///
+    /// It used to be the account under ONE root. `/home/{a}` was the only form
+    /// this matched, so `E1` reported the tree clean while three occurrences
+    /// under two other roots sat in it -- `/Users/<account>` in
+    /// `scripts/fix-line-anchors.py` and `scripts/fix-tables.py`, and
+    /// `~<account>` in `docs/design/backlog.md`. Every one names the account
+    /// exactly as loudly as the form that was banned.
+    ///
+    /// Enumerating roots cannot be the whole answer -- a fifth will appear --
+    /// which is why `two_part_reference_test::
+    /// no_tracked_file_names_a_private_account_outside_the_gate_that_bans_it`
+    /// exists beside it and matches the NAME at a word boundary with no path
+    /// shape at all. That one is the superset and cannot be slipped past by
+    /// inventing a prefix; this one keeps the specific, actionable message
+    /// about paths, which is the form that actually gets pasted in.
     pub fn account_path(line: &str) -> bool {
-        PRIVATE_ACCOUNTS
-            .iter()
-            .any(|a| line.contains(&format!("/home/{a}")))
+        let low = line.to_ascii_lowercase();
+        PRIVATE_ACCOUNTS.iter().any(|a| {
+            HOME_ROOTS
+                .iter()
+                .any(|r| ends_a_name(&low, &format!("{r}/{a}")))
+                || ends_a_name(&low, &format!("~{a}"))
+        })
+    }
+
+    /// `needle` occurs in `hay` and is not the start of a longer name.
+    ///
+    /// Without the trailing boundary the tilde form matches any LONGER
+    /// account name that starts the same way, and the rule then accuses a
+    /// different account -- the shape of false positive that gets a gate
+    /// suppressed.
+    fn ends_a_name(hay: &str, needle: &str) -> bool {
+        let bytes = hay.as_bytes();
+        hay.match_indices(needle).any(|(i, _)| {
+            !matches!(bytes.get(i + needle.len()), Some(c) if c.is_ascii_alphanumeric() || *c == b'_')
+        })
     }
 
     /// E. The location of a private capture corpus.
@@ -1075,6 +1113,51 @@ fn e8_the_account_scan_reaches_scripts() {
         assert!(
             reaches(&files, surface),
             "{surface} carried an account path and must be in the scan"
+        );
+    }
+}
+
+/// E8b. The rule reaches every home root the account has actually appeared
+/// under, not just the Linux one.
+///
+/// Each string below was in the tree on 2026-08-31 and each walked past the
+/// `/home/{account}` form of this rule.
+#[test]
+fn e8b_the_account_rule_reaches_the_other_home_roots() {
+    for leaked in [
+        "# /Users/gator/Development/sipnab: `git ls-files` ran with `cwd=` a path",
+        "  Only Rust was added, user-local under `~gator`; no system package changed.",
+        "/var/home/gator/pcaps",
+        "/export/home/gator/captures/x.pcap",
+    ] {
+        assert!(
+            rule::account_path(leaked),
+            "the account is named just as loudly under a root the rule did not \
+             list: {leaked}"
+        );
+    }
+}
+
+/// E8c. Widening it did not make it fire on a different account, or on prose.
+///
+/// The half that decides whether anyone keeps the gate. Before the trailing
+/// boundary was added the tilde form matched any longer account name that
+/// starts the same way, and the tree already contains `aggregator`,
+/// `navigator` and `investigator`.
+#[test]
+fn e8c_the_widened_account_rule_still_spares_the_words_around_it() {
+    for benign in [
+        "/home/gatorade/pcaps",
+        "user-local under `~gatorade`",
+        "and every aggregator downstream of journald",
+        "navigator.clipboard.writeText",
+        "/Users/user/capture.pcap",
+        "$HOME/pcaps",
+    ] {
+        assert!(
+            !rule::account_path(benign),
+            "a rule that cries about a different account, or about ordinary \
+             English, gets suppressed and then catches nothing: {benign}"
         );
     }
 }

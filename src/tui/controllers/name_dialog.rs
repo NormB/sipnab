@@ -155,23 +155,6 @@ pub(in crate::tui) fn handle_name_popup_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Apply the Name Address popup: set or clear the manual mapping for every
-/// offered endpoint, persist the table, and turn name resolution on so the
-/// changes are visible immediately.
-///
-/// # Returns
-/// `false` on a validation failure — the error is shown inline in the
-/// popup (which stays open) and NOTHING is applied, so a multi-endpoint
-/// edit is never left half-saved. `true` once every target has been
-/// applied.
-///
-/// # Side effects
-/// Non-empty names are set on the resolver's manual table (empty names
-/// clear existing mappings); the first set flips `app.name_mode` on when
-/// it was `Off`. Writes the manual table to `app.names_save_path` and,
-/// when configured, into the user's sipnabrc via `names_config_path` —
-/// write failures are reported on the status line. Sets `app.status_error`
-/// to a named/cleared summary.
 /// Say which rule the name broke, and for length, by how much.
 ///
 /// The old text was `"Invalid name (control characters or too long); not
@@ -201,6 +184,23 @@ fn name_rejection_reason(name: &str) -> String {
     }
 }
 
+/// Apply the Name Address popup: set or clear the manual mapping for every
+/// offered endpoint, persist the table, and turn name resolution on so the
+/// changes are visible immediately.
+///
+/// # Returns
+/// `false` on a validation failure — the error is shown inline in the
+/// popup (which stays open) and NOTHING is applied, so a multi-endpoint
+/// edit is never left half-saved. `true` once every target has been
+/// applied.
+///
+/// # Side effects
+/// Non-empty names are set on the resolver's manual table (empty names
+/// clear existing mappings); the first set flips `app.name_mode` on when
+/// it was `Off`. Writes the manual table to `app.names_save_path` and,
+/// when configured, into the user's sipnabrc via `names_config_path` —
+/// write failures are reported on the status line. Sets `app.status_error`
+/// to a named/cleared summary.
 fn apply_name_dialog(app: &mut App) -> bool {
     let mut set = 0usize;
     let mut cleared = 0usize;

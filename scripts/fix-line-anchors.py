@@ -29,8 +29,8 @@ from lib_markdown import fence_mask  # noqa: E402
 # Derived from this file's location, like every sibling script
 # (`check-line-drift.py` and `rfc-links.py` both use the same `parents[1]`).
 # It was an absolute `/srv/sipnab`, which exists on exactly
-# one machine. Measured 2026-08-19 on macOS/aarch64 at
-# /Users/gator/Development/sipnab: `git ls-files` ran with `cwd=` a path that
+# one machine. Measured 2026-08-19 on macOS/aarch64, in a checkout under a
+# different $HOME: `git ls-files` ran with `cwd=` a path that
 # is not there and the script died with
 # `FileNotFoundError: ... PosixPath('/srv/sipnab')`, before
 # reading a single doc. `tests/doc_link_hygiene_test.rs:321` fails with "Run

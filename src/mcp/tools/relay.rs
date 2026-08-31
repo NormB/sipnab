@@ -425,6 +425,136 @@ impl SipnabMcp {
             })?,
         )?]))
     }
+
+    /// Decode one captured relay control message.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when `frame_ref` is blank. A pointer that
+    /// cannot be followed is a result with `status: "unresolvable"`, never a
+    /// call failure -- the reason is the answer, exactly as in
+    /// `decode_evidence`.
+    #[tool(
+        name = "decode_ng",
+        description = "Follows one frame pointer back to a captured relay \
+                       control message and decodes it: the command, the \
+                       call it names, whether it carries SDP, and -- the part \
+                       no other surface reports -- which delivery path carried \
+                       it and whether that path authenticated its sender. A \
+                       message mirrored to the HEP port is believed because of \
+                       the port and nothing else, so its sender is \
+                       unauthenticated; one delivered over an HMAC-authenticated \
+                       HEP listener is not. Status is `verified`, `unverified` \
+                       or `unresolvable`, as in decode_evidence. Sources are \
+                       confined to --mcp-file-root.",
+        output_schema = schema_for_output::<NgDecode>(),
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn decode_ng(
+        &self,
+        Parameters(params): Parameters<DecodeNgParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let pointer = params.frame_ref.trim();
+        if pointer.is_empty() {
+            return Err(rmcp::ErrorData::invalid_params(
+                "frame_ref must name one frame pointer, in the \
+                 <source>#<ordinal>@<digest> form the query tools emit. A blank \
+                 string names no frame, and an empty decode would read as 'this \
+                 frame holds no control message'"
+                    .to_string(),
+                None,
+            ));
+        }
+        let payload = decode_ng_one(self, pointer);
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(serde_json::to_value(&payload).map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("serialization failed: {e}"), None)
+            })?)?,
+            ContentBlock::text(crate::mcp::shape::untrusted_note()),
+        ]))
+    }
+
+    /// Ask the live relay what it is holding.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when the run cannot or may not ask, naming
+    /// which of the three reasons applies: the opt-in is off, no relay address
+    /// was configured, or this run reads a file and can obtain no transmit
+    /// permit. Three separate messages rather than one, because the operator
+    /// action differs for each.
+    #[tool(
+        name = "query_relay",
+        description = "Asks the configured relay what it is \
+                       holding right now: every Call-ID it knows, or the ports \
+                       and tags for one call. This is the only MCP tool that \
+                       TRANSMITS -- every other one answers from bytes sipnab \
+                       already has. It closes the gap a passive decoder cannot: \
+                       a call already in progress when sipnab started has no \
+                       control exchange left to read, which is exactly the case \
+                       during incident response. Off unless \
+                       --mcp-allow-relay-query is given, refused on a run \
+                       reading a file, and the destination comes from operator \
+                       configuration only -- never from an argument.",
+        output_schema = schema_for_output::<RelayAnswer>(),
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    pub async fn query_relay(
+        &self,
+        Parameters(params): Parameters<QueryRelayParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let Some(access) = self.relay_query_access() else {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!(
+                    "query_relay is not available on this server. It transmits, \
+                     so it needs three things: --mcp-allow-relay-query to enable \
+                     it, {} <addr:port> to say which relay to ask, and a live \
+                     source. A run reading a capture file can obtain no transmit \
+                     permit, so an analyst opening somebody else's pcap cannot \
+                     make sipnab talk to the addresses inside it.",
+                    crate::cli::RELAY_CONTROL_FLAG
+                ),
+                None,
+            ));
+        };
+
+        // Handed in by the composition root. This layer asks a relay a
+        // question; which relay, and what speaks to it, is not its business.
+        let client = &access.relay;
+        let asked = if params.call_id.is_some() {
+            "query"
+        } else {
+            "list"
+        };
+        let reply = match params.call_id.as_deref() {
+            Some(call_id) => client.query(&access.permit, call_id),
+            None => client.list(
+                &access.permit,
+                params
+                    .max_calls
+                    .unwrap_or(crate::relay::reconcile::DEFAULT_LIST_LIMIT),
+            ),
+        };
+        let reply = reply.map_err(|e| {
+            rmcp::ErrorData::internal_error(
+                format!(
+                    "the relay at {} did not answer: {e:#}. Nothing is known \
+                     about what it holds; this is not an answer that it holds \
+                     nothing.",
+                    access.addr
+                ),
+                None,
+            )
+        })?;
+
+        let payload = RelayAnswer::from_reply(asked, access.addr, &reply);
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(serde_json::to_value(&payload).map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("serialization failed: {e}"), None)
+            })?)?,
+            ContentBlock::text(crate::mcp::shape::untrusted_note()),
+        ]))
+    }
 }
 
 /// Decide what one endpoint's delivery path is worth.
@@ -447,5 +577,459 @@ pub fn classify(
         // It arrived over a capture path, so the run's configured posture is
         // what it was worth -- a datagram that failed was never stored.
         Some(_) => configured,
+    }
+}
+
+/// Parameters for `decode_ng`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct DecodeNgParams {
+    /// One frame pointer, in the `<source>#<ordinal>@<digest>` form the query
+    /// tools emit.
+    ///
+    /// One pointer rather than a batch, for the reason `decode_evidence` takes
+    /// one: a decode is a whole message, and a batch of them fills a context
+    /// window with control traffic nobody asked to read.
+    pub frame_ref: String,
+}
+
+/// How a control message reached the capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(rename_all = "kebab-case")]
+pub enum NgDelivery {
+    /// Encapsulated in HEP.
+    Hep,
+    /// A bare `ng` datagram, read off the wire.
+    SniffedUdp,
+}
+
+/// One decoded relay control message, and what its delivery path is worth.
+///
+/// The decode fields are absent on `unresolvable`, so a caller cannot read a
+/// partially-filled answer as a thin one -- the same split `decode_evidence`
+/// makes for the same reason.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct NgDecode {
+    /// The pointer this answers for, echoed.
+    pub pointer: String,
+    /// `verified` (the bytes still match the digest), `unverified`, or
+    /// `unresolvable`.
+    pub status: String,
+    /// Why the pointer led nowhere. Present only on `unresolvable`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The capture file, as a leaf name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Which frame of that file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ordinal: Option<u64>,
+    /// Which path carried the message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<NgDelivery>,
+    /// What that path is worth, on the same scale `explain_attribution` uses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery_trust: Option<DeliveryTrust>,
+    /// The one-line reading of `delivery_trust`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery_note: Option<String>,
+    /// Whether the datagram arrived on a port a sniffed mirror is believed on.
+    ///
+    /// Reported separately from `delivery_trust` because it is the ONLY reason
+    /// a sniffed message is believed at all, and an operator reading a decode
+    /// should see the whole of that reason rather than its conclusion.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_believed_mirror_port: Option<bool>,
+    /// The `ng` verb, as the relay spells it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// The call the message names, where it names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    /// The HEP correlation-id, which names the call on a REPLY.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    /// Whether the message carries SDP.
+    pub has_sdp: bool,
+    /// How much SDP, where there is any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sdp_bytes: Option<usize>,
+    /// Version of this response shape.
+    pub schema_version: u32,
+}
+
+/// The answer for a pointer that leads to no control message anyone can read.
+fn ng_unresolvable(pointer: &str, reason: String) -> NgDecode {
+    NgDecode {
+        pointer: pointer.to_string(),
+        status: "unresolvable".to_string(),
+        reason: Some(reason),
+        source: None,
+        ordinal: None,
+        delivery: None,
+        delivery_trust: None,
+        delivery_note: None,
+        on_believed_mirror_port: None,
+        command: None,
+        call_id: None,
+        correlation_id: None,
+        has_sdp: false,
+        sdp_bytes: None,
+        schema_version: 1,
+    }
+}
+
+/// Build the answer for a message that decoded.
+fn describe_control_message(
+    pointer: &str,
+    status: &str,
+    leaf: &str,
+    ordinal: u64,
+    trust: DeliveryTrust,
+    decoded: &crate::relay::DecodedControl,
+) -> NgDecode {
+    NgDecode {
+        pointer: pointer.to_string(),
+        status: status.to_string(),
+        reason: None,
+        source: Some(leaf.to_string()),
+        ordinal: Some(ordinal),
+        delivery: Some(match decoded.delivery {
+            crate::relay::ControlDelivery::Encapsulated => NgDelivery::Hep,
+            crate::relay::ControlDelivery::BareDatagram => NgDelivery::SniffedUdp,
+        }),
+        delivery_trust: Some(trust),
+        delivery_note: Some(trust.explain().to_string()),
+        on_believed_mirror_port: decoded.on_believed_mirror_port,
+        command: decoded.message.command.clone(),
+        call_id: decoded.message.call_id.clone(),
+        correlation_id: decoded.correlation_id.clone(),
+        has_sdp: decoded.message.sdp_bytes.is_some(),
+        sdp_bytes: decoded.message.sdp_bytes,
+        schema_version: 1,
+    }
+}
+
+/// Follow one pointer, confine it, resolve it and decode the control message.
+///
+/// The order of the refusals matches `decode_evidence`, and the ordering is
+/// load-bearing rather than stylistic: a uprobe pointer has to be refused
+/// BEFORE the path logic, because `Path::file_name()` on `uprobe:opensips/1234`
+/// returns `"1234"` and would send it down the file-root check to answer with a
+/// missing file -- a wrong answer about evidence rather than an honest refusal.
+fn decode_ng_one(server: &SipnabMcp, pointer: &str) -> NgDecode {
+    let parsed = match crate::capture::resolve::parse_pointer(pointer) {
+        Ok(p) => p,
+        Err(e) => return ng_unresolvable(pointer, e.to_string()),
+    };
+
+    if matches!(
+        parsed.kind,
+        crate::capture::packet::FrameSource::Uprobe { .. }
+    ) {
+        return ng_unresolvable(
+            pointer,
+            "pointer names a uprobe read. sipnab took those bytes where an \
+             application handed them to its TLS library and never saw a \
+             datagram, so there is no control message to decode"
+                .to_string(),
+        );
+    }
+
+    let Some(leaf) = std::path::Path::new(parsed.source.as_ref())
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+    else {
+        return ng_unresolvable(
+            pointer,
+            format!(
+                "'{}' does not name a capture file. A pointer from live capture \
+                 or from a HEP listener cannot be followed: sipnab holds parsed \
+                 messages, not frames, so there is nothing to seek to.",
+                parsed.source
+            ),
+        );
+    };
+
+    let path = match server.resolve_in_root(&leaf) {
+        Ok(p) => p,
+        Err(e) => {
+            return ng_unresolvable(
+                pointer,
+                format!(
+                    "source '{}' is not reachable from the configured file \
+                     root: {}",
+                    parsed.source, e.message
+                ),
+            );
+        }
+    };
+
+    // Resolve against the CONFINED path, never the one the pointer carried.
+    let confined = crate::capture::packet::FrameRef {
+        source: path.display().to_string().into(),
+        origin: parsed.origin,
+        kind: parsed.kind.clone(),
+    };
+    let resolution = match crate::capture::resolve::resolve(&confined) {
+        Ok(r) => r,
+        Err(e) => return ng_unresolvable(pointer, e.to_string()),
+    };
+    let frame = resolution.bytes();
+    let status = if resolution.is_verified() {
+        "verified"
+    } else {
+        "unverified"
+    };
+
+    // The link type decides how many bytes precede the IP header, and decoding
+    // an SLL or PPPoE capture as Ethernet produces addressing that looks
+    // decoded and is wrong.
+    let link_type = match crate::capture::file::open_offline(&path) {
+        Ok((cap, _guard)) => cap.get_datalink().0,
+        Err(e) => {
+            return ng_unresolvable(
+                pointer,
+                format!(
+                    "the frame resolved, but '{leaf}' would not reopen for its \
+                     link-layer type: {e:#}. Decoding it as Ethernet would be a \
+                     guess about the wire format, and a wrong guess reads as a \
+                     decoded message."
+                ),
+            );
+        }
+    };
+
+    let packet = crate::capture::packet::Packet::with_source(
+        chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+        frame.to_vec(),
+        frame.len(),
+        frame.len(),
+        Some(std::sync::Arc::from(leaf.as_str())),
+        link_type,
+    );
+    let decoded = match crate::capture::parse::parse_packet(&packet) {
+        Ok(d) => d,
+        Err(e) => {
+            return ng_unresolvable(
+                pointer,
+                format!(
+                    "frame {} of '{leaf}' carries no decodable transport: {e}",
+                    parsed.origin.ordinal
+                ),
+            );
+        }
+    };
+
+    // Decoding belongs to whatever speaks the relay's protocol. This layer
+    // asks for a control message and is told what arrived.
+    let Some(decoder) = server.control_decoder() else {
+        return ng_unresolvable(
+            pointer,
+            "this server has no relay control decoder installed, so it cannot \
+             say what a control datagram contains. Nothing was decoded; this is \
+             not an answer that the frame holds no control message."
+                .to_string(),
+        );
+    };
+    let Some(control) = decoder.decode(&decoded.payload, decoded.dst_port) else {
+        return ng_unresolvable(
+            pointer,
+            format!(
+                "frame {} of '{leaf}' carries no relay control message. One is a \
+                 cookie, a space, and a complete dictionary consuming the rest \
+                 of the datagram; this payload is not one, either bare or \
+                 encapsulated.",
+                parsed.origin.ordinal
+            ),
+        );
+    };
+
+    // An encapsulated message can have been authenticated on delivery, and what
+    // that is worth is a property of this RUN's configuration. A bare datagram
+    // cannot have been: it is believed because of where it landed and for no
+    // other reason, which is what `PortGatedOnly` says.
+    let trust = match control.delivery {
+        crate::relay::ControlDelivery::Encapsulated => server.relay_delivery_trust(),
+        crate::relay::ControlDelivery::BareDatagram => DeliveryTrust::PortGatedOnly,
+    };
+    describe_control_message(
+        pointer,
+        status,
+        &leaf,
+        parsed.origin.ordinal,
+        trust,
+        &control,
+    )
+}
+
+/// Parameters for `query_relay`.
+///
+/// # Why there is no address here
+///
+/// The relay's address comes from `--rtpengine-control` and from nowhere else.
+/// A tool argument naming the destination would make this surface a way to send
+/// packets to a host of the caller's choosing, which is a far larger act than
+/// reading a capture -- and the address sipnab could otherwise infer is one it
+/// learned from packets, which may belong to somebody's laptop now.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct QueryRelayParams {
+    /// One Call-ID to ask about. Omit it to enumerate what the relay holds.
+    pub call_id: Option<String>,
+    /// Cap on the Call-IDs an enumeration returns.
+    ///
+    /// Named for what it bounds rather than `limit`: this is the relay's own
+    /// `list` argument, traveling to another process, not a page over data
+    /// sipnab already holds. rtpengine warns that raising it may exceed a UDP
+    /// datagram, and a truncated answer is reported rather than padded.
+    pub max_calls: Option<u32>,
+}
+
+/// One relay-side port, as the relay describes it.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct RelayStreamView {
+    /// The relay's own address for this stream.
+    pub local_address: String,
+    /// The relay's own port -- the half a capture can see without signaling.
+    pub local_port: u16,
+    /// Where the relay currently sends, once it has learned it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// What the far side advertised in SDP, which may differ from `endpoint`
+    /// behind NAT -- and the difference is often the bug being chased.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub advertised_endpoint: Option<String>,
+    /// Whether this port carries RTCP rather than RTP.
+    pub is_rtcp: bool,
+    /// Every SSRC the relay has seen on this port.
+    pub ssrcs: Vec<u32>,
+}
+
+/// One side of a call, as the relay holds it.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct RelayTagView {
+    /// The SIP tag identifying this side.
+    pub tag: String,
+    /// The tags this side exchanges media with.
+    pub in_dialogue_with: Vec<String>,
+    /// The codec the relay recorded, where it recorded one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
+    /// Ports the relay holds for this side, RTP and RTCP together.
+    pub streams: Vec<RelayStreamView>,
+}
+
+/// What the relay said, and what asking it is worth.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct RelayAnswer {
+    /// `list` or `query` -- which question was put.
+    pub asked: String,
+    /// The address asked, echoed so the answer names its own source.
+    ///
+    /// Echoed from CONFIGURATION, which is the only place it can come from.
+    pub relay_address: String,
+    /// `calls`, `call`, or `refused`.
+    pub outcome: String,
+    /// The Call-IDs an enumeration returned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_ids: Option<Vec<String>>,
+    /// Whether the relay held more than it returned.
+    ///
+    /// A capped enumeration read as a complete one is the failure this field
+    /// exists to prevent: "the relay holds these 32 calls" and "the relay
+    /// returned the first 32 of an unknown number" are different statements.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
+    /// The Call-ID a `query` asked about, carried from the REQUEST.
+    ///
+    /// rtpengine's `query` answer does not echo the Call-ID it was asked about,
+    /// so pairing the answer with its question is the caller's job and cannot
+    /// be checked from the bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    /// Each side of the call a `query` returned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<RelayTagView>>,
+    /// The relay's own words when it declined.
+    ///
+    /// A refusal is not a transport failure: the relay was reached, understood
+    /// the question, and said no.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
+    /// Always `asked` -- sipnab put the question to the relay over its control
+    /// socket, so no third party could have answered it.
+    pub delivery_trust: DeliveryTrust,
+    /// The one-line reading of `delivery_trust`.
+    pub delivery_note: String,
+    /// Version of this response shape.
+    pub schema_version: u32,
+}
+
+impl RelayAnswer {
+    /// Render one control reply for an agent.
+    fn from_reply(
+        asked: &str,
+        addr: std::net::SocketAddr,
+        reply: &crate::relay::types::ControlReply,
+    ) -> Self {
+        use crate::relay::types::ControlReply;
+        let base = |outcome: &str| Self {
+            asked: asked.to_string(),
+            relay_address: addr.to_string(),
+            outcome: outcome.to_string(),
+            call_ids: None,
+            truncated: None,
+            call_id: None,
+            tags: None,
+            refusal: None,
+            // This tool ASKED. That is the strongest reading on the scale, and
+            // the only one no third party could have produced.
+            delivery_trust: DeliveryTrust::Asked,
+            delivery_note: DeliveryTrust::Asked.explain().to_string(),
+            schema_version: 1,
+        };
+        match reply {
+            ControlReply::Calls(e) => Self {
+                call_ids: Some(e.call_ids.clone()),
+                truncated: Some(e.truncated),
+                ..base("calls")
+            },
+            ControlReply::Call(view) => Self {
+                call_id: Some(view.call_id.clone()),
+                tags: Some(
+                    view.tags
+                        .iter()
+                        .map(|t| RelayTagView {
+                            tag: t.tag.clone(),
+                            in_dialogue_with: t.in_dialogue_with.clone(),
+                            codec: t.codec.clone(),
+                            streams: t
+                                .streams
+                                .iter()
+                                .map(|s| RelayStreamView {
+                                    local_address: s.local_address.clone(),
+                                    local_port: s.local_port,
+                                    endpoint: s.endpoint.clone(),
+                                    advertised_endpoint: s.advertised_endpoint.clone(),
+                                    is_rtcp: s.is_rtcp,
+                                    ssrcs: s.ssrcs.clone(),
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                ),
+                ..base("call")
+            },
+            ControlReply::Refused { reason } => Self {
+                refusal: Some(reason.clone()),
+                ..base("refused")
+            },
+        }
     }
 }

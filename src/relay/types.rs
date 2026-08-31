@@ -64,22 +64,6 @@ pub enum ControlReply {
         reason: String,
     },
 }
-/// A client for one relay's control socket.
-///
-/// # Why the address is a constructor argument
-///
-/// It is never inferred from capture traffic. The address sipnab could guess
-/// is one it learned from packets, and sending to an address derived from a
-/// capture is how an analysis tool starts talking to a stranger -- a host that
-/// was a relay when the capture was taken, and is somebody's laptop now.
-///
-/// # Why there is no `run` method
-///
-/// RE4 requires this to be triggered at startup and when an unexplained stream
-/// appears, and NEVER to poll. There is no loop here and no timer: a caller who
-/// wants periodic behavior has to write the loop themselves, which is a
-/// visible act rather than a default. A poller is a service, and a service that
-/// talks to a production relay is something an operator opts into.
 /// One relay-side port, and who the relay exchanges media with on it.
 ///
 /// This is the join key an unexplained stream needs. sipnab sees packets

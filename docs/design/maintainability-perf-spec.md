@@ -351,7 +351,7 @@ Five implementations of "dialog summary", already divergent on the wire:
 |---|---|---|
 | CLI/NDJSON | [`src/output/json.rs:420`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L420) `DialogJson` | `msg_count`, `schema_version: 1` |
 | REST API | [`src/output/api.rs:715`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L715) ad-hoc `json!` | `msg_count`, `method.as_str()` |
-| MCP | [`src/mcp/server.rs:8179`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8179) `DialogSummary` | **`message_count`**, **`format!("{:?}", method)`** |
+| MCP | [`src/mcp/server.rs:8237`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8237) `DialogSummary` | **`message_count`**, **`format!("{:?}", method)`** |
 | TUI save | [`src/tui/save.rs:212`](https://github.com/NormB/sipnab/blob/main/src/tui/save.rs#L212) hand-built `json!` | third field set, no `schema_version` |
 | Report | `src/output/call_report.rs:50/183` | independent text/markdown re-derivations |
 

@@ -284,7 +284,7 @@ A divergence figure fails the way a MOS fails. The number a two-source capture
 produces is byte-identical to the number a two-hundred-source capture produces,
 and only one of them means anything — which is exactly why an RTP score says
 whether it is grounded. `mos_is_grounded`
-([`src/mcp/server.rs:3109`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3109))
+([`src/mcp/server.rs:3167`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3167))
 exists because a placeholder 4.2 and a measured 4.2 are the same bytes, and an
 agent that cannot tell them apart reasons confidently from a guess.
 

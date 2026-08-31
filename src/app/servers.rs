@@ -226,6 +226,14 @@ pub fn start_servers(
     stream_store: &Arc<RwLock<StreamStore>>,
     alerts: Option<&Arc<RwLock<AlertEngine>>>,
     selection: Selection,
+    // Proof this run may transmit, when it holds one. Carried rather than
+    // derived here: the permit's rule lives in `TransmitPermit::for_source`,
+    // and re-deriving "is this run live?" from the CLI would be a second copy
+    // of that rule, free to drift from it. Gated like `capture_meter` below,
+    // because only the MCP door has a tool that transmits.
+    #[cfg(feature = "mcp")] relay_query_permit: Option<
+        crate::security::transmit_guard::TransmitPermit,
+    >,
     #[cfg(feature = "metrics")] capture_meter: Option<crate::capture::channel::CaptureMeter>,
 ) -> anyhow::Result<Option<ServerHandles>> {
     // Metrics first, and on its OWN thread rather than the shared async
@@ -480,6 +488,33 @@ pub fn start_servers(
                 s.with_open_capture()
             } else {
                 s
+            };
+            // All three are required, and the permit is the one that
+            // cannot be faked: a file-backed run never has one, so an analyst
+            // opening somebody else's pcap cannot reach this branch. A
+            // malformed address is already reported by bootstrap, so it is
+            // dropped here rather than reported a second time.
+            // The composition root is where an implementation is CHOSEN. The
+            // seam declares what a control message is; this says which protocol
+            // speaks it, so no layer above has to know.
+            let s = s.with_control_decoder(std::sync::Arc::new(crate::rtpengine::NgControlDecoder));
+            let s = match (
+                cli.mcp_args.mcp_allow_relay_query,
+                relay_query_permit,
+                cli.rtp_args.rtpengine_control.as_deref(),
+            ) {
+                (true, Some(permit), Some(addr)) => match addr.parse::<std::net::SocketAddr>() {
+                    Ok(sock) => s.with_relay_query(
+                        sock,
+                        std::sync::Arc::new(crate::rtpengine::control::ControlClient::new(
+                            sock,
+                            crate::rtpengine::control::DEFAULT_CONTROL_TIMEOUT,
+                        )),
+                        permit,
+                    ),
+                    Err(_) => s,
+                },
+                _ => s,
             };
             let s = if cli.mcp_args.mcp_allow_tls_capture {
                 s.with_tls_capture()

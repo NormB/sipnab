@@ -62,6 +62,9 @@ fn nothing_enabled_spawns_nothing() {
             metrics: false,
             armed_detections: Vec::new(),
         },
+        // No transmit permit: none of these cases opens a live source.
+        #[cfg(feature = "mcp")]
+        None,
         #[cfg(feature = "metrics")]
         None,
     )
@@ -97,6 +100,9 @@ fn selection_gates_configured_servers() {
             metrics: false,
             armed_detections: Vec::new(),
         },
+        // No transmit permit: none of these cases opens a live source.
+        #[cfg(feature = "mcp")]
+        None,
         #[cfg(feature = "metrics")]
         None,
     )
@@ -133,6 +139,9 @@ fn invalid_api_addr_is_an_error() {
             metrics: false,
             armed_detections: Vec::new(),
         },
+        // No transmit permit: none of these cases opens a live source.
+        #[cfg(feature = "mcp")]
+        None,
         #[cfg(feature = "metrics")]
         None,
     );
@@ -166,6 +175,9 @@ fn api_on_ephemeral_port_starts_servers_thread() {
             metrics: false,
             armed_detections: Vec::new(),
         },
+        // No transmit permit: none of these cases opens a live source.
+        #[cfg(feature = "mcp")]
+        None,
         #[cfg(feature = "metrics")]
         None,
     )
@@ -206,6 +218,9 @@ fn api_port_in_use_is_a_startup_error() {
             metrics: false,
             armed_detections: Vec::new(),
         },
+        // No transmit permit: none of these cases opens a live source.
+        #[cfg(feature = "mcp")]
+        None,
         #[cfg(feature = "metrics")]
         None,
     )
@@ -247,6 +262,9 @@ fn api_non_loopback_without_auth_is_a_startup_error() {
             metrics: false,
             armed_detections: Vec::new(),
         },
+        // No transmit permit: none of these cases opens a live source.
+        #[cfg(feature = "mcp")]
+        None,
         #[cfg(feature = "metrics")]
         None,
     )
@@ -289,6 +307,9 @@ fn api_tls_flags_are_a_startup_error() {
             metrics: false,
             armed_detections: Vec::new(),
         },
+        // No transmit permit: none of these cases opens a live source.
+        #[cfg(feature = "mcp")]
+        None,
         #[cfg(feature = "metrics")]
         None,
     )
@@ -331,6 +352,9 @@ fn mcp_http_transport_without_feature_is_a_startup_error() {
             metrics: false,
             armed_detections: Vec::new(),
         },
+        // No transmit permit: none of these cases opens a live source.
+        #[cfg(feature = "mcp")]
+        None,
         #[cfg(feature = "metrics")]
         None,
     )
@@ -371,6 +395,9 @@ fn unknown_mcp_transport_is_a_startup_error() {
             metrics: false,
             armed_detections: Vec::new(),
         },
+        // No transmit permit: none of these cases opens a live source.
+        #[cfg(feature = "mcp")]
+        None,
         #[cfg(feature = "metrics")]
         None,
     )
@@ -412,6 +439,9 @@ fn invalid_mcp_bind_is_a_startup_error() {
             metrics: false,
             armed_detections: Vec::new(),
         },
+        // No transmit permit: none of these cases opens a live source.
+        #[cfg(feature = "mcp")]
+        None,
         #[cfg(feature = "metrics")]
         None,
     );
@@ -511,6 +541,9 @@ fn metrics_non_loopback_without_auth_is_a_startup_error() {
             metrics: true,
             armed_detections: Vec::new(),
         },
+        // No transmit permit: none of these cases opens a live source.
+        #[cfg(feature = "mcp")]
+        None,
         None,
     )
     .err()
@@ -550,6 +583,9 @@ fn metrics_on_loopback_ephemeral_port_starts() {
             metrics: true,
             armed_detections: Vec::new(),
         },
+        // No transmit permit: none of these cases opens a live source.
+        #[cfg(feature = "mcp")]
+        None,
         None,
     );
     assert!(

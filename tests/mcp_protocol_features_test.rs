@@ -243,6 +243,21 @@ fn text_payload(reply: &Value) -> Value {
 /// Keyed by tool name and resolved against the live `tools/list`, so a tool
 /// that starts declaring an `outputSchema` without an entry here is named by
 /// the failure rather than skipped.
+/// Schema-declaring tools that cannot be driven to a payload here, each with
+/// the reason.
+///
+/// A list like this is where coverage goes to die, so every entry names a
+/// PROPERTY of the tool rather than a convenience, and the gates below fail if
+/// an entry stops being registered, loses its reason, or becomes drivable.
+const SCHEMA_NOT_DRIVEN: &[(&str, &str)] = &[(
+    "query_relay",
+    "transmits to a relay that must be reachable, and needs a live capture \
+     source for a transmit permit to exist at all. A stock test server has \
+     neither, so every call here refuses before a payload is built. Driving it \
+     would mean standing up a relay and a live interface inside a unit test, \
+     and a fake reachable at a real address is a transmitting test.",
+)];
+
 fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
     vec![
         ("aggregate_dialogs", json!({"group_by": "state"})),
@@ -262,6 +277,15 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
         // false and `relay_was_consulted` computed over every orphan rather
         // than over a page.
         ("reconcile_orphans", json!({})),
+        // A well-formed pointer at a file that is not there. The answer is the
+        // `unresolvable` shape, which is the half of `NgDecode` most likely to
+        // drift out of its schema: it is the branch that fills almost nothing,
+        // so a required field wrongly added to the type would show up HERE
+        // first and nowhere else.
+        (
+            "decode_ng",
+            json!({"frame_ref": "absent.pcap#1@0000000000000000"}),
+        ),
     ]
 }
 
@@ -365,6 +389,9 @@ fn every_declared_output_schema_matches_the_payload_it_describes() {
             "{name}'s outputSchema must have root type object; structuredContent \
              cannot carry anything else"
         );
+        if SCHEMA_NOT_DRIVEN.iter().any(|(t, _)| t == name) {
+            continue;
+        }
         let Some((_, args)) = probes.iter().find(|(t, _)| t == name) else {
             panic!(
                 "{name} declares an outputSchema but has no case in schema_probes, \
@@ -459,4 +486,66 @@ fn capture_health_sends_no_progress_when_the_caller_did_not_ask() {
          notifications; got {:?}",
         wire.progress_reports()
     );
+}
+
+/// Every excuse names a registered tool and gives a reason.
+///
+/// Without this an entry could outlive the tool it excuses, and a list naming
+/// something deleted asserts nothing while looking like it asserts something.
+#[test]
+fn every_schema_excuse_is_registered_and_reasoned() {
+    let mut wire = Wire::start();
+    let registered: Vec<String> = wire
+        .tools()
+        .into_iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        !SCHEMA_NOT_DRIVEN.is_empty(),
+        "the excuse list is empty, so the gate below proves nothing"
+    );
+    for (tool, reason) in SCHEMA_NOT_DRIVEN {
+        assert!(
+            registered.iter().any(|r| r == tool),
+            "{tool} is excused from schema probing and is not a registered tool"
+        );
+        assert!(
+            reason.len() > 60,
+            "{tool}'s excuse must say WHY, not merely that it is excused"
+        );
+    }
+}
+
+/// The excused tool really is undrivable here, and refuses for the stated
+/// reason rather than answering.
+///
+/// This is the half that keeps the excuse honest. If `query_relay` ever starts
+/// answering on a stock server, that is a hole in the opt-in -- a tool that
+/// transmits would be reachable without `--mcp-allow-relay-query`, without a
+/// configured relay, and on a run reading a FILE. The excuse and the security
+/// property rest on the same fact, so one test covers both.
+#[test]
+fn the_excused_tool_refuses_on_a_stock_server() {
+    let mut wire = Wire::start();
+    let reply = wire.call("query_relay", json!({}), None);
+
+    assert!(
+        reply["result"].is_null(),
+        "query_relay answered on a server with no relay configured, no opt-in, \
+         and a file source. A tool that transmits must not be reachable there: \
+         {reply}"
+    );
+    let message = reply["error"]["message"].as_str().unwrap_or_default();
+    for required in [
+        "--mcp-allow-relay-query",
+        "--rtpengine-control",
+        "live",
+        "transmit permit",
+    ] {
+        assert!(
+            message.contains(required),
+            "the refusal must name {required} so an operator knows which of the \
+             three requirements is missing: {message}"
+        );
+    }
 }

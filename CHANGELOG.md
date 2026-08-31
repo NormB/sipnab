@@ -32,6 +32,26 @@ entry that carries them.
   asked" is a weaker statement than "asked and told no" and a small `limit` must
   not turn an absence of evidence into evidence of absence.
 
+- **`decode_ng` -- what a captured relay control message says, and what its
+  delivery path is worth.** `decode_evidence` decodes a SIP frame; this decodes
+  a relay control message and adds the question no other surface answers.
+  Anything on the segment can put a control message on the HEP port, and landing
+  there is the whole reason sipnab credits it -- whereupon it names a call and
+  binds media to an address its sender chose. A message delivered to an
+  HMAC-authenticated listener is a different claim entirely, and both decode to
+  the same bytes. `on_believed_mirror_port` is reported beside the verdict
+  because it is the only reason a sniffed message is credited at all.
+- **`query_relay` -- the agent counterpart of the relay control flag, and the
+  only MCP tool that transmits.** A call already in progress when sipnab started
+  has no control exchange left to read, so the relay's own view is the only way
+  to learn which ports belong to it. Off unless `--mcp-allow-relay-query`, and
+  **there is no address parameter**: the destination comes from operator
+  configuration and nowhere else, or the agent surface becomes a way to make
+  sipnab send packets to a host the caller chose. The server holds a
+  `TransmitPermit` rather than a boolean, so "an offline run never transmits" is
+  structural -- a run reading a file cannot construct one, cannot populate the
+  field, and has nothing to send with.
+
 ### Changed
 
 - **The read-only relay seam is its own module.** `ReadOnlyCommand`,
@@ -39,6 +59,17 @@ entry that carries them.
   `src/rtpengine` to `src/relay`, so the contract a caller programs against no
   longer lives inside the one implementation that happens to satisfy it today.
   No operator-facing string in the seam names a relay vendor.
+
+### Fixed
+
+- **`RelayStream` rendered with `ControlClient`'s documentation.** The module
+  move above left `ControlClient`'s doc block behind in `src/relay/types.rs`
+  after the type itself moved. With no item and no blank line between them, that
+  block merged into the next one, so `RelayStream` published the summary "A
+  client for one relay's control socket" plus two sections about a type it is
+  not. The two rationale sections -- why the relay address is a constructor
+  argument, and why there is deliberately no `run` method -- now sit on
+  `ControlClient` itself, which is the only place they were ever true.
 
 ## [0.5.138] - 2026-08-31
 

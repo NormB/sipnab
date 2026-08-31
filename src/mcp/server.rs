@@ -116,6 +116,16 @@ pub struct SipnabMcp {
     allow_shutdown: bool,
     /// Whether `open_capture` may replace the loaded capture.
     allow_open_capture: bool,
+    /// Where `query_relay` may send, and the proof that it may send at all.
+    ///
+    /// `None` means the tool refuses. Holding the permit here rather than a
+    /// boolean is what makes "an offline run never transmits" structural: a
+    /// file-backed run cannot construct a `TransmitPermit`, so it cannot
+    /// populate this field, so the tool has nothing to send with.
+    relay_query: Option<RelayQueryAccess>,
+    /// How captured control messages are decoded, chosen by the composition
+    /// root so this layer never names a protocol.
+    control_decoder: Option<std::sync::Arc<dyn crate::relay::ControlDecoder>>,
     /// Whether `start_tls_capture` may install kernel uprobes.
     ///
     /// Separate from `allow_open_capture` because it is a different act. That
@@ -260,6 +270,8 @@ impl SipnabMcp {
             protected_inputs: Default::default(),
             allow_shutdown: false,
             allow_open_capture: false,
+            relay_query: None,
+            control_decoder: None,
             allow_tls_capture: false,
             allow_save_findings: false,
             findings: Arc::new(RwLock::new(crate::mcp::findings::FindingsLog::new())),
@@ -628,6 +640,52 @@ impl SipnabMcp {
     pub fn with_open_capture(mut self) -> Self {
         self.allow_open_capture = true;
         self
+    }
+
+    /// Permit `query_relay` to ask the relay at `addr` what it holds.
+    ///
+    /// The address is the operator's, taken from `--rtpengine-control`. There
+    /// is deliberately no way for a tool argument to reach it: an agent that
+    /// could name the destination would turn this surface into a way to make
+    /// sipnab send packets to a host of the caller's choosing.
+    #[must_use]
+    pub fn with_relay_query(
+        mut self,
+        addr: std::net::SocketAddr,
+        relay: std::sync::Arc<dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync>,
+        permit: crate::security::transmit_guard::TransmitPermit,
+    ) -> Self {
+        self.relay_query = Some(RelayQueryAccess {
+            addr,
+            relay,
+            permit,
+        });
+        self
+    }
+
+    /// The decoder `decode_ng` reads captured control messages with.
+    ///
+    /// Injected for the same reason the relay is: this layer must not choose
+    /// which protocol a captured datagram is measured against.
+    #[must_use]
+    pub fn with_control_decoder(
+        mut self,
+        decoder: std::sync::Arc<dyn crate::relay::ControlDecoder>,
+    ) -> Self {
+        self.control_decoder = Some(decoder);
+        self
+    }
+
+    /// Where `query_relay` may send, if anywhere.
+    pub(crate) fn relay_query_access(&self) -> Option<RelayQueryAccess> {
+        self.relay_query.clone()
+    }
+
+    /// The decoder `decode_ng` may use, if one was installed.
+    pub(crate) fn control_decoder(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::relay::ControlDecoder>> {
+        self.control_decoder.clone()
     }
 
     /// Permit `start_tls_capture` to install kernel uprobes on this host.
@@ -7986,11 +8044,6 @@ fn audit_args(arguments: Option<&rmcp::model::JsonObject>) -> String {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for SipnabMcp {
-    /// Files under `--mcp-file-root`, listed as resources.
-    ///
-    /// Delegates to `resource_list` so the logic is testable without
-    /// fabricating a `RequestContext`, and so the sandbox has exactly one
-    /// implementation.
     /// Read what the peer advertised at `initialize`.
     ///
     /// The client's capabilities exist only after the handshake, which is why
@@ -8084,6 +8137,11 @@ impl ServerHandler for SipnabMcp {
         )
     }
 
+    /// Files under `--mcp-file-root`, listed as resources.
+    ///
+    /// Delegates to `resource_list` so the logic is testable without
+    /// fabricating a `RequestContext`, and so the sandbox has exactly one
+    /// implementation.
     async fn list_resources(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
@@ -14341,4 +14399,25 @@ mod tests {
             "null means no time-based match was returned, not that the clock is fine"
         );
     }
+}
+
+/// Where `query_relay` may send, and the proof that it may send at all.
+///
+/// Carried together because neither half is sufficient: an address without a
+/// permit is a run that must not transmit, and a permit without an address is a
+/// run whose operator never named a relay.
+#[derive(Clone)]
+pub(crate) struct RelayQueryAccess {
+    /// The relay's control port, from operator configuration.
+    ///
+    /// Kept alongside the client so an answer can name its own source. It is
+    /// never used to CHOOSE a destination -- the client already points at it.
+    pub addr: std::net::SocketAddr,
+    /// The relay to ask, chosen by the composition root.
+    ///
+    /// A trait object rather than a concrete client: this layer must not name
+    /// an implementation, and a second relay must not mean a second field.
+    pub relay: std::sync::Arc<dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync>,
+    /// Proof this run reads a live source and may put a packet on the wire.
+    pub permit: crate::security::transmit_guard::TransmitPermit,
 }

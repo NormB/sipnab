@@ -30,11 +30,43 @@ its own.
 Re-pointing targets a DEFINITION (`fn`/`struct`/`enum`/`const`/`static`/`impl`/
 `type`/`trait`/`let`), and only when exactly one exists. Matching any mention
 would re-point at a call site, which is how the drift starts.
+
+# The second rule: a citation says its line TWICE
+
+A citation carries the line number in the visible LABEL and again in the URL's
+`#L` fragment, and `_repoint` has always rewritten the two together -- because
+they are one citation. Nothing read them back. So when source moved 28 lines
+and the LABELS were updated by hand, the ANCHORS stayed where they were: the
+drift rule above resolved every label to the right code and reported the tree
+clean, while every click landed 28 lines away. It was found by eye.
+
+`check_anchors` is that missing read-back, and it lives here rather than in a
+Rust gate for the reason this file already exists: it is the FIXER as well, and
+a gate and its fixer must derive from one rule. It is deliberately wider than
+the drift rule in three ways, because the drift rule's narrowness is bought
+with a symbol lookup that agreement does not need:
+
+  * every label shape, not only `.rs` -- `docs/architecture.md:149-150` and
+    the bare `[`:1928`](...)` form used inside tables are 349 of the 781
+    citations here, and `CITE` matches none of them;
+  * ranges, at BOTH ends -- 228 of them, and comparing only the start
+    certifies `:35-40` -> `#L35-L99`;
+  * every published page, not only `docs/` -- `website/content/` carries
+    citations that no Rust gate opens for this.
+
+The LABEL is authoritative and `--apply` moves the fragment onto it. That is
+not a coin toss: the label is what a human wrote, and it is the half the drift
+rule above validates against the source, so the two rules cannot pull a
+citation in opposite directions.
 """
 
 import pathlib
 import re
 import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from lib_markdown import fence_mask  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
@@ -55,6 +87,17 @@ IDENT = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)")
 # every one of those is a variable name someone wrote near a citation, and the
 # gate then demanded the citation point at an arbitrary `let` site.
 DEF = r"(?:fn|struct|enum|const|static|impl|type|trait|mod|macro_rules!)"
+
+# Any line-bearing citation, in every shape these pages use: `.rs` and `.md`
+# labels, a bare `[`:1928`](...)`, a single line and a range. Wider than `CITE`
+# on purpose -- agreement needs neither the cited file's language nor its
+# contents, so the restrictions `CITE` pays for a symbol lookup with are not
+# owed here.
+ANCHORED = re.compile(r"\[`([^`\n]*?):(\d+)(?:-(\d+))?`\]\(([^)\n]+)\)")
+# The `#L` fragment at the END of an href. `-L20` is GitHub's form; `-20` is
+# accepted so a half-written one is REPORTED rather than silently read as
+# having no range at all.
+FRAGMENT = re.compile(r"#L(\d+)(?:-L?(\d+))?$")
 
 CONTEXT_CHARS = 90
 TOLERANCE = 15
@@ -331,6 +374,105 @@ def check(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
     return 1 if problems else 0
 
 
+def anchor_pages() -> list[pathlib.Path]:
+    """Every page a reader can reach a citation from.
+
+    Wider than `check`'s `docs/**` glob. `docs/` is mirrored into
+    `website/content/docs/` and both are published, so a citation that
+    desynchronizes on the site is as wrong as one that desynchronizes in the
+    repository -- and no Rust gate opens the site copy for this: measured
+    2026-08-31, two line citations live under `website/content/` alone.
+    README.md is here for the same reason and currently carries none, which is
+    the point: a page set chosen by where citations happen to be today is one
+    that misses the first one written tomorrow.
+    """
+    pages = [p for p in sorted(REPO.glob("docs/**/*.md")) if "superpowers" not in str(p)]
+    pages += sorted(REPO.glob("website/content/**/*.md"))
+    readme = REPO / "README.md"
+    if readme.is_file():
+        pages.append(readme)
+    return pages
+
+
+def check_anchors(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
+    """The label and the `#L` fragment of one citation must name one line."""
+    page_list = anchor_pages() if pages is None else pages
+    problems: list[str] = []
+    fixed = examined = both = fenced = 0
+
+    for md in page_list:
+        text = md.read_text()
+        try:
+            rel = md.relative_to(REPO).as_posix()
+        except ValueError:
+            rel = str(md)  # a fixture outside the repository
+
+        # `fence_mask`, not a per-line toggle, and not "no masking at all".
+        # Documentation about citations has to be able to SHOW a broken one,
+        # and a gate that fails on its own worked example gets an exemption
+        # comment instead of a fix. Measured 2026-08-31: zero citations in this
+        # tree sit inside a fence, so the mask costs no coverage today. The
+        # count is reported below, because a mask that swallowed the whole
+        # document would otherwise look exactly like a clean document.
+        mask = fence_mask(text)
+        lines = text.split("\n")
+        changed = False
+
+        for i, line in enumerate(lines):
+            if i < len(mask) and mask[i]:
+                fenced += len(ANCHORED.findall(line))
+                continue
+            edits: list[tuple[int, int, str]] = []
+            for m in ANCHORED.finditer(line):
+                examined += 1
+                start, end, href = m.group(2), m.group(3), m.group(4)
+                frag = FRAGMENT.search(href)
+                if frag is None:
+                    # A label with no fragment at all is a different failure
+                    # with a different fix, and `cited_line_numbers_link_to_
+                    # the_line` in tests/doc_link_hygiene_test.rs owns it --
+                    # including the `docs/internals/**` exemption it has to
+                    # carry, which this rule must not contradict.
+                    continue
+                both += 1
+                label = f":{start}" + (f"-{end}" if end else "")
+                want = f"#L{start}" + (f"-L{end}" if end else "")
+                have = frag.group(0)
+                if have == want:
+                    continue
+                if apply:
+                    at = m.start(4)
+                    edits.append((at + frag.start(), at + frag.end(), want))
+                    fixed += 1
+                else:
+                    problems.append(
+                        f"{rel}:{i + 1}: the label promises `{label}` and the "
+                        f"link lands at `{have}` -- expected `{want}`"
+                    )
+            if edits:
+                # Right-to-left, so an earlier edit cannot shift a later span.
+                for lo, hi, replacement in sorted(edits, reverse=True):
+                    line = line[:lo] + replacement + line[hi:]
+                lines[i] = line
+                changed = True
+
+        if changed:
+            md.write_text("\n".join(lines))
+
+    if apply:
+        print(f"re-anchored {fixed} citation(s)")
+    # One machine-readable line, because every number here is load-bearing:
+    # `examined=0` is how this scanner goes blind, and `disagreeing=0` reads
+    # identically whether it examined 781 citations or none.
+    print(
+        f"two-part references: pages={len(page_list)} examined={examined} "
+        f"both_halves={both} fenced={fenced} disagreeing={len(problems)}"
+    )
+    for p in problems:
+        print(f"  {p}")
+    return 1 if problems else 0
+
+
 def _repoint(cite: str, line: int) -> str:
     """Rewrite both the label's `:NNN` and the link's `#LNNN` together."""
     cite = re.sub(r"(\.rs):\d+`\]", rf"\1:{line}`]", cite)
@@ -340,4 +482,11 @@ def _repoint(cite: str, line: int) -> str:
 
 if __name__ == "__main__":
     named = [pathlib.Path(a) for a in sys.argv[1:] if not a.startswith("-")]
-    sys.exit(check(apply="--apply" in sys.argv, pages=named or None))
+    apply_ = "--apply" in sys.argv
+    pages = named or None
+    # Both rules always run, and both always report. Short-circuiting on the
+    # first failure would hide the second one behind it, and these two fail for
+    # unrelated reasons -- a moved symbol against a half-applied edit.
+    rc = check(apply=apply_, pages=pages)
+    rc |= check_anchors(apply=apply_, pages=pages)
+    sys.exit(rc)

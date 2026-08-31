@@ -545,6 +545,11 @@ pub fn run_tui_mode(
             // consumer, so there is nothing to declare.
             armed_detections: Vec::new(),
         },
+        // `mcp: false` above: this door serves no MCP tools, so there is no
+        // `query_relay` here to hold a permit for. The reconciler's own permit
+        // stays with the reconciler.
+        #[cfg(feature = "mcp")]
+        None,
         #[cfg(feature = "metrics")]
         capture_meter,
     )

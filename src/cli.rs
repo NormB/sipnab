@@ -8,6 +8,14 @@
 
 use clap::Parser;
 
+/// The flag that names the relay's control port, as an operator spells it.
+///
+/// Exported so a message can name it without the spelling being duplicated --
+/// and so layers forbidden from naming a relay implementation can still tell an
+/// operator which flag to set. The flag's own name is the one place that
+/// spelling belongs.
+pub const RELAY_CONTROL_FLAG: &str = "--rtpengine-control";
+
 /// Value of `--hep-rate-limit-per-peer`: disabled, a fixed cap, or `auto`
 /// (derive a fair per-peer cap from the global ceiling and the number of
 /// allowed sources at startup).
@@ -2628,6 +2636,27 @@ pub struct McpArgs {
         long = "mcp-allow-open-capture"
     )]
     pub mcp_allow_open_capture: bool,
+
+    /// Let an agent ask the live relay what it is holding (`query_relay`).
+    ///
+    /// Off by default because this tool TRANSMITS. Every other MCP tool answers
+    /// from bytes sipnab already has; this one puts a packet on the network, at
+    /// the address `--rtpengine-control` names.
+    ///
+    /// The address comes from that flag and from nowhere else -- never from a
+    /// tool argument. An agent that could name the destination would make the
+    /// MCP surface a way to send packets to a host of the caller's choosing,
+    /// which is a far larger act than reading a capture.
+    ///
+    /// Without `--rtpengine-control`, or on a run reading a file, the tool
+    /// refuses and says which of the two is missing: a file-backed run cannot
+    /// obtain a transmit permit at all, so an analyst opening somebody else's
+    /// pcap cannot make sipnab talk to the addresses inside it.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-allow-relay-query"
+    )]
+    pub mcp_allow_relay_query: bool,
 
     /// Let an agent install kernel uprobes and read TLS plaintext
     /// (`start_tls_capture`, `stop_tls_capture`).
