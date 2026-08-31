@@ -2289,9 +2289,12 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // 50 -> 51 by `top_talkers` (PB15), which ranks participants rather than
     // dialogs -- a dialog has two ends, and grouping dialogs forces a caller to
     // pick one and ignore the other.
+    // 51 -> 53 by `explain_attribution` and `reconcile_orphans` (RV1, RV3).
+    // Both are read-only, so the `readOnlyHint` split in `docs/mcp-protocol.md`
+    // moves 41-of-51 to 43-of-53 and the ten write-capable tools are unchanged.
     assert_eq!(
         registered.len(),
-        51,
+        53,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -2940,7 +2943,10 @@ fn no_documentation_table_repeats_a_row() {
     // the first thing a reader met, and grouping the sections while leaving
     // the index flat fixed the half nobody looks at. That is +7 in
     // docs/mcp-tools.md and the same +7 in its website/content mirror.
-    const EXPECTED_TABLES: usize = 770;
+    // 770 -> 774: the two verdict tables `reconcile_orphans` and
+    // `explain_attribution` document, each counted twice because
+    // `docs/mcp-tools.md` is mirrored into `website/content/docs/`.
+    const EXPECTED_TABLES: usize = 774;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

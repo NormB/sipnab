@@ -34,6 +34,7 @@ ordinary update.
 |---|---|---|
 | [`capture_status`](#capture-status) | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
 | [`capture_health`](#capture-health) | `sample_seconds` | Capture-path counters read twice: run totals, deltas across the window, `undecoded_fraction`, and undecodable frames by reason |
+| [`reconcile_orphans`](#reconcile-orphans) | `limit?` | Why each RTP stream with no dialog lacks one: a relay named the endpoint but no signaling arrived, SDP named it but no dialog claims it, or nothing named it at all |
 | [`get_capture_report`](#get-capture-report) | `format?` | Whole-capture analysis: findings, orphaned media, STUN/ICMP evidence, what the caps shed |
 | [`list_captures`](#list-captures) | -- | Capture files in `--mcp-file-root`, with sizes |
 | [`list_dialogs`](#list-dialogs) | `filter?`, `limit?`, `cursor?` | A page of dialog summaries, with the total behind it |
@@ -99,6 +100,7 @@ ordinary update.
 
 | Tool | Parameters | Returns |
 |---|---|---|
+| [`explain_attribution`](#explain-attribution) | `call_id` | Where each of a call's media endpoints came from and how much that path is worth — asked directly, HMAC-verified, plain secret, port-gated only, or the parties' own SDP |
 | [`show_evidence`](#show-evidence) | `refs`, `max_bytes?` | Follows frame pointers back to the captured bytes: verified, unverified, or unresolvable with a reason |
 | [`decode_evidence`](#decode-evidence) | `frame_ref`, `field?` | Decodes the frame one pointer names: link type, addressing, and each SIP header's byte range inside the message and the frame |
 | [`build_evidence_package`](#build-evidence-package) | `call_ids`, `filename` | **Write.** One directory of escalation artifacts in `--mcp-file-root`: pcapng, ladder and RTP stats per call, manifest, and the rebuilt-frames README |
@@ -1073,7 +1075,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.138",
+  "version": "0.5.139",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -1094,6 +1096,48 @@ discovers the setup by calling a tool and collecting a refusal, and a refusal
 mid-investigation reads as a dead end rather than as a server it was never
 allowed to use that way.
 
+
+### `reconcile_orphans`
+
+An orphaned stream is media with no dialog. `rtp_stats` names which streams
+have none. This tool says why each one has none, which is the part an incident
+needs.
+
+Three verdicts, and the difference between them is the point:
+
+| verdict | what it means |
+|---|---|
+| `relay-asserted-but-no-dialog` | a relay named this endpoint and no captured dialog claims it — the **signaling** is missing, not the media |
+| `signaled-but-no-dialog` | SDP named it and no dialog holds it — either the capture missed the dialog, or its SDP arrived before capture started |
+| `never-named` | nothing in this capture named this endpoint at all |
+
+`relay_was_consulted` rides alongside the verdict and matters more than it looks. A
+`never-named` verdict with `relay_was_consulted: false` means **nobody asked** —
+an absence of evidence, not evidence of absence. It is deliberately not
+reported using the `Unattributed` vocabulary, which answers "sipnab asked the
+relay and it said X": this server holds no live reconciler, and claiming an answer
+nobody received is the failure that vocabulary exists to prevent.
+
+```jsonc
+// reconcile_orphans { "limit": 2 }
+{
+  "orphans": [
+    {
+      "ssrc": 305419896,
+      "src": "127.0.0.1:5094",
+      "dst": "127.0.0.1:5084",
+      "named_endpoint": null,
+      "asserted_by": null,
+      "reason": "never-named",
+      "note": "nothing in this capture named this endpoint. A relay could answer it and none was asked: that is an absence of evidence, not evidence of absence"
+    }
+  ],
+  "total_orphans": 4,
+  "truncated": true,
+  "relay_was_consulted": false,
+  "schema_version": 1
+}
+```
 
 ## Find — narrow to the calls that matter
 
@@ -3551,6 +3595,50 @@ the server threw away is worse off than one told plainly that it was not.
 `remaining` counts down so the bound is visible before it bites.
 
 
+### `explain_attribution`
+
+An agent that reports "media anchored at `<addr>`" cannot otherwise say whether
+that came from SDP the two parties exchanged, from a relay sipnab asked, or
+from a mirrored datagram anybody could have sent. Those carry very different
+weight in an incident review and every other surface renders them identically.
+
+`delivery_trust`, strongest first:
+
+| value | meaning |
+|---|---|
+| `asked` | sipnab asked the relay over its control socket; no third party could answer |
+| `hmac-verified` | delivered over HEP, authenticated with a token covering the datagram |
+| `plain-secret` | delivered over HEP with a shared secret; the token does not cover the datagram, so anyone who captures one can replay it |
+| `port-gated-only` | accepted because it arrived on the expected port and for no other reason — **the source is not authenticated** |
+| `not-relay-asserted` | the parties' own claim in SDP |
+
+The authentication answer comes from the run's configuration rather than a
+per-packet record, and that is correct rather than a shortcut: ingest rejects any datagram
+that fails authentication, so everything still in the store arrived under
+whatever posture the run configured. With no posture configured it
+reports the **weakest** reading — a tool whose job is telling you what a claim
+is worth must not round up in the absence of information.
+
+```jsonc
+// explain_attribution { "call_id": "call-2c9d47@192.0.2.10" }
+{
+  "call_id": "call-2c9d47@192.0.2.10",
+  "endpoints": [
+    {
+      "address": "192.0.2.10",
+      "port": 10000,
+      "asserted_by": "signaled",
+      "input_origin": "wire",
+      "observed_at": "2023-11-14T22:13:25+00:00",
+      "delivery_trust": "not-relay-asserted",
+      "delivery_note": "the parties' own claim in SDP, not a relay's statement about its allocation"
+    }
+  ],
+  "unauthenticated_endpoints": 0,
+  "schema_version": 1
+}
+```
+
 ## Export and handoff
 
 Getting the result out of sipnab and into the next tool, the next team, or a bug report someone else can reproduce.
@@ -3813,7 +3901,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.138 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.139 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",

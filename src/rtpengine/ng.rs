@@ -303,7 +303,7 @@ mod tests {
     /// RE5: recording and forking commands are counted, never attributed.
     #[test]
     fn a_media_creating_command_is_counted_and_not_attributed() {
-        crate::rtpengine::reset_media_creating_count();
+        crate::relay::reset_media_creating_count();
         let sdp = "v=0\r\nc=IN IP4 10.0.0.40\r\nm=audio 39000 RTP/AVP 0";
         let raw = format!(
             "ck d7:command15:start recording7:call-id4:cid13:sdp{}:{sdp}e",
@@ -315,7 +315,7 @@ mod tests {
             "a recording stream is not one of the call's two legs"
         );
         assert_eq!(
-            crate::rtpengine::media_creating_commands_seen(),
+            crate::relay::media_creating_commands_seen(),
             1,
             "but the run must be able to SAY it saw one"
         );

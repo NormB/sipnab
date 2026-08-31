@@ -33,8 +33,8 @@ use std::sync::mpsc::Receiver;
 
 use parking_lot::RwLock;
 
+use crate::relay::reconcile::{ReadOnlyRelay, Reconciler, Unattributed};
 use crate::rtp::stream_store::StreamStore;
-use crate::rtpengine::reconcile::{ReadOnlyRelay, Reconciler, Unattributed};
 use crate::security::transmit_guard::TransmitPermit;
 
 /// Run the reconciler until the hand-off queue closes.
@@ -120,8 +120,8 @@ pub fn spawn<R: ReadOnlyRelay + Send + 'static>(
 mod tests {
     use super::*;
     use crate::capture::CaptureSource;
-    use crate::rtpengine::control::{CallView, ControlReply, Enumeration, RelayStream, RelayTag};
-    use crate::rtpengine::reconcile::orphan_channel;
+    use crate::relay::reconcile::orphan_channel;
+    use crate::relay::types::{CallView, ControlReply, Enumeration, RelayStream, RelayTag};
 
     /// A relay holding one call on one socket.
     struct OneCallRelay;

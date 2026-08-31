@@ -17,8 +17,8 @@ use crate::cli::{self, Cli};
 use crate::config::{Config, LoadedConfig};
 use crate::output::{ColorMode, EventExecEngine, OutputOptions};
 use crate::privilege;
+use crate::relay::reconcile::Reconciler;
 use crate::rtpengine::control::ControlClient;
-use crate::rtpengine::reconcile::Reconciler;
 use crate::security::transmit_guard::TransmitPermit;
 use crate::sip::{dsl::FilterExpr, matcher::SipMatcher};
 
@@ -1078,7 +1078,7 @@ pub struct ReadyReconciler {
 #[derive(Default)]
 pub struct RelayControl {
     /// What the relay said at startup, stamped with when it said it.
-    pub snapshot: crate::rtpengine::reconcile::RelaySnapshot,
+    pub snapshot: crate::relay::reconcile::RelaySnapshot,
     /// The reconciler to keep asking with, absent when nothing was asked.
     pub ready: Option<ReadyReconciler>,
 }
@@ -1102,8 +1102,8 @@ pub struct RelayControl {
 /// down; refusing to start over an enrichment would be the wrong trade, and
 /// the summary line says what was and was not learned.
 fn relay_startup_snapshot(cli: &Cli, source: Option<&CaptureSource>) -> RelayControl {
+    use crate::relay::reconcile::Reconciler;
     use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
-    use crate::rtpengine::reconcile::Reconciler;
     use crate::security::transmit_guard::TransmitPermit;
 
     let Some(addr) = cli.rtp_args.rtpengine_control.as_deref() else {

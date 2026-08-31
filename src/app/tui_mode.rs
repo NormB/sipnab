@@ -160,7 +160,7 @@ fn names_path_from(
 fn build_stores(
     cli: &Cli,
     config: &Config,
-    relay_snapshot: &crate::rtpengine::reconcile::RelaySnapshot,
+    relay_snapshot: &crate::relay::reconcile::RelaySnapshot,
 ) -> (Arc<RwLock<DialogStore>>, Arc<RwLock<StreamStore>>) {
     let dialog_store = Arc::new(RwLock::new(
         {
@@ -293,7 +293,7 @@ pub fn run_tui_mode(
     // on a relay. Both ends of the arrangement are set up here, or neither.
     let (relay_orphans, relay_thread) = match launched.relay.ready.take() {
         Some(ready) => {
-            let (sink, orphan_rx) = crate::rtpengine::reconcile::orphan_channel();
+            let (sink, orphan_rx) = crate::relay::reconcile::orphan_channel();
             stream_store.write().record_new_orphans(true);
             match crate::app::relay_reconciler::spawn(
                 ready.reconciler,
@@ -934,8 +934,8 @@ mod tests {
     /// sites actually call it.
     #[test]
     fn the_relay_snapshot_reaches_the_store_this_mode_builds() {
+        use crate::relay::reconcile::{RelayLink, RelaySnapshot};
         use crate::rtp::stream_store::EndpointAssertion;
-        use crate::rtpengine::reconcile::{RelayLink, RelaySnapshot};
         use std::net::{IpAddr, Ipv4Addr};
 
         let relay = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));

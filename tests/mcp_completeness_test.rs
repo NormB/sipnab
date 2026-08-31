@@ -713,6 +713,8 @@ const PROBES: &[(&str, &str)] = &[
     ("validate_filter", r#"{"expr":"state == InCall"}"#),
     ("export_vcon", r#"{"call_id":"{CALL}"}"#),
     ("generate_wireshark_filter", r#"{"call_id":"{CALL}"}"#),
+    ("explain_attribution", r#"{"call_id":"{CALL}"}"#),
+    ("reconcile_orphans", r#"{"limit":5}"#),
     (
         "evaluate_expectations",
         r#"{"rules":[{"metric":"count","op":">=","value":0}]}"#,

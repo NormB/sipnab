@@ -1953,7 +1953,7 @@ fn join_capped(items: &[&str], max: usize) -> String {
 fn build_live_stream_store(
     cli: &Cli,
     config: &Config,
-    relay_snapshot: &crate::rtpengine::reconcile::RelaySnapshot,
+    relay_snapshot: &crate::relay::reconcile::RelaySnapshot,
 ) -> StreamStore {
     let mut ss = StreamStore::new(cli.max_streams_limit(config));
     if let Some(max_frames) = config.limits.max_audio_frames {
@@ -2195,7 +2195,7 @@ pub struct BatchRunner {
     /// which case the store is also recording those sockets. The two are set
     /// up together or not at all: recording with nothing to drain the buffer
     /// would fill it for no one.
-    relay_orphans: Option<crate::rtpengine::reconcile::OrphanSink>,
+    relay_orphans: Option<crate::relay::reconcile::OrphanSink>,
     /// The reconciler thread, joined after the loop so its summary prints.
     relay_thread: Option<std::thread::JoinHandle<()>>,
     /// Heuristic RTP detector for streams with no SDP linkage.
@@ -2365,7 +2365,7 @@ impl BatchRunner {
         // its own thread so this loop never waits on a relay.
         let (relay_orphans, relay_thread) = match batch.relay.ready.take() {
             Some(ready) => {
-                let (sink, orphan_rx) = crate::rtpengine::reconcile::orphan_channel();
+                let (sink, orphan_rx) = crate::relay::reconcile::orphan_channel();
                 stream_store.write().record_new_orphans(true);
                 match crate::app::relay_reconciler::spawn(
                     ready.reconciler,
@@ -9055,8 +9055,8 @@ mod tests {
     /// bug to see: nothing errors, the run just attributes less.
     #[test]
     fn the_relay_snapshot_reaches_the_store_this_mode_builds() {
+        use crate::relay::reconcile::{RelayLink, RelaySnapshot};
         use crate::rtp::stream_store::EndpointAssertion;
-        use crate::rtpengine::reconcile::{RelayLink, RelaySnapshot};
         use std::net::{IpAddr, Ipv4Addr};
 
         let relay = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
@@ -9085,7 +9085,7 @@ mod tests {
     /// endpoint stamped with a moment nothing happened at.
     #[test]
     fn a_run_that_never_asked_registers_no_relay_endpoint() {
-        use crate::rtpengine::reconcile::RelaySnapshot;
+        use crate::relay::reconcile::RelaySnapshot;
         use std::net::{IpAddr, Ipv4Addr};
 
         let ss =

@@ -84,6 +84,12 @@ pub mod provenance;
 // so a build with neither carries no dead counter.
 #[cfg(any(feature = "hep", feature = "mcp"))]
 pub mod rate_limit;
+// Native only, alongside `rtpengine`, which together with the MCP surface is
+// its only caller: `reconcile` holds a `TransmitPermit`, which is itself
+// native-gated, and a browser analyzer has no control plane to reconcile
+// against in the first place.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod relay;
 pub mod rtp;
 // Native only, exactly as `pipeline` is: this module hands `ng`-derived SDP to
 // `pipeline::extract_sdp_links`, so it cannot compile where that does not. It

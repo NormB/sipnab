@@ -316,7 +316,7 @@ pub fn print_dialog_report_as(
     // it. Reported HERE, beside the relay-named calls, because both answer the
     // same question -- what did the relay do that this report does not show as
     // an ordinary call leg.
-    if let Some(note) = media_creating_note(crate::rtpengine::media_creating_commands_seen()) {
+    if let Some(note) = media_creating_note(crate::relay::media_creating_commands_seen()) {
         let _ = writeln!(out);
         let _ = writeln!(out, "{note}");
     }
@@ -1334,7 +1334,7 @@ mod tests {
     /// way, and it is what fails if the render site goes away.
     #[test]
     fn the_note_reaches_the_rendered_report() {
-        crate::rtpengine::note_media_creating_command();
+        crate::relay::note_media_creating_command();
 
         let report = print_dialog_report(&[], &[]);
 

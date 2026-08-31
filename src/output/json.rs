@@ -985,7 +985,7 @@ impl CaptureCaveats {
     #[must_use]
     pub fn current() -> Self {
         Self {
-            media_creating_commands: crate::rtpengine::media_creating_commands_seen(),
+            media_creating_commands: crate::relay::media_creating_commands_seen(),
             tls: crate::capture::published_tls_decrypt(),
         }
     }

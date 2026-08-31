@@ -2838,7 +2838,7 @@ per SIP message and grows with the call):
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.138 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.139 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -3739,7 +3739,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.137 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.138 sh
 ```
 
 To install somewhere other than `/usr/local/bin` — a directory you already own,
@@ -3837,7 +3837,7 @@ canonical triples deliberately: they match `rustc -vV`, they are what
 script constructs them.
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
-Alpine included. Replace `<version>` with the latest, e.g. 0.5.137:
+Alpine included. Replace `<version>` with the latest, e.g. 0.5.138:
 
 ```bash
 # Run all of these, in order.
@@ -3856,7 +3856,7 @@ sudo install -m 755 sipnab-<version>-aarch64-unknown-linux-musl/sipnab /usr/loca
 ```
 
 Manual download with checksum verification (replace `<version>` with the
-latest, e.g. 0.5.137):
+latest, e.g. 0.5.138):
 
 ```bash
 # Run all of these, in order.
@@ -3898,7 +3898,7 @@ cargo install sipnab --features full
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.36, i.e. Debian 12+ / Ubuntu 23.04+ -- on older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package — replace `<version>` with the
-latest, e.g. 0.5.137:
+latest, e.g. 0.5.138:
 
 ```bash
 # Run all of these, in order.
@@ -3957,26 +3957,26 @@ dependency — for headless servers, mirroring the `.deb` variants).
 The standard package on an x86_64 host:
 
 ```bash
-sudo rpm -i sipnab-0.5.137-1.x86_64.rpm
+sudo rpm -i sipnab-0.5.138-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo rpm -i sipnab-0.5.137-1.x86_64-noaudio.rpm
+sudo rpm -i sipnab-0.5.138-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host — pick the variant matching
 `uname -m`:
 
 ```bash
-sudo rpm -i sipnab-0.5.137-1.aarch64.rpm
+sudo rpm -i sipnab-0.5.138-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo rpm -i sipnab-0.5.137-1.aarch64-noaudio.rpm
+sudo rpm -i sipnab-0.5.138-1.aarch64-noaudio.rpm
 ```
 
 ### Homebrew (macOS)
@@ -4298,7 +4298,7 @@ sipnab -D
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```text
-sipnab 0.5.138 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+sipnab 0.5.139 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
 ```
 
 This is the fastest way to confirm a build carries the feature set
@@ -11273,7 +11273,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.138 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.139 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -12357,7 +12357,7 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
-  "version": "0.5.138",
+  "version": "0.5.139",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -12807,7 +12807,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.138"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.139"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -13599,6 +13599,7 @@ ordinary update.
 |---|---|---|
 | [`capture_status`](#capture_status) | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
 | [`capture_health`](#capture_health) | `sample_seconds` | Capture-path counters read twice: run totals, deltas across the window, `undecoded_fraction`, and undecodable frames by reason |
+| [`reconcile_orphans`](#reconcile_orphans) | `limit?` | Why each RTP stream with no dialog lacks one: a relay named the endpoint but no signaling arrived, SDP named it but no dialog claims it, or nothing named it at all |
 | [`get_capture_report`](#get_capture_report) | `format?` | Whole-capture analysis: findings, orphaned media, STUN/ICMP evidence, what the caps shed |
 | [`list_captures`](#list_captures) | -- | Capture files in `--mcp-file-root`, with sizes |
 | [`list_dialogs`](#list_dialogs) | `filter?`, `limit?`, `cursor?` | A page of dialog summaries, with the total behind it |
@@ -13664,6 +13665,7 @@ ordinary update.
 
 | Tool | Parameters | Returns |
 |---|---|---|
+| [`explain_attribution`](#explain_attribution) | `call_id` | Where each of a call's media endpoints came from and how much that path is worth — asked directly, HMAC-verified, plain secret, port-gated only, or the parties' own SDP |
 | [`show_evidence`](#show_evidence) | `refs`, `max_bytes?` | Follows frame pointers back to the captured bytes: verified, unverified, or unresolvable with a reason |
 | [`decode_evidence`](#decode_evidence) | `frame_ref`, `field?` | Decodes the frame one pointer names: link type, addressing, and each SIP header's byte range inside the message and the frame |
 | [`build_evidence_package`](#build_evidence_package) | `call_ids`, `filename` | **Write.** One directory of escalation artifacts in `--mcp-file-root`: pcapng, ladder and RTP stats per call, manifest, and the rebuilt-frames README |
@@ -14638,7 +14640,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.138",
+  "version": "0.5.139",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -14659,6 +14661,48 @@ discovers the setup by calling a tool and collecting a refusal, and a refusal
 mid-investigation reads as a dead end rather than as a server it was never
 allowed to use that way.
 
+
+### `reconcile_orphans`
+
+An orphaned stream is media with no dialog. `rtp_stats` names which streams
+have none. This tool says why each one has none, which is the part an incident
+needs.
+
+Three verdicts, and the difference between them is the point:
+
+| verdict | what it means |
+|---|---|
+| `relay-asserted-but-no-dialog` | a relay named this endpoint and no captured dialog claims it — the **signaling** is missing, not the media |
+| `signaled-but-no-dialog` | SDP named it and no dialog holds it — either the capture missed the dialog, or its SDP arrived before capture started |
+| `never-named` | nothing in this capture named this endpoint at all |
+
+`relay_was_consulted` rides alongside the verdict and matters more than it looks. A
+`never-named` verdict with `relay_was_consulted: false` means **nobody asked** —
+an absence of evidence, not evidence of absence. It is deliberately not
+reported using the `Unattributed` vocabulary, which answers "sipnab asked the
+relay and it said X": this server holds no live reconciler, and claiming an answer
+nobody received is the failure that vocabulary exists to prevent.
+
+```jsonc
+// reconcile_orphans { "limit": 2 }
+{
+  "orphans": [
+    {
+      "ssrc": 305419896,
+      "src": "127.0.0.1:5094",
+      "dst": "127.0.0.1:5084",
+      "named_endpoint": null,
+      "asserted_by": null,
+      "reason": "never-named",
+      "note": "nothing in this capture named this endpoint. A relay could answer it and none was asked: that is an absence of evidence, not evidence of absence"
+    }
+  ],
+  "total_orphans": 4,
+  "truncated": true,
+  "relay_was_consulted": false,
+  "schema_version": 1
+}
+```
 
 ## Find — narrow to the calls that matter
 
@@ -17116,6 +17160,50 @@ the server threw away is worse off than one told plainly that it was not.
 `remaining` counts down so the bound is visible before it bites.
 
 
+### `explain_attribution`
+
+An agent that reports "media anchored at `<addr>`" cannot otherwise say whether
+that came from SDP the two parties exchanged, from a relay sipnab asked, or
+from a mirrored datagram anybody could have sent. Those carry very different
+weight in an incident review and every other surface renders them identically.
+
+`delivery_trust`, strongest first:
+
+| value | meaning |
+|---|---|
+| `asked` | sipnab asked the relay over its control socket; no third party could answer |
+| `hmac-verified` | delivered over HEP, authenticated with a token covering the datagram |
+| `plain-secret` | delivered over HEP with a shared secret; the token does not cover the datagram, so anyone who captures one can replay it |
+| `port-gated-only` | accepted because it arrived on the expected port and for no other reason — **the source is not authenticated** |
+| `not-relay-asserted` | the parties' own claim in SDP |
+
+The authentication answer comes from the run's configuration rather than a
+per-packet record, and that is correct rather than a shortcut: ingest rejects any datagram
+that fails authentication, so everything still in the store arrived under
+whatever posture the run configured. With no posture configured it
+reports the **weakest** reading — a tool whose job is telling you what a claim
+is worth must not round up in the absence of information.
+
+```jsonc
+// explain_attribution { "call_id": "call-2c9d47@192.0.2.10" }
+{
+  "call_id": "call-2c9d47@192.0.2.10",
+  "endpoints": [
+    {
+      "address": "192.0.2.10",
+      "port": 10000,
+      "asserted_by": "signaled",
+      "input_origin": "wire",
+      "observed_at": "2023-11-14T22:13:25+00:00",
+      "delivery_trust": "not-relay-asserted",
+      "delivery_note": "the parties' own claim in SDP, not a relay's statement about its allocation"
+    }
+  ],
+  "unauthenticated_endpoints": 0,
+  "schema_version": 1
+}
+```
+
 ## Export and handoff
 
 Getting the result out of sipnab and into the next tool, the next team, or a bug report someone else can reproduce.
@@ -17378,7 +17466,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.138 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.139 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -17948,7 +18036,7 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 51 carry MCP annotations, so a host
+- **Every tool declares what it does.** All 53 carry MCP annotations, so a host
   can decide what to call without asking. Thirty are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the five that are
   not. Every tool sets `openWorldHint` to `false`, because sipnab answers from
@@ -18212,7 +18300,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions, where
 
 ## What the write verbs do
 
-Forty-one of the 51 tools are `readOnlyHint: true`. These ten are not, and
+Forty-three of the 53 tools are `readOnlyHint: true`. These ten are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 
@@ -20440,7 +20528,7 @@ and a consumer parses it before indexing into it.
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.138 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.139 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -24890,7 +24978,7 @@ flow's packets share a host pair and therefore a worker.
 | `--cores` reader → workers, file input | crossbeam `bounded::<Vec<Packet>>(64)` carrying batches of 128 ([`run_offline_parallel_file()`](../../src/parallel.rs)) — same ~8192 in-flight packet cap, one channel hop per 128 packets instead of per packet |
 | `--cores` per-file reader → dispatcher, multi-file input | crossbeam `bounded` carrying one batch per item ([`shard_set_parallel()`](../../src/parallel.rs)). The queue depth is not the bound that matters: `READ_AHEAD_BYTES` caps in **bytes** how far a LATER file's reader may run ahead of the file the dispatcher holds, because a batch is 128 packets of any size and the default snaplen is 65535 |
 | scanner-kill request / response | crossbeam `bounded(256)` in each direction ([`process_isolation.rs`](../../src/process_isolation.rs)) |
-| packet path → rtpengine reconciler | `std::sync::mpsc::sync_channel(1024)` ([`orphan_channel()`](../../src/rtpengine/reconcile.rs)) — the capture path offers a relay-side socket and never waits on it: a full queue drops the offer and counts it, because stalling packet processing on a relay round trip is the trade `--rtpengine-control` exists to avoid |
+| packet path → rtpengine reconciler | `std::sync::mpsc::sync_channel(1024)` ([`orphan_channel()`](../../src/relay/reconcile.rs)) — the capture path offers a relay-side socket and never waits on it: a full queue drops the offer and counts it, because stalling packet processing on a relay round trip is the trade `--rtpengine-control` exists to avoid |
 | DNS resolve queue | `std::sync::mpsc` ([`names.rs`](../../src/names.rs)) |
 | inside api/mcp servers | tokio (axum/rmcp internals) |
 
@@ -25381,7 +25469,7 @@ with that cost stated.
 | [`src/rtpengine/bencode.rs`](../../src/rtpengine/bencode.rs) | Bencode decoder. Borrowed values, depth-limited, hostile-input facing |
 | [`src/rtpengine/ng.rs`](../../src/rtpengine/ng.rs) | Cookie/body split, command classification, field extraction |
 | [`src/rtpengine/control.rs`](../../src/rtpengine/control.rs) | `list` and `query`, their reply parsers, and the UDP client that carries them |
-| [`src/rtpengine/reconcile.rs`](../../src/rtpengine/reconcile.rs) | The two moments sipnab asks, the port index, the bounds that keep asking from becoming polling, and the hand-off the capture path offers to |
+| [`src/relay/reconcile.rs`](../../src/relay/reconcile.rs) | The two moments sipnab asks, the port index, the bounds that keep asking from becoming polling, and the hand-off the capture path offers to |
 | [`src/rtpengine/mod.rs`](../../src/rtpengine/mod.rs) | `sdp_links_from_ng`, the bridge into the existing SDP linking |
 | [`src/app/relay_reconciler.rs`](../../src/app/relay_reconciler.rs) | The thread that drains the hand-off and does the asking |
 

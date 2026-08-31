@@ -710,6 +710,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "describe_endpoint",
         "diagnose_registration",
         "evaluate_expectations",
+        "explain_attribution",
         "explain_response_code",
         "explain_rule",
         "export_audio",
@@ -733,6 +734,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "list_tls_libraries",
         "media_diagnostics",
         "open_capture",
+        "reconcile_orphans",
         "render_ladder",
         "rtp_stats",
         "save_findings",
@@ -753,7 +755,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
     ];
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    assert_eq!(names.len(), 51, "expected exactly 51 MCP tools");
+    assert_eq!(names.len(), 53, "expected exactly 53 MCP tools");
 
     // find_problems with default kinds (['problems']) → JSON array, no error.
     send(

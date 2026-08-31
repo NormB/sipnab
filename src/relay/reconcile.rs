@@ -48,7 +48,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
-use super::control::{CallView, ControlReply};
+use super::types::{CallView, ControlReply};
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 use crate::security::transmit_guard::TransmitPermit;
 
@@ -169,7 +169,7 @@ impl Unattributed {
 /// How many Call-IDs to ask `list` for.
 ///
 /// rtpengine's own default, and it warns that raising it may exceed a UDP
-/// datagram. [`super::control::Enumeration::truncated`] is what keeps a capped answer from
+/// datagram. [`crate::relay::types::Enumeration::truncated`] is what keeps a capped answer from
 /// reading as a complete one.
 pub const DEFAULT_LIST_LIMIT: u32 = 32;
 
@@ -489,7 +489,7 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
     fn refresh(&mut self, permit: &TransmitPermit) -> String {
         if !self.spend() {
             return format!(
-                "rtpengine at {}: not asked -- {}",
+                "{}: not asked -- {}",
                 self.relay.describe(),
                 Unattributed::BudgetSpent.describe()
             );
@@ -499,7 +499,7 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
             Ok(ControlReply::Refused { reason }) => {
                 self.last_ask_failure = Some(format!("the relay refused: {reason}"));
                 return format!(
-                    "rtpengine at {} refused to enumerate its calls: {reason}",
+                    "{} refused to enumerate its calls: {reason}",
                     self.relay.describe()
                 );
             }
@@ -507,14 +507,14 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
                 self.last_ask_failure =
                     Some("the relay answered a `list` with something else".to_owned());
                 return format!(
-                    "rtpengine at {} answered a `list` with something else ({other:?})",
+                    "{} answered a `list` with something else ({other:?})",
                     self.relay.describe()
                 );
             }
             Err(e) => {
                 self.last_ask_failure = Some(format!("{e:#}"));
                 return format!(
-                    "rtpengine at {} could not be asked which calls are up: {e:#}",
+                    "{} could not be asked which calls are up: {e:#}",
                     self.relay.describe()
                 );
             }
@@ -550,7 +550,7 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
         let failed = self.unread_calls.len();
 
         let mut line = format!(
-            "rtpengine at {}: {}; queried {queried} of them, {} relay port(s) \
+            "{}: {}; queried {queried} of them, {} relay port(s) \
              now attributable",
             self.relay.describe(),
             enumeration.describe(),
@@ -717,33 +717,12 @@ pub struct RelaySnapshot {
     pub taken_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// The live client is the only production implementation.
-///
-/// The impl lives here rather than beside [`super::control::ControlClient`]
-/// so that the
-/// direction of the dependency matches the layering: reconciliation knows
-/// about the wire, and the wire knows nothing about reconciliation.
-#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
-impl ReadOnlyRelay for super::control::ControlClient {
-    fn list(&self, permit: &TransmitPermit, limit: u32) -> anyhow::Result<ControlReply> {
-        Self::list(self, permit, limit)
-    }
-
-    fn query(&self, permit: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply> {
-        Self::query(self, permit, call_id)
-    }
-
-    fn describe(&self) -> String {
-        self.addr().to_string()
-    }
-}
-
 #[cfg(test)]
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 mod tests {
     use super::*;
     use crate::capture::CaptureSource;
-    use crate::rtpengine::control::{Enumeration, RelayStream, RelayTag};
+    use crate::relay::types::{Enumeration, RelayStream, RelayTag};
     use std::cell::RefCell;
 
     /// The address the scripted relay reports for every stream.

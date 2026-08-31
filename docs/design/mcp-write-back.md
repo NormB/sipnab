@@ -85,7 +85,7 @@ raw material and none of the interpretation. This is a real dead end, and it is
 the strongest argument on this page.
 
 **The read surface is rich enough that the asymmetry is conspicuous.** There are
-51 tools ([`server.rs`](../../src/mcp/server.rs), `#[tool(` at `:938` through
+53 tools ([`server.rs`](../../src/mcp/server.rs), `#[tool(` at `:938` through
 `:2260`), and several of them do genuine analysis rather than projection:
 `triage_call` (`:1927`), `check_codec_negotiation` (`:1999`),
 `diagnose_registration` (`:2085`), `compare_dialogs` (`:1722`). An agent that
@@ -146,7 +146,7 @@ concrete rather than theoretical:
   populated at `:91-92`) are copied off the From/To URIs.
 - `get_message` ([`server.rs:4702`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4702)) returns headers and
   body.
-- `search_messages` ([`server.rs:4995`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4995)) returns a
+- `search_messages` ([`server.rs:5023`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5023)) returns a
   `snippet` built at [`:1391`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1391) from
   `truncate_string(&String::from_utf8_lossy(&msg.raw), …)` — raw bytes off the
   wire, unmodified.
@@ -205,7 +205,7 @@ states the reasoning, and `:21-29` states why the fix is a type:
 > remembering.
 
 Both fixes reached MCP, and how they reached it is the point. `resolve_in_root`
-([`server.rs:641`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L641)) accepts a bare filename and rejects
+([`server.rs:669`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L669)) accepts a bare filename and rejects
 any separator, `..`, root prefix or drive letter *before* touching the
 filesystem — its doc comment (`:163-173`) argues that requiring one component
 has no middle ground, where "every clever normaliser eventually meets a symlink,
@@ -323,7 +323,7 @@ touching the analysis at all.
   Call-IDs, a verdict per call, free text — to a bare filename under
   `--mcp-file-root`.
 - It reaches the filesystem through `resolve_in_root`
-  ([`server.rs:641`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L641)) exactly as `export_capture` and
+  ([`server.rs:669`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L669)) exactly as `export_capture` and
   `export_audio` do, and therefore inherits `ProtectedInputs::check` and cannot
   land on a capture.
 - **Nothing reads it back.** No tool, no report, no REST route, no diagnosis.

@@ -116,7 +116,7 @@ with that cost stated.
 | [`src/rtpengine/bencode.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/bencode.rs) | Bencode decoder. Borrowed values, depth-limited, hostile-input facing |
 | [`src/rtpengine/ng.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/ng.rs) | Cookie/body split, command classification, field extraction |
 | [`src/rtpengine/control.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/control.rs) | `list` and `query`, their reply parsers, and the UDP client that carries them |
-| [`src/rtpengine/reconcile.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/reconcile.rs) | The two moments sipnab asks, the port index, the bounds that keep asking from becoming polling, and the hand-off the capture path offers to |
+| [`src/relay/reconcile.rs`](https://github.com/NormB/sipnab/blob/main/src/relay/reconcile.rs) | The two moments sipnab asks, the port index, the bounds that keep asking from becoming polling, and the hand-off the capture path offers to |
 | [`src/rtpengine/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/mod.rs) | `sdp_links_from_ng`, the bridge into the existing SDP linking |
 | [`src/app/relay_reconciler.rs`](https://github.com/NormB/sipnab/blob/main/src/app/relay_reconciler.rs) | The thread that drains the hand-off and does the asking |
 

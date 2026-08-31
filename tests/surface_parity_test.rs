@@ -323,7 +323,10 @@ const CAPTURE_CAVEAT_COUNTERS: &[Caveat] = &[
     // attributing them -- decoding one as an ordinary leg would make a
     // two-party call report three streams -- so the count IS the disclosure.
     Caveat {
-        kept_in: "src/rtpengine/mod.rs",
+        // Moved with the read-only relay seam in 0.5.139: the counter is a
+        // fact about relay control, not about the rtpengine transport that
+        // happens to deliver it.
+        kept_in: "src/relay/mod.rs",
         metric: Metric {
             name: "media_creating",
             aliases: &["media_creating_commands_seen", "MEDIA_CREATING_SEEN"],

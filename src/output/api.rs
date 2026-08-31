@@ -3060,7 +3060,7 @@ mod tests {
     /// that would satisfy the first half on its own.
     #[tokio::test]
     async fn stats_reports_declined_work_at_zero_and_when_it_happens() {
-        let before = crate::rtpengine::media_creating_commands_seen();
+        let before = crate::relay::media_creating_commands_seen();
 
         let app = build_router(make_state());
         let parsed: Value = serde_json::from_str(
@@ -3083,7 +3083,7 @@ mod tests {
         // The tally is process-global and shared with every other test in this
         // binary, so this asserts a DELTA rather than an absolute -- an exact
         // figure here would be true only until the next test ran.
-        crate::rtpengine::note_media_creating_command();
+        crate::relay::note_media_creating_command();
 
         let parsed: Value = serde_json::from_str(
             &body_to_string(

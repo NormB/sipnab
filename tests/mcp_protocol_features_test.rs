@@ -257,6 +257,11 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
             "save_findings",
             json!({"summary": "outputSchema conformance probe"}),
         ),
+        ("explain_attribution", json!({"call_id": call_id})),
+        // No `limit`, so the response is the untruncated shape: `truncated`
+        // false and `relay_was_consulted` computed over every orphan rather
+        // than over a page.
+        ("reconcile_orphans", json!({})),
     ]
 }
 

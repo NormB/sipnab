@@ -1732,7 +1732,7 @@ pub fn apply_relay_control_links(
 /// an operator reads as measured.
 pub fn apply_relay_snapshot(
     ss: &mut rtp::stream_store::StreamStore,
-    snapshot: &crate::rtpengine::reconcile::RelaySnapshot,
+    snapshot: &crate::relay::reconcile::RelaySnapshot,
 ) {
     let Some(taken_at) = snapshot.taken_at else {
         // Never asked. Not an empty relay -- see `Unattributed`.
@@ -2342,7 +2342,7 @@ pub fn process_packet(
     rtp_heuristic: &mut rtp::heuristic::RtpHeuristic,
     opts: &PipelineOptions,
     decrypt: &mut MediaDecrypt<'_>,
-    relay_orphans: Option<&crate::rtpengine::reconcile::OrphanSink>,
+    relay_orphans: Option<&crate::relay::reconcile::OrphanSink>,
 ) {
     match classify_packet(pp, rtp_heuristic, opts, decrypt) {
         PacketAction::None => {}
@@ -2796,9 +2796,9 @@ mod relay_control_tests {
     #[test]
     fn a_snapshot_attributes_a_stream_created_afterwards() {
         use crate::capture::parse::{InputOrigin, ParsedPacket, TransportProto};
+        use crate::relay::reconcile::{RelayLink, RelaySnapshot};
         use crate::rtp::parser::RtpHeader;
         use crate::rtp::stream_store::{EndpointAssertion, StreamStore};
-        use crate::rtpengine::reconcile::{RelayLink, RelaySnapshot};
         use std::net::{IpAddr, Ipv4Addr};
 
         let relay = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));

@@ -8,6 +8,38 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.139] - 2026-08-31
+
+### Added
+
+- **`explain_attribution` -- where a media endpoint came from, and what that
+  path is worth.** An agent reporting "media anchored at `<addr>`" could not say
+  whether that address came from SDP the two parties exchanged, from a relay
+  sipnab asked over its control socket, or from a mirrored datagram any host on
+  the network could have sent. Sniffed relay control is gated on the destination
+  port and the SOURCE is still not authenticated, so "the relay told us" and
+  "something claiming to be the relay told us" were the same assertion in the
+  store and differed only in delivery. Each endpoint is now graded `asked`,
+  `hmac-verified`, `plain-secret`, `port-gated-only` or `not-relay-asserted`.
+  With no authentication posture configured it reports the WEAKEST reading: a
+  tool whose job is saying what a claim is worth must not round up in the
+  absence of information.
+- **`reconcile_orphans` -- why a stream with no dialog has none.** `rtp_stats`
+  could say a stream was orphaned; this says whether a relay named the endpoint
+  and the signaling never arrived, whether SDP named it and no dialog claims it,
+  or whether nothing named it at all. `relay_was_consulted` rides alongside and
+  is computed over every orphan rather than the returned page, because "nobody
+  asked" is a weaker statement than "asked and told no" and a small `limit` must
+  not turn an absence of evidence into evidence of absence.
+
+### Changed
+
+- **The read-only relay seam is its own module.** `ReadOnlyCommand`,
+  `ControlReply`, `CallView`, `Enumeration` and the reconciler moved from
+  `src/rtpengine` to `src/relay`, so the contract a caller programs against no
+  longer lives inside the one implementation that happens to satisfy it today.
+  No operator-facing string in the seam names a relay vendor.
+
 ## [0.5.138] - 2026-08-31
 
 ### Changed

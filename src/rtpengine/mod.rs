@@ -43,7 +43,6 @@
 pub mod bencode;
 pub mod control;
 pub mod ng;
-pub mod reconcile;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -54,32 +53,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// as `ng` under any protocol number. Confirmed as 0x3d against rtpengine
 /// 12.5.1 in `tests/fixtures/rtpengine-ng-hep.pcap`.
 pub const NG_HEP_CAPTURE_PROTO: u8 = 0x3d;
-
-/// How many media-creating commands were seen without being attributed.
-///
-/// A plain counter, deliberately: RE5 attributes recording streams from
-/// rtpengine's recording spool, not by decoding these commands, so what is
-/// owed here is a HONEST COUNT and not an attribution. A run that saw
-/// `start recording` and says nothing is the failure this project already
-/// named once -- a forensics tool that cannot say what it did not attribute.
-static MEDIA_CREATING_SEEN: AtomicU64 = AtomicU64::new(0);
-
-/// Record that a media-creating command went past unattributed.
-pub fn note_media_creating_command() {
-    MEDIA_CREATING_SEEN.fetch_add(1, Ordering::Relaxed);
-}
-
-/// How many media-creating commands this process has seen.
-#[must_use]
-pub fn media_creating_commands_seen() -> u64 {
-    MEDIA_CREATING_SEEN.load(Ordering::Relaxed)
-}
-
-/// Reset the counter. Test-only: the tally is process-global.
-#[cfg(test)]
-pub fn reset_media_creating_count() {
-    MEDIA_CREATING_SEEN.store(0, Ordering::Relaxed);
-}
 
 /// Does this HEP packet carry an rtpengine `ng` message?
 ///
@@ -219,7 +192,7 @@ pub fn sdp_links_from_ng(
     // recording leg counted as an ordinary leg turns a two-party call into a
     // three-stream one -- which is what the media analysis then reasons about.
     if let Some(ng::NgCommand::MediaCreating(_)) = msg.command {
-        note_media_creating_command();
+        crate::relay::note_media_creating_command();
         return Vec::new();
     }
 

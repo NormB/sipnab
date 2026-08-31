@@ -188,6 +188,8 @@ pub struct SipnabMcp {
     /// that copied with it would reset every time the server was cloned --
     /// an hourly ceiling anything can reset is not a ceiling.
     sampling: Arc<parking_lot::Mutex<super::sampling::Governor>>,
+    /// The HEP authentication posture this run was started with, when one was.
+    hep_auth_mode: Option<crate::cli::HepAuthMode>,
     /// The append-only file every tool call is recorded to, or `None` when the
     /// operator asked for no such file.
     ///
@@ -272,6 +274,7 @@ impl SipnabMcp {
                 super::sampling::Governor::disabled(),
             )),
             audit_sink: None,
+            hep_auth_mode: None,
             subscriptions: super::subscribe::Subscriptions::new(),
             tool_router: Self::tool_router()
                 + Self::aggregation_router()
@@ -279,7 +282,8 @@ impl SipnabMcp {
                 + Self::inspect_router()
                 + Self::provenance_router()
                 + Self::compare_router()
-                + Self::endpoints_router(),
+                + Self::endpoints_router()
+                + Self::relay_router(),
         }
     }
 
@@ -585,6 +589,33 @@ impl SipnabMcp {
         self.sampling
             .lock()
             .allow(signature, std::time::Instant::now())
+    }
+
+    /// What a relay assertion delivered over a capture path was worth.
+    ///
+    /// Read from the run's configuration, not from a per-packet record, and
+    /// that is the correct source rather than a shortcut: a datagram that
+    /// failed authentication was REJECTED at ingest, so every assertion still
+    /// in the store arrived under whatever posture was configured. A bit per
+    /// packet would restate this once per packet and let the two drift.
+    ///
+    /// Defaults to the weakest reading. An unset mode is not evidence of an
+    /// authenticated path, and a tool whose job is telling an operator how much
+    /// a claim is worth must not round up in the absence of information.
+    #[must_use]
+    pub fn relay_delivery_trust(&self) -> super::tools::relay::DeliveryTrust {
+        match self.hep_auth_mode {
+            Some(crate::cli::HepAuthMode::Hmac) => super::tools::relay::DeliveryTrust::HmacVerified,
+            Some(crate::cli::HepAuthMode::Plain) => super::tools::relay::DeliveryTrust::PlainSecret,
+            _ => super::tools::relay::DeliveryTrust::PortGatedOnly,
+        }
+    }
+
+    /// Record the HEP authentication posture this run was started with.
+    #[must_use]
+    pub fn with_hep_auth_mode(mut self, mode: crate::cli::HepAuthMode) -> Self {
+        self.hep_auth_mode = Some(mode);
+        self
     }
 
     /// Permit `shutdown_server` to stop this process.
@@ -8801,7 +8832,7 @@ mod tests {
         // The tally is process-global and shared with every other test in this
         // binary, so this is a DELTA. An exact figure would be true only until
         // the next test ran.
-        crate::rtpengine::note_media_creating_command();
+        crate::relay::note_media_creating_command();
         let after_result = empty_server()
             .capture_status()
             .await
