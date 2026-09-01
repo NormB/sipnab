@@ -821,3 +821,246 @@ fn capitalization_does_not_hide_a_british_spelling() {
         );
     }
 }
+
+// ── 7. debts from the misses this file's own work produced ──────────────
+//
+// Three separate things went wrong while building the rule above, and each is
+// worth a test rather than a memory:
+//
+//  * the scan reported 20/20 green while this file was UNTRACKED, so
+//    `git ls-files` never handed it over and the gate never read itself;
+//  * the first version reported `disable`, `raised` and `rising`, because the
+//    exceptions listed base forms and not inflections;
+//  * it reported `pyse`, four characters of a base64 hash in a lockfile.
+//
+// A gate that cries wolf gets switched off, and a gate that cannot see its own
+// subject looks exactly like a clean tree.
+
+/// The scan reads THIS file.
+///
+/// It reported twenty passing tests while this file was untracked and
+/// therefore invisible to `git ls-files`. Staging it produced thirteen hits in
+/// prose I had just written, including a helper whose own name was British.
+/// A gate that exempts the file defining it proves the least where it matters
+/// most.
+#[test]
+fn the_spelling_scan_reads_this_very_file() {
+    let me = "tests/us_spelling_test.rs";
+    assert!(
+        scanned_files().iter().any(|f| f == me),
+        "{me} is not in the scan. Either it is untracked -- in which case the \
+         gate is passing on a file nobody checked -- or it has been excluded, \
+         which a spelling gate may not do to its own definition."
+    );
+}
+
+/// No test file is invisible to the scan.
+///
+/// The general form. A test file is where a British spelling is most likely to
+/// be written and least likely to be read again, and a new one is invisible
+/// until it is staged.
+#[test]
+fn every_tracked_test_file_is_reachable_by_the_scan() {
+    let scanned = scanned_files();
+    let out = Command::new("git")
+        .args(["ls-files", "tests/"])
+        .current_dir(repo())
+        .output()
+        .expect("git ls-files tests/");
+    let listed: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .filter(|f| f.ends_with(".rs"))
+        .map(str::to_string)
+        .collect();
+
+    assert!(
+        listed.len() >= 40,
+        "only {} test file(s) tracked; the listing is wrong",
+        listed.len()
+    );
+    // Scanned, or excluded with a stated reason. Neither is the failure: a
+    // file that is simply invisible, which is what an unstaged one is.
+    let excluded: BTreeSet<&str> = NOT_SCANNED.iter().map(|(p, _)| *p).collect();
+    let missed: Vec<&String> = listed
+        .iter()
+        .filter(|f| !scanned.iter().any(|s| s == *f))
+        .filter(|f| !excluded.contains(f.as_str()))
+        .collect();
+    assert!(
+        missed.is_empty(),
+        "these tracked test files are neither scanned nor on the exclusion \
+         list, so nothing checks their spelling and nothing says why: \
+         {missed:?}"
+    );
+}
+
+/// The scan reads what git tracks, and says so.
+///
+/// The limitation behind the hollow green, written down where it will be read.
+/// An unstaged file is invisible; that is a property of the input, not a bug,
+/// and the fix is to stage before believing a pass.
+#[test]
+fn the_scan_reads_what_git_tracks_and_nothing_else() {
+    let scanned = scanned_files();
+    assert!(
+        !scanned.iter().any(|f| f.starts_with("target/")),
+        "the scan is reading build output, so it is not reading git's listing"
+    );
+    assert!(
+        scanned.iter().all(|f| repo().join(f).exists()),
+        "the scan lists a path that is not on disk"
+    );
+    assert!(
+        !scanned.iter().any(|f| f == "no/such/file.rs"),
+        "the scan invented a path"
+    );
+}
+
+/// A fenced code block is prose too.
+///
+/// Documentation examples are copied by readers verbatim. A British spelling
+/// inside a fence reaches them as surely as one in a sentence, and reaches
+/// their shell as a command that may not exist.
+#[test]
+fn a_british_spelling_in_a_code_fence_is_caught() {
+    let word = british_form("normal", "ise");
+    let fence = format!("```sh\nsipnab --{word}-timing\n```");
+    assert!(
+        !british_words(&fence).is_empty(),
+        "a British spelling inside a code fence was missed; a reader copies \
+         that line"
+    );
+}
+
+/// A string literal is shipped text.
+///
+/// What a program PRINTS is the most user-visible prose it has, and it sits in
+/// quotes where a prose-only reading would skip it.
+#[test]
+fn a_british_spelling_in_a_string_literal_is_caught() {
+    let word = british_form("recogn", "ised");
+    let src = format!("    return Err(format!(\"the header was not {word}\"));");
+    assert!(
+        !british_words(&src).is_empty(),
+        "a British spelling inside a string literal was missed, and a string \
+         literal is what the user actually reads"
+    );
+}
+
+/// Digits do not hide a spelling.
+///
+/// A British verb with a digit stuck to either end is one token to a tokenizer
+/// that splits only on punctuation, and neither form ends in a suffix as a
+/// whole.
+#[test]
+fn a_british_spelling_adjacent_to_digits_is_caught() {
+    let word = british_form("normal", "ise");
+    for ident in [
+        format!("{word}2"),
+        format!("sip2{word}"),
+        format!("v1_{word}"),
+    ] {
+        assert!(
+            !british_words(&ident).is_empty(),
+            "{ident} carries a British spelling and the rule missed it"
+        );
+    }
+}
+
+/// An acronym run is not shredded into fragments.
+///
+/// The camelCase split fires on a lower-to-upper transition only. Splitting on
+/// every capital would turn `HTTPServer` into single letters and `SIPMessage`
+/// into noise, and a rule that manufactures fragments manufactures hits.
+#[test]
+fn an_acronym_run_is_not_split_into_fragments() {
+    for ident in [
+        "HTTPServer",
+        "SIPMessageParser",
+        "RTPStreamID",
+        "TLSKeylogSource",
+    ] {
+        let found = british_words(ident);
+        assert!(
+            found.is_empty(),
+            "{ident} is an ordinary identifier and the rule reported {found:?}"
+        );
+    }
+}
+
+/// Hash and hex fragments are never reported.
+///
+/// `pyse` came from a base64 integrity hash in a lockfile. Base64 produces
+/// convincing-looking fragments by the thousand, and one bogus hit teaches a
+/// reader to skim every real one after it.
+#[test]
+fn a_hash_or_hex_fragment_is_never_reported() {
+    // Built, not written: a literal here would be a British-suffixed token in
+    // a file that may not contain one.
+    let long_stem = format!("deadbeef{}", british_form("", "yse"));
+    for fragment in [
+        "sha512-Pyse".to_string(),
+        "a3f9dise".to_string(),
+        long_stem,
+        "c2lnbmFsbGluZyse".to_string(),
+    ] {
+        let found = british_words(&fragment);
+        for w in &found {
+            assert!(
+                w.len() >= 7,
+                "{fragment} produced the fragment {w:?}, which is hash noise \
+                 rather than a word"
+            );
+        }
+    }
+    assert!(
+        british_words("sha512-Pyse").is_empty(),
+        "a four-character hash fragment was reported as a spelling"
+    );
+}
+
+/// Every suffix pair changes the spelling.
+///
+/// A pair mapping a suffix to itself would report a hit and offer the same
+/// word back, which reads as a gate that is broken rather than a word that is
+/// wrong.
+#[test]
+fn every_suffix_pair_maps_to_a_different_spelling() {
+    for (brit, us) in SUFFIXES {
+        assert_ne!(
+            brit, us,
+            "the suffix pair {brit:?} maps to itself; the correction it offers \
+             would be the word it rejected"
+        );
+        assert_eq!(
+            brit.len(),
+            us.len(),
+            "{brit} and {us} differ in length; every pair in this table is one \
+             letter substituted, and a length change means a typo in the table"
+        );
+    }
+}
+
+/// Every suffix pair actually fires.
+///
+/// A pair nothing can trigger is a line of table that looks like coverage. The
+/// longest suffixes are the ones at risk: `isation` is only reachable if the
+/// table is tried longest-first, and a reordering would silently shadow it.
+#[test]
+fn every_suffix_pair_actually_fires() {
+    for (brit, us) in SUFFIXES {
+        let word = format!("normal{brit}");
+        let found = british_words(&word);
+        assert!(
+            found.contains(&word),
+            "the suffix {brit:?} never fires; it is a line of table that looks \
+             like coverage"
+        );
+        assert_eq!(
+            us_form(&word),
+            format!("normal{us}"),
+            "the suffix {brit:?} is shadowed by an earlier entry, so the \
+             correction it offers comes from the wrong pair"
+        );
+    }
+}

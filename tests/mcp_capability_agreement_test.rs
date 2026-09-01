@@ -155,6 +155,79 @@ fn rebuild_targets(line: &str) -> Vec<Vec<String>> {
     out
 }
 
+/// Tool modules behind a `#[cfg(feature = ..)]`, and the tools each declares.
+///
+/// Read from the source rather than from the router, because the router can
+/// only show what THIS build registered -- and the property under test is
+/// about the relationship between the two.
+fn gated_tool_modules() -> Vec<(String, Vec<String>)> {
+    let modsrc = repo("src/mcp/tools/mod.rs");
+    let lines: Vec<&str> = modsrc.lines().collect();
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let line = line.trim();
+        if !line.starts_with("#[cfg(") || !line.contains("feature = ") {
+            continue;
+        }
+        let Some(next) = lines.get(i + 1) else {
+            continue;
+        };
+        let Some(name) = next
+            .trim()
+            .strip_prefix("pub mod ")
+            .or_else(|| next.trim().strip_prefix("mod "))
+            .and_then(|n| n.strip_suffix(';'))
+        else {
+            continue;
+        };
+        let path = format!("src/mcp/tools/{name}.rs");
+        let body = repo(&path);
+        let mut tools = Vec::new();
+        for l in body.lines() {
+            let l = l.trim();
+            if let Some(rest) = l.strip_prefix("name = \"")
+                && let Some((tool, _)) = rest.split_once('"')
+            {
+                tools.push(tool.to_string());
+            }
+        }
+        if !tools.is_empty() {
+            out.push((path, tools));
+        }
+    }
+    out
+}
+
+/// Every feature named in a tool module's gate.
+fn gating_features() -> BTreeSet<String> {
+    let modsrc = repo("src/mcp/tools/mod.rs");
+    let lines: Vec<&str> = modsrc.lines().collect();
+    let mut out = BTreeSet::new();
+    for (i, line) in lines.iter().enumerate() {
+        let l = line.trim();
+        if !l.starts_with("#[cfg(") {
+            continue;
+        }
+        let Some(next) = lines.get(i + 1) else {
+            continue;
+        };
+        if !next.trim_start().starts_with("pub mod ") && !next.trim_start().starts_with("mod ") {
+            continue;
+        }
+        let mut rest = l;
+        while let Some(at) = rest.find("feature = \"") {
+            rest = &rest[at + 11..];
+            if let Some((name, tail)) = rest.split_once('"') {
+                out.insert(name.to_string());
+                rest = tail;
+            } else {
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// Aggregates, excluded with the reason each one is not a capability.
 ///
 /// Every exclusion is paired with why, because a scanner narrowed until it is
@@ -403,5 +476,106 @@ fn the_capability_scans_found_plausible_sources() {
         !registered().is_empty(),
         "the router registered no tools at all; every tool assertion above is \
          vacuous"
+    );
+}
+
+// ── the debt from `stdio_mcp_full_tool_set_and_remaining_tools` ─────────
+//
+// That test carried a flat list of tool names and a literal count, and both
+// assumed the vCon pair was always present. It failed the moment the pair was
+// registered honestly -- not because the fix was wrong, but because the
+// expectation described one build and was checked against every build. It was
+// corrected and nothing was written to keep it corrected, which is the half of
+// a fix that gets skipped.
+
+/// Every feature-gated tool module registers all of its tools, or none.
+///
+/// The general form of the defect this file exists for. `export_vcon` and
+/// `validate_vcon` live in one module behind one feature: a build carrying the
+/// feature must advertise both, and a build without it must advertise neither.
+/// HALF a module is the shape that shipped -- the tools listed, the exporter
+/// absent -- and it is invisible to any test that checks one name at a time.
+///
+/// Deliberately does not consult `cfg!`: the property holds in every build
+/// without knowing which features are on, so it cannot rot into a test that
+/// only means something under `full`.
+#[test]
+fn a_feature_gated_tool_module_registers_all_or_none_of_its_tools() {
+    let registered: BTreeSet<String> = registered().into_iter().collect();
+    let mut modules = 0;
+
+    for (module, tools) in gated_tool_modules() {
+        modules += 1;
+        let present = tools.iter().filter(|t| registered.contains(*t)).count();
+        assert!(
+            present == 0 || present == tools.len(),
+            "{module} declares {} tool(s) and {present} of them are \
+             registered. A feature-gated module is all or nothing: a partly \
+             advertised module means the gate is on the registration and not \
+             on the code behind it, which is exactly how a tool that cannot \
+             run reaches tools/list. Declared: {tools:?}",
+            tools.len()
+        );
+    }
+    assert!(
+        modules >= 1,
+        "no feature-gated tool module found; the scan of \
+         src/mcp/tools/mod.rs is wrong and this gate proves nothing"
+    );
+}
+
+/// Every feature gating a tool module is one the report can name.
+///
+/// The two halves joined. If a module is hidden behind a feature, the absence
+/// of its tools is a question an agent will ask, and `server_capabilities` is
+/// the only place that can answer it.
+#[test]
+fn every_feature_gating_a_tool_module_is_one_the_report_can_name() {
+    let reportable = reportable_features();
+    let mut checked = 0;
+    for feature in gating_features() {
+        checked += 1;
+        assert!(
+            reportable.contains(&feature),
+            "tool modules are gated on `{feature}` and server_capabilities \
+             cannot name it, so a client that notices the tools are missing \
+             has no way to learn why"
+        );
+    }
+    assert!(
+        checked >= 1,
+        "no gating feature found; the scan is wrong and this proves nothing"
+    );
+}
+
+/// The stdio test's expected tool set is derived from the build.
+///
+/// A regression guard on the exact failure. The expectation may not go back to
+/// being a flat list: it has to consult `cfg!` for the feature-gated tools, or
+/// it asserts a tool set that only one build has while running in all of them.
+#[test]
+fn the_stdio_tool_set_expectation_is_feature_aware() {
+    let src = repo("tests/mcp_stdio_test.rs");
+    let at = src.find("MCP tool set drifted").expect(
+        "mcp_stdio_test.rs no longer asserts the tool set; this guard \
+                 is reading the wrong file",
+    );
+    // The window above the assertion, where the expectation is built.
+    let window = &src[at.saturating_sub(3000)..at];
+    assert!(
+        window.contains("cfg!(feature ="),
+        "the expected MCP tool set is built without consulting `cfg!`, so it \
+         describes one build and is checked against every build. That is the \
+         failure this guard exists for: the list named the vCon pair \
+         unconditionally and broke as soon as they were registered honestly."
+    );
+    let count_at = src
+        .find("MCP tools\"")
+        .expect("the tool-count assertion is gone");
+    let count_window = &src[count_at.saturating_sub(400)..count_at];
+    assert!(
+        count_window.contains("cfg!(feature =") || count_window.contains("want"),
+        "the expected tool COUNT is a bare literal; it has to move with the \
+         feature set the same way the names do"
     );
 }
