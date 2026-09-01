@@ -8,6 +8,21 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **The homepage hero shows the call `/analyze` offers.** Three surfaces
+  carried three different captures: the hero still used
+  `register-invite-reinvite-bye.pcap`, the first demo tab uses
+  `sip-rtp-g711.pcap`, and the analyze page's "Load a sample call" fetches
+  `demos/sample-call.pcap`. Someone watched one call and clicked through to a
+  different one. The hero now drives the capture the analyze page serves, which
+  is also the richer one -- seven dialogs covering Registered, Expired, Active,
+  Pending and Terminated, an OPTIONS ping, and the call with 600 RTP packets.
+  The image's alt text described a re-INVITE and hold that the new capture does
+  not contain, so it now describes what the screenshot shows.
+
 ## [0.5.139] - 2026-08-31
 
 ### Added
