@@ -167,13 +167,40 @@ impl Fixture {
     }
 
     /// Backdate a file so age-gated rules can see it as old.
+    ///
+    /// Done in Rust rather than by shelling out. `touch -d @<epoch>` is a GNU
+    /// extension: on macOS it fails, the file keeps today's mtime, the age
+    /// floor correctly declines to remove it, and three tests fail with
+    /// assertions about the CLEANER when the fixture was what broke. CI found
+    /// that on 2026-09-01 and the local run could not have.
+    ///
+    /// The write is verified, because a setup step that silently does nothing
+    /// looks exactly like one that worked.
     fn age(&self, rel: &str, days: u64) {
         let p = self.root.join(rel);
         let when = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
-        let ft = filetime(when);
-        let _ = Command::new("touch")
-            .args(["-d", &ft, p.to_string_lossy().as_ref()])
-            .status();
+        let f = std::fs::File::options()
+            .write(true)
+            .open(&p)
+            .unwrap_or_else(|e| panic!("open {} to backdate: {e}", p.display()));
+        f.set_modified(when)
+            .unwrap_or_else(|e| panic!("backdate {}: {e}", p.display()));
+
+        let got = std::fs::metadata(&p)
+            .and_then(|m| m.modified())
+            .unwrap_or_else(|e| panic!("read back mtime of {}: {e}", p.display()));
+        let age = std::time::SystemTime::now()
+            .duration_since(got)
+            .unwrap_or_default();
+        assert!(
+            age.as_secs() >= days * 86_400 / 2,
+            "backdating {} did not take: it reads as {}s old, not {}d. Every \
+             age-gated assertion below would then be testing the fixture \
+             rather than the cleaner.",
+            p.display(),
+            age.as_secs(),
+            days
+        );
     }
 
     fn run(&self, extra: &[&str]) -> (bool, String) {
@@ -199,14 +226,6 @@ impl Fixture {
     fn discard(self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
-}
-
-fn filetime(when: std::time::SystemTime) -> String {
-    let secs = when
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format!("@{secs}")
 }
 
 /// Dry run is the default, and it removes nothing.
@@ -485,4 +504,224 @@ fn the_cleaner_never_touches_the_dependency_cache() {
         "the cleaner removed from target/debug/deps. Partial removal there \
          leaves cargo rebuilding in ways that look like corruption:\n{said}"
     );
+}
+
+// ── portability: a fixture that no-ops is worse than one that fails ─────
+//
+// On 2026-09-01 three of the tests above failed on macOS and nowhere else.
+// `Fixture::age` backdated files with `touch -d @<epoch>`, a GNU extension.
+// On macOS the command simply failed, the file kept today's mtime, the
+// cleaner's age floor correctly declined to remove it, and three assertions
+// about the CLEANER failed when the FIXTURE was what broke. The local run
+// could not have caught it and the failure message pointed at the wrong code.
+//
+// The class is broader than one flag: test infrastructure that depends on GNU
+// behavior and does nothing, quietly, somewhere else.
+
+/// Backdating actually moves the file's timestamp.
+///
+/// The primitive every age-gated test rests on, checked directly. If this is
+/// wrong then every assertion above is testing the fixture rather than the
+/// cleaner -- and it will say so in the language of the cleaner.
+#[test]
+fn backdating_a_fixture_file_actually_moves_its_mtime() {
+    let f = Fixture::new("age_primitive");
+    f.write(".git/probe.log", "x");
+
+    let before = std::fs::metadata(f.root.join(".git/probe.log"))
+        .and_then(|m| m.modified())
+        .expect("mtime before");
+    f.age(".git/probe.log", 30);
+    let after = std::fs::metadata(f.root.join(".git/probe.log"))
+        .and_then(|m| m.modified())
+        .expect("mtime after");
+    f.discard();
+
+    let moved = before
+        .duration_since(after)
+        .expect("backdating must move the mtime BACKWARDS");
+    assert!(
+        moved.as_secs() >= 29 * 86_400,
+        "backdating moved the mtime by only {}s; the age floor cannot be \
+         exercised and every age-gated test is measuring the wrong thing",
+        moved.as_secs()
+    );
+}
+
+/// The floor separates a recent file from a backdated one, in one run.
+///
+/// Both directions together on purpose. A fixture that made everything look
+/// OLD would pass the removal tests; one that made everything look NEW would
+/// pass the retention test. Only asserting both at once catches a backdating
+/// mechanism that has quietly stopped working.
+#[test]
+fn the_age_floor_separates_recent_from_backdated_in_one_run() {
+    let f = Fixture::new("age_both_ways");
+    f.write(".git/old.log", "x");
+    f.write(".git/new.log", "x");
+    f.age(".git/old.log", 30);
+
+    let (ok, said) = f.run(&["--apply"]);
+    let old_gone = !f.exists(".git/old.log");
+    let new_kept = f.exists(".git/new.log");
+    f.discard();
+
+    assert!(ok, "the cleaner failed:\n{said}");
+    assert!(
+        old_gone && new_kept,
+        "the age floor did not separate the two: old removed={old_gone}, \
+         recent kept={new_kept}. If BOTH went the floor is not applied; if \
+         NEITHER went the backdating is not taking.\n{said}"
+    );
+}
+
+/// No test shells out to read or write file metadata.
+///
+/// `touch`, `stat`, `date` and `readlink` differ between GNU and BSD in
+/// exactly the flags a test reaches for. Rust's own filesystem API is
+/// portable, so there is no reason to leave the process.
+#[test]
+fn no_test_shells_out_for_file_metadata() {
+    let mut offenders = Vec::new();
+    let mut scanned = 0;
+    let out = Command::new("git")
+        .args(["ls-files", "tests/"])
+        .current_dir(repo())
+        .output()
+        .expect("git ls-files tests/");
+    for file in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+        if !file.ends_with(".rs") {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(repo().join(file)) else {
+            continue;
+        };
+        scanned += 1;
+        for (n, line) in src.lines().enumerate() {
+            let l = line.trim();
+            if l.starts_with("//") {
+                continue;
+            }
+            for tool in ["\"touch\"", "\"stat\"", "\"date\"", "\"readlink\""] {
+                if l.contains(&format!("Command::new({tool}")) {
+                    offenders.push(format!("  {file}:{}: {l}", n + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        scanned >= 40,
+        "only {scanned} test file(s) scanned; the walk is wrong"
+    );
+    assert!(
+        offenders.is_empty(),
+        "these tests shell out for file metadata, where GNU and BSD disagree \
+         on the flags. Use std::fs, which is portable:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// No executable line uses a GNU-only spelling.
+///
+/// The general form, across the scripts and hooks too. Each pattern here has
+/// a BSD counterpart that differs, so the command does not fail loudly on
+/// macOS -- it fails in whatever way that platform's tool chooses, which was
+/// "silently do nothing" for the one that started this.
+#[test]
+fn no_executable_line_uses_a_gnu_only_spelling() {
+    // Measured 2026-09-01: one real hit, `stat -c %s` in bench/live-capture.sh,
+    // now `wc -c` which is POSIX. Everything else that matches is prose
+    // explaining the hazard, which is why comment lines are skipped.
+    const GNU_ONLY: &[(&str, &str)] = &[
+        ("touch -d", "BSD touch has no -d; use std::fs or -t"),
+        ("stat -c", "BSD spells it `stat -f`; `wc -c` is portable"),
+        ("readlink -f", "BSD readlink has no -f"),
+        ("date -d ", "BSD date spells it -v or -j -f"),
+        ("cp --preserve", "BSD cp uses -p"),
+    ];
+    let out = Command::new("git")
+        .args(["ls-files", "scripts/", ".githooks/", "bench/"])
+        .current_dir(repo())
+        .output()
+        .expect("git ls-files");
+
+    let mut offenders = Vec::new();
+    let mut scanned = 0;
+    for file in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+        let Ok(src) = std::fs::read_to_string(repo().join(file)) else {
+            continue; // binary fixture
+        };
+        scanned += 1;
+        for (n, line) in src.lines().enumerate() {
+            let l = line.trim();
+            if l.starts_with('#') || l.starts_with("//") {
+                continue;
+            }
+            for (pattern, fix) in GNU_ONLY {
+                if l.contains(pattern) {
+                    offenders.push(format!("  {file}:{}: {pattern} -- {fix}", n + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        scanned >= 20,
+        "only {scanned} script(s) scanned; the walk is wrong and this proves \
+         nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "these lines use a GNU-only spelling and behave differently on \
+         macOS:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The cleaner leaves the process entirely alone.
+///
+/// It is pure stdlib Python, which is what makes it portable by construction
+/// rather than by inspection. A `subprocess` call here would reintroduce the
+/// same platform question the fixture just tripped over -- in the tool that
+/// DELETES things.
+#[test]
+fn the_cleaner_shells_out_to_nothing() {
+    let script = std::fs::read_to_string(repo().join("scripts/clean-stale.py"))
+        .expect("read scripts/clean-stale.py");
+    for forbidden in ["subprocess", "os.system", "Popen", "shell=True"] {
+        assert!(
+            !script.contains(forbidden),
+            "the cleaner uses {forbidden}. It deletes files; it must not also \
+             depend on which platform's `rm`, `find` or `stat` is installed."
+        );
+    }
+    assert!(
+        script.contains("import pathlib"),
+        "the cleaner no longer uses pathlib; this check is reading the wrong \
+         file"
+    );
+}
+
+/// Every fixture lives under the cargo temp dir and nowhere else.
+///
+/// These tests hand a recursive remover a root. If a fixture could be
+/// constructed outside `CARGO_TARGET_TMPDIR` -- an absolute path, a `..`
+/// escape -- a bug in the cleaner would delete real files rather than a
+/// throwaway tree.
+#[test]
+fn every_fixture_is_confined_to_the_cargo_temp_dir() {
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    for name in ["confine_a", "confine_b"] {
+        let f = Fixture::new(name);
+        let root = f.root.clone();
+        f.discard();
+        assert!(
+            root.starts_with(&tmp),
+            "a fixture root {root:?} is outside {tmp:?}; these tests point a \
+             recursive remover at that path"
+        );
+        assert!(
+            !root.to_string_lossy().contains(".."),
+            "a fixture root escapes upward: {root:?}"
+        );
+    }
 }

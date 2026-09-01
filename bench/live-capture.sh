@@ -2129,7 +2129,10 @@ generate_corpus() { # <out-dir> <calls> <rtp> <call-ids> <pairs> <concurrency>
   CORPUS_GEN_S=$(awk -v n="$((t1 - t0))" 'BEGIN { printf "%.2f", n / 1000000000 }')
   CORPUS_ARGV="python3 bench/carrier.py ${argv[*]}"
   CORPUS_SHA=$(sha256sum "$1/corpus.pcap" | awk '{ print $1 }')
-  CORPUS_REAL_BYTES=$(stat -c %s "$1/corpus.pcap")
+  # `wc -c <`, not `stat -c %s`: the latter is a GNU spelling that fails on
+  # macOS, where the same field is `stat -f %z`. `wc -c` is POSIX and reads
+  # the same number everywhere.
+  CORPUS_REAL_BYTES=$(wc -c < "$1/corpus.pcap" | tr -d ' ')
 }
 
 # One timed run. Sets RUN_* globals; echoes the verdict.
