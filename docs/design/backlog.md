@@ -44,13 +44,13 @@ Tiers:
 
 ## Status
 
-**46 open, 399 done** across 25 sections.
+**42 open, 403 done** across 25 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
 |---|---:|---:|---|
 | P0 | 0 | 21 | `##########` |
-| P1 | 6 | 64 | `#########.` |
+| P1 | 2 | 68 | `##########` |
 | PV | 0 | 13 | `##########` |
 | P2 | 0 | 109 | `##########` |
 | P3 | 0 | 64 | `##########` |
@@ -1139,20 +1139,30 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   plainly which keys carry a display name so a redaction step can be written
   against reality.
 
-- [ ] **VAL11 — a 401/407 challenge is published as a failed, incomplete
-  dialog.** Reported by the vCon validation agent: an auth challenge is emitted
+- [x] **VAL11 (closed 2026-08-31, did not reproduce) — a 401/407 challenge is
+  published as a failed, incomplete dialog.** Reported by the vCon validation agent: an auth challenge is emitted
   as `type: incomplete, disposition: failed` while sipnab's own store records
   `state=Trying, response_class=None`. This is the same "assert a failure that
   never happened" class the 0.5.128 `incomplete` fix removed, surviving in
   `final_status_code` selection. A challenge is a normal step in almost every
   authenticated call, so this inflates the failure rate of ordinary traffic.
-  (Agent-reported; not independently reproduced by the coordinator.)
+  **Verified not to reproduce.** `SipDialog::final_status_code` already
+  excludes 401/407 (`max_non_auth.or(max_any)`), which is the exact
+  selection this item said the defect survived in, so a call challenged
+  then answered reports 200. Confirmed three ways: the guard's own test,
+  a mutation forcing the challenge to win (turns it red, so the guard is
+  load-bearing rather than decorative), and an end-to-end export of
+  challenged-then-succeeded REGISTERs from two real captures, all clean.
 
-- [ ] **VAL12 — a REFER produces a `transfer` Dialog Object with no `start`,
+- [x] **VAL12 (done 2026-08-31) — a REFER produces a `transfer` Dialog Object with no `start`,
   which is schema-invalid.** Invalid against both the vendored and the
   published schema (2 of 4,216 real containers, plus a synthetic reproducer),
   and it contradicts the documented deviation's own justification that sipnab
-  "knows the start time". (Agent-reported; not independently reproduced.)
+  "knows the start time". (Agent-reported; independently reproduced before fixing.)
+
+  **Fixed.** The transfer object set `type` and took `start` from
+  `Dialog::bare`, which is `None`. The instant was already computed for
+  the signaling object beside it. A failing test was written first.
 
 - [ ] **VAL13 — headers of 8,192 bytes or more vanish while the completeness
   note still says "No omissions recorded".** Another instance of the VAL2/VAL3
@@ -1160,7 +1170,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   field whose job is to say so reports nothing was. (Agent-reported; not
   independently reproduced.)
 
-- [ ] **VAL14 — one capture addressed by relative vs absolute path mints
+- [x] **VAL14 (done 2026-08-31) — one capture addressed by relative vs absolute path mints
   different vCon UUIDs** for the same dialog, though the frame content digest is
   identical in both containers. A consumer de-duplicating on UUID sees two
   conversations where the content proves there is one. (Agent-reported; not
@@ -1195,7 +1205,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   workaround should be removed when this is fixed, and the comment there names
   it.
 
-- [ ] **VAL16 — `timeline` answers with a bare array, so it can carry no
+- [x] **VAL16 (done 2026-08-31) — `timeline` answers with a bare array, so it can carry no
   envelope.** It is the last top-level array on the agent surface, which is
   exactly the defect class `DialogPage`'s own doc comment describes: a payload
   with no key has nowhere to put `source_exhausted`, `truncated`, or a cursor.

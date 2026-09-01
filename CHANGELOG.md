@@ -10,7 +10,43 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A transfer Dialog Object carries the `start` its schema requires (VAL12).**
+  Every Dialog Object in both the vendored and the published vCon schema lists
+  `start` as required, and a transfer object names a `type`, so it shipped as a
+  typed object with a mandatory field missing. The instant was never unavailable
+  -- it is the same one the signaling object beside it already carried, because
+  a transfer happens DURING the dialog rather than being a second conversation.
+- **One capture addressed two ways mints one uuid (VAL14).** `-I tests/x.pcap`
+  and `-I /abs/tests/x.pcap` are the same bytes and produced different `uuid`
+  values, so a consumer deduplicating on it -- which §4.1.2 says it may -- saw
+  two conversations where the content proves there is one. Only the uuid SEED is
+  normalized, never the recorded frame pointer: the pointer keeps the spelling
+  the operator used, because that is what they recognize and what
+  `show_evidence` resolves, and because an absolute path carries the account
+  name, which has no business in a container that leaves the building. A uuid is
+  a digest, so the normalized form is never published. A live device and a HEP
+  listener are left alone; joining `eth0` to the working directory would make
+  one interface two identities depending on where sipnab was started.
+
 ### Changed
+
+- **`timeline` answers with an envelope rather than a bare array (VAL16).** It
+  was the last tool on the agent surface returning a top-level array, which has
+  no key to carry `source_exhausted`, `truncated`, or a cursor -- so the
+  completeness envelope could only arrive as a further content block, and a
+  client reading `result.content[0]` got rows with no idea how much of the
+  capture they covered. The rows are now under `buckets`, beside
+  `schema_version`, `returned`, and the `bucket_seconds` actually used. **This
+  is a published-shape change.** Two tests that pinned the array form are
+  inverted rather than deleted, and a new gate fails if any drivable tool
+  returns to a top-level array.
+- **VAL11 was closed without a code change.** A 401/407 challenge is not
+  published as a failed dialog: `final_status_code` already excludes challenges,
+  which is the exact selection the report said the defect survived in. Verified
+  by mutation -- forcing a challenge to win turns the guard's test red -- and by
+  exporting challenged-then-succeeded registrations from two real captures.
 
 - **The homepage hero shows the call `/analyze` offers.** Three surfaces
   carried three different captures: the hero still used

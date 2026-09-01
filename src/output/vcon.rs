@@ -1493,6 +1493,12 @@ pub fn export_dialog_with_audio_at(
         });
         dialog_objects.push(Dialog {
             kind: Some(TRANSFER_TYPE),
+            // Every Dialog Object in the schema requires `start`, and this one
+            // names a type, so omitting it shipped a typed object missing a
+            // mandatory field. The instant is the dialog's own: a transfer is
+            // something that happened DURING this conversation, so a separate
+            // start would assert a second one nobody observed.
+            start: Some(started.clone()),
             // The party that sent the REFER is the caller on this leg, and the
             // party being moved is the other one. Both come from the dialog's
             // own From/To rather than from the REFER's, which a mid-dialog
@@ -2503,6 +2509,7 @@ fn media_clause(outcome: MediaOutcome) -> &'static str {
 #[must_use]
 pub fn dialog_uuid(dialog: &SipDialog, capture_id: &str) -> String {
     let mut bytes = [0u8; 16];
+    let capture_id: &str = &capture_identity_key(capture_id);
 
     // 48-bit big-endian millisecond timestamp. `max(0)` rather than a wrap:
     // a pre-epoch capture timestamp is nonsense, and wrapping it would spread
@@ -2556,6 +2563,52 @@ pub fn dialog_uuid(dialog: &SipDialog, capture_id: &str) -> String {
     bytes[8..].copy_from_slice(&(0x8000_0000_0000_0000_u64 | rand_b).to_be_bytes());
 
     format_uuid(&bytes)
+}
+
+/// The capture identity a uuid is seeded from, with one file spelled one way.
+///
+/// `capture_id` is the SOURCE half of a frame pointer -- the path exactly as
+/// the operator typed it. `-I tests/x.pcap` and `-I /abs/tests/x.pcap` name the
+/// same bytes and seeded different uuids, so a consumer deduplicating on `uuid`
+/// saw two conversations where the content proves there is one (VAL14).
+///
+/// Only the SEED is normalized, never the recorded pointer. The pointer keeps
+/// the operator's own spelling because that is what they recognize and what
+/// `show_evidence` resolves, and because an absolute path carries the account
+/// name, which has no business in a container that leaves the building. A uuid
+/// is a digest, so the normalized form is never published.
+///
+/// # What is treated as a path
+///
+/// A separator, or a capture-file extension. Both are needed and neither alone
+/// is enough: `x.pcap` in the working directory has no separator, and a VLAN
+/// interface is spelled `eth0.100`, which has a dot and is not a file. A live
+/// device or a HEP listener joined to the working directory would make one
+/// interface two identities depending on where sipnab was started, which is
+/// the bug this fixes, pointed the other way.
+///
+/// `std::path::absolute` is lexical: it consults the working directory but not
+/// the filesystem, so this neither stats a file nor resolves a symlink, and a
+/// capture that has since been moved or deleted still exports the same uuid.
+fn capture_identity_key(capture_id: &str) -> std::borrow::Cow<'_, str> {
+    const CAPTURE_EXTENSIONS: &[&str] = &["pcap", "pcapng", "cap"];
+
+    if capture_id.starts_with("hep:") || capture_id.starts_with("uprobe:") {
+        return std::borrow::Cow::Borrowed(capture_id);
+    }
+    let path = std::path::Path::new(capture_id);
+    let looks_like_a_file = capture_id.contains(std::path::MAIN_SEPARATOR)
+        || path.extension().is_some_and(|e| {
+            CAPTURE_EXTENSIONS
+                .iter()
+                .any(|k| e.eq_ignore_ascii_case(std::ffi::OsStr::new(k)))
+        });
+    if !looks_like_a_file {
+        return std::borrow::Cow::Borrowed(capture_id);
+    }
+    std::path::absolute(path).map_or(std::borrow::Cow::Borrowed(capture_id), |p| {
+        std::borrow::Cow::Owned(p.to_string_lossy().into_owned())
+    })
 }
 
 /// Render 16 bytes in the canonical `8-4-4-4-12` hyphenated hex form.
@@ -3822,6 +3875,49 @@ mod tests {
         dialog
     }
 
+    /// A transfer object carries the `start` its own schema requires.
+    ///
+    /// VAL12. Every Dialog Object in the vendored schema lists `start` as
+    /// required, and a transfer object sets `type`, so it is a typed object
+    /// with a mandatory field missing -- invalid against both the vendored and
+    /// the published schema. The value was never unavailable: `observed_start`
+    /// is computed for the signaling object a few lines above and is the same
+    /// instant, because the transfer is part of THIS dialog rather than a
+    /// separate conversation.
+    ///
+    /// The empty consultation object is the deliberate deviation here and is
+    /// not this: issue #20 settled that an attended transfer's unseen leg is
+    /// an EMPTY object, and the draft's own schema rejecting `{}` is the
+    /// working group's contradiction rather than sipnab's.
+    #[test]
+    fn a_transfer_object_carries_the_start_its_schema_requires() {
+        let dialog = dialog_with_refer("<sip:carol@example.org>");
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        let objects = v["dialog"].as_array().expect("dialog array");
+        let transfer = objects
+            .iter()
+            .find(|o| o["type"] == "transfer")
+            .expect("a transfer object");
+
+        let start = transfer.get("start").and_then(serde_json::Value::as_str);
+        assert!(
+            start.is_some(),
+            "the transfer object names a type and omits `start`, which every \
+             Dialog Object in the schema requires: {transfer}"
+        );
+
+        // The same instant as the signaling object it belongs to. A transfer
+        // is a thing that happened during this dialog, so a different start
+        // would assert a second conversation that nobody observed.
+        let signaling = objects.first().expect("a signaling object");
+        assert_eq!(
+            start,
+            signaling.get("start").and_then(serde_json::Value::as_str),
+            "the transfer belongs to this dialog and must share its start: \
+             {transfer}"
+        );
+    }
+
     /// PV8: an observed REFER becomes a `transfer` Dialog Object.
     ///
     /// A transfer object carries no content by design, which makes it
@@ -4460,6 +4556,57 @@ mod tests {
             note.contains("INCOMPLETE") && note.contains("49"),
             "a ranked blind spot must reach the prose surface too: {note}"
         );
+    }
+
+    /// One capture addressed two ways is one capture.
+    ///
+    /// VAL14. `capture_id` is the SOURCE half of a frame pointer, which is the
+    /// path exactly as it was typed. `-I tests/x.pcap` and
+    /// `-I /abs/tests/x.pcap` are the same bytes, and minted different uuids --
+    /// so a consumer deduplicating on `uuid`, which §4.1.2 says it may, saw two
+    /// conversations where the content proves there is one.
+    ///
+    /// Normalizing only the SEED and not the recorded pointer is deliberate.
+    /// The pointer keeps the spelling the operator used, because that is what
+    /// they will recognize and what `show_evidence` resolves; and an absolute
+    /// path carries the account name, which has no business being published in
+    /// a container that leaves the building. The uuid is a digest, so the
+    /// normalized form never appears anywhere.
+    #[test]
+    fn one_capture_addressed_two_ways_mints_one_uuid() {
+        let dialog = dialog_with(&[response(200, "OK")]);
+        let rel = "tests/pcap-samples/sip-rtp-g711.pcap";
+        let abs = std::path::absolute(rel)
+            .expect("cwd is readable")
+            .to_string_lossy()
+            .into_owned();
+        assert_ne!(rel, abs, "the fixture must actually test two spellings");
+
+        assert_eq!(
+            dialog_uuid(&dialog, rel),
+            dialog_uuid(&dialog, &abs),
+            "one capture addressed relatively and absolutely is one capture"
+        );
+
+        // The property this must not buy the fix with: two DIFFERENT captures
+        // still differ. Collapsing everything to one key would make the uuid
+        // stable and useless.
+        assert_ne!(
+            dialog_uuid(&dialog, rel),
+            dialog_uuid(&dialog, "tests/pcap-samples/sip-proxy.pcap"),
+            "different captures must keep different uuids"
+        );
+
+        // A live device and a HEP listener are not paths. Joining them to the
+        // working directory would make one interface two identities depending
+        // on where sipnab was started.
+        for not_a_path in ["eth0", "any", "hep:0.0.0.0:9060", "uprobe:opensips/1234"] {
+            assert_eq!(
+                dialog_uuid(&dialog, not_a_path),
+                dialog_uuid(&dialog, not_a_path),
+                "{not_a_path} must be stable"
+            );
+        }
     }
 
     /// The uuid is a well-formed UUIDv8 and is stable for one dialog out of

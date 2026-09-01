@@ -338,20 +338,85 @@ fn a_rendered_document_carries_no_structured_content() {
     );
 }
 
-/// `timeline` returns a top-level array, which the MCP schema types
-/// `structuredContent` cannot carry.
+/// No tool answers with a top-level array.
+///
+/// This test used to pin the opposite: `timeline` DID return a bare array, and
+/// this asserted that it therefore carried no `structuredContent`, because the
+/// MCP schema types that field as an object. That was a true statement about a
+/// defect (VAL16). `timeline` was the last such tool on the surface, so the
+/// assertion is inverted rather than deleted -- the shape it described is now
+/// one nothing may go back to.
+///
+/// An array payload has nowhere to put `source_exhausted`, `truncated`, or a
+/// cursor. The completeness stamp could only reach `timeline` as a SECOND
+/// content block, so a client reading `result.content[0]` alone got rows with
+/// no idea how much of the capture they covered.
 #[test]
-fn a_top_level_array_payload_carries_no_structured_content() {
+fn no_tool_answers_with_a_top_level_array() {
     let mut wire = Wire::start();
-    let reply = wire.call("timeline", json!({}), None);
+    let call_id = wire.a_call_id();
+
+    // Driven, not asserted from source: a shape is a property of the wire.
+    let drivable = schema_probes(&call_id);
+    assert!(
+        drivable.len() >= 5,
+        "only {} tool(s) driven; this gate is checking almost nothing",
+        drivable.len()
+    );
+
+    for (tool, args) in drivable.into_iter().chain([
+        ("timeline", json!({})),
+        ("timeline", json!({"bucket_seconds": 3600})),
+    ]) {
+        if SCHEMA_NOT_DRIVEN.iter().any(|(t, _)| *t == tool) {
+            continue;
+        }
+        let reply = wire.call(tool, args, None);
+        let payload = text_payload(&reply);
+        assert!(
+            !payload.is_array(),
+            "{tool} answers with a top-level array, which can carry no envelope \
+             -- no `source_exhausted`, no `truncated`, no cursor. Wrap it in an \
+             object, as VAL16 did for timeline: {payload}"
+        );
+    }
+}
+
+/// `timeline` carries an envelope, and the stamp lands inside it.
+///
+/// The other half of VAL16: it is not enough that the payload stopped being an
+/// array, it has to actually describe itself now.
+#[test]
+fn timeline_answers_with_a_self_describing_envelope() {
+    let mut wire = Wire::start();
+    let reply = wire.call("timeline", json!({"bucket_seconds": 60}), None);
+    let payload = text_payload(&reply);
 
     assert!(
-        text_payload(&reply).is_array(),
-        "the fixture is only meaningful while timeline returns an array: {reply}"
+        payload.is_object(),
+        "timeline must answer with an object: {payload}"
+    );
+    for key in ["schema_version", "buckets", "returned", "bucket_seconds"] {
+        assert!(
+            payload.get(key).is_some(),
+            "the envelope is missing {key}: {payload}"
+        );
+    }
+    assert_eq!(
+        payload["bucket_seconds"],
+        json!(60),
+        "the width actually used is echoed, so a row is readable without the \
+         request beside it: {payload}"
+    );
+    assert_eq!(
+        payload["returned"].as_u64(),
+        payload["buckets"].as_array().map(|a| a.len() as u64),
+        "`returned` must agree with the array it counts: {payload}"
     );
     assert!(
-        reply["result"]["structuredContent"].is_null(),
-        "structuredContent is typed as an object; an array has none to give: {reply}"
+        reply["result"]["structuredContent"].is_object(),
+        "an object payload publishes structuredContent, which the array form \
+         could never carry: {reply}"
     );
 }
 

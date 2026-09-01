@@ -645,30 +645,37 @@ fn source_independent_tools_are_not_stamped() {
     }
 }
 
-/// `timeline` answers with a top-level array, which has no key to carry a
-/// field. The envelope arrives as a further content block instead.
+/// `timeline` carries the envelope IN its payload, not beside it.
+///
+/// This pinned the opposite until VAL16: `timeline` answered with a top-level
+/// array, which has no key to put a field in, so the completeness envelope
+/// arrived as a further content block. That worked and was still wrong in the
+/// way that matters -- a client reading `result.content[0]` got rows and no
+/// idea how much of the capture they covered, because the envelope was
+/// somewhere it had no reason to look.
+///
+/// `timeline` was the last array-answering tool on the surface, so this is
+/// inverted rather than deleted: the shape it described is one nothing may
+/// return to, and `mcp_protocol_features_test::no_tool_answers_with_a_top_level_array`
+/// holds that line for every drivable tool.
 #[test]
-fn an_array_answering_tool_carries_the_envelope_in_a_second_block() {
+fn the_timeline_envelope_arrives_inside_the_payload() {
     let mut wire = Wire::start(&sample(INTACT), &[]);
     wire.drain();
 
     let reply = wire.call("timeline", json!({}));
+    let body = payload(&reply);
     assert!(
-        payload(&reply).is_array(),
-        "timeline's published shape is unchanged: {reply}"
+        body.is_object(),
+        "timeline answers with an envelope now; an array would have nowhere to \
+         put the completeness fields: {reply}"
     );
-    let blocks = reply["result"]["content"]
-        .as_array()
-        .expect("content array");
-    let envelope: Value = serde_json::from_str(
-        blocks
-            .last()
-            .and_then(|b| b["text"].as_str())
-            .unwrap_or_else(|| panic!("no trailing block: {reply}")),
-    )
-    .unwrap_or_else(|e| panic!("the envelope block is not JSON: {e}\n{reply}"));
-    assert_eq!(envelope[EXHAUSTED], json!(true), "{envelope}");
-    assert_eq!(envelope[STOPPED_EARLY], json!(false), "{envelope}");
+    assert_eq!(body[EXHAUSTED], json!(true), "{body}");
+    assert_eq!(body[STOPPED_EARLY], json!(false), "{body}");
+    assert!(
+        body.get("buckets").is_some(),
+        "the rows are still there, under a key: {body}"
+    );
 }
 
 // ── the enumeration, derived from the source ────────────────────────────

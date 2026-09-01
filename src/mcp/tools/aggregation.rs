@@ -18,6 +18,33 @@ pub struct TimelineParams {
     pub bucket_seconds: Option<u64>,
 }
 
+/// One `timeline` answer, as an object rather than a bare array.
+///
+/// VAL16. `timeline` was the last tool on the agent surface answering with a
+/// top-level array, which is the shape `DialogPage`'s own doc comment warns
+/// about: a payload with no key has nowhere to put `source_exhausted`,
+/// `truncated`, or a cursor. The completeness stamp could only reach it as a
+/// SECOND content block, which is additive but is not the same as a response
+/// that describes itself -- a client reading `result.content[0]` alone got the
+/// rows and no idea how much of the capture they covered.
+///
+/// There is no `truncated` or cursor here because `timeline` takes no `limit`:
+/// it returns every bucket in the capture. `returned` is still carried so
+/// counting the array is never necessary, and the object gives the stamp
+/// somewhere to land.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct TimelinePage {
+    /// Version of this response schema.
+    pub schema_version: u32,
+    /// One row per interval, oldest first.
+    pub buckets: Vec<crate::mcp::server::TimelineBucket>,
+    /// Rows in `buckets`.
+    pub returned: usize,
+    /// The width actually used, echoed because the caller may have omitted it.
+    pub bucket_seconds: u64,
+}
+
 /// Dimensions `group_dialogs` accepts beyond the shared
 /// [`GROUPABLE`](crate::mcp::server::GROUPABLE) list.
 ///
@@ -502,8 +529,14 @@ impl SipnabMcp {
                 None,
             ));
         }
-        let rows = self.timeline_buckets(width);
-        Ok(CallToolResult::success(vec![ContentBlock::json(rows)?]))
+        let buckets = self.timeline_buckets(width);
+        let page = TimelinePage {
+            schema_version: 1,
+            returned: buckets.len(),
+            bucket_seconds: width,
+            buckets,
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
     }
 
     /// Carrier metrics per group, computed inside the store.
