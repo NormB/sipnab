@@ -1350,7 +1350,18 @@ fn item_below(lines: &[&str], after: usize) -> String {
 /// `# Safety` is deliberately absent. It is legitimate on a SAFE function that
 /// wraps an `unsafe` block -- `src/signals.rs`'s `install_handlers` is one, and
 /// the exclusion is checked rather than asserted in the test below.
-const FUNCTION_ONLY_SECTIONS: &[&str] = &["errors", "panics", "returns", "arguments"];
+/// `# Side effects` joined this list on 2026-08-31, and the reason is a near
+/// miss rather than tidiness. An insertion split `set_parser_limits`'s doc
+/// block, and the orphaned half landed on a `static`. This rule caught it --
+/// but only because that half happened to carry `# Arguments` too. Had the cut
+/// fallen one section later the orphan would have carried `# Side effects`
+/// alone and nothing here would have fired, because a side effect is just as
+/// much a claim about a CALL and was not on the list.
+///
+/// Measured before widening: adding it reports zero blocks on `src/`, so this
+/// buys coverage without an exclusion.
+const FUNCTION_ONLY_SECTIONS: &[&str] =
+    &["errors", "panics", "returns", "arguments", "side effects"];
 
 /// Does this declaration declare a function?
 fn declares_a_function(sig: &str) -> bool {
@@ -1538,5 +1549,164 @@ fn every_walk_in_this_file_found_a_plausible_tree() {
          is a subtree `no_module_the_wasm_build_compiles_reaches_a_module_it_excludes` \
          stops reading, and it stops reading it quietly. Teach the evaluator \
          the spelling rather than letting the number drift."
+    );
+}
+
+/// The last line of a doc block that says anything, ignoring trailing blanks.
+fn last_speaking_line(body: &[String]) -> Option<&String> {
+    body.iter().rev().find(|l| !l.trim().is_empty())
+}
+
+/// Whether a doc block ends on a section heading with no prose under it.
+///
+/// A pure function of the block's own lines so both the tree scan and the
+/// discriminator below drive ONE rule. Two copies of this test would be two
+/// chances to disagree about the same shape, and the disagreement would be
+/// silent -- the scan would go green while the discriminator proved a rule
+/// nothing was actually using.
+fn block_ends_on_a_heading(body: &[String]) -> bool {
+    last_speaking_line(body).is_some_and(|l| l.trim_start().starts_with("# "))
+}
+
+/// No doc block ends on a section heading with nothing under it.
+///
+/// The failure this gates, from 2026-08-31: a scripted insertion anchored on a
+/// CONTINUATION line of `set_parser_limits`'s doc block rather than on the
+/// block's first line, so a static and three functions landed in the middle of
+/// it. The half left above ended `/// # Side effects` with no prose, and the
+/// prose resumed as a separate block further down, above the function it had
+/// always described.
+///
+/// **This rule does NOT catch the instance it was written for, and saying so is
+/// the point.** Mutation showed why: the inserted items came WITH their own doc
+/// comment, so the two `///` runs were contiguous and merged into one block.
+/// That block does not END on a heading, it continues into the newcomer's
+/// prose. What fires on that shape is
+/// `no_doc_block_carries_a_contract_section_its_item_cannot_have`, whose
+/// section list was widened to `# Side effects` for exactly this reason.
+///
+/// What this rule DOES catch is the sibling variant, which nothing else does:
+/// the same insertion made with an item carrying NO doc comment. Then the block
+/// really is cut, and its surviving half ends on a heading promising prose that
+/// was carried away. A section heading is a promise, so a block ending on one
+/// was cut.
+///
+/// Blocks that legitimately end in a heading do not exist: rustdoc renders an
+/// empty section as a bare bold line, which no author writes on purpose. The
+/// measured count on a clean tree is zero, which is why this is an equality
+/// rather than a ratchet.
+#[test]
+fn no_doc_block_ends_on_a_section_heading() {
+    let mut cut = Vec::new();
+    let mut blocks = 0usize;
+    let mut with_headings = 0usize;
+
+    for path in rust_files("src") {
+        for (line, body) in doc_blocks_of(&path) {
+            blocks += 1;
+            if body.iter().any(|l| l.trim_start().starts_with("# ")) {
+                with_headings += 1;
+            }
+            let last = last_speaking_line(&body);
+            if block_ends_on_a_heading(&body) {
+                cut.push(format!(
+                    "  {}:{line}: block ends on {:?} with nothing under it",
+                    path.display(),
+                    last.unwrap_or(&String::new()).trim()
+                ));
+            }
+        }
+    }
+
+    // Anti-vacuity: the walk found a real tree and headings really occur, so a
+    // zero result means "nothing is cut", not "nothing was read".
+    assert!(
+        blocks >= 1000,
+        "only {blocks} doc block(s) parsed from src/; the walk is wrong"
+    );
+    assert!(
+        with_headings >= 100,
+        "only {with_headings} block(s) carry a section heading; the heading \
+         predicate has stopped matching and this gate proves nothing"
+    );
+    assert!(
+        cut.is_empty(),
+        "these doc blocks end on a section heading, which promises prose that \
+         is not there. The usual cause is an insertion anchored on a \
+         continuation line of the block rather than on its first line, which \
+         cuts the block in half and leaves the rest of it attached to whatever \
+         was inserted:\n{}",
+        cut.join("\n")
+    );
+}
+
+/// The heading rule fires on the split that caused it, and spares intact blocks.
+///
+/// The paired half of `no_doc_block_ends_on_a_section_heading`. That test is an
+/// equality against zero, so on a clean tree it passes whether the rule works
+/// or matches nothing at all -- and a rule that matches nothing is exactly what
+/// a careless narrowing produces. This drives the same predicate over the shape
+/// the real failure had.
+///
+/// The fixture is the real one, reduced: `set_parser_limits` documents
+/// `# Arguments` and `# Side effects`, and an insertion anchored on a
+/// continuation line landed between the heading and its prose. The half left
+/// behind ended on `# Side effects` with nothing under it.
+#[test]
+fn the_heading_rule_fires_on_a_cut_block_and_spares_an_intact_one() {
+    let doc = |lines: &[&str]| -> Vec<String> { lines.iter().map(|l| (*l).to_string()).collect() };
+
+    // The wound: a block cut immediately after a section heading.
+    let cut = doc(&[
+        "Set parser limits from configuration. Call once at startup.",
+        "",
+        "# Arguments",
+        "",
+        "* `max_header_line` — maximum bytes allowed in one unfolded header line.",
+        "",
+        "# Side effects",
+        "",
+    ]);
+    assert!(
+        block_ends_on_a_heading(&cut),
+        "the rule must fire on the shape that caused it: a heading promising          prose that an insertion carried away"
+    );
+
+    // Same block, whole. The heading is present and so is what it promised.
+    let intact = doc(&[
+        "Set parser limits from configuration. Call once at startup.",
+        "",
+        "# Side effects",
+        "",
+        "Stores both values into the process-global atomics, affecting every",
+        "subsequent parse on any thread.",
+    ]);
+    assert!(
+        !block_ends_on_a_heading(&intact),
+        "a block whose heading is followed by its prose is not cut"
+    );
+
+    // Trailing blank doc lines are ordinary and must not read as a cut.
+    let trailing_blanks = doc(&["A summary.", "", "Some prose.", "", ""]);
+    assert!(
+        !block_ends_on_a_heading(&trailing_blanks),
+        "a block ending in blank `///` lines is not cut; only a HEADING with          nothing under it is"
+    );
+
+    // A block that is only a summary has no heading to be cut after.
+    assert!(
+        !block_ends_on_a_heading(&doc(&["Just a summary."])),
+        "a block with no heading cannot end on one"
+    );
+
+    // The widened contract list is the half that catches the MERGED variant --
+    // the one this file's heading rule cannot see. `# Side effects` is on the
+    // list because the real cut fell one section short of landing there alone,
+    // and had it not, nothing would have fired.
+    assert!(
+        FUNCTION_ONLY_SECTIONS.contains(&"side effects"),
+        "a side effect is a claim about a CALL. Dropping it from the list \
+         reopens the exact near miss that put it there: an orphan carrying \
+         `# Side effects` and no other contract section, sitting on a static."
     );
 }
