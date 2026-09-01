@@ -38,6 +38,11 @@ pub struct Selection {
     /// Resolved by the caller with `cli.mcp_body_cap(config)`, and carried here
     /// for the same reason `mcp_row_cap` is.
     pub mcp_body_cap: usize,
+    /// Ceiling on how long one `await_condition` MCP call may wait, seconds.
+    ///
+    /// Resolved by the caller with `cli.mcp_wait_cap(config)`, and carried
+    /// here for the same reason `mcp_row_cap` is.
+    pub mcp_wait_seconds: u64,
     /// Ceiling on rows in one list-style REST response.
     ///
     /// Resolved by the caller with `cli.api_row_cap(config)`, and carried here
@@ -141,6 +146,13 @@ enum Prepared {
         auth: crate::auth::VerifierConfig,
         /// `--mcp-allowed-host` additions to the Host-header allowlist.
         extra_allowed_hosts: Vec<String>,
+        /// Validated `--mcp-resource-url`, when one was given: the public
+        /// identity published for RFC 9728 discovery.
+        ///
+        /// Parsed at prepare time rather than inside the server so a malformed
+        /// URL is a startup error the operator sees, not a metadata document
+        /// that quietly never appears.
+        resource: Option<crate::mcp::transport::ProtectedResource>,
     },
 }
 
@@ -179,10 +191,16 @@ impl Prepared {
                 bind,
                 auth,
                 extra_allowed_hosts,
+                resource,
             } => {
-                if let Err(e) =
-                    crate::mcp::transport::serve_http(*server, bind, auth, extra_allowed_hosts)
-                        .await
+                if let Err(e) = crate::mcp::transport::serve_http(
+                    *server,
+                    bind,
+                    auth,
+                    extra_allowed_hosts,
+                    resource,
+                )
+                .await
                 {
                     tracing::error!("MCP HTTP server error: {e}");
                 }
@@ -466,6 +484,7 @@ pub fn start_servers(
                         .map(|mib| mib.saturating_mul(1024 * 1024)),
                 )
                 .with_body_cap(selection.mcp_body_cap)
+                .with_max_wait_seconds(selection.mcp_wait_seconds)
                 .with_findings_cap(selection.mcp_max_findings);
             let s = match audit_sink.as_ref() {
                 Some(sink) => s.with_audit_sink(Arc::clone(sink)),
@@ -546,11 +565,23 @@ pub fn start_servers(
                 let bind_str = cli.mcp_args.mcp_bind.as_deref().unwrap_or("127.0.0.1:8731");
                 let bind = crate::output::api::parse_bind_addr(bind_str)
                     .map_err(|e| anyhow::anyhow!("Invalid --mcp-bind address: {e}"))?;
+                // Validated here so a bad value is a fatal startup error like
+                // `--mcp-bind` is. Deferring it to the server would log a line
+                // and carry on serving with discovery silently off, which is
+                // the failure mode a client cannot distinguish from a build
+                // that never had it.
+                let resource = cli
+                    .mcp_args
+                    .mcp_resource_url
+                    .as_deref()
+                    .map(crate::mcp::transport::ProtectedResource::parse)
+                    .transpose()?;
                 prepared.push(Prepared::McpHttp {
                     server: Box::new(new_server()),
                     bind,
                     auth: resolve_mcp_verifier_config(cli),
                     extra_allowed_hosts: cli.mcp_args.mcp_allowed_host.clone(),
+                    resource,
                 });
             }
             #[cfg(not(feature = "mcp-http"))]

@@ -6,9 +6,36 @@
 #   make laptop      # print the MCP client config for your laptop
 #   make down        # stop and remove the stack
 #
+#   make up ANCHOR=rtpproxy   # same stack, media anchored by rtpproxy
+#   make up ANCHOR=none       # same stack, endpoints exchange media directly
+#
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
-COMPOSE := docker compose
+
+# ---- Media anchor ----------------------------------------------------------
+# ONE variable, deliberately. The anchor choice has two halves that must agree
+# -- which relay CONTAINER runs, and which relay OpenSIPS is configured to talk
+# to -- and a harness that made you set both would eventually be run with them
+# disagreeing, which presents as a 500 on every INVITE with nothing in either
+# log saying why. ANCHOR sets the compose profile and MEDIA_ANCHOR together.
+#
+# Precedence: `make up ANCHOR=x` beats MEDIA_ANCHOR in .env beats rtpengine.
+ANCHOR ?= $(shell . ./$(ENV_FILE) 2>/dev/null; echo $${MEDIA_ANCHOR:-rtpengine})
+VALID_ANCHORS := rtpengine rtpproxy none
+
+COMPOSE := MEDIA_ANCHOR=$(ANCHOR) docker compose --profile $(ANCHOR)
+# Every profile at once, for teardown only: `make down` must remove the relay
+# that is running, not the relay the current ANCHOR names.
+COMPOSE_ALL := docker compose --profile rtpengine --profile rtpproxy --profile none
+
+# What the stack is ACTUALLY running, read from the container rather than
+# assumed from .env -- the two drift the moment anyone runs `make up ANCHOR=x`.
+RUNNING_ANCHOR = $(shell docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' opensips-1 2>/dev/null | sed -n 's/^MEDIA_ANCHOR=//p')
+# Presence is a SEPARATE question from which anchor. An empty RUNNING_ANCHOR
+# means either "no container" or "a container built before this variable
+# existed", and reporting the second as "the stack is down" sends you to
+# `make up` looking for a failure that is not there.
+OPENSIPS_PRESENT = $(shell docker inspect -f '{{.Id}}' opensips-1 2>/dev/null)
 # Long-lived HMAC signing key (the real secret; stays on the host). The bearer
 # TOKEN_FILE is a short-lived artifact the sipnab container re-mints on a timer.
 SIGNING_KEY_FILE := secrets/mcp.signing-key
@@ -53,8 +80,40 @@ secrets/api.key:
 .PHONY: signing-key
 signing-key: $(SIGNING_KEY_FILE) ## Generate the long-lived MCP signing key (idempotent)
 
+.PHONY: check-anchor
+check-anchor:
+	@case " $(VALID_ANCHORS) " in \
+	  *" $(ANCHOR) "*) ;; \
+	  *) echo "ANCHOR='$(ANCHOR)' is not one of: $(VALID_ANCHORS)" >&2; exit 1;; \
+	esac
+
+.PHONY: anchor
+anchor: ## Show the selected media anchor and the one actually running
+	@echo "selected: $(ANCHOR)"
+	@if [ -z "$(OPENSIPS_PRESENT)" ]; then \
+	  echo "running:  (stack is down)"; \
+	elif [ -z "$(RUNNING_ANCHOR)" ]; then \
+	  echo "running:  (unset -- container predates MEDIA_ANCHOR; 'make up' recreates it)"; \
+	else \
+	  echo "running:  $(RUNNING_ANCHOR)"; \
+	fi
+
+.PHONY: stop-other-anchors
+stop-other-anchors: ## Remove relay containers belonging to a different anchor
+	@# A relay left over from the previous anchor keeps its published ports, so
+	@# the incoming relay fails to bind and the stack comes up half-swapped.
+	@for a in $(filter-out $(ANCHOR),rtpengine rtpproxy); do \
+	  case $$a in \
+	    rtpengine) victims="sipnab-relay rtpengine";; \
+	    rtpproxy)  victims="sipnab-relay-rtpproxy rtpproxy";; \
+	  esac; \
+	  for v in $$victims; do \
+	    docker rm -f "$$v" >/dev/null 2>&1 && echo "  removed $$v (anchor $$a)"; \
+	  done; \
+	done; true
+
 .PHONY: build
-build: $(ENV_FILE) ## Build all images
+build: $(ENV_FILE) check-anchor ## Build all images
 	$(COMPOSE) build
 
 .PHONY: host-prep
@@ -65,9 +124,20 @@ host-prep: ## Ensure bridged container traffic is delivered (sets a sysctl; need
 	else echo "host-prep: bridge-nf-call-iptables already disabled — ok"; fi
 
 .PHONY: up
-up: $(ENV_FILE) $(SIGNING_KEY_FILE) host-prep ## Build (if needed) and start the whole stack
-	$(COMPOSE) up -d --build
+up: $(ENV_FILE) $(SIGNING_KEY_FILE) check-anchor host-prep stop-other-anchors ## Build (if needed) and start the whole stack
+	@# An anchor change rewrites opensips-1's environment, and sipnab-proxy
+	@# lives in its NAMESPACE -- so recreating the owner without its dependents
+	@# leaves the capture point attached to a namespace that no longer exists.
+	@# Compose only recreates what it can see has changed, hence the explicit
+	@# --force-recreate on a switch and not on a plain restart.
+	@if [ -n "$(OPENSIPS_PRESENT)" ] && [ "$(RUNNING_ANCHOR)" != "$(ANCHOR)" ]; then \
+	  echo "anchor: $(if $(RUNNING_ANCHOR),$(RUNNING_ANCHOR),unset) -> $(ANCHOR) (recreating the netns owner and its dependents)"; \
+	  $(COMPOSE) up -d --build --force-recreate; \
+	else \
+	  $(COMPOSE) up -d --build; \
+	fi
 	@echo
+	@echo "media anchor: $(ANCHOR)"
 	@$(MAKE) --no-print-directory laptop
 
 .PHONY: wait-token
@@ -83,8 +153,8 @@ recreate: host-prep ## Recreate the stack (use after editing opensips: rebuilds 
 	$(COMPOSE) up -d --build --force-recreate
 
 .PHONY: down
-down: ## Stop and remove the stack
-	$(COMPOSE) down
+down: ## Stop and remove the stack (every anchor profile)
+	$(COMPOSE_ALL) down
 
 .PHONY: ps
 ps: ## Show container status
@@ -112,5 +182,5 @@ scenarios: ## List the SIPp scenarios the UAC loop cycles through
 
 .PHONY: clean
 clean: down ## Remove the stack, images, and captured pcaps
-	-$(COMPOSE) down --rmi local -v
+	-$(COMPOSE_ALL) down --rmi local -v
 	-rm -f captures/*.pcap captures/*.pcapng captures/*.json

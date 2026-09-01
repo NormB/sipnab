@@ -40,6 +40,18 @@
 /// spell exactly, which is precisely the case completions are for.
 pub const LINT_RULE_URI_PREFIX: &str = "sipnab://lint/";
 
+/// One diagnostic filter alias, expanded against THIS run's thresholds.
+///
+/// Beside the rule prefix and for a sharper version of the same reason. The
+/// alias NAMES are a fixed vocabulary an agent has to spell exactly, which is
+/// what completions are for; the alias EXPANSIONS are not fixed at all.
+/// `docs/filter-dsl.md` — served verbatim as `sipnab://reference/filter-dsl` —
+/// carries the numbers that were compiled in, so on a server whose operator
+/// tuned `[diagnosis]` the published page and the running filter disagree, and
+/// nothing over MCP could say so. This URI is the only place the running
+/// expansion can be read.
+pub const FILTER_ALIAS_URI_PREFIX: &str = "sipnab://filter/";
+
 /// Most values one completion response may carry.
 ///
 /// The MCP-specified ceiling, restated here because the response type refuses
@@ -59,6 +71,11 @@ pub enum Source {
     CallIds,
     /// Identifiers from the conformance rule catalog (`sip::lint::RULES`).
     LintRules,
+    /// Diagnostic filter alias names (`sip::dsl::DIAGNOSTIC_ALIASES`).
+    ///
+    /// The names are constant; what they mean on this server is not, which is
+    /// why the template they belong to resolves rather than merely completing.
+    FilterAliases,
     /// The reference pages `super::reference::all` serves.
     ReferenceTopics,
     /// Filenames under `--mcp-file-root`.
@@ -121,6 +138,19 @@ pub fn all() -> Vec<Template> {
             mime_type: "application/json",
             variable: "rule_id",
             source: Source::LintRules,
+            needs_file_root: false,
+        },
+        Template {
+            uri_template: "sipnab://filter/{alias}",
+            name: "Diagnostic filter alias by name",
+            description: "One diagnostic alias — the vocabulary `find_problems` takes as \
+                 `kinds` and `--filter` accepts as shorthand — expanded to the DSL \
+                 expression THIS server would evaluate. The numbers come from the \
+                 thresholds the operator configured, which the published grammar page \
+                 cannot know.",
+            mime_type: "application/json",
+            variable: "alias",
+            source: Source::FilterAliases,
             needs_file_root: false,
         },
         Template {
@@ -214,15 +244,34 @@ pub fn matches(value: &str, prefix: &str) -> bool {
 /// last time would appear to have left the capture.
 #[must_use]
 pub fn narrow(values: impl IntoIterator<Item = String>, prefix: &str) -> Completion {
+    narrow_to(values, prefix, MAX_VALUES)
+}
+
+/// [`narrow`], under a ceiling the operator chose.
+///
+/// `cap` is clamped to [`MAX_VALUES`] because the response type refuses to be
+/// built past it — a caller passing a larger number is asking for an answer
+/// that cannot be sent, and silently sending fewer beats failing to answer.
+///
+/// This exists because a completion is a QUERY. `--mcp-max-rows` is how an
+/// operator says how many rows of a capture one answer may carry, and a
+/// Call-ID is the most identifying row sipnab holds; a completion that ignored
+/// it would release fifty times the configured number of caller identifiers
+/// through a method that also skips the audit line, the scope check and the
+/// rate limit. `total` still reports what MATCHED, so a narrowed answer is
+/// visible as narrowed rather than passing for the whole set.
+#[must_use]
+pub fn narrow_to(values: impl IntoIterator<Item = String>, prefix: &str, cap: usize) -> Completion {
+    let cap = cap.min(MAX_VALUES);
     let mut matched: Vec<String> = values.into_iter().filter(|v| matches(v, prefix)).collect();
     matched.sort_unstable();
     matched.dedup();
     let total = matched.len();
-    matched.truncate(MAX_VALUES);
+    matched.truncate(cap);
     Completion {
         values: matched,
         total,
-        has_more: total > MAX_VALUES,
+        has_more: total > cap,
     }
 }
 
@@ -272,6 +321,7 @@ mod tests {
         for want in [
             Source::CallIds,
             Source::LintRules,
+            Source::FilterAliases,
             Source::ReferenceTopics,
             Source::CaptureFiles,
         ] {
@@ -388,6 +438,37 @@ mod tests {
             "a client told 100 of 125 is a client that knows to narrow; a \
              client told 100 believes it has them all"
         );
+    }
+
+    /// An operator's ceiling narrows the answer, and the answer says so.
+    #[test]
+    fn a_tighter_cap_narrows_and_reports_the_narrowing() {
+        let many: Vec<String> = (0..10).map(|i| format!("call-{i:02}")).collect();
+        let c = narrow_to(many, "", 3);
+        assert_eq!(c.values.len(), 3);
+        assert_eq!(
+            c.values,
+            vec![
+                "call-00".to_string(),
+                "call-01".to_string(),
+                "call-02".to_string()
+            ],
+            "a capped answer must still be the sorted prefix, not an arbitrary three"
+        );
+        assert_eq!(c.total, 10, "total reports what matched, not what fit");
+        assert!(c.has_more);
+    }
+
+    /// A cap above the spec's ceiling cannot raise it.
+    ///
+    /// The response type refuses to be built past [`MAX_VALUES`], so a caller
+    /// asking for more is asking for an answer that cannot be sent at all.
+    #[test]
+    fn a_cap_above_the_spec_ceiling_is_clamped_to_it() {
+        let many: Vec<String> = (0..MAX_VALUES + 5).map(|i| format!("c-{i:04}")).collect();
+        let c = narrow_to(many, "", usize::MAX);
+        assert_eq!(c.values.len(), MAX_VALUES);
+        assert!(c.has_more);
     }
 
     /// Duplicates collapse, so one dialog is offered once.

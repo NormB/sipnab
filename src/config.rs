@@ -171,6 +171,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "max_audio_frames",
             "mcp_max_rows",
             "mcp_max_body_bytes",
+            "mcp_max_wait_seconds",
             "mcp_max_findings",
             "lint_max_per_rule",
             "exec_queue_depth",
@@ -1117,6 +1118,14 @@ pub struct LimitsConfig {
     /// their number, and the tighter of the two on a body question: a caller
     /// may ask for one dialog and still be answered with a clipped `INVITE`.
     pub mcp_max_body_bytes: Option<u64>,
+    /// Longest ONE `await_condition` MCP call may wait, in seconds
+    /// (default: 60).
+    ///
+    /// The only MCP limit here that bounds a DURATION rather than a size:
+    /// `mcp_max_rows` and `mcp_max_body_bytes` bound what an answer carries,
+    /// this bounds how long a caller may hold a `--mcp-max-concurrent` permit
+    /// while carrying nothing.
+    pub mcp_max_wait_seconds: Option<u64>,
     /// Findings the MCP `save_findings` tool accepts before refusing further
     /// writes (default: 1000).
     ///
@@ -1308,6 +1317,14 @@ impl LimitsConfig {
             return Err(crate::Error::ConfigInvalid(
                 "[limits] mcp_max_body_bytes must be > 0 (0 would answer every \
                  body question with a truncation marker and no body)"
+                    .into(),
+            ));
+        }
+        if let Some(0) = self.mcp_max_wait_seconds {
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] mcp_max_wait_seconds must be > 0 (0 would make \
+                 await_condition answer before it looked, which is a poll \
+                 spelled expensively)"
                     .into(),
             ));
         }
@@ -2701,6 +2718,7 @@ column_selector = "F10"
             lint_max_per_rule: Some(25),
             exec_queue_depth: Some(100),
             mcp_max_body_bytes: Some(4096),
+            mcp_max_wait_seconds: Some(120),
             mcp_max_findings: Some(1000),
             max_lost_sequences: Some(1000),
             max_groups: Some(10_000),
@@ -2726,6 +2744,7 @@ column_selector = "F10"
     fn truncation_caps_parse_are_registered_and_reject_zero() {
         for key in [
             "mcp_max_body_bytes",
+            "mcp_max_wait_seconds",
             "max_lost_sequences",
             "max_groups",
             "max_grouped_messages",

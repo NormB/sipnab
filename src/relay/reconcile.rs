@@ -28,6 +28,15 @@
 //!   for the whole run. A capture full of orphans cannot
 //!   turn into a flood of control traffic, and when the ceiling is reached
 //!   sipnab SAYS so rather than quietly attributing nothing.
+//! - **One reach past a capped answer, per run.** A relay that returns a
+//!   capped enumeration is asked ONCE more, for [`WIDE_LIST_LIMIT`], because
+//!   covering 32 of 400 calls reports the other 368 as orphans and looks like
+//!   it worked. The size of that second ask is deliberately past what a
+//!   datagram can carry, so an implementation with no stream transport fails
+//!   it -- which is how "where available" is discovered rather than declared.
+//!   It is attempted once whether it succeeds or fails, and either way the
+//!   summary SAYS which happened: "we never tried" and "we tried and could
+//!   not" send an operator to different places.
 //! - **Read-only, in the type system.** [`ReadOnlyRelay`] has two methods.
 //!   There is no path from this module to `delete` or `start recording`,
 //!   because there is no method that means them.
@@ -173,6 +182,22 @@ impl Unattributed {
 /// reading as a complete one.
 pub const DEFAULT_LIST_LIMIT: u32 = 32;
 
+/// How many Call-IDs to ask for when a capped answer has to be reached past.
+///
+/// A CHOICE, and one bounded at the far end by measurement rather than by
+/// taste. [`DEFAULT_LIST_LIMIT`] exists because a relay's own documentation
+/// warns that a bigger answer may not fit in a datagram; a transport that
+/// streams has no datagram to overflow, so the cap becomes what sipnab is
+/// willing to read back.
+///
+/// Measured against a relay holding 1200 calls with 55-character Call-IDs: an
+/// answer of 1000 of them is 61034 bytes and one of 1200 is 73234, and the
+/// second is past what any UDP datagram can carry -- the request draws no
+/// reply at all rather than a short one. 1024 sits between those two, which
+/// is the point: it is a number a datagram cannot be relied on to return and
+/// a stream returns without difficulty.
+pub const WIDE_LIST_LIMIT: u32 = 1024;
+
 /// Control transactions one run may spend, in total.
 ///
 /// Enough for a full startup snapshot (one `list` plus a `query` per call at
@@ -208,6 +233,20 @@ pub struct Reconciler<R: ReadOnlyRelay> {
     unkeyable_streams: usize,
     /// Whether the last enumeration was capped.
     enumeration_partial: bool,
+    /// Whether this run has already reached past a capped enumeration.
+    ///
+    /// Once for the run, not once per refresh: a relay with no transport that
+    /// can carry a wider answer refuses the same way every time, and asking it
+    /// again on every refresh is a packet spent on a question already answered.
+    wide_enumeration_attempted: bool,
+    /// Why the wider enumeration could not be read, when one was tried and
+    /// failed.
+    ///
+    /// Held apart from [`Self::last_ask_failure`] because the relay was
+    /// reached: the capped answer is real and is still used. Only the reach
+    /// past it failed, and "we never tried" and "we tried and could not" send
+    /// an operator to different places.
+    wide_enumeration_failure: Option<String>,
     /// Why the last enumeration could not be read, when it could not be.
     ///
     /// Held as STATE rather than only reported in the summary line, because
@@ -251,6 +290,8 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
             asked_ports: HashSet::new(),
             unkeyable_streams: 0,
             enumeration_partial: false,
+            wide_enumeration_attempted: false,
+            wide_enumeration_failure: None,
             last_ask_failure: None,
             new_since_take: Vec::new(),
             unread_calls: HashSet::new(),
@@ -494,7 +535,8 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
                 Unattributed::BudgetSpent.describe()
             );
         }
-        let enumeration = match self.relay.list(permit, self.list_limit) {
+        let narrow_limit = self.list_limit;
+        let mut enumeration = match self.relay.list(permit, self.list_limit) {
             Ok(ControlReply::Calls(e)) => e,
             Ok(ControlReply::Refused { reason }) => {
                 self.last_ask_failure = Some(format!("the relay refused: {reason}"));
@@ -521,6 +563,46 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
         };
         // The relay answered. Whatever went wrong last time no longer governs.
         self.last_ask_failure = None;
+
+        // THE REACH HALF. A capped answer is not an answer about the relay, it
+        // is an answer about the transport that carried it: the calls past the
+        // cap were never named, and their streams arrive looking like orphans.
+        // So a capped answer is followed by ONE wider ask, whose size is
+        // deliberately past what a datagram can return -- an implementation
+        // that can only answer over a datagram fails it, which is exactly the
+        // "where available" test, discovered rather than declared.
+        let mut reached_wider = false;
+        if enumeration.truncated
+            && !self.wide_enumeration_attempted
+            && narrow_limit < WIDE_LIST_LIMIT
+        {
+            self.wide_enumeration_attempted = true;
+            if self.spend() {
+                match self.relay.list(permit, WIDE_LIST_LIMIT) {
+                    Ok(ControlReply::Calls(wider)) => {
+                        // Adopted for the rest of the run: a relay that
+                        // answered a wider question once will answer it again,
+                        // and starting every later refresh from the capped
+                        // limit would spend a transaction rediscovering that.
+                        self.list_limit = WIDE_LIST_LIMIT;
+                        enumeration = wider;
+                        reached_wider = true;
+                    }
+                    Ok(ControlReply::Refused { reason }) => {
+                        self.wide_enumeration_failure =
+                            Some(format!("the relay refused: {reason}"));
+                    }
+                    Ok(_) => {
+                        self.wide_enumeration_failure =
+                            Some("the relay answered it with something else".to_owned());
+                    }
+                    Err(e) => self.wide_enumeration_failure = Some(format!("{e:#}")),
+                }
+            } else {
+                self.wide_enumeration_failure =
+                    Some("the control-transaction ceiling was already spent".to_owned());
+            }
+        }
         self.enumeration_partial = enumeration.truncated;
 
         let mut queried = 0_usize;
@@ -548,6 +630,16 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
             }
         }
         let failed = self.unread_calls.len();
+        // Calls the enumeration named that this run never even asked about.
+        // Neither read nor failed: the ceiling ran out before their turn. The
+        // reach half moves the binding constraint here, and "40 enumerated, 10
+        // queried" is arithmetic an operator should not have to do to learn
+        // that thirty calls' streams will read as orphans.
+        let never_read = enumeration
+            .call_ids
+            .iter()
+            .filter(|c| !self.known_calls.contains(*c) && !self.unread_calls.contains(*c))
+            .count();
 
         let mut line = format!(
             "{}: {}; queried {queried} of them, {} relay port(s) \
@@ -556,6 +648,29 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
             enumeration.describe(),
             self.index.len()
         );
+        if reached_wider {
+            line.push_str(&format!(
+                ". The first answer was capped at {narrow_limit}, so the relay \
+                 was asked once more for up to {WIDE_LIST_LIMIT} and this is \
+                 that wider answer"
+            ));
+        } else if let Some(why) = &self.wide_enumeration_failure
+            && self.enumeration_partial
+        {
+            line.push_str(&format!(
+                ". A wider ask for up to {WIDE_LIST_LIMIT} was attempted and \
+                 failed ({why}), so this list stays capped at {narrow_limit} -- \
+                 the calls past that were never named, and their streams will \
+                 arrive looking like orphans"
+            ));
+        }
+        if never_read > 0 {
+            line.push_str(&format!(
+                ". {never_read} call(s) were never read because the \
+                 control-transaction ceiling was reached, so their ports stay \
+                 unattributed"
+            ));
+        }
         if failed > 0 {
             line.push_str(&format!(
                 ". {failed} call(s) could not be read, so their ports stay \
@@ -1509,6 +1624,212 @@ mod tests {
             why,
             Unattributed::BudgetSpent,
             "a port nobody asked about is not a port the relay disowned"
+        );
+    }
+
+    /// A relay that caps a narrow `list` and answers a wide one in full.
+    ///
+    /// The two answers differ, which is the whole point: a test whose relay
+    /// ignores the limit cannot tell a run that reached further from one that
+    /// asked the same question twice.
+    struct WideningRelay {
+        /// Every Call-ID this relay holds.
+        all: Vec<String>,
+        /// Every limit `list` was asked for, in order.
+        ///
+        /// Shared with the test rather than owned, because the reconciler
+        /// takes the relay by value and a counter it swallows cannot be read.
+        limits: std::rc::Rc<RefCell<Vec<u32>>>,
+        /// Refuse any `list` wider than the datagram-safe default, as a relay
+        /// with no stream transport configured does.
+        refuse_wide: bool,
+    }
+
+    /// A widening relay and the log of every limit it is asked for.
+    fn widening(n: usize) -> (WideningRelay, std::rc::Rc<RefCell<Vec<u32>>>) {
+        let limits = std::rc::Rc::new(RefCell::new(Vec::new()));
+        (
+            WideningRelay {
+                all: (0..n).map(|i| format!("call-{i:04}")).collect(),
+                limits: std::rc::Rc::clone(&limits),
+                refuse_wide: false,
+            },
+            limits,
+        )
+    }
+
+    impl WideningRelay {
+        fn refusing_wide(mut self) -> Self {
+            self.refuse_wide = true;
+            self
+        }
+    }
+
+    impl ReadOnlyRelay for WideningRelay {
+        fn list(&self, _permit: &TransmitPermit, limit: u32) -> anyhow::Result<ControlReply> {
+            self.limits.borrow_mut().push(limit);
+            if self.refuse_wide && limit > DEFAULT_LIST_LIMIT {
+                anyhow::bail!("connection refused");
+            }
+            let call_ids: Vec<String> = self
+                .all
+                .iter()
+                .take(limit as usize)
+                .map(String::clone)
+                .collect();
+            let truncated = call_ids.len() as u32 >= limit && limit > 0;
+            Ok(ControlReply::Calls(Enumeration {
+                call_ids,
+                truncated,
+            }))
+        }
+
+        fn query(&self, _permit: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply> {
+            let index = self
+                .all
+                .iter()
+                .position(|c| c == call_id)
+                .ok_or_else(|| anyhow::anyhow!("no such call"))?;
+            Ok(ControlReply::Call(CallView {
+                call_id: call_id.to_owned(),
+                tags: vec![RelayTag {
+                    tag: format!("tag-of-{call_id}"),
+                    in_dialogue_with: Vec::new(),
+                    codec: Some("PCMU".to_owned()),
+                    streams: vec![RelayStream {
+                        local_address: RELAY_IP.to_owned(),
+                        local_port: 30000 + u16::try_from(index).expect("a small index"),
+                        endpoint: None,
+                        advertised_endpoint: None,
+                        is_rtcp: false,
+                        ssrcs: Vec::new(),
+                    }],
+                }],
+            }))
+        }
+
+        fn describe(&self) -> String {
+            format!("{RELAY_IP}:22222")
+        }
+    }
+
+    /// A capped enumeration is asked again for more than a datagram carries.
+    ///
+    /// The reach half of RE4. Measured against rtpengine 14.2.0.0 holding
+    /// 1200 calls: `list` with `limit: 1200` produces a 73234-byte answer,
+    /// which no UDP datagram can carry -- the request simply never gets a
+    /// reply -- and the same request over a stream transport returns all 1200.
+    /// Stopping at the first capped answer is what reports the rest as
+    /// orphans.
+    #[test]
+    fn a_capped_enumeration_is_asked_again_for_more_than_a_datagram_carries() {
+        let (relay, limits) = widening(40);
+        let mut r = Reconciler::new(relay).with_budget(200);
+        let line = r.at_startup(&permit()).expect("startup asks once");
+
+        assert_eq!(
+            *limits.borrow(),
+            vec![DEFAULT_LIST_LIMIT, WIDE_LIST_LIMIT],
+            "a capped answer must be followed by ONE wider ask; \
+             the summary was: {line}"
+        );
+        assert!(
+            line.contains("40 call(s) enumerated, complete"),
+            "the wider answer is the one reported, not the capped one: {line}"
+        );
+        assert!(
+            !r.enumeration_was_partial(),
+            "the wider answer was complete, so nothing may still read as partial"
+        );
+    }
+
+    /// A relay with no wider transport keeps its capped answer, and the run
+    /// SAYS the wider attempt was made and failed.
+    ///
+    /// "We never tried" and "we tried and could not" are different facts about
+    /// the same missing calls, and only one of them tells the operator to go
+    /// and enable something.
+    #[test]
+    fn a_wider_enumeration_that_fails_keeps_the_capped_answer_and_says_so() {
+        let (relay, _limits) = widening(40);
+        let mut r = Reconciler::new(relay.refusing_wide()).with_budget(200);
+        let line = r.at_startup(&permit()).expect("startup asks once");
+
+        assert!(
+            r.enumeration_was_partial(),
+            "the capped answer is still all there is, so this stays partial: {line}"
+        );
+        assert!(
+            line.contains("connection refused"),
+            "the operator must be told WHY the wider ask failed: {line}"
+        );
+        assert!(
+            line.contains("32 call(s) enumerated"),
+            "the capped answer must still be reported and used: {line}"
+        );
+        assert_eq!(
+            r.attributed_ports(),
+            32,
+            "the calls the capped answer DID name must still be read"
+        );
+    }
+
+    /// The wider ask is spent once for the run, not once per refresh.
+    #[test]
+    fn a_wider_enumeration_is_attempted_once_for_the_run() {
+        let p = permit();
+        let (relay, limits) = widening(40);
+        let mut r = Reconciler::new(relay.refusing_wide()).with_budget(200);
+        r.at_startup(&p);
+        // A socket the snapshot does not hold forces a refresh.
+        let _ = r.on_unexplained_stream(&p, relay_ip(), 49999);
+
+        let wide = limits
+            .borrow()
+            .iter()
+            .filter(|l| **l == WIDE_LIST_LIMIT)
+            .count();
+        assert_eq!(
+            wide,
+            1,
+            "a relay that cannot answer a wider `list` must be asked once, \
+             not on every refresh: {:?}",
+            limits.borrow()
+        );
+    }
+
+    /// A complete enumeration is never widened. Nothing is missing, so there
+    /// is nothing to reach for and no packet to spend.
+    #[test]
+    fn a_complete_enumeration_is_never_widened() {
+        let (relay, limits) = widening(5);
+        let mut r = Reconciler::new(relay).with_budget(200);
+        r.at_startup(&permit());
+        assert_eq!(
+            *limits.borrow(),
+            vec![DEFAULT_LIST_LIMIT],
+            "the relay held five calls and answered completely; a second, \
+             wider `list` is a packet sent to production for nothing"
+        );
+    }
+
+    /// Reaching further than the ceiling can read SAYS how many calls went
+    /// unread.
+    ///
+    /// The reach half moves the binding constraint from the enumeration to the
+    /// transaction ceiling. "400 enumerated, 64 queried" is arithmetic the
+    /// operator should not have to do, and the calls in the gap are exactly
+    /// the ones whose streams would otherwise look like orphans.
+    #[test]
+    fn calls_the_ceiling_could_not_read_are_counted_in_the_summary() {
+        let (relay, _limits) = widening(40);
+        let mut r = Reconciler::new(relay).with_budget(12);
+        let line = r.at_startup(&permit()).expect("startup asks once");
+
+        assert!(
+            line.contains("30 call(s) were never read"),
+            "the enumeration named 40 calls and the ceiling paid for ten \
+             queries; the other thirty have to be named: {line}"
         );
     }
 }

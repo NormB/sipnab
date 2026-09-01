@@ -268,6 +268,13 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
         // about the response shape and not about the sampling.
         ("capture_health", json!({"sample_seconds": 1})),
         ("find_correlated", json!({"call_id": call_id})),
+        // One second, and the filter is allowed to match nothing: the
+        // deadline path is a SUCCESSFUL answer, so it exercises the same
+        // outputSchema the matched path does.
+        (
+            "await_condition",
+            json!({"filter": "state == 'InCall'", "timeout_seconds": 1}),
+        ),
         (
             "save_findings",
             json!({"summary": "outputSchema conformance probe"}),

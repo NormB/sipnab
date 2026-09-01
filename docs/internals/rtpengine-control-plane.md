@@ -110,7 +110,7 @@ with that cost stated.
 |---|---|
 | [`src/rtpengine/bencode.rs`](../../src/rtpengine/bencode.rs) | Bencode decoder. Borrowed values, depth-limited, hostile-input facing |
 | [`src/rtpengine/ng.rs`](../../src/rtpengine/ng.rs) | Cookie/body split, command classification, field extraction |
-| [`src/rtpengine/control.rs`](../../src/rtpengine/control.rs) | `list` and `query`, their reply parsers, and the UDP client that carries them |
+| [`src/rtpengine/control.rs`](../../src/rtpengine/control.rs) | `list` and `query`, their reply parsers, and the client that carries them -- over a datagram by default, over a stream when the answer asked for is bigger than a datagram can return |
 | [`src/relay/mod.rs`](../../src/relay/mod.rs) | The seam's declarations: `ControlDecoder`, `ControlMessage`, `DecodedControl`, and the media-creating tally. Declares only -- it imports no implementation, so a second relay can satisfy it |
 | [`src/relay/types.rs`](../../src/relay/types.rs) | The vocabulary a caller programs against: commands, replies, and the views of a call the relay returns |
 | [`src/relay/reconcile.rs`](../../src/relay/reconcile.rs) | The two moments sipnab asks, the port index, the bounds that keep asking from becoming polling, and the hand-off the capture path offers to |
@@ -348,7 +348,7 @@ rtpengine at 127.0.0.1:22222: 2 unexplained stream(s) offered, 0 attributed, 4 c
 
 ### Why the asking runs on a thread
 
-One question is a UDP round trip, and `DEFAULT_CONTROL_TIMEOUT` gives it two
+One question is a round trip, and `DEFAULT_CONTROL_TIMEOUT` gives it two
 seconds. Asking from the packet path would stall capture for as long as the
 relay stayed quiet, trading dropped packets for an attribution, which is the
 wrong way round for a tool whose job is watching the traffic. So the
@@ -440,8 +440,39 @@ So it keeps five reasons apart:
 Only the last of those says anything about the relay. `why_not` tests them
 most-conclusive-first, so the last arm becomes reachable only after a complete
 answer. Where two gaps hold at once it names the truncated enumeration first,
-because that is the wider gap and the operator's fix for it — raise the limit,
-or enumerate over TCP — shrinks the other one too.
+because that is the wider gap and closing it shrinks the other one too.
+
+### Reaching past a capped enumeration
+
+sipnab does not merely report the cap. A capped answer earns ONE
+wider ask, for `WIDE_LIST_LIMIT` Call-IDs, and that number aims to be
+past what a datagram can return — so `ControlClient` sends it over a stream,
+and a relay with no `listen-tcp-ng` refuses the connection. Availability is
+therefore discovered by asking rather than declared in a flag that could
+assert a listener which is not there.
+
+Measured against rtpengine 14.2.0.0 holding 1200 calls with 55-character
+Call-IDs:
+
+| `limit` | Reply size | Over a datagram | Over a stream |
+|---|---|---|---|
+| 32 (default) | ~2 KB | fine | fine |
+| 1000 | 61034 bytes | fine, in two reads | fine, in two reads |
+| 1200 | 73234 bytes | **no reply at all** — past the maximum UDP payload | all 1200 returned |
+
+Two consequences the code has to carry. A stream has no message boundary and
+the connection stays open after the answer, so there is no EOF to read up to:
+`round_trip_stream` reads until the bencode COMPLETES, which is what rtpengine
+does in the other direction. And nothing bounds a stream, so
+`MAX_STREAM_REPLY_BYTES` is what stops the far end deciding how much memory
+sipnab allocates.
+
+The wider ask runs once for the run, whether it succeeds or fails, and
+the summary says which happened — "we never tried" and "we tried and could
+not" send an operator to different places. Reaching further also moves the
+binding constraint from the enumeration to the transaction ceiling, so a run
+that enumerated more calls than it could afford to query names how many went
+unread rather than leaving the operator to subtract two numbers.
 
 ## What is deliberately not here
 

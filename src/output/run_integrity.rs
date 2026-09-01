@@ -294,15 +294,38 @@ impl RunIntegrity {
         if !self.is_degraded() {
             return None;
         }
-        let mut out =
-            String::from("\nINCOMPLETE RUN — this report does not describe the whole capture:\n");
-        for reason in self.reasons() {
-            out.push_str("  - ");
-            out.push_str(&reason);
-            out.push('\n');
-        }
-        Some(out)
+        Some(incomplete_notice(&self.reasons()))
     }
+}
+
+/// The `INCOMPLETE RUN` block, given one sentence per reason.
+///
+/// Split out of [`RunIntegrity::report_notice`] because a second surface says
+/// the same thing from a different pair of facts: `crate::mcp::completeness`
+/// appends this block to the rendered documents `render_ladder` and the
+/// `markdown`/`text` arms of the two report tools answer with, which have no
+/// envelope to carry `source_exhausted` and whose reader therefore has neither
+/// `$?` nor JSON in front of them (VAL17).
+///
+/// One formatter rather than two, so a reader who has learned to scan for
+/// `INCOMPLETE RUN` finds the same heading, the same dash and the same
+/// indentation wherever sipnab has to say it. Two copies of a heading is the
+/// shape where one gets reworded and the other keeps answering to a name
+/// nobody looks for any more.
+///
+/// The CALLER decides whether there is anything to say: a block with no
+/// reasons under it is a heading that accuses without naming anything, and
+/// both callers return `None`/skip rather than emit one.
+#[must_use]
+pub(crate) fn incomplete_notice(reasons: &[String]) -> String {
+    let mut out =
+        String::from("\nINCOMPLETE RUN — this report does not describe the whole capture:\n");
+    for reason in reasons {
+        out.push_str("  - ");
+        out.push_str(reason);
+        out.push('\n');
+    }
+    out
 }
 
 /// Record what became of one `-I` set.

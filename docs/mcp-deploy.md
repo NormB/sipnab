@@ -117,7 +117,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.140 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.141 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -762,7 +762,7 @@ three of the four are wiring rather than sipnab:
 
 | Status | Cause | Fix |
 |---|---|---|
-| `401` | Wrong or missing bearer token | Check the token file is non-empty |
+| `401` | Wrong or missing bearer token | Check the token file is non-empty. The response's `WWW-Authenticate` says which: `error="invalid_token"` means the client presented a token and sipnab rejected it, no `error` at all means the client presented none |
 | `403` | `Host:` not in the allowlist | `--mcp-allowed-host <what the client sends>` |
 | `404` | The request never reached sipnab's MCP route | Check for a proxy rewrite. **Not** a trailing slash: `/mcp` and `/mcp/` both answer `200` |
 | `406` | `Accept` missing a type | Offer `application/json, text/event-stream` |
@@ -1201,7 +1201,7 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
-  "version": "0.5.140",
+  "version": "0.5.141",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -1238,6 +1238,14 @@ explicit call with `dry_run: false`, and it refuses to discard unsaved live
 data unless you either name a `save_to` target or pass `discard_unsaved: true`.
 An agent that misreads "we can stop looking at this now" as an instruction
 should not be able to end an afternoon of capture.
+
+If your client declared MCP's `elicitation` capability, that second call also
+asks a PERSON, over a real `elicitation/create` round trip, and a declined
+confirmation stops nothing. The two guards stack rather than replace each
+other: the deliberate second call is still made by the same agent that made the
+first, which is why the confirmation is worth having. A client that cannot
+answer is never asked and is not treated as having refused — see
+[the protocol page](mcp-protocol.md#confirming-the-two-irreversible-ones).
 
 ## Understand the load on a busy server
 
@@ -1328,7 +1336,10 @@ Work outward from the server. Each layer has a definitive test.
 | Network path | same curl from the laptop | same |
 | Client | `claude mcp list` | ✓ connected |
 
-HTTP status decoder: `401` wrong/missing bearer token · `403` `Host:` not
+HTTP status decoder: `401` wrong/missing bearer token — the reply's
+`WWW-Authenticate` distinguishes them, and with
+[`--mcp-resource-url`](#check-what-a-client-sees-when-it-has-no-token---mcp-resource-url)
+set it also names the metadata document · `403` `Host:` not
 in the allowlist (`--mcp-allowed-host`) · `404` the request never reached the MCP route (a proxy rewrite, not a trailing slash) ·
 `406` missing `Accept: application/json, text/event-stream`. More in
 [Troubleshooting](#troubleshooting) further down this page. The
@@ -1504,6 +1515,95 @@ sipnab --mcp -N --mcp-transport http \
 The literal `*` disables host checking entirely — only do that behind a
 network-level source-IP allowlist as the substitute defense.
 
+### Check what a client sees when it has no token (`--mcp-resource-url`)
+
+A `401` from sipnab always carries a challenge, so a client can tell "present
+a bearer token" from "something else went wrong":
+
+```
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer realm="sipnab"
+```
+
+A token the client presented and sipnab rejected — expired, revoked, forged, or minted
+for the REST API instead of MCP — adds the [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750.html)
+error code, so the two are distinguishable from the outside:
+
+```
+WWW-Authenticate: Bearer realm="sipnab", error="invalid_token", error_description="The access token is invalid or has expired"
+```
+
+Every rejection reads the same. Which of the four reasons applied is
+deliberately not in the header: an attacker gets the challenge for free, and a
+challenge that told them apart would answer "is this token id known?" for
+anyone who asked.
+
+Name the public URL and sipnab also publishes an
+[RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html) protected-resource
+metadata document, and points the challenge at it:
+
+```bash
+sipnab --mcp -N --mcp-transport http \
+       --mcp-bind 127.0.0.1:8731 \
+       --mcp-token-file /etc/sipnab/mcp.token \
+       --mcp-resource-url https://capture.example.com/mcp \
+       -I capture.pcap
+```
+
+The challenge now carries the metadata URL, which is the value [RFC 9728 §3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1)
+derives by inserting `/.well-known/oauth-protected-resource` between the host
+and the path:
+
+```
+WWW-Authenticate: Bearer realm="sipnab", resource_metadata="https://capture.example.com/.well-known/oauth-protected-resource/mcp"
+```
+
+That document needs no token — a client fetches it precisely because it does
+not have one yet:
+
+```bash
+curl -s https://capture.example.com/.well-known/oauth-protected-resource/mcp
+```
+
+```json
+{
+  "bearer_methods_supported": ["header"],
+  "resource": "https://capture.example.com/mcp",
+  "resource_documentation": "https://sipnab.com/docs/mcp-deploy/",
+  "resource_name": "sipnab MCP server",
+  "scopes_supported": ["full", "read"]
+}
+```
+
+**Give the URL, do not expect sipnab to work it out.** Behind the nginx that
+terminates TLS, sipnab sees a cleartext request and no scheme; anything it
+derived from its own socket would say `http://` for a resource the client
+reached over `https://`, and [RFC 9728 §3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) tells a conformant client to
+discard a document whose `resource` does not match the URL it used. sipnab
+does not read `X-Forwarded-Proto` here for the same reason it ignores
+`X-Forwarded-For` when rate limiting: a header the client sets is not
+evidence. A malformed value is a startup error, not a wrong document.
+
+**This is discovery, not OAuth.** sipnab neither issues nor validates OAuth
+access tokens — it verifies its own tokens exactly as it always has — so the
+document advertises no `authorization_servers`, and a client that follows this
+still needs a token from
+[Issue a token the client can present](#issue-a-token-the-client-can-present).
+What discovery buys today is a machine-readable answer to "what does this
+endpoint want, and where is it documented" in place of a bodyless `401`.
+
+The document is public by design, so it names nothing that is not: no bind
+address, no `Host` allowlist, no token, no signing key, no capture, no
+version. A metadata endpoint appears only when this flag names a URL — sipnab does
+not publish a resource identifier it had to guess:
+
+```bash
+sipnab --mcp -N --mcp-transport http --mcp-bind 0.0.0.0:8731 \
+       --mcp-token-file /etc/sipnab/mcp.token \
+       --mcp-allowed-host capture.example.com \
+       --mcp-resource-url https://capture.example.com/mcp -d eth0
+```
+
 ### Start it at boot with systemd
 
 `/etc/systemd/system/sipnab-mcp.service` (a packaged variant ships in
@@ -1565,7 +1665,7 @@ expose the MCP surface pay zero binary size for it.
 | Symptom | Cause / fix |
 |---------|-------------|
 | `--mcp-transport http` rejected | Built without `mcp-http`. Rebuild with `--features mcp-http` (run `sipnab --version` to see compiled features). |
-| 401 from the server | Token mismatch — compare the client's bearer token with the token file; check for a trailing newline stripped by your client. |
+| 401 from the server | Token mismatch — compare the client's bearer token with the token file; check for a trailing newline stripped by your client. Read the `WWW-Authenticate` header first: `error="invalid_token"` means the client sent a token and sipnab rejected it, while a challenge with no `error` means it sent none, which is a client-configuration problem rather than a wrong value. |
 | 403 / host rejected | DNS-rebind protection: add the hostname clients use via `--mcp-allowed-host`. |
 | Server starts, then "no packets" | If feeding via HEP, confirm the sender targets the `-L` port and watch for the idle warning (`no packets for 30s`) in the logs. |
 
@@ -1651,7 +1751,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.140"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.141"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand

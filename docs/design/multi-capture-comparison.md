@@ -218,7 +218,7 @@ calls. Under comparison it becomes the exact operation wanted, and the refusal
 must be relaxed *only* for a confirmed cross-session pair — not removed.
 
 The MCP surface has the single-capture ancestor of all three: `compare_dialogs`
-([`server.rs:5918`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5918)) takes two Call-IDs, projects state,
+([`server.rs:5998`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5998)) takes two Call-IDs, projects state,
 final status code, message count, methods and hints for each, and names the keys
 that differ. Its shape is right and its scope is one store — both Call-IDs are
 looked up in the same `dialog_store`. Extending it to cross sessions is the same

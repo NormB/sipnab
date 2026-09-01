@@ -2776,6 +2776,7 @@ impl BatchRunner {
             crate::app::servers::Selection {
                 mcp_row_cap: cli.mcp_row_cap(config),
                 mcp_body_cap: cli.mcp_body_cap(config),
+                mcp_wait_seconds: cli.mcp_wait_cap(config),
                 api_row_cap: cli.api_row_cap(config),
                 api_rate_limit_per_peer: cli.api_peer_rate_limit(config),
                 max_tracked_peers: cli.tracked_peer_capacity(config),
@@ -3530,6 +3531,51 @@ impl BatchRunner {
             }
         }
 
+        // Who the detectors accused, grouped. Every detector answers per
+        // MESSAGE, which is right for `--kill-scanner` acting on one packet
+        // and wrong for the question asked after a capture: which addresses
+        // were probing me, and how do I know. Nothing here re-detects -- it
+        // groups findings the detectors already produced, so there is one
+        // detector and one set of thresholds.
+        //
+        // `established` is carried with the accusation rather than left in the
+        // detector that already acts on it. A source that also completed a
+        // registration or a call is one a block would disconnect, and learning
+        // that after the block is too late.
+        //
+        // Computed ABOVE the `--quiet` gate, and read by two consumers below:
+        // the summary, which `--quiet` silences, and `--recommend-block`,
+        // which it must not. An operator who asked for a firewall rule and got
+        // nothing because an unrelated flag suppressed the summary would have
+        // no way to tell that from a capture with nothing in it.
+        let accused_sources = {
+            let findings = engines
+                .alerts
+                .read()
+                .iter_findings(&[], None, ACCUSED_FINDING_SCAN_CAP)
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            let refs: Vec<&crate::security::alerting::Finding> = findings.iter().collect();
+            let mut accused = crate::security::sources::accused(&refs);
+            for a in &mut accused {
+                a.established = engines.scanner.as_ref().map(|d| d.established(&a.src_ip));
+            }
+            accused
+        };
+
+        // 21c. `--recommend-block`: the accusation as a rule the operator can
+        // run. sipnab RECOMMENDS -- this prints text and reaches no firewall.
+        if let Some(dialect) = cli.security_args.recommend_block {
+            if accused_sources.is_empty() {
+                print!("{}", crate::security::recommend::nothing_to_recommend());
+            } else {
+                for a in &accused_sources {
+                    print!("{}", crate::security::recommend::recommend(a, dialect));
+                }
+            }
+        }
+
         // 22. Summary
         if !cli.mode_args.quiet {
             let stream_count = stream_store.read().len();
@@ -3539,49 +3585,25 @@ impl BatchRunner {
                 counters.rtp_count,
             );
 
-            // Who the detectors accused, grouped. Every detector answers per
-            // MESSAGE, which is right for `--kill-scanner` acting on one
-            // packet and wrong for the question asked after a capture: which
-            // addresses were probing me, and how do I know. Nothing here
-            // re-detects -- it groups findings the detectors already produced,
-            // so there is one detector and one set of thresholds.
-            //
-            // `established` is printed with the accusation rather than left in
-            // the detector that already acts on it. A source that also
-            // completed a registration or a call is one a block would
-            // disconnect, and learning that after the block is too late.
-            {
-                let findings = engines
-                    .alerts
-                    .read()
-                    .iter_findings(&[], None, ACCUSED_FINDING_SCAN_CAP)
-                    .into_iter()
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let refs: Vec<&crate::security::alerting::Finding> = findings.iter().collect();
-                let mut accused = crate::security::sources::accused(&refs);
-                for a in &mut accused {
-                    a.established = engines.scanner.as_ref().map(|d| d.established(&a.src_ip));
-                }
-                if !accused.is_empty() {
+            // The accusation summary, over the grouping computed above.
+            if !accused_sources.is_empty() {
+                tracing::info!(
+                    "sipnab: {} source(s) named by security detections",
+                    accused_sources.len()
+                );
+                for a in &accused_sources {
+                    let rules = a.rules.iter().cloned().collect::<Vec<_>>().join(", ");
+                    let counter = match a.established {
+                        Some(true) => {
+                            "  -- also completed a registration or call, so a block disconnects it"
+                        }
+                        _ => "",
+                    };
                     tracing::info!(
-                        "sipnab: {} source(s) named by security detections",
-                        accused.len()
+                        "sipnab:   {} {} finding(s) [{rules}]{counter}",
+                        a.src_ip,
+                        a.findings
                     );
-                    for a in &accused {
-                        let rules = a.rules.iter().cloned().collect::<Vec<_>>().join(", ");
-                        let counter = match a.established {
-                            Some(true) => {
-                                "  -- also completed a registration or call, so a block disconnects it"
-                            }
-                            _ => "",
-                        };
-                        tracing::info!(
-                            "sipnab:   {} {} finding(s) [{rules}]{counter}",
-                            a.src_ip,
-                            a.findings
-                        );
-                    }
                 }
             }
 

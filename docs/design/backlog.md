@@ -44,26 +44,26 @@ Tiers:
 
 ## Status
 
-**41 open, 404 done** across 25 sections.
+**32 open, 413 done** across 25 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
 |---|---:|---:|---|
 | P0 | 0 | 21 | `##########` |
-| P1 | 1 | 69 | `##########` |
+| P1 | 0 | 70 | `##########` |
 | PV | 0 | 13 | `##########` |
 | P2 | 0 | 109 | `##########` |
 | P3 | 0 | 64 | `##########` |
 | P4 | 0 | 39 | `##########` |
 | PA | 1 | 12 | `#########.` |
-| PB | 4 | 16 | `########..` |
+| PB | 0 | 20 | `##########` |
 | TK | 4 | 6 | `######....` |
 | RE | 3 | 4 | `######....` |
-| BA | 3 | 1 | `##........` |
+| BA | 1 | 3 | `########..` |
 | NAT | 0 | 4 | `##########` |
 | RV | 4 | 4 | `#####.....` |
 | RP | 4 | 0 | `..........` |
-| HX | 3 | 0 | `..........` |
+| HX | 1 | 2 | `#######...` |
 | AS | 6 | 1 | `#.........` |
 | DOC | 0 | 16 | `##########` |
 | MCPX | 1 | 6 | `#########.` |
@@ -844,8 +844,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:5336`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5336)) currently takes
-  nowhere; `security_findings` ([`src/mcp/server.rs:5336`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5336)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5416`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5416)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5416`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5416)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -1217,7 +1217,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   a deliberate published-shape change and should be taken as one rather than
   slipped in.
 
-- [ ] **VAL17 — rendered documents carry no completeness envelope.**
+- [x] **VAL17 (done 2026-09-01) — rendered documents carry no completeness envelope.**
   `render_ladder`, and `get_capture_report` / `get_dialog_report` in `markdown`
   and `text`, answer with a rendered document that has no structured envelope,
   so a caller asking for a human-readable form loses the "is this whole?" signal
@@ -1623,8 +1623,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5451`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5451),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5451`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5451),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5531`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5531),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5531`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5531),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -2470,16 +2470,16 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:377`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L377)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:6771`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6771), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:6851`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6851), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1701`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1701)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1730`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1730)), which attaches `frame_ref`
     (`#[tool(` at [`src/mcp/server.rs:4528`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4528), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1701`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1701)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1730`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1730)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -2631,7 +2631,7 @@ output path.
     `SUPPRESSION_FILENAME` ([`src/sip/lint/mod.rs:70`](https://github.com/NormB/sipnab/blob/main/src/sip/lint/mod.rs#L70)),
     `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
     exist, and the MCP lint tools consume them through `resolve_suppressions`
-    ([`src/mcp/server.rs:865`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L865)), which takes an explicit filename or walks up from
+    ([`src/mcp/server.rs:894`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L894)), which takes an explicit filename or walks up from
     the capture's directory to a project root. **What is still missing is the
     suppression half of the CLI, and the evidence this line cited for that is
     now false too. Corrected 2026-08-06:** it read *"`grep -n lint src/cli.rs`
@@ -2942,11 +2942,11 @@ production traffic.
   Follow-on value now lives elsewhere: #141 derives per-tool authorization
   from these same annotations, so the hint a client sees and the scope a
   token needs cannot drift apart.
-- [ ] **PB3 — Completions (`completion/complete`).** For `call_id`, filter
+- [x] **PB3 (done 2026-09-01) — Completions (`completion/complete`).** For `call_id`, filter
   aliases, `security_findings.kinds` and the format enums. Cheaper than a
   failed call plus a retry, and it removes the same guess-and-retry loop PA3's
   DSL resource attacks from the other side.
-- [ ] **PB4 — Notifications and subscriptions.** `tail_dialogs` plus
+- [x] **PB4 (done 2026-09-01) — Notifications and subscriptions.** `tail_dialogs` plus
   `source_exhausted` is a polling loop.
   `notifications/resources/updated` on a live capture, or a `subscribe(filter)`
   that pushes when a dialog matches, changes what sipnab *is* rather than how
@@ -2990,11 +2990,11 @@ production traffic.
   the agent. On stdio, clients swallow stderr — the troubleshooting page
   currently tells the reader to re-run the command by hand to see the real
   error, which is a workaround for exactly this gap.
-- [ ] **PB6 — Elicitation instead of the `dry_run` convention.** A real
+- [x] **PB6 (done 2026-09-01) — Elicitation instead of the `dry_run` convention.** A real
   round-trip for `shutdown_server`, and for `open_capture`, which discards
   every held dialog. The convention was the right call before elicitation was
   available.
-- [ ] **PB7 — OAuth 2.1 / [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) protected-resource metadata.** Static and
+- [x] **PB7 (done 2026-09-01) — OAuth 2.1 / [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) protected-resource metadata.** Static and
   HMAC bearer tokens cover self-hosted. Metadata plus a proper
   `WWW-Authenticate` on 401 is what hosted clients need to connect without a
   manual token paste.
@@ -3096,7 +3096,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:7868`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7868), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:8040`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8040), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -4605,7 +4605,7 @@ applies.
   Still open, and now BA1b rather than left implied: premium-range callees, and
   OPTIONS/REGISTER sweeps counted apart from INVITE attempts.
 
-- [ ] **BA2 — turn that into a rule the operator can apply.** Emit a concrete
+- [x] **BA2 (done 2026-09-01) — turn that into a rule the operator can apply.** Emit a concrete
   fail2ban filter/jail or nftables/iptables rule for what BA1 identified,
   with the evidence attached to it. Bounded hard: sipnab RECOMMENDS and does
   not apply, does not reach a firewall, and does not hold a credential. The
@@ -4626,21 +4626,84 @@ applies.
   streams to the offending call. The missing piece is presenting them together
   as one answer about one caller.
 
-- [ ] **BA4 — a Lenny plugin, and the tension it creates.** Lenny is a
+- [x] **BA4 — a Lenny plugin: DECLINED for sipnab, 2026-08-31.** Lenny is a
   well-known anti-scam project: a chatbot of recorded audio that keeps a
   caller talking indefinitely, wasting the attacker's most expensive resource.
   Pairing it with BA3 is genuinely interesting, because a tarpited call is a
   LONG media sample from a confirmed bad actor, which is exactly the evidence
   BA3 wants and exactly what a normal capture never gets.
-  The tension is real and belongs in the entry rather than in a surprise
-  later. sipnab is a passive capture tool that does not sit in the production
-  path and does not answer calls; a Lenny plugin makes it originate media and
-  hold a session, which is a different product. It probably belongs BESIDE
-  sipnab -- something answers, sipnab watches -- rather than inside it. Decide
-  that before building, and check it against the positioning doc rather than
-  against how appealing the feature is. Note also that engaging an attacker is
-  a legal and policy question in some jurisdictions, and that is the
-  operator's call to make, not a default to ship.
+
+  **The idea is good and it is not sipnab's.** Decided against
+  [`positioning.md`](./positioning.md) §4 and
+  [`outbound-transmit-capability.md`](./outbound-transmit-capability.md), not
+  against how appealing it is, and recorded here rather than left to surprise
+  somebody mid-implementation.
+
+  **Decisive, and each one is independently fatal:**
+
+  1. **It fails the "operated, not run" test outright.** §4's test is a verb:
+     *if a feature requires sipnab to be operated rather than run, it is out of
+     position*. A tarpit is only useful if it is **up when the call arrives**.
+     Everything else in this tool is run against something that already
+     happened, or watched for as long as an operator is watching; this one has
+     to be reachable, in a dialplan, at three in the morning. That is a
+     service, and the moment somebody owns a service the lightness that was the
+     reason to choose sipnab has been spent.
+  2. **It inverts the single most useful fact on the positioning page.** §2:
+     *"for OpenSIPS and Kamailio, sipnab does not go on the production host at
+     all"* — the proxy's own HEP module points at a listener elsewhere. A thing
+     that answers calls MUST be in the path a call traverses. The lightest
+     configuration and the Lenny configuration are opposites.
+  3. **Its destination can only come from a packet, which is the one thing the
+     transmit design forbids.**
+     [`outbound-transmit-capability.md`](./outbound-transmit-capability.md) §5.2
+     turns on `OperatorDestination` having *no constructor taking an `IpAddr`,
+     a `SocketAddr`, a `SipMessage`, a `Packet` or a `ParsedPacket`* — an
+     originated destination is named by the operator, never read out of
+     traffic. A tarpit's peer is by definition the party whose INVITE it just
+     answered. There is no version of this that does not read the destination
+     out of a packet, so it cannot be built behind `OriginatePermit`, and §7
+     closes the other door: *"**Never** reach the goal by widening
+     `TransmitPermit`."* Note also that §4's inventory of what someone
+     legitimately wants to send — replay, active probes, telemetry — was
+     written to enumerate this space and does not contain "answer a call and
+     hold a media session". It is a fourth category, not an instance of one of
+     the three.
+  4. **The audio is a second versioned artifact beside the binary.** Lenny is a
+     set of recorded WAVs. That is the distribution-layer objection that
+     declined the ML anomaly detector in this same file — *"ships as a second
+     versioned artifact beside the binary, which fails 'run, not operated' at
+     the distribution layer rather than the runtime one"* — and it lands
+     identically here, with a licensing question on the recordings on top.
+  5. **The evidence would be evidence sipnab MANUFACTURED.** Every detection in
+     this tree is reproducible from a pcap by someone who was not there. A
+     tarpit's media exists because sipnab held the call; it cannot be
+     reproduced from the file, only re-provoked, and only against an attacker
+     who is still there. That is the same evidence rule the ML item was
+     declined on, arrived at from the media side.
+
+  Engaging an attacker is also a legal and policy question in some
+  jurisdictions — the operator's call, never a default to ship — but that is
+  the least of the five and is deliberately not the reason. A feature declined
+  on jurisdiction gets re-proposed the moment somebody's jurisdiction is fine
+  with it; the four above do not move.
+
+  **What survives, and it is most of the value.** The entry's own instinct was
+  right: this belongs BESIDE sipnab. Something answers — a real Lenny, an
+  Asterisk or FreeSWITCH box, an OpenSIPS media server — and sipnab watches it,
+  which is what sipnab already does with no code at all. A tarpited call
+  arrives at BA3 as a long call from an accused source, and BA3 reads it
+  exactly as it reads any other. **Nothing needs to be built inside sipnab to
+  collect the sample this entry wanted.**
+
+  **What would have to change first, so this can be re-opened honestly rather
+  than re-argued.** All three, not one: `positioning.md` §4 would have to admit
+  a component that must be up when a call arrives; §7's falsification list
+  would have to have actually fired (nobody using the remote path, retention
+  argued up toward weeks, analysis not the reason people choose it — none has
+  been reported); and `outbound-transmit-capability.md` would need a permit
+  whose destination may come from a packet, which §5.2 exists to prevent. A
+  proposal that changes none of those is this proposal again.
 
 
 ## NAT — STUN/TURN visibility (added 2026-08-17)
@@ -5018,7 +5081,7 @@ take:
   moved 0 -> 38 as a filter narrowed to one hop; that finding is currently
   reproducible only against traffic that cannot be shared.
 
-- [ ] **HX2 — make the media anchor swappable: rtpengine, rtpproxy, or
+- [x] **HX2 (done 2026-09-01) — make the media anchor swappable: rtpengine, rtpproxy, or
   neither.** Parameterise the anchor the way `RTPENGINE_SOCK` is already
   parameterised, so one variable selects the relay and the same call scenarios
   run under each. "Neither" matters too: direct media between endpoints is the
@@ -5035,7 +5098,7 @@ take:
   it is exactly what an operator sees today, media arriving with no control
   exchange to explain it.
 
-- [ ] **HX3 — the matrix, not the cross product.** Directions (2) x anchors (3)
+- [x] **HX3 (done 2026-09-01) — the matrix, not the cross product.** Directions (2) x anchors (3)
   x call outcomes is more combinations than are worth running on every commit.
   Choose the set deliberately and write down why each is in or out, the way
   [`docs/design/testing-matrix.md`](https://github.com/NormB/sipnab/blob/main/docs/design/testing-matrix.md) already does for flags. A harness that takes
@@ -5273,7 +5336,7 @@ promises an absence is acted on; a missing feature is merely absent.
 
 - [x] **DOC4 (done 2026-08-30) — [`docs/mcp-deploy.md:248`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L248) opens the remote-access section by
   promising no tool mutates the stores.** `open_capture` calls `ds.clear()` and
-  `ss.clear()` ([`src/mcp/server.rs:7141`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7141)). The code already knows: a note at
+  `ss.clear()` ([`src/mcp/server.rs:7221`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7221)). The code already knows: a note at
   `:8377` records that the wire `instructions` string was corrected for exactly
   this. The page was not. [`SECURITY.md:35`](https://github.com/NormB/sipnab/blob/main/SECURITY.md#L35) scopes reports to "any MCP tool that
   mutates dialog/stream/alert state", so a good-faith reporter is told the scope

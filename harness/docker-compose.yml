@@ -44,6 +44,16 @@ services:
       # reaches it. This address and RTPENGINE_NG_BIND below must agree, or
       # opensips answers every INVITE with a 500 and the media never anchors.
       RTPENGINE_SOCK: udp:${RTPENGINE_IP:-172.28.0.11}:22222
+      RTPPROXY_SOCK: udp:${RTPPROXY_IP:-172.28.0.12}:22223
+      # ONE variable selects the media anchor: rtpengine | rtpproxy | none.
+      # It picks the OpenSIPS module, its control-socket parameter and its
+      # teardown function together (see opensips/entrypoint.sh), and the
+      # matching compose profile starts the matching relay container. Drive it
+      # through `make up ANCHOR=<name>`, which sets both halves from this one
+      # value -- setting the variable without the profile gives you an OpenSIPS
+      # configured for a relay that is not running, which is a 500 on every
+      # INVITE.
+      MEDIA_ANCHOR: ${MEDIA_ANCHOR:-rtpengine}
     ports:
       # bind_addr:host_port:container_port -- internal ports are fixed; only the
       # host side is configurable (to dodge conflicts with a host SIP service).
@@ -95,6 +105,10 @@ services:
     image: sipnab-harness/rtpengine:local
     container_name: rtpengine
     restart: unless-stopped
+    # Only when MEDIA_ANCHOR=rtpengine. The rtpproxy profile publishes the same
+    # host ports, so enabling both profiles at once fails loudly on a port
+    # collision rather than quietly anchoring through whichever won.
+    profiles: ["rtpengine"]
     # Its OWN namespace, not opensips-1's. Sharing one meant a sipnab on the
     # "relay" and a sipnab on the "proxy" read the same eth0 and returned
     # identical answers -- two copies of one capture point, which cannot show
@@ -173,6 +187,7 @@ services:
     image: sipnab-harness/sipnab:local
     container_name: sipnab-relay
     restart: unless-stopped
+    profiles: ["rtpengine"]
     # The RELAY capture point: rtpengine's namespace. Sees media, and the ng
     # control plane, and no signaling.
     network_mode: "service:rtpengine"
@@ -208,6 +223,78 @@ services:
       - ./secrets:/run/secrets
       - ./captures:/captures
 
+  # ---- Media anchor: rtpproxy (MEDIA_ANCHOR=rtpproxy) ----------------------
+  # The second anchor. Same wiring as rtpengine -- its own namespace, its own
+  # sipnab watching it -- so the two are comparable rather than merely both
+  # present.
+  #
+  # What it cannot do is the point of running it: rtpproxy has no HEP mirror of
+  # its control channel, so this relay sees media it cannot name. rtpengine's
+  # relay names calls because `homer-enable-ng` copies the ng control plane
+  # onto a wire sipnab watches; rtpproxy offers no equivalent. Until sipnab
+  # decodes the rtpproxy control protocol directly, streams here carry no
+  # Call-ID -- which is exactly what an operator sees today.
+  rtpproxy:
+    build:
+      context: ./rtpproxy
+      network: host
+    image: sipnab-harness/rtpproxy:local
+    container_name: rtpproxy
+    restart: unless-stopped
+    profiles: ["rtpproxy"]
+    ports:
+      # The same host ports rtpengine publishes. Only one anchor profile runs
+      # at a time, so this is a swap and not a second set of doors to learn.
+      - "${HARNESS_BIND:-127.0.0.1}:${RELAY_MCP_PORT:-8732}:8732/tcp"        # sipnab-relay MCP HTTP
+      - "${HARNESS_BIND:-127.0.0.1}:${RELAY_API_PORT:-8081}:8081/tcp"        # sipnab-relay REST
+      - "${HARNESS_BIND:-127.0.0.1}:${RTP_MIN:-30000}-${RTP_MAX:-30050}:30000-30050/udp"  # media
+    networks:
+      sipnet:
+        ipv4_address: ${RTPPROXY_IP:-172.28.0.12}
+    depends_on:
+      - opensips-1
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      RTPPROXY_IF: ${RTPPROXY_IP:-172.28.0.12}
+      # Must agree with opensips-1's RTPPROXY_SOCK above.
+      RTPPROXY_CTL_BIND: ${RTPPROXY_IP:-172.28.0.12}:22223
+      RTP_MIN: ${RTP_MIN:-30000}
+      RTP_MAX: ${RTP_MAX:-30050}
+
+  sipnab-relay-rtpproxy:
+    image: sipnab-harness/sipnab:local
+    container_name: sipnab-relay-rtpproxy
+    restart: unless-stopped
+    profiles: ["rtpproxy"]
+    network_mode: "service:rtpproxy"
+    depends_on:
+      - rtpproxy
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      MCP_BIND: 0.0.0.0:8732
+      API_BIND: 0.0.0.0:8081
+      MCP_ALLOWED_HOST: ${SIPNAB_MCP_ALLOWED_HOST:-*}
+      CAPTURE_IFACE: eth0
+      SIP_PORTRANGE: ${SIP_PORT:-5060}-5061
+      # rtpproxy's control socket. Widening the capture filter to it puts the
+      # command exchange in the pcap even though sipnab cannot decode it yet:
+      # the evidence is captured now, and a decoder added later can be tested
+      # against a real recording rather than a hand-written one.
+      CONTROL_PORTS: "22223"
+      RETAIN_AUDIO: "1"
+      # No HEP_PARSE: there is no HEP here to parse. rtpproxy mirrors nothing.
+      MCP_TOKEN_FILE: /run/secrets/mcp.token.relay
+      MCP_TOKEN_TTL: ${SIPNAB_MCP_TOKEN_TTL:-600}
+      MCP_ROTATE_INTERVAL: ${SIPNAB_MCP_ROTATE_INTERVAL:-300}
+      NODE_NAME: relay-rtpproxy
+    volumes:
+      - ./secrets:/run/secrets
+      - ./captures:/captures
+
   # ---- SIPp UAS: answers calls relayed by opensips-1 -----------------------
   sipp-uas:
     build:
@@ -228,10 +315,11 @@ services:
     image: sipnab-harness/sipp:local
     container_name: sipp-uac
     restart: unless-stopped
+    # NOT rtpengine: the anchor is profile-selected now, and a depends_on
+    # naming a service outside the active profile drags that profile in.
     depends_on:
       - opensips-1
       - sipp-uas
-      - rtpengine
     environment:
       # Idle by default: a background call loop running during a measurement
       # makes every count "the calls under test, plus whatever the loop fit in

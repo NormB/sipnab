@@ -1054,6 +1054,22 @@ sipnab -N -I trunk.pcap --kill-scanner --fail2ban | grep -oE 'src=[^ ]+' | sort 
 
 Every address in that list is one the jail below would ban. Use `ignoreip` in the jail for the peers you already trust.
 
+### 10c. Block a scanner with a rule sipnab wrote, after reading the evidence
+
+Counting `src=` fields tells you who. It does not tell you whether banning them costs you a customer. `--recommend-block` groups the detections by source and prints one block per accused address, carrying the evidence, the counter-evidence and a rule in the dialect you name (`fail2ban`, `nftables`, `iptables` or `all`):
+
+```bash
+sipnab -N -I trunk.pcap --kill-scanner --reg-flood --recommend-block all --quiet
+```
+
+**sipnab recommends and does not apply.** sipnab ran none of that output, contacted no firewall and holds no credential anywhere in sipnab. It prints text and stops. The line to read in every block is `COUNTER-EVIDENCE:`, which says one of three things:
+
+- **`also completed a registration or a call`** — the source is a working peer and a block disconnects it, so the `nftables` and `iptables` commands arrive commented out and the fail2ban jail arrives with `ignoreip` already filled in.
+- **`none`** — nothing in this capture says the source has a relationship, and the commands are live.
+- **`UNKNOWN`** — no scanner detector ran, so sipnab asked nothing. The commands are live, and the block tells you to re-run with `--kill-scanner` before acting on them.
+
+The third case is the one worth pausing on: "asked and it had not" and "never asked" produce the same silence, and only the first is a reason to feel safe.
+
 #### What the behavioral rules actually test
 
 Neither behavioral rule fires on volume, because volume does not separate reconnaissance from operation. A trunk sends OPTIONS keepalives continuously by design — that is how each end learns the other is alive — and an SBC fronting a hunt group reaches dozens of distinct extensions a second. Both rules therefore need an OUTCOME as well as a rate:

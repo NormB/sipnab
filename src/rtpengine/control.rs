@@ -67,6 +67,21 @@ use crate::security::transmit_guard::TransmitPermit;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 const MAX_REPLY_BYTES: usize = 64 * 1024;
 
+/// Largest control reply this client will read back over a STREAM.
+///
+/// The datagram path is bounded by the kernel, which truncates anything past
+/// its own limit. A stream is bounded by nothing, so without this the relay --
+/// or whatever answered in its place on an operator-supplied address --
+/// decides how much memory sipnab allocates.
+///
+/// Sized against the answer it exists to allow. Measured against rtpengine
+/// 14.2.0.0 holding 1200 calls with 55-character Call-IDs, an enumeration of
+/// 1200 is 73234 bytes; [`crate::relay::reconcile::WIDE_LIST_LIMIT`] Call-IDs
+/// of a kilobyte each is the pathological end of the same shape, and that is
+/// what this covers.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+const MAX_STREAM_REPLY_BYTES: usize = 1024 * 1024;
+
 impl ReadOnlyCommand {
     /// The ng verb, as it goes on the wire.
     #[must_use]
@@ -423,6 +438,31 @@ pub struct ControlClient {
     base: u64,
 }
 
+/// Split a reply into its cookie and its body, refusing one that answers a
+/// different question.
+///
+/// rtpengine frames a reply exactly as the request: cookie, one space, then
+/// the bencode. The cookie check is not decoration -- rtpengine replays cached
+/// replies keyed on the cookie, so a reply carrying somebody else's describes
+/// some other call's streams.
+///
+/// `Ok(None)` means the framing space has not arrived yet, which only a stream
+/// can be in the middle of; a datagram either carries the whole message or the
+/// kernel already threw the rest away.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+fn framed_reply_body<'a>(buf: &'a [u8], cookie: &str) -> anyhow::Result<Option<&'a [u8]>> {
+    let Some(space) = buf.iter().position(|b| *b == b' ') else {
+        return Ok(None);
+    };
+    if &buf[..space] != cookie.as_bytes() {
+        anyhow::bail!(
+            "reply cookie does not match the request; it answers a \
+             different transaction"
+        );
+    }
+    Ok(Some(&buf[space + 1..]))
+}
+
 /// How long to wait for a relay's answer before giving up.
 ///
 /// A CHOICE, not a measurement. rtpengine's control port is normally on the
@@ -505,14 +545,113 @@ impl ControlClient {
         parse_query_reply(&body, call_id)
     }
 
-    /// Send one request and read one reply.
+    /// Whether this command's ANSWER is too big for a datagram to carry.
     ///
-    /// UDP, because that is rtpengine's control transport. The reply buffer is
-    /// bounded: a datagram larger than this is truncated by the kernel, and a
-    /// truncated bencode message fails to parse rather than being read as a
-    /// short list -- which is the right failure, because a silently short list
-    /// is the thing RE4 is most careful about.
+    /// The transport is chosen by the size of the answer being asked for, and
+    /// by nothing else. rtpengine's own documentation warns that a `list`
+    /// beyond the default "may not fit in a UDP packet, and therefore be
+    /// invalid", and measurement bears it out: against 14.2.0.0 holding 1200
+    /// calls, `limit: 1200` is a 73234-byte answer that draws NO reply at all
+    /// over a datagram and returns in full over `listen-tcp-ng`.
+    ///
+    /// So availability is discovered rather than declared: a relay with no
+    /// stream listener refuses the connection, the wider ask fails, and the
+    /// caller keeps the capped answer it already has and says so. No flag
+    /// asserts a listener that may not be there.
+    fn needs_a_stream(command: &ReadOnlyCommand) -> bool {
+        matches!(
+            command,
+            ReadOnlyCommand::List { limit }
+                if *limit > crate::relay::reconcile::DEFAULT_LIST_LIMIT
+        )
+    }
+
+    /// Send one request and read one reply, over whichever transport can
+    /// carry the answer.
     fn round_trip(&self, request: &ControlRequest) -> anyhow::Result<Vec<u8>> {
+        if Self::needs_a_stream(&request.command) {
+            self.round_trip_stream(request)
+        } else {
+            self.round_trip_datagram(request)
+        }
+    }
+
+    /// Send one request and read one reply over a stream.
+    ///
+    /// The framing is identical to the datagram form -- cookie, space,
+    /// bencode -- and rtpengine writes it the same way on both, from one
+    /// function. What differs is that a stream has no message boundary: the
+    /// reply arrives in as many pieces as the network chooses, the connection
+    /// stays open afterwards, and there is therefore no EOF to read up to. So
+    /// the loop reads until the bencode COMPLETES, which is what rtpengine's
+    /// own reader does in the other direction.
+    ///
+    /// Not a hypothetical: a 61034-byte answer from 14.2.0.0 arrived in two
+    /// reads, so a client that treats one read as one reply parses half a
+    /// message and reports a working relay as broken.
+    fn round_trip_stream(&self, request: &ControlRequest) -> anyhow::Result<Vec<u8>> {
+        use anyhow::Context;
+        use std::io::{Read, Write};
+
+        let mut conn = std::net::TcpStream::connect_timeout(&self.addr, self.timeout)
+            .with_context(|| {
+                format!(
+                    "connecting to the relay at {} over a stream transport",
+                    self.addr
+                )
+            })?;
+        conn.set_read_timeout(Some(self.timeout))
+            .context("setting the control read timeout")?;
+        conn.set_write_timeout(Some(self.timeout))
+            .context("setting the control write timeout")?;
+        conn.write_all(&request.to_wire())
+            .with_context(|| format!("sending {} to {}", request.command, self.addr))?;
+
+        let mut buf = Vec::new();
+        let mut chunk = vec![0u8; 64 * 1024];
+        loop {
+            // A stream has no message boundary, so completeness is the only
+            // thing that says the reply has all arrived. Asked of the parser
+            // that will read it, rather than of a second scanner that could
+            // disagree with it.
+            if let Some(body) = framed_reply_body(&buf, request.cookie())?
+                && super::bencode::decode(body).is_ok()
+            {
+                return Ok(body.to_vec());
+            }
+            if buf.len() > MAX_STREAM_REPLY_BYTES {
+                anyhow::bail!(
+                    "the relay's answer is larger than the {MAX_STREAM_REPLY_BYTES} \
+                     byte ceiling this client reads; nothing on the far end of a \
+                     stream bounds it but this"
+                );
+            }
+            let n = conn.read(&mut chunk).with_context(|| {
+                format!(
+                    "no complete reply from {} within {:?} -- the answer was \
+                     still arriving, or it is not a complete message",
+                    self.addr, self.timeout
+                )
+            })?;
+            if n == 0 {
+                anyhow::bail!(
+                    "the relay at {} closed the connection with an incomplete \
+                     reply",
+                    self.addr
+                );
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+    }
+
+    /// Send one request and read one reply as a datagram.
+    ///
+    /// UDP, because that is rtpengine's default control transport. The reply
+    /// buffer is bounded: a datagram larger than this is truncated by the
+    /// kernel, and a truncated bencode message fails to parse rather than being
+    /// read as a short list -- which is the right failure, because a silently
+    /// short list is the thing RE4 is most careful about.
+    fn round_trip_datagram(&self, request: &ControlRequest) -> anyhow::Result<Vec<u8>> {
         use anyhow::Context;
 
         // Bind to the unspecified address matching the target's family, so a
@@ -546,18 +685,12 @@ impl ControlClient {
         buf.truncate(n);
 
         // The reply is framed exactly as the request: cookie, space, bencode.
-        // A reply whose cookie is not ours answers a different question.
-        let space = buf
-            .iter()
-            .position(|b| *b == b' ')
+        // One rule for both transports, in one place -- a second copy here is
+        // a cookie check that can be fixed on one path and left wrong on the
+        // other.
+        let body = framed_reply_body(&buf, request.cookie())?
             .context("reply carries no cookie framing")?;
-        if &buf[..space] != request.cookie().as_bytes() {
-            anyhow::bail!(
-                "reply cookie does not match the request; it answers a \
-                 different transaction"
-            );
-        }
-        Ok(buf[space + 1..].to_vec())
+        Ok(body.to_vec())
     }
 }
 
@@ -938,6 +1071,239 @@ mod tests {
             "Display leaked a Call-ID into a string that ends up in logs \
              outliving the capture: {shown}"
         );
+    }
+
+    /// Stand in for a relay reachable on BOTH transports at ONE address, with
+    /// a DIFFERENT answer on each.
+    ///
+    /// The two answers differ so a test can say which transport carried the
+    /// question. A fake that answered identically on both could not tell a
+    /// deliberate choice from a coincidence, which is the only thing these
+    /// tests are for.
+    ///
+    /// Real sockets rather than a mock: the framing, the connect and the
+    /// read loop are the parts most likely to be wrong, and a mock would
+    /// assert my own assumptions back at me.
+    ///
+    /// Each side is named by the ONE Call-ID it answers with, and the reply is
+    /// built by [`bstr`] rather than typed out: the length prefix in
+    /// `18:from-the-datagram` is seventeen characters of string, and a
+    /// hand-counted fixture is a test that fails for a reason that has nothing
+    /// to do with the code.
+    /// The threads are DETACHED rather than returned. Whichever transport the
+    /// client did not choose leaves its thread blocked forever -- on `accept`
+    /// or on `recv_from` -- and joining that one is a test that hangs instead
+    /// of failing. Which transport goes unused is exactly what these tests
+    /// vary, so there is no handle a caller could safely wait on.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    fn dual_relay(datagram_call: &str, stream_call: &str) -> SocketAddr {
+        let datagram_reply = format!("d6:result2:ok5:callsl{}ee", bstr(datagram_call));
+        let stream_reply = format!("d6:result2:ok5:callsl{}ee", bstr(stream_call));
+        // The two protocols have separate port spaces, so one port number can
+        // carry both -- which is how a relay with `listen-ng` and
+        // `listen-tcp-ng` on the same port looks. Taking the stream port first
+        // and then asking for the same datagram port can lose a race with
+        // anything else on the box, so it is retried rather than assumed.
+        let (listener, sock) = (0..32)
+            .find_map(|_| {
+                let l = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
+                let port = l.local_addr().ok()?.port();
+                let u = std::net::UdpSocket::bind(("127.0.0.1", port)).ok()?;
+                Some((l, u))
+            })
+            .expect("a port free on both transports");
+        let addr = sock.local_addr().expect("addr");
+
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            if let Ok((n, peer)) = sock.recv_from(&mut buf) {
+                let req = &buf[..n];
+                let space = req.iter().position(|b| *b == b' ').unwrap_or(0);
+                let mut out = req[..space].to_vec();
+                out.push(b' ');
+                out.extend_from_slice(datagram_reply.as_bytes());
+                let _ = sock.send_to(&out, peer);
+            }
+        });
+        std::thread::spawn(move || {
+            if let Ok((conn, _)) = listener.accept() {
+                answer_one_stream_request(conn, &[stream_reply.as_bytes()]);
+            }
+        });
+        addr
+    }
+
+    /// Read one framed request off a stream connection and answer it in the
+    /// given pieces, echoing the cookie.
+    ///
+    /// The pieces are written separately, with a flush between, because a
+    /// reader that assumes one read per reply passes against a single write
+    /// and fails against a relay whose 61034-byte answer arrives in two.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    fn answer_one_stream_request(mut conn: std::net::TcpStream, pieces: &[&[u8]]) {
+        use std::io::{Read, Write};
+        let mut buf = [0u8; 4096];
+        let Ok(n) = conn.read(&mut buf) else { return };
+        let req = &buf[..n];
+        let space = req.iter().position(|b| *b == b' ').unwrap_or(0);
+        let mut head = req[..space].to_vec();
+        head.push(b' ');
+        let _ = conn.write_all(&head);
+        for piece in pieces {
+            let _ = conn.write_all(piece);
+            let _ = conn.flush();
+        }
+        // Held open: a relay does not close after answering, so a reader that
+        // only terminates on EOF would hang against the real thing.
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    /// An enumeration within the datagram-safe default stays on the datagram.
+    ///
+    /// The common case, and the one that must cost nothing new: a relay
+    /// holding a handful of calls is asked exactly as it was before, with no
+    /// connection opened to a port that may hold something else entirely.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    #[test]
+    fn a_narrow_enumeration_stays_on_the_datagram_transport() {
+        let addr = dual_relay("from-the-datagram", "from-the-stream");
+        let client = ControlClient::new(addr, Duration::from_secs(2));
+
+        match client
+            .list(&live_permit(), crate::relay::reconcile::DEFAULT_LIST_LIMIT)
+            .expect("the relay answered")
+        {
+            ControlReply::Calls(e) => assert_eq!(
+                e.call_ids,
+                vec!["from-the-datagram".to_string()],
+                "a narrow enumeration must not open a connection"
+            ),
+            other => panic!("expected calls, got {other:?}"),
+        }
+    }
+
+    /// An enumeration past what a datagram carries goes over the stream.
+    ///
+    /// The reach half of RE4. Measured against rtpengine 14.2.0.0 holding
+    /// 1200 calls: `list` with `limit: 1200` is a 73234-byte answer, which no
+    /// UDP datagram can carry -- the request draws no reply at all -- and the
+    /// identical request over the stream transport returns all 1200.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    #[test]
+    fn a_wide_enumeration_goes_over_the_stream_transport() {
+        let addr = dual_relay("from-the-datagram", "from-the-stream");
+        let client = ControlClient::new(addr, Duration::from_secs(2));
+
+        match client
+            .list(&live_permit(), crate::relay::reconcile::WIDE_LIST_LIMIT)
+            .expect("the relay answered")
+        {
+            ControlReply::Calls(e) => assert_eq!(
+                e.call_ids,
+                vec!["from-the-stream".to_string()],
+                "an answer this size cannot come back in a datagram"
+            ),
+            other => panic!("expected calls, got {other:?}"),
+        }
+    }
+
+    /// A stream answer arriving in pieces is reassembled.
+    ///
+    /// Not a hypothetical. Measured against rtpengine 14.2.0.0: a 61034-byte
+    /// `list` answer arrived in two reads, so a client that treats one read as
+    /// one reply parses half a message and reports the relay as broken.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    #[test]
+    fn a_stream_answer_split_across_writes_is_reassembled() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let relay = std::thread::spawn(move || {
+            if let Ok((conn, _)) = listener.accept() {
+                answer_one_stream_request(conn, &[b"d6:result2:ok5:callsl4:aaaa", b"4:bbbbee"]);
+            }
+        });
+
+        let client = ControlClient::new(addr, Duration::from_secs(2));
+        match client
+            .list(&live_permit(), crate::relay::reconcile::WIDE_LIST_LIMIT)
+            .expect("a reply split across writes is still one reply")
+        {
+            ControlReply::Calls(e) => {
+                assert_eq!(e.call_ids, vec!["aaaa".to_string(), "bbbb".to_string()]);
+            }
+            other => panic!("expected calls, got {other:?}"),
+        }
+        let _ = relay.join();
+    }
+
+    /// A relay with no stream transport fails the wider ask, and says why.
+    ///
+    /// This IS the "where available" test: availability is discovered by
+    /// asking, not declared in configuration. A relay that answers on a
+    /// datagram and nothing else refuses the connection, and the caller keeps
+    /// the capped answer it already has.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    #[test]
+    fn a_relay_with_no_stream_transport_fails_the_wider_ask() {
+        // Bound on the datagram transport only: the address exists, nothing
+        // accepts a connection there.
+        let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
+        let addr = sock.local_addr().expect("addr");
+
+        let client = ControlClient::new(addr, Duration::from_millis(500));
+        let err = client
+            .list(&live_permit(), crate::relay::reconcile::WIDE_LIST_LIMIT)
+            .expect_err("nothing accepts a connection here");
+        assert!(
+            err.to_string().contains("connecting"),
+            "the operator must be told the connection is what failed, since \
+             the fix is to enable one: {err:#}"
+        );
+        drop(sock);
+    }
+
+    /// A stream answer past the read ceiling is refused rather than read
+    /// without bound.
+    ///
+    /// The datagram path is bounded by the kernel; a stream is bounded by
+    /// nothing but this. Without it a relay -- or anything that answered in
+    /// its place -- decides how much memory sipnab allocates.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    #[test]
+    fn a_stream_answer_past_the_ceiling_is_refused() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let relay = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let Ok((mut conn, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let Ok(n) = conn.read(&mut buf) else { return };
+            let space = buf[..n].iter().position(|b| *b == b' ').unwrap_or(0);
+            let mut head = buf[..space].to_vec();
+            head.push(b' ');
+            let _ = conn.write_all(&head);
+            // A bencode value that never ends: the length prefix promises more
+            // than the ceiling allows, so no amount of reading completes it.
+            let _ = conn.write_all(b"d6:result2:ok5:callsl");
+            let filler = vec![b'x'; 64 * 1024];
+            for _ in 0..(MAX_STREAM_REPLY_BYTES / filler.len() + 2) {
+                if conn.write_all(b"65536:").is_err() || conn.write_all(&filler).is_err() {
+                    return;
+                }
+            }
+        });
+
+        let client = ControlClient::new(addr, Duration::from_secs(5));
+        let err = client
+            .list(&live_permit(), crate::relay::reconcile::WIDE_LIST_LIMIT)
+            .expect_err("an unbounded answer must be refused");
+        assert!(
+            err.to_string().contains("larger than"),
+            "the error must name the ceiling, not look like a parse failure: {err:#}"
+        );
+        let _ = relay.join();
     }
 }
 

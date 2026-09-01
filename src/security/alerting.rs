@@ -721,7 +721,7 @@ impl AlertEngine {
         tracing::warn!(
             target: "sipnab::alert",
             alert_type, %src_ip, %sanitized_detail,
-            "[ALERT] {alert_type} src={src_ip} {sanitized_detail}"
+            "{}", alert_log_line(alert_type, src_ip, &sanitized_detail)
         );
 
         // Structured machine channel: one JSON object per line on STDERR (the
@@ -736,9 +736,7 @@ impl AlertEngine {
         // Send to syslog if enabled (native only — requires libc)
         #[cfg(feature = "native")]
         if self.syslog_enabled {
-            send_to_syslog(&format!(
-                "[ALERT] {alert_type} src={src_ip} {sanitized_detail}"
-            ));
+            send_to_syslog(&alert_log_line(alert_type, src_ip, &sanitized_detail));
         }
 
         // Execute command if configured — pass data via env vars, never interpolated
@@ -992,6 +990,29 @@ fn migrate_alert_template(template: &str) -> String {
 /// Replaces `\r` and `\n` with spaces to prevent log injection attacks.
 pub fn sanitize_log_value(s: &str) -> String {
     s.replace(['\r', '\n'], " ")
+}
+
+/// The one spelling of the human `[ALERT]` line.
+///
+/// Extracted because it is read as well as written. `security::recommend`
+/// generates a fail2ban `failregex` against this exact shape, and a filter
+/// whose log line has moved out from under it fails SILENTLY: the jail keeps
+/// running, keeps reporting zero bans, and looks precisely like a quiet
+/// network. That is the "a fact written twice, and the gate checks one copy"
+/// defect, so there is now one copy — the tracing event, the syslog line and
+/// the generated regex all derive from here.
+///
+/// # Arguments
+///
+/// * `alert_type` — the rule name that fired.
+/// * `src_ip` — the source the finding names.
+/// * `detail` — the detail string, **already sanitized** by
+///   [`sanitize_log_value`]; this function does not sanitize, because its
+///   callers hold the sanitized value and re-sanitizing would hide a caller
+///   that forgot.
+#[must_use]
+pub fn alert_log_line(alert_type: &str, src_ip: std::net::IpAddr, detail: &str) -> String {
+    format!("[ALERT] {alert_type} src={src_ip} {detail}")
 }
 
 /// Format one alert as a single JSON line for the `--alert-json` machine channel.

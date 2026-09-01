@@ -678,7 +678,16 @@ fn wiki_intra_docs_links_resolve() {
     // 605 -> 609: exactly four, all in `docs/mcp-tools.md` -- the index rows
     // for `decode_ng` and `query_relay`, plus the two cross-links their
     // sections make to `decode_evidence` and `explain_attribution`.
-    const EXPECTED_WIKI_LINKS: usize = 609;
+    //
+    // 609 -> 615: exactly six, all in `docs/mcp-tools.md` -- the index row for
+    // `await_condition` plus the five cross-links its section makes, three to
+    // `list_dialogs` (the filter vocabulary, the row shape, and the paging
+    // surface it declines to be) and one each to `tail_dialogs` and
+    // `validate_filter`.
+    // 615 -> 623: eight, from the `await_condition` index row and section
+    // cross-links plus the elicitation and RFC 9728 documentation the PB6
+    // and PB7 work added.
+    const EXPECTED_WIKI_LINKS: usize = 623;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

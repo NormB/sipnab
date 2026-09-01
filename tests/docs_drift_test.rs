@@ -2296,9 +2296,12 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // tool with `openWorldHint: true`: it transmits.
     // Both are read-only, so the `readOnlyHint` split in `docs/mcp-protocol.md`
     // moves 41-of-51 to 43-of-53 and the ten write-capable tools are unchanged.
+    // 55 -> 56 by `await_condition` (PB4, bounded form). Read-only, so the
+    // `readOnlyHint` split moves 45-of-55 to 46-of-56 and the ten
+    // write-capable tools are unchanged.
     assert_eq!(
         registered.len(),
-        55,
+        56,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -2952,7 +2955,15 @@ fn no_documentation_table_repeats_a_row() {
     // `docs/mcp-tools.md` is mirrored into `website/content/docs/`.
     // 774 -> 776: the requirements table in `query_relay`, counted twice
     // because `docs/mcp-tools.md` is mirrored into `website/content/docs/`.
-    const EXPECTED_TABLES: usize = 776;
+    // 776 -> 780: the two `await_condition` documents -- its parameter table
+    // and the table naming what each `stopped_because` value means -- each
+    // counted twice because `docs/mcp-tools.md` is mirrored into
+    // `website/content/docs/`. Attributed per file: both new tables are in the
+    // one section, and no other page gained one.
+    // 780 -> 782: the `await_condition` reference section's two tables
+    // (stopped_because values, and the clamp behaviour), each counted twice
+    // because docs/mcp-tools.md is mirrored into website/content/docs/.
+    const EXPECTED_TABLES: usize = 782;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

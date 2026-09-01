@@ -15,6 +15,7 @@
 //! opens one file rather than searching a large one.
 
 pub mod aggregation;
+pub mod await_condition;
 pub mod compare;
 pub mod endpoints;
 pub mod expectations;

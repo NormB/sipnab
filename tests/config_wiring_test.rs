@@ -1033,6 +1033,11 @@ fn limit_probes() -> Vec<LimitProbe> {
             observe: probe_mcp_max_body_bytes,
         },
         LimitProbe {
+            key: "mcp_max_wait_seconds",
+            enabled: cfg!(feature = "mcp"),
+            observe: probe_mcp_max_wait_seconds,
+        },
+        LimitProbe {
             key: "max_lost_sequences",
             enabled: true,
             observe: probe_max_lost_sequences,
@@ -1702,6 +1707,110 @@ fn probe_mcp_max_body_bytes() -> (String, String) {
 /// probe disabled, so it is never called.
 #[cfg(not(feature = "mcp"))]
 fn probe_mcp_max_body_bytes() -> (String, String) {
+    (String::new(), String::new())
+}
+
+/// `mcp_max_wait_seconds`: an hour asked for against a one-second ceiling.
+///
+/// Driven over the MCP stdio server for the same reason `mcp_max_body_bytes`
+/// is: there is no other surface this key is visible on.
+///
+/// The observation is the EFFECTIVE deadline `await_condition` reports, which
+/// is the value it actually waited to, not a copy of the setting: the tool
+/// computes it as `min(requested, ceiling)` and answers with it. Asking for an
+/// hour makes the ceiling the only thing that can decide the answer.
+#[cfg(feature = "mcp")]
+fn probe_mcp_max_wait_seconds() -> (String, String) {
+    fn effective_timeout(cfg: Option<&std::path::Path>, pcap: &std::path::Path) -> u64 {
+        use std::io::{BufRead, BufReader, Write};
+        let mut args: Vec<String> = vec![
+            "--mcp".into(),
+            "-N".into(),
+            "-I".into(),
+            pcap.to_str().unwrap().into(),
+            "--quiet".into(),
+        ];
+        match cfg {
+            Some(c) => {
+                args.push("--config".into());
+                args.push(c.to_str().unwrap().into());
+            }
+            None => args.push("--no-config".into()),
+        }
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn mcp server");
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut out = BufReader::new(child.stdout.take().expect("stdout"));
+
+        let send = |w: &mut std::process::ChildStdin, v: serde_json::Value| {
+            writeln!(w, "{v}").expect("write");
+            w.flush().expect("flush");
+        };
+        send(
+            &mut stdin,
+            serde_json::json!({
+            "jsonrpc":"2.0","id":1,"method":"initialize",
+            "params":{"protocolVersion":"2024-11-05","capabilities":{},
+                      "clientInfo":{"name":"probe","version":"0"}}}),
+        );
+        let mut line = String::new();
+        out.read_line(&mut line).expect("initialize reply");
+        send(
+            &mut stdin,
+            serde_json::json!({
+            "jsonrpc":"2.0","method":"notifications/initialized"}),
+        );
+        // A filter every capture with one INVITE satisfies, so the wait ends on
+        // its first look and the probe measures the ceiling rather than the
+        // clock.
+        send(
+            &mut stdin,
+            serde_json::json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"await_condition","arguments":{
+                "filter":"method == 'INVITE'","timeout_seconds":3600}}}),
+        );
+
+        let mut seconds = 0u64;
+        for _ in 0..40 {
+            line.clear();
+            if out.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if v["id"] != serde_json::json!(2) {
+                continue;
+            }
+            let text = v["result"]["content"][0]["text"].as_str().unwrap_or("");
+            let parsed: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+            seconds = parsed["timeout_seconds"].as_u64().unwrap_or(0);
+            break;
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        seconds
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let pcap = write_multi_call_pcap(&dir, 1);
+    let cfg = write_config(&dir, "[limits]\nmcp_max_wait_seconds = 1\n");
+    (
+        format!("timeout={}", effective_timeout(None, &pcap)),
+        format!("timeout={}", effective_timeout(Some(&cfg), &pcap)),
+    )
+}
+
+/// Placeholder for a build without the `mcp` feature; the registry marks the
+/// probe disabled, so it is never called.
+#[cfg(not(feature = "mcp"))]
+fn probe_mcp_max_wait_seconds() -> (String, String) {
     (String::new(), String::new())
 }
 

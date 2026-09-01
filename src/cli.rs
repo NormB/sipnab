@@ -1963,6 +1963,31 @@ pub struct SecurityArgs {
         value_name = "FILE"
     )]
     pub tui_audit_file: Option<String>,
+
+    /// Print a firewall rule for every source the detectors accused, in
+    /// DIALECT: `fail2ban`, `nftables`, `iptables` or `all`.
+    ///
+    /// **sipnab recommends and does not apply.** The rule is text on stdout:
+    /// nothing here opens a connection to a firewall, holds a credential or
+    /// shells out. The operator reads it, decides, and runs it.
+    ///
+    /// Each block carries the evidence — how many findings named the address,
+    /// which rules they tripped, and when — and the COUNTER-evidence beside
+    /// it. A source that also completed a registration or a call is one a
+    /// block would disconnect, so the address-specific dialects comment their
+    /// commands out for it and the fail2ban dialect puts it in `ignoreip`.
+    ///
+    /// Needs a detector to have been armed (`--kill-scanner`, `--kill-ua`,
+    /// `--fraud-detect`, `--reg-flood`, `--digest-leak`); with none of them
+    /// nothing is ever accused, and the empty output says so rather than
+    /// reading as an all-clear.
+    #[arg(
+        help_heading = "Security",
+        long = "recommend-block",
+        value_name = "DIALECT",
+        value_enum
+    )]
+    pub recommend_block: Option<crate::security::recommend::BlockDialect>,
 }
 
 /// `Event execution` flags.
@@ -2481,6 +2506,28 @@ pub struct McpArgs {
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub mcp_max_body_bytes: Option<u64>,
+    /// Longest wait ONE `await_condition` MCP call may take, in seconds.
+    ///
+    /// `--mcp-max-rows` bounds how much an answer carries; this bounds how
+    /// long a caller may occupy a `--mcp-max-concurrent` permit while
+    /// producing no answer at all. `await_condition` exists so an agent can
+    /// wait for a condition on a live capture instead of re-asking
+    /// `tail_dialogs` and paying a model turn per empty reply — and an
+    /// unbounded wait is a held connection by another name.
+    ///
+    /// sipnab CLAMPS a larger request to it and says so in the response,
+    /// which is what `--mcp-max-rows` does with an over-large `limit`.
+    ///
+    /// No clap `default_value`, for the reason given on
+    /// [`Self::mcp_max_rows`]. The default lives in
+    /// [`Cli::DEFAULT_MCP_MAX_WAIT_SECONDS`].
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-max-wait-seconds",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub mcp_max_wait_seconds: Option<u64>,
 
     /// Findings `save_findings` accepts before refusing further writes
     /// (default 1000). Config: `[limits] mcp_max_findings`.
@@ -2535,6 +2582,34 @@ pub struct McpArgs {
         value_name = "HOST"
     )]
     pub mcp_allowed_host: Vec<String>,
+
+    /// Public URL clients reach this MCP server at, published as the
+    /// OAuth 2.0 protected-resource identifier (RFC 9728).
+    ///
+    /// Setting it turns on discovery: the `401` challenge gains a
+    /// `resource_metadata` parameter, and the metadata document is served
+    /// unauthenticated at the well-known path RFC 9728 §3.1 derives from this
+    /// value — `https://sipnab.example.com/mcp` publishes at
+    /// `/.well-known/oauth-protected-resource/mcp`. Leave it unset and the
+    /// challenge still appears; only the metadata half is off.
+    ///
+    /// It has to be given rather than guessed. Behind the TLS-terminating
+    /// proxy this deployment expects, sipnab sees a cleartext request and no
+    /// scheme, so anything it derived from the socket or the `Host` header
+    /// would name `http://` for a resource the client reached over `https://`
+    /// — and RFC 9728 §3.3 makes a client that finds that mismatch discard the
+    /// document. A forwarded header is not an answer either: sipnab does not
+    /// trust `X-Forwarded-*` anywhere (see `--api` rate limiting).
+    ///
+    /// Must be absolute, `http` or `https`, with no userinfo, query or
+    /// fragment; a rejected value is a startup error, not a silently wrong
+    /// document.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-resource-url",
+        value_name = "URL"
+    )]
+    pub mcp_resource_url: Option<String>,
 
     /// Directory the MCP file tools may read from and write to.
     ///
@@ -3294,6 +3369,14 @@ impl Cli {
     /// definition can serve both — `mcp::shape::DEFAULT_MAX_BODY_BYTES` reads
     /// it from here.
     pub const DEFAULT_MCP_MAX_BODY_BYTES: u64 = 4_096;
+    /// Default ceiling on one `await_condition` wait, in seconds — see
+    /// [`Self::DEFAULT_DIALOG_LIMIT`].
+    ///
+    /// The number lives here rather than in `mcp::tools::await_condition`
+    /// for the reason [`Self::DEFAULT_MCP_MAX_BODY_BYTES`] records: this
+    /// module is compiled into every native build while that one is not, so
+    /// a single definition can serve both.
+    pub const DEFAULT_MCP_MAX_WAIT_SECONDS: u64 = 60;
     /// Default color mode. `auto` means "color when stdout is a terminal".
     pub const DEFAULT_COLOR: &'static str = "auto";
     /// Default scanner-kill response code. `200 OK` is the sipgrep default: it
@@ -3447,6 +3530,22 @@ impl Cli {
             .mcp_max_body_bytes
             .or(config.limits.mcp_max_body_bytes)
             .unwrap_or(Self::DEFAULT_MCP_MAX_BODY_BYTES) as usize
+    }
+
+    /// MCP wait ceiling: `--mcp-max-wait-seconds`, else
+    /// `[limits] mcp_max_wait_seconds`, else the default. See
+    /// [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// Bounds the DURATION of one `await_condition` call where
+    /// [`Self::mcp_row_cap`] and [`Self::mcp_body_cap`] bound the size of an
+    /// answer. It is the only one of the three that bounds a resource the
+    /// caller holds while returning nothing.
+    #[must_use]
+    pub fn mcp_wait_cap(&self, config: &crate::config::Config) -> u64 {
+        self.mcp_args
+            .mcp_max_wait_seconds
+            .or(config.limits.mcp_max_wait_seconds)
+            .unwrap_or(Self::DEFAULT_MCP_MAX_WAIT_SECONDS)
     }
 
     /// Per-stream loss-log retention: `--max-lost-sequences`, else
@@ -4344,6 +4443,14 @@ impl Cli {
             (self.output_args.hexdump, "--hexdump"),
             (self.output_args.fail2ban, "--fail2ban"),
             (self.output_args.group_by.is_some(), "--group-by"),
+            // A block of root-shell commands on stdout, printed once the
+            // capture has ended. Same shape as the rest of this list, and the
+            // same reason: under the TUI it would be written over the terminal
+            // the operator is reading.
+            (
+                self.security_args.recommend_block.is_some(),
+                "--recommend-block",
+            ),
         ]
         .iter()
         .filter(|(active, _)| *active)
@@ -6443,6 +6550,17 @@ mod tests {
                 requires: &[],
             },
             Case {
+                key: "mcp_max_wait_seconds",
+                flag: "--mcp-max-wait-seconds",
+                set_key: |l| l.mcp_max_wait_seconds = Some(600),
+                key_value: 600,
+                flag_value: "5",
+                flag_number: 5,
+                shipped: Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
+                resolve: |c, cfg| c.mcp_wait_cap(cfg),
+                requires: &[],
+            },
+            Case {
                 key: "max_tcp_buffer",
                 flag: "--max-tcp-buffer",
                 set_key: |l| l.max_tcp_buffer = Some(262_144),
@@ -6661,6 +6779,7 @@ mod tests {
             "--max-metadata-file-bytes",
             "--max-gunzip-bytes",
             "--mcp-max-body-bytes",
+            "--mcp-max-wait-seconds",
             // `--api-rate-limit-per-peer` is deliberately absent: 0 DISABLES
             // that cap, the reading every per-peer rate knob here carries.
             "--api-max-rows",

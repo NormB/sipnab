@@ -26,6 +26,28 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
   `auth::TokenVerifier`), sharing the same code path as the REST API.
   Signed tokens with expiry / rotation / revocation are also supported —
   see [auth.md](auth.md).
+- **Every `401` says what it wants.** The rejection carries
+  `WWW-Authenticate: Bearer realm="sipnab"`, as
+  [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html) §15.5.2 requires of
+  any `401`, plus `error="invalid_token"`
+  ([RFC 6750](https://www.rfc-editor.org/rfc/rfc6750.html) §3.1) when a token
+  the client presented a token and it failed. Presenting nothing carries no error code, which is
+  what §3.1 asks for and what lets an operator tell a misconfigured client from
+  a wrong token. Every rejected credential produces the same challenge: telling
+  expired from revoked from forged would make the header an oracle.
+- **Discovery is available; sipnab is not an authorization server.**
+  `--mcp-resource-url` publishes an
+  [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html) protected-resource
+  metadata document at the well-known path derived from that URL, unauthenticated
+  by design, and adds `resource_metadata` to the challenge. It names the
+  resource, the scopes this surface understands, and where the surface is
+  documented — and nothing else: no bind address, no `Host` allowlist, no
+  token, no signing key, no capture. It advertises no `authorization_servers`,
+  because sipnab issues and validates no OAuth tokens and a client sent to
+  fetch one elsewhere would return holding a credential this server rejects.
+  The operator names the URL rather than sipnab deriving it: behind a TLS-terminating proxy
+  sipnab cannot see the scheme a client used, and [RFC 9728 §3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) makes a client
+  discard a document whose `resource` does not match the URL it requested.
 - **Host header allowlist.** rmcp's DNS-rebind protection runs by
   default (`localhost`/`127.0.0.1`/`::1`); extend with
   `--mcp-allowed-host` for non-loopback clients.
@@ -53,7 +75,7 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 55 carry MCP annotations, so a host
+- **Every tool declares what it does.** All 56 carry MCP annotations, so a host
   can decide what to call without asking. Thirty are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the five that are
   not. Every tool sets `openWorldHint` to `false`, because sipnab answers from
@@ -216,6 +238,7 @@ to the one this run is already answering questions about:
 | `sipnab://live/dialogs` | every dialog the loaded capture holds |
 | `sipnab://live/dialogs/<Call-ID>` | one dialog, by Call-ID |
 | `sipnab://lint/<rule-id>` | one conformance rule's catalog entry |
+| `sipnab://filter/<alias>` | one diagnostic alias, expanded against this run's thresholds |
 
 The two live ones render through the same code path as `list_dialogs`, under
 the same `--mcp-max-rows` ceiling and the same fencing of untrusted text. The
@@ -233,6 +256,18 @@ change.
 The same function `explain_rule` uses builds `sipnab://lint/<rule-id>`,
 for the same reason.
 
+`sipnab://filter/<alias>` is the one URI here that carries something no
+document can. The alias NAMES — `problems`, `slow-setup`, `short-calls` and the
+rest — appear in
+[the filter DSL reference](filter-dsl.md#named-aliases), which sipnab also
+serves verbatim as `sipnab://reference/filter-dsl`. The NUMBERS in each
+expansion are not: they come from the thresholds this run resolved, so on a
+server whose operator tuned `[diagnosis]`, `slow-setup` means something the
+published page does not say. Reading the URI returns the alias, the DSL
+expression this server would actually evaluate, and a note not to cache it —
+the same `expand_alias` that `find_problems` compiles, so the expression an
+agent reads is the expression the tool runs.
+
 ### Templates and completions
 
 `resources/templates/list` names the URI shapes a client may construct, each
@@ -243,6 +278,7 @@ state:
 |---|---|---|
 | `sipnab://live/dialogs/{call_id}` | `call_id` | the Call-IDs the capture holds right now |
 | `sipnab://lint/{rule_id}` | `rule_id` | the conformance rule catalog |
+| `sipnab://filter/{alias}` | `alias` | the diagnostic aliases `find_problems` takes as `kinds` |
 | `sipnab://reference/{topic}` | `topic` | the reference pages `resources/list` names |
 | `sipnab:///{filename}` | `filename` | the directory `--mcp-file-root` names |
 
@@ -263,7 +299,11 @@ Three bounds worth knowing:
   with it.
 - **100 values per response**, the spec's ceiling, with `total` reporting what
   actually matched so a client can see it needs to narrow rather than believing
-  it has the whole set.
+  it has the whole set. `--mcp-max-rows` lowers it further where an operator
+  set it lower: a completion is a query, a Call-ID is the most identifying row
+  sipnab holds, and this method reaches the store without the audit line, the
+  scope check or the rate limit that `tools/call` applies. One ceiling for both
+  doors, not a second one that happens to be smaller today.
 
 MCP has no way to complete a TOOL argument — the primitive completes prompt
 arguments and resource-template variables only — so a `call_id` completion is
@@ -317,7 +357,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions, where
 
 ## What the write verbs do
 
-Forty-five of the 55 tools are `readOnlyHint: true`. These ten are not, and
+Forty-six of the 56 tools are `readOnlyHint: true`. These ten are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 
@@ -341,6 +381,45 @@ service, so an agent cannot use a tool here to reach the network.
 A test walks the registered router and fails if any tool carries no
 `readOnlyHint`, or if the set of non-read-only tools stops matching that table —
 so a new write verb, or an existing tool quietly flipped, cannot ship unnoticed.
+
+### Confirming the two irreversible ones
+
+`shutdown_server` ends the run. `open_capture` clears every dialog and stream
+the process holds, so every Call-ID, cursor and message index an agent has
+collected addresses a capture that no longer exists. A convention guarded both:
+CONVENTION — `dry_run` defaulting to the safe value, so stopping took a
+deliberate second call — and a convention has a structural hole: the second
+call comes from the same agent, on the same reasoning that produced the
+first. It rate-limits an accident. It does not introduce a second party.
+
+**Where the client declares MCP's `elicitation` capability, sipnab asks one.**
+Both tools issue a real `elicitation/create` REQUEST — a form with a single
+required boolean — and wait for the reply before answering the tool call.
+Only `accept` carrying `confirm: true` proceeds. A decline, a cancel, an
+`accept` whose form came back `false`, and a round trip that did not complete
+are all the same thing to the caller: sipnab did nothing.
+
+- `shutdown_server` reports `would_stop: false` and puts the reason in `note`.
+  `confirmed_by_operator` is `true`, `false`, or `null` where sipnab asked nobody.
+- `open_capture` refuses with `invalid_params`, and the message says how many
+  dialogs are still addressable.
+
+Three bounds worth knowing:
+
+- **A dry run asks nobody.** Nothing happens on one, so there is nothing to
+  approve, and a confirmation with no consequence behind it teaches whoever
+  reads it to click through the next one.
+- **A swap that would discard nothing asks nobody**, for the same reason.
+- **A client that did not declare the capability is never sent one, and is not
+  treated as having refused.** Elicitation is a CLIENT capability. Reading
+  "there was nobody to ask" as "they said no" would make `shutdown_server`
+  impossible on every stock client, so the convention remains the floor:
+  `dry_run` still governs, and `--mcp-allow-shutdown` /
+  `--mcp-allow-open-capture` still gate both tools whatever any client says.
+
+`open_capture` settles its three refusals — live source, load in flight, source
+not drained — BEFORE it asks, and again inside the lock that performs the swap.
+Asking first and refusing afterwards would put the question on a false premise.
 
 ## Untrusted capture text
 

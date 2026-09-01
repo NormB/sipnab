@@ -50,6 +50,7 @@ fn nothing_enabled_spawns_nothing() {
         Selection {
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             api_row_cap: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             api_rate_limit_per_peer: sipnab::cli::Cli::DEFAULT_API_RATE_LIMIT_PER_PEER,
             max_tracked_peers: sipnab::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
@@ -88,6 +89,7 @@ fn selection_gates_configured_servers() {
         Selection {
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             api_row_cap: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             api_rate_limit_per_peer: sipnab::cli::Cli::DEFAULT_API_RATE_LIMIT_PER_PEER,
             max_tracked_peers: sipnab::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
@@ -127,6 +129,7 @@ fn invalid_api_addr_is_an_error() {
         Selection {
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             api_row_cap: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             api_rate_limit_per_peer: sipnab::cli::Cli::DEFAULT_API_RATE_LIMIT_PER_PEER,
             max_tracked_peers: sipnab::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
@@ -163,6 +166,7 @@ fn api_on_ephemeral_port_starts_servers_thread() {
         Selection {
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             api_row_cap: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             api_rate_limit_per_peer: sipnab::cli::Cli::DEFAULT_API_RATE_LIMIT_PER_PEER,
             max_tracked_peers: sipnab::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
@@ -206,6 +210,7 @@ fn api_port_in_use_is_a_startup_error() {
         Selection {
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             api_row_cap: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             api_rate_limit_per_peer: sipnab::cli::Cli::DEFAULT_API_RATE_LIMIT_PER_PEER,
             max_tracked_peers: sipnab::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
@@ -250,6 +255,7 @@ fn api_non_loopback_without_auth_is_a_startup_error() {
         Selection {
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             api_row_cap: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             api_rate_limit_per_peer: sipnab::cli::Cli::DEFAULT_API_RATE_LIMIT_PER_PEER,
             max_tracked_peers: sipnab::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
@@ -295,6 +301,7 @@ fn api_tls_flags_are_a_startup_error() {
         Selection {
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             api_row_cap: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             api_rate_limit_per_peer: sipnab::cli::Cli::DEFAULT_API_RATE_LIMIT_PER_PEER,
             max_tracked_peers: sipnab::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
@@ -340,6 +347,7 @@ fn mcp_http_transport_without_feature_is_a_startup_error() {
         Selection {
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             api_row_cap: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             api_rate_limit_per_peer: sipnab::cli::Cli::DEFAULT_API_RATE_LIMIT_PER_PEER,
             max_tracked_peers: sipnab::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
@@ -383,6 +391,7 @@ fn unknown_mcp_transport_is_a_startup_error() {
         Selection {
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             api_row_cap: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             api_rate_limit_per_peer: sipnab::cli::Cli::DEFAULT_API_RATE_LIMIT_PER_PEER,
             max_tracked_peers: sipnab::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
@@ -427,6 +436,7 @@ fn invalid_mcp_bind_is_a_startup_error() {
         Selection {
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             api_row_cap: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             api_rate_limit_per_peer: sipnab::cli::Cli::DEFAULT_API_RATE_LIMIT_PER_PEER,
             max_tracked_peers: sipnab::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
@@ -531,6 +541,7 @@ fn metrics_non_loopback_without_auth_is_a_startup_error() {
         Selection {
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             api_row_cap: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             api_rate_limit_per_peer: sipnab::cli::Cli::DEFAULT_API_RATE_LIMIT_PER_PEER,
             max_tracked_peers: sipnab::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
@@ -573,6 +584,7 @@ fn metrics_on_loopback_ephemeral_port_starts() {
         Selection {
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             api_row_cap: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
             api_rate_limit_per_peer: sipnab::cli::Cli::DEFAULT_API_RATE_LIMIT_PER_PEER,
             max_tracked_peers: sipnab::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,

@@ -50,6 +50,7 @@ ordinary update.
 | [`validate_filter`](#validate_filter) | `expr` | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
 | [`describe_endpoint`](#describe_endpoint) | `ip?`, `user?`, `limit?` | Everything one participant did: dialogs by method and state, INVITE outcomes, REGISTER state, banners, streams, findings |
 | [`tail_dialogs`](#tail_dialogs) | `cursor?`, `limit?` | Cursor-based incremental dialog fetch |
+| [`await_condition`](#await_condition) | `filter`, `timeout_seconds?`, `poll_interval_ms?` | Waits until a filter matches or a deadline passes, whichever is first, so a live capture costs one call instead of a polling loop |
 | [`find_correlated`](#find_correlated) | `call_id`, `limit?` | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
 | [`get_call_tree`](#get_call_tree) | `call_id`, `limit?` | Every leg of one call as a tree, each edge carrying its parent, depth, score, strategy and whether the walk went through it |
 | [`compare_dialogs`](#compare_dialogs) | `call_id_a`, `call_id_b` | Two calls side by side, with the differences named |
@@ -181,8 +182,14 @@ always carried `source_exhausted`. Now every tool that answers from the capture
 does. The exceptions are the tools whose answer cannot move with the load —
 `explain_response_code`, `explain_rule`, `decode_evidence`, `show_evidence`,
 `list_captures`, `list_tls_libraries`, `server_capabilities` and
-`compare_captures`, which reads two files and never the loaded capture — plus
-the tools that answer with a rendered document rather than an object.
+`compare_captures`, which reads two files and never the loaded capture. The
+tools that answer with a rendered document — `render_ladder`, and
+`get_capture_report` / `get_dialog_report` in `markdown` and `text` — have no
+object to put a field in, so they say it in prose instead: a document drawn
+over a capture that is still loading, or over one whose read stopped before its
+end, ends with the same `INCOMPLETE RUN` block `--report` appends, naming each
+reason. A document drawn over a capture read in full says nothing extra,
+because a caveat on every answer is a caveat nobody reads.
 `timeline`, whose payload is a top-level array with no key to carry a field,
 carries the two booleans in a second content block instead.
 
@@ -595,7 +602,13 @@ the two facts under it, `source_exhausted` and `source_stopped_early`, now gate
 it and travel beside it.
 
 `markdown` and `text` answer with a rendered document, which has no envelope to
-carry either flag. Call `capture_status` beside them, or ask for `json`.
+carry either flag, so the document states the fact itself. A report drawn while
+the capture is still loading, or over one whose read stopped before its end,
+ends with an `INCOMPLETE RUN` block naming each reason — the same block
+`--report` appends, and for the same reason: the reader of a rendered report has
+no `$?` and no JSON in front of them, and a partial report looks exactly like a
+whole one. A capture read in full adds nothing and the report ends where it
+always did. Ask for `json` when you want the two booleans as fields.
 
 > Before 0.5.125 this default returned the TEXT rendering. `format` chooses
 > between markdown headings and plain text inside the renderer and never had a
@@ -1072,7 +1085,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.140",
+  "version": "0.5.141",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -1598,6 +1611,113 @@ has finished: stop when it turns `true` instead of polling forever.
 }
 ```
 
+### `await_condition`
+
+Waits until a filter selects at least one dialog, or until a deadline passes —
+whichever happens first. One call replaces a [`tail_dialogs`](#tail_dialogs)
+loop in which every turn that finds nothing still costs a model call.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `filter` | string | A named alias or a filter DSL expression, exactly what [`list_dialogs`](#list_dialogs) accepts. [`validate_filter`](#validate_filter) checks one without waiting. | Required — the call fails. |
+| `timeout_seconds` | u32? | Ceiling is `--mcp-max-wait-seconds` (60 by default). Higher clamps to it and sets `timeout_clamped`. `0` means "look once and answer". | 30 seconds. |
+| `poll_interval_ms` | u32? | Floor is 100 ms. sipnab raises anything smaller and returns the effective value. | 500 ms. |
+
+Returns `{ matched, stopped_because, dialogs, returned, total_matched,
+truncated, elapsed_ms, timeout_seconds, timeout_clamped, poll_interval_ms,
+polls, scans, source_exhausted, capture_identity }`, where `dialogs` holds the
+same summary rows [`list_dialogs`](#list_dialogs) returns, fencing included,
+and is empty unless `matched` is `true`.
+
+There is no page-size argument. This tool answers *did it happen*, and the rows
+are evidence that it did rather than a page to work through — so it returns
+what any list tool returns to a caller that named no `limit`: the default fifty
+rows, cut to `--mcp-max-rows` when the operator set that lower.
+[`list_dialogs`](#list_dialogs) with the same `filter` is the paging surface,
+with the cursors and field projection that belong there. The response carries
+reported either way, so a bounded page never reads as a smaller event than it
+was.
+
+**A deadline that passes is an answer, not an error.** It comes back as a
+successful call carrying `matched: false` — because "the fault has not
+reproduced" and "the tool broke" are different findings, and an agent has to
+be able to tell them apart.
+
+`stopped_because` names which of three endings this was, and the two negative
+ones differ in whether asking again could ever help:
+
+| Value | `matched` | Meaning |
+|---|---|---|
+| `condition_met` | `true` | The filter selected at least one dialog |
+| `deadline` | `false` | The wait ran out. Not yet — asking again may still find it |
+| `source_exhausted` | `false` | The capture source drained. Not ever, from this capture: the wait returns early rather than holding a slot to learn nothing |
+
+The numbers this tool applies, and what moves each one:
+
+- **Deadline default: 30 seconds** (`DEFAULT_TIMEOUT_SECONDS`). Used when the
+  call names no `timeout_seconds`.
+- **Deadline ceiling: 60 seconds** (`DEFAULT_MCP_MAX_WAIT_SECONDS`, which
+  `await_condition` reads as `DEFAULT_MAX_WAIT_SECONDS`). The shipped value of
+  `--mcp-max-wait-seconds`; the operator moves it, and a request above it is
+  clamped rather than refused.
+- **Poll default: 500 milliseconds** (`DEFAULT_POLL_INTERVAL_MS`). Used when
+  the call names no `poll_interval_ms`.
+- **Poll floor: 100 milliseconds** (`MIN_POLL_INTERVAL_MS`). A smaller request
+  meets that floor, so no caller can turn this into a spin loop, and the
+  response carries the value actually used.
+
+`polls` counts the looks and `scans` counts the looks that ran the filter. They
+differ because both stores number their revisions, so a look at a capture that
+has not moved resolves by comparing two integers rather than by re-running
+the filter — an idle capture costs almost nothing to watch.
+
+Nothing this call allocates outlives it. There is no subscription registry, no
+per-client filter and no background task, which is why the deadline is not a
+detail: it is what ends the server's obligation. `--mcp-max-wait-seconds`
+bounds that obligation for the same reason `--mcp-max-rows` bounds a response,
+and for a reason of its own — a waiting call occupies one of
+`--mcp-max-concurrent` slots while producing nothing.
+
+```jsonc
+// await_condition { "filter": "state == Failed", "timeout_seconds": 20 }
+{
+  "schema_version": 1,
+  "filter": "state == Failed",
+  "matched": true,
+  "stopped_because": "condition_met",
+  "dialogs": [
+    {
+      "call_id": "1-1966@10.0.2.20",
+      "state": "Failed",
+      "method": "INVITE",
+      "from_user": "⟦untrusted-capture-data⟧sipp⟦/untrusted-capture-data⟧",
+      "to_user": "⟦untrusted-capture-data⟧test⟦/untrusted-capture-data⟧",
+      "msg_count": 4,
+      "duration_sec": 1.204,
+      "created_at": "2016-11-26T14:52:59.666393+00:00",
+      "updated_at": "2016-11-26T14:53:00.870676+00:00",
+      "frame": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546"
+    }
+  ],
+  "returned": 1,
+  "total_matched": 1,
+  "truncated": false,
+  "elapsed_ms": 4512,
+  "timeout_seconds": 20,
+  "timeout_clamped": false,
+  "poll_interval_ms": 500,
+  "polls": 10,
+  "scans": 3,
+  "source_exhausted": false,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "1d1a718cb5c33b7c52754-1",
+    "dialog_generation": 41,
+    "stream_generation": 7
+  }
+}
+```
+
 ### `find_correlated`
 
 Finds the other legs of one call — the far side of a B2BUA, SBC or PBX hop.
@@ -2051,7 +2171,11 @@ Per-call diagnostic report for one Call-ID. Backed by
 `"json"` answers with the structured object below. `"markdown"` and `"text"`
 answer with one text block holding the rendered report, byte-identical to what
 [`render_ladder`](#render_ladder) produces for the same dialog. All three append
-the provenance note as a second content block.
+the provenance note as a second content block. The two rendered formats also
+carry the `INCOMPLETE RUN` block described under
+[`get_capture_report`](#get_capture_report) when the capture was not read in
+full. `"json"` carries `source_exhausted` and `source_stopped_early` as fields
+instead.
 
 The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
 
@@ -2171,6 +2295,11 @@ Output is byte-identical to the report
 `sipnab -N --call-report <id> --no-cli-print` writes for the same dialog.
 `--no-cli-print` matters for the comparison: without it the CLI writes the whole
 capture's per-message dump ahead of the report, and the tool never does.
+
+Over a capture that was not read in full — still loading, or a read that
+stopped before the file's end — the tool appends an `INCOMPLETE RUN` block
+after the ladder, which `--call-report` does not. The ladder itself does not
+change: the block goes after it, so no line of the drawing moves.
 
 ```text
 # Call Report: 1-1966@10.0.2.20
@@ -3939,7 +4068,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.140 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.141 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -4250,6 +4379,23 @@ Four refusals, each naming what to do instead:
 | The source has not drained | The original reader is still filling the stores. Poll `capture_status` until `source_exhausted` is true |
 | A load is already running | Poll `capture_status` until `load.done` is true |
 
+**A fifth, where the client can carry the question.** If your client declared
+MCP's `elicitation` capability, a swap that would discard dialogs asks the
+person driving it to confirm first, and a decline refuses the call:
+
+```text
+refusing to open 'outage-0722.pcap': the confirmation was declined; nothing
+was done. The loaded capture is untouched and its 13 dialog(s) are still
+addressable.
+```
+
+The four refusals above resolve *before* the question, so sipnab asks nobody
+to approve a swap sipnab was going to refuse anyway. A swap that would discard
+nothing does not ask, and a client that declared no elicitation capability is
+not asked and is not treated as having refused — `--mcp-allow-open-capture`
+remains the guard it always was. See
+[the protocol page](mcp-protocol.md#confirming-the-two-irreversible-ones).
+
 A filename must be a bare name inside the root, under the same rule every file
 tool applies. sipnab also refuses a capture that belongs to this run's own `-I`
 set, with the output guard's wording about overwriting — that file is already
@@ -4273,8 +4419,9 @@ A stock server cannot be stopped by an agent.
 | `discard_unsaved` | bool? | `true` accepts losing the packets a live capture holds in memory. | `false` — a live capture with unsaved packets refuses to stop. |
 
 Returns `dry_run`, `would_stop`, `live`, `unsaved`, `dialogs`, `streams`,
-`saved_to`, `note` and `schema_version`. Read `would_stop` rather than assuming:
-it is `false` on a dry run and on a refusal alike, and `note` says which.
+`saved_to`, `confirmed_by_operator`, `note` and `schema_version`. Read
+`would_stop` rather than assuming: it is `false` on a dry run, on a refusal and
+on a declined confirmation alike, and `note` says which.
 
 ```jsonc
 // shutdown_server {}   — no arguments means DRY RUN
@@ -4287,6 +4434,7 @@ it is `false` on a dry run and on a refusal alike, and `note` says which.
   "dialogs": 13,
   "streams": 2,
   "saved_to": null,
+  "confirmed_by_operator": null,
   "note": "dry run — nothing stopped. Call again with dry_run=false to stop."
 }
 ```
@@ -4295,6 +4443,30 @@ Stopping takes a deliberate second call with `dry_run: false`. On a **live**
 capture holding packets written nowhere, it refuses outright unless you pass
 `save_to` or `discard_unsaved: true` — losing a capture to a misread sentence
 is the failure worth engineering against.
+
+**And, where the client can carry the question, sipnab asks a person.** If your
+client declared MCP's `elicitation` capability, a `dry_run: false` call sends a
+real `elicitation/create` request and waits for the answer. Only `accept`
+carrying `confirm: true` stops the process:
+
+```jsonc
+// shutdown_server { "dry_run": false }, confirmation declined
+{
+  "schema_version": 1,
+  "dry_run": false,
+  "would_stop": false,
+  "confirmed_by_operator": false,
+  "note": "the confirmation was declined; nothing was done"
+  // ...
+}
+```
+
+`confirmed_by_operator` is `null` where sipnab asked nobody — a dry run, or a
+client that declared no elicitation capability. That case is **not** a refusal:
+`dry_run` remains the guard it always was, so the tool behaves exactly as it
+did on any client that cannot answer. `save_to` writes only on the path that
+actually stops, so a declined confirmation leaves no file behind. See
+[the protocol page](mcp-protocol.md#confirming-the-two-irreversible-ones).
 
 ### `start_tls_capture`
 

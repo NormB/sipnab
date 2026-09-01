@@ -587,6 +587,238 @@ fn opening_an_intact_capture_clears_the_partial_read_record() {
         "the previous file's partial read is not this file's: {cleared}"
     );
 }
+// ── VAL17: the rendered documents ───────────────────────────────────────
+
+/// The word `--report` leads its partial-read block with (VAL2).
+///
+/// Spelled out here rather than read from the constant the renderer uses: a
+/// gate that imports the value it is checking agrees with that value whatever
+/// it becomes, which is how a renamed heading would pass every test and reach
+/// a reader who had learned to scan for the old one.
+const INCOMPLETE: &str = "INCOMPLETE RUN";
+
+/// Every tool-and-format pair that answers with a drawn document.
+///
+/// These are exactly the answers with no key to put `source_exhausted` in,
+/// which is why `render_ladder` is excused from [`PROBES`] and why the two
+/// report tools are probed there only in their `json` arm. The fact still has
+/// to reach their reader, so on this surface it arrives as prose.
+///
+/// `{CALL}` is replaced with a Call-ID from the loaded store.
+const RENDERED: &[(&str, &str)] = &[
+    (
+        "render_ladder",
+        r#"{"call_id":"{CALL}","format":"markdown"}"#,
+    ),
+    ("render_ladder", r#"{"call_id":"{CALL}","format":"text"}"#),
+    ("get_capture_report", r#"{"format":"markdown"}"#),
+    ("get_capture_report", r#"{"format":"text"}"#),
+    (
+        "get_dialog_report",
+        r#"{"call_id":"{CALL}","format":"markdown"}"#,
+    ),
+    (
+        "get_dialog_report",
+        r#"{"call_id":"{CALL}","format":"text"}"#,
+    ),
+];
+
+/// The first content block of a reply, as the text it literally holds.
+///
+/// [`payload`] parses; these answers are documents and must not parse, which
+/// is the premise [`rendered_documents`] proves before asserting anything
+/// about them.
+fn document(reply: &Value) -> String {
+    reply["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no text content block in {reply}"))
+        .to_string()
+}
+
+/// Every [`RENDERED`] answer, as `(what was called, what came back)`.
+///
+/// Each one is checked to be a document rather than an envelope before it is
+/// returned. Without that the whole section could pass while measuring the
+/// `json` arm — a tool that started answering these formats with an object
+/// would be asserted about under a name that no longer described it.
+fn rendered_documents(wire: &mut Wire, call_id: &str) -> Vec<(String, String)> {
+    assert!(
+        RENDERED.len() >= 6,
+        "only {} rendered formats; three tools answer with a document in two \
+         formats each, so this gate is checking less than the surface has",
+        RENDERED.len()
+    );
+    let mut out = Vec::new();
+    for (tool, template) in RENDERED {
+        let raw = template.replace("{CALL}", call_id);
+        let args: Value = serde_json::from_str(&raw)
+            .unwrap_or_else(|e| panic!("{tool}: probe arguments are not JSON: {e}"));
+        let label = format!("{tool} {template}");
+        let reply = wire.call(tool, args);
+        assert_ne!(
+            reply["result"]["isError"],
+            json!(true),
+            "{label} refused its probe: {reply}"
+        );
+        let text = document(&reply);
+        assert!(
+            !text.trim().is_empty(),
+            "{label} answered with nothing at all"
+        );
+        assert!(
+            serde_json::from_str::<Value>(&text).is_err(),
+            "{label} answered with JSON, so it has an envelope and belongs in \
+             PROBES; this list is for the answers that have none: {text}"
+        );
+        out.push((label, text));
+    }
+    out
+}
+
+/// A document drawn over a capture that stopped early says so, in prose.
+///
+/// VAL17. `render_ladder` and the `markdown`/`text` arms of the two report
+/// tools answer with a drawn document, which has no key to carry
+/// `source_exhausted` — so the reader of a ladder was told, by the tool docs,
+/// to make a second call to a different tool for the fact every JSON answer
+/// on this surface now carries in its own envelope. A reader of a rendered
+/// ladder has no `$?` and no JSON in front of them, which is precisely the
+/// case `--report`'s `INCOMPLETE RUN` block was added for (VAL2).
+#[test]
+fn a_rendered_document_over_a_partial_capture_says_so_in_prose() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let cut = write_truncated_capture(dir.path(), "cut.pcap");
+
+    let mut wire = Wire::start(&cut, &[]);
+    wire.drain();
+
+    // The premise, off the wire rather than assumed: this capture really did
+    // stop early, and really was read to the end of what there was.
+    let status = payload(&wire.call("capture_status", json!({})));
+    assert_eq!(
+        status[STOPPED_EARLY],
+        json!(true),
+        "the truncated fixture must be recorded as stopped early, or nothing \
+         below is measuring a partial read: {status}"
+    );
+    assert_eq!(status[EXHAUSTED], json!(true), "{status}");
+
+    let call_id = wire.a_call_id();
+    for (label, doc) in rendered_documents(&mut wire, &call_id) {
+        assert!(
+            doc.contains(INCOMPLETE),
+            "{label} rests on a partial read and its reader is looking at \
+             prose, not an envelope. `--report` states this fact in the \
+             report itself; a rendered document has to as well: {doc}"
+        );
+        // `at > 0` alone would NOT hold this line: the block opens with a
+        // blank line, so a prepended one still starts at index 1 and the
+        // check passes over the very mutation it exists to catch. Both ends
+        // are asserted directly instead.
+        assert!(
+            !doc.trim_start().starts_with(INCOMPLETE),
+            "{label} LEADS with the notice, so the drawing no longer begins \
+             the document a reader is looking at: {doc}"
+        );
+        assert!(
+            doc.trim_end_matches('\n')
+                .lines()
+                .next_back()
+                .is_some_and(|last| last.starts_with("  - ")),
+            "{label} does not END with the block. It is appended the way \
+             `--report` appends it, so nothing is written into the drawing \
+             and no column of it moves: {doc}"
+        );
+        assert!(
+            doc.contains("partial read"),
+            "{label} says the answer is incomplete without saying which of \
+             the two facts made it so: {doc}"
+        );
+    }
+}
+
+/// A document drawn while the capture is still loading says that instead.
+///
+/// The other half of "is this whole": a file still arriving is not exhausted,
+/// and it is a different sentence from a file that was read to a premature
+/// end. Only `get_capture_report` is driven here, because it is the one
+/// rendering tool that needs no Call-ID — `open_capture` clears the store, so
+/// mid-load there is no id to hand the per-dialog renderers that is not
+/// itself a race.
+#[test]
+fn a_document_drawn_mid_load_says_the_capture_is_still_being_read() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let big = dir.path().join("big.pcap");
+    write_big_capture(&big, BIG_CALLS);
+
+    let root = dir.path().to_string_lossy().into_owned();
+    let mut wire = Wire::start(
+        &sample(INTACT),
+        &["--mcp-file-root", &root, "--mcp-allow-open-capture"],
+    );
+    wire.drain();
+    wire.call("open_capture", json!({"filename": "big.pcap"}));
+
+    let drawn = document(&wire.call("get_capture_report", json!({"format": "markdown"})));
+
+    // The premise is proved AFTER the measurement, deliberately.
+    // `source_exhausted` only ever goes false -> true within one capture, so a
+    // reading of `false` taken now proves it was false at the earlier call as
+    // well. Asking first would prove nothing about what happened after.
+    let status = payload(&wire.call("capture_status", json!({})));
+    assert_eq!(
+        status[EXHAUSTED],
+        json!(false),
+        "the load finished before the document was drawn, so the window was \
+         missed and this test measured a whole capture. Raise BIG_CALLS: \
+         {status}"
+    );
+
+    assert!(
+        drawn.contains(INCOMPLETE),
+        "a report rendered over a capture that is still arriving describes \
+         what had loaded, and the reader has no envelope to learn that from: \
+         {drawn}"
+    );
+    assert!(
+        drawn.contains("still being read"),
+        "a still-loading capture and a truncated one are different \
+         situations, and a reader who has to act on one of them cannot be \
+         handed a sentence that fits both: {drawn}"
+    );
+}
+
+/// A whole capture is not accused, and its documents are untouched.
+///
+/// A caveat that fires on every answer is one nobody reads. `--report` settled
+/// this: `report_notice` returns `None` on a clean run and the report ends
+/// exactly where it used to. This mirrors that decision rather than making a
+/// second one.
+#[test]
+fn a_rendered_document_over_a_whole_capture_says_nothing() {
+    let mut wire = Wire::start(&sample(INTACT), &[]);
+    wire.drain();
+
+    let call_id = wire.a_call_id();
+    for (label, doc) in rendered_documents(&mut wire, &call_id) {
+        assert!(
+            !doc.contains(INCOMPLETE),
+            "{label} was drawn over a capture read in full and accuses it \
+             anyway. A warning on every answer is a warning nobody reads, and \
+             it is the same defect as a missing one pointed the other way: \
+             {doc}"
+        );
+    }
+
+    let ladder = document(&wire.call(
+        "render_ladder",
+        json!({"call_id": call_id, "format": "markdown"}),
+    ));
+    assert!(
+        ladder.starts_with("# Call Report"),
+        "the drawing opens exactly as it always did: {ladder}"
+    );
+}
 
 // ── no regression on an intact, drained capture ─────────────────────────
 
@@ -700,6 +932,13 @@ const PROBES: &[(&str, &str)] = &[
     ("capture_status", r#"{}"#),
     ("capture_health", r#"{"sample_seconds":1}"#),
     ("tail_dialogs", r#"{}"#),
+    // One second, and a filter that need not match: this is about the
+    // envelope, and a drained capture ends the wait on its first look
+    // anyway. A default deadline here would add 30 seconds to the suite.
+    (
+        "await_condition",
+        r#"{"filter":"state == 'InCall'","timeout_seconds":1}"#,
+    ),
     ("security_findings", r#"{}"#),
     ("get_dialog", r#"{"call_id":"{CALL}"}"#),
     ("get_dialog_report", r#"{"call_id":"{CALL}"}"#),
@@ -736,7 +975,8 @@ const PROBES: &[(&str, &str)] = &[
 const NOT_PROBED: &[(&str, &str)] = &[
     (
         "render_ladder",
-        "answers with a drawn document, not an envelope",
+        "answers with a drawn document, not an envelope; the prose it carries \
+         instead is driven by RENDERED above",
     ),
     (
         "timeline",
@@ -773,23 +1013,14 @@ const NOT_PROBED: &[(&str, &str)] = &[
     ("stop_tls_capture", "the other half of the uprobe pair"),
 ];
 
-/// Tools whose answer is derived from the capture, read out of the source.
+/// Every `#[tool]` block under `src/mcp/` whose text holds one of `markers`.
 ///
-/// The set is DERIVED rather than typed, so a tool added tomorrow is measured
-/// against this gate without anyone remembering to add it. The markers are the
-/// ways a handler reaches the capture: the two stores directly, or one of the
-/// helpers that reads them for it.
-fn capture_derived_tools() -> Vec<String> {
-    const MARKERS: &[&str] = &[
-        "self.dialog_store",
-        "self.stream_store",
-        "self.capture.read",
-        "self.dialog_page",
-        "self.timeline_buckets",
-        "self.alert_engine",
-        "self.build_vcon",
-    ];
-
+/// Shared by the two derivations below rather than written twice. They look
+/// for different markers over the SAME set of blocks, and a second copy of
+/// the file walk and the block boundary is a second place for either to go
+/// wrong: one derivation would then agree with any implementation while the
+/// other held the line, and nothing would say which of them was blind.
+fn tools_matching(markers: &[&str]) -> Vec<String> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/mcp");
     let mut files: Vec<PathBuf> = Vec::new();
     for dir in [root.clone(), root.join("tools")] {
@@ -825,7 +1056,7 @@ fn capture_derived_tools() -> Vec<String> {
             else {
                 continue;
             };
-            if MARKERS.iter().any(|m| block.contains(m)) {
+            if markers.iter().any(|m| block.contains(m)) {
                 found.push(name.to_string());
             }
         }
@@ -833,6 +1064,64 @@ fn capture_derived_tools() -> Vec<String> {
     found.sort();
     found.dedup();
     found
+}
+
+/// Tools whose answer is derived from the capture, read out of the source.
+///
+/// The set is DERIVED rather than typed, so a tool added tomorrow is measured
+/// against this gate without anyone remembering to add it. The markers are the
+/// ways a handler reaches the capture: the two stores directly, or one of the
+/// helpers that reads them for it.
+fn capture_derived_tools() -> Vec<String> {
+    tools_matching(&[
+        "self.dialog_store",
+        "self.stream_store",
+        "self.capture.read",
+        "self.dialog_page",
+        "self.timeline_buckets",
+        "self.alert_engine",
+        "self.build_vcon",
+    ])
+}
+
+/// Tools that answer with a rendered document, read out of the source.
+///
+/// The marker is the arm that turns a caller's `format` into a rendering:
+/// past it the tool hands back prose, and prose is what has no envelope. This
+/// is derived for the reason [`capture_derived_tools`] is — the fourth tool to
+/// grow a `markdown` arm has to be measured by [`RENDERED`] without anyone
+/// remembering to put it there.
+fn tools_that_render_a_document() -> Vec<String> {
+    tools_matching(&["ReportFormat::Markdown"])
+}
+
+/// Every tool that renders a document is driven here, in BOTH its formats.
+///
+/// [`RENDERED`] is typed by hand, so on its own it is a list that a fourth
+/// rendering tool would quietly not be on. The set it must cover is derived
+/// from the source instead, which is the direction that fails safe.
+#[test]
+fn every_tool_that_renders_a_document_is_driven_in_both_formats() {
+    let derived = tools_that_render_a_document();
+    assert!(
+        derived.len() >= 3,
+        "only {} tools with a rendered arm were derived from src/mcp. A \
+         scanner that matches almost nothing agrees with any implementation, \
+         which is how this file's predecessor died: {derived:?}",
+        derived.len()
+    );
+    for name in &derived {
+        for format in ["markdown", "text"] {
+            assert!(
+                RENDERED
+                    .iter()
+                    .any(|(tool, args)| tool == name && args.contains(format)),
+                "{name} answers with a rendered document in {format}, and \
+                 nothing here checks that the document says how much of the \
+                 capture is behind it. Add it to RENDERED."
+            );
+        }
+    }
 }
 
 /// The derivation finds a real population, and nothing it finds has opted out.

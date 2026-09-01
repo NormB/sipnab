@@ -22,10 +22,37 @@ use std::time::{Duration, Instant};
 
 include!("timeout.rs");
 
-/// A minimal HTTP response: status code + body (headers are discarded).
+/// A minimal HTTP response: status code, response headers, and body.
+///
+/// Headers are kept rather than discarded because the whole point of an
+/// RFC 9728 / RFC 6750 challenge is a HEADER: a 401 whose body is empty and
+/// whose `WWW-Authenticate` is missing looks identical, over a status-code-only
+/// client, to a conformant one. Names are lowercased on capture so a test never
+/// depends on the casing a server happens to emit.
 pub struct HttpResponse {
     pub status: u16,
+    /// `(lowercased-name, value)` in wire order; a repeated header appears once
+    /// per occurrence rather than being folded, so a test can assert there is
+    /// exactly one `WWW-Authenticate`.
+    pub headers: Vec<(String, String)>,
     pub body: String,
+}
+
+impl HttpResponse {
+    /// The first value of `name` (case-insensitive), or `None` when absent.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        let want = name.to_ascii_lowercase();
+        self.headers
+            .iter()
+            .find(|(k, _)| *k == want)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// How many times `name` (case-insensitive) appears in the response.
+    pub fn header_count(&self, name: &str) -> usize {
+        let want = name.to_ascii_lowercase();
+        self.headers.iter().filter(|(k, _)| *k == want).count()
+    }
 }
 
 /// Absolute path to a file under `tests/fixtures/`.
@@ -164,6 +191,34 @@ pub fn post_status(url: &str, bearer: Option<&str>, body: &serde_json::Value) ->
 /// # Side effects
 /// Opens a TCP connection with a 5s read timeout.
 pub fn post_json(url: &str, bearer: Option<&str>, body: &serde_json::Value) -> HttpResponse {
+    let body_str = serde_json::to_string(body).expect("serialize");
+    send(url, "POST", bearer, Some(&body_str))
+}
+
+/// Issue a raw-TCP HTTP `GET` and return the parsed status, headers and body.
+///
+/// The metadata half of RFC 9728 is a `GET` at a well-known path (§3.1: "A
+/// protected resource metadata document MUST be queried using an HTTP GET
+/// request"), so the harness needs a verb it did not previously have. Kept as
+/// a raw `TcpStream` for the same reason `post_json` is: these tests carry no
+/// HTTP-client dependency.
+///
+/// # Arguments
+/// * `url` — plain `http://host:port/path` URL.
+/// * `bearer` — optional bearer token; `None` sends no `Authorization` header,
+///   which is what proves an endpoint is reachable unauthenticated.
+pub fn get(url: &str, bearer: Option<&str>) -> HttpResponse {
+    send(url, "GET", bearer, None)
+}
+
+/// One raw HTTP/1.1 request/response exchange over a fresh connection.
+///
+/// `Connection: close` plus `read_to_end` is what makes a response bounded
+/// without parsing `Content-Length` or chunked framing.
+///
+/// # Side effects
+/// Opens a TCP connection with a 5s read timeout and closes it.
+fn send(url: &str, method: &str, bearer: Option<&str>, body: Option<&str>) -> HttpResponse {
     let parsed = url.strip_prefix("http://").expect("http url");
     let (authority, path) = parsed.split_once('/').unwrap_or((parsed, ""));
     let (host, port_str) = authority.rsplit_once(':').expect("host:port");
@@ -174,35 +229,44 @@ pub fn post_json(url: &str, bearer: Option<&str>, body: &serde_json::Value) -> H
         .set_read_timeout(Some(test_timeout(5)))
         .expect("read timeout");
 
-    let body_str = serde_json::to_string(body).expect("serialize");
     let mut req = format!(
-        "POST /{path} HTTP/1.1\r\n\
+        "{method} /{path} HTTP/1.1\r\n\
          Host: {host}:{port}\r\n\
-         Content-Type: application/json\r\n\
          Accept: application/json, text/event-stream\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n",
-        body_str.len(),
+         Connection: close\r\n"
     );
+    if let Some(b) = body {
+        req.push_str(&format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n",
+            b.len()
+        ));
+    }
     if let Some(b) = bearer {
         req.push_str(&format!("Authorization: Bearer {b}\r\n"));
     }
     req.push_str("\r\n");
-    req.push_str(&body_str);
+    if let Some(b) = body {
+        req.push_str(b);
+    }
     stream.write_all(req.as_bytes()).expect("write");
 
     let mut resp = Vec::new();
     stream.read_to_end(&mut resp).expect("read");
     let s = String::from_utf8_lossy(&resp);
     let (head, body) = s.split_once("\r\n\r\n").unwrap_or((&s, ""));
-    let status = head
-        .lines()
+    let mut lines = head.lines();
+    let status = lines
         .next()
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|c| c.parse().ok())
         .unwrap_or(0);
+    let headers = lines
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+        .collect();
     HttpResponse {
         status,
+        headers,
         body: body.to_string(),
     }
 }

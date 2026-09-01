@@ -458,6 +458,34 @@ fn dsl_num(v: f64) -> String {
     format!("{v:?}")
 }
 
+/// Every diagnostic alias name, in the order `docs/filter-dsl.md` lists them.
+///
+/// The MEMBERSHIP half of [`expand_alias`], and load-bearing rather than a
+/// second copy of its arms: that function refuses anything not named here
+/// before it reaches the match, so a name deleted from this list stops
+/// expanding everywhere at once — `--filter <name>`, the `--problems` family of
+/// flags, `find_problems`'s `kinds`, and the `sipnab://filter/{alias}`
+/// resource. `the_alias_list_is_exactly_what_expand_alias_matches_on` reads the
+/// match arms out of this file's own source and fails if the two disagree, so
+/// neither half can quietly gain an entry the other does not have.
+///
+/// Published because the MCP server serves the vocabulary rather than
+/// restating it: a completion built from a hand-written second list would
+/// eventually offer a name the expander does not know, and the agent would
+/// spend a call finding out.
+pub const DIAGNOSTIC_ALIASES: [&str; 10] = [
+    "problems",
+    "slow-setup",
+    "short-calls",
+    "one-way",
+    "nat-issues",
+    "codec-asym",
+    "ptime-asym",
+    "payload-asym",
+    "duration-asym",
+    "late-media",
+];
+
 /// Expand a named filter alias to its DSL expression, using `t` for every
 /// number it compares against.
 ///
@@ -480,6 +508,14 @@ fn dsl_num(v: f64) -> String {
 /// Returns `None` if the alias is not recognized.
 #[must_use]
 pub fn expand_alias(alias: &str, t: &AliasThresholds) -> Option<String> {
+    // Membership is decided by the published list, not by falling off the end
+    // of the match. Both halves have to name an alias for it to work, which is
+    // what stops the list from becoming decorative — a vocabulary served over
+    // MCP that the expander does not actually accept is worse than no
+    // vocabulary at all.
+    if !DIAGNOSTIC_ALIASES.contains(&alias) {
+        return None;
+    }
     let expr = match alias {
         "problems" => format!(
             "state == 'Failed' OR one_way == true OR rtp.loss > {loss} \
@@ -2535,6 +2571,47 @@ mod tests {
     #[test]
     fn unknown_alias_returns_none() {
         assert!(expand_alias("nonexistent", &AliasThresholds::default()).is_none());
+    }
+
+    /// [`DIAGNOSTIC_ALIASES`] and the match arms are ONE vocabulary.
+    ///
+    /// Read out of this file's own source rather than restated, for the reason
+    /// `SECURITY_FINDING_KINDS` reads the detectors' call sites: a published
+    /// list checked against a copy of itself proves nothing, and the failure it
+    /// has to catch is an arm added to the match without the list — which the
+    /// membership guard turns into an alias that silently never expands.
+    #[test]
+    fn the_alias_list_is_exactly_what_expand_alias_matches_on() {
+        const SOURCE: &str = include_str!("dsl.rs");
+        let body = SOURCE
+            .split_once("let expr = match alias {")
+            .expect("expand_alias still opens with a match on the alias")
+            .1
+            .split_once("_ => return None,")
+            .expect("the match still ends with the catch-all")
+            .0;
+
+        let arms: Vec<&str> = body
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with('"') && l.contains("=>"))
+            .filter_map(|l| l.split('"').nth(1))
+            .collect();
+
+        // The extractor must FIRE before it can certify anything: one that
+        // found nothing would agree with an empty list and read as a pass.
+        assert_eq!(
+            arms.len(),
+            DIAGNOSTIC_ALIASES.len(),
+            "read {} arm(s) out of expand_alias but the list names {}: {arms:?}",
+            arms.len(),
+            DIAGNOSTIC_ALIASES.len()
+        );
+        assert_eq!(
+            arms,
+            DIAGNOSTIC_ALIASES.to_vec(),
+            "the published alias list and the match arms have drifted apart"
+        );
     }
 
     // ── Double-quoted strings ───────────────────────────────────────

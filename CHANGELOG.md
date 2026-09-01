@@ -8,6 +8,67 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.141] - 2026-09-01
+
+### Added
+
+- **`await_condition` — wait for a filter to select something, or for a
+  deadline.** An agent watching a live capture had only `tail_dialogs` plus
+  `source_exhausted`, which is a polling loop where every turn that finds
+  nothing still costs a model call. This is ONE call that returns when the
+  condition is met or the deadline passes, whichever comes first. The
+  subscription form was declined rather than deferred: a registry, per-client
+  filters and delivery state make sipnab something you OPERATE, and
+  positioning.md gives that as the test. Nothing outlives the call. A deadline
+  that passes is an ordinary answer -- `matched: false` with
+  `stopped_because: deadline` -- not a tool error, and an exhausted source ends
+  the wait early because no further waiting could change that answer.
+  `--mcp-max-wait-seconds` bounds it, and the clamp is reported.
+- **Argument completions (`completion/complete`).** For the filter aliases and
+  the format enums, so a caller stops guessing and retrying.
+- **Elicitation for the destructive tools.** `shutdown_server` and
+  `open_capture` can ask a real question rather than relying on the `dry_run`
+  convention, where the client supports it. A client that declared nothing is
+  NOT treated as having refused -- there was nobody to ask, which is the common
+  case and a different fact.
+- **RFC 9728 protected-resource metadata**, with a conformant
+  `WWW-Authenticate` challenge on 401, behind `--mcp-resource-url`. Static and
+  HMAC bearer tokens already covered self-hosted; this is what a hosted client
+  needs to connect without a manual token paste. sipnab does not become an
+  authorization server: it publishes discovery and nothing else.
+- **`--recommend-block`** groups detections by source and prints one block per
+  accused address carrying the evidence, the COUNTER-evidence, and a rule in
+  the dialect you name. sipnab recommends and never applies: it reaches no
+  firewall and holds no credential. The counter-evidence is not decoration --
+  an address that also completed a normal registered call says so in the same
+  block, because a rule that blocks a customer is worse than the scan it
+  stopped.
+
+### Fixed
+
+- **Rendered documents carry the completeness notice (VAL17).**
+  `render_ladder`, and the `markdown` and `text` arms of the two report tools,
+  answered with a document that had no envelope -- so a reader who asked for a
+  human-readable form lost the "is this whole?" signal the `json` form carries,
+  and had neither `$?` nor JSON in front of them. The `INCOMPLETE RUN` block
+  `--report` already had is now one formatter serving both surfaces, rather
+  than two that agree today.
+
+### Changed
+
+- **The relay control client reads a capped enumeration honestly.** A `list`
+  answer larger than a datagram is truncated by the kernel, and the client now
+  says when the answer was capped rather than presenting a short list as
+  complete.
+- **The harness parameterises its media anchor** and gains an rtpproxy image,
+  so the same scenarios run under a second relay -- which is what turns the
+  seam's "adding a relay touches no file under `src/mcp/`" from an assertion
+  into a measurement.
+- **BA4 (a Lenny plugin) is DECLINED for sipnab**, recorded with its reasoning
+  in the backlog rather than left open. Lenny answers calls and holds sessions;
+  sipnab is a passive tap that does neither. The entry's own words were the
+  argument against it.
+
 ## [0.5.140] - 2026-08-31
 
 ### Fixed

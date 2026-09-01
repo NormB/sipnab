@@ -593,6 +593,14 @@ sipnab -N -I capture.pcap --filter "ua =~ 'friendly-scanner|sipcli|sipvicious'"
    ```
 
    Put every address you recognize into the jail's `ignoreip` and raise `maxretry` until the list holds only what you meant. A jail that bans your carrier takes the phone system down more thoroughly than the scanner would have.
+
+   sipnab does that arithmetic for you and hands back the rule itself. `--recommend-block` groups the detections by source and prints one block per accused address — the evidence, the counter-evidence, and a `fail2ban`, `nftables` or `iptables` rule:
+
+   ```bash
+   sipnab -N -I capture.pcap --kill-scanner --recommend-block fail2ban
+   ```
+
+   **sipnab recommends and does not apply.** It reaches no firewall, holds no credential and runs nothing. The output is text you read first. Read the `COUNTER-EVIDENCE:` line of every block before you run any of it — an address that also completed a registration or a call is a working peer, and for those the address-specific dialects arrive commented out and the fail2ban dialect arrives with an `ignoreip` line already filled in.
 2. Then point fail2ban at the log file. `--fail2ban` chooses the **format** and detects nothing on its own: `--kill-scanner` (or `--kill-ua`) produces `scanner_detected` lines, `--reg-flood` produces `reg_flood` lines, and without one of those the log stays empty while looking like an all-clear. sipnab warns on stderr when you ask for the format with no scanner detector armed.
 3. For broader detection, combine flags: `sudo sipnab -N -d eth0 --kill-scanner --fraud-detect --reg-flood --alert syslog`
 4. Use `--digest-leak` to check if any endpoints are leaking credentials in cleartext.

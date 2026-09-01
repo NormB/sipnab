@@ -57,6 +57,11 @@
 //! structurally string-free so that it cannot leak packet content; a stamp that
 //! injected prose would dissolve that guarantee from the outside.
 //!
+//! `note_in_prose` is not an exception to that. The one thing on this surface
+//! that IS prose — a drawn ladder, a rendered report — has no object and no
+//! `outputSchema` to violate, and the block is appended only there. Nothing
+//! with a key to carry a field is ever handed a sentence.
+//!
 //! # `truncated: false` is not emitted unless it is true
 //!
 //! `truncated` keeps its meaning — the row cap withheld matching rows — and
@@ -227,9 +232,7 @@ pub fn answer_is_whole(source_exhausted: bool, stopped_early: bool) -> bool {
 
 /// Stamp one tool result with how much of the source is behind it.
 ///
-/// A no-op for an error result, for a tool in [`SOURCE_INDEPENDENT_TOOLS`], and
-/// for a payload that is neither a JSON object nor a JSON array — a rendered
-/// ladder or a Markdown report has no envelope to carry a field.
+/// A no-op for an error result and for a tool in [`SOURCE_INDEPENDENT_TOOLS`].
 ///
 /// # Arguments
 ///
@@ -268,6 +271,12 @@ pub fn answer_is_whole(source_exhausted: bool, stopped_early: bool) -> bool {
 /// field. The envelope is APPENDED as a further content block rather than
 /// wrapped around the array, because wrapping would change the payload's
 /// published shape; appending leaves the first block exactly as it was.
+///
+/// # What it does to a rendered document
+///
+/// A payload that is neither a JSON object nor a JSON array — a drawn ladder,
+/// a Markdown report — has no envelope at all, so the fact is stated in the
+/// document itself instead. See `note_in_prose`.
 pub fn stamp(tool: &str, source_exhausted: bool, stopped_early: bool, result: &mut CallToolResult) {
     if result.is_error == Some(true) || SOURCE_INDEPENDENT_TOOLS.contains(&tool) {
         return;
@@ -282,6 +291,7 @@ pub fn stamp(tool: &str, source_exhausted: bool, stopped_early: bool, result: &m
     let text = block.text.trim_start();
     let object = text.starts_with('{');
     if !object && !text.starts_with('[') {
+        note_in_prose(result, source_exhausted, stopped_early);
         return;
     }
     let Ok(value) = serde_json::from_str::<Value>(&block.text) else {
@@ -306,6 +316,82 @@ pub fn stamp(tool: &str, source_exhausted: bool, stopped_early: bool, result: &m
         }
         _ => {}
     }
+}
+
+/// State the fact in prose, for an answer that is a drawing (VAL17).
+///
+/// `render_ladder`, and `get_capture_report` / `get_dialog_report` in their
+/// `markdown` and `text` arms, answer with a document rather than an object.
+/// There is no key to put [`SOURCE_EXHAUSTED_KEY`] in, so `docs/mcp-tools.md`
+/// sent that reader to `capture_status` for it: a second call, to a different
+/// tool, for the one fact every JSON answer on this surface carries in its own
+/// envelope. Measured before this: a ladder drawn over a capture whose read
+/// stopped part-way was byte-identical to one drawn over the whole file, and a
+/// `markdown` capture report drawn 12 frames into a 36,000-frame load said
+/// *"Every frame decoded ... so this is a statement about the capture, not
+/// only about what sipnab could read of it."*
+///
+/// Three decisions, none of them made here for the first time:
+///
+/// * **Nothing at all when the answer is whole.** `--report` settled it:
+///   [`crate::output::run_integrity::RunIntegrity::report_notice`] returns
+///   `None` on a clean run, for the reason its neighbour states — a marker
+///   emitted on every run "changes the shape of every existing consumer's
+///   input to report that nothing happened". A caveat on every ladder is a
+///   caveat nobody reads, which leaves the one that matters unread too.
+///
+/// * **The same predicate the envelope uses.** [`answer_is_whole`], not a
+///   looser one of its own. The `json` and `markdown` arms of one tool
+///   disagreeing about one capture is the drift [`crate::mcp::structured`]
+///   exists to prevent, a format over.
+///
+/// * **Inside the document, appended.** VAL16's lesson: `timeline`'s envelope
+///   arrived as a further content block, which worked and was still wrong,
+///   because a client reading `content[0]` had no reason to look anywhere
+///   else. Appending is also what `--report` does, and it leaves the drawing
+///   entirely alone: a ladder is aligned column by column, and nothing here
+///   writes inside it or ahead of its first line.
+///
+/// The block is rebuilt rather than extended in place because `ContentBlock`
+/// hands out no mutable access to the text it holds; the copy is paid for only
+/// on the path that has something to say, which is the rare one.
+fn note_in_prose(result: &mut CallToolResult, source_exhausted: bool, stopped_early: bool) {
+    if answer_is_whole(source_exhausted, stopped_early) {
+        return;
+    }
+    let mut reasons = Vec::new();
+    if !source_exhausted {
+        reasons.push(
+            "the capture is still being read; this document describes only what had \
+             loaded when it was drawn -- poll capture_status until source_exhausted \
+             is true"
+                .to_string(),
+        );
+    }
+    if stopped_early {
+        // The words `--report` uses for the same fact, minus the counts. The
+        // file tally belongs to the `-I` set; a capture `open_capture` loaded
+        // afterwards has no place in it, and inventing "1 of 1" for that case
+        // would put a measured-looking number in front of a reader that
+        // nothing measured.
+        reasons.push(
+            "a capture file was not read to the end; this document rests on a partial \
+             read"
+                .to_string(),
+        );
+    }
+    debug_assert!(
+        !reasons.is_empty(),
+        "an answer that is not whole is not whole for a reason, and a heading \
+         with nothing under it accuses without naming anything"
+    );
+    let notice = crate::output::run_integrity::incomplete_notice(&reasons);
+    let ContentBlock::Text(block) = &result.content[0] else {
+        return;
+    };
+    let mut text = block.text.clone();
+    text.push_str(&notice);
+    result.content[0] = ContentBlock::text(text);
 }
 
 /// Both facts, without disturbing a value the tool already published.
@@ -496,17 +582,91 @@ mod tests {
         );
     }
 
-    /// A rendered document has no envelope, and is not handed to a parser.
+    /// A drawn ladder, as `render_ladder` answers with one.
+    const LADDER: &str = "alice -> bob  INVITE\nbob -> alice  200 OK\n";
+
+    /// The literal text of a result's first block.
+    fn document(result: &CallToolResult) -> String {
+        let ContentBlock::Text(block) = &result.content[0] else {
+            panic!("the fixture's first block is text");
+        };
+        block.text.clone()
+    }
+
+    /// A whole answer's document is byte-identical to what the tool drew.
+    ///
+    /// The half that keeps the other half readable: a caveat appended to every
+    /// ladder is a caveat nobody reads. `--report` made this call first --
+    /// `report_notice` returns `None` on a clean run -- and this mirrors it.
     #[test]
-    fn a_rendered_document_is_left_alone() {
-        let mut result = json_result("alice -> bob  INVITE\nbob -> alice  200 OK\n");
-        stamp("render_ladder", false, false, &mut result);
+    fn a_whole_rendered_document_is_left_alone() {
+        let mut result = json_result(LADDER);
+        stamp("render_ladder", true, false, &mut result);
 
         assert_eq!(result.content.len(), 1);
-        let ContentBlock::Text(block) = &result.content[0] else {
-            panic!("text block");
-        };
-        assert!(block.text.starts_with("alice -> bob"));
+        assert_eq!(
+            document(&result),
+            LADDER,
+            "a capture read in full is not accused, and the drawing is \
+             returned exactly as it was drawn"
+        );
+    }
+
+    /// VAL17: a document has no envelope, so it says it in its own words.
+    ///
+    /// Never handed to a JSON parser either — the leading-character check in
+    /// [`stamp`] decides this before any parse is attempted.
+    #[test]
+    fn a_rendered_document_states_incompleteness_in_its_own_text() {
+        let mut result = json_result(LADDER);
+        stamp("render_ladder", false, false, &mut result);
+
+        assert_eq!(result.content.len(), 1, "no second block to overlook");
+        let doc = document(&result);
+        assert!(
+            doc.starts_with(LADDER),
+            "the drawing keeps its first line and its alignment; the block is \
+             appended after it, the way `--report` appends it: {doc}"
+        );
+        assert!(
+            doc.contains("INCOMPLETE RUN"),
+            "the reader of a ladder has no `$?` and no JSON, which is the case \
+             this block was written for: {doc}"
+        );
+        assert!(
+            doc.contains("still being read"),
+            "a capture still arriving is a different situation from one read \
+             to a premature end, and the reader has to act on one of them: \
+             {doc}"
+        );
+    }
+
+    /// Two facts, two sentences: neither hides the other.
+    #[test]
+    fn a_rendered_document_names_every_reason_that_holds() {
+        let mut result = json_result(LADDER);
+        stamp("get_capture_report", false, true, &mut result);
+
+        let doc = document(&result);
+        assert!(doc.contains("still being read"), "{doc}");
+        assert!(
+            doc.contains("partial read"),
+            "a load still running does not un-say a file that stopped early: \
+             {doc}"
+        );
+    }
+
+    /// A tool that opted out of the envelope opts out of the prose too.
+    ///
+    /// `show_evidence` answers about bytes the caller pointed at, not about
+    /// how much of the capture has been read, and one rule governs both forms
+    /// of the same statement.
+    #[test]
+    fn a_source_independent_tool_gets_no_prose_either() {
+        let mut result = json_result(LADDER);
+        stamp("show_evidence", false, true, &mut result);
+
+        assert_eq!(document(&result), LADDER);
     }
 
     /// An error result's content is a message, not a payload.

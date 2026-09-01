@@ -1052,6 +1052,22 @@ sipnab -N -I trunk.pcap --kill-scanner --fail2ban | grep -oE 'src=[^ ]+' | sort 
 
 Every address in that list is one the jail below would ban. Use `ignoreip` in the jail for the peers you already trust.
 
+### 10c. Block a scanner with a rule sipnab wrote, after reading the evidence
+
+Counting `src=` fields tells you who. It does not tell you whether banning them costs you a customer. `--recommend-block` groups the detections by source and prints one block per accused address, carrying the evidence, the counter-evidence and a rule in the dialect you name (`fail2ban`, `nftables`, `iptables` or `all`):
+
+```bash
+sipnab -N -I trunk.pcap --kill-scanner --reg-flood --recommend-block all --quiet
+```
+
+**sipnab recommends and does not apply.** sipnab ran none of that output, contacted no firewall and holds no credential anywhere in sipnab. It prints text and stops. The line to read in every block is `COUNTER-EVIDENCE:`, which says one of three things:
+
+- **`also completed a registration or a call`** — the source is a working peer and a block disconnects it, so the `nftables` and `iptables` commands arrive commented out and the fail2ban jail arrives with `ignoreip` already filled in.
+- **`none`** — nothing in this capture says the source has a relationship, and the commands are live.
+- **`UNKNOWN`** — no scanner detector ran, so sipnab asked nothing. The commands are live, and the block tells you to re-run with `--kill-scanner` before acting on them.
+
+The third case is the one worth pausing on: "asked and it had not" and "never asked" produce the same silence, and only the first is a reason to feel safe.
+
 #### What the behavioral rules actually test
 
 Neither behavioral rule fires on volume, because volume does not separate reconnaissance from operation. A trunk sends OPTIONS keepalives continuously by design — that is how each end learns the other is alive — and an SBC fronting a hunt group reaches dozens of distinct extensions a second. Both rules therefore need an OUTCOME as well as a rate:
@@ -2838,7 +2854,7 @@ per SIP message and grows with the call):
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.140 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.141 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -4298,7 +4314,7 @@ sipnab -D
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```text
-sipnab 0.5.140 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+sipnab 0.5.141 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
 ```
 
 This is the fastest way to confirm a build carries the feature set
@@ -5673,6 +5689,14 @@ sipnab -N -I capture.pcap --filter "ua =~ 'friendly-scanner|sipcli|sipvicious'"
    ```
 
    Put every address you recognize into the jail's `ignoreip` and raise `maxretry` until the list holds only what you meant. A jail that bans your carrier takes the phone system down more thoroughly than the scanner would have.
+
+   sipnab does that arithmetic for you and hands back the rule itself. `--recommend-block` groups the detections by source and prints one block per accused address — the evidence, the counter-evidence, and a `fail2ban`, `nftables` or `iptables` rule:
+
+   ```bash
+   sipnab -N -I capture.pcap --kill-scanner --recommend-block fail2ban
+   ```
+
+   **sipnab recommends and does not apply.** It reaches no firewall, holds no credential and runs nothing. The output is text you read first. Read the `COUNTER-EVIDENCE:` line of every block before you run any of it — an address that also completed a registration or a call is a working peer, and for those the address-specific dialects arrive commented out and the fail2ban dialect arrives with an `ignoreip` line already filled in.
 2. Then point fail2ban at the log file. `--fail2ban` chooses the **format** and detects nothing on its own: `--kill-scanner` (or `--kill-ua`) produces `scanner_detected` lines, `--reg-flood` produces `reg_flood` lines, and without one of those the log stays empty while looking like an all-clear. sipnab warns on stderr when you ask for the format with no scanner detector armed.
 3. For broader detection, combine flags: `sudo sipnab -N -d eth0 --kill-scanner --fraud-detect --reg-flood --alert syslog`
 4. Use `--digest-leak` to check if any endpoints are leaking credentials in cleartext.
@@ -7723,6 +7747,7 @@ report a healthy network in the middle of an outage.
 | `--reg-flood` | -- | off | Detect registration flood attacks |
 | `--reg-flood-threshold` | `<N>` | `50` | REGISTER requests per second from one source before `--reg-flood` reports a flood. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets, and it fires all through a re-REGISTER storm on a registrar that just restarted. Config: `[security] reg_flood_threshold` |
 | `--digest-leak` | -- | off | Detect digest credential leaks in SIP messages |
+| `--recommend-block` | `<DIALECT>` | -- | Print a firewall rule for every source the detectors accused: `fail2ban`, `nftables`, `iptables` or `all`. **sipnab recommends and does not apply** — the rule is text on stdout, and nothing here reaches a firewall or holds a credential. Each block carries its evidence (how many findings named the address, which rules they tripped, and when) and its COUNTER-evidence beside it: a source that also completed a registration or a call is one a block would disconnect, so the address-specific dialects comment their commands out for it and the fail2ban dialect puts it in `ignoreip`. Needs a detector armed beside it; with none, nothing is ever accused and the empty output says which silence that is rather than reading as an all-clear. Requires `-N` |
 | `--findings-history` | `<N>` | `1000` | Security findings kept in memory for later retrieval. `0` keeps none. Config: `[security] findings_history` |
 | `--alert` | `<CHANNEL>` | -- | Alert channels (repeatable): `syslog`, `json`, `exec` |
 | `--alert-exec` | `<CMD>` | -- | Execute this command when an alert fires |
@@ -7761,6 +7786,8 @@ report a healthy network in the middle of an outage.
 - `sudo sipnab -N -d eth0 --kill-scanner --scanner-established-factor 1 --scanner-rejected-probes 8` — judge a registered endpoint like any other source, for a site hunting compromised handsets rather than outside scanners
 - `sipnab -N -I pbx.pcap --kill-scanner --scanner-answer-grace 1500 --scanner-established-factor 8 --scanner-unanswered-probes 10` — a small PBX on a slow access circuit, where a registered phone needs eight times the evidence and every probe gets a second and a half to draw a reply
 - `sudo sipnab -N -d eth0 --kill-scanner --kill-rate-limit 2 --findings-history 20000` — answer scanners at a deliberately small two responses a second while keeping a long detection history for an agent to read back
+- `sipnab -N -I capture.pcap --kill-scanner --recommend-block nftables` — read a capture you already have and print an `nft` rule per accused source, with the evidence and the counter-evidence in the same block. sipnab prints; you decide and run it
+- `sipnab -N -I trunk.pcap --kill-scanner --reg-flood --digest-leak --recommend-block all --quiet > blocks.txt` — every dialect for every accused source on a trunk capture, with the packet echo suppressed so the file holds nothing but the recommendation. Read `blocks.txt` before running any of it: an address that also completed a call is one a block disconnects, and the block says so
 - `sudo sipnab -N -d eth0 --kill-target 192.0.2.66 --kill-rate-limit 50 --findings-history 0` — a targeted response with a wider transmit budget and no findings retained in memory
 - `sipnab -N -I capture.pcap --json --run-provenance-file /var/log/sipnab-runs.jsonl` — record the invocation beside the report, so a reader can trace the JSON above back to the capture, the filters and the build that produced it
 - `sudo sipnab -N -d eth0 --portrange 5060-5090 --report --run-provenance-file /var/log/sipnab-runs.jsonl` — the case the record exists for: the port range decided what this run could see, and without the record a later reader cannot tell a narrow run from a complete one
@@ -7943,10 +7970,12 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--one-way-delay` | `<MS>` | -- | One-way network path delay, in milliseconds — the single MOS input a passive tap cannot measure directly. Declared here it beats an RTCP-reported round trip, which an unauthenticated packet can move, and that in turn beats the round trip sipnab derives from a sender-report echo carried in a receiver report; with none of the three, sipnab assumes 100 ms and says so. Config: `[media] one_way_delay_ms` |
 | `--mcp-max-rows` | `<N>` | `1000` | Maximum rows in one list-style MCP response. The consumer decides the right value: a small-context agent wants fewer, a batch client wants more. Config: `[limits] mcp_max_rows`. Do not mistake this for `-l`/`--limit`, which bounds dialogs tracked over the run |
 | `--mcp-max-body-bytes` | `<N>` | `4096` | Maximum bytes of SIP body or matched snippet in one MCP response. `--mcp-max-rows` bounds how many rows an answer carries; this bounds how wide one row may be, and a caller can ask for fewer rows but cannot widen one. An SDP body with a dozen codecs and ICE candidates passes the default, and the agent reading the clipped half cannot tell a truncated answer from a short one. Config: `[limits] mcp_max_body_bytes` |
+| `--mcp-max-wait-seconds` | `<N>` | `60` | Longest ONE `await_condition` MCP call may wait, in seconds. `--mcp-max-rows` and `--mcp-max-body-bytes` bound how much an answer carries; this bounds how long a caller may hold one of `--mcp-max-concurrent` slots while carrying nothing. `await_condition` lets an agent wait for a condition on a live capture instead of re-asking `tail_dialogs` and paying a model turn per empty reply, and an unbounded wait is a held connection by another name. sipnab clamps a larger request to it and says so in the response. Config: `[limits] mcp_max_wait_seconds` |
 | `--mcp-max-findings` | `<N>` | `1000` | Findings the MCP `save_findings` tool accepts before refusing further writes. The one WRITE budget on that surface: `--mcp-max-rows` and `--mcp-max-body-bytes` bound what an agent may READ, this bounds what it puts into the operator's journal. Past it sipnab refuses the write and says so, and drops nothing to make room -- a finding is a log line the journal already holds, so sipnab keeps no copy a newer one could displace. Raise it for a long agent session on a large capture. Config: `[limits] mcp_max_findings` |
 | `--mcp-sampling-budget` | `<PER_HOUR>` | off | Requests per hour sipnab may ask the CLIENT's model to narrate. Off unless set, because client support for the sampling primitive is thin and uneven and nothing here may depend on a narration arriving; a client that did not advertise the capability is never asked and gets structured evidence instead. Requests dedupe by finding signature before they spend from this budget, so a rule a scanner trips five hundred times costs one narration. `0` means NONE, not unlimited: elsewhere a zero limit removes a ceiling, but this one spends the operator's money and the client's rate limit, so zero reads restrictively. sipnab forwards named fields only -- control characters stripped, length clamped, under a system prompt stating every value is untrusted observation -- and never raw message text. Feature: `mcp` |
 | `--mcp-rate-limit-per-peer` | `<N>` | `100` | Maximum tool calls one peer may make per second (`0` = unlimited). The other half of `--mcp-max-concurrent`: that caps calls *in flight*, this caps their *arrival rate*, and without it an agent that stays under the concurrency cap while looping as fast as sipnab answers has no bound at all. A call over the cap gets the same retry-shortly error, never a queue slot. A peer is the source IP over HTTP (the address, not the socket, so reconnecting mints no fresh allowance) and the pipe itself over stdio. Shares its per-peer accounting with `--hep-rate-limit-per-peer`. Feature: `mcp` |
 | `--mcp-allowed-host` | `<HOST>` | -- | Additional `Host` header values the HTTP MCP server accepts (repeatable). rmcp's DNS-rebind protection defaults to `localhost`, `127.0.0.1`, `::1` only — add the public hostname or bind IP when clients connect via that name. Use `*` to disable host checking entirely (not recommended; pair the resulting open binding with a network-level source-IP allowlist). Feature: `mcp-http` |
+| `--mcp-resource-url` | `<URL>` | -- | Public URL clients reach this MCP server at, published as the OAuth 2.0 protected-resource identifier ([RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html)). Setting it turns on discovery: the `401` challenge gains a `resource_metadata` parameter and sipnab serves the metadata document unauthenticated at the path [RFC 9728 §3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1) derives from this value, so `https://sipnab.example.com/mcp` publishes at `/.well-known/oauth-protected-resource/mcp`. Leave it unset and the challenge still appears — only the metadata half is off. The operator names it rather than sipnab guessing: behind the TLS-terminating proxy this deployment expects, sipnab sees a cleartext request and no scheme, and anything derived from the socket or the `Host` header would name `http://` for a resource the client reached over `https://` — which [RFC 9728 §3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) makes a conformant client discard. Discovery only: sipnab issues and validates no OAuth tokens, so the document advertises no `authorization_servers`, and the bearer tokens it accepts are still its own. Must be absolute, `http` or `https`, with no userinfo, query or fragment; a rejected value is a startup error. Feature: `mcp-http` |
 | `--mcp-file-root` | `<DIR>` | -- | Directory the MCP file tools (`export_capture`, `export_audio`, `list_captures`) may read and write. Without it those tools refuse to run. They take a bare FILENAME, never a path — an agent cannot escape this directory. Feature: `mcp` |
 | `--mcp-allow-shutdown` | -- | off | Permit the `shutdown_server` MCP tool to stop this process. Off by default, so an agent cannot stop a stock server. Even enabled, the tool dry-runs unless told otherwise and refuses to discard an unsaved live capture. Feature: `mcp` |
 | `--mcp-allow-open-capture` | -- | off | Permit the `open_capture` MCP tool to load a different capture from `--mcp-file-root`, discarding every dialog and stream held. Off by default, so a stock server keeps the capture the command line named. The tool refuses while the source is live or still filling the stores, loads in the background, and mints a new capture identity every later answer carries. Feature: `mcp` |
@@ -7998,6 +8027,8 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 - `sipnab -N -I capture.pcap --mcp --mcp-max-rows 5000` — raise the ceiling above the 1000 default for a batch client that pipes whole pages to a file, where the round trips cost more than the bytes
 - `sipnab -N -I capture.pcap --mcp --mcp-max-body-bytes 65536` — let an agent read a whole `INVITE` with a long SDP body rather than the first 4096 bytes of it, on a capture whose bodies are what the investigation is about
 - `sipnab -N -I capture.pcap --mcp --mcp-max-rows 20 --mcp-max-body-bytes 512` — a small-context agent: few rows, and each one short, so a page of hits fits the window it has to reason in
+- `sipnab --mcp -i eth0 --mcp-max-wait-seconds 300` — let an agent sit on a live capture for up to five minutes per `await_condition` call, on a box watching for a fault that reproduces slowly
+- `sipnab --mcp -i eth0 --mcp-max-wait-seconds 5` — hold every wait to five seconds, for a host where MCP slots are scarce and a stalled agent must not occupy one
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-rate-limit-per-peer 20` — a network-facing MCP server where any one client may make twenty tool calls a second; sipnab answers the twenty-first that second with a retry-shortly error instead of serving it
 - `sipnab -N -I capture.pcap --mcp --mcp-max-concurrent 8 --mcp-rate-limit-per-peer 0` — bound how many calls run at once but put no cap on the arrival rate (`0` = unlimited), for a scripted client that sweeps a capture as fast as it can
 - `sipnab -N -I capture.pcap --tls-key /etc/sipnab/tls-rsa.key --keylog /etc/sipnab/keys.log --allow-coredump` — decrypt TLS 1.2 RSA-key-exchange SIP from a pcap using an RSA private key, with core dumps left enabled
@@ -10613,6 +10644,7 @@ Resource limits to prevent unbounded memory growth.
 | `lint_max_per_rule` | integer | `25` | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. `--lint-max-per-rule` overrides it. `0` fails validation and names the key |
 | `exec_queue_depth` | integer | `100` | Hook commands allowed to be running at once before sipnab drops `--on-dialog-exec` and `--on-quality-exec` events. The second ceiling above `--exec-rate-limit`, and the binding one for any hook that takes longer than a second: its slot is still occupied when the next second's budget arrives, so on a busy trunk this is what events actually meet. `--exec-queue-depth` overrides it. `0` fails validation and names the key |
 | `mcp_max_body_bytes` | integer | `4096` | Bytes of SIP body or matched snippet in ONE MCP response. `mcp_max_rows` bounds how many rows an answer carries; this bounds how wide one row may be, and a caller can ask for fewer rows but cannot widen one. `--mcp-max-body-bytes` overrides it. `0` fails validation and names the key |
+| `mcp_max_wait_seconds` | integer | `60` | Longest ONE `await_condition` MCP call may wait, in seconds. `mcp_max_rows` and `mcp_max_body_bytes` bound what an answer carries; this bounds how long a caller may hold one of `--mcp-max-concurrent` slots while carrying nothing. sipnab clamps a larger request to it and says so in the response. `--mcp-max-wait-seconds` overrides it. `0` fails validation and names the key |
 | `mcp_max_findings` | integer | `1000` | Findings the MCP `save_findings` tool accepts before refusing further writes. The one WRITE budget on that surface: `mcp_max_rows` and `mcp_max_body_bytes` bound what an agent may READ, this bounds what it puts into the operator's journal. Past it sipnab refuses the write and says so, and drops nothing to make room -- a finding is a log line the journal already holds, so sipnab keeps no copy a newer one could displace. Raise it for a long agent session on a large capture, where a thousand annotations is a session doing its job. `--mcp-max-findings` overrides it. `0` fails validation and names the key |
 | `max_lost_sequences` | integer | `1000` | Lost RTP sequence numbers retained per stream. This is the window the Packet Loss Map draws and the burst/gap analysis reasons over, so a 30-minute call losing 1 % shows only its last minute at the default. The burst/gap window widens with it. `--max-lost-sequences` overrides it. `0` fails validation and names the key |
 | `max_groups` | integer | `100000` | Distinct `--group-by` keys one run retains, the same figure `dialog_limit` ships so a grouped run cannot outgrow an ordinary capture. Past it sipnab refuses new keys and warns that the output is incomplete. `--max-groups` overrides it |
@@ -11316,7 +11348,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.140 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.141 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -11961,7 +11993,7 @@ three of the four are wiring rather than sipnab:
 
 | Status | Cause | Fix |
 |---|---|---|
-| `401` | Wrong or missing bearer token | Check the token file is non-empty |
+| `401` | Wrong or missing bearer token | Check the token file is non-empty. The response's `WWW-Authenticate` says which: `error="invalid_token"` means the client presented a token and sipnab rejected it, no `error` at all means the client presented none |
 | `403` | `Host:` not in the allowlist | `--mcp-allowed-host <what the client sends>` |
 | `404` | The request never reached sipnab's MCP route | Check for a proxy rewrite. **Not** a trailing slash: `/mcp` and `/mcp/` both answer `200` |
 | `406` | `Accept` missing a type | Offer `application/json, text/event-stream` |
@@ -12400,7 +12432,7 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
-  "version": "0.5.140",
+  "version": "0.5.141",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -12437,6 +12469,14 @@ explicit call with `dry_run: false`, and it refuses to discard unsaved live
 data unless you either name a `save_to` target or pass `discard_unsaved: true`.
 An agent that misreads "we can stop looking at this now" as an instruction
 should not be able to end an afternoon of capture.
+
+If your client declared MCP's `elicitation` capability, that second call also
+asks a PERSON, over a real `elicitation/create` round trip, and a declined
+confirmation stops nothing. The two guards stack rather than replace each
+other: the deliberate second call is still made by the same agent that made the
+first, which is why the confirmation is worth having. A client that cannot
+answer is never asked and is not treated as having refused — see
+[the protocol page](mcp-protocol.md#confirming-the-two-irreversible-ones).
 
 ## Understand the load on a busy server
 
@@ -12527,7 +12567,10 @@ Work outward from the server. Each layer has a definitive test.
 | Network path | same curl from the laptop | same |
 | Client | `claude mcp list` | ✓ connected |
 
-HTTP status decoder: `401` wrong/missing bearer token · `403` `Host:` not
+HTTP status decoder: `401` wrong/missing bearer token — the reply's
+`WWW-Authenticate` distinguishes them, and with
+[`--mcp-resource-url`](#check-what-a-client-sees-when-it-has-no-token---mcp-resource-url)
+set it also names the metadata document · `403` `Host:` not
 in the allowlist (`--mcp-allowed-host`) · `404` the request never reached the MCP route (a proxy rewrite, not a trailing slash) ·
 `406` missing `Accept: application/json, text/event-stream`. More in
 [Troubleshooting](#troubleshooting) further down this page. The
@@ -12703,6 +12746,95 @@ sipnab --mcp -N --mcp-transport http \
 The literal `*` disables host checking entirely — only do that behind a
 network-level source-IP allowlist as the substitute defense.
 
+### Check what a client sees when it has no token (`--mcp-resource-url`)
+
+A `401` from sipnab always carries a challenge, so a client can tell "present
+a bearer token" from "something else went wrong":
+
+```
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer realm="sipnab"
+```
+
+A token the client presented and sipnab rejected — expired, revoked, forged, or minted
+for the REST API instead of MCP — adds the [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750.html)
+error code, so the two are distinguishable from the outside:
+
+```
+WWW-Authenticate: Bearer realm="sipnab", error="invalid_token", error_description="The access token is invalid or has expired"
+```
+
+Every rejection reads the same. Which of the four reasons applied is
+deliberately not in the header: an attacker gets the challenge for free, and a
+challenge that told them apart would answer "is this token id known?" for
+anyone who asked.
+
+Name the public URL and sipnab also publishes an
+[RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html) protected-resource
+metadata document, and points the challenge at it:
+
+```bash
+sipnab --mcp -N --mcp-transport http \
+       --mcp-bind 127.0.0.1:8731 \
+       --mcp-token-file /etc/sipnab/mcp.token \
+       --mcp-resource-url https://capture.example.com/mcp \
+       -I capture.pcap
+```
+
+The challenge now carries the metadata URL, which is the value [RFC 9728 §3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1)
+derives by inserting `/.well-known/oauth-protected-resource` between the host
+and the path:
+
+```
+WWW-Authenticate: Bearer realm="sipnab", resource_metadata="https://capture.example.com/.well-known/oauth-protected-resource/mcp"
+```
+
+That document needs no token — a client fetches it precisely because it does
+not have one yet:
+
+```bash
+curl -s https://capture.example.com/.well-known/oauth-protected-resource/mcp
+```
+
+```json
+{
+  "bearer_methods_supported": ["header"],
+  "resource": "https://capture.example.com/mcp",
+  "resource_documentation": "https://sipnab.com/docs/mcp-deploy/",
+  "resource_name": "sipnab MCP server",
+  "scopes_supported": ["full", "read"]
+}
+```
+
+**Give the URL, do not expect sipnab to work it out.** Behind the nginx that
+terminates TLS, sipnab sees a cleartext request and no scheme; anything it
+derived from its own socket would say `http://` for a resource the client
+reached over `https://`, and [RFC 9728 §3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) tells a conformant client to
+discard a document whose `resource` does not match the URL it used. sipnab
+does not read `X-Forwarded-Proto` here for the same reason it ignores
+`X-Forwarded-For` when rate limiting: a header the client sets is not
+evidence. A malformed value is a startup error, not a wrong document.
+
+**This is discovery, not OAuth.** sipnab neither issues nor validates OAuth
+access tokens — it verifies its own tokens exactly as it always has — so the
+document advertises no `authorization_servers`, and a client that follows this
+still needs a token from
+[Issue a token the client can present](#issue-a-token-the-client-can-present).
+What discovery buys today is a machine-readable answer to "what does this
+endpoint want, and where is it documented" in place of a bodyless `401`.
+
+The document is public by design, so it names nothing that is not: no bind
+address, no `Host` allowlist, no token, no signing key, no capture, no
+version. A metadata endpoint appears only when this flag names a URL — sipnab does
+not publish a resource identifier it had to guess:
+
+```bash
+sipnab --mcp -N --mcp-transport http --mcp-bind 0.0.0.0:8731 \
+       --mcp-token-file /etc/sipnab/mcp.token \
+       --mcp-allowed-host capture.example.com \
+       --mcp-resource-url https://capture.example.com/mcp -d eth0
+```
+
 ### Start it at boot with systemd
 
 `/etc/systemd/system/sipnab-mcp.service` (a packaged variant ships in
@@ -12764,7 +12896,7 @@ expose the MCP surface pay zero binary size for it.
 | Symptom | Cause / fix |
 |---------|-------------|
 | `--mcp-transport http` rejected | Built without `mcp-http`. Rebuild with `--features mcp-http` (run `sipnab --version` to see compiled features). |
-| 401 from the server | Token mismatch — compare the client's bearer token with the token file; check for a trailing newline stripped by your client. |
+| 401 from the server | Token mismatch — compare the client's bearer token with the token file; check for a trailing newline stripped by your client. Read the `WWW-Authenticate` header first: `error="invalid_token"` means the client sent a token and sipnab rejected it, while a challenge with no `error` means it sent none, which is a client-configuration problem rather than a wrong value. |
 | 403 / host rejected | DNS-rebind protection: add the hostname clients use via `--mcp-allowed-host`. |
 | Server starts, then "no packets" | If feeding via HEP, confirm the sender targets the `-L` port and watch for the idle warning (`no packets for 30s`) in the logs. |
 
@@ -12850,7 +12982,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.140"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.141"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -13663,6 +13795,7 @@ ordinary update.
 | [`validate_filter`](#validate_filter) | `expr` | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
 | [`describe_endpoint`](#describe_endpoint) | `ip?`, `user?`, `limit?` | Everything one participant did: dialogs by method and state, INVITE outcomes, REGISTER state, banners, streams, findings |
 | [`tail_dialogs`](#tail_dialogs) | `cursor?`, `limit?` | Cursor-based incremental dialog fetch |
+| [`await_condition`](#await_condition) | `filter`, `timeout_seconds?`, `poll_interval_ms?` | Waits until a filter matches or a deadline passes, whichever is first, so a live capture costs one call instead of a polling loop |
 | [`find_correlated`](#find_correlated) | `call_id`, `limit?` | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
 | [`get_call_tree`](#get_call_tree) | `call_id`, `limit?` | Every leg of one call as a tree, each edge carrying its parent, depth, score, strategy and whether the walk went through it |
 | [`compare_dialogs`](#compare_dialogs) | `call_id_a`, `call_id_b` | Two calls side by side, with the differences named |
@@ -13794,8 +13927,14 @@ always carried `source_exhausted`. Now every tool that answers from the capture
 does. The exceptions are the tools whose answer cannot move with the load —
 `explain_response_code`, `explain_rule`, `decode_evidence`, `show_evidence`,
 `list_captures`, `list_tls_libraries`, `server_capabilities` and
-`compare_captures`, which reads two files and never the loaded capture — plus
-the tools that answer with a rendered document rather than an object.
+`compare_captures`, which reads two files and never the loaded capture. The
+tools that answer with a rendered document — `render_ladder`, and
+`get_capture_report` / `get_dialog_report` in `markdown` and `text` — have no
+object to put a field in, so they say it in prose instead: a document drawn
+over a capture that is still loading, or over one whose read stopped before its
+end, ends with the same `INCOMPLETE RUN` block `--report` appends, naming each
+reason. A document drawn over a capture read in full says nothing extra,
+because a caveat on every answer is a caveat nobody reads.
 `timeline`, whose payload is a top-level array with no key to carry a field,
 carries the two booleans in a second content block instead.
 
@@ -14208,7 +14347,13 @@ the two facts under it, `source_exhausted` and `source_stopped_early`, now gate
 it and travel beside it.
 
 `markdown` and `text` answer with a rendered document, which has no envelope to
-carry either flag. Call `capture_status` beside them, or ask for `json`.
+carry either flag, so the document states the fact itself. A report drawn while
+the capture is still loading, or over one whose read stopped before its end,
+ends with an `INCOMPLETE RUN` block naming each reason — the same block
+`--report` appends, and for the same reason: the reader of a rendered report has
+no `$?` and no JSON in front of them, and a partial report looks exactly like a
+whole one. A capture read in full adds nothing and the report ends where it
+always did. Ask for `json` when you want the two booleans as fields.
 
 > Before 0.5.125 this default returned the TEXT rendering. `format` chooses
 > between markdown headings and plain text inside the renderer and never had a
@@ -14685,7 +14830,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.140",
+  "version": "0.5.141",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -15211,6 +15356,113 @@ has finished: stop when it turns `true` instead of polling forever.
 }
 ```
 
+### `await_condition`
+
+Waits until a filter selects at least one dialog, or until a deadline passes —
+whichever happens first. One call replaces a [`tail_dialogs`](#tail_dialogs)
+loop in which every turn that finds nothing still costs a model call.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `filter` | string | A named alias or a filter DSL expression, exactly what [`list_dialogs`](#list_dialogs) accepts. [`validate_filter`](#validate_filter) checks one without waiting. | Required — the call fails. |
+| `timeout_seconds` | u32? | Ceiling is `--mcp-max-wait-seconds` (60 by default). Higher clamps to it and sets `timeout_clamped`. `0` means "look once and answer". | 30 seconds. |
+| `poll_interval_ms` | u32? | Floor is 100 ms. sipnab raises anything smaller and returns the effective value. | 500 ms. |
+
+Returns `{ matched, stopped_because, dialogs, returned, total_matched,
+truncated, elapsed_ms, timeout_seconds, timeout_clamped, poll_interval_ms,
+polls, scans, source_exhausted, capture_identity }`, where `dialogs` holds the
+same summary rows [`list_dialogs`](#list_dialogs) returns, fencing included,
+and is empty unless `matched` is `true`.
+
+There is no page-size argument. This tool answers *did it happen*, and the rows
+are evidence that it did rather than a page to work through — so it returns
+what any list tool returns to a caller that named no `limit`: the default fifty
+rows, cut to `--mcp-max-rows` when the operator set that lower.
+[`list_dialogs`](#list_dialogs) with the same `filter` is the paging surface,
+with the cursors and field projection that belong there. The response carries
+reported either way, so a bounded page never reads as a smaller event than it
+was.
+
+**A deadline that passes is an answer, not an error.** It comes back as a
+successful call carrying `matched: false` — because "the fault has not
+reproduced" and "the tool broke" are different findings, and an agent has to
+be able to tell them apart.
+
+`stopped_because` names which of three endings this was, and the two negative
+ones differ in whether asking again could ever help:
+
+| Value | `matched` | Meaning |
+|---|---|---|
+| `condition_met` | `true` | The filter selected at least one dialog |
+| `deadline` | `false` | The wait ran out. Not yet — asking again may still find it |
+| `source_exhausted` | `false` | The capture source drained. Not ever, from this capture: the wait returns early rather than holding a slot to learn nothing |
+
+The numbers this tool applies, and what moves each one:
+
+- **Deadline default: 30 seconds** (`DEFAULT_TIMEOUT_SECONDS`). Used when the
+  call names no `timeout_seconds`.
+- **Deadline ceiling: 60 seconds** (`DEFAULT_MCP_MAX_WAIT_SECONDS`, which
+  `await_condition` reads as `DEFAULT_MAX_WAIT_SECONDS`). The shipped value of
+  `--mcp-max-wait-seconds`; the operator moves it, and a request above it is
+  clamped rather than refused.
+- **Poll default: 500 milliseconds** (`DEFAULT_POLL_INTERVAL_MS`). Used when
+  the call names no `poll_interval_ms`.
+- **Poll floor: 100 milliseconds** (`MIN_POLL_INTERVAL_MS`). A smaller request
+  meets that floor, so no caller can turn this into a spin loop, and the
+  response carries the value actually used.
+
+`polls` counts the looks and `scans` counts the looks that ran the filter. They
+differ because both stores number their revisions, so a look at a capture that
+has not moved resolves by comparing two integers rather than by re-running
+the filter — an idle capture costs almost nothing to watch.
+
+Nothing this call allocates outlives it. There is no subscription registry, no
+per-client filter and no background task, which is why the deadline is not a
+detail: it is what ends the server's obligation. `--mcp-max-wait-seconds`
+bounds that obligation for the same reason `--mcp-max-rows` bounds a response,
+and for a reason of its own — a waiting call occupies one of
+`--mcp-max-concurrent` slots while producing nothing.
+
+```jsonc
+// await_condition { "filter": "state == Failed", "timeout_seconds": 20 }
+{
+  "schema_version": 1,
+  "filter": "state == Failed",
+  "matched": true,
+  "stopped_because": "condition_met",
+  "dialogs": [
+    {
+      "call_id": "1-1966@10.0.2.20",
+      "state": "Failed",
+      "method": "INVITE",
+      "from_user": "⟦untrusted-capture-data⟧sipp⟦/untrusted-capture-data⟧",
+      "to_user": "⟦untrusted-capture-data⟧test⟦/untrusted-capture-data⟧",
+      "msg_count": 4,
+      "duration_sec": 1.204,
+      "created_at": "2016-11-26T14:52:59.666393+00:00",
+      "updated_at": "2016-11-26T14:53:00.870676+00:00",
+      "frame": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546"
+    }
+  ],
+  "returned": 1,
+  "total_matched": 1,
+  "truncated": false,
+  "elapsed_ms": 4512,
+  "timeout_seconds": 20,
+  "timeout_clamped": false,
+  "poll_interval_ms": 500,
+  "polls": 10,
+  "scans": 3,
+  "source_exhausted": false,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "1d1a718cb5c33b7c52754-1",
+    "dialog_generation": 41,
+    "stream_generation": 7
+  }
+}
+```
+
 ### `find_correlated`
 
 Finds the other legs of one call — the far side of a B2BUA, SBC or PBX hop.
@@ -15664,7 +15916,11 @@ Per-call diagnostic report for one Call-ID. Backed by
 `"json"` answers with the structured object below. `"markdown"` and `"text"`
 answer with one text block holding the rendered report, byte-identical to what
 [`render_ladder`](#render_ladder) produces for the same dialog. All three append
-the provenance note as a second content block.
+the provenance note as a second content block. The two rendered formats also
+carry the `INCOMPLETE RUN` block described under
+[`get_capture_report`](#get_capture_report) when the capture was not read in
+full. `"json"` carries `source_exhausted` and `source_stopped_early` as fields
+instead.
 
 The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
 
@@ -15784,6 +16040,11 @@ Output is byte-identical to the report
 `sipnab -N --call-report <id> --no-cli-print` writes for the same dialog.
 `--no-cli-print` matters for the comparison: without it the CLI writes the whole
 capture's per-message dump ahead of the report, and the tool never does.
+
+Over a capture that was not read in full — still loading, or a read that
+stopped before the file's end — the tool appends an `INCOMPLETE RUN` block
+after the ladder, which `--call-report` does not. The ladder itself does not
+change: the block goes after it, so no line of the drawing moves.
 
 ```text
 # Call Report: 1-1966@10.0.2.20
@@ -17552,7 +17813,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.140 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.141 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -17863,6 +18124,23 @@ Four refusals, each naming what to do instead:
 | The source has not drained | The original reader is still filling the stores. Poll `capture_status` until `source_exhausted` is true |
 | A load is already running | Poll `capture_status` until `load.done` is true |
 
+**A fifth, where the client can carry the question.** If your client declared
+MCP's `elicitation` capability, a swap that would discard dialogs asks the
+person driving it to confirm first, and a decline refuses the call:
+
+```text
+refusing to open 'outage-0722.pcap': the confirmation was declined; nothing
+was done. The loaded capture is untouched and its 13 dialog(s) are still
+addressable.
+```
+
+The four refusals above resolve *before* the question, so sipnab asks nobody
+to approve a swap sipnab was going to refuse anyway. A swap that would discard
+nothing does not ask, and a client that declared no elicitation capability is
+not asked and is not treated as having refused — `--mcp-allow-open-capture`
+remains the guard it always was. See
+[the protocol page](mcp-protocol.md#confirming-the-two-irreversible-ones).
+
 A filename must be a bare name inside the root, under the same rule every file
 tool applies. sipnab also refuses a capture that belongs to this run's own `-I`
 set, with the output guard's wording about overwriting — that file is already
@@ -17886,8 +18164,9 @@ A stock server cannot be stopped by an agent.
 | `discard_unsaved` | bool? | `true` accepts losing the packets a live capture holds in memory. | `false` — a live capture with unsaved packets refuses to stop. |
 
 Returns `dry_run`, `would_stop`, `live`, `unsaved`, `dialogs`, `streams`,
-`saved_to`, `note` and `schema_version`. Read `would_stop` rather than assuming:
-it is `false` on a dry run and on a refusal alike, and `note` says which.
+`saved_to`, `confirmed_by_operator`, `note` and `schema_version`. Read
+`would_stop` rather than assuming: it is `false` on a dry run, on a refusal and
+on a declined confirmation alike, and `note` says which.
 
 ```jsonc
 // shutdown_server {}   — no arguments means DRY RUN
@@ -17900,6 +18179,7 @@ it is `false` on a dry run and on a refusal alike, and `note` says which.
   "dialogs": 13,
   "streams": 2,
   "saved_to": null,
+  "confirmed_by_operator": null,
   "note": "dry run — nothing stopped. Call again with dry_run=false to stop."
 }
 ```
@@ -17908,6 +18188,30 @@ Stopping takes a deliberate second call with `dry_run: false`. On a **live**
 capture holding packets written nowhere, it refuses outright unless you pass
 `save_to` or `discard_unsaved: true` — losing a capture to a misread sentence
 is the failure worth engineering against.
+
+**And, where the client can carry the question, sipnab asks a person.** If your
+client declared MCP's `elicitation` capability, a `dry_run: false` call sends a
+real `elicitation/create` request and waits for the answer. Only `accept`
+carrying `confirm: true` stops the process:
+
+```jsonc
+// shutdown_server { "dry_run": false }, confirmation declined
+{
+  "schema_version": 1,
+  "dry_run": false,
+  "would_stop": false,
+  "confirmed_by_operator": false,
+  "note": "the confirmation was declined; nothing was done"
+  // ...
+}
+```
+
+`confirmed_by_operator` is `null` where sipnab asked nobody — a dry run, or a
+client that declared no elicitation capability. That case is **not** a refusal:
+`dry_run` remains the guard it always was, so the tool behaves exactly as it
+did on any client that cannot answer. `save_to` writes only on the path that
+actually stops, so a declined confirmation leaves no file behind. See
+[the protocol page](mcp-protocol.md#confirming-the-two-irreversible-ones).
 
 ### `start_tls_capture`
 
@@ -18153,6 +18457,28 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
   `auth::TokenVerifier`), sharing the same code path as the REST API.
   Signed tokens with expiry / rotation / revocation are also supported —
   see [auth.md](auth.md).
+- **Every `401` says what it wants.** The rejection carries
+  `WWW-Authenticate: Bearer realm="sipnab"`, as
+  [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html) §15.5.2 requires of
+  any `401`, plus `error="invalid_token"`
+  ([RFC 6750](https://www.rfc-editor.org/rfc/rfc6750.html) §3.1) when a token
+  the client presented a token and it failed. Presenting nothing carries no error code, which is
+  what §3.1 asks for and what lets an operator tell a misconfigured client from
+  a wrong token. Every rejected credential produces the same challenge: telling
+  expired from revoked from forged would make the header an oracle.
+- **Discovery is available; sipnab is not an authorization server.**
+  `--mcp-resource-url` publishes an
+  [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html) protected-resource
+  metadata document at the well-known path derived from that URL, unauthenticated
+  by design, and adds `resource_metadata` to the challenge. It names the
+  resource, the scopes this surface understands, and where the surface is
+  documented — and nothing else: no bind address, no `Host` allowlist, no
+  token, no signing key, no capture. It advertises no `authorization_servers`,
+  because sipnab issues and validates no OAuth tokens and a client sent to
+  fetch one elsewhere would return holding a credential this server rejects.
+  The operator names the URL rather than sipnab deriving it: behind a TLS-terminating proxy
+  sipnab cannot see the scheme a client used, and [RFC 9728 §3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) makes a client
+  discard a document whose `resource` does not match the URL it requested.
 - **Host header allowlist.** rmcp's DNS-rebind protection runs by
   default (`localhost`/`127.0.0.1`/`::1`); extend with
   `--mcp-allowed-host` for non-loopback clients.
@@ -18180,7 +18506,7 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 55 carry MCP annotations, so a host
+- **Every tool declares what it does.** All 56 carry MCP annotations, so a host
   can decide what to call without asking. Thirty are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the five that are
   not. Every tool sets `openWorldHint` to `false`, because sipnab answers from
@@ -18343,6 +18669,7 @@ to the one this run is already answering questions about:
 | `sipnab://live/dialogs` | every dialog the loaded capture holds |
 | `sipnab://live/dialogs/<Call-ID>` | one dialog, by Call-ID |
 | `sipnab://lint/<rule-id>` | one conformance rule's catalog entry |
+| `sipnab://filter/<alias>` | one diagnostic alias, expanded against this run's thresholds |
 
 The two live ones render through the same code path as `list_dialogs`, under
 the same `--mcp-max-rows` ceiling and the same fencing of untrusted text. The
@@ -18360,6 +18687,18 @@ change.
 The same function `explain_rule` uses builds `sipnab://lint/<rule-id>`,
 for the same reason.
 
+`sipnab://filter/<alias>` is the one URI here that carries something no
+document can. The alias NAMES — `problems`, `slow-setup`, `short-calls` and the
+rest — appear in
+[the filter DSL reference](filter-dsl.md#named-aliases), which sipnab also
+serves verbatim as `sipnab://reference/filter-dsl`. The NUMBERS in each
+expansion are not: they come from the thresholds this run resolved, so on a
+server whose operator tuned `[diagnosis]`, `slow-setup` means something the
+published page does not say. Reading the URI returns the alias, the DSL
+expression this server would actually evaluate, and a note not to cache it —
+the same `expand_alias` that `find_problems` compiles, so the expression an
+agent reads is the expression the tool runs.
+
 ### Templates and completions
 
 `resources/templates/list` names the URI shapes a client may construct, each
@@ -18370,6 +18709,7 @@ state:
 |---|---|---|
 | `sipnab://live/dialogs/{call_id}` | `call_id` | the Call-IDs the capture holds right now |
 | `sipnab://lint/{rule_id}` | `rule_id` | the conformance rule catalog |
+| `sipnab://filter/{alias}` | `alias` | the diagnostic aliases `find_problems` takes as `kinds` |
 | `sipnab://reference/{topic}` | `topic` | the reference pages `resources/list` names |
 | `sipnab:///{filename}` | `filename` | the directory `--mcp-file-root` names |
 
@@ -18390,7 +18730,11 @@ Three bounds worth knowing:
   with it.
 - **100 values per response**, the spec's ceiling, with `total` reporting what
   actually matched so a client can see it needs to narrow rather than believing
-  it has the whole set.
+  it has the whole set. `--mcp-max-rows` lowers it further where an operator
+  set it lower: a completion is a query, a Call-ID is the most identifying row
+  sipnab holds, and this method reaches the store without the audit line, the
+  scope check or the rate limit that `tools/call` applies. One ceiling for both
+  doors, not a second one that happens to be smaller today.
 
 MCP has no way to complete a TOOL argument — the primitive completes prompt
 arguments and resource-template variables only — so a `call_id` completion is
@@ -18444,7 +18788,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions, where
 
 ## What the write verbs do
 
-Forty-five of the 55 tools are `readOnlyHint: true`. These ten are not, and
+Forty-six of the 56 tools are `readOnlyHint: true`. These ten are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 
@@ -18468,6 +18812,45 @@ service, so an agent cannot use a tool here to reach the network.
 A test walks the registered router and fails if any tool carries no
 `readOnlyHint`, or if the set of non-read-only tools stops matching that table —
 so a new write verb, or an existing tool quietly flipped, cannot ship unnoticed.
+
+### Confirming the two irreversible ones
+
+`shutdown_server` ends the run. `open_capture` clears every dialog and stream
+the process holds, so every Call-ID, cursor and message index an agent has
+collected addresses a capture that no longer exists. A convention guarded both:
+CONVENTION — `dry_run` defaulting to the safe value, so stopping took a
+deliberate second call — and a convention has a structural hole: the second
+call comes from the same agent, on the same reasoning that produced the
+first. It rate-limits an accident. It does not introduce a second party.
+
+**Where the client declares MCP's `elicitation` capability, sipnab asks one.**
+Both tools issue a real `elicitation/create` REQUEST — a form with a single
+required boolean — and wait for the reply before answering the tool call.
+Only `accept` carrying `confirm: true` proceeds. A decline, a cancel, an
+`accept` whose form came back `false`, and a round trip that did not complete
+are all the same thing to the caller: sipnab did nothing.
+
+- `shutdown_server` reports `would_stop: false` and puts the reason in `note`.
+  `confirmed_by_operator` is `true`, `false`, or `null` where sipnab asked nobody.
+- `open_capture` refuses with `invalid_params`, and the message says how many
+  dialogs are still addressable.
+
+Three bounds worth knowing:
+
+- **A dry run asks nobody.** Nothing happens on one, so there is nothing to
+  approve, and a confirmation with no consequence behind it teaches whoever
+  reads it to click through the next one.
+- **A swap that would discard nothing asks nobody**, for the same reason.
+- **A client that did not declare the capability is never sent one, and is not
+  treated as having refused.** Elicitation is a CLIENT capability. Reading
+  "there was nobody to ask" as "they said no" would make `shutdown_server`
+  impossible on every stock client, so the convention remains the floor:
+  `dry_run` still governs, and `--mcp-allow-shutdown` /
+  `--mcp-allow-open-capture` still gate both tools whatever any client says.
+
+`open_capture` settles its three refusals — live source, load in flight, source
+not drained — BEFORE it asks, and again inside the lock that performs the swap.
+Asking first and refusing afterwards would put the question on a false premise.
 
 ## Untrusted capture text
 
@@ -20672,7 +21055,7 @@ and a consumer parses it before indexing into it.
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.140 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.141 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -25612,7 +25995,7 @@ with that cost stated.
 |---|---|
 | [`src/rtpengine/bencode.rs`](../../src/rtpengine/bencode.rs) | Bencode decoder. Borrowed values, depth-limited, hostile-input facing |
 | [`src/rtpengine/ng.rs`](../../src/rtpengine/ng.rs) | Cookie/body split, command classification, field extraction |
-| [`src/rtpengine/control.rs`](../../src/rtpengine/control.rs) | `list` and `query`, their reply parsers, and the UDP client that carries them |
+| [`src/rtpengine/control.rs`](../../src/rtpengine/control.rs) | `list` and `query`, their reply parsers, and the client that carries them -- over a datagram by default, over a stream when the answer asked for is bigger than a datagram can return |
 | [`src/relay/mod.rs`](../../src/relay/mod.rs) | The seam's declarations: `ControlDecoder`, `ControlMessage`, `DecodedControl`, and the media-creating tally. Declares only -- it imports no implementation, so a second relay can satisfy it |
 | [`src/relay/types.rs`](../../src/relay/types.rs) | The vocabulary a caller programs against: commands, replies, and the views of a call the relay returns |
 | [`src/relay/reconcile.rs`](../../src/relay/reconcile.rs) | The two moments sipnab asks, the port index, the bounds that keep asking from becoming polling, and the hand-off the capture path offers to |
@@ -25850,7 +26233,7 @@ rtpengine at 127.0.0.1:22222: 2 unexplained stream(s) offered, 0 attributed, 4 c
 
 ### Why the asking runs on a thread
 
-One question is a UDP round trip, and `DEFAULT_CONTROL_TIMEOUT` gives it two
+One question is a round trip, and `DEFAULT_CONTROL_TIMEOUT` gives it two
 seconds. Asking from the packet path would stall capture for as long as the
 relay stayed quiet, trading dropped packets for an attribution, which is the
 wrong way round for a tool whose job is watching the traffic. So the
@@ -25942,8 +26325,39 @@ So it keeps five reasons apart:
 Only the last of those says anything about the relay. `why_not` tests them
 most-conclusive-first, so the last arm becomes reachable only after a complete
 answer. Where two gaps hold at once it names the truncated enumeration first,
-because that is the wider gap and the operator's fix for it — raise the limit,
-or enumerate over TCP — shrinks the other one too.
+because that is the wider gap and closing it shrinks the other one too.
+
+### Reaching past a capped enumeration
+
+sipnab does not merely report the cap. A capped answer earns ONE
+wider ask, for `WIDE_LIST_LIMIT` Call-IDs, and that number aims to be
+past what a datagram can return — so `ControlClient` sends it over a stream,
+and a relay with no `listen-tcp-ng` refuses the connection. Availability is
+therefore discovered by asking rather than declared in a flag that could
+assert a listener which is not there.
+
+Measured against rtpengine 14.2.0.0 holding 1200 calls with 55-character
+Call-IDs:
+
+| `limit` | Reply size | Over a datagram | Over a stream |
+|---|---|---|---|
+| 32 (default) | ~2 KB | fine | fine |
+| 1000 | 61034 bytes | fine, in two reads | fine, in two reads |
+| 1200 | 73234 bytes | **no reply at all** — past the maximum UDP payload | all 1200 returned |
+
+Two consequences the code has to carry. A stream has no message boundary and
+the connection stays open after the answer, so there is no EOF to read up to:
+`round_trip_stream` reads until the bencode COMPLETES, which is what rtpengine
+does in the other direction. And nothing bounds a stream, so
+`MAX_STREAM_REPLY_BYTES` is what stops the far end deciding how much memory
+sipnab allocates.
+
+The wider ask runs once for the run, whether it succeeds or fails, and
+the summary says which happened — "we never tried" and "we tried and could
+not" send an operator to different places. Reaching further also moves the
+binding constraint from the enumeration to the transaction ceiling, so a run
+that enumerated more calls than it could afford to query names how many went
+unread rather than leaving the operator to subtract two numbers.
 
 ## What is deliberately not here
 

@@ -394,6 +394,7 @@ NISQA
 Nord
 NRBs
 ns
+OAuth
 octet_count
 offerless
 onboarding
@@ -702,6 +703,7 @@ update_register_state
 updated_at
 uprobes?
 URIs
+userinfo
 userspace
 Userspace
 usize

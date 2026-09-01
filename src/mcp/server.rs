@@ -102,6 +102,17 @@ pub struct SipnabMcp {
     /// read from a constant at each call site is not something an operator can
     /// move.
     pub(crate) body_cap: usize,
+    /// Ceiling on how long ONE `await_condition` call may wait, in seconds,
+    /// from `--mcp-max-wait-seconds` or `[limits] mcp_max_wait_seconds`.
+    /// Defaults to
+    /// [`DEFAULT_MAX_WAIT_SECONDS`](super::tools::await_condition::DEFAULT_MAX_WAIT_SECONDS).
+    ///
+    /// Carried beside `row_cap` and `body_cap` for the reason spelled out on
+    /// the first of them, and it bounds a different resource: those two bound
+    /// the SIZE of an answer, this one bounds how long a caller may occupy a
+    /// `--mcp-max-concurrent` permit while producing none. An unbounded wait
+    /// is a held connection by another name.
+    pub(crate) max_wait_seconds: u64,
     /// Directory the file tools are confined to. `None` disables them.
     file_root: Option<std::path::PathBuf>,
     /// Capture files and directories this server is reading, which the file
@@ -266,6 +277,7 @@ impl SipnabMcp {
             max_inline_media_bytes: None,
             alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
             body_cap: super::shape::DEFAULT_MAX_BODY_BYTES,
+            max_wait_seconds: super::tools::await_condition::DEFAULT_MAX_WAIT_SECONDS,
             file_root: None,
             protected_inputs: Default::default(),
             allow_shutdown: false,
@@ -295,7 +307,8 @@ impl SipnabMcp {
                 + Self::provenance_router()
                 + Self::compare_router()
                 + Self::endpoints_router()
-                + Self::relay_router(),
+                + Self::relay_router()
+                + Self::await_condition_router(),
         }
     }
 
@@ -401,6 +414,22 @@ impl SipnabMcp {
             super::shape::DEFAULT_MAX_BODY_BYTES
         } else {
             bytes
+        };
+        self
+    }
+
+    /// Cap how long one `await_condition` call may wait, in seconds.
+    ///
+    /// `0` is treated as the default rather than as "no waiting", the same
+    /// reading [`Self::with_row_cap`] gives it and for the same reason: the
+    /// config layer already rejects 0 by name, so a 0 arriving here is a
+    /// caller that never asked rather than an operator who did.
+    #[must_use]
+    pub fn with_max_wait_seconds(mut self, seconds: u64) -> Self {
+        self.max_wait_seconds = if seconds == 0 {
+            super::tools::await_condition::DEFAULT_MAX_WAIT_SECONDS
+        } else {
+            seconds
         };
         self
     }
@@ -3520,6 +3549,42 @@ impl SipnabMcp {
             return Ok(vec![rmcp::model::ResourceContents::text(text, uri)]);
         }
 
+        // One diagnostic alias, expanded against THIS run's thresholds. The
+        // expansion is built by the same `expand_alias` that `find_problems`
+        // and `--filter <name>` compile, so the expression an agent reads here
+        // is the expression the tool will evaluate rather than a description
+        // of one.
+        if let Some(alias) = uri.strip_prefix(super::completion::FILTER_ALIAS_URI_PREFIX) {
+            let expanded = expand_alias(alias, &self.alias_thresholds).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!(
+                        "'{alias}' is not a diagnostic alias; complete the \
+                         'sipnab://filter/{{alias}}' template, or read \
+                         sipnab://reference/filter-dsl for the grammar. \
+                         Served: {}",
+                        crate::sip::dsl::DIAGNOSTIC_ALIASES.join(", ")
+                    ),
+                    None,
+                )
+            })?;
+            let text = serde_json::to_string_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "alias": alias,
+                "expands_to": expanded,
+                // Stated rather than implied. The same alias on a differently
+                // configured server expands to different numbers, and an agent
+                // that cached this expression would carry one operator's SLA
+                // into another operator's capture.
+                "note": "the numbers come from this server's configured thresholds, \
+                         not from the published grammar page; pass the alias name to \
+                         find_problems rather than caching this expression",
+            }))
+            .map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("cannot render '{uri}': {e}"), None)
+            })?;
+            return Ok(vec![rmcp::model::ResourceContents::text(text, uri)]);
+        }
+
         let name = uri.strip_prefix("sipnab:///").ok_or_else(|| {
             rmcp::ErrorData::invalid_params(
                 format!(
@@ -3674,6 +3739,10 @@ impl SipnabMcp {
                 .iter()
                 .map(|r| r.id.to_string())
                 .collect(),
+            super::completion::Source::FilterAliases => crate::sip::dsl::DIAGNOSTIC_ALIASES
+                .iter()
+                .map(|a| (*a).to_string())
+                .collect(),
             super::completion::Source::ReferenceTopics => super::reference::all()
                 .iter()
                 .filter_map(|r| {
@@ -3734,7 +3803,16 @@ impl SipnabMcp {
         if template.needs_file_root && self.file_root.is_none() {
             return super::completion::Completion::none();
         }
-        super::completion::narrow(self.completion_values(template.source, typed), typed)
+        // Under the operator's ceiling, not merely the spec's. A completion is
+        // a query, and `--mcp-max-rows` is the number that decides how many
+        // rows of a capture one answer may carry — see
+        // [`narrow_to`](super::completion::narrow_to) for why answering 100
+        // Call-IDs on a server configured to release two was the wrong shape.
+        super::completion::narrow_to(
+            self.completion_values(template.source, typed),
+            typed,
+            self.row_cap,
+        )
     }
 
     /// Start the task that watches `view` for this connection.
@@ -4829,8 +4907,10 @@ impl SipnabMcp {
     #[tool(
         name = "render_ladder",
         description = "Renders a SIP call-flow ladder for one Call-ID. \
-                       Format 'markdown' (default) or 'text'. Output is \
-                       byte-identical to `--call-report --markdown`.",
+                       Format 'markdown' (default) or 'text'. The ladder is \
+                       byte-identical to `--call-report --markdown`; over a \
+                       capture that was not read in full an INCOMPLETE RUN \
+                       block follows it, naming why.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn render_ladder(
@@ -7141,6 +7221,7 @@ impl SipnabMcp {
     pub async fn open_capture(
         &self,
         Parameters(params): Parameters<OpenCaptureParams>,
+        Extension(confirm): Extension<super::elicit::Confirm>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if !self.allow_open_capture {
             return Err(rmcp::ErrorData::invalid_params(
@@ -7168,54 +7249,69 @@ impl SipnabMcp {
             .as_ref()
             .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed));
 
+        // The refusals, checked once BEFORE the question and once inside the
+        // critical section that acts on the answer. The second is the
+        // authoritative one -- it is what makes the swap atomic -- and the
+        // first exists so a person is never asked to approve discarding a
+        // capture that sipnab was going to refuse to swap anyway. One rule
+        // (`open_capture_refusal`), two call sites; the alternative is two
+        // copies of three refusal messages that drift.
+        if let Some(refusal) = {
+            let state = self.capture.read();
+            let refusal = open_capture_refusal(&state, exhausted, &params.filename);
+            drop(state);
+            refusal
+        } {
+            return Err(refusal);
+        }
+
+        // PB6. Asked only when there is something to lose: on an empty store
+        // the swap discards nothing, and a confirmation dialog with no
+        // consequence behind it teaches whoever reads it to click through the
+        // next one. A client that declared no elicitation capability is not
+        // asked at all -- `--mcp-allow-open-capture` remains the guard it
+        // always was. See `super::elicit`.
+        let holding = self.dialog_store.read().len();
+        if holding > 0 {
+            let answer = confirm
+                .ask(
+                    &format!(
+                        "sipnab is being asked to load '{}', REPLACING the capture it \
+                         holds. {holding} dialog(s) and every stream, cursor and \
+                         message index taken from them are discarded and cannot be \
+                         recovered from this process.",
+                        params.filename
+                    ),
+                    "Replace the loaded capture",
+                    "Discards every dialog and stream this server currently holds.",
+                )
+                .await;
+            if let super::elicit::Answer::Refused(why) = answer {
+                tracing::warn!(
+                    "MCP open_capture: NOT replacing the capture ({holding} dialogs kept) — {why}"
+                );
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!(
+                        "refusing to open '{}': {why}. The loaded capture is untouched \
+                         and its {holding} dialog(s) are still addressable.",
+                        params.filename
+                    ),
+                    None,
+                ));
+            }
+        }
+
         // One critical section for the whole swap: check, rotate, clear,
         // spawn. Two agents calling this at once must not both get past the
         // in-flight check, and no reader may see a cleared store still
         // wearing the previous capture's identity.
         let (identity, previous_dialogs) = {
             let mut state = self.capture.write();
-            if let Some(c) = &state.context
-                && c.live
-            {
-                return Err(rmcp::ErrorData::invalid_params(
-                    format!(
-                        "refusing to open '{}': this server is capturing live from '{}'. \
-                         The capture thread never finishes, so loading a file would leave \
-                         two writers on one store. Restart sipnab with -I to analyze files.",
-                        params.filename, c.name
-                    ),
-                    None,
-                ));
-            }
-            // The in-flight check comes FIRST of the two, because a running
-            // load also holds `source_exhausted` false: testing exhaustion
-            // first answered "the current source has not finished reading" to
-            // an agent whose own previous call is the thing still reading, and
-            // sent it to poll a field that describes the wrong subject.
-            if let Some(load) = &state.load
-                && !load.finished()
-            {
-                return Err(rmcp::ErrorData::invalid_params(
-                    format!(
-                        "refusing to open '{}': '{}' is still loading ({} packets so far). \
-                         Poll capture_status until load.done is true.",
-                        params.filename,
-                        load.filename,
-                        load.packets.load(std::sync::atomic::Ordering::Relaxed)
-                    ),
-                    None,
-                ));
-            }
-            if !exhausted {
-                return Err(rmcp::ErrorData::invalid_params(
-                    format!(
-                        "refusing to open '{}': the current source has not finished \
-                         reading. Poll capture_status until source_exhausted is true, \
-                         then call again.",
-                        params.filename
-                    ),
-                    None,
-                ));
+            // Re-checked under the write lock, because the read above was
+            // released to ask the question and anything could have started a
+            // load in between.
+            if let Some(refusal) = open_capture_refusal(&state, exhausted, &params.filename) {
+                return Err(refusal);
             }
 
             let previous_dialogs = self.dialog_store.read().len();
@@ -7486,14 +7582,39 @@ impl SipnabMcp {
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
-    /// Stop this sipnab process. Opt-in, dry-run by default.
+    /// Stop this sipnab process. Opt-in, dry-run by default, and confirmed by
+    /// a person where the client can carry the question (PB6).
+    ///
+    /// # Two guards, not one replacing the other
+    ///
+    /// `dry_run` is the convention: stopping takes a deliberate second call.
+    /// It rate-limits an accident, but the second call comes from the same
+    /// agent and the same reasoning as the first, so it never introduces a
+    /// second party. Where the client declared MCP's elicitation capability,
+    /// this handler now asks one — a real `elicitation/create` round trip
+    /// whose answer arrives before the tool call is answered.
+    ///
+    /// A client that declared nothing gets exactly the behavior that existed
+    /// before: see [`super::elicit`] for why "there was nobody to ask" must
+    /// never read as "they said no".
+    ///
+    /// # Ordering
+    ///
+    /// The confirmation happens after every refusal is settled and BEFORE
+    /// `save_to` writes anything. Asking first and refusing afterwards would
+    /// put the question on a false premise; writing first and asking
+    /// afterwards would leave a file on disk from a shutdown that never
+    /// happened.
     #[tool(
         name = "shutdown_server",
         description = "Stops this sipnab process. DESTRUCTIVE. Requires \
                        --mcp-allow-shutdown on the server. Defaults to a DRY \
                        RUN that only reports what would happen; pass \
-                       dry_run=false to actually stop. Refuses to discard an \
-                       unsaved live capture unless save_to is given or \
+                       dry_run=false to actually stop. Where the client \
+                       supports elicitation, a real stop also asks the person \
+                       driving it to confirm, and a declined confirmation \
+                       stops nothing. Refuses to discard an unsaved live \
+                       capture unless save_to is given or \
                        discard_unsaved=true.",
         annotations(
             read_only_hint = false,
@@ -7505,6 +7626,7 @@ impl SipnabMcp {
     pub async fn shutdown_server(
         &self,
         Parameters(params): Parameters<ShutdownParams>,
+        Extension(confirm): Extension<super::elicit::Confirm>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if !self.allow_shutdown {
             return Err(rmcp::ErrorData::invalid_params(
@@ -7535,21 +7657,14 @@ impl SipnabMcp {
             (ds.len(), ss.len())
         };
 
-        let mut saved_to = None;
-        if let Some(name) = &params.save_to {
-            // WRITES the saved capture before stopping.
-            let path = self.resolve_in_root_for_write(name)?;
-            if !dry_run {
-                let messages: Vec<crate::sip::SipMessage> = {
-                    let ds = self.dialog_store.read();
-                    ds.iter().flat_map(|d| d.messages.iter().cloned()).collect()
-                };
-                write_messages_to_pcap(&messages, &path).map_err(|e| {
-                    rmcp::ErrorData::internal_error(format!("save failed, NOT stopping: {e}"), None)
-                })?;
-            }
-            saved_to = Some(path.display().to_string());
-        }
+        // The destination is resolved on a dry run too, so a caller learns
+        // that its filename is unusable from the report rather than from the
+        // call that was meant to stop the process.
+        let save_path = match &params.save_to {
+            Some(name) => Some(self.resolve_in_root_for_write(name)?),
+            None => None,
+        };
+        let saved_to = save_path.as_ref().map(|p| p.display().to_string());
 
         // Losing a live capture to a misread sentence is the failure that
         // matters, so the destructive path must be named rather than defaulted
@@ -7565,7 +7680,45 @@ impl SipnabMcp {
             ));
         }
 
-        if !dry_run {
+        // PB6. Only on a real stop: a dry run does nothing, so there is
+        // nothing to confirm and waking a person to approve a report would
+        // teach them to approve without reading.
+        let answer = if dry_run {
+            super::elicit::Answer::Unavailable
+        } else {
+            confirm
+                .ask(
+                    &format!(
+                        "sipnab is being asked to STOP. It is holding {dialogs} dialog(s) \
+                         and {streams} RTP stream(s){}. Stopping ends the run; nothing \
+                         it holds in memory survives.",
+                        match (&saved_to, unsaved) {
+                            (Some(to), _) => format!(", and will first write them to {to}"),
+                            (None, true) => ", from a LIVE capture written nowhere".to_string(),
+                            (None, false) => String::new(),
+                        }
+                    ),
+                    "Stop the sipnab server",
+                    "Ends this run. Any analysis held only in memory is lost.",
+                )
+                .await
+        };
+        let stopping = !dry_run && answer.permits();
+
+        // The save happens only on the path that actually stops. A file
+        // written for a shutdown that was then declined is a capture nobody
+        // asked to export, under a name the caller will not look for again.
+        if stopping && let Some(path) = &save_path {
+            let messages: Vec<crate::sip::SipMessage> = {
+                let ds = self.dialog_store.read();
+                ds.iter().flat_map(|d| d.messages.iter().cloned()).collect()
+            };
+            write_messages_to_pcap(&messages, path).map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("save failed, NOT stopping: {e}"), None)
+            })?;
+        }
+
+        if stopping {
             tracing::warn!(
                 "MCP shutdown_server: stopping (dialogs={dialogs}, streams={streams}, \
                  unsaved={unsaved}, saved_to={saved_to:?})"
@@ -7575,22 +7728,41 @@ impl SipnabMcp {
             // writers flushed, files closed — rather than a second mechanism
             // that has to relearn all of that.
             crate::signals::request_shutdown();
+        } else if let super::elicit::Answer::Refused(why) = &answer {
+            tracing::warn!("MCP shutdown_server: NOT stopping — {why}");
         }
 
         Ok(CallToolResult::success(vec![ContentBlock::json(
             serde_json::json!({
                 "schema_version": 1,
                 "dry_run": dry_run,
-                "would_stop": !dry_run,
+                // Still the one field to read, and now true only when the
+                // process is actually going down: a declined confirmation is
+                // one more refusal, which is exactly what this flag has always
+                // meant.
+                "would_stop": stopping,
                 "live": live,
                 "unsaved": unsaved,
                 "dialogs": dialogs,
                 "streams": streams,
+                // The RESOLVED destination, on a dry run as on a real stop —
+                // unchanged, and `would_stop` is what says whether the bytes
+                // are actually there.
                 "saved_to": saved_to,
-                "note": if dry_run {
-                    "dry run — nothing stopped. Call again with dry_run=false to stop."
-                } else {
-                    "shutdown requested"
+                // Whether a PERSON was asked, stated rather than inferred: an
+                // agent cannot otherwise tell a client that carried the
+                // question from one that could not.
+                "confirmed_by_operator": match &answer {
+                    super::elicit::Answer::Unavailable => serde_json::Value::Null,
+                    super::elicit::Answer::Confirmed => serde_json::Value::Bool(true),
+                    super::elicit::Answer::Refused(_) => serde_json::Value::Bool(false),
+                },
+                "note": match (&answer, dry_run) {
+                    (super::elicit::Answer::Refused(why), _) => why.clone(),
+                    (_, true) =>
+                        "dry run — nothing stopped. Call again with dry_run=false to stop."
+                            .to_string(),
+                    (_, false) => "shutdown requested".to_string(),
                 },
             }),
         )?]))
@@ -7966,6 +8138,67 @@ fn rate_limit_refusal(
         format!("sipnab MCP server is at its per-peer rate limit{cause}; retry shortly"),
         None,
     ))
+}
+
+/// Why `open_capture` may not swap the capture right now, if it may not.
+///
+/// The three refusals, in one place because `open_capture` asks them twice:
+/// once outside the lock so a person is not asked to approve a swap that would
+/// be refused anyway, and once inside the write lock, where the answer is the
+/// one that governs. Two hand-written copies of three messages would drift,
+/// and the copy an operator reads would stop being the copy that decided.
+///
+/// The in-flight check comes FIRST of the three, because a running load also
+/// holds `source_exhausted` false: testing exhaustion first answered "the
+/// current source has not finished reading" to an agent whose own previous
+/// call is the thing still reading, and sent it to poll a field that describes
+/// the wrong subject.
+#[cfg(feature = "mcp")]
+fn open_capture_refusal(
+    state: &CaptureState,
+    exhausted: bool,
+    filename: &str,
+) -> Option<rmcp::ErrorData> {
+    // A live capture's writer never finishes, so a second writer against the
+    // same stores would race it for as long as the process runs. This is the
+    // one refusal with no opt-out.
+    if let Some(c) = &state.context
+        && c.live
+    {
+        return Some(rmcp::ErrorData::invalid_params(
+            format!(
+                "refusing to open '{filename}': this server is capturing live from '{}'. \
+                 The capture thread never finishes, so loading a file would leave \
+                 two writers on one store. Restart sipnab with -I to analyze files.",
+                c.name
+            ),
+            None,
+        ));
+    }
+    if let Some(load) = &state.load
+        && !load.finished()
+    {
+        return Some(rmcp::ErrorData::invalid_params(
+            format!(
+                "refusing to open '{filename}': '{}' is still loading ({} packets so far). \
+                 Poll capture_status until load.done is true.",
+                load.filename,
+                load.packets.load(std::sync::atomic::Ordering::Relaxed)
+            ),
+            None,
+        ));
+    }
+    if !exhausted {
+        return Some(rmcp::ErrorData::invalid_params(
+            format!(
+                "refusing to open '{filename}': the current source has not finished \
+                 reading. Poll capture_status until source_exhausted is true, \
+                 then call again."
+            ),
+            None,
+        ));
+    }
+    None
 }
 
 /// Decide whether `scope` is allowed to invoke the tool, returning the
@@ -8478,6 +8711,16 @@ impl ServerHandler for SipnabMcp {
                     context.meta.get_progress_token(),
                 );
                 context.extensions.insert(progress);
+                // The confirmation channel (PB6), inserted for EVERY call for
+                // the reason `Progress` is: a handler that had to ask whether
+                // it was given one would be asking a question with two answers
+                // that mean the same thing. `Confirm::to` reads the peer's
+                // advertised capability, so a client that cannot answer yields
+                // a confirmer that asks nobody rather than a request nothing
+                // will respond to.
+                context
+                    .extensions
+                    .insert(super::elicit::Confirm::to(context.peer.clone()));
                 let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
                 self.tool_router.call(tcc).await
             }
@@ -8761,8 +9004,6 @@ mod tests {
         parse_at(&raw, ts)
     }
 
-    /// A server whose dialog store holds one dialog (`call_id`) with an
-    /// INVITE followed by a 200 OK (two messages).
     /// A bare filename that is a symlink out of the root is refused.
     ///
     /// `resolve_in_root` rejected separators, `..` and anything that was not a
@@ -9386,6 +9627,8 @@ mod tests {
         );
     }
 
+    /// A server whose dialog store holds one dialog (`call_id`) with an
+    /// INVITE followed by a 200 OK (two messages).
     fn server_with_dialog(call_id: &str) -> SipnabMcp {
         let mut ds = DialogStore::new(100, false);
         ds.process_message(invite(call_id, base_ts()));
@@ -10510,6 +10753,130 @@ mod tests {
             let json = serde_json::to_value(err).unwrap();
             assert_eq!(json["code"], -32602, "refused as invalid_params: {bad}");
         }
+    }
+
+    // ── completions (PB3) ────────────────────────────────────────────
+
+    /// A `ref/resource` for one template, spelled once.
+    fn template_ref(uri_template: &str) -> rmcp::model::Reference {
+        rmcp::model::Reference::for_resource(uri_template)
+    }
+
+    /// A completion is a QUERY, and it answers under the operator's row cap.
+    ///
+    /// `--mcp-max-rows` is what an operator sets to decide how many rows of a
+    /// capture one answer may carry, and a Call-ID is the most identifying row
+    /// sipnab holds. Before this bound, `completion/complete` returned up to
+    /// the spec's 100 regardless — so a server configured to release two
+    /// dialogs per answer released fifty times that many Call-IDs through a
+    /// method that also skips the audit line, the scope check and the rate
+    /// limit. The cap has to be the SAME number, not a second one that happens
+    /// to be smaller today.
+    #[test]
+    fn completions_are_bounded_by_the_operators_row_cap() {
+        let ids: Vec<String> = (0..6).map(|i| format!("cap-{i}@10.0.0.1")).collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let srv = server_with_simultaneous_dialogs(&refs).with_row_cap(2);
+
+        let c = srv.completion_for(
+            &template_ref("sipnab://live/dialogs/{call_id}"),
+            "call_id",
+            "",
+        );
+
+        assert_eq!(
+            c.values.len(),
+            2,
+            "the row cap is 2 and the completion offered {}: {:?}",
+            c.values.len(),
+            c.values
+        );
+        assert_eq!(c.total, 6, "total must report what MATCHED, not what fit");
+        assert!(
+            c.has_more,
+            "a client told 2 of 6 narrows; a client told 2 believes it has them all"
+        );
+    }
+
+    /// The diagnostic aliases complete, and they are exactly the vocabulary
+    /// `find_problems` accepts.
+    ///
+    /// Compared against `expand_alias` rather than against a literal list, so
+    /// the assertion cannot pass by both sides being wrong in the same
+    /// direction — which is precisely how a hand-copied vocabulary goes stale.
+    #[test]
+    fn filter_alias_completions_are_the_names_the_expander_accepts() {
+        let srv = empty_server();
+        let offered = srv
+            .completion_for(&template_ref("sipnab://filter/{alias}"), "alias", "")
+            .values;
+
+        assert!(!offered.is_empty(), "no alias was offered at all");
+        for name in &offered {
+            assert!(
+                crate::sip::dsl::expand_alias(name, &srv.alias_thresholds).is_some(),
+                "'{name}' was offered and find_problems would refuse it"
+            );
+        }
+        let mut expected: Vec<String> = crate::sip::dsl::DIAGNOSTIC_ALIASES
+            .iter()
+            .map(|a| (*a).to_string())
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(
+            offered, expected,
+            "the offered vocabulary is not the whole one"
+        );
+    }
+
+    /// Reading an alias returns the expansion THIS server would use.
+    ///
+    /// The whole reason the alias is worth a resource rather than a line in a
+    /// document: `docs/filter-dsl.md` — served verbatim as
+    /// `sipnab://reference/filter-dsl` — carries the SHIPPED numbers, compiled
+    /// in. An operator who tuned `[diagnosis]` has a `slow-setup` that means
+    /// something else, and until now there was no way to read it over MCP.
+    #[test]
+    fn reading_a_filter_alias_returns_the_expansion_this_server_would_use() {
+        let tuned = crate::sip::dsl::AliasThresholds {
+            pdd_secs: 2.5,
+            ..crate::sip::dsl::AliasThresholds::default()
+        };
+        assert_ne!(
+            tuned.pdd_secs,
+            crate::sip::dsl::AliasThresholds::default().pdd_secs,
+            "the fixture only proves anything while it differs from the default"
+        );
+        let srv = empty_server().with_alias_thresholds(tuned);
+
+        let read = srv
+            .resource_read("sipnab://filter/slow-setup")
+            .expect("the alias resource must resolve");
+        assert_eq!(read.len(), 1, "one alias, one content block");
+        let text = match &read[0] {
+            rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+            other => panic!("expected text, got {other:?}"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).expect("the payload is JSON");
+        assert_eq!(v["alias"], "slow-setup");
+        assert_eq!(
+            v["expands_to"], "pdd > 2.5",
+            "the resource served the shipped default instead of the tuned \
+             threshold, which is the one fact it exists to carry: {v}"
+        );
+        // And it is DSL a client can hand straight to `filter`.
+        crate::sip::dsl::FilterExpr::parse(v["expands_to"].as_str().expect("a string"))
+            .expect("the expansion must parse as the filter the client will send");
+    }
+
+    /// An alias nothing expands is refused by name, not answered emptily.
+    #[test]
+    fn reading_an_unknown_filter_alias_is_refused() {
+        let err = empty_server()
+            .resource_read("sipnab://filter/no-such-alias")
+            .expect_err("an unknown alias must be refused");
+        let json = serde_json::to_value(err).unwrap();
+        assert_eq!(json["code"], -32602);
     }
 
     // ── search_messages ──────────────────────────────────────────────
@@ -11827,9 +12194,12 @@ mod tests {
     async fn open_capture_is_refused_without_the_opt_in_flag() {
         let server = exhausted_server();
         let err = server
-            .open_capture(Parameters(OpenCaptureParams {
-                filename: "other.pcap".into(),
-            }))
+            .open_capture(
+                Parameters(OpenCaptureParams {
+                    filename: "other.pcap".into(),
+                }),
+                Extension(crate::mcp::elicit::Confirm::unavailable()),
+            )
             .await
             .expect_err("must refuse");
         assert!(
@@ -11845,9 +12215,12 @@ mod tests {
     async fn the_opt_in_refusal_precedes_the_path_check() {
         let server = exhausted_server();
         let err = server
-            .open_capture(Parameters(OpenCaptureParams {
-                filename: "../escape.pcap".into(),
-            }))
+            .open_capture(
+                Parameters(OpenCaptureParams {
+                    filename: "../escape.pcap".into(),
+                }),
+                Extension(crate::mcp::elicit::Confirm::unavailable()),
+            )
             .await
             .expect_err("must refuse");
         assert!(
@@ -11862,9 +12235,12 @@ mod tests {
     async fn open_capture_needs_a_file_root() {
         let server = exhausted_server().with_open_capture();
         let err = server
-            .open_capture(Parameters(OpenCaptureParams {
-                filename: "other.pcap".into(),
-            }))
+            .open_capture(
+                Parameters(OpenCaptureParams {
+                    filename: "other.pcap".into(),
+                }),
+                Extension(crate::mcp::elicit::Confirm::unavailable()),
+            )
             .await
             .expect_err("must refuse");
         assert!(
@@ -11881,9 +12257,12 @@ mod tests {
         let server = exhausted_server().with_open_capture().with_file_root(&root);
         for bad in ["../escape.pcap", "/etc/passwd", "sub/dir.pcap", ".."] {
             let err = server
-                .open_capture(Parameters(OpenCaptureParams {
-                    filename: bad.to_string(),
-                }))
+                .open_capture(
+                    Parameters(OpenCaptureParams {
+                        filename: bad.to_string(),
+                    }),
+                    Extension(crate::mcp::elicit::Confirm::unavailable()),
+                )
                 .await
                 .expect_err("must refuse a path");
             assert!(
@@ -11909,9 +12288,12 @@ mod tests {
                 writing_to: None,
             });
         let err = server
-            .open_capture(Parameters(OpenCaptureParams {
-                filename: "next.pcap".into(),
-            }))
+            .open_capture(
+                Parameters(OpenCaptureParams {
+                    filename: "next.pcap".into(),
+                }),
+                Extension(crate::mcp::elicit::Confirm::unavailable()),
+            )
             .await
             .expect_err("must refuse a live source");
         assert!(
@@ -11936,9 +12318,12 @@ mod tests {
                 writing_to: None,
             });
         let err = server
-            .open_capture(Parameters(OpenCaptureParams {
-                filename: "next.pcap".into(),
-            }))
+            .open_capture(
+                Parameters(OpenCaptureParams {
+                    filename: "next.pcap".into(),
+                }),
+                Extension(crate::mcp::elicit::Confirm::unavailable()),
+            )
             .await
             .expect_err("must refuse an unfinished source");
         assert!(
@@ -11965,9 +12350,12 @@ mod tests {
         assert_eq!(before["name"], "first.pcap");
 
         server
-            .open_capture(Parameters(OpenCaptureParams {
-                filename: "second.pcap".into(),
-            }))
+            .open_capture(
+                Parameters(OpenCaptureParams {
+                    filename: "second.pcap".into(),
+                }),
+                Extension(crate::mcp::elicit::Confirm::unavailable()),
+            )
             .await
             .expect("the swap should be accepted");
 
@@ -11996,9 +12384,12 @@ mod tests {
         let root = root_with_capture("concurrent", "second.pcap");
         let server = exhausted_server().with_open_capture().with_file_root(&root);
         server
-            .open_capture(Parameters(OpenCaptureParams {
-                filename: "second.pcap".into(),
-            }))
+            .open_capture(
+                Parameters(OpenCaptureParams {
+                    filename: "second.pcap".into(),
+                }),
+                Extension(crate::mcp::elicit::Confirm::unavailable()),
+            )
             .await
             .expect("the first swap should be accepted");
 
@@ -12013,9 +12404,12 @@ mod tests {
         };
         if running {
             let err = server
-                .open_capture(Parameters(OpenCaptureParams {
-                    filename: "second.pcap".into(),
-                }))
+                .open_capture(
+                    Parameters(OpenCaptureParams {
+                        filename: "second.pcap".into(),
+                    }),
+                    Extension(crate::mcp::elicit::Confirm::unavailable()),
+                )
                 .await
                 .expect_err("a concurrent load must be refused");
             assert!(

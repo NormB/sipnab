@@ -182,6 +182,12 @@ failure is not automatically a `401`:
 Reading a `401` as "bad token" is safe. Reading a `503` that way is not — a
 `503` says nothing about the credential, because nothing looked at it yet.
 
+On the HTTP MCP surface a `401` also carries a `WWW-Authenticate: Bearer`
+challenge: `error="invalid_token"` when the client presented a credential that
+failed, and no error code at all when it presented none, so the two read
+differently in a log. The REST API answers with the status alone. See
+[the MCP security model](mcp-protocol.md#security-model).
+
 `/health` needs no credential and skips the rate limiter entirely.
 
 ## 4. Expiry

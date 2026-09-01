@@ -428,6 +428,67 @@ fn a_typed_prefix_narrows_the_rule_identifiers() {
     );
 }
 
+/// Every alias offered is one `find_problems` accepts as a `kind`.
+///
+/// Proved by calling the tool with each rather than against a literal list:
+/// an alias the completion invented is refused there with `invalid_params`, so
+/// a hand-copied vocabulary that has drifted from the expander cannot survive
+/// this.
+#[test]
+fn filter_alias_completions_are_kinds_find_problems_accepts() {
+    let mut wire = Wire::start();
+    let offered = values(&wire.complete("sipnab://filter/{alias}", "alias", ""));
+    assert!(
+        offered.len() >= 5,
+        "only {} alias(es) offered; the completion is reading the wrong table: {offered:?}",
+        offered.len()
+    );
+    for alias in &offered {
+        let reply = wire.request(
+            "tools/call",
+            json!({"name": "find_problems", "arguments": {"kinds": [alias], "limit": 1}}),
+        );
+        assert!(
+            reply["error"].is_null(),
+            "completion offered '{alias}', which find_problems refuses: {reply}"
+        );
+    }
+}
+
+/// Reading an alias returns DSL the filter argument accepts.
+///
+/// The reason the alias is a resource and not a line in a document: the
+/// expansion carries the numbers THIS server was configured with, and the
+/// value of serving it at all is that a client can hand it straight back as a
+/// `filter`. If it did not parse, the resource would be describing a filter
+/// rather than being one.
+#[test]
+fn a_filter_alias_resolves_to_an_expression_the_filter_argument_takes() {
+    let mut wire = Wire::start();
+    let read = wire.request(
+        "resources/read",
+        json!({"uri": "sipnab://filter/slow-setup"}),
+    );
+    assert!(read["error"].is_null(), "the alias did not resolve: {read}");
+    let body: Value = serde_json::from_str(
+        read["result"]["contents"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no text in {read}")),
+    )
+    .expect("the alias payload is JSON");
+    assert_eq!(body["alias"], json!("slow-setup"));
+    let expression = body["expands_to"].as_str().expect("an expansion");
+
+    let reply = wire.request(
+        "tools/call",
+        json!({"name": "list_dialogs", "arguments": {"filter": expression, "limit": 1}}),
+    );
+    assert!(
+        reply["error"].is_null(),
+        "the expansion '{expression}' is not something the filter argument takes: {reply}"
+    );
+}
+
 /// Every advertised template resolves: complete it, build the URI, read it.
 ///
 /// The end-to-end contract of PB3 in one test. A template is a promise that
@@ -443,7 +504,7 @@ fn every_advertised_template_completes_into_a_readable_uri() {
         .unwrap_or_else(|| panic!("no resourceTemplates in {listed}"))
         .clone();
     assert!(
-        templates.len() >= 3,
+        templates.len() >= 5,
         "only {} template(s) advertised: {listed}",
         templates.len()
     );
