@@ -3318,7 +3318,7 @@ fn inline_script_edits_require_csp_hash_refresh() {
             // a comment edit changes the hash exactly as much as a code edit
             // does, and shipping the old hash would blank the whole script.
             "index.html",
-            "sha256-5OKR8JyQ4j6wxspQeVUe7ezImucMEP9DdTPuVvetsU4=",
+            "sha256-jkZDUfcMSkaA5zdJk8XtpjPoyxBG3nGNd4tUw3NiJB4=",
         ),
         (
             "page.html",
@@ -4834,7 +4834,7 @@ fn every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist() {
         ),
         (
             "index.html",
-            r#"var animated = {{ get_url(path='demos/01-intro.webp') | json_encode | safe }} + '?v=9';"#,
+            r#"var animated = {{ get_url(path='demos/01-intro.webp') | json_encode | safe }} + '?v=10';"#,
             "a build-time get_url() over a repo-relative literal path, resolved \
              into the script rather than read back out of the DOM (which is the \
              js/xss-through-dom form CodeQL rejected); json_encode supplies the \

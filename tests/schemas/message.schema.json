@@ -54,6 +54,11 @@
       "minimum": 0,
       "maximum": 63,
       "description": "DSCP of the frame that carried this message (RFC 2474), the queue the network was asked to put this signaling in. Optional, and absent rather than null when no IP header was observed (a HEP-fed message) — so an absent key means the marking is unknown and 0 means it was observed and is best effort, which is itself a frequent fault."
+    },
+    "input_origin": {
+      "type": "string",
+      "enum": ["wire", "hep", "uprobe"],
+      "description": "Which capture source delivered this message. The per-message analogue of the dialog `input_origin`, and what keeps `frame` honest: a uprobe read carries a pointer of the same shape as a capture offset — `uprobe:opensips/954#3` beside `capture.pcap#4212` — and only one of the two can ever be followed to bytes. `wire` was read from an observed IP header; `hep` was asserted by a remote HEP sender; `uprobe` was lifted out of a process's TLS library and was never on a wire, so it has no addressing and no resolvable frame. Optional, and absent rather than null when the message came from no captured packet, because `wire` there would be a claim sipnab never observed."
     }
   }
 }

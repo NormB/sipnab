@@ -2299,9 +2299,13 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // 55 -> 56 by `await_condition` (PB4, bounded form). Read-only, so the
     // `readOnlyHint` split moves 45-of-55 to 46-of-56 and the ten
     // write-capable tools are unchanged.
+    // 56 -> 57 by `validate_vcon` (RV6), which checks a container against the
+    // vendored schema. Read-only and it writes nothing, so the `readOnlyHint`
+    // split moves 46-of-56 to 47-of-57 and the ten write-capable tools are
+    // unchanged.
     assert_eq!(
         registered.len(),
-        56,
+        57,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -2963,7 +2967,10 @@ fn no_documentation_table_repeats_a_row() {
     // 780 -> 782: the `await_condition` reference section's two tables
     // (stopped_because values, and the clamp behaviour), each counted twice
     // because docs/mcp-tools.md is mirrored into website/content/docs/.
-    const EXPECTED_TABLES: usize = 782;
+    // 782 -> 786: RV5/RV6 in docs/mcp-tools.md -- the `validate_vcon`
+    // reference section's two tables, one of them the three-verdict list --
+    // counted once in docs/ and once in the site mirror.
+    const EXPECTED_TABLES: usize = 786;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

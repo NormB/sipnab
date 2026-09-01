@@ -65,7 +65,9 @@ export writes the same bytes. Pick the door that suits you:
 |---|---|---|
 | At a shell, reading a capture file | `sipnab -N -I call.pcap --export-vcon 'CALL-ID' --vcon-out out.json` | the container in `out.json` |
 | At a shell, wanting it on stdout | `sipnab -N -I call.pcap --export-vcon 'CALL-ID'` | the container on stdout |
-| An agent holding an MCP session | the `export_vcon` tool, with `call_id` | a structured content block |
+| An agent holding an MCP session, one call | the `export_vcon` tool, with `call_id` | one container, its SHA-256, and what the capture missed |
+| An agent holding an MCP session, a set | the `export_vcon` tool, with `filter` | one entry per matching dialog, bounded by `--mcp-max-rows` |
+| An agent checking a container before sending it | the `validate_vcon` tool | a verdict against the vendored schema, with the one documented deviation named |
 | A program over HTTP | `GET /v1/dialogs/{call_id}/vcon` | `200` and the container, or `404` |
 | Rust, in-process | `sipnab::output::vcon::export_dialog` | a `Vcon` value |
 
@@ -288,7 +290,7 @@ and a consumer parses it before indexing into it.
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.141 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.142 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",

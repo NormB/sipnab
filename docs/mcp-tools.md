@@ -110,7 +110,8 @@ ordinary update.
 |---|---|---|
 | [`export_capture`](#export_capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
 | [`export_audio`](#export_audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
-| [`export_vcon`](#export_vcon) | `call_id` | One dialog as a vCon conversation container, structured JSON. Unsigned, retained audio inline, and it carries what the capture missed |
+| [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `limit?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set. Unsigned, retained audio inline, and every omission stated in the response |
+| [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the schema sipnab vendors and names the one documented deviation instead of passing it |
 | [`generate_repro`](#generate_repro) | `call_id`, `format?`, `pin?`, `vary?`, `filename?` | A SIPp scenario replaying one call, with the hypothesis as an input: `pin` holds the suspected cause fixed, `vary` regenerates identity |
 | [`generate_wireshark_filter`](#generate_wireshark_filter) | `call_id`, `include_media?` | A Wireshark display filter selecting one call's signaling and its RTP by SSRC, plus the tshark line that applies it |
 
@@ -1085,7 +1086,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.141",
+  "version": "0.5.142",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -3942,7 +3943,23 @@ Unlike its file-writing neighbors this tool writes nothing and needs no
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `call_id` | string | A Call-ID the store holds. An unknown one fails with `invalid_params` (-32602) naming the value. | Required — the call fails. |
+| `call_id` | string | A Call-ID the store holds. An unknown one fails with `invalid_params` (-32602) naming the value. | Give `filter` instead. |
+| `filter` | string | A filter alias or a raw DSL expression, the vocabulary [`list_dialogs`](#list_dialogs) and `--export-vcon-when` take. Every matching dialog comes back. | Give `call_id` instead. |
+| `limit` | integer | 1 to `--mcp-max-rows` (1000 by default). | 50. |
+
+Give `call_id` or `filter`, never both. The CLI refuses the same pair, because
+a request naming a dialog AND a rule for choosing dialogs has two answers and
+names neither.
+
+**Export a set in one call.** An agent asked for every failed call used to list
+dialogs and then issue one `export_vcon` per row — on a real capture, hundreds
+of round trips to do what `--export-vcon-when` does in one invocation. Pass the
+filter here instead. A container is a large answer, so `limit` bounds the set.
+`total_matched` counts the whole store, so it is the number to page against.
+
+A filter matching nothing answers with an empty set. "No call failed" is a
+finding, and a refusal there would make a clean capture look like a broken
+request.
 
 There is no `format`. A vCon IS a JSON container defined by the draft, so a
 markdown arm would render a document whose whole purpose is to travel between
@@ -4004,10 +4021,78 @@ attachment, both built from ONE value so the two cannot contradict each other.
 Read `capture_completeness.note` before the contents: every clause in it is a
 measurement of what this run READ and dropped.
 
-The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+**Every container comes back with its SHA-256.** sipnab computes it exactly as
+`--vcon-digest` does — one function, over the container's own serialized bytes
+— so a `SHA256SUMS` line or a store's ledger entry compares against this value
+directly. That is what binds one emission to one ledger entry.
+
+The digest identifies the DOCUMENT, not the dialog. `created_at` records the
+moment sipnab wrote the container, so re-exporting one call produces a second
+document with a new digest and the same `uuid`. Deduplicate on the `uuid`.
+
+**What the container omits reaches you in the response.** A container over the
+size budget carries no audio, which looks exactly like a conversation that had
+none, and the caveat explaining the difference lives inside an attachment whose
+body is JSON text. So the response repeats it where a caller reads it.
+`completeness.note` is the container's own caveat, verbatim.
+`completeness.max_inline_media_bytes` is the budget this run ENFORCED, never the
+compiled-in default. `completeness.omissions` carries one row per loss, each
+naming the counter it came from, how many, and in what unit. An empty list and
+`complete: true` say the container lost nothing.
+
+The response is an envelope, so one dialog and a filtered set arrive in one
+shape:
 
 ```jsonc
-// export_vcon { "call_id": "1-1966@10.0.2.20" }
+// export_vcon { "filter": "response_code >= 400", "limit": 2 }
+{
+  "schema_version": 1,
+  "returned": 2,
+  "total_matched": 7,
+  "truncated": true,
+  "capture_identity": { /* which capture, and which revision of its stores */ },
+  "containers": [
+    {
+      "call_id": "1-1966@10.0.2.20",
+      "digest": "b6f0a1c9d84e2f7a3b5c6d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c",
+      "completeness": {
+        "note": "Produced by sipnab 0.5.141 on node capture-01. ... sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "media": "none-decodable",
+        "media_note": "No audio payload retained: ...",
+        "max_inline_media_bytes": 5242880,
+        "complete": true,
+        "omissions": []
+      },
+      "container": { /* the vCon itself, shown in full below */ }
+    }
+  ]
+}
+```
+
+A run that lost something fills the same block instead:
+
+```jsonc
+"completeness": {
+  "note": "Produced by sipnab 0.5.141 on node capture-01. ... — INCOMPLETE: 3 header line(s) exceeded the parser's length cap and were dropped, ...",
+  "media": "refused-over-budget",
+  "media_note": "...",
+  "max_inline_media_bytes": 1048576,
+  "complete": false,
+  "omissions": [
+    { "kind": "media_refused_over_budget", "count": 1, "unit": "recording" },
+    { "kind": "headers_dropped_oversize", "count": 3, "unit": "header" }
+  ]
+}
+```
+
+One row per `— INCOMPLETE:` clause in the note, always. One set of counters
+produces both the rows and the prose, so a reader holding either has the whole
+account.
+
+The container example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+
+```jsonc
+// the "container" member of one entry above
 {
   "vcon": "0.4.0",
   "uuid": "0158a120-0392-86a4-a667-78f1c5213800",
@@ -4068,7 +4153,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.141 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.142 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -4084,6 +4169,10 @@ An unknown Call-ID answers with an error, never an empty container:
 // export_vcon { "call_id": "no-such@nowhere" }
 { "code": -32602, "message": "call_id 'no-such@nowhere' not found" }
 ```
+
+A filter that selects nothing answers with an empty set instead, because
+"nothing matched" is a finding about the capture and "that call is not here" is
+a mistake in the request.
 
 **Three things a reader must not conclude.**
 
@@ -4104,6 +4193,117 @@ layout, which spends a v7's entropy on a host-derived `rand_b`.
 
 A binary built without the `vcon` Cargo feature refuses this tool with
 `invalid_params` and names the feature, rather than the tool being absent.
+[`server_capabilities`](#server_capabilities) lists what a given binary carries.
+
+### `validate_vcon`
+
+Checks a vCon container against the working group's schema as sipnab vendors it
+([`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json)). Backed by
+[`output::vcon_schema`](https://github.com/NormB/sipnab/blob/main/src/output/vcon_schema.rs).
+
+Run it before handing containers to a conserver. A store that refuses one
+reports the refusal to whoever POSTed it, never to whoever built it — and a
+validation pass over 4,216 real containers found 2 the schema rejects, with
+nothing on any surface saying so.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `call_id` | string | A Call-ID the store holds. sipnab exports its container, then checks it. | Give `container` instead. |
+| `container` | object | A container you already hold — one sipnab wrote, one another producer wrote, one a store rejected. It must be the object itself, not a string holding it. | Give `call_id` instead. |
+
+Give one, never both.
+
+**Three verdicts, not two.**
+
+| `verdict` | What it means |
+|---|---|
+| `valid` | Nothing disagrees with the schema |
+| `valid-except-documented-deviation` | Every finding is a shape sipnab emits on purpose that the schema rejects. `deviations` names each one and `explanations` says why |
+| `invalid` | At least one finding is an ordinary defect. `errors` carries it |
+
+The middle verdict carries the whole point. §4.3 of the draft says "it is
+possible to have a Dialog Object with no parameters in it", the working group
+agreed that shape in issue #20 after IETF 124, and the draft's own Appendix B
+schema forbids it, because every Dialog Object requires a `start`. sipnab emits
+one: the consultative call of an attended transfer, which the observed leg
+never saw. A validator that folded that into a clean pass would teach a
+producer that a missing `start` is fine — and a missing `start` on a `transfer`
+object is exactly the defect the corpus pass found.
+
+So the exemption is narrow. ONLY a Dialog Object with no members at all counts
+as the documented deviation. A typed object missing `start` is an error, and
+the two never merge.
+
+```jsonc
+// validate_vcon { "call_id": "1-1966@10.0.2.20" }
+{
+  "schema_version": 1,
+  "verdict": "valid",
+  "schema_path": "tests/schemas/vcon.schema.json",
+  "schema_id": "https://ietf.org/vcon/schemas/unsigned-vcon.json",
+  "errors": [],
+  "deviations": [],
+  "explanations": [],
+  "call_id": "1-1966@10.0.2.20"
+}
+```
+
+A container carrying an attended transfer's consultation object:
+
+```jsonc
+{
+  "verdict": "valid-except-documented-deviation",
+  "errors": [],
+  "deviations": [
+    {
+      "instance_path": "/dialog/2",
+      "keyword": "required",
+      "detail": "missing required properties: start",
+      "deviation": "empty-dialog-object"
+    }
+  ],
+  "explanations": [
+    {
+      "name": "empty-dialog-object",
+      "explanation": "The empty Dialog Object `{}` of section 4.3: ... reported here rather than passed silently ..."
+    }
+  ]
+}
+```
+
+And the defect the corpus pass found, which is an error rather than an
+exemption:
+
+```jsonc
+// validate_vcon { "container": { ..., "dialog": [ { "type": "transfer" } ] } }
+{
+  "verdict": "invalid",
+  "errors": [
+    {
+      "instance_path": "/dialog/0",
+      "keyword": "required",
+      "detail": "missing required properties: start"
+    }
+  ],
+  "deviations": []
+}
+```
+
+A container that disagrees with the schema is an ANSWER, not a tool error. The
+call fails with `invalid_params` only when the REQUEST is wrong: neither
+argument, both arguments, an unknown `call_id`, or a `container` that is not a
+JSON object.
+
+**The validator reads the vendored file rather than a transcription of it.**
+`jsonschema` is a dev-dependency, so a validator built on it would ship only in
+the test tree — which is where the gap already was. This walks the schema
+itself, implementing the draft-07 subset the file uses, and it refuses to guess:
+a keyword outside that subset makes every validation report `invalid` naming
+the keyword. Re-vendoring a richer schema therefore fails loudly instead of
+quietly certifying less than it claims.
+
+A binary built without the `vcon` Cargo feature refuses this tool with
+`invalid_params` and names the feature.
 [`server_capabilities`](#server_capabilities) lists what a given binary carries.
 
 ### `generate_repro`

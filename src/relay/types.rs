@@ -94,12 +94,44 @@ pub struct RelayStream {
 pub struct RelayTag {
     /// The SIP tag identifying this side.
     pub tag: String,
-    /// The tags this side exchanges media with.
+    /// The tags this side is in an offer/answer DIALOG with.
+    ///
+    /// Offer/answer only. A relay also lets one side receive another's media
+    /// by SUBSCRIPTION -- which is how relay-side recording and forking are
+    /// built -- and a subscriber is not the party the call is with. Folding
+    /// the two together reports a recorder as the other end, so a two-party
+    /// call comes back with three parties. They are separated here, at the
+    /// only place that can still tell them apart.
     pub in_dialogue_with: Vec<String>,
+    /// The tags whose media this side receives by SUBSCRIPTION.
+    ///
+    /// Kept rather than discarded: a subscription sipnab drops is a relay
+    /// stream it will never be able to explain, and [`Self::is_media_subscriber`]
+    /// is computed from it.
+    pub media_subscriptions: Vec<String>,
     /// The codec the relay recorded for this side, where it recorded one.
     pub codec: Option<String>,
     /// Ports the relay holds for this side, RTP and RTCP together.
     pub streams: Vec<RelayStream>,
+}
+impl RelayTag {
+    /// Whether this side CONSUMES the call's media rather than being party to
+    /// it.
+    ///
+    /// A recording fork or a media subscriber arrives from a relay as a tag of
+    /// its own, holding its own relay ports -- because a query walks every
+    /// side the relay is holding, not only the two that signed the call. Those
+    /// ports do belong to the call and are attributed to it; what they are not
+    /// is a leg of it.
+    ///
+    /// The test is that this side takes media from another and answers no
+    /// offer of its own. A leg that has not been answered yet has neither, so
+    /// it is not swept up: an unanswered offer is a call with one party, not a
+    /// call with a subscriber.
+    #[must_use]
+    pub fn is_media_subscriber(&self) -> bool {
+        !self.media_subscriptions.is_empty() && self.in_dialogue_with.is_empty()
+    }
 }
 /// What a relay knows about one call.
 ///

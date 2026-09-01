@@ -8,6 +8,57 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.142] - 2026-09-01
+
+### Added
+
+- **`validate_vcon` — check a container against the schema sipnab vendors.**
+  Grounded rather than speculative: a pass over 4,216 real containers found 2
+  schema-invalid. Three verdicts, and the middle one is the point:
+  `valid-except-documented-deviation` names the empty Dialog Object `{}` that
+  IETF 124 agreed and the draft's own Appendix B schema rejects. The exemption
+  is narrow -- ONLY an object with no members -- so a `transfer` object missing
+  `start`, which is the defect the corpus actually found, stays an error. A
+  validator that quietly tolerated the one shape the schema forbids would teach
+  a producer the wrong lesson.
+- **`export_vcon` takes a filter and returns a digest.** An agent asked to
+  export every failed call had to list dialogs and then issue one call per
+  dialog -- hundreds of round trips to do what one CLI invocation does. It now
+  accepts the same filter vocabulary `--export-vcon-when` takes, bounded by
+  `--mcp-max-rows`, and every entry carries its container's SHA-256. The digest
+  has ONE definition: `--vcon-digest` now calls the same function.
+- **`decode_ng` and the message surface name where plaintext came from
+  (TK7).** `SSL_read`/`SSL_write` yield SIP bytes with no packet behind them --
+  no frame number, no byte offset, no capture timestamp. The refusal half
+  already worked; the LABEL half did not, so a uprobe message sat beside a wire
+  frame with nothing to tell them apart. Wire stays unmarked on human surfaces:
+  marking it would put a constant token on every line of every capture.
+
+### Fixed
+
+- **A media SUBSCRIBER is no longer reported as the party the call is with.**
+  rtpengine stamps every peer `offer/answer` or `pub/sub`, and sipnab discarded
+  that field -- so a recorder or a fork, which is exactly what `pub/sub` means,
+  came back as the other end and a two-party call reported three parties. The
+  ports stay attributed to the call, because refusing them would leave real
+  relay media unexplained; they are simply no longer called a leg.
+- **A vacuous branch that could never fire.** The code claimed to read the older
+  `in dialogue with` spelling as a list, under a comment asserting both spellings
+  worked. Older rtpengine wrote it as a byte string, so the list match never ran
+  and every call on such a relay came back with no other side.
+- **A container's omissions reach the agent that requested it (RV7).** The
+  completeness caveat, the inline-media bound actually APPLIED, and one row per
+  omission now travel in the tool's own response. The pairing is gated both
+  ways: a clause without a row fails, and so does a row without a clause.
+
+### Changed
+
+- **The homepage video shows the call `/analyze` offers.** Three surfaces
+  carried three captures: the hero still, the animation it swaps to, and the
+  sample the analyze page fetches. Every asset was valid and every gate green --
+  what was wrong was an agreement between a `.tape`, a template and a `.js`
+  fetch that no rule expressed. Seven tests now express it.
+
 ## [0.5.141] - 2026-09-01
 
 ### Added

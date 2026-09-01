@@ -140,6 +140,7 @@ mod tests {
                 tags: vec![RelayTag {
                     tag: "from-tag".to_owned(),
                     in_dialogue_with: vec!["to-tag".to_owned()],
+                    media_subscriptions: Vec::new(),
                     codec: Some("PCMU".to_owned()),
                     streams: vec![RelayStream {
                         local_address: "10.0.0.2".to_owned(),

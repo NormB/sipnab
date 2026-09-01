@@ -915,8 +915,27 @@ pub struct RelayStreamView {
 pub struct RelayTagView {
     /// The SIP tag identifying this side.
     pub tag: String,
-    /// The tags this side exchanges media with.
+    /// The tags this side exchanges media with in an offer/answer DIALOG.
+    ///
+    /// Offer/answer ONLY. A relay also lets one side receive another's media by
+    /// SUBSCRIPTION, which is how relay-side recording and forking are built,
+    /// and a subscriber is not the party the call is with. Folding the two
+    /// together reported a recorder as the other end, so a two-party call came
+    /// back with three parties.
     pub in_dialogue_with: Vec<String>,
+    /// The tags whose media this side receives by SUBSCRIPTION.
+    ///
+    /// Separate from `in_dialogue_with` because the two answer different
+    /// questions. An agent asked "who is on this call" must read the former; an
+    /// agent asked "why is there a third stream" needs this one.
+    pub media_subscriptions: Vec<String>,
+    /// Whether this side only SUBSCRIBES and holds no dialog of its own.
+    ///
+    /// True for a recorder or a fork: its ports are real and belong to the
+    /// call, so they are still attributed, but calling it a leg would turn a
+    /// two-party conversation into a three-party one in every answer built on
+    /// top of this.
+    pub is_media_subscriber: bool,
     /// The codec the relay recorded, where it recorded one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codec: Option<String>,
@@ -1008,6 +1027,8 @@ impl RelayAnswer {
                         .map(|t| RelayTagView {
                             tag: t.tag.clone(),
                             in_dialogue_with: t.in_dialogue_with.clone(),
+                            media_subscriptions: t.media_subscriptions.clone(),
+                            is_media_subscriber: t.is_media_subscriber(),
                             codec: t.codec.clone(),
                             streams: t
                                 .streams
@@ -1031,5 +1052,301 @@ impl RelayAnswer {
                 ..base("refused")
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod query_relay_view_tests {
+    use super::*;
+    use crate::relay::types::{CallView, ControlReply, RelayStream, RelayTag};
+
+    /// The address a query answer echoes. A literal, so no test depends on
+    /// anything an operator configured.
+    fn addr() -> std::net::SocketAddr {
+        "127.0.0.1:22222".parse().expect("a literal address")
+    }
+
+    /// Run tags through the conversion `query_relay` actually performs.
+    ///
+    /// Driven through `from_reply` rather than over the wire because
+    /// `query_relay` TRANSMITS and cannot run against a stock test server --
+    /// the same reason it sits in `SCHEMA_NOT_DRIVEN`. Every test here
+    /// exercises the real conversion rather than a restatement of it.
+    fn view_of(tags: Vec<RelayTag>) -> Vec<RelayTagView> {
+        let reply = ControlReply::Call(CallView {
+            call_id: "call-1@192.0.2.10".to_string(),
+            tags,
+        });
+        RelayAnswer::from_reply("query", addr(), &reply)
+            .tags
+            .expect("a query answer carries tags")
+    }
+
+    /// A leg that ALSO has media subscribed off it is still a leg.
+    ///
+    /// The boundary the `&&` in `is_media_subscriber` draws. A recorded call
+    /// has exactly this shape: `from-tag-a` talks to `to-tag-b` AND a recorder
+    /// subscribes to it. Reading "has subscriptions" as "is a subscriber" would
+    /// erase the caller from their own call.
+    #[test]
+    fn a_leg_with_subscriptions_taken_off_it_is_still_a_leg() {
+        let tags = view_of(vec![RelayTag {
+            tag: "from-tag-a".to_string(),
+            in_dialogue_with: vec!["to-tag-b".to_string()],
+            media_subscriptions: vec!["recorder-1".to_string()],
+            codec: None,
+            streams: Vec::new(),
+        }]);
+        assert!(
+            !tags[0].is_media_subscriber,
+            "a tag holding a dialog is a party to the call however many things \
+             subscribe to it"
+        );
+        assert_eq!(tags[0].media_subscriptions, vec!["recorder-1".to_string()]);
+    }
+
+    /// A tag with neither is neither.
+    ///
+    /// The empty case has to be decided rather than fall out. A tag the relay
+    /// returned with no peer and no subscriber is a tag sipnab knows nothing
+    /// about, and calling that a subscriber would invent a role for it.
+    #[test]
+    fn a_tag_with_no_peer_and_no_subscription_is_not_a_subscriber() {
+        let tags = view_of(vec![RelayTag {
+            tag: "lonely".to_string(),
+            in_dialogue_with: Vec::new(),
+            media_subscriptions: Vec::new(),
+            codec: None,
+            streams: Vec::new(),
+        }]);
+        assert!(
+            !tags[0].is_media_subscriber,
+            "knowing nothing about a tag is not the same as knowing it subscribes"
+        );
+    }
+
+    /// Both fields reach the wire, not merely the struct.
+    ///
+    /// A field that exists in Rust and is skipped by serde is invisible to the
+    /// agent this whole change is for. The struct compiling proves nothing
+    /// about what a caller receives.
+    #[test]
+    fn the_subscription_facts_are_serialized_not_merely_stored() {
+        let tags = view_of(vec![RelayTag {
+            tag: "recorder-1".to_string(),
+            in_dialogue_with: Vec::new(),
+            media_subscriptions: vec!["from-tag-a".to_string()],
+            codec: None,
+            streams: Vec::new(),
+        }]);
+        let wire = serde_json::to_value(&tags[0]).expect("serializes");
+        assert_eq!(
+            wire.get("is_media_subscriber"),
+            Some(&serde_json::json!(true)),
+            "the flag must reach the caller: {wire}"
+        );
+        assert_eq!(
+            wire.get("media_subscriptions"),
+            Some(&serde_json::json!(["from-tag-a"])),
+            "and so must the list it rests on: {wire}"
+        );
+    }
+
+    /// A client validating against the declared schema can see them.
+    ///
+    /// `query_relay` publishes an `outputSchema`, and a schema that omits a
+    /// field a client is expected to read is a promise broken quietly --
+    /// validation passes while the client has no idea the field exists.
+    #[test]
+    fn the_declared_schema_names_both_subscription_fields() {
+        let schema = serde_json::to_value(rmcp::schemars::schema_for!(RelayAnswer))
+            .expect("the output schema serializes");
+        let text = schema.to_string();
+        for field in ["media_subscriptions", "is_media_subscriber"] {
+            assert!(
+                text.contains(field),
+                "the published schema omits {field}, so a client validating \
+                 against it cannot know to read it"
+            );
+        }
+    }
+
+    /// Every subscriber is listed, not just the first.
+    ///
+    /// Forking makes more than one. A view that carried only the first would be
+    /// wrong in exactly the deployment this field exists for.
+    #[test]
+    fn every_subscriber_of_one_leg_is_listed() {
+        let tags = view_of(vec![RelayTag {
+            tag: "from-tag-a".to_string(),
+            in_dialogue_with: vec!["to-tag-b".to_string()],
+            media_subscriptions: vec!["rec-1".to_string(), "fork-2".to_string()],
+            codec: None,
+            streams: Vec::new(),
+        }]);
+        assert_eq!(
+            tags[0].media_subscriptions,
+            vec!["rec-1".to_string(), "fork-2".to_string()]
+        );
+    }
+
+    /// A subscriber's PORTS still reach the caller.
+    ///
+    /// The seam attributes a fork's port to its call deliberately -- refusing
+    /// it would leave real relay media unexplained. Reclassifying the tag must
+    /// not quietly drop the ports with it, or the agent trades one wrong answer
+    /// for a missing one.
+    #[test]
+    fn a_subscribers_ports_are_still_reported() {
+        let tags = view_of(vec![RelayTag {
+            tag: "recorder-1".to_string(),
+            in_dialogue_with: Vec::new(),
+            media_subscriptions: vec!["from-tag-a".to_string()],
+            codec: None,
+            streams: vec![RelayStream {
+                local_address: "192.0.2.10".to_string(),
+                local_port: 30000,
+                endpoint: None,
+                advertised_endpoint: None,
+                is_rtcp: false,
+                ssrcs: vec![1],
+            }],
+        }]);
+        assert!(tags[0].is_media_subscriber);
+        assert_eq!(
+            tags[0].streams.len(),
+            1,
+            "a subscriber's media is real and must still be visible"
+        );
+        assert_eq!(tags[0].streams[0].local_port, 30000);
+    }
+
+    /// The view does not keep a second copy of the seam's rule.
+    ///
+    /// `is_media_subscriber` must be the seam's own answer, not a predicate
+    /// re-derived here that agrees today. Two copies of one rule are two
+    /// chances to disagree, and the disagreement is silent.
+    #[test]
+    fn the_view_reports_the_seams_own_verdict() {
+        for (dialog, subs) in [
+            (vec![], vec!["x".to_string()]),
+            (vec!["y".to_string()], vec!["x".to_string()]),
+            (vec!["y".to_string()], vec![]),
+            (vec![], vec![]),
+        ] {
+            let tag = RelayTag {
+                tag: "t".to_string(),
+                in_dialogue_with: dialog.clone(),
+                media_subscriptions: subs.clone(),
+                codec: None,
+                streams: Vec::new(),
+            };
+            let expected = tag.is_media_subscriber();
+            let tags = view_of(vec![tag]);
+            assert_eq!(
+                tags[0].is_media_subscriber, expected,
+                "the view disagreed with the seam for dialog={dialog:?} subs={subs:?}"
+            );
+        }
+    }
+
+    /// An enumeration answer is unaffected.
+    ///
+    /// `list` returns Call-IDs and no tags. A change to the tag view must not
+    /// have grown a tags array onto the shape that has none.
+    #[test]
+    fn an_enumeration_answer_still_carries_no_tags() {
+        let reply = ControlReply::Calls(crate::relay::types::Enumeration {
+            call_ids: vec!["call-1@192.0.2.10".to_string()],
+            truncated: false,
+        });
+        let answer = RelayAnswer::from_reply("list", addr(), &reply);
+        assert!(answer.tags.is_none(), "a list answer has no tags to carry");
+        assert_eq!(answer.outcome, "calls");
+    }
+
+    /// A refusal is unaffected.
+    ///
+    /// The relay was reached and declined. That is not a call view, and must
+    /// not acquire one.
+    #[test]
+    fn a_refusal_still_carries_no_tags() {
+        let reply = ControlReply::Refused {
+            reason: "unknown call-id".to_string(),
+        };
+        let answer = RelayAnswer::from_reply("query", addr(), &reply);
+        assert!(answer.tags.is_none());
+        assert_eq!(answer.outcome, "refused");
+        assert_eq!(answer.refusal.as_deref(), Some("unknown call-id"));
+    }
+
+    /// A subscriber reaches the agent as a subscriber, not as the other end.
+    ///
+    /// The seam separates offer/answer peers from media SUBSCRIBERS, because a
+    /// relay lets one side receive another's media without being party to the
+    /// call -- which is how relay-side recording and forking are built. That
+    /// separation is worth nothing if the tool that answers agents folds them
+    /// back together: an agent asked "who is on this call" would be told a
+    /// recorder is, and a two-party conversation would come back with three
+    /// parties.
+    ///
+    /// Driven through `from_reply` rather than over the wire because
+    /// `query_relay` TRANSMITS and cannot run against a stock test server --
+    /// the same reason it sits in `SCHEMA_NOT_DRIVEN`. This is the conversion
+    /// that surface performs, exercised directly.
+    #[test]
+    fn a_media_subscriber_is_not_published_as_a_dialogue_peer() {
+        let leg = RelayTag {
+            tag: "from-tag-a".to_string(),
+            in_dialogue_with: vec!["to-tag-b".to_string()],
+            media_subscriptions: Vec::new(),
+            codec: Some("PCMU".to_string()),
+            streams: Vec::new(),
+        };
+        // A fork or recorder: it receives the leg's media and holds no dialog.
+        let recorder = RelayTag {
+            tag: "recorder-1".to_string(),
+            in_dialogue_with: Vec::new(),
+            media_subscriptions: vec!["from-tag-a".to_string()],
+            codec: None,
+            streams: Vec::new(),
+        };
+        let reply = ControlReply::Call(CallView {
+            call_id: "call-1@192.0.2.10".to_string(),
+            tags: vec![leg, recorder],
+        });
+
+        let answer = RelayAnswer::from_reply(
+            "query",
+            "127.0.0.1:22222".parse().expect("a literal address"),
+            &reply,
+        );
+        let tags = answer.tags.expect("a query answer carries tags");
+
+        assert!(
+            !tags[0].is_media_subscriber,
+            "a tag holding an offer/answer dialog is a leg: {:?}",
+            tags[0].tag
+        );
+        assert_eq!(tags[0].in_dialogue_with, vec!["to-tag-b".to_string()]);
+        assert!(
+            tags[0].media_subscriptions.is_empty(),
+            "a leg that nothing subscribes to must list no subscriptions"
+        );
+
+        assert!(
+            tags[1].is_media_subscriber,
+            "a tag that only subscribes is not a party to the call"
+        );
+        assert!(
+            tags[1].in_dialogue_with.is_empty(),
+            "a subscriber must NOT appear as the other end -- that is the whole \
+             defect: it turns a two-party call into a three-party one"
+        );
+        assert_eq!(
+            tags[1].media_subscriptions,
+            vec!["from-tag-a".to_string()],
+            "and the agent must still be able to see WHOSE media it receives"
+        );
     }
 }

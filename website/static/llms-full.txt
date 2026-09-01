@@ -2854,7 +2854,7 @@ per SIP message and grows with the call):
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.141 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.142 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -4314,7 +4314,7 @@ sipnab -D
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```text
-sipnab 0.5.141 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+sipnab 0.5.142 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
 ```
 
 This is the fastest way to confirm a build carries the feature set
@@ -9917,6 +9917,25 @@ or broken input rather than silently accepting it: missing mandatory headers
 larger than the body actually present (truncated/lying length), and control/NUL
 bytes in a header. Example: `"malformed": ["missing mandatory header: Call-ID"]`.
 
+`input_origin` names the capture source that delivered the message — `wire`,
+`hep` or `uprobe` — and it is what keeps `frame` honest. A uprobe read carries a
+pointer of the same shape as a capture offset (`uprobe:opensips/954#3` beside
+`capture.pcap#4212`), and only one of the two leads back to bytes anyone can
+read: `wire` came from an IP header sipnab observed, `hep` carries addressing a
+remote HEP sender asserted, and `uprobe` names plaintext sipnab lifted out of a
+process's TLS library, which was never on a wire at all. Feeding a `uprobe:` pointer to `--show-frame`
+therefore gets a refusal that names the process, not a frame. The field drops
+out when the message came from no captured packet, because `wire` there would
+claim an observation sipnab never made.
+
+The `-N` text output and the TUI's raw-message viewer carry the same fact as a
+trailing `origin=hep` or `origin=uprobe`, and leave an ordinary wire capture
+unmarked:
+
+```text
+12:57:47.360 0.0.0.0:0 -> 0.0.0.0:0 REGISTER TCP origin=uprobe
+```
+
 `schema_version` increments on breaking field changes — pin your
 consumers to it.
 
@@ -11112,12 +11131,27 @@ sudo sipnab -N --uprobe-tls --uprobe-flavor openssl
 ### Step 3 — read the output, and know what is missing
 
 ```text
-REGISTER sip:example.net SIP/2.0 ... uprobe:opensips/954#3
+12:57:47.360 0.0.0.0:0 -> 0.0.0.0:0 REGISTER TCP origin=uprobe
 ```
 
 Dialogs carry **no addresses and port 0**, labeled `uprobe:<comm>/<pid>`. A
 uprobe sees the bytes an application handed its TLS library and nothing about
 the socket beneath, so sipnab names the process rather than inventing a peer.
+
+`origin=uprobe` closes the last gap that leaves. Without it, `0.0.0.0:0 ->
+0.0.0.0:0` reads exactly like a wire capture whose addressing sipnab failed to
+parse, and the reader cannot tell the two apart. Every surface carries the same
+mark: the `--json` line adds `"input_origin": "uprobe"`, and the TUI's raw
+viewer appends it to the info line. A wire capture stays unmarked.
+
+The frame pointer beside it is honest about the same thing. `--show-frame` on a
+`uprobe:` pointer **refuses** and names the process the bytes came out of,
+because there is no capture to seek into and nothing to verify the bytes
+against:
+
+```bash
+sipnab --show-frame 'uprobe:opensips/954#3'
+```
 
 If you need the peer, that is the eBPF backend below.
 
@@ -11348,7 +11382,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.141 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.142 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -12432,7 +12466,7 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
-  "version": "0.5.141",
+  "version": "0.5.142",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -12982,7 +13016,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.141"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.142"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -13855,7 +13889,8 @@ ordinary update.
 |---|---|---|
 | [`export_capture`](#export_capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
 | [`export_audio`](#export_audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
-| [`export_vcon`](#export_vcon) | `call_id` | One dialog as a vCon conversation container, structured JSON. Unsigned, retained audio inline, and it carries what the capture missed |
+| [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `limit?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set. Unsigned, retained audio inline, and every omission stated in the response |
+| [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the schema sipnab vendors and names the one documented deviation instead of passing it |
 | [`generate_repro`](#generate_repro) | `call_id`, `format?`, `pin?`, `vary?`, `filename?` | A SIPp scenario replaying one call, with the hypothesis as an input: `pin` holds the suspected cause fixed, `vary` regenerates identity |
 | [`generate_wireshark_filter`](#generate_wireshark_filter) | `call_id`, `include_media?` | A Wireshark display filter selecting one call's signaling and its RTP by SSRC, plus the tshark line that applies it |
 
@@ -14830,7 +14865,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.141",
+  "version": "0.5.142",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -17687,7 +17722,23 @@ Unlike its file-writing neighbors this tool writes nothing and needs no
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `call_id` | string | A Call-ID the store holds. An unknown one fails with `invalid_params` (-32602) naming the value. | Required — the call fails. |
+| `call_id` | string | A Call-ID the store holds. An unknown one fails with `invalid_params` (-32602) naming the value. | Give `filter` instead. |
+| `filter` | string | A filter alias or a raw DSL expression, the vocabulary [`list_dialogs`](#list_dialogs) and `--export-vcon-when` take. Every matching dialog comes back. | Give `call_id` instead. |
+| `limit` | integer | 1 to `--mcp-max-rows` (1000 by default). | 50. |
+
+Give `call_id` or `filter`, never both. The CLI refuses the same pair, because
+a request naming a dialog AND a rule for choosing dialogs has two answers and
+names neither.
+
+**Export a set in one call.** An agent asked for every failed call used to list
+dialogs and then issue one `export_vcon` per row — on a real capture, hundreds
+of round trips to do what `--export-vcon-when` does in one invocation. Pass the
+filter here instead. A container is a large answer, so `limit` bounds the set.
+`total_matched` counts the whole store, so it is the number to page against.
+
+A filter matching nothing answers with an empty set. "No call failed" is a
+finding, and a refusal there would make a clean capture look like a broken
+request.
 
 There is no `format`. A vCon IS a JSON container defined by the draft, so a
 markdown arm would render a document whose whole purpose is to travel between
@@ -17749,10 +17800,78 @@ attachment, both built from ONE value so the two cannot contradict each other.
 Read `capture_completeness.note` before the contents: every clause in it is a
 measurement of what this run READ and dropped.
 
-The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+**Every container comes back with its SHA-256.** sipnab computes it exactly as
+`--vcon-digest` does — one function, over the container's own serialized bytes
+— so a `SHA256SUMS` line or a store's ledger entry compares against this value
+directly. That is what binds one emission to one ledger entry.
+
+The digest identifies the DOCUMENT, not the dialog. `created_at` records the
+moment sipnab wrote the container, so re-exporting one call produces a second
+document with a new digest and the same `uuid`. Deduplicate on the `uuid`.
+
+**What the container omits reaches you in the response.** A container over the
+size budget carries no audio, which looks exactly like a conversation that had
+none, and the caveat explaining the difference lives inside an attachment whose
+body is JSON text. So the response repeats it where a caller reads it.
+`completeness.note` is the container's own caveat, verbatim.
+`completeness.max_inline_media_bytes` is the budget this run ENFORCED, never the
+compiled-in default. `completeness.omissions` carries one row per loss, each
+naming the counter it came from, how many, and in what unit. An empty list and
+`complete: true` say the container lost nothing.
+
+The response is an envelope, so one dialog and a filtered set arrive in one
+shape:
 
 ```jsonc
-// export_vcon { "call_id": "1-1966@10.0.2.20" }
+// export_vcon { "filter": "response_code >= 400", "limit": 2 }
+{
+  "schema_version": 1,
+  "returned": 2,
+  "total_matched": 7,
+  "truncated": true,
+  "capture_identity": { /* which capture, and which revision of its stores */ },
+  "containers": [
+    {
+      "call_id": "1-1966@10.0.2.20",
+      "digest": "b6f0a1c9d84e2f7a3b5c6d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c",
+      "completeness": {
+        "note": "Produced by sipnab 0.5.141 on node capture-01. ... sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "media": "none-decodable",
+        "media_note": "No audio payload retained: ...",
+        "max_inline_media_bytes": 5242880,
+        "complete": true,
+        "omissions": []
+      },
+      "container": { /* the vCon itself, shown in full below */ }
+    }
+  ]
+}
+```
+
+A run that lost something fills the same block instead:
+
+```jsonc
+"completeness": {
+  "note": "Produced by sipnab 0.5.141 on node capture-01. ... — INCOMPLETE: 3 header line(s) exceeded the parser's length cap and were dropped, ...",
+  "media": "refused-over-budget",
+  "media_note": "...",
+  "max_inline_media_bytes": 1048576,
+  "complete": false,
+  "omissions": [
+    { "kind": "media_refused_over_budget", "count": 1, "unit": "recording" },
+    { "kind": "headers_dropped_oversize", "count": 3, "unit": "header" }
+  ]
+}
+```
+
+One row per `— INCOMPLETE:` clause in the note, always. One set of counters
+produces both the rows and the prose, so a reader holding either has the whole
+account.
+
+The container example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+
+```jsonc
+// the "container" member of one entry above
 {
   "vcon": "0.4.0",
   "uuid": "0158a120-0392-86a4-a667-78f1c5213800",
@@ -17813,7 +17932,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.141 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.142 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -17829,6 +17948,10 @@ An unknown Call-ID answers with an error, never an empty container:
 // export_vcon { "call_id": "no-such@nowhere" }
 { "code": -32602, "message": "call_id 'no-such@nowhere' not found" }
 ```
+
+A filter that selects nothing answers with an empty set instead, because
+"nothing matched" is a finding about the capture and "that call is not here" is
+a mistake in the request.
 
 **Three things a reader must not conclude.**
 
@@ -17849,6 +17972,117 @@ layout, which spends a v7's entropy on a host-derived `rand_b`.
 
 A binary built without the `vcon` Cargo feature refuses this tool with
 `invalid_params` and names the feature, rather than the tool being absent.
+[`server_capabilities`](#server_capabilities) lists what a given binary carries.
+
+### `validate_vcon`
+
+Checks a vCon container against the working group's schema as sipnab vendors it
+([`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json)). Backed by
+[`output::vcon_schema`](https://github.com/NormB/sipnab/blob/main/src/output/vcon_schema.rs).
+
+Run it before handing containers to a conserver. A store that refuses one
+reports the refusal to whoever POSTed it, never to whoever built it — and a
+validation pass over 4,216 real containers found 2 the schema rejects, with
+nothing on any surface saying so.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `call_id` | string | A Call-ID the store holds. sipnab exports its container, then checks it. | Give `container` instead. |
+| `container` | object | A container you already hold — one sipnab wrote, one another producer wrote, one a store rejected. It must be the object itself, not a string holding it. | Give `call_id` instead. |
+
+Give one, never both.
+
+**Three verdicts, not two.**
+
+| `verdict` | What it means |
+|---|---|
+| `valid` | Nothing disagrees with the schema |
+| `valid-except-documented-deviation` | Every finding is a shape sipnab emits on purpose that the schema rejects. `deviations` names each one and `explanations` says why |
+| `invalid` | At least one finding is an ordinary defect. `errors` carries it |
+
+The middle verdict carries the whole point. §4.3 of the draft says "it is
+possible to have a Dialog Object with no parameters in it", the working group
+agreed that shape in issue #20 after IETF 124, and the draft's own Appendix B
+schema forbids it, because every Dialog Object requires a `start`. sipnab emits
+one: the consultative call of an attended transfer, which the observed leg
+never saw. A validator that folded that into a clean pass would teach a
+producer that a missing `start` is fine — and a missing `start` on a `transfer`
+object is exactly the defect the corpus pass found.
+
+So the exemption is narrow. ONLY a Dialog Object with no members at all counts
+as the documented deviation. A typed object missing `start` is an error, and
+the two never merge.
+
+```jsonc
+// validate_vcon { "call_id": "1-1966@10.0.2.20" }
+{
+  "schema_version": 1,
+  "verdict": "valid",
+  "schema_path": "tests/schemas/vcon.schema.json",
+  "schema_id": "https://ietf.org/vcon/schemas/unsigned-vcon.json",
+  "errors": [],
+  "deviations": [],
+  "explanations": [],
+  "call_id": "1-1966@10.0.2.20"
+}
+```
+
+A container carrying an attended transfer's consultation object:
+
+```jsonc
+{
+  "verdict": "valid-except-documented-deviation",
+  "errors": [],
+  "deviations": [
+    {
+      "instance_path": "/dialog/2",
+      "keyword": "required",
+      "detail": "missing required properties: start",
+      "deviation": "empty-dialog-object"
+    }
+  ],
+  "explanations": [
+    {
+      "name": "empty-dialog-object",
+      "explanation": "The empty Dialog Object `{}` of section 4.3: ... reported here rather than passed silently ..."
+    }
+  ]
+}
+```
+
+And the defect the corpus pass found, which is an error rather than an
+exemption:
+
+```jsonc
+// validate_vcon { "container": { ..., "dialog": [ { "type": "transfer" } ] } }
+{
+  "verdict": "invalid",
+  "errors": [
+    {
+      "instance_path": "/dialog/0",
+      "keyword": "required",
+      "detail": "missing required properties: start"
+    }
+  ],
+  "deviations": []
+}
+```
+
+A container that disagrees with the schema is an ANSWER, not a tool error. The
+call fails with `invalid_params` only when the REQUEST is wrong: neither
+argument, both arguments, an unknown `call_id`, or a `container` that is not a
+JSON object.
+
+**The validator reads the vendored file rather than a transcription of it.**
+`jsonschema` is a dev-dependency, so a validator built on it would ship only in
+the test tree — which is where the gap already was. This walks the schema
+itself, implementing the draft-07 subset the file uses, and it refuses to guess:
+a keyword outside that subset makes every validation report `invalid` naming
+the keyword. Re-vendoring a richer schema therefore fails loudly instead of
+quietly certifying less than it claims.
+
+A binary built without the `vcon` Cargo feature refuses this tool with
+`invalid_params` and names the feature.
 [`server_capabilities`](#server_capabilities) lists what a given binary carries.
 
 ### `generate_repro`
@@ -18506,7 +18740,7 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 56 carry MCP annotations, so a host
+- **Every tool declares what it does.** All 57 carry MCP annotations, so a host
   can decide what to call without asking. Thirty are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the five that are
   not. Every tool sets `openWorldHint` to `false`, because sipnab answers from
@@ -18788,7 +19022,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions, where
 
 ## What the write verbs do
 
-Forty-six of the 56 tools are `readOnlyHint: true`. These ten are not, and
+Forty-seven of the 57 tools are `readOnlyHint: true`. These ten are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 
@@ -20832,7 +21066,9 @@ export writes the same bytes. Pick the door that suits you:
 |---|---|---|
 | At a shell, reading a capture file | `sipnab -N -I call.pcap --export-vcon 'CALL-ID' --vcon-out out.json` | the container in `out.json` |
 | At a shell, wanting it on stdout | `sipnab -N -I call.pcap --export-vcon 'CALL-ID'` | the container on stdout |
-| An agent holding an MCP session | the `export_vcon` tool, with `call_id` | a structured content block |
+| An agent holding an MCP session, one call | the `export_vcon` tool, with `call_id` | one container, its SHA-256, and what the capture missed |
+| An agent holding an MCP session, a set | the `export_vcon` tool, with `filter` | one entry per matching dialog, bounded by `--mcp-max-rows` |
+| An agent checking a container before sending it | the `validate_vcon` tool | a verdict against the vendored schema, with the one documented deviation named |
 | A program over HTTP | `GET /v1/dialogs/{call_id}/vcon` | `200` and the container, or `404` |
 | Rust, in-process | `sipnab::output::vcon::export_dialog` | a `Vcon` value |
 
@@ -21055,7 +21291,7 @@ and a consumer parses it before indexing into it.
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.141 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.142 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -26373,6 +26609,18 @@ unread rather than leaving the operator to subtract two numbers.
   relay commands seen:`, so a run says what it did not attribute. The counter
   landed first and no surface read it, which is the same silence it exists to
   break. A run that saw none prints nothing rather than a zero.
+
+  The same misattribution reaches the ACTIVE path, and there sipnab answers it
+  rather than declining it. A `query` walks every side the relay holds, so a
+  recording or forwarding fork comes back as a tag of its own with its own
+  relay ports. rtpengine stamps each `subscriptions` entry with a `type`:
+  `offer/answer` for the other side of a dialog, `pub/sub` for a side that only
+  receives media from another. sipnab reads that stamp. A `pub/sub` peer becomes a
+  media subscription rather than a party the call is with, the fork's ports are
+  still attributed to the call they fork, and the startup summary names how
+  many of the ports it counted a subscriber holds. Folded together instead, a
+  two-party call comes back with three parties, which is the same wrong answer
+  the passive path refuses, arriving through the door sipnab does open.
 - **HEP carrying SIP or RTP off the wire.** The claim covers `ng` only.
   Claiming those here would change what every existing capture containing HEP
   reports, which is a much larger decision than this required.

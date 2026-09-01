@@ -958,6 +958,12 @@ const PROBES: &[(&str, &str)] = &[
     ),
     ("validate_filter", r#"{"expr":"state == InCall"}"#),
     ("export_vcon", r#"{"call_id":"{CALL}"}"#),
+    // The call_id form, which exports from the store and is therefore as
+    // source-dependent as the export itself. The `container` form is not
+    // probed here for the reason `decode_evidence` is excused: it judges a
+    // document the caller supplied, and how much of the capture has been read
+    // says nothing about it.
+    ("validate_vcon", r#"{"call_id":"{CALL}"}"#),
     ("generate_wireshark_filter", r#"{"call_id":"{CALL}"}"#),
     ("explain_attribution", r#"{"call_id":"{CALL}"}"#),
     ("reconcile_orphans", r#"{"limit":5}"#),

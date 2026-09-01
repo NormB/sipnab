@@ -5263,10 +5263,11 @@ fn export_vcon_selection(
 /// moved or mounted elsewhere still verifies from inside its own directory.
 #[cfg(feature = "vcon")]
 fn digest_line(path: &std::path::Path, bytes: &[u8]) -> String {
-    use sha2::Digest as _;
-
-    let digest = sha2::Sha256::digest(bytes);
-    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    // The digest comes from the exporter rather than from a second `Sha256`
+    // written here. `export_vcon` publishes the same value over MCP, and two
+    // implementations of "a container's digest" is the pair this repository
+    // keeps finding half-fixed.
+    let hex = crate::output::vcon::container_digest(bytes);
     let name = path
         .file_name()
         .map_or_else(|| std::borrow::Cow::Borrowed("-"), |n| n.to_string_lossy());

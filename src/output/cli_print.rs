@@ -196,6 +196,19 @@ pub fn format_sip_message(
     if opts.show_proto_number {
         let _ = write!(out, "({})", msg.transport.ip_proto_number());
     }
+
+    // Where the bytes came from, when it is not the wire. The addresses above
+    // are rendered from whatever the message carries, and for a uprobe read
+    // that is `0.0.0.0:0 -> 0.0.0.0:0` — which is exactly what a capture with
+    // unparsed addressing looks like. `InputOrigin::line_note` owns both the
+    // decision and the spelling, so this line and the TUI's raw viewer cannot
+    // drift apart.
+    if let Some(note) = msg
+        .input_origin
+        .and_then(crate::capture::parse::InputOrigin::line_note)
+    {
+        out.push_str(note);
+    }
     out.push('\n');
 
     // Payload (optional, with truncation)
@@ -377,6 +390,60 @@ mod tests {
             "without show_empty a bodyless message must be one line only, \
              got:\n{out}"
         );
+    }
+
+    /// A message that was never on a wire says so on the summary line.
+    ///
+    /// `TK7`: uprobe plaintext arrives with no packet behind it. The summary
+    /// line renders `src:port -> dst:port` regardless — `0.0.0.0:0` for a
+    /// tracefs read, a real tuple when the eBPF backend paired one — and an
+    /// operator reading `0.0.0.0:0 -> 0.0.0.0:0 INVITE TCP` has no way to tell
+    /// a uprobe read from a capture whose addressing sipnab failed to parse.
+    ///
+    /// Marked only when the origin is NOT the wire, deliberately: every
+    /// ordinary capture would otherwise gain a constant token on every line,
+    /// and the fact worth reporting is the exception. The spelling is
+    /// `InputOrigin::as_str`, so this line and the `--json` field cannot
+    /// disagree about the same message.
+    #[test]
+    fn a_message_that_was_never_on_a_wire_is_labeled_on_the_summary_line() {
+        use crate::capture::parse::InputOrigin;
+
+        let opts = OutputOptions {
+            color: ColorMode::Never,
+            show_empty: false,
+            ..Default::default()
+        };
+
+        let mut msg = make_options();
+        msg.input_origin = Some(InputOrigin::Uprobe);
+        let marked = format_sip_message(&msg, &opts, None);
+        assert!(
+            marked
+                .lines()
+                .next()
+                .is_some_and(|l| l.contains("origin=uprobe")),
+            "a uprobe read must be labeled on the summary line, or it reads as \
+             a wire capture with unparsed addressing:\n{marked}"
+        );
+
+        msg.input_origin = Some(InputOrigin::Hep);
+        let hep = format_sip_message(&msg, &opts, None);
+        assert!(
+            hep.lines().next().is_some_and(|l| l.contains("origin=hep")),
+            "HEP addressing is asserted by a remote sender, not observed, and \
+             the line must say so:\n{hep}"
+        );
+
+        for wire in [None, Some(InputOrigin::Wire)] {
+            msg.input_origin = wire;
+            let plain = format_sip_message(&msg, &opts, None);
+            assert!(
+                !plain.contains("origin="),
+                "an ordinary wire capture must be unchanged, or every existing \
+                 line grows a constant token:\n{plain}"
+            );
+        }
     }
 
     /// An INVITE with `Always` color carries green + reset ANSI codes and

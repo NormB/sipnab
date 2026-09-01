@@ -145,12 +145,27 @@ sudo sipnab -N --uprobe-tls --uprobe-flavor openssl
 ### Step 3 — read the output, and know what is missing
 
 ```text
-REGISTER sip:example.net SIP/2.0 ... uprobe:opensips/954#3
+12:57:47.360 0.0.0.0:0 -> 0.0.0.0:0 REGISTER TCP origin=uprobe
 ```
 
 Dialogs carry **no addresses and port 0**, labeled `uprobe:<comm>/<pid>`. A
 uprobe sees the bytes an application handed its TLS library and nothing about
 the socket beneath, so sipnab names the process rather than inventing a peer.
+
+`origin=uprobe` closes the last gap that leaves. Without it, `0.0.0.0:0 ->
+0.0.0.0:0` reads exactly like a wire capture whose addressing sipnab failed to
+parse, and the reader cannot tell the two apart. Every surface carries the same
+mark: the `--json` line adds `"input_origin": "uprobe"`, and the TUI's raw
+viewer appends it to the info line. A wire capture stays unmarked.
+
+The frame pointer beside it is honest about the same thing. `--show-frame` on a
+`uprobe:` pointer **refuses** and names the process the bytes came out of,
+because there is no capture to seek into and nothing to verify the bytes
+against:
+
+```bash
+sipnab --show-frame 'uprobe:opensips/954#3'
+```
 
 If you need the peer, that is the eBPF backend below.
 

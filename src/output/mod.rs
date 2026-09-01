@@ -28,6 +28,9 @@
 //!   export
 //! - `vcon` — one observed dialog as an unsigned, signaling-only vCon
 //!   container (feature-gated: `vcon`)
+//! - `vcon_schema` — a container checked against the vendored working-group
+//!   schema, with the one deviation sipnab emits on purpose named rather than
+//!   waved through (feature-gated: `vcon`)
 //! - `wireshark` — filter-DSL → Wireshark display-filter translation and
 //!   tshark command generation
 //!
@@ -58,6 +61,8 @@ pub mod stun_report;
 pub mod synthetic;
 #[cfg(feature = "vcon")]
 pub mod vcon;
+#[cfg(feature = "vcon")]
+pub mod vcon_schema;
 pub mod wireshark;
 
 pub use analysis_report::{print_analysis_report, print_analysis_report_as};

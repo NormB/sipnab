@@ -293,3 +293,52 @@ fn all_schemas_compile() {
         "expected at least the 4 known schemas in tests/schemas/, found {seen}"
     );
 }
+
+/// Every `InputOrigin` sipnab can report is a value the message and dialog
+/// schemas accept.
+///
+/// The origin name is a fact written in three places — `InputOrigin::as_str`,
+/// `message.schema.json` and `dialog.schema.json` — and a consumer validating
+/// against a schema that omits one gets a *validation failure* on honest
+/// output, which reads as sipnab emitting something wrong. The match below is
+/// exhaustive by construction: a fourth variant stops this file compiling
+/// until somebody adds it to both schemas.
+#[test]
+fn every_capture_origin_is_a_value_both_schemas_accept() {
+    use sipnab::capture::parse::InputOrigin;
+
+    let all = [InputOrigin::Wire, InputOrigin::Hep, InputOrigin::Uprobe];
+    for origin in all {
+        match origin {
+            InputOrigin::Wire | InputOrigin::Hep | InputOrigin::Uprobe => {}
+        }
+    }
+
+    for schema in ["message.schema.json", "dialog.schema.json"] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/schemas")
+            .join(schema);
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+        let doc: Value = serde_json::from_str(&text).expect("schema is JSON");
+        let listed = doc["properties"]["input_origin"]["enum"]
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!("{schema} declares no input_origin enum, so it cannot validate an origin")
+            });
+        for origin in all {
+            assert!(
+                listed.iter().any(|v| v.as_str() == Some(origin.as_str())),
+                "{schema} rejects `{}`, an origin sipnab really emits",
+                origin.as_str()
+            );
+        }
+        assert_eq!(
+            listed.len(),
+            all.len(),
+            "{schema} lists {} origin(s) against {} sipnab can report, so one \
+             side has a name the other does not",
+            listed.len(),
+            all.len()
+        );
+    }
+}

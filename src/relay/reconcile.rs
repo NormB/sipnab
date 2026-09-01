@@ -108,6 +108,15 @@ pub struct Attribution {
     pub peer_tags: Vec<String>,
     /// Whether the relay holds this port for RTCP rather than RTP.
     pub is_rtcp: bool,
+    /// Whether the relay holds this port for a side that CONSUMES the call's
+    /// media rather than for a leg of it.
+    ///
+    /// A recording or forwarding fork is a side of the call in its own right,
+    /// with its own relay ports, so its media is genuinely this call's and is
+    /// attributed to it. It is still not a party to the call, and a consumer
+    /// that cannot tell the difference reports a two-party call as having
+    /// three parties.
+    pub is_media_subscriber: bool,
     /// The codec the relay recorded for this side, where it recorded one.
     pub codec: Option<String>,
 }
@@ -678,6 +687,22 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
                  those streams are unattached"
             ));
         }
+        // Counted over the INDEX rather than over this refresh's tags: the
+        // question an operator is asking is about the ports now attributable,
+        // which is what the number beside it counts.
+        let subscriber_ports = self
+            .index
+            .values()
+            .filter(|a| a.is_media_subscriber)
+            .count();
+        if subscriber_ports > 0 {
+            line.push_str(&format!(
+                ". {subscriber_ports} of those port(s) are held by a media \
+                 subscriber -- a recording or forwarding consumer of the call \
+                 rather than a leg of it -- so a two-party call legitimately \
+                 shows more relay-side streams than it has parties"
+            ));
+        }
         if self.unkeyable_streams > 0 {
             line.push_str(&format!(
                 ". {} relay stream(s) reported an address that is not an IP \
@@ -715,6 +740,7 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
                         tag: tag.tag.clone(),
                         peer_tags: tag.in_dialogue_with.clone(),
                         is_rtcp: stream.is_rtcp,
+                        is_media_subscriber: tag.is_media_subscriber(),
                         codec: tag.codec.clone(),
                     },
                 );
@@ -937,6 +963,7 @@ mod tests {
                         tags: vec![RelayTag {
                             tag: "from-tag".to_owned(),
                             in_dialogue_with: vec!["to-tag".to_owned()],
+                            media_subscriptions: Vec::new(),
                             codec: Some("PCMU".to_owned()),
                             streams: ports
                                 .iter()
@@ -959,6 +986,99 @@ mod tests {
         fn describe(&self) -> String {
             "203.0.113.7:22222".to_owned()
         }
+    }
+
+    /// A relay holding one call: two legs, and one side that only subscribes.
+    ///
+    /// This is what relay-side recording and forking look like from a query:
+    /// the subscriber is a side of the call in its own right, with its own
+    /// relay ports, because the relay answers about every side it holds and
+    /// not only the two that signed the call.
+    struct ForkedRelay;
+
+    impl ReadOnlyRelay for ForkedRelay {
+        fn list(&self, _permit: &TransmitPermit, _limit: u32) -> anyhow::Result<ControlReply> {
+            Ok(ControlReply::Calls(Enumeration {
+                call_ids: vec!["call-a".to_owned()],
+                truncated: false,
+            }))
+        }
+
+        fn query(&self, _permit: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply> {
+            let stream = |port: u16| RelayStream {
+                local_address: RELAY_IP.to_owned(),
+                local_port: port,
+                endpoint: None,
+                advertised_endpoint: None,
+                is_rtcp: false,
+                ssrcs: Vec::new(),
+            };
+            Ok(ControlReply::Call(CallView {
+                call_id: call_id.to_owned(),
+                tags: vec![
+                    RelayTag {
+                        tag: "from-tag".to_owned(),
+                        in_dialogue_with: vec!["to-tag".to_owned()],
+                        media_subscriptions: Vec::new(),
+                        codec: Some("PCMU".to_owned()),
+                        streams: vec![stream(30000)],
+                    },
+                    RelayTag {
+                        tag: "recorder-1".to_owned(),
+                        in_dialogue_with: Vec::new(),
+                        media_subscriptions: vec!["from-tag".to_owned()],
+                        codec: Some("PCMU".to_owned()),
+                        streams: vec![stream(30010)],
+                    },
+                ],
+            }))
+        }
+
+        fn describe(&self) -> String {
+            "203.0.113.7:22222".to_owned()
+        }
+    }
+
+    /// A recording fork's port belongs to the call. It is not a leg of it.
+    ///
+    /// Both halves matter and they pull apart. Refusing the port would leave
+    /// real media on the relay unexplained; calling it a leg gives a
+    /// two-party call three parties, after which the analysis that judges
+    /// one-way audio and asymmetry answers a question nobody asked.
+    #[test]
+    fn a_port_held_by_a_media_subscriber_is_attributed_but_not_called_a_leg() {
+        let mut r = Reconciler::new(ForkedRelay);
+        let p = permit();
+        let summary = r.at_startup(&p).expect("startup asks once");
+
+        let leg = r
+            .on_unexplained_stream(&p, relay_ip(), 30000)
+            .expect("the leg's port is in the snapshot");
+        assert!(
+            !leg.is_media_subscriber,
+            "a side with an offer/answer peer is a leg of the call"
+        );
+
+        let fork = r.on_unexplained_stream(&p, relay_ip(), 30010).expect(
+            "the fork's port is the relay's media for this call, so \
+                     it must still be attributed",
+        );
+        assert_eq!(
+            fork.call_id, "call-a",
+            "the subscriber's port belongs to the call it forks"
+        );
+        assert!(
+            fork.is_media_subscriber,
+            "and it must be marked as a consumer of the call rather than a \
+             party to it"
+        );
+
+        assert!(
+            summary.contains("media subscriber"),
+            "the summary an operator reads must SAY that some of the ports it \
+             counted are a recording or forwarding fork, or three streams on \
+             a two-party call look like a bug in sipnab: {summary}"
+        );
     }
 
     /// A relay that could not be reached never said the stream was not its
@@ -1361,6 +1481,7 @@ mod tests {
                 tags: vec![RelayTag {
                     tag: format!("tag-of-{call_id}"),
                     in_dialogue_with: Vec::new(),
+                    media_subscriptions: Vec::new(),
                     codec: Some("PCMU".to_owned()),
                     streams,
                 }],
@@ -1695,6 +1816,7 @@ mod tests {
                 tags: vec![RelayTag {
                     tag: format!("tag-of-{call_id}"),
                     in_dialogue_with: Vec::new(),
+                    media_subscriptions: Vec::new(),
                     codec: Some("PCMU".to_owned()),
                     streams: vec![RelayStream {
                         local_address: RELAY_IP.to_owned(),

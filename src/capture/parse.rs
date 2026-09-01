@@ -111,6 +111,37 @@ impl InputOrigin {
             Self::Uprobe => "uprobe",
         }
     }
+
+    /// The note a HUMAN-facing line appends, or `None` when nothing needs
+    /// saying.
+    ///
+    /// [`Wire`](Self::Wire) returns `None` deliberately. It is what every
+    /// reader already assumes, so marking it would put a constant token on
+    /// every line of every ordinary capture and tell nobody anything. The
+    /// other two are the cases a reader has to be told about, and both look
+    /// like a wire capture on the surfaces that render addressing:
+    ///
+    /// - `hep` — the addresses on this line were asserted by a remote sender,
+    ///   not observed by sipnab.
+    /// - `uprobe` — there was no packet at all. A tracefs read renders
+    ///   `0.0.0.0:0 -> 0.0.0.0:0`, which is indistinguishable from a capture
+    ///   whose addressing sipnab failed to parse, and the `frame` pointer
+    ///   beside it can never be followed to bytes.
+    ///
+    /// One function, so the `-N` summary line and the TUI's raw viewer cannot
+    /// disagree about the same message. The names it embeds are pinned against
+    /// [`as_str`](Self::as_str) by
+    /// `the_line_note_and_the_field_name_agree_for_every_origin`, because the
+    /// machine surfaces and the human ones naming one origin differently is
+    /// exactly what that function's own doc forbids.
+    #[must_use]
+    pub fn line_note(self) -> Option<&'static str> {
+        match self {
+            Self::Wire => None,
+            Self::Hep => Some(" origin=hep"),
+            Self::Uprobe => Some(" origin=uprobe"),
+        }
+    }
 }
 
 impl std::fmt::Display for InputOrigin {
@@ -4836,6 +4867,42 @@ mod tests {
         assert_eq!(parsed.fragment_offset, None);
         assert!(!parsed.more_fragments);
         assert_eq!(parsed.ip_protocol, 17);
+    }
+
+    /// The human note and the machine field name one origin identically.
+    ///
+    /// `as_str` is declared to be "the name this origin is written under on
+    /// every output surface", and `line_note` embeds those names in literals
+    /// so the print path costs no allocation. Two literals describing one
+    /// contract is the shape that goes wrong silently: an operator comparing
+    /// a `-N` line against the `--json` field would be unable to tell whether
+    /// they were looking at the same source. The match is exhaustive, so a
+    /// fourth origin fails this until it has both halves.
+    #[test]
+    fn the_line_note_and_the_field_name_agree_for_every_origin() {
+        for origin in [InputOrigin::Wire, InputOrigin::Hep, InputOrigin::Uprobe] {
+            match origin {
+                // Nothing to say: `wire` is what an unmarked line already
+                // means, and a token on every line of every capture is noise.
+                InputOrigin::Wire => assert_eq!(
+                    origin.line_note(),
+                    None,
+                    "marking the ordinary case would put a constant token on \
+                     every line sipnab prints"
+                ),
+                InputOrigin::Hep | InputOrigin::Uprobe => {
+                    let note = origin
+                        .line_note()
+                        .expect("a non-wire origin must be reported to a human");
+                    assert!(
+                        note.ends_with(origin.as_str()),
+                        "the human note `{note}` does not name `{}`, so one \
+                         surface calls this origin something the other does not",
+                        origin.as_str()
+                    );
+                }
+            }
+        }
     }
 
     /// A pre-parsed packet from a uprobe must NOT be labeled HEP. Both are

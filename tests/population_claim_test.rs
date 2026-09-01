@@ -256,6 +256,18 @@ const PROBES: &[PageProbe] = &[
         per_page: &[],
     },
     PageProbe {
+        // RV5. `export_vcon` takes a filter as the alternative to `call_id`,
+        // so it pages like every other set-returning tool -- and a container
+        // is the largest row on this surface, which makes a page size that
+        // moved `total_matched` the most expensive kind of wrong. The three
+        // unanswered INVITEs in the fixture are the population.
+        tool: "export_vcon",
+        args: r#"{"filter":"response_code >= 400"}"#,
+        page: "containers",
+        nested: None,
+        per_page: &[],
+    },
+    PageProbe {
         tool: "security_findings",
         args: "{}",
         page: "findings",

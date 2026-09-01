@@ -488,6 +488,18 @@ unread rather than leaving the operator to subtract two numbers.
   relay commands seen:`, so a run says what it did not attribute. The counter
   landed first and no surface read it, which is the same silence it exists to
   break. A run that saw none prints nothing rather than a zero.
+
+  The same misattribution reaches the ACTIVE path, and there sipnab answers it
+  rather than declining it. A `query` walks every side the relay holds, so a
+  recording or forwarding fork comes back as a tag of its own with its own
+  relay ports. rtpengine stamps each `subscriptions` entry with a `type`:
+  `offer/answer` for the other side of a dialog, `pub/sub` for a side that only
+  receives media from another. sipnab reads that stamp. A `pub/sub` peer becomes a
+  media subscription rather than a party the call is with, the fork's ports are
+  still attributed to the call they fork, and the startup summary names how
+  many of the ports it counted a subscriber holds. Folded together instead, a
+  two-party call comes back with three parties, which is the same wrong answer
+  the passive path refuses, arriving through the door sipnab does open.
 - **HEP carrying SIP or RTP off the wire.** The claim covers `ng` only.
   Claiming those here would change what every existing capture containing HEP
   reports, which is a much larger decision than this required.

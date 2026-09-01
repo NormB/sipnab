@@ -293,6 +293,12 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
             "decode_ng",
             json!({"frame_ref": "absent.pcap#1@0000000000000000"}),
         ),
+        // The filter form rather than the call_id form: it is the arm that
+        // fills `total_matched` and `truncated`, and an empty match is still a
+        // successful answer, so the envelope is exercised whatever the fixture
+        // holds.
+        ("export_vcon", json!({"filter": "response_code >= 400"})),
+        ("validate_vcon", json!({"call_id": call_id})),
     ]
 }
 

@@ -347,6 +347,12 @@ pub const MESSAGE_VERBATIM_FIELDS: &[&str] = &[
     // the field is a number — there is no string for instruction-shaped text
     // to hide in, and fencing an integer would only make it unusable as one.
     "dscp",
+    // One of three variants of `InputOrigin`, rendered from sipnab's own enum.
+    // The packet's sender cannot choose this string — which reader built the
+    // packet decides it — and it is the field that tells an agent whether the
+    // `frame` beside it can be followed at all, so fencing it would wrap the
+    // very marker that keeps the pointer honest in untrusted-text markers.
+    "input_origin",
 ];
 
 /// Fence one JSON value that is either a string or an array of strings.

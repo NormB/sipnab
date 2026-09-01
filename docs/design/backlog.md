@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**32 open, 413 done** across 25 sections.
+**26 open, 419 done** across 25 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -57,11 +57,11 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | P4 | 0 | 39 | `##########` |
 | PA | 1 | 12 | `#########.` |
 | PB | 0 | 20 | `##########` |
-| TK | 4 | 6 | `######....` |
-| RE | 3 | 4 | `######....` |
+| TK | 3 | 7 | `#######...` |
+| RE | 1 | 6 | `#########.` |
 | BA | 1 | 3 | `########..` |
 | NAT | 0 | 4 | `##########` |
-| RV | 4 | 4 | `#####.....` |
+| RV | 1 | 7 | `#########.` |
 | RP | 4 | 0 | `..........` |
 | HX | 1 | 2 | `#######...` |
 | AS | 6 | 1 | `#.........` |
@@ -844,8 +844,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:5416`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5416)) currently takes
-  nowhere; `security_findings` ([`src/mcp/server.rs:5416`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5416)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5264`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5264)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5264`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5264)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -1623,8 +1623,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5531`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5531),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5531`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5531),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5379`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5379),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5379`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5379),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -2470,7 +2470,7 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:377`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L377)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:6851`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6851), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:6699`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6699), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
@@ -3096,7 +3096,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:8040`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8040), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:7888`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7888), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -4178,7 +4178,7 @@ host. The packaged instance is untouched.
   unaffected; and because the aarch64 host has no BTF, the tracefs reader stays the
   **default** rather than becoming a fallback nobody tested.
 
-- [ ] **TK7 — Plaintext-from-uprobe has no honest provenance.** `SSL_read`/
+- [x] **TK7 (done 2026-09-01) — Plaintext-from-uprobe has no honest provenance.** `SSL_read`/
   `SSL_write` yield SIP bytes with no packet behind them: no frame number, no
   byte offset, no capture timestamp. sipnab's frame-pointer evidence is a stated
   differentiator, and passing uprobe bytes off as wire frames would make that
@@ -4424,7 +4424,7 @@ are exactly the cases a signaling-only view gets wrong.
   an unreachable destination returns ICMP port-unreachable and it drops the
   trace, which is why the harness now ships a sink.
 
-- [ ] **RE4 — reconcile calls already in progress, by asking.** A passive
+- [x] **RE4 (done 2026-09-01) — reconcile calls already in progress, by asking.** A passive
   decoder learns nothing about a call whose offer happened before sipnab
   started, and incident response usually begins mid-call. `list` returns the
   active Call-IDs and `query` returns, per call, the tags with `in dialogue
@@ -4502,7 +4502,7 @@ are exactly the cases a signaling-only view gets wrong.
   `subscribers` INSIDE a tag rather than beside it, which suggests it is fine,
   but that capture had no recording running and nothing has tested it.
 
-- [ ] **RE7 — record from sipnab's own capture, and never command the relay.**
+- [x] **RE7 (done 2026-09-01) — record from sipnab's own capture, and never command the relay.**
   `-O` writes captured packets verbatim before parse with real wire
   timestamps, and RE1's Call-ID now makes them attributable. sipnab must NOT
   send `start recording`: that changes a production relay's behavior, fills
@@ -4894,7 +4894,7 @@ exactly that reason.
   whether that path was authenticated. Refuse a pointer whose digest no longer
   matches, as `--show-frame` already does.
 
-- [ ] **RV5 — `export_vcon` should take a filter, and should return its
+- [x] **RV5 (done 2026-09-01) — `export_vcon` should take a filter, and should return its
   digest.** `--export-vcon-when` takes the filter DSL — *"Reusing it rather
   than growing a flag per policy is deliberate"* — and pairs with
   `--export-vcon-dir` to emit one container per matching dialog. The tool takes
@@ -4911,7 +4911,7 @@ exactly that reason.
   `--mcp-max-rows` like every other set-returning tool, and return the SHA-256
   of each container beside it.
 
-- [ ] **RV6 — `validate_vcon`: check a container against the schema sipnab
+- [x] **RV6 (done 2026-09-01) — `validate_vcon`: check a container against the schema sipnab
   vendors.** Grounded rather than speculative: a validation pass over **4,216
   real containers found 2 schema-invalid** — a REFER producing a `transfer`
   Dialog Object with no `start`, invalid against both the vendored and the
@@ -4925,7 +4925,7 @@ exactly that reason.
   validator that quietly tolerates the one shape the schema forbids teaches a
   producer the wrong lesson.
 
-- [ ] **RV7 — a container's omissions must reach the agent that requested it.**
+- [x] **RV7 (done 2026-09-01) — a container's omissions must reach the agent that requested it.**
   VAL13 in the P1 section: headers of 8,192 bytes or more vanish from a
   container while the completeness note still reports *"No omissions
   recorded"*. `--vcon-max-inline-media` has the same shape — a refused media
@@ -5931,7 +5931,7 @@ ones that fit an analysis tool.
   unfragmented DATA chunk per packet. Enables SIGTRAN/Diameter (3GPP IMS).
   **Corrected 2026-08-06:** this used to end *"multi-packet fragment reassembly
   (B/E spanning) is a documented follow-up"*, and that follow-up shipped —
-  `SctpReassembler` ([`src/capture/parse.rs:1867`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1867)), constructed on every
+  `SctpReassembler` ([`src/capture/parse.rs:1898`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L1898)), constructed on every
   `PacketProcessor` ([`src/capture/mod.rs:897`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs#L897), `:651`, `:686`). The P2 entry
   above records it as done. Two entries in one file disagreeing about the same
   feature is the cheapest kind of wrong to produce and the most expensive to

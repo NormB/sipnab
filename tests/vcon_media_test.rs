@@ -33,8 +33,9 @@ use chrono::{DateTime, TimeDelta, Utc};
 use sipnab::analysis::CaptureFacts;
 use sipnab::net::TransportProto;
 use sipnab::output::vcon::{
-    ExportContext, MAX_INLINE_MEDIA_BYTES, MediaOutcome, ObservedAudio, RECORDING_MEDIATYPE,
-    RECORDING_SET_TYPE, RECORDING_TYPE, Vcon, export_dialog_with_audio,
+    ExportContext, ExportedDialog, MAX_INLINE_MEDIA_BYTES, MediaOutcome, ObservedAudio, Omission,
+    RECORDING_MEDIATYPE, RECORDING_SET_TYPE, RECORDING_TYPE, Vcon, export_dialog_and_completeness,
+    export_dialog_with_audio,
 };
 use sipnab::rtp::audio_export::{DialogAudio, decode_dialog_audio};
 use sipnab::rtp::parser::RtpHeader;
@@ -204,6 +205,37 @@ fn export_within(
         ObservedAudio::Decoded(&audio),
     );
     (vcon, audio)
+}
+
+/// The same export again, reporting the completeness carrier beside the
+/// container.
+///
+/// The carrier is inside the container as JSON TEXT, so reading a field off it
+/// means parsing a string out of a document. The rows RV7 is about are read
+/// from the value itself.
+fn export_reporting_within(
+    store: &DialogStore,
+    call_id: &str,
+    streams: &[&RtpStream],
+    budget: Option<usize>,
+) -> (ExportedDialog, DialogAudio) {
+    let audio = decode_dialog_audio(streams).expect("the fixture streams decode");
+    let dialog = store
+        .get(call_id)
+        .expect("the fixture dialog is in the store");
+    let facts = CaptureFacts::default();
+    let exported = export_dialog_and_completeness(
+        dialog,
+        &ExportContext {
+            capture_id: "vcon-media-fixture.pcap",
+            facts: &facts,
+            max_inline_media_bytes: budget,
+            analysis: None,
+        },
+        ObservedAudio::Decoded(&audio),
+        Utc::now(),
+    );
+    (exported, audio)
 }
 
 /// The container as JSON, which is what actually crosses the wire.
@@ -1039,6 +1071,78 @@ fn the_inline_media_budget_is_an_operator_setting() {
 
 /// A raised budget carries audio the default would have refused.
 ///
+/// RV7: a refused recording is an omission ROW, not only a sentence.
+///
+/// The container an agent gets back has an empty-looking `dialog[]` and a
+/// caveat buried in an attachment body that is a JSON string. Every surface
+/// above this one has to be able to say "the audio exists and is not here"
+/// without parsing prose, and the row is what makes that possible.
+///
+/// Paired with the clause count in the same assertion, for the reason
+/// `an_omission_row_exists_for_every_incomplete_clause` gives: checking one
+/// half of a fact written twice certifies half a fix.
+#[test]
+fn a_refused_recording_is_an_omission_row_beside_the_clause() {
+    let call_id = "intact@example.com";
+    let store = dialog_store(call_id, sock(10, 0, 0, 1, 20000), sock(10, 0, 0, 2, 30000));
+    let s = stream(
+        sock(10, 0, 0, 1, 20000),
+        sock(10, 0, 0, 2, 30000),
+        1,
+        2,
+        0xFF,
+        0,
+        TimeDelta::seconds(0),
+    );
+
+    // Carried first, so the row below is the refusal talking and not a row
+    // this export emits for every container.
+    let (carried, _) = export_reporting_within(&store, call_id, &[&s], None);
+    assert_eq!(
+        carried.completeness.media,
+        MediaOutcome::Carried,
+        "premise: the fixture must fit under the default, or the contrast          below is between two refusals"
+    );
+    assert!(
+        carried.completeness.omissions().is_empty(),
+        "a container that carries its audio omitted nothing: {:?}",
+        carried.completeness.omissions()
+    );
+    assert!(
+        carried.completeness.complete(),
+        "and says so: {}",
+        carried.completeness.note
+    );
+
+    let (refused, _) = export_reporting_within(&store, call_id, &[&s], Some(0));
+    assert_eq!(
+        refused.completeness.media,
+        MediaOutcome::RefusedOverBudget,
+        "premise: a zero budget refuses every body"
+    );
+    assert_eq!(
+        refused.completeness.omissions(),
+        vec![Omission {
+            kind: "media_refused_over_budget",
+            count: 1,
+            unit: "recording",
+        }],
+        "the refusal must reach the rows: {}",
+        refused.completeness.note
+    );
+    assert_eq!(
+        refused.completeness.note.matches("— INCOMPLETE:").count(),
+        1,
+        "and the prose and the rows must describe one set: {}",
+        refused.completeness.note
+    );
+    assert!(
+        !refused.completeness.complete(),
+        "a container missing its audio is not complete: {}",
+        refused.completeness.note
+    );
+}
+
 /// The other direction of the same setting, and the one that makes it worth
 /// having: without this, "configurable" could mean a knob that only ever
 /// tightens.

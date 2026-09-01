@@ -92,6 +92,25 @@ or broken input rather than silently accepting it: missing mandatory headers
 larger than the body actually present (truncated/lying length), and control/NUL
 bytes in a header. Example: `"malformed": ["missing mandatory header: Call-ID"]`.
 
+`input_origin` names the capture source that delivered the message — `wire`,
+`hep` or `uprobe` — and it is what keeps `frame` honest. A uprobe read carries a
+pointer of the same shape as a capture offset (`uprobe:opensips/954#3` beside
+`capture.pcap#4212`), and only one of the two leads back to bytes anyone can
+read: `wire` came from an IP header sipnab observed, `hep` carries addressing a
+remote HEP sender asserted, and `uprobe` names plaintext sipnab lifted out of a
+process's TLS library, which was never on a wire at all. Feeding a `uprobe:` pointer to `--show-frame`
+therefore gets a refusal that names the process, not a frame. The field drops
+out when the message came from no captured packet, because `wire` there would
+claim an observation sipnab never made.
+
+The `-N` text output and the TUI's raw-message viewer carry the same fact as a
+trailing `origin=hep` or `origin=uprobe`, and leave an ordinary wire capture
+unmarked:
+
+```text
+12:57:47.360 0.0.0.0:0 -> 0.0.0.0:0 REGISTER TCP origin=uprobe
+```
+
 `schema_version` increments on breaking field changes — pin your
 consumers to it.
 

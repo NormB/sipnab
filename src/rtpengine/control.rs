@@ -325,19 +325,44 @@ pub fn parse_query_reply(body: &[u8], call_id: &str) -> anyhow::Result<ControlRe
             let tag = String::from_utf8_lossy(key).into_owned();
 
             let mut in_dialogue_with = Vec::new();
-            // 12.5.1 writes `subscriptions`; older builds wrote
-            // `in dialogue with`. Both are read, because a version check would
-            // be a worse test than simply looking for the data.
-            for key in [b"subscriptions".as_slice(), b"in dialogue with".as_slice()] {
-                if let Some(Value::List(subs)) = tv.get(key) {
-                    for sub in subs {
-                        if let Some(other) = sub.get_str(b"tag")
-                            && !in_dialogue_with.contains(&other)
-                        {
-                            in_dialogue_with.push(other);
-                        }
+            let mut media_subscriptions = Vec::new();
+            // Each `subscriptions` entry is stamped with a `type`, and the two
+            // values mean different things about the call: `offer/answer` is
+            // the other side of a SIP dialog, `pub/sub` is a side that merely
+            // RECEIVES this one's media -- which is how relay-side recording
+            // and forking are built. Reading both into one list reports a
+            // recorder as the party the call is with.
+            //
+            // Anything that is not `pub/sub` is read as a dialog peer,
+            // including an entry with no `type` at all: the only producer
+            // known to write this key always writes the type beside it, so an
+            // entry without one is a shape this parser has not seen, and the
+            // reading that was correct before the type existed is the safer
+            // one to fall back to.
+            if let Some(Value::List(subs)) = tv.get(b"subscriptions") {
+                for sub in subs {
+                    let Some(other) = sub.get_str(b"tag") else {
+                        continue;
+                    };
+                    let target = if sub.get_str(b"type").as_deref() == Some("pub/sub") {
+                        &mut media_subscriptions
+                    } else {
+                        &mut in_dialogue_with
+                    };
+                    if !target.contains(&other) {
+                        target.push(other);
                     }
                 }
+            }
+            // Older builds carried the peer's tag DIRECTLY under
+            // `in dialogue with`, as a byte string and not as a list -- there
+            // was one active dialog per side before one-to-many forwarding
+            // existed. Read as a list it matches nothing, and every call on
+            // such a relay comes back with no other side at all.
+            if let Some(other) = tv.get_str(b"in dialogue with")
+                && !in_dialogue_with.contains(&other)
+            {
+                in_dialogue_with.push(other);
             }
 
             let mut codec = None;
@@ -383,6 +408,7 @@ pub fn parse_query_reply(body: &[u8], call_id: &str) -> anyhow::Result<ControlRe
             tags.push(RelayTag {
                 tag,
                 in_dialogue_with,
+                media_subscriptions,
                 codec,
                 streams,
             });
@@ -1625,6 +1651,159 @@ mod query_reply_tests {
             Ok(ControlReply::Refused { reason }) => assert_eq!(reason, "Unknown call-id"),
             other => panic!("a relay error must not read as a transport failure: {other:?}"),
         }
+    }
+
+    /// A synthetic tag entry, assembled from its parts.
+    ///
+    /// The captured 12.5.1 reply had no recording running, so the shape this
+    /// group is about does not appear in it. Lengths are computed, never
+    /// counted, for the reason [`super::tests::bstr`] gives.
+    fn subscription(tag: &str, kind: &str) -> String {
+        use super::tests::bstr;
+        format!(
+            "d{}{}{}{}e",
+            bstr("tag"),
+            bstr(tag),
+            bstr("type"),
+            bstr(kind)
+        )
+    }
+
+    /// One `tags` entry holding one relay port and the subscriptions given.
+    fn tag_entry(tag: &str, port: u16, subs: &[String]) -> String {
+        use super::tests::bstr;
+        let stream = format!(
+            "d{}{}{}i{port}ee",
+            bstr("local address"),
+            bstr("10.0.0.2"),
+            bstr("local port"),
+        );
+        let media = format!("d{}i1e{}l{stream}ee", bstr("index"), bstr("streams"));
+        format!(
+            "d{}l{media}e{}l{}e{}{}e",
+            bstr("medias"),
+            bstr("subscriptions"),
+            subs.concat(),
+            bstr("tag"),
+            bstr(tag),
+        )
+    }
+
+    /// A whole `query` reply carrying the given tag entries.
+    fn reply(entries: &[(&str, String)]) -> String {
+        use super::tests::bstr;
+        let body: String = entries
+            .iter()
+            .map(|(name, entry)| format!("{}{entry}", bstr(name)))
+            .collect();
+        format!("d{}{}{}d{body}ee", bstr("result"), bstr("ok"), bstr("tags"),)
+    }
+
+    /// A media subscriber is not the party the call is with.
+    ///
+    /// rtpengine stamps every `subscriptions` entry with a `type`:
+    /// `offer/answer` for the other side of a SIP dialog, `pub/sub` for a
+    /// media subscription -- which is exactly what relay-side recording and
+    /// forking create. Reading both into one list reports a recorder as the
+    /// other end of the call, so a two-party call comes back with three
+    /// parties and the media analysis that judges asymmetry answers a
+    /// question nobody asked.
+    #[test]
+    fn a_media_subscriber_is_not_reported_as_a_dialogue_peer() {
+        let entry = tag_entry(
+            "leg-a",
+            30000,
+            &[
+                subscription("leg-b", "offer/answer"),
+                subscription("recorder", "pub/sub"),
+            ],
+        );
+        let ControlReply::Call(call) =
+            parse_query_reply(reply(&[("leg-a", entry)]).as_bytes(), "c@x")
+                .expect("the synthetic reply must parse")
+        else {
+            panic!("expected a call view");
+        };
+
+        assert_eq!(
+            call.tags[0].in_dialogue_with,
+            ["leg-b"],
+            "only the offer/answer peer is the party this call is with; a \
+             pub/sub subscriber listed beside it is a recorder wearing a \
+             leg's clothes"
+        );
+        assert_eq!(
+            call.tags[0].media_subscriptions,
+            ["recorder"],
+            "and it must not be DROPPED either -- a subscription sipnab \
+             silently discards is a stream it will never explain"
+        );
+    }
+
+    /// The subscriber's own entry is a tag too, and it holds relay ports.
+    ///
+    /// `query` with no from-tag walks every monologue the call has, so a
+    /// recording fork arrives as its own top-level tag with its own ports.
+    /// Those ports DO belong to the call and are attributed to it; what they
+    /// are not is a leg of it, and the difference has to survive the parse.
+    #[test]
+    fn a_tag_that_only_subscribes_is_not_a_call_leg() {
+        let leg = tag_entry("leg-a", 30000, &[subscription("leg-b", "offer/answer")]);
+        let rec = tag_entry("recorder", 30010, &[subscription("leg-a", "pub/sub")]);
+        let ControlReply::Call(call) = parse_query_reply(
+            reply(&[("leg-a", leg), ("recorder", rec)]).as_bytes(),
+            "c@x",
+        )
+        .expect("the synthetic reply must parse") else {
+            panic!("expected a call view");
+        };
+
+        let leg = call
+            .tag_for_port(30000)
+            .expect("the leg holds port 30000 in this reply");
+        let rec = call
+            .tag_for_port(30010)
+            .expect("the subscriber holds port 30010 in this reply");
+        assert!(
+            !leg.is_media_subscriber(),
+            "a tag with an offer/answer peer is a leg of the call"
+        );
+        assert!(
+            rec.is_media_subscriber(),
+            "a tag that only ever subscribes to another tag's media is a \
+             consumer of the call, not a party to it"
+        );
+    }
+
+    /// The older spelling is a STRING, and reading it as a list reads nothing.
+    ///
+    /// rtpengine wrote `in dialogue with` as the peer's tag directly until
+    /// one-to-many forwarding replaced it with the `subscriptions` list. A
+    /// parser that looks for a list under that key finds a byte string, does
+    /// not match, and reports every call on such a relay as having no other
+    /// side -- while a comment claims both spellings are read.
+    #[test]
+    fn the_older_spelling_of_the_peer_is_a_string_and_is_still_read() {
+        use super::tests::bstr;
+        let entry = format!(
+            "d{}{}{}{}e",
+            bstr("in dialogue with"),
+            bstr("leg-b"),
+            bstr("tag"),
+            bstr("leg-a"),
+        );
+        let ControlReply::Call(call) =
+            parse_query_reply(reply(&[("leg-a", entry)]).as_bytes(), "c@x")
+                .expect("the synthetic reply must parse")
+        else {
+            panic!("expected a call view");
+        };
+        assert_eq!(
+            call.tags[0].in_dialogue_with,
+            ["leg-b"],
+            "a relay old enough to spell it this way still names the other \
+             side, and sipnab must read it"
+        );
     }
 
     /// A truncated datagram must fail, not read as a call with no tags.

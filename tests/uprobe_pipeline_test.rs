@@ -110,3 +110,123 @@ fn a_hep_packet_is_not_given_the_uprobe_bypass() {
          decides is the reassembler's business, not this test's"
     );
 }
+
+/// **`TK7`: the plaintext reaches every output surface LABELED, and its
+/// pointer refuses to resolve.**
+///
+/// The two facts have to be proved together on one message, because each is
+/// harmless alone and dangerous in combination. A uprobe read renders
+/// `0.0.0.0:0 -> 0.0.0.0:0 REGISTER TCP` — indistinguishable from a wire
+/// capture whose addressing sipnab failed to parse — while carrying a `frame`
+/// pointer of exactly the shape `--show-frame` accepts. Passing that off as a
+/// wire frame is what would make sipnab's frame-pointer evidence lie.
+///
+/// This drives the REAL pipeline rather than setting `input_origin` by hand.
+/// The surface tests beside each renderer build their own message, so deleting
+/// `sip_msg.input_origin = Some(pp.input_origin)` in `classify_packet` would
+/// leave all of them green while every label silently reported nothing. That
+/// is the assignment this test exists for.
+#[test]
+fn a_uprobe_read_reaches_the_output_surfaces_labeled_and_its_pointer_refuses() {
+    use sipnab::capture::packet::FrameSource;
+    use sipnab::capture::parse::InputOrigin;
+    use sipnab::pipeline::{MediaDecrypt, PacketAction, PipelineOptions, classify_packet};
+
+    let mut packet = uprobe_packet("uprobe:opensips/4242", 0, 0);
+    // What the uprobe readers stamp: a source AND an ordinal, with no digest,
+    // because these bytes can never be read a second time.
+    packet.origin = Some(sipnab::capture::packet::FrameOrigin {
+        ordinal: 3,
+        digest: None,
+        verifiable: false,
+    });
+
+    let mut processor = PacketProcessor::new();
+    let parsed = processor.process(&packet);
+    assert_eq!(parsed.len(), 1, "the read must reach classification at all");
+    assert_eq!(
+        parsed[0].input_origin,
+        InputOrigin::Uprobe,
+        "the packet must be recognized as a uprobe read before anything can \
+         label it one"
+    );
+
+    let mut heuristic = sipnab::rtp::heuristic::RtpHeuristic::new();
+    let mut decrypt = MediaDecrypt::default();
+    let action = classify_packet(
+        &parsed[0],
+        &mut heuristic,
+        &PipelineOptions::default(),
+        &mut decrypt,
+    );
+    let PacketAction::Sip { msg, .. } = action else {
+        panic!("a uprobe read carrying a REGISTER must classify as SIP");
+    };
+
+    assert_eq!(
+        msg.input_origin,
+        Some(InputOrigin::Uprobe),
+        "the origin must cross the packet→message boundary, or every surface \
+         below reports nothing while looking perfectly healthy"
+    );
+
+    // The machine surface: `--json`, and through it MCP `get_message` and the
+    // vCon message trace, which share this projection.
+    let line = sipnab::output::json::message_to_json(&msg);
+    let json: serde_json::Value =
+        serde_json::from_str(line.trim_end()).expect("the NDJSON line parses");
+    assert_eq!(
+        json["input_origin"], "uprobe",
+        "the JSON line must name the source that delivered it: {line}"
+    );
+
+    // The human surface: the `-N` summary line.
+    let text = sipnab::output::cli_print::format_sip_message(
+        &msg,
+        &sipnab::output::OutputOptions {
+            color: sipnab::output::ColorMode::Never,
+            show_empty: false,
+            ..Default::default()
+        },
+        None,
+    );
+    assert!(
+        text.contains("origin=uprobe"),
+        "the summary line must say these bytes were never on a wire: {text}"
+    );
+
+    // The TUI's raw viewer, which renders the same endpoints from the same
+    // absent packet.
+    #[cfg(feature = "tui")]
+    {
+        let (info, _) = sipnab::tui::msg_raw::raw_display_text(
+            &msg,
+            sipnab::tui::header_form::HeaderFormMode::default(),
+        );
+        assert!(
+            info.contains("origin=uprobe"),
+            "the raw viewer's info line must carry the same note: {info}"
+        );
+    }
+
+    // And the pointer beside all of that is refused, by name, rather than
+    // followed to whatever sits at ordinal 3 of some file.
+    let pointer = msg
+        .frame
+        .expect("a uprobe read still says WHICH read it was");
+    assert!(
+        matches!(pointer.source_kind(), FrameSource::Uprobe { pid: 4242, .. }),
+        "the pointer must carry the kind, not merely a source string that \
+         looks like one: {pointer:?}"
+    );
+    let refusal = sipnab::capture::resolve::resolve(&pointer)
+        .expect_err("a uprobe pointer names no frame and must never resolve")
+        .to_string();
+    for expected in ["opensips", "4242"] {
+        assert!(
+            refusal.contains(expected),
+            "the refusal must name the process the bytes came out of, so the \
+             pointer stays useful as provenance: {refusal}"
+        );
+    }
+}

@@ -99,6 +99,23 @@ struct MessageJson<'a> {
     /// unmarked signaling is itself the common fault.
     #[serde(skip_serializing_if = "Option::is_none")]
     dscp: Option<u8>,
+    /// Which capture source delivered this message — `wire`, `hep` or
+    /// `uprobe`.
+    ///
+    /// The per-message analogue of `DialogJson.input_origin`, and the field
+    /// that keeps `frame` honest. A uprobe read carries a pointer of exactly
+    /// the same shape as a capture offset — `uprobe:opensips/954#3` beside
+    /// `capture.pcap#4212` — and only one of them can ever be followed to
+    /// bytes. Without this the reader has to know sipnab's pointer grammar to
+    /// tell them apart; with it, the line says so.
+    ///
+    /// One spelling, from
+    /// [`InputOrigin::as_str`](crate::capture::parse::InputOrigin::as_str),
+    /// shared with the dialog and stream summaries. Omitted, never null, when
+    /// the message came from no captured packet: "sipnab saw this on a wire"
+    /// is a claim a synthesized message must not make.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_origin: Option<&'static str>,
 }
 
 /// JSON representation of a parsed `CSeq` header.
@@ -566,6 +583,9 @@ fn build_message_json(msg: &SipMessage) -> MessageJson<'_> {
         malformed: msg.malformations(),
         frame: msg.frame.as_ref().map(ToString::to_string),
         dscp: msg.dscp,
+        input_origin: msg
+            .input_origin
+            .map(crate::capture::parse::InputOrigin::as_str),
     }
 }
 
@@ -1302,6 +1322,46 @@ mod tests {
             "the frame pointer must be the resolvable <source>#<ordinal>@<digest> \
              string that --show-frame accepts"
         );
+    }
+
+    /// The per-message half of capture-source provenance.
+    ///
+    /// `SipMessage` has carried `input_origin` since scanner-kill needed to
+    /// decide whether an address was observed or asserted, and it died at the
+    /// output boundary: the dialog summary names its origin, the message did
+    /// not. That is the gap `TK7` exists for. A message whose bytes were
+    /// lifted out of a process's TLS library carries a `frame` pointer that
+    /// LOOKS exactly like a capture offset — `uprobe:opensips/954#3` beside
+    /// `capture.pcap#4212` — so without this field a reader has no way to tell
+    /// that one of them can never be followed to a frame.
+    ///
+    /// One spelling, from `InputOrigin::as_str`, which is the same function the
+    /// dialog and stream summaries use. Absent, never null, when the message
+    /// came from no captured packet, because "sipnab saw this on a wire" is a
+    /// claim a synthesized message must not make.
+    #[test]
+    fn message_json_names_the_capture_source_that_delivered_it() {
+        use crate::capture::parse::InputOrigin;
+
+        let mut msg = make_invite();
+        msg.input_origin = None;
+        assert!(
+            message_to_json_value(&msg).get("input_origin").is_none(),
+            "a message from no captured packet must omit the key, not claim it \
+             came off a wire"
+        );
+
+        for origin in [InputOrigin::Wire, InputOrigin::Hep, InputOrigin::Uprobe] {
+            msg.input_origin = Some(origin);
+            assert_eq!(
+                message_to_json_value(&msg)
+                    .get("input_origin")
+                    .and_then(serde_json::Value::as_str),
+                Some(origin.as_str()),
+                "the message line must name the source that delivered it, in \
+                 the one spelling InputOrigin::as_str decides"
+            );
+        }
     }
 
     // Perf path (MCP get_dialog/get_message): the Value variant must equal

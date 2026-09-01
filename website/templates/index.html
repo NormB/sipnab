@@ -243,7 +243,7 @@ Issues Detected:
       </div>
       <div class="demo-panel" data-demo="5" role="tabpanel" id="demo-panel-5" aria-labelledby="demo-tab-5">
         <p class="demo-desc">Browse SIP dialogs, select one, and drill into the call-flow ladder diagram with parsed message detail. Open a different pcap any time with <kbd>o</kbd> — no restart.</p>
-        <img src="{{ get_url(path='demos/01-intro.webp') }}?v=9" alt="sipnab TUI demo: browsing dialogs and the call-flow ladder" loading="lazy">
+        <img src="{{ get_url(path='demos/01-intro.webp') }}?v=10" alt="sipnab TUI demo: browsing dialogs and the call-flow ladder" loading="lazy">
       </div>
       <div class="demo-panel" data-demo="6" role="tabpanel" id="demo-panel-6" aria-labelledby="demo-tab-6">
         <p class="demo-desc">Read the parsed message beside the ladder — cycle SDP display with <kbd>d</kbd> and toggle wrapping with <kbd>w</kbd> for long headers.</p>
@@ -367,7 +367,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
           <tr><td><a href="{{ get_url(path='@/docs/metrics.md') }}">Prometheus metrics</a></td><td>Counters and gauges about sipnab itself: what it captured, what it lost, what it could not read.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. 32 tools cover dialogs, RTP, diagnostics, and security findings. 27 are read-only; the five that write — file export, capture swap, findings, shutdown — each stay off until you enable them server-side.</td></tr>
           <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Memory-safe by construction. 6995 automated tests. Under 14 MB static binary.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Memory-safe by construction. 7058 automated tests. Under 14 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -438,7 +438,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
         <span class="arch-label">Stripped binary ceiling, enforced at release (musl, static)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ get_url(path='@/docs/mcp-tools.md') }}">
-        <span class="arch-stat" data-count="56" data-suffix=" MCP tools">56 MCP tools</span>
+        <span class="arch-stat" data-count="57" data-suffix=" MCP tools">57 MCP tools</span>
         <span class="arch-label">Agent-callable analysis: triage, conformance lint, evidence, correlation</span>
       </a>
       {# The label argues REACH, not a benchmark win. Throughput is why one
@@ -453,7 +453,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
         <span class="arch-label">Headroom to take a whole estate's HEP feed on one box, with no collector tier &mdash; offline reconstruction, four cores (measured v0.5.122)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
-        <span class="arch-stat" data-count="6995" data-suffix="">6995</span>
+        <span class="arch-stat" data-count="7058" data-suffix="">7058</span>
         <span class="arch-label">Automated tests</span>
       </a>
     </div>
@@ -583,7 +583,7 @@ document.querySelectorAll('.copy-btn').forEach(function(btn) {
   // and the whole point of the alert is that the next edit does not have to
   // keep that promise. Taking the value from the template removes the source
   // rather than arguing with the sink.
-  var animated = {{ get_url(path='demos/01-intro.webp') | json_encode | safe }} + '?v=9';
+  var animated = {{ get_url(path='demos/01-intro.webp') | json_encode | safe }} + '?v=10';
 
   // Honor the OS setting. The animation loops forever, which is precisely
   // what someone who set this asked not to be given.

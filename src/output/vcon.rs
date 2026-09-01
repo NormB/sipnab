@@ -749,6 +749,118 @@ pub struct CaptureCompleteness {
     pub media_note: Option<String>,
 }
 
+/// One thing this run did not carry into the container, as a row.
+///
+/// [`CaptureCompleteness::note`] states every omission in prose, and prose is
+/// what a PERSON reads. An agent handed the same container through a tool
+/// reads neither: it gets a caveat it would have to parse out of a string, or
+/// -- worse -- a container with no audio and an absence that looks clean. This
+/// is the same set of facts in a shape a caller can branch on.
+///
+/// DERIVED from the carrier's own counters rather than written beside them, so
+/// there is one account of what was lost and not two.
+/// `an_omission_row_exists_for_every_incomplete_clause` is the gate on that:
+/// one row per `-- INCOMPLETE:` clause in the note, both directions.
+///
+/// Shaped like [`BlindSpot`] on purpose. A consumer that learned to read one
+/// list of "what was missed" should not have to learn a second vocabulary for
+/// the other.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+pub struct Omission {
+    /// Stable machine identifier — the carrier field this row was read from.
+    pub kind: &'static str,
+    /// How many times it happened.
+    ///
+    /// `1` for a fact that either happened or did not, so a caller never has
+    /// to branch on whether a row carries a count.
+    pub count: u64,
+    /// What one occurrence is — `"frame"`, `"message"`, `"dialog"`,
+    /// `"header"`, `"run"`, `"recording"`, `"blind-spot"`.
+    pub unit: &'static str,
+}
+
+impl CaptureCompleteness {
+    /// Every omission this container records, one row per `-- INCOMPLETE:`
+    /// clause in [`Self::note`].
+    ///
+    /// The order matches the note's clause order, so a reader holding both
+    /// reads one sequence rather than two orderings of one set.
+    ///
+    /// An analysis that ran and ranked nothing produces no row, and so does an
+    /// analysis that never ran — neither is something this container lost, and
+    /// the note keeps those two apart in its own words.
+    #[must_use]
+    pub fn omissions(&self) -> Vec<Omission> {
+        let mut out = Vec::new();
+        let mut push = |kind, count, unit| out.push(Omission { kind, count, unit });
+
+        // The refusal is first because the note puts it first: it is the one
+        // omission a reader is most likely to be looking for, since the
+        // container it describes has an empty-looking `dialog[]`.
+        if self.media == MediaOutcome::RefusedOverBudget {
+            push("media_refused_over_budget", 1, "recording");
+        }
+        for (kind, count, unit) in [
+            ("undecodable_frames", self.undecodable_frames, "frame"),
+            (
+                "sip_discarded_by_port_gate",
+                self.sip_discarded_by_port_gate,
+                "message",
+            ),
+            (
+                "sip_discarded_by_websocket_gate",
+                self.sip_discarded_by_websocket_gate,
+                "message",
+            ),
+            ("messages_evicted", self.messages_evicted, "message"),
+            ("dialogs_refused", self.dialogs_refused, "dialog"),
+            ("dialogs_rotated", self.dialogs_rotated, "dialog"),
+        ] {
+            if count > 0 {
+                push(kind, count, unit);
+            }
+        }
+        // A decision rather than a capture fault, and reported for the reason
+        // the note reports it: containers are absent and nothing else in the
+        // capture records why.
+        if self.gate_closed_during_run {
+            push("gate_closed_during_run", 1, "run");
+        }
+        if self.dialogs_suppressed_by_deny > 0 {
+            push(
+                "dialogs_suppressed_by_deny",
+                self.dialogs_suppressed_by_deny,
+                "dialog",
+            );
+        }
+        if self.headers_dropped_oversize > 0 {
+            push(
+                "headers_dropped_oversize",
+                self.headers_dropped_oversize,
+                "header",
+            );
+        }
+        if let Some(spots) = self.blind_spots.as_deref()
+            && !spots.is_empty()
+        {
+            push("analysis_blind_spots", spots.len() as u64, "blind-spot");
+        }
+        out
+    }
+
+    /// Whether this container omits nothing at all.
+    ///
+    /// The same answer the note's clean verdict gives, as a boolean. A caller
+    /// that has to search prose for "No omissions recorded" is one string
+    /// edit away from reading every container as complete.
+    #[must_use]
+    pub fn complete(&self) -> bool {
+        self.omissions().is_empty()
+    }
+}
+
 /// What became of one dialog's audio on its way into a container.
 ///
 /// Four answers, kept apart, because collapsing any two of them recreates the
@@ -899,6 +1011,29 @@ pub fn sealed_json(
     container: &crate::output::redact::Redacted<Vcon>,
 ) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(container)
+}
+
+/// A container's SHA-256, as lowercase hex.
+///
+/// Over the BYTES an export writes, which is what makes the value join to
+/// anything outside this process: the line `--vcon-digest` prints into a
+/// `SHA256SUMS`, the ledger entry a conserver records for a container it
+/// accepted. A digest taken over some other rendering of the same container
+/// would look right and match nothing, so every surface that publishes one
+/// takes it from here.
+///
+/// # Arguments
+///
+/// * `bytes` — the container's serialized form, exactly as it is written or
+///   sent. [`sealed_json`] produces it.
+#[must_use]
+pub fn container_digest(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Seal a container, redacting it when a policy is in force.
@@ -1460,6 +1595,44 @@ pub fn export_dialog_with_audio_at(
     audio: ObservedAudio<'_>,
     exported_at: DateTime<Utc>,
 ) -> Vcon {
+    export_dialog_and_completeness(dialog, context, audio, exported_at).container
+}
+
+/// A container and the completeness carrier it was built from.
+///
+/// The carrier is inside the container already, twice — in the analysis body
+/// and in the `sipnab-capture-completeness` attachment — but §2.3 makes both
+/// of those JSON TEXT, so a caller wanting the structured facts would have to
+/// parse a string out of a container it had just built. Worse, it would then
+/// hold a second decoding of a value this module already has.
+#[derive(Debug, Clone)]
+pub struct ExportedDialog {
+    /// The container.
+    pub container: Vcon,
+    /// What the capture missed, as the value both of the container's copies
+    /// were serialized from.
+    pub completeness: CaptureCompleteness,
+}
+
+/// [`export_dialog_with_audio_at`], handing back the completeness beside the
+/// container.
+///
+/// For a surface that must state a container's omissions in its OWN response
+/// rather than only inside the document: an agent that gets a container with
+/// no audio and nothing saying why has been told the same nothing a silent
+/// drop would have told it.
+///
+/// # Arguments
+///
+/// The same four [`export_dialog_with_audio_at`] takes, and it is the function
+/// that does the work.
+#[must_use]
+pub fn export_dialog_and_completeness(
+    dialog: &SipDialog,
+    context: &ExportContext<'_>,
+    audio: ObservedAudio<'_>,
+    exported_at: DateTime<Utc>,
+) -> ExportedDialog {
     let mut parties = observed_parties(dialog);
 
     // A transfer target joins the party array BEFORE the observer, so the
@@ -1527,7 +1700,7 @@ pub fn export_dialog_with_audio_at(
         completeness_attachment(&completeness, observer, started),
     ];
 
-    Vcon {
+    let container = Vcon {
         vcon: VCON_SYNTAX_VERSION,
         uuid: dialog_uuid(dialog, context.capture_id),
         created_at: exported_at.to_rfc3339(),
@@ -1538,6 +1711,11 @@ pub fn export_dialog_with_audio_at(
         dialog: dialog_objects,
         attachments,
         analysis: vec![report(dialog, &completeness)],
+    };
+
+    ExportedDialog {
+        container,
+        completeness,
     }
 }
 
@@ -2868,6 +3046,273 @@ mod tests {
         );
     }
 
+    // ── The omissions, as rows a caller can branch on ───────────
+
+    /// Export against supplied facts and report the completeness beside the
+    /// container.
+    ///
+    /// The prose caveat lives inside the container twice, as JSON TEXT both
+    /// times, so a test reading it back would be asserting against a string it
+    /// had to parse out of a string. This hands back the value the container
+    /// was built from.
+    fn export_reporting(dialog: &SipDialog, facts: &CaptureFacts) -> ExportedDialog {
+        export_dialog_and_completeness(
+            dialog,
+            &ExportContext {
+                capture_id: "fixture.pcap",
+                facts,
+                max_inline_media_bytes: None,
+                analysis: None,
+            },
+            ObservedAudio::NotConsidered,
+            exported_at(),
+        )
+    }
+
+    /// Facts with exactly one loss counter set, named.
+    fn facts_losing(kind: &str, count: u64) -> CaptureFacts {
+        let mut facts = clean_facts();
+        match kind {
+            "undecodable_frames" => facts.undecodable.frames = count,
+            "sip_discarded_by_port_gate" => facts.portrange.messages = count,
+            "sip_discarded_by_websocket_gate" => facts.websocket.messages = count,
+            "messages_evicted" => facts.retention.messages_evicted = count,
+            "dialogs_refused" => facts.retention.dialogs_refused = count,
+            "dialogs_rotated" => facts.retention.dialogs_rotated = count,
+            "gate_closed_during_run" => facts.gate_closed_during_run = count > 0,
+            "dialogs_suppressed_by_deny" => facts.dialogs_suppressed_by_deny = count,
+            "headers_dropped_oversize" => facts.headers_dropped_oversize = count,
+            other => panic!("no fixture for `{other}`; the list below and this must move together"),
+        }
+        facts
+    }
+
+    /// Every loss counter the note has a clause for.
+    const LOSS_COUNTERS: &[&str] = &[
+        "undecodable_frames",
+        "sip_discarded_by_port_gate",
+        "sip_discarded_by_websocket_gate",
+        "messages_evicted",
+        "dialogs_refused",
+        "dialogs_rotated",
+        "gate_closed_during_run",
+        "dialogs_suppressed_by_deny",
+        "headers_dropped_oversize",
+    ];
+
+    /// How many `— INCOMPLETE:` clauses a note carries.
+    fn incomplete_clauses(note: &str) -> usize {
+        note.matches("— INCOMPLETE:").count()
+    }
+
+    /// RV7: the prose and the rows describe the same set, always.
+    ///
+    /// The note is the surface a person reads and the rows are the surface an
+    /// agent reads, and they are built from one set of counters. This is the
+    /// pairing gate: a clause added to `completeness_note` with no matching row
+    /// in [`CaptureCompleteness::omissions`] — or the reverse — fails here,
+    /// naming the counter. Checking one half would certify half a fix.
+    #[test]
+    fn an_omission_row_exists_for_every_incomplete_clause() {
+        let dialog = dialog_with(&[response(200, "OK")]);
+        for kind in LOSS_COUNTERS {
+            let exported = export_reporting(&dialog, &facts_losing(kind, 7));
+            let note = &exported.completeness.note;
+            let rows = exported.completeness.omissions();
+            assert_eq!(
+                incomplete_clauses(note),
+                1,
+                "premise: `{kind}` must produce exactly one clause, or the \
+                 comparison below is against the wrong number: {note}"
+            );
+            assert_eq!(
+                rows.len(),
+                1,
+                "`{kind}` states a clause in prose and no row an agent can \
+                 read: {rows:?}\n{note}"
+            );
+            assert_eq!(
+                rows[0].kind, *kind,
+                "the row must name the counter it came from: {rows:?}"
+            );
+        }
+
+        // And all of them at once: a run with every loss is the one whose
+        // container explains itself least, and the one an `else if` between
+        // two clauses would silently shorten.
+        let mut all = clean_facts();
+        all.undecodable.frames = 1;
+        all.portrange.messages = 2;
+        all.websocket.messages = 3;
+        all.retention.messages_evicted = 4;
+        all.retention.dialogs_refused = 5;
+        all.retention.dialogs_rotated = 6;
+        all.gate_closed_during_run = true;
+        all.dialogs_suppressed_by_deny = 7;
+        all.headers_dropped_oversize = 8;
+        let exported = export_reporting(&dialog, &all);
+        let rows = exported.completeness.omissions();
+        assert_eq!(
+            rows.len(),
+            LOSS_COUNTERS.len(),
+            "one row per loss, and every counter above is a loss: {rows:?}"
+        );
+        assert_eq!(
+            incomplete_clauses(&exported.completeness.note),
+            rows.len(),
+            "the prose and the rows must describe one set: {}",
+            exported.completeness.note
+        );
+    }
+
+    /// A row carries the count and the unit, not merely the name.
+    ///
+    /// "Something was dropped" is the failure VAL13 was: a reader who cannot
+    /// weigh the loss cannot decide whether to go back to the capture.
+    #[test]
+    fn an_omission_row_carries_the_count_and_the_unit() {
+        let exported = export_reporting(
+            &dialog_with(&[response(200, "OK")]),
+            &facts_losing("headers_dropped_oversize", 3),
+        );
+        let rows = exported.completeness.omissions();
+        assert_eq!(
+            rows,
+            vec![Omission {
+                kind: "headers_dropped_oversize",
+                count: 3,
+                unit: "header",
+            }],
+            "the row must say what was lost, how much, and in what unit"
+        );
+    }
+
+    /// A capture that lost nothing records no omissions.
+    ///
+    /// The anti-vacuity half. A list that is never empty is a list nobody
+    /// reads, and `complete()` reporting `false` on a clean run would make
+    /// every container read as suspect.
+    #[test]
+    fn a_clean_capture_records_no_omissions() {
+        let exported = export_reporting(&dialog_with(&[response(200, "OK")]), &clean_facts());
+        assert!(
+            exported.completeness.omissions().is_empty(),
+            "a clean capture omitted nothing: {:?}",
+            exported.completeness.omissions()
+        );
+        assert!(
+            exported.completeness.complete(),
+            "and says so: {}",
+            exported.completeness.note
+        );
+        assert!(
+            exported.completeness.note.contains("No omissions recorded"),
+            "which is the same answer the prose gives: {}",
+            exported.completeness.note
+        );
+    }
+
+    /// A ranked blind spot is an omission row; an analysis that found nothing
+    /// is not.
+    ///
+    /// `None` and `Some([])` are different answers on the carrier and stay
+    /// different here: neither is an omission, and only a RANKED spot is.
+    #[test]
+    fn a_ranked_blind_spot_is_an_omission_and_a_clean_analysis_is_not() {
+        use crate::analysis::{Finding, FindingKind};
+
+        let dialog = dialog_with(&[response(200, "OK")]);
+        let facts = clean_facts();
+        let ranked = CaptureAnalysis {
+            frames_read: 120,
+            findings: vec![Finding {
+                kind: FindingKind::UndecodableFrames,
+                severity: Severity::Blind,
+                occurrences: 49,
+                unit: FindingKind::UndecodableFrames.meta().unit,
+                evidence: Vec::new(),
+                evidence_omitted: 0,
+            }],
+            ..CaptureAnalysis::default()
+        };
+
+        for (analysis, expected) in [
+            (None, 0usize),
+            (Some(&CaptureAnalysis::default()), 0),
+            (Some(&ranked), 1),
+        ] {
+            let exported = export_dialog_and_completeness(
+                &dialog,
+                &ExportContext {
+                    capture_id: "fixture.pcap",
+                    facts: &facts,
+                    max_inline_media_bytes: None,
+                    analysis,
+                },
+                ObservedAudio::NotConsidered,
+                exported_at(),
+            );
+            let rows = exported.completeness.omissions();
+            assert_eq!(
+                rows.len(),
+                expected,
+                "an analysis that ranked {expected} spot(s) must produce \
+                 {expected} row(s): {rows:?}"
+            );
+            assert_eq!(
+                incomplete_clauses(&exported.completeness.note),
+                expected,
+                "and the prose must agree: {}",
+                exported.completeness.note
+            );
+        }
+    }
+
+    /// RV5: a container's digest is the digest of the bytes an export writes.
+    ///
+    /// The whole point of the value is that it joins to something outside this
+    /// process — a `SHA256SUMS` line, a store's ledger entry. A digest over
+    /// some other rendering of the same container would look right and match
+    /// nothing.
+    #[test]
+    fn a_container_digest_is_the_digest_of_the_bytes_an_export_writes() {
+        use sha2::Digest as _;
+
+        let dialog = dialog_with(&[response(200, "OK")]);
+        let container = export_with(&dialog, &clean_facts());
+        let sealed = seal(container, None);
+        let json = sealed_json(&sealed).expect("serializes");
+
+        let expected: String = sha2::Sha256::digest(json.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            container_digest(json.as_bytes()),
+            expected,
+            "the digest must be SHA-256 over the container's own bytes, in the \
+             lowercase hex `sha256sum` writes"
+        );
+    }
+
+    /// Two different containers do not share a digest.
+    ///
+    /// The anti-vacuity half: a function returning a constant would satisfy
+    /// the test above and identify nothing.
+    #[test]
+    fn two_different_containers_do_not_share_a_digest() {
+        let ok = export_with(&dialog_with(&[response(200, "OK")]), &clean_facts());
+        let busy = export_with(&dialog_with(&[response(486, "Busy Here")]), &clean_facts());
+        let one = sealed_json(&seal(ok, None)).expect("serializes");
+        let two = sealed_json(&seal(busy, None)).expect("serializes");
+        assert_ne!(
+            container_digest(one.as_bytes()),
+            container_digest(two.as_bytes()),
+            "two containers describing different calls hashed to one value, so \
+             the digest identifies nothing"
+        );
+    }
+
     /// Zero suppressed dialogs is not "some".
     ///
     /// The counter is a `u64`, and the clause is gated on `> 0`. A `!= 0`
@@ -4102,6 +4547,70 @@ mod tests {
             0,
             "the consultation call happened and sipnab saw nothing of it. The \
              working group agreed on `{{}}` for exactly this case: {empty}"
+        );
+    }
+
+    /// RV6: an ordinary container passes the vendored schema, and the
+    /// validator is reading the real exporter's output.
+    ///
+    /// The gates above validate with `jsonschema`, which ships only in the
+    /// test tree. This is the SHIPPED validator, run against the SHIPPED
+    /// exporter — the pair a producer actually has.
+    #[test]
+    fn an_exported_container_passes_the_vendored_schema_validator() {
+        use crate::output::vcon_schema::{SchemaVerdict, validate};
+
+        for responses in [
+            vec![response(200, "OK")],
+            vec![response(486, "Busy Here")],
+            vec![response(180, "Ringing"), response(200, "OK")],
+        ] {
+            let v = serde_json::to_value(export_with(&dialog_with(&responses), &clean_facts()))
+                .expect("serializes");
+            let report = validate(&v);
+            assert_eq!(
+                report.verdict,
+                SchemaVerdict::Valid,
+                "a container sipnab writes must satisfy the schema sipnab                  vendors: {report:#?}\n{v:#}"
+            );
+        }
+    }
+
+    /// An attended transfer's container carries the documented deviation, and
+    /// says so.
+    ///
+    /// The one shape sipnab emits that the schema rejects. It must reach a
+    /// producer under its own name: neither an ordinary error, which would
+    /// send somebody hunting a bug that is a working-group decision, nor a
+    /// clean bill, which would teach that a missing `start` is fine.
+    #[test]
+    fn an_attended_transfer_container_reports_the_documented_deviation() {
+        use crate::output::vcon_schema::{EMPTY_DIALOG_OBJECT, SchemaVerdict, validate};
+
+        let dialog = dialog_with_refer(
+            "<sip:carol@example.org?Replaces=abc%40example.org%3Bto-tag%3D1%3Bfrom-tag%3D2>",
+        );
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        let report = validate(&v);
+
+        assert_eq!(
+            report.verdict,
+            SchemaVerdict::ValidExceptDocumentedDeviation,
+            "the consultation object is the deviation, and nothing else here              departs from the schema: {report:#?}\n{v:#}"
+        );
+        assert!(
+            report.errors.is_empty(),
+            "nothing here is an ordinary error: {report:#?}"
+        );
+        assert_eq!(report.deviations.len(), 1, "{report:#?}");
+        assert_eq!(
+            report.deviations[0].deviation,
+            Some(EMPTY_DIALOG_OBJECT),
+            "{report:#?}"
+        );
+        assert!(
+            report.explanations[0].explanation.contains("IETF 124"),
+            "the reasoning has to travel with the finding, or a producer reads              a rejection with no way to tell whether it is theirs: {report:#?}"
         );
     }
 

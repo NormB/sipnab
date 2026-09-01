@@ -138,13 +138,21 @@ pub fn raw_display_text(
     header_form: super::header_form::HeaderFormMode,
 ) -> (String, String) {
     let info = format!(
-        "{} {}:{} -> {}:{} [{}]",
+        "{} {}:{} -> {}:{} [{}]{}",
         msg.timestamp.format("%H:%M:%S%.3f"),
         msg.src_addr,
         msg.src_port,
         msg.dst_addr,
         msg.dst_port,
         msg.transport,
+        // Empty for an ordinary wire capture. The endpoints above are rendered
+        // whether or not sipnab ever observed a packet, so a uprobe read shows
+        // `0.0.0.0:0 -> 0.0.0.0:0` and reads as a parse failure unless the line
+        // says otherwise. Same function as the `-N` summary line, so the two
+        // views of one message always agree.
+        msg.input_origin
+            .and_then(crate::capture::parse::InputOrigin::line_note)
+            .unwrap_or(""),
     );
     let raw_bytes = String::from_utf8_lossy(&msg.raw);
     let raw_text = super::header_form::reformat_headers(&raw_bytes, header_form).to_string();
@@ -539,6 +547,61 @@ mod tests {
         let raw_text = "Via: udp\nCSeq: 1 INVITE";
         let rows = search_match_lines(info, raw_text, "cseq", 200);
         assert_eq!(rows, vec![3]);
+    }
+
+    /// The raw viewer's info line says when the bytes were never on a wire.
+    ///
+    /// `TK7`: the TUI renders `src:port -> dst:port [TRANSPORT]` from fields a
+    /// uprobe read never had. A tracefs capture shows `0.0.0.0:0 -> 0.0.0.0:0`,
+    /// which is indistinguishable from a wire capture whose addressing sipnab
+    /// failed to parse — and the operator staring at the raw bytes is exactly
+    /// the reader who must not be left guessing. Marked only for a non-wire
+    /// origin, in `InputOrigin::as_str`'s spelling, so the TUI, the summary
+    /// line and `--json` cannot disagree about one message.
+    #[test]
+    fn the_raw_viewer_info_line_says_when_the_bytes_were_never_on_a_wire() {
+        use crate::capture::parse::{InputOrigin, TransportProto};
+        use crate::tui::header_form::HeaderFormMode;
+
+        let raw = crate::test_utils::build_sip_message(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                "Call-ID: raw-origin@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let localhost = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        let mut msg = crate::sip::parser::parse_sip(
+            &raw,
+            chrono::Utc::now(),
+            localhost,
+            localhost,
+            5060,
+            5060,
+            TransportProto::Tcp,
+        )
+        .expect("fixture parses");
+
+        msg.input_origin = Some(InputOrigin::Uprobe);
+        let (info, _) = raw_display_text(&msg, HeaderFormMode::default());
+        assert!(
+            info.contains("origin=uprobe"),
+            "the raw viewer must say these bytes came out of a process, not \
+             off a wire: {info}"
+        );
+
+        for wire in [None, Some(InputOrigin::Wire)] {
+            msg.input_origin = wire;
+            let (plain, _) = raw_display_text(&msg, HeaderFormMode::default());
+            assert!(
+                !plain.contains("origin="),
+                "an ordinary wire capture's info line must be unchanged: {plain}"
+            );
+        }
     }
 
     /// A minimal INVITE produces the expected line layout: info, blank,

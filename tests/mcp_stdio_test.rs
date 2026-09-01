@@ -755,10 +755,11 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "triage_call",
         "validate_filter",
         "validate_message",
+        "validate_vcon",
     ];
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    assert_eq!(names.len(), 56, "expected exactly 56 MCP tools");
+    assert_eq!(names.len(), 57, "expected exactly 57 MCP tools");
 
     // find_problems with default kinds (['problems']) → JSON array, no error.
     send(

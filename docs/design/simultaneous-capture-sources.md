@@ -111,7 +111,7 @@ parser already tells the two kinds of packet apart:
   source. Live capture sets the device name ([`src/capture/live.rs:533`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L533)); the
   HEP listener sets `hep:<capture-id>@<peer>` via `hep_source_label`
   ([`src/capture/hep.rs:121`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L121)) and `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)).
-- `ParsedPacket` ([`src/capture/parse.rs:124`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L124)) carries an `input_origin`
+- `ParsedPacket` ([`src/capture/parse.rs:155`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L155)) carries an `input_origin`
   field holding the `InputOrigin` enum ([`src/capture/parse.rs:90`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L90)) — `Wire`, `Hep` or
   `Uprobe`. Line [`src/capture/parse.rs:2307`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L2307) derives it per packet from the presence of
   pre-parsed addressing and the source name. Nothing in that derivation consults
