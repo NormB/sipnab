@@ -1,0 +1,58 @@
+name: Free disk space
+description: >-
+  Reclaim the preinstalled SDKs a Rust build never touches, and report the
+  margin that is left.
+
+# One definition, because there were four.
+#
+# Two of them (ci.yml) removed dotnet, android, ghc, CodeQL and boost. The
+# other two (quality.yml) removed those plus swift, the hosted tool cache and
+# every docker image. The stronger pair was written when the Coverage job ran
+# out of space; CI's copy never got the update, and on 2026-09-01 CI is what
+# ran out -- the runner process itself died writing its own diagnostic log:
+#
+#   System.IO.IOException: No space left on device :
+#     '/home/runner/actions-runner/cached/2.337.0/_diag/Worker_....log'
+#
+# That failure has no readable log, because the thing that could not write was
+# the logger. It cost a release cycle to diagnose from an annotation.
+#
+# So: one action, and every job that builds the whole matrix uses it. Two
+# copies of a rule agree until one of them is updated.
+runs:
+  using: composite
+  steps:
+    - name: Reclaim preinstalled SDKs
+      shell: bash
+      run: |
+        set -u
+        before=$(df --output=avail -k / | tail -1)
+
+        # Removals only -- no installs, no config. Each is a directory a Rust
+        # build never reads, and `|| true` so a path that a future runner image
+        # drops cannot fail the job.
+        sudo rm -rf \
+          /usr/share/dotnet \
+          /usr/local/lib/android \
+          /opt/ghc \
+          /usr/local/.ghcup \
+          /usr/share/swift \
+          /usr/local/share/boost \
+          /usr/share/miniconda \
+          /usr/local/share/powershell \
+          /usr/local/lib/node_modules \
+          /opt/hostedtoolcache/CodeQL \
+          "${AGENT_TOOLSDIRECTORY:-}" || true
+        sudo docker image prune --all --force >/dev/null 2>&1 || true
+
+        after=$(df --output=avail -k / | tail -1)
+        # Reported, not merely printed: the number that matters is the MARGIN
+        # left, and `df -h` after the fact does not say how close the job came.
+        # A floor is deliberately NOT enforced here yet -- the right value is a
+        # measurement nobody has taken, and a threshold invented to look
+        # rigorous is worse than none.
+        awk -v b="$before" -v a="$after" 'BEGIN {
+          printf "reclaimed %.1f GB; %.1f GB free before, %.1f GB free after\n",
+                 (a-b)/1048576, b/1048576, a/1048576
+        }'
+        df -h /

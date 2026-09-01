@@ -127,12 +127,7 @@ jobs:
       # can exhaust the runner disk ("No space left on device"); reclaim it up
       # front so the build has headroom.
       - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
-                      /usr/local/share/boost /usr/share/swift \
-                      /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
-          sudo docker image prune --all --force || true
-          df -h /
+        uses: ./.github/actions/free-disk
 
       - name: Install system deps
         uses: ./.github/actions/system-deps
@@ -256,12 +251,7 @@ jobs:
       # can exhaust the runner disk ("No space left on device"); reclaim it up
       # front so the build has headroom.
       - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
-                      /usr/local/share/boost /usr/share/swift \
-                      /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
-          sudo docker image prune --all --force || true
-          df -h /
+        uses: ./.github/actions/free-disk
 
       - name: Install system deps
         uses: ./.github/actions/system-deps
