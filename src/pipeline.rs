@@ -883,14 +883,14 @@ pub const MAX_ICMP_PER_FLOW: usize = 8;
 pub enum QuotedMediaKind {
     /// An RTP header. `ssrc` is the second key onto a tracked stream.
     Rtp {
-        /// Synchronisation source from the RTP header.
+        /// Synchronization source from the RTP header.
         ssrc: u32,
         /// Payload type, so a reader knows which codec went missing.
         payload_type: u8,
     },
     /// An RTCP packet — a sender or receiver report, SDES, BYE, or feedback.
     Rtcp {
-        /// Synchronisation source from the report.
+        /// Synchronization source from the report.
         ssrc: u32,
         /// RTCP packet type (200 SR, 201 RR, 202 SDES, …).
         packet_type: u8,
@@ -2032,7 +2032,7 @@ pub fn classify_packet(
                 // `Arc<str>` already interned once per source, plus two words.
                 // Paid per SIP message rather than per packet, which on real
                 // traffic is a small fraction of the frames.
-                // Materialise the owned pointer HERE, where the message keeps
+                // Materialize the owned pointer HERE, where the message keeps
                 // it. The parser carries a Copy locator precisely so the ~93%
                 // of frames that never reach a retention site pay no refcount.
                 sip_msg.frame = pp.retained_frame_ref();
@@ -2683,7 +2683,7 @@ mod quiet_bad_parse_tests {
     /// media on an ephemeral port is admitted immediately, without waiting for
     /// the three-packet heuristic to corroborate it.
     #[test]
-    fn rtp_on_a_dynamic_port_is_still_recognised_immediately() {
+    fn rtp_on_a_dynamic_port_is_still_recognized_immediately() {
         let mut rtp = vec![0x80u8, 0x00]; // V=2, PT=0 (PCMU)
         rtp.extend_from_slice(&[0x00, 0x01]); // sequence
         rtp.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // timestamp

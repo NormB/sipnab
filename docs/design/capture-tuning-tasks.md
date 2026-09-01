@@ -78,7 +78,7 @@ order*.
 - [ ] **CT2b — Justify the 64 MiB default with a measurement.** The default was
   raised 2 → 64 MiB with a halving fallback ladder, but the "prove it against a
   measured `dropped` of zero at line rate" half of CT2 is not done — and CT7
-  caps how much of it is realisable.
+  caps how much of it is realizable.
 - [ ] **CT7b — No escape hatch back to immediate mode on a headless run.**
   CT7 decides the ring by run mode with nothing an operator can say about it.
   A headless run that genuinely wants per-packet delivery — a `--json` feed

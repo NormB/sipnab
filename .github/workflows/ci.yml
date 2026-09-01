@@ -188,7 +188,7 @@ jobs:
       # thorough enough to survive being checked.
       #
       # tmux is now installed on macOS, so the tests run on both platforms.
-      # If this ever does turn flaky, stabilise the test. Do not re-mute the
+      # If this ever does turn flaky, stabilize the test. Do not re-mute the
       # suite: a gate that reports a safety it is not providing is worse than
       # no gate, because it stops anyone looking.
       - name: Install tmux (macOS)

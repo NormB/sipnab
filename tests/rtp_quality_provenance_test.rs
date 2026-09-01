@@ -461,7 +461,7 @@ fn corpus_xr_never_becomes_the_local_measurement() {
     );
 }
 
-/// A synthesised XR on an odd port, for the case where no corpus is available.
+/// A synthesized XR on an odd port, for the case where no corpus is available.
 ///
 /// Pins the two halves of the classification hazard side by side: the payload
 /// is unambiguously RTCP by content, and the RTP pre-filter — which looks only

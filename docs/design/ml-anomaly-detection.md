@@ -46,7 +46,7 @@ in the population is faulty.
 
 ## Why the obvious implementation is wrong
 
-The tempting version is: featurise dialogs, fit an autoencoder or isolation
+The tempting version is: featurize dialogs, fit an autoencoder or isolation
 forest, flag high reconstruction error. It should be rejected, for reasons that
 have nothing to do with model quality.
 

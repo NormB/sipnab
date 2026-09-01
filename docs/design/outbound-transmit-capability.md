@@ -84,7 +84,7 @@ historical third party, and the tool would send SIP at them. So the kill path
 takes the strictest available protection precisely because its destination is
 capture-derived.
 
-Generalising that gives the rule this document builds on:
+Generalizing that gives the rule this document builds on:
 
 > **A capture-derived destination requires a live source. An
 > operator-configured destination does not — but it requires something else.**
@@ -190,7 +190,7 @@ operator-supplied. Content is the capture.
 **Active probes.** Send an OPTIONS ping to a peer and record what comes back, to
 distinguish "the peer is down" from "the peer is rejecting us". Destination is
 operator-supplied *or* named from the capture by the operator. Content is
-synthesised.
+synthesized.
 
 **Telemetry export.** HEP to a collector, or OpenTelemetry spans. Destination is
 operator-supplied. Content is derived from the capture. This is the category
@@ -328,7 +328,7 @@ extending it:
   *"offline analysis never transmits"*. Once `--replay-to` exists, that sentence
   is true of `--kill-scanner` and false of sipnab as a whole. The refusal is
   per-feature (it takes the flag name as an argument), so the fix is to keep it
-  feature-specific and resist any edit that generalises it.
+  feature-specific and resist any edit that generalizes it.
 
 ## 6. What goes wrong if someone builds it the obvious way
 

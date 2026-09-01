@@ -107,7 +107,7 @@ wrong on the day it first becomes reachable.
 **A second flag does not remove the ambiguity it is meant to remove.** Call it
 `--capture-sockets N` and an operator still has to learn that it does not fan
 out processing — the same thing `--cores N` live would fail to do. The
-distinction the operator needs is *"how much of this did you parallelise"*, and
+distinction the operator needs is *"how much of this did you parallelize"*, and
 that is a log line and a help-text sentence, not a second noun.
 
 **Decision: reuse `--cores`.** With three obligations, none optional:

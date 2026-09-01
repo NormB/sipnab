@@ -91,13 +91,13 @@ fn run_text(extra: &[&str]) -> (String, String, i32) {
 //  VERSION & HELP
 // ═══════════════════════════════════════════════════════════════════════
 
-/// `-V` exits 0 with `sipnab 0.` plus a parenthesised commit hash.
+/// `-V` exits 0 with `sipnab 0.` plus a parenthesized commit hash.
 #[test]
 fn version_includes_commit_hash() {
     let (stdout, _, code) = run(&["-V"]);
     assert_eq!(code, 0);
     assert!(stdout.starts_with("sipnab 0."), "got: {stdout}");
-    // Version should contain parenthesised commit hash (8 hex chars)
+    // Version should contain parenthesized commit hash (8 hex chars)
     assert!(
         stdout.contains('(') && stdout.contains(')'),
         "Expected commit hash in parens, got: {stdout}"
@@ -1289,7 +1289,7 @@ fn summary_reports_correct_counts() {
 // used to act on `cli.primary_input()` — the FIRST `-I` *argument* — while `-I`
 // is repeatable and expands directories and globs. Every file past the first
 // kept its Decryption Secrets Block, the command exited 0, and nothing said so.
-// A partial sanitisation that reports success is worse than a refusal, so these
+// A partial sanitization that reports success is worse than a refusal, so these
 // tests pin both halves: one resolved file gets stripped, anything else is
 // rejected loudly with the input untouched.
 
@@ -1322,7 +1322,7 @@ fn write_pcapng_with_secrets(path: &std::path::Path, call_id: &str) {
 }
 
 /// Two `-I` arguments must be refused outright: one output path cannot hold two
-/// sanitised captures, and stripping only the first ships the operator's live
+/// sanitized captures, and stripping only the first ships the operator's live
 /// keys to whoever receives the rest.
 #[test]
 fn strip_secrets_refuses_two_input_files() {
@@ -1349,7 +1349,7 @@ fn strip_secrets_refuses_two_input_files() {
 
     assert_ne!(
         code, 0,
-        "--strip-secrets must refuse a two-file input set instead of sanitising \
+        "--strip-secrets must refuse a two-file input set instead of sanitizing \
          one of them and reporting success:\n{stderr}"
     );
     assert!(
@@ -1406,7 +1406,7 @@ fn strip_secrets_refuses_a_directory_of_captures() {
     assert!(
         stderr.contains("ring-0.pcapng") && stderr.contains("ring-1.pcapng"),
         "the refusal must name the resolved files, not just the directory — \
-         otherwise the operator cannot tell what went unsanitised:\n{stderr}"
+         otherwise the operator cannot tell what went unsanitized:\n{stderr}"
     );
 }
 

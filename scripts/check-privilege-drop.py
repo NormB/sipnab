@@ -23,7 +23,7 @@ answers regardless of whether anything compiles.
 
 WHAT IT CHECKS, AND WHAT IT CANNOT
 ----------------------------------
-Four things: that each control is PRESENT, that none has been NEUTRALISED in
+Four things: that each control is PRESENT, that none has been NEUTRALIZED in
 place (a call left written down but unable to run), that supplementary groups
 are surrendered BEFORE the GID, and that the binary's entry point still calls
 `block_privilege_escalation()`.
@@ -204,7 +204,7 @@ def main() -> int:
         for m in re.finditer(pattern, code):
             line = code[: m.start()].count("\n") + 1
             failures.append(
-                f"  NEUTRALISED: {name} at approx {TARGET}:{line}\n"
+                f"  NEUTRALIZED: {name} at approx {TARGET}:{line}\n"
                 f"    The control is still written down but cannot run. That is "
                 f"worse than deleting it, because review sees the call and stops "
                 f"looking."
@@ -227,7 +227,7 @@ def main() -> int:
         return 1
 
     print(
-        f"{len(REQUIRED)} controls present and reached, none neutralised, "
+        f"{len(REQUIRED)} controls present and reached, none neutralized, "
         f"groups before GID"
     )
     return 0

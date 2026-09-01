@@ -131,7 +131,7 @@ mixed-flavor host captures exactly one of them.
 open perf consumer. `UprobeReader` declares `bands` before `probes` because
 Rust drops fields in declaration order, so rings close first. Declared the
 other way round, a clean shutdown leaves every probe attached to a production
-library — measured, not theorised: the first end-to-end run leaked four probes
+library — measured, not theorized: the first end-to-end run leaked four probes
 exactly that way.
 
 **Never enable through tracefs.** `install` writes the probe and its filter and

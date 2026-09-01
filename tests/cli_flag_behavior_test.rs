@@ -1389,7 +1389,7 @@ fn alert_channel_names_are_accepted_not_parsed_as_rules() {
     }
 }
 
-/// An unrecognised channel says what the valid ones are.
+/// An unrecognized channel says what the valid ones are.
 ///
 /// Silently ignoring it would reproduce the original bug in a new place.
 #[test]

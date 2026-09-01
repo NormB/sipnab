@@ -133,7 +133,7 @@ RUN fetch-pinned "https://www.tcpdump.org/release/libpcap-${LIBPCAP_VERSION}.tar
 # reports "netmap support ... yes" either way because its probe compiles with
 # AC_INCLUDES_DEFAULT, so a green configure proves nothing. `-D_GNU_SOURCE`
 # alone does not fix it. Setting CFLAGS replaces libpcap's own default, so
-# `-g -O2` is restated to avoid silently building unoptimised.
+# `-g -O2` is restated to avoid silently building unoptimized.
 #
 # The `ar t` assertion is the actual gate: if netmap ever stops compiling in,
 # the image build fails here rather than shipping a binary quietly missing it.

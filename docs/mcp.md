@@ -2,7 +2,7 @@
 
 sipnab can run as a **Model Context Protocol** server, so an AI agent — Claude
 Code, Claude Desktop, or any MCP-capable client — can ask questions about a
-capture instead of you memorising CLI flags.
+capture instead of you memorizing CLI flags.
 
 It is a fourth output mode beside the TUI, the `-N` CLI and `--json`. The same
 parser, dialog state machine, RTP store and diagnostic engine drive all four, so

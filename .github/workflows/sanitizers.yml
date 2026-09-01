@@ -62,7 +62,7 @@ jobs:
           packages: libpcap-dev libasound2-dev
 
       # rust-src is required by -Zbuild-std: the standard library has to be
-      # rebuilt with instrumentation, or TSan sees std's synchronisation as
+      # rebuilt with instrumentation, or TSan sees std's synchronization as
       # opaque and reports the channel itself as a race.
       - uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
         with:

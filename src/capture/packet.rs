@@ -234,7 +234,7 @@ pub fn frame_digest(bytes: &[u8]) -> u64 {
 ///
 /// The source here is `&'static str` rather than `Arc<str>` precisely so this
 /// is `Copy`: it is interned once per capture source by [`intern_source`], and
-/// a pointer is only materialised as a `FrameRef` at the two sites that
+/// a pointer is only materialized as a `FrameRef` at the two sites that
 /// actually retain one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameLocator {
@@ -245,7 +245,7 @@ pub struct FrameLocator {
 }
 
 impl FrameLocator {
-    /// Materialise the owned pointer. Pays one refcount, at the point a fact
+    /// Materialize the owned pointer. Pays one refcount, at the point a fact
     /// actually keeps the pointer rather than once per packet.
     #[must_use]
     pub fn to_frame_ref(self) -> FrameRef {
@@ -293,7 +293,7 @@ pub fn intern_source(source: &Arc<str>) -> &'static str {
     })
 }
 
-/// The owned `Arc<str>` for an interned source, memoised per thread.
+/// The owned `Arc<str>` for an interned source, memoized per thread.
 fn source_arc(source: &'static str) -> Arc<str> {
     ARC_MEMO.with(|m| {
         let mut m = m.borrow_mut();

@@ -236,13 +236,9 @@ pub struct ValidateVconResponse {
 
 /// Which dialogs an export was asked for.
 ///
-/// Built on EVERY build, including one carrying no exporter. A caller that
-/// sent both `call_id` and `filter` has a malformed request whichever binary
-/// answers it, and telling them about the missing Cargo feature first would
-/// hide the mistake they can actually fix. So the arguments are read before
-/// the feature is consulted, and on a build with no exporter nothing then
-/// reads the selection back.
-#[cfg_attr(not(feature = "vcon"), allow(dead_code))]
+/// A caller that sent both `call_id` and `filter` has a malformed request, and
+/// the arguments are read before anything else, so the mistake they can fix is
+/// the one they are told about.
 enum Selection {
     /// One named dialog. A Call-ID the store does not hold is an error, not an
     /// empty answer.
@@ -573,25 +569,6 @@ impl SipnabMcp {
         })
     }
 
-    /// Refuse a vCon on a build that carries no exporter.
-    ///
-    /// The tools stay registered rather than disappearing, so an agent that
-    /// asks for a container is told which build it is talking to instead of
-    /// getting "no such tool" — which reads as sipnab not supporting vCon at
-    /// all. `server_capabilities` lists the features this binary carries.
-    ///
-    /// # Errors
-    ///
-    /// Always `invalid_params` (-32602).
-    #[cfg(not(feature = "vcon"))]
-    fn export_containers(
-        &self,
-        _selection: &Selection,
-        _limit: usize,
-    ) -> Result<ExportVconResponse, rmcp::ErrorData> {
-        Err(no_exporter())
-    }
-
     /// Validate one container against the vendored schema.
     ///
     /// # Errors
@@ -625,33 +602,6 @@ impl SipnabMcp {
             call_id: None,
         })
     }
-
-    /// Refuse a validation on a build that carries no exporter.
-    ///
-    /// # Errors
-    ///
-    /// Always `invalid_params` (-32602).
-    #[cfg(not(feature = "vcon"))]
-    fn validate_container(
-        &self,
-        _container: &serde_json::Value,
-    ) -> Result<ValidateVconResponse, rmcp::ErrorData> {
-        Err(no_exporter())
-    }
-}
-
-/// The refusal a build with no exporter gives.
-///
-/// One function so the two tools cannot word it differently, and so the string
-/// naming the feature exists in exactly one place.
-#[cfg(not(feature = "vcon"))]
-fn no_exporter() -> rmcp::ErrorData {
-    rmcp::ErrorData::invalid_params(
-        "this sipnab was built without the 'vcon' Cargo feature, so it has \
-         no vCon exporter. Rebuild with --features vcon (or --features \
-         full); server_capabilities lists what this binary carries",
-        None,
-    )
 }
 
 /// The completeness carrier, in the shape this response publishes it.
@@ -1537,46 +1487,5 @@ mod tests {
             .await
             .expect_err("a string is not a container");
         assert_eq!(code_of(err), -32602);
-    }
-
-    /// Both tools refuse by name on a build with no exporter.
-    ///
-    /// The paired half of the success tests above. Both arms compile in every
-    /// build and each runs in the one it describes, so neither rots into an
-    /// assertion nothing exercises.
-    #[cfg(not(feature = "vcon"))]
-    #[tokio::test]
-    async fn the_vcon_tools_refuse_and_name_the_feature_when_it_is_absent() {
-        let server = server_with(&[("vcon-nofeat@x", 200)]);
-
-        for message in [
-            message_of(
-                server
-                    .export_vcon(Parameters(ExportVconParams {
-                        call_id: Some("vcon-nofeat@x".to_string()),
-                        ..ExportVconParams::default()
-                    }))
-                    .await
-                    .expect_err("a build with no exporter must refuse"),
-            ),
-            message_of(
-                server
-                    .validate_vcon(Parameters(ValidateVconParams {
-                        container: Some(serde_json::json!({})),
-                        ..ValidateVconParams::default()
-                    }))
-                    .await
-                    .expect_err("a build with no exporter must refuse"),
-            ),
-        ] {
-            assert!(
-                message.contains("vcon"),
-                "the refusal must name the missing feature: {message}"
-            );
-            assert!(
-                message.contains("--features"),
-                "the refusal must name what produces a binary that can: {message}"
-            );
-        }
     }
 }

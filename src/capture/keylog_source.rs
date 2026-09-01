@@ -435,7 +435,7 @@ fn file_id(_meta: &std::fs::Metadata) -> FileId {
 /// Read until the buffer is full or the file ends.
 ///
 /// A single `read` may return short without an error, which would otherwise
-/// desynchronise the consumed offset from what was actually parsed.
+/// desynchronize the consumed offset from what was actually parsed.
 fn read_full(f: &mut std::fs::File, buf: &mut [u8]) -> Result<usize> {
     let mut n = 0;
     while n < buf.len() {

@@ -662,7 +662,7 @@ impl RtpStream {
     /// lint rule reads. Reused rather than re-tabulated — two tables of codec
     /// rates is how they drift.
     ///
-    /// This generalises past duplicate input: a clock-rate error, a timestamp
+    /// This generalizes past duplicate input: a clock-rate error, a timestamp
     /// bug, or a misidentified payload type all land here too. It says a number
     /// cannot be right; it does not claim to know why.
     ///
@@ -867,7 +867,7 @@ impl RtpStream {
         if let (Some(prev_arrival), Some(prev_rtp_ts)) = (self.prev_arrival, self.prev_rtp_ts) {
             // Microseconds, not milliseconds: on a 20 ms stream the interarrival
             // variation being measured is itself sub-millisecond, so truncating
-            // to whole milliseconds quantises away the entire signal and reports
+            // to whole milliseconds quantizes away the entire signal and reports
             // jitter far above what the packets show. `num_microseconds` returns
             // None only past ~292,000 years, where the old behavior is fine.
             let since = timestamp.signed_duration_since(prev_arrival);

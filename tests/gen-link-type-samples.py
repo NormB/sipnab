@@ -5,7 +5,7 @@ Three fixtures, one per link-layer framing that had decoder code but no
 capture file to prove it end to end:
 
 * `loopback-dlt-loop.pcap` -- DLT_LOOP (108), OpenBSD loopback encapsulation.
-  The implementation existed and was covered only by frames synthesised inside
+  The implementation existed and was covered only by frames synthesized inside
   a unit test, so nothing exercised the reader, the pipeline and the report
   against a real file. DLT_LOOP's address-family word is ALWAYS big-endian --
   that single difference is the entire reason it exists alongside DLT_NULL

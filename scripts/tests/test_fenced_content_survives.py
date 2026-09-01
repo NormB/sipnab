@@ -213,8 +213,8 @@ def test_fence_mask_runs_an_unclosed_fence_to_the_end_of_the_document():
     )
 
 
-def test_this_files_parametrisation_is_not_empty():
-    """Every test above is parametrised over `TRANSFORMERS` and `BAIT`.
+def test_this_files_parametrization_is_not_empty():
+    """Every test above is parametrized over `TRANSFORMERS` and `BAIT`.
 
     An empty list is not a failure in pytest — it collects zero cases, prints
     nothing, and the run stays green. So the file that guards three

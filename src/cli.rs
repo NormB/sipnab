@@ -6224,7 +6224,7 @@ mod tests {
     /// flag outranks the key it shadows.
     ///
     /// The assertion is on the BAND, not on the field holding the number. Eight
-    /// keys that deserialise and are then never consulted is exactly the defect
+    /// keys that deserialize and are then never consulted is exactly the defect
     /// this wiring exists to prevent, and a field-equality test passes just as
     /// happily when nothing downstream reads the value. Banding a measurement
     /// is the effect an operator sees, so that is what is checked.

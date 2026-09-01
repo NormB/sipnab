@@ -22,4 +22,14 @@ pub mod expectations;
 pub mod inspect;
 pub mod provenance;
 pub mod relay;
+// Only where the exporter exists. A tool in `tools/list` that can never run
+// is worse than an absent one: an agent plans around it, calls it, and gets
+// an error no argument it could have chosen would have avoided. What a build
+// omits is `server_capabilities`' question to answer, and it names `vcon`.
+// Both, and stated as both: the file is an MCP tool (it imports `rmcp`, which
+// `mcp` supplies) that exports vCon containers (which needs `vcon`). The `mcp`
+// half is implied by this tree already, and saying it anyway is what lets
+// `scripts/check-feature-deps.py` see that `vcon` alone never compiles this
+// file and so owes it nothing.
+#[cfg(all(feature = "mcp", feature = "vcon"))]
 pub mod vcon;

@@ -505,7 +505,7 @@ fn wiki_intra_docs_links_resolve() {
     // so unlike the docs_drift table gate this is +5 and not +10.
     // Raised 279 -> 280 by the federated-tracing section's link back to
     // "Collect captures from several SIP servers in one place", the
-    // centralised alternative it compares against. One link, one page.
+    // centralized alternative it compares against. One link, one page.
     // Raised 280 -> 281 by the security model's pointer to the new
     // "Untrusted capture text" section in docs/mcp.md (#139).
     // Raised 281 -> 282 by the security model's pointer to the new

@@ -46,7 +46,7 @@ fn clap_long_flags() -> BTreeSet<String> {
         .get_arguments()
         .filter_map(|a| a.get_long().map(|l| format!("--{l}")))
         .collect();
-    // clap synthesises these and does not return them from `get_arguments()`,
+    // clap synthesizes these and does not return them from `get_arguments()`,
     // but `--help` prints them and prose legitimately names them.
     flags.insert("--help".into());
     flags.insert("--version".into());

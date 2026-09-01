@@ -1629,7 +1629,7 @@ pub fn init_logging(cli: &Cli) {
 /// `--strip-secrets` resolves `-I` (reading the directories and globs it
 /// names) and writes a DSB-free copy of the one capture it resolves to
 /// (atomically; the input is never modified). It refuses an input set of any
-/// other size rather than sanitising part of it.
+/// other size rather than sanitizing part of it.
 pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
     // --completions <shell>: print a completion script and exit. Needs no
     // config, capture, or privileges.
@@ -1704,7 +1704,7 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
         // `--strip-secrets <out>` names ONE output path, so a set of inputs has
         // nowhere to go: stripping every file would mean inventing output names
         // and writing files the operator never asked for. The alternative this
-        // replaces was worse — it sanitised the first file, exited 0, and said
+        // replaces was worse — it sanitized the first file, exited 0, and said
         // "Stripped N decryption secret(s)". This is a privacy control. Someone
         // running it before sending captures to a vendor reads that success and
         // ships the remaining files with live TLS keys inside them, and nothing
@@ -1719,15 +1719,15 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
                 .collect::<Vec<_>>()
                 .join(", ");
             tracing::error!(
-                "--strip-secrets writes one sanitised copy, but -I resolved to {} files: {names}. \
+                "--strip-secrets writes one sanitized copy, but -I resolved to {} files: {names}. \
                  Run it once per file — stripping only one of them would ship the rest with \
                  their decryption secrets intact.",
                 resolved.len()
             );
             return Some(1);
         }
-        // Same precondition as `-O`: the sanitised copy must not be written
-        // over the file it is sanitising. `--strip-secrets` promises the input
+        // Same precondition as `-O`: the sanitized copy must not be written
+        // over the file it is sanitizing. `--strip-secrets` promises the input
         // is never modified, and pointed at its own input it replaced it —
         // taking the only copy of the decryption secrets with it, which is
         // precisely the material this flag exists to preserve a copy without.
@@ -2301,7 +2301,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
         // to one socket wherever fanout is unavailable, so passing it
         // unconditionally is safe and the fallback explains itself.
         fanout_sockets: cli.limits_args.cores.max(1),
-        // Finalised by `plan` once the run mode is known — see
+        // Finalized by `plan` once the run mode is known — see
         // `immediate_mode_for`. The interactive value is the right thing to
         // start from: it is what every capture asked for before the choice
         // existed, so nothing here can quietly change a ring format on its own.

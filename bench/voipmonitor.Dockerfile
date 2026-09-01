@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 #
 # voipmonitor, built from source, purely so the benchmark comparison can
-# include it. Containerised deliberately: voipmonitor is not packaged for most
+# include it. Containerized deliberately: voipmonitor is not packaged for most
 # distributions and a host install pulls in a database service, which is a lot
 # to ask of someone who only wants to re-run a table.
 #

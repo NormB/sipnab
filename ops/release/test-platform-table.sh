@@ -78,7 +78,7 @@ else
   fail "a partial release yields a partial table, not a fixed one" "rc=$RC rows=$rows"
 fi
 
-# 4. An unrecognised target is a hard error. If the build matrix gains a target
+# 4. An unrecognized target is a hard error. If the build matrix gains a target
 #    and this script does not, the table would otherwise publish silently
 #    missing a platform — the exact "looks complete, is not" failure the rest of
 #    this repository's gates were audited for.

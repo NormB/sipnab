@@ -1308,7 +1308,7 @@ fn the_shard_peek_dispatch_is_exhaustive_over_link_type() {
     let wildcard = regex::Regex::new(r"(^|[^A-Za-z0-9_])_([^A-Za-z0-9_]|$)").expect("regex");
     for func in ["fn peek_host_pair(", "fn slice_link_layer<'a>("] {
         // Both functions bind the resolved link type to `link` and match on
-        // it; `LinkType::from_dlt` is what turns an unrecognised DLT number
+        // it; `LinkType::from_dlt` is what turns an unrecognized DLT number
         // away BEFORE the dispatch, which is what lets the dispatch be
         // exhaustive at all.
         let body = body_of(&src, func);

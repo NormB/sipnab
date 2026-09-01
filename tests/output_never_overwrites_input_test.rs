@@ -206,7 +206,7 @@ fn split_rotation_onto_an_input_is_refused() {
     assert_intact(&rotated, &before, "--split rotating onto an input");
 }
 
-/// `--strip-secrets` writes a sanitised COPY; the docs promise the input is
+/// `--strip-secrets` writes a sanitized COPY; the docs promise the input is
 /// never modified. Pointed at its own input it replaced it, taking the only
 /// copy of the decryption secrets with it.
 #[test]

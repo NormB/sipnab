@@ -3126,7 +3126,7 @@ mod tests {
     /// count is exact, the first few names are shown, and the sentence stays
     /// readable.
     #[test]
-    fn the_file_export_notice_summarises_a_capture_ring() {
+    fn the_file_export_notice_summarizes_a_capture_ring() {
         let dest = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, "10.0.0.5:9060");
         let paths: Vec<std::path::PathBuf> = (0..40)
             .map(|i| std::path::PathBuf::from(format!("/cases/ring/tg.pcap{i}")))

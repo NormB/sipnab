@@ -220,7 +220,7 @@ impl Btf {
 
     /// How many bytes of trailing data a type of this kind carries.
     ///
-    /// Getting this wrong desynchronises the whole walk, so every kind the
+    /// Getting this wrong desynchronizes the whole walk, so every kind the
     /// format defines is listed. An unknown kind returns `None` rather than a
     /// guess: continuing past one would index every later type incorrectly and
     /// still produce plausible answers.

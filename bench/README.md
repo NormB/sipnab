@@ -212,7 +212,7 @@ Three things keep the container measurement fair, and all three matter:
   carrying both directions. sipnab itself will read those files back
   (`sipnab -N -I <spooled>.pcap --report`), which is a convenient cross-check.
 
-What remains asymmetric: voipmonitor runs containerised while sngrep, sipgrep
-and sipnab run natively. On Linux that is namespaces, not virtualisation, so
+What remains asymmetric: voipmonitor runs containerized while sngrep, sipgrep
+and sipnab run natively. On Linux that is namespaces, not virtualization, so
 CPU-bound parsing is near native — but the cost, whatever it is, lands on
 voipmonitor's number.

@@ -206,7 +206,7 @@ fn extension_method_acceptance_stays_strict() {
 /// earlier is a tightening on input that was never a message, and the
 /// parse-succeeds qualifier is what distinguishes the two.
 #[test]
-fn no_message_the_old_sniff_analysed_is_lost() {
+fn no_message_the_old_sniff_analyzed_is_lost() {
     /// Inputs the old sniff accepted and parsed.
     const EXPECTED_OLD_SNIFF_INPUTS: usize = 18;
     const METHODS: [&str; 14] = [
@@ -329,7 +329,7 @@ fn portrange_skips_are_counted_not_silent() {
 /// This is where a loose sniff does real damage. Everywhere else the parser
 /// sits behind the sniff and rejects whatever it wrongly admitted; here there
 /// is nothing behind it, and a false positive becomes sipnab telling an
-/// operator they have unanalysed SIP on a port carrying their web traffic.
+/// operator they have unanalyzed SIP on a port carrying their web traffic.
 /// Ports outside `--portrange` are, by construction, exactly where the
 /// non-SIP protocols live.
 #[test]

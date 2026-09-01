@@ -98,7 +98,7 @@ fn the_live_response_is_well_formed() {
 /// A library that is in use but cannot be probed is a gap in the capture, and
 /// the count must agree with the entries rather than being reported separately.
 #[test]
-fn the_unreachable_count_matches_the_entries_it_summarises() {
+fn the_unreachable_count_matches_the_entries_it_summarizes() {
     let r = tls_libraries_response();
     let actual = r
         .libraries

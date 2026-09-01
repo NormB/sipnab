@@ -113,7 +113,7 @@ ordinary update.
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| [`export_capture`](#export-capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
+| [`export_capture`](#export-capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesized frames, no RTP) |
 | [`export_audio`](#export-audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
 | [`export_vcon`](#export-vcon) | `call_id?`, `filter?`, `limit?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set. Unsigned, retained audio inline, and every omission stated in the response |
 | [`validate_vcon`](#validate-vcon) | `call_id?`, `container?` | Checks a container against the schema sipnab vendors and names the one documented deviation instead of passing it |
@@ -4795,7 +4795,7 @@ which of the two situations produced the answer, so a relayed conclusion does
 not lose it.
 
 **`probe_path: null` is a finding, not a blank.** That library is carrying
-traffic sipnab cannot capture — usually a containerised process whose
+traffic sipnab cannot capture — usually a containerized process whose
 `/proc/<pid>/root` this server cannot read. sipnab reports it rather than
 dropping it, because the alternative is a capture that looks complete and is
 not.

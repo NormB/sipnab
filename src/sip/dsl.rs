@@ -1100,7 +1100,7 @@ pub const FIELD_NAMES: &[&str] = &[
 ///
 /// Tolerant of case, and of a hyphen or an underscore where a space belongs,
 /// because those are typing variants rather than different questions. Anything
-/// unrecognised returns `None` and the caller falls back to a plain string
+/// unrecognized returns `None` and the caller falls back to a plain string
 /// comparison, which matches nothing -- the same way every other string field
 /// here treats a value it does not know.
 fn response_class_set(value: &str) -> Option<&'static [u16]> {

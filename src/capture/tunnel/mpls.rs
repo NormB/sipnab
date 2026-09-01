@@ -305,7 +305,7 @@ fn pw_control_word(d: &[u8], at: usize) -> Option<Inner> {
 }
 
 /// A first nibble of 1 means a PW Associated Channel Header (RFC 4385 §5),
-/// generalised to the Generic Associated Channel by RFC 5586.
+/// generalized to the Generic Associated Channel by RFC 5586.
 ///
 /// "Bits 0..3 MUST be 0001. This allows the packet to be distinguished from an
 /// IP packet and from a PW data packet." The Version field is the one other
@@ -520,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unrecognised_first_nibble_is_rejected() {
+    fn an_unrecognized_first_nibble_is_rejected() {
         for nibble in [0x2u8, 0x3, 0x5, 0x7, 0x8, 0x9, 0xA, 0xF] {
             let mut payload = vec![nibble << 4];
             payload.extend_from_slice(&[0x11; 63]);

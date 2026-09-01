@@ -699,7 +699,7 @@ the process, not a peer. It never invents an address it did not observe.
   Unprivileged, `/proc/<pid>/maps` is readable only for your own processes, so
   `--uprobe-list` quietly shows a fraction of the host — run it as root before
   concluding a daemon is not using TLS.
-- **Containers.** The path a containerised process sees names a *different
+- **Containers.** The path a containerized process sees names a *different
   file* from sipnab's namespace. sipnab handles this by matching inodes and
   probing through `/proc/<pid>/root`, which is why the listing above shows such
   paths. If you pass `--uprobe-library` by hand for a container, pass the

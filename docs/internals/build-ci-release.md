@@ -88,7 +88,7 @@ the pinned stable version. Moving the build to nightly would break the toolchain
 pin, the MSRV promise, and the reproducibility of a released binary.
 
 **`-Zbuild-std` is mandatory, not optional.** Without rebuilding the standard
-library with instrumentation, TSan sees `std`'s synchronisation as opaque and
+library with instrumentation, TSan sees `std`'s synchronization as opaque and
 reports the channel itself as a race — the noise that gets a race detector
 switched off.
 
@@ -105,7 +105,7 @@ race. An unexplained suppression turns a race detector into a race ignorer.
 `--cfg sipnab_tsan`, and [`src/main.rs`](../../src/main.rs) skips its `#[global_allocator]` under that
 cfg. mimalloc is C compiled by the `cc` crate, so `-Zsanitizer=thread`
 does not instrument it, and TSan sees neither its alloc/free (no shadow reset on
-a recycled block) nor its internal cross-thread synchronisation: every block
+a recycled block) nor its internal cross-thread synchronization: every block
 handed from one thread to another reads as a data race. The 2026-07-29 run
 reported exactly that, and its stacks named `read` and
 `Vec::append_elements_unreserved` with no allocator frame anywhere — so a

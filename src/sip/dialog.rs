@@ -161,7 +161,7 @@ pub struct SipDialog {
     /// what it would be built from.
     ///
     /// `None` when the opening message carried no origin — hand-built, or
-    /// synthesised for a report.
+    /// synthesized for a report.
     pub input_origin: Option<crate::capture::parse::InputOrigin>,
     /// Destination port of the initial message.
     pub dst_port: u16,

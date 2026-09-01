@@ -370,7 +370,19 @@ fn no_tool_answers_with_a_top_level_array() {
     let call_id = wire.a_call_id();
 
     // Driven, not asserted from source: a shape is a property of the wire.
-    let drivable = schema_probes(&call_id);
+    // The SET comes from the wire too. A probe may name a tool this build does
+    // not carry -- `export_vcon` is absent without the `vcon` feature -- and
+    // calling it would test the registration, not the shape. Whether a tool
+    // SHOULD be registered here is gated in `mcp_capability_agreement_test`.
+    let offered: Vec<String> = wire
+        .tools()
+        .into_iter()
+        .map(|t| t["name"].as_str().unwrap_or_default().to_string())
+        .collect();
+    let drivable: Vec<(&str, Value)> = schema_probes(&call_id)
+        .into_iter()
+        .filter(|(t, _)| offered.iter().any(|o| o == t))
+        .collect();
     assert!(
         drivable.len() >= 5,
         "only {} tool(s) driven; this gate is checking almost nothing",

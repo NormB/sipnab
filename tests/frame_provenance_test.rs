@@ -550,11 +550,11 @@ fn a_sip_message_carries_a_frame_ref_that_resolves_to_its_own_bytes() {
     for pkt in &packets {
         let Ok(pp) = parse_packet(pkt) else { continue };
         // The parser now carries a Copy locator rather than an owned
-        // FrameRef, so compare what it MATERIALISES to. That is the stronger
+        // FrameRef, so compare what it MATERIALIZES to. That is the stronger
         // claim and the one the change rests on: the cheap form must round-trip
         // to exactly the pointer the old path built, or every stored pointer
         // shifts meaning.
-        // Compare the two MATERIALISED forms. `to_frame_ref` is the bare
+        // Compare the two MATERIALIZED forms. `to_frame_ref` is the bare
         // conversion and deliberately hashes nothing; since PERF1 the digest is
         // computed where a pointer is RETAINED, which is what
         // `retained_frame_ref` and `Packet::frame_ref` both do. Comparing a

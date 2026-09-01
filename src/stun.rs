@@ -2224,7 +2224,7 @@ mod turn_tests {
     /// ChannelData is the one TURN framing the STUN parser cannot read, and it
     /// must be told apart from both STUN and RTP by its high bits alone.
     #[test]
-    fn channel_data_is_recognised_and_never_confused_with_stun_or_rtp() {
+    fn channel_data_is_recognized_and_never_confused_with_stun_or_rtp() {
         let mut cd = vec![0x40, 0x01, 0x00, 0x04];
         cd.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
         assert!(is_channel_data(&cd));

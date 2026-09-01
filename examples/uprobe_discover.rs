@@ -45,7 +45,7 @@ fn main() {
 
         // The fact that matters. A path from /proc/<pid>/maps was resolved in
         // the MAPPING process's mount namespace; a uprobe is installed with a
-        // path resolved in OURS. For a containerised process those name
+        // path resolved in OURS. For a containerized process those name
         // different files, and probing the bare path attaches to the host's
         // copy while looking entirely successful.
         match lib.probe_path() {

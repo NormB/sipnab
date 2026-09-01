@@ -682,7 +682,7 @@ fn shard_opened<S: ShardSink>(
     // later by whichever WORKER finished with it. mimalloc's cross-thread free
     // path is atomic, so a 535k-packet capture paid it 535k times -- the
     // largest single driver in the profile. Slicing from a block makes the
-    // allocation and its free amortise across every frame that shares it: at
+    // allocation and its free amortize across every frame that shares it: at
     // 64 KiB and ~240-byte frames that is ~270 packets per allocation, so the
     // cross-thread traffic falls by the same factor.
     //
@@ -883,7 +883,7 @@ enum Frames<'a> {
         /// freed later by whichever WORKER finished with it. mimalloc's
         /// cross-thread free path is atomic, so a 535k-packet capture paid it
         /// 535k times -- the largest single driver in the profile. Slicing from
-        /// a block makes the allocation and its free amortise across every
+        /// a block makes the allocation and its free amortize across every
         /// frame that shares it: at 64 KiB and ~240-byte frames that is ~270
         /// packets per allocation, so the cross-thread traffic falls by the
         /// same factor.
@@ -904,7 +904,7 @@ enum Frames<'a> {
 
 impl<'a> Frames<'a> {
     /// Block size frames are copied into on the libpcap arm, matching the
-    /// mapped reader's own so both arms amortise allocation the same way.
+    /// mapped reader's own so both arms amortize allocation the same way.
     const BLOCK: usize = 64 * 1024;
 
     /// Prefer the mapping, fall back to libpcap. `may_map` is false when a BPF
@@ -2779,7 +2779,7 @@ mod tests {
     /// A two-file set whose SECOND member has a link type the filter cannot
     /// compile against.
     ///
-    /// Chosen from the stock fixtures rather than synthesised, because the
+    /// Chosen from the stock fixtures rather than synthesized, because the
     /// resolver orders a set by first-packet time and the failing member has to
     /// land SECOND for this to be the later-file case at all:
     /// `sip-register.pcap` is Ethernet at 1312180642, `loopback-dlt-loop.pcap`

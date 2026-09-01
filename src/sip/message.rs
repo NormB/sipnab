@@ -114,7 +114,7 @@ pub struct SipMessage {
     /// same reason: a mixed run has no run-level answer.
     ///
     /// `None` for a message that came from no captured packet — hand-built in
-    /// a test, or synthesised for a report. Deliberately not defaulted to
+    /// a test, or synthesized for a report. Deliberately not defaulted to
     /// `Wire`: "sipnab saw this on a wire" is a claim, and a synthetic message
     /// must not make it.
     pub input_origin: Option<crate::capture::parse::InputOrigin>,

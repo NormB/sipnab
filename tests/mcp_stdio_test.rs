@@ -717,7 +717,6 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "explain_rule",
         "export_audio",
         "export_capture",
-        "export_vcon",
         "find_correlated",
         "find_problems",
         "generate_fail2ban_rule",
@@ -755,11 +754,19 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "triage_call",
         "validate_filter",
         "validate_message",
-        "validate_vcon",
     ];
+    // The vCon pair is registered only where the exporter exists, so this
+    // build's expectation has to say so too. A list that names them
+    // unconditionally asserts a tool set no `mcp`-without-`vcon` build has --
+    // and the two are advertised exactly when they can run, which
+    // `mcp_capability_agreement_test` is what gates.
+    if cfg!(feature = "vcon") {
+        expected.extend_from_slice(&["export_vcon", "validate_vcon"]);
+    }
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    assert_eq!(names.len(), 57, "expected exactly 57 MCP tools");
+    let want = if cfg!(feature = "vcon") { 57 } else { 55 };
+    assert_eq!(names.len(), want, "expected exactly {want} MCP tools");
 
     // find_problems with default kinds (['problems']) → JSON array, no error.
     send(

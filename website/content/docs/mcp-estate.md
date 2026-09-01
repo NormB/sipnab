@@ -550,19 +550,19 @@ identity the wire never established.
 > is not a substitute for `Session-ID`. Full argument, including what is still
 > unverified: [`docs/design/icid-correlation.md`](https://github.com/NormB/sipnab/blob/main/docs/design/icid-correlation.md).
 
-### Choose between federated and centralised
+### Choose between federated and centralized
 
 Both work, and the choice is about where packet data lives rather than which is
 newer.
 
-| | Federated (this section) | Centralised (HEP) |
+| | Federated (this section) | Centralized (HEP) |
 |---|---|---|
 | Setup | Register N servers with the client | `--hep-send` on each node into one `--hep-listen` collector |
 | Packet data | Never leaves the node | Concentrates on the collector |
 | Correlation | Agent joins the answers | One store, `find_correlated` runs unchanged |
 | Cost | More round trips, one per node | Bandwidth, and a PII decision |
 
-Centralising needs no new code. See
+Centralizing needs no new code. See
 [Collect captures from several SIP servers in one place](#collect-captures-from-several-sip-servers-in-one-place).
 It is also what Homer does, at the scale of a whole enterprise system; sipnab is
 one binary, and it can feed Homer rather than replace it.

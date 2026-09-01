@@ -323,7 +323,7 @@ performance one. `find_default_device()` returns `"any"` on Linux
 ```
 
 That is a real hazard, not a hypothetical one. A B2BUA talking to a registrar
-over `127.0.0.1`, a containerised stack bridging SIP across `docker0`, a proxy
+over `127.0.0.1`, a containerized stack bridging SIP across `docker0`, a proxy
 handing calls to a media server over a veth pair — capture `eth0` alone and
 those legs are simply absent. A dialog missing one leg does not come back
 smaller, it comes back **wrong**, exactly as §1 describes for dropped packets.
@@ -470,7 +470,7 @@ irrelevant. Look outside sipnab:
 
 ## 8. Offline: `--cores`
 
-`--cores N` parallelises **offline** reconstruction (`-I`), not live capture.
+`--cores N` parallelizes **offline** reconstruction (`-I`), not live capture.
 
 ```bash
 sipnab -N -I /var/captures/ --cores 4 --report

@@ -3113,7 +3113,7 @@ mod tests {
     fn format_sdp_codecs_maps_bare_payload_types_and_passes_through_unknown() {
         // No a=rtpmap → fall back to static payload-type numbers. This is the
         // branch covering the numeric→name table and the `o => o` pass-through
-        // for an unrecognised dynamic type (99).
+        // for an unrecognized dynamic type (99).
         let body = b"v=0\r\n\
             m=audio 5004 RTP/AVP 0 8 9 18 4 3 101 99\r\n";
         let session = sdp::parse_sdp(body).expect("valid sdp");

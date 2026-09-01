@@ -158,7 +158,7 @@ fn tool_descriptions_do_not_instruct_the_model_to_trust_content() {
 
 /// A tool whose output could be mistaken for a recording must say it is not.
 ///
-/// The export writes one re-synthesised Ethernet/IP/UDP frame per held SIP
+/// The export writes one re-synthesized Ethernet/IP/UDP frame per held SIP
 /// message, because the dialog store keeps parsed messages and not the original
 /// bytes. So the file holds no RTP, carries reconstructed link and IP headers,
 /// and on a measured corpus export was missing 97.5% of the packets that had
@@ -173,7 +173,7 @@ fn tool_descriptions_do_not_instruct_the_model_to_trust_content() {
 ///
 /// This gate keeps the disclosure at the layer the consumer actually reads.
 #[test]
-fn an_export_that_synthesises_frames_says_so_where_the_model_reads() {
+fn an_export_that_synthesizes_frames_says_so_where_the_model_reads() {
     let src = mcp_registry_source();
 
     let export = tool_descriptions(&src)
@@ -189,7 +189,7 @@ fn an_export_that_synthesises_frames_says_so_where_the_model_reads() {
         .any(|w| lower.contains(w));
     assert!(
         discloses,
-        "the '{}' tool description must say the frames are re-synthesised rather \
+        "the '{}' tool description must say the frames are re-synthesized rather \
          than captured. Without it the model is told it is preserving packets and \
          hands on a reconstruction that reads as a recording. Description was: {}",
         export.0, export.1
@@ -199,7 +199,7 @@ fn an_export_that_synthesises_frames_says_so_where_the_model_reads() {
     assert!(
         names_the_gap,
         "the '{}' description must name what the file does NOT contain — it holds \
-         no RTP, only signaling. 'Re-synthesised' alone still reads as complete. \
+         no RTP, only signaling. 'Re-synthesized' alone still reads as complete. \
          Description was: {}",
         export.0, export.1
     );

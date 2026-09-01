@@ -256,7 +256,7 @@ fn an_icmp_error_quoting_rtp_is_recorded_not_dropped() {
 /// carries is a second, independent key onto a tracked stream.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn the_quoted_payload_is_recognised_as_rtp() {
+fn the_quoted_payload_is_recognized_as_rtp() {
     pipeline::reset_icmp_evidence();
 
     let quoted = quoted_ipv4_udp(sender(), dead_peer(), RTP_SRC, RTP_DST, &rtp_datagram(SSRC));

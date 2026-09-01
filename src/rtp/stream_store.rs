@@ -2542,7 +2542,7 @@ a=rtpmap:96 H264/90000\r\n";
         use crate::capture::packet::FrameOrigin;
 
         // A parsed packet now carries the Copy locator, so the fixture builds
-        // that; the store materialises the owned FrameRef when it keeps one.
+        // that; the store materializes the owned FrameRef when it keeps one.
         let pointer = |ordinal: u64| {
             Some(crate::capture::packet::FrameLocator {
                 source: "calls.pcap",

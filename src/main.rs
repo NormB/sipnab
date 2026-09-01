@@ -16,7 +16,7 @@
 // NOT under ThreadSanitizer. mimalloc is C compiled by the `cc` crate, and
 // `-Zsanitizer=thread` instruments Rust only, so TSan sees neither its
 // alloc/free (no shadow reset when a block is recycled) nor its internal
-// cross-thread synchronisation (no happens-before edges). Every block mimalloc
+// cross-thread synchronization (no happens-before edges). Every block mimalloc
 // hands from one thread to another therefore reads as a data race. That is not
 // a hypothetical: it made `sanitizers.yml` report a race on the file-capture
 // path, and the report named `read`/`Vec::append_elements_unreserved` with no

@@ -249,7 +249,7 @@ pub(crate) fn fanout_source_name(device: &str, socket_index: Option<usize>) -> S
 ///
 /// Derived from the pid so two sipnab instances capturing the same interface do
 /// not land in one group and split each other's traffic. `0` is a legal group
-/// id but is also what an uninitialised value looks like, so it is mapped away.
+/// id but is also what an uninitialized value looks like, so it is mapped away.
 pub(crate) fn fanout_group_id() -> u16 {
     let pid = std::process::id() as u16;
     if pid == 0 { 0xA1B2 } else { pid }
@@ -995,7 +995,7 @@ mod fanout_plan_tests {
     /// The group id is per-process. Two sipnab instances on one interface must
     /// not share a group, or each would receive a share of the other's traffic
     /// and both would under-report. Zero is avoided because it is also what an
-    /// uninitialised value looks like.
+    /// uninitialized value looks like.
     #[test]
     fn the_group_id_is_per_process_and_never_zero() {
         let id = fanout_group_id();
@@ -1105,7 +1105,7 @@ mod tests {
     /// The first case is a real report from a CentOS 9 host: it named
     /// CAP_NET_RAW and still missed every clause of the old predicate.
     #[test]
-    fn libpcap_privilege_messages_are_recognised_as_permission_failures() {
+    fn libpcap_privilege_messages_are_recognized_as_permission_failures() {
         for msg in [
             "Attempt to create packet socket failed - CAP_NET_RAW may be required",
             "socket: Operation not permitted",

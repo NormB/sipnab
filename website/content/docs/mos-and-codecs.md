@@ -102,7 +102,7 @@ in front of sipnab. The report may be perfectly true and still not describe the
 traffic in the file.
 
 So a stream's MOS may disagree with the far end's reported MOS. **That
-disagreement is information, not an error** — it localises the fault. If the
+disagreement is information, not an error** — it localizes the fault. If the
 reporter sees loss and sipnab does not, the loss happened downstream of the
 capture point. If sipnab measures loss and the reporter does not, it happened
 upstream.

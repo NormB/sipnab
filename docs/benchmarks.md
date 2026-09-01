@@ -125,7 +125,7 @@ That moves where the curve stops. Reading through libpcap flattens the curve
 past two cores and sags it past four, which is the shape that makes `--cores 4`
 a ceiling. With the capture mapped, eight cores is marginally the best figure on
 the table rather than a regression, and **`--cores 4` is the point where most of
-the gain has arrived, not a ceiling that penalises you for passing it.**
+the gain has arrived, not a ceiling that penalizes you for passing it.**
 
 One and two cores do not move, which follows from the design rather than
 disappointing it: `--cores 1` and a run with no `--cores` use the

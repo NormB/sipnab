@@ -179,7 +179,7 @@ pub struct ParsedPacket {
     /// in tests. That is the honest value: a packet nobody read from anything
     /// has no provenance, and a downstream guess would be worse than the gap.
     /// Where this frame sat, carried as `Copy` so the parser touches no
-    /// refcount. Materialise it with `FrameLocator::to_frame_ref()` at the
+    /// refcount. Materialize it with `FrameLocator::to_frame_ref()` at the
     /// point a fact actually keeps the pointer — see the type's docs for why
     /// building one per packet cost ~40% of the packet path in atomics.
     pub frame: Option<crate::capture::packet::FrameLocator>,
@@ -354,7 +354,7 @@ pub struct IcmpQuote {
     pub reported_to: IpAddr,
     /// Which error class this is.
     pub kind: IcmpErrorKind,
-    /// Raw ICMP type byte, kept so an unrecognised code is still reportable.
+    /// Raw ICMP type byte, kept so an unrecognized code is still reportable.
     pub icmp_type: u8,
     /// Raw ICMP code byte.
     pub icmp_code: u8,
@@ -1408,7 +1408,7 @@ const SLL_ARPHRD_WITHOUT_ETHERTYPE: [u16; 5] = [770, 778, 803, 823, 824];
 /// Offset of the IP header inside a Linux cooked-capture frame, or `None`
 /// when the frame carries none this walk can point at.
 ///
-/// One function for both versions, parameterised by the three numbers that
+/// One function for both versions, parameterized by the three numbers that
 /// differ, and used by BOTH the full parse and the `--cores` shard peek — a
 /// second copy of these offsets is a second place for them to drift, and a
 /// peek that disagreed with the parse is the split brain `--cores` keeps

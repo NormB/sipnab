@@ -25,7 +25,7 @@
 //! tool must take it.
 //!
 //! The named flows below are the journeys an operator actually walks. The
-//! sweep at the end is the generalisation — it harvests identifiers from the
+//! sweep at the end is the generalization — it harvests identifiers from the
 //! whole surface and feeds each one back in, so a NEW tool that emits a
 //! pointer nobody can follow fails here without anyone writing a test for it.
 //!

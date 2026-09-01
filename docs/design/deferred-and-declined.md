@@ -422,7 +422,7 @@ The roadmap's own "not proposed" list already reaches the same place for
 `set_filter` / `apply_filter` — *"mutates what the operator is looking at, which
 is exactly the invariant's target, and buys nothing: filters are already
 arguments to the query tools"*
-([`mcp-tool-roadmap.md`](mcp-tool-roadmap.md)). Generalise that: for every
+([`mcp-tool-roadmap.md`](mcp-tool-roadmap.md)). Generalize that: for every
 write-back verb proposed so far, the same state is reachable as an argument to a
 read tool, or as a CLI flag at startup. The mutation buys convenience and
 spends the one property that makes an agent-driven surface safe to point at

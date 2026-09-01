@@ -705,7 +705,7 @@ the process, not a peer. It never invents an address it did not observe.
   Unprivileged, `/proc/<pid>/maps` is readable only for your own processes, so
   `--uprobe-list` quietly shows a fraction of the host — run it as root before
   concluding a daemon is not using TLS.
-- **Containers.** The path a containerised process sees names a *different
+- **Containers.** The path a containerized process sees names a *different
   file* from sipnab's namespace. sipnab handles this by matching inodes and
   probing through `/proc/<pid>/root`, which is why the listing above shows such
   paths. If you pass `--uprobe-library` by hand for a container, pass the
@@ -3600,7 +3600,7 @@ table 86% of the way down it.
 
 sipnab can run as a **Model Context Protocol** server, so an AI agent — Claude
 Code, Claude Desktop, or any MCP-capable client — can ask questions about a
-capture instead of you memorising CLI flags.
+capture instead of you memorizing CLI flags.
 
 It is a fourth output mode beside the TUI, the `-N` CLI and `--json`. The same
 parser, dialog state machine, RTP store and diagnostic engine drive all four, so
@@ -7760,7 +7760,7 @@ report a healthy network in the middle of an outage.
 > `--syslog` and `--alert-json` are the equivalent boolean forms; naming the
 > channel here does the same thing. A value containing `:` is instead parsed as
 > an alert rule (`<name>:<threshold>/<window>[:<cooldown>]`, window needs an
-> `s`/`m`/`h` suffix). An unrecognised bare word draws a warning naming the
+> `s`/`m`/`h` suffix). An unrecognized bare word draws a warning naming the
 > valid channels. It used to fail silently, so a documented `--alert syslog`
 > enabled nothing at all.
 
@@ -8107,8 +8107,8 @@ CoreAudio the moment anything touches it.
 - `sipnab -N -I calls.pcap --lint --lint-suppress-file ci.sipnablint --no-cli-print` — a suppression list of the pipeline's own, for a CI job whose tolerances differ from the tree's
 - `sipnab -N -I calls.pcap --lint --lint-no-suppress --no-cli-print` — the full catalog, ignoring every suppression file, for auditing what the project has agreed to live with
 - `sipnab -N -I ring-00042.pcapng --max-metadata-file-bytes 8589934592 --report` — read the embedded names and TLS secrets out of an 8 GiB ring member you captured yourself, which the shipped ceiling refuses outright
-- `sipnab -N -I ring-00042.pcapng --max-metadata-file-bytes 8589934592 --strip-secrets sanitised.pcapng` — the same file, sanitised for handover; the copy costs roughly twice the ceiling in memory, so raise it only for a file you trust
-- `sipnab -N -I archive.pcapng.gz --max-gunzip-bytes 8589934592 --strip-secrets sanitised.pcapng` — sanitise an 8 GiB pcapng you compressed yourself, without spending the disk that decompressing it by hand would need
+- `sipnab -N -I ring-00042.pcapng --max-metadata-file-bytes 8589934592 --strip-secrets sanitized.pcapng` — the same file, sanitized for handover; the copy costs roughly twice the ceiling in memory, so raise it only for a file you trust
+- `sipnab -N -I archive.pcapng.gz --max-gunzip-bytes 8589934592 --strip-secrets sanitized.pcapng` — sanitize an 8 GiB pcapng you compressed yourself, without spending the disk that decompressing it by hand would need
 - `sipnab -N -I from-customer.pcapng.gz --max-gunzip-bytes 268435456 --report` — the opposite, for a file that arrived from outside: a quarter-gigabyte ceiling on the embedded names and secrets sipnab reads out of it, so a gzip bomb wearing a capture's name cannot take the box down
 - `sipnab -N -I isup-trunk.pcap --max-tcp-buffer 1048576 --json-dialogs --no-cli-print` — a carrier trunk whose SIP/TCP messages carry encapsulated ISUP bodies past 64 KiB: at the shipped ceiling sipnab cuts each one in half and reports it malformed, and at 1 MiB the same bytes produce the call
 - `sudo sipnab -d eth0 --max-tcp-buffer 262144` — watch a live SBC that answers with long `Record-Route` sets, holding a quarter-megabyte per TCP direction so a large response frames whole instead of arriving as two malformed fragments
@@ -9458,7 +9458,7 @@ in front of sipnab. The report may be perfectly true and still not describe the
 traffic in the file.
 
 So a stream's MOS may disagree with the far end's reported MOS. **That
-disagreement is information, not an error** — it localises the fault. If the
+disagreement is information, not an error** — it localizes the fault. If the
 reporter sees loss and sipnab does not, the loss happened downstream of the
 capture point. If sipnab measures loss and the reporter does not, it happened
 upstream.
@@ -13756,19 +13756,19 @@ identity the wire never established.
 > is not a substitute for `Session-ID`. Full argument, including what is still
 > unverified: [`docs/design/icid-correlation.md`](design/icid-correlation.md).
 
-### Choose between federated and centralised
+### Choose between federated and centralized
 
 Both work, and the choice is about where packet data lives rather than which is
 newer.
 
-| | Federated (this section) | Centralised (HEP) |
+| | Federated (this section) | Centralized (HEP) |
 |---|---|---|
 | Setup | Register N servers with the client | `--hep-send` on each node into one `--hep-listen` collector |
 | Packet data | Never leaves the node | Concentrates on the collector |
 | Correlation | Agent joins the answers | One store, `find_correlated` runs unchanged |
 | Cost | More round trips, one per node | Bandwidth, and a PII decision |
 
-Centralising needs no new code. See
+Centralizing needs no new code. See
 [Collect captures from several SIP servers in one place](#collect-captures-from-several-sip-servers-in-one-place).
 It is also what Homer does, at the scale of a whole enterprise system; sipnab is
 one binary, and it can feed Homer rather than replace it.
@@ -13887,7 +13887,7 @@ ordinary update.
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| [`export_capture`](#export_capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesised frames, no RTP) |
+| [`export_capture`](#export_capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesized frames, no RTP) |
 | [`export_audio`](#export_audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
 | [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `limit?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set. Unsigned, retained audio inline, and every omission stated in the response |
 | [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the schema sipnab vendors and names the one documented deviation instead of passing it |
@@ -18569,7 +18569,7 @@ which of the two situations produced the answer, so a relayed conclusion does
 not lose it.
 
 **`probe_path: null` is a finding, not a blank.** That library is carrying
-traffic sipnab cannot capture — usually a containerised process whose
+traffic sipnab cannot capture — usually a containerized process whose
 `/proc/<pid>/root` this server cannot read. sipnab reports it rather than
 dropping it, because the alternative is a capture that looks complete and is
 not.
@@ -20122,7 +20122,7 @@ performance one. `find_default_device()` returns `"any"` on Linux
 ```
 
 That is a real hazard, not a hypothetical one. A B2BUA talking to a registrar
-over `127.0.0.1`, a containerised stack bridging SIP across `docker0`, a proxy
+over `127.0.0.1`, a containerized stack bridging SIP across `docker0`, a proxy
 handing calls to a media server over a veth pair — capture `eth0` alone and
 those legs are simply absent. A dialog missing one leg does not come back
 smaller, it comes back **wrong**, exactly as §1 describes for dropped packets.
@@ -20269,7 +20269,7 @@ irrelevant. Look outside sipnab:
 
 ## 8. Offline: `--cores`
 
-`--cores N` parallelises **offline** reconstruction (`-I`), not live capture.
+`--cores N` parallelizes **offline** reconstruction (`-I`), not live capture.
 
 ```bash
 sipnab -N -I /var/captures/ --cores 4 --report
@@ -24213,7 +24213,7 @@ Writing it somewhere else is not disclosure, and it reads as one.
   produces, while an entire WebRTC signaling leg went unreported. Adding a
   disclosure to one surface is not the fix; the fix is adding it to every
   surface that answers the question it qualifies.
-- `export_capture` re-synthesises a frame per SIP message rather than writing
+- `export_capture` re-synthesizes a frame per SIP message rather than writing
   the packets it read. The function's own doc comment said so plainly and
   called the result "honest about the rest". The tool description an MCP client
   reads said "writes the packets sipnab is holding to a pcap file".
@@ -24747,7 +24747,7 @@ the pinned stable version. Moving the build to nightly would break the toolchain
 pin, the MSRV promise, and the reproducibility of a released binary.
 
 **`-Zbuild-std` is mandatory, not optional.** Without rebuilding the standard
-library with instrumentation, TSan sees `std`'s synchronisation as opaque and
+library with instrumentation, TSan sees `std`'s synchronization as opaque and
 reports the channel itself as a race — the noise that gets a race detector
 switched off.
 
@@ -24764,7 +24764,7 @@ race. An unexplained suppression turns a race detector into a race ignorer.
 `--cfg sipnab_tsan`, and [`src/main.rs`](../../src/main.rs) skips its `#[global_allocator]` under that
 cfg. mimalloc is C compiled by the `cc` crate, so `-Zsanitizer=thread`
 does not instrument it, and TSan sees neither its alloc/free (no shadow reset on
-a recycled block) nor its internal cross-thread synchronisation: every block
+a recycled block) nor its internal cross-thread synchronization: every block
 handed from one thread to another reads as a data race. The 2026-07-29 run
 reported exactly that, and its stacks named `read` and
 `Vec::append_elements_unreserved` with no allocator frame anywhere — so a
@@ -26766,7 +26766,7 @@ mixed-flavor host captures exactly one of them.
 open perf consumer. `UprobeReader` declares `bands` before `probes` because
 Rust drops fields in declaration order, so rings close first. Declared the
 other way round, a clean shutdown leaves every probe attached to a production
-library — measured, not theorised: the first end-to-end run leaked four probes
+library — measured, not theorized: the first end-to-end run leaked four probes
 exactly that way.
 
 **Never enable through tracefs.** `install` writes the probe and its filter and

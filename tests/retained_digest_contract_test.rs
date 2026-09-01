@@ -198,7 +198,7 @@ fn the_flag_follows_the_source_not_whether_it_is_a_test() {
 ///
 /// `frame_locator` is the `Copy` form the parser carries for every packet, and
 /// it exists so ~93% of frames pay no hash and no refcount. If it ever starts
-/// materialising a digest, the +29% goes away silently and only a benchmark
+/// materializing a digest, the +29% goes away silently and only a benchmark
 /// would notice.
 #[test]
 fn the_per_packet_locator_hashes_nothing() {

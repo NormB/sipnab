@@ -57,7 +57,7 @@ fn a_long_haul_delay_scores_lower_than_the_assumption() {
         "300 ms one-way must score below the assumed 100 ms; got {satellite} vs {assumed}"
     );
     // The gap is the size of the defect, not a rounding difference: G.107's Id
-    // knee at 177.3 ms means a 300 ms path is penalised by the sqrt term the
+    // knee at 177.3 ms means a 300 ms path is penalized by the sqrt term the
     // assumption never reaches.
     assert!(
         assumed - satellite > 1.0,

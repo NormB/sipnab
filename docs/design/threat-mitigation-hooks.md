@@ -63,7 +63,7 @@ silent, so it says so, once, at startup
 > will emit nothing. An empty jail log means 'nothing was detected', not
 > 'nothing happened'. […]"
 
-**The generalisable lesson: a mitigation path that produces no output must say so
+**The generalizable lesson: a mitigation path that produces no output must say so
 out loud, because silence on a security surface is indistinguishable from
 safety.**
 

@@ -33,7 +33,7 @@ use super::*;
 /// Successes are worded per format ("Saved 12 packets…", "Exported 4.3s of
 /// audio…"), so a whitelist would silently reclassify the next exporter's
 /// wording as a failure; the failure vocabulary is small, closed and stated
-/// in every one of those functions' `# Returns` sections. An unrecognised
+/// in every one of those functions' `# Returns` sections. An unrecognized
 /// message therefore reads as a successful export, which is the direction
 /// that cannot invent a refusal that never happened — the trail's own
 /// `refused` outcome is set by the caller, from the guard that refused.

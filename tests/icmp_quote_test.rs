@@ -545,7 +545,7 @@ fn a_quote_of_non_sip_traffic_is_not_attributed_to_a_dialog() {
 /// Serialized even though it asserts nothing about the store: rejecting the
 /// packet is only half of what `parse_packet` does with an ICMP error — it also
 /// FILES the quote in the process-global evidence store on its way to the
-/// `Err`. Unserialised, that write lands inside another test's reset-record-read
+/// `Err`. Unserialized, that write lands inside another test's reset-record-read
 /// window and inflates its totals by one. It did exactly that in CI while
 /// passing locally five runs in a row, because the race needs the right
 /// interleaving and one more serialized test was enough to produce it.

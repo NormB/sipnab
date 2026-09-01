@@ -163,7 +163,7 @@ fn the_notice_names_the_binary_and_denies_full_validation() {
 ///
 /// Reading `SIPNAB_CORPUS` directly is how a *new* corpus suite would go
 /// silent again without touching anything this file watches, so the read is
-/// centralised and the bypass is a build-time-visible failure.
+/// centralized and the bypass is a build-time-visible failure.
 #[test]
 fn no_test_source_reads_the_corpus_variable_directly() {
     let mut offenders = Vec::new();

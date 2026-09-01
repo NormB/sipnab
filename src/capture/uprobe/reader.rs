@@ -46,7 +46,7 @@ struct Band {
 /// to remove a tracepoint that still has an open perf consumer, so the rings
 /// must close before the probes are removed. Declared the other way round, a
 /// clean shutdown would leave every probe attached to a production library —
-/// measured, not theorised: the first end-to-end run leaked four probes exactly
+/// measured, not theorized: the first end-to-end run leaked four probes exactly
 /// that way.
 pub struct UprobeReader {
     /// Dropped FIRST.
@@ -64,7 +64,7 @@ pub struct UprobeReader {
 pub struct Target {
     /// Path that names the library **from sipnab's own mount namespace**.
     ///
-    /// For a containerised process this is a `/proc/<pid>/root/…` path, not the
+    /// For a containerized process this is a `/proc/<pid>/root/…` path, not the
     /// path the process itself sees. See
     /// [`TlsLibrary::probe_path`](super::discover::TlsLibrary::probe_path).
     pub library: std::path::PathBuf,

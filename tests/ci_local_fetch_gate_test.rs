@@ -3,7 +3,7 @@
 //! Every system package a hosted CI job needs must come from a local cache
 //! first, not from the Ubuntu archives on every run.
 //!
-//! Measured, not theorised. On 2026-08-20 the `Security audit` job of the
+//! Measured, not theorized. On 2026-08-20 the `Security audit` job of the
 //! 0.5.118 CI run sat in `apt-get install -y libpcap-dev` for **15 minutes**
 //! (`23:44:35Z` to `23:59:51Z`) and was canceled, which failed the aggregate
 //! `CI success` job and blocked the release tag. Nothing was wrong with the

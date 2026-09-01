@@ -218,7 +218,7 @@ impl Completion {
 /// client could not then build a URI out of what it was offered.
 ///
 /// Public because the server applies it while READING a large vocabulary
-/// rather than after materialising it — the dialog store holds up to
+/// rather than after materializing it — the dialog store holds up to
 /// `--limit` entries, and cloning all of them to discard most is work
 /// nobody asked for. Two copies of this predicate would let a value one side
 /// offered be dropped by the other, and the symptom would be a completion

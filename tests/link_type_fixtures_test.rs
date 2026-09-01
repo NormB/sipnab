@@ -5,7 +5,7 @@
 //! Each of these link types had decoder code and no capture behind it:
 //!
 //! * **DLT_LOOP (108)** — OpenBSD loopback encapsulation. It was implemented
-//!   alongside DLT_NULL and covered only by frames synthesised inside a unit
+//!   alongside DLT_NULL and covered only by frames synthesized inside a unit
 //!   test, so nothing exercised the reader, the pipeline and the report
 //!   against a real file. `tests/link_layer_decap_test.rs` does exactly that
 //!   for DLT_NULL against `h263-over-rtp.pcap`; this is the missing half.

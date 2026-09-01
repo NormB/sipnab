@@ -102,7 +102,7 @@ pub enum UprobeBackend {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UprobeTarget {
     /// Path naming the library **from sipnab's own mount namespace** — for a
-    /// containerised process a `/proc/<pid>/root/…` path, not the one the
+    /// containerized process a `/proc/<pid>/root/…` path, not the one the
     /// process itself sees.
     pub library: String,
     /// Exported write function to probe.

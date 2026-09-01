@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**26 open, 419 done** across 25 sections.
+**27 open, 419 done** across 26 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -66,6 +66,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | HX | 1 | 2 | `#######...` |
 | AS | 6 | 1 | `#.........` |
 | DOC | 0 | 16 | `##########` |
+| SPELL | 1 | 0 | `..........` |
 | MCPX | 1 | 6 | `#########.` |
 | P5 | 7 | 13 | `######....` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
@@ -166,7 +167,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   requested-first, halving, no-promotion, and termination/non-zero. Docs
   updated in [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md), [`docs/config-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/config-reference.md) and both
   website mirrors. **Caveat — read CT7. Corrected 2026-08-05:** this used to end
-  *"so most of this win is unrealised until CT7 lands"*, and CT7 has since
+  *"so most of this win is unrealized until CT7 lands"*, and CT7 has since
   landed. The arithmetic still holds for the TUI, which keeps immediate mode by
   design and therefore keeps TPACKET_V2: on a stock server with NIC offloads on,
   V2 slot sizing means 64 MiB holds only ~1,000 packets. Every headless run now
@@ -2447,11 +2448,11 @@ output path.
   - A ref must be honest about itself: `resolvable: true | false |
     "reconstructed"`. File sources can seek and return real bytes. Live sources
     hold parsed messages and not frames, which is exactly why `export_capture`
-    re-synthesises — so they need a bounded raw-frame ring
+    re-synthesizes — so they need a bounded raw-frame ring
     (`--mcp-evidence-ring 256MB`) or an explicit reconstruction marker. Do not
     paper over the difference.
   - Composes with PA3: a ref points at a frame, not at content, so it survives
-    pseudonymisation. The agent can cite what it is not permitted to read.
+    pseudonymization. The agent can cite what it is not permitted to read.
   - Granularity: frame-level is easy, byte-range-within-message is much better,
     and the parser already carries spans. Field-level is what lets a lint
     finding point at the specific malformed `Contact` rather than the message.
@@ -2689,13 +2690,13 @@ output path.
     the exposure there is latent rather than live — but `export_audio` is on the
     MCP surface and writes the conversation itself.
   - **A boolean flag is the wrong design.** Naive masking destroys correlation,
-    and correlation is the entire diagnostic value. Keyed pseudonymisation with
+    and correlation is the entire diagnostic value. Keyed pseudonymization with
     structure preservation: E.164 to a prefix-preserving token with configurable
     retained prefix so route/NPA analysis survives; IPs via Crypto-PAn style
     prefix-preserving mapping (Xu et al., already solved in the netflow
-    anonymisation literature) so NAT-mismatch and subnet reasoning still work on
+    anonymization literature) so NAT-mismatch and subnet reasoning still work on
     pseudonyms; digest `response`/`nonce`/`cnonce`/`nc` **deleted** rather than
-    tokenised, since none of it survives anonymisation with diagnostic value
+    tokenized, since none of it survives anonymization with diagnostic value
     intact; DTMF reduced to a count and a time ("8 digits collected at t+4.2s")
     with the digits destroyed; `export_audio` either refused or emitting an
     energy-envelope WAV that preserves talk/silence for one-way and clipping
@@ -2708,7 +2709,7 @@ output path.
     beside the stdio invariant.
   - **The bug that will actually ship is free text.** `"RTP from 10.0.2.15 ->
     10.0.2.20 only"` leaks two addresses through a `hints[]` string while every
-    structured field is dutifully tokenised. Same for `search_messages` snippets
+    structured field is dutifully tokenized. Same for `search_messages` snippets
     (raw body bytes), `render_ladder` markdown, and the markdown/text arms of
     `get_dialog_report`. Fix by making hints structured
     (`{template: "one_way_media", args: {src, dst}}`) and rendering *after*
@@ -2768,7 +2769,7 @@ output path.
     trying to own the workflow. `generate_fail2ban_rule { finding_id }` scoped
     to one finding, with evidence attached.
   - **Fix the pcap asterisk here.** `export_capture` honestly warns that frames
-    are re-synthesised, but that weakness lands exactly where repro needs
+    are re-synthesized, but that weakness lands exactly where repro needs
     strength. When the source is a *file*, seek and copy the original frames for
     a Call-ID — RTP included, real link layer, byte-exact. Wants PA1's frame
     addressing.
@@ -2840,9 +2841,9 @@ output path.
   stateless wrappers with nothing to say between turns.
   - Uses in value order: alert narration (AlertEngine trips `reg_flood`, sipnab
     assembles structured evidence and asks the client's model for a
-    two-sentence characterisation — LLM capability with no key in the config and
+    two-sentence characterization — LLM capability with no key in the config and
     no weights in the binary); long-tail novelty (unknown UA, unregistered
-    response code, unparsed SDP attribute); cluster labeling amortised once per
+    response code, unparsed SDP attribute); cluster labeling amortized once per
     dialog signature and cached, so the cost pays off across every later query;
     and an NL query bar in the TUI that samples for a Filter DSL expression and
     validates it against sipnab's own parser before running it.
@@ -2890,7 +2891,7 @@ output path.
 - [x] **PA13 — `build_evidence_package { call_ids[], filename }`. DONE 2026-08-28.** pcapng, per-call ladder and RTP stats, manifest and a README carrying the rebuilt-frames disclaimer. Ladder and stats come from calling `render_ladder` and `rtp_stats` themselves, so a package cannot disagree with what the agent was shown. Artifacts are named by ORDINAL, never by Call-ID -- a second traversal class, since a Call-ID is attacker-influenced text.
 
   ORIGINAL: `build_evidence_package { call_ids[], filename }`.** pcap, ladder,
-  RTP stats and report in one directory, with the re-synthesised-frames
+  RTP stats and report in one directory, with the re-synthesized-frames
   disclaimer baked into a README *inside* it — the artifact is what gets
   forwarded to the carrier, so that is where the warning has to live. Much
   stronger once PA1 makes every claim dereferenceable and PA7 makes the pcap
@@ -3557,7 +3558,7 @@ authoritative; the PB text above adds only what they do not already say.
   reinstates exactly that.
 
   What works instead: carry the frame `Bytes` on `ParsedPacket` and hash at
-  materialisation. `pp.payload` is already `data.slice(..)` of the same
+  materialization. `pp.payload` is already `data.slice(..)` of the same
   allocation, so the frame is retained for every packet either way — the added
   cost is one more refcount increment on a counter the packet already holds,
   against ~240 bytes of dependent FNV multiplies saved on 93% of frames.
@@ -4754,7 +4755,7 @@ a web-filtering appliance silently discarding UDP. sipnab read one of them as
   school, campus and corporate networks that is most often a security
   appliance — web filter, secure web gateway, firewall or IPS — discarding UDP
   it does not recognize. That is the answer the originating investigation
-  reached, generalised.
+  reached, generalized.
 
 - [x] **NAT2 — a private media address offered to a public peer is not
   flagged.** An SDP `c=` line carrying an [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) / [RFC 4193](https://www.rfc-editor.org/rfc/rfc4193) / link-local
@@ -5082,8 +5083,8 @@ take:
   reproducible only against traffic that cannot be shared.
 
 - [x] **HX2 (done 2026-09-01) — make the media anchor swappable: rtpengine, rtpproxy, or
-  neither.** Parameterise the anchor the way `RTPENGINE_SOCK` is already
-  parameterised, so one variable selects the relay and the same call scenarios
+  neither.** Parameterize the anchor the way `RTPENGINE_SOCK` is already
+  parameterized, so one variable selects the relay and the same call scenarios
   run under each. "Neither" matters too: direct media between endpoints is the
   case where sipnab must attribute streams with no relay assertion at all, and
   it is the control the other two are measured against.
@@ -5188,7 +5189,7 @@ behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
   Population A is pjproject (`res_pjsip`); B is `chan_sip`. The split
   reproduces per source IP and across three separate capture sets, and the
   `z9hG4bKPj` shape also appears from Grandstream UCM and FreePBX, so it
-  generalises past the bare Asterisk banner. Whether an endpoint is `chan_sip`
+  generalizes past the bare Asterisk banner. Whether an endpoint is `chan_sip`
   or `res_pjsip` changes the entire debugging path — different config, NAT
   handling and re-INVITE behavior — and the banner cannot answer it.
 
@@ -5477,6 +5478,38 @@ class recur:
 - [x] **DOC15 (done 2026-08-30) — 44 of 51 MCP tools declare no `outputSchema`**, and 17 live
   response keys are undocumented. Config keys outside `[limits]` are also
   ungated: the `[limits]` gate is a working template covering 26 of 123.
+
+## SPELL — British spellings the gates still cannot see (added 2026-09-01)
+
+The US-English gate checked a list of about seventy words. 0.5.142 replaced
+that with a morphological rule for the `-ise/-isation/-isable/-yse` class and
+swept **186 occurrences across 95 files**, and the new rule splits snake_case
+and camelCase — which is where fourteen of them had been hiding, because `_`
+is a word character and a `\b` match never fires there.
+
+The other British classes are still list-only, and the same blind spot applies
+to them. Measured 2026-09-01: **45 identifiers** carry `-our`, `-ogue` or a
+doubled `-lled` inside a token, invisible to both gates.
+
+- [ ] **SPELL1 — the `-our`, `-ogue` and doubled-`-lled` classes inside
+  identifiers.** `every_documented_limits_key_changes_observable_behaviour`,
+  `a_healthy_dialog_gets_no_signalling_section`,
+  `both_session_id_rules_are_catalogued_and_resolvable_by_identifier`,
+  `a_zero_lockon_window_is_refused_while_a_real_one_is_honoured`. Fixing them
+  is a rename, which is cheap; the care is in the two that are not internal.
+  `cancelled_count` in [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs)
+  is a published key and must be treated as the `unanalysed_*` family was — a
+  wire contract with a deprecation window, not a sweep. `aria-labelledby` in
+  the templates is the HTML spec's own attribute and must never be touched;
+  the existing gate already says so in a comment, and a token-aware rule needs
+  that exemption made explicit rather than implied by a word-boundary
+  accident.
+
+  These classes have no clean morphology — `-our` covers `four`, `hour`,
+  `pour`, `contour` and `devour` as readily as the British forms — so the
+  honest shape is the existing list plus token splitting, not a new suffix
+  rule. That is the work: apply [`tests/us_spelling_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/us_spelling_test.rs)'s tokenizer to
+  `docs_drift_test.rs`'s list, then fix what it finds.
 
 ## MCPX — gaps found by surveying the VoIP MCP field (added 2026-08-21)
 
@@ -5976,7 +6009,7 @@ ones that fit an analysis tool.
 **mimalloc**, which [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) installs as the global allocator. mimalloc is
 C compiled by the `cc` crate, and `-Zsanitizer=thread` instruments Rust only, so
 TSan sees neither its alloc/free (no shadow reset when a block is recycled) nor
-its internal cross-thread synchronisation (no happens-before edges). Every block
+its internal cross-thread synchronization (no happens-before edges). Every block
 the allocator hands from one thread to another therefore reads as a data race.
 
 The bisect: the same binary, same fixture, same TSan options, differing only in

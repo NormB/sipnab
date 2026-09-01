@@ -322,7 +322,7 @@ pub fn plan_targets(
     if targets.is_empty() {
         return Err(format!(
             "every TLS library found is unreachable from sipnab's mount namespace \
-             ({}). The processes using them are most likely containerised and \
+             ({}). The processes using them are most likely containerized and \
              sipnab cannot read /proc/<pid>/root — run as root",
             unreachable.join(", ")
         ));
@@ -525,7 +525,7 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
     /// Two files, one path string. The probe must reach the one the process
     /// actually mapped, and the inode is what decides.
     #[test]
-    fn a_containerised_library_is_probed_through_the_process_root() {
+    fn a_containerized_library_is_probed_through_the_process_root() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let root = tmp.path();
 

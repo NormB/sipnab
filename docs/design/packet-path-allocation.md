@@ -2,7 +2,7 @@
 
 **Status:** P1 and P2 both SHIPPED in 0.5.91, 2026-08-10. P1 landed as
 `ddde6b4` — `ParsedPacket` carries a `Copy` locator, and only the two sites
-that retain a pointer materialise a `FrameRef`. P2 landed as `ac75f2f` — the
+that retain a pointer materialize a `FrameRef`. P2 landed as `ac75f2f` — the
 reader cuts frames from a shared 64 KiB block instead of allocating one per
 packet. P3 is still open: nothing in the tree installs or runs `coz`.
 **Check:** `grep -n 'pub frame' src/capture/parse.rs` returns
@@ -238,7 +238,7 @@ through both constructors is plumbing. Two lighter alternatives, neither yet
 evaluated:
 
 - Leak one `&'static str` per capture file in the reader — bounded, a handful
-  of short strings for a process lifetime — and have each consumer memoise a
+  of short strings for a process lifetime — and have each consumer memoize a
   single `(&'static str, Arc<str>)` pair, re-deriving only when the source
   changes. No table, no plumbing, correct across a multi-file set.
 - Keep the index, and give each consumer a one-entry cache of the last
@@ -248,10 +248,10 @@ Both make the common single-source case one atomic per *run* rather than per
 packet, which is the entire point.
 
 **Decided: the leaked `&'static str`.** The index does not actually avoid the
-table — a consumer memoising `(idx, Arc<str>)` still needs something to resolve
+table — a consumer memoizing `(idx, Arc<str>)` still needs something to resolve
 the index the *first* time, which is the plumbing the alternative existed to
 avoid. A `&'static str` is self-describing: the consumer builds its `Arc<str>`
-straight from it and memoises the pair, so no table reaches either consumer and
+straight from it and memoizes the pair, so no table reaches either consumer and
 no constructor signature changes.
 
 What is being leaked is one interned path per capture source, for the process
@@ -274,7 +274,7 @@ Implementation order, with the multi-file assertion written first:
 3. `ParsedPacket::frame` becomes the `Copy` locator. Zero literal churn — all
    28 sites are `None`.
 4. `parse_packet` stores the locator instead of calling `frame_ref()`.
-5. The two retention sites build the `FrameRef`, each memoising one
+5. The two retention sites build the `FrameRef`, each memoizing one
    `(&'static str, Arc<str>)` pair.
 
 **`FrameRef` itself does not change**, so `--json`, the REST API and MCP keep

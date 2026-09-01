@@ -903,7 +903,7 @@ mod tests {
                         match (chars.next(), chars.next()) {
                             (Some(c), None) => plain(KeyCode::Char(c)),
                             _ => panic!(
-                                "f-key bar legend {legend:?} has an unrecognised token {tok:?}. \
+                                "f-key bar legend {legend:?} has an unrecognized token {tok:?}. \
                                  Teach bar_legend_keys what key it names — an unparsed legend \
                                  is an unverified promise to the operator."
                             ),

@@ -114,7 +114,7 @@ def content_length_lies(t0):
 
 
 def uri_without_brackets(t0):
-    """SIP-3261-20: a parameterised URI in a `To` header with no angle brackets.
+    """SIP-3261-20: a parameterized URI in a `To` header with no angle brackets.
 
     RFC 3261 §20 requires the brackets once a URI carries parameters, because
     without them a `;tag=` cannot be told from a URI parameter. Real stacks

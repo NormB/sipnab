@@ -225,7 +225,7 @@ fn scrape_carries_the_process_counters_into_the_exposition() {
 /// capture has not seen reads `0` instead of no-data. This is the difference
 /// between "no 5xx responses" and "the metric does not exist".
 #[test]
-fn scrape_initialises_closed_label_sets() {
+fn scrape_initializes_closed_label_sets() {
     let body = format_metrics(&PrometheusMetrics::for_scrape());
 
     for class in ["1xx", "2xx", "3xx", "4xx", "5xx", "6xx"] {

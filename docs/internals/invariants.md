@@ -513,7 +513,7 @@ Writing it somewhere else is not disclosure, and it reads as one.
   produces, while an entire WebRTC signaling leg went unreported. Adding a
   disclosure to one surface is not the fix; the fix is adding it to every
   surface that answers the question it qualifies.
-- `export_capture` re-synthesises a frame per SIP message rather than writing
+- `export_capture` re-synthesizes a frame per SIP message rather than writing
   the packets it read. The function's own doc comment said so plainly and
   called the result "honest about the rest". The tool description an MCP client
   reads said "writes the packets sipnab is holding to a pcap file".

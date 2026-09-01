@@ -67,7 +67,7 @@ pub const KEY_BYTES: usize = 32;
 /// The file every ephemeral key is drawn from.
 ///
 /// Named as a constant so the one place that reads entropy is greppable. There
-/// is no fallback: a run that cannot read it fails rather than pseudonymising
+/// is no fallback: a run that cannot read it fails rather than pseudonymizing
 /// under a key an attacker could guess, because a weak key here does not
 /// degrade the output gracefully — it makes every token in the export
 /// reversible by anyone holding a phone book.
@@ -445,7 +445,7 @@ impl<'a> Redactor<'a> {
     /// interconnect, and the `void` convention exists in the same section
     /// precisely because operators treat the transit list as commercially
     /// secret. `void` is passed through unchanged: it is the spec's own way of
-    /// saying "no operator", so pseudonymising it would invent an operator
+    /// saying "no operator", so pseudonymizing it would invent an operator
     /// where the sender deliberately named none.
     #[must_use]
     pub fn operator(&self, value: &str) -> String {
@@ -726,7 +726,7 @@ impl<'a> Redactor<'a> {
         out
     }
 
-    /// Keep the header parameters, pseudonymising the ones that identify.
+    /// Keep the header parameters, pseudonymizing the ones that identify.
     ///
     /// `tag` is a dialog identifier and stays: it correlates messages within
     /// one capture and says nothing about a person. `+sip.instance` does not —
@@ -1382,7 +1382,7 @@ mod tests {
 
     /// The unspecified address is a protocol signal, not an address.
     ///
-    /// RFC 3264 §8.4 hold is `c=IN IP4 0.0.0.0`. Pseudonymising it deletes a
+    /// RFC 3264 §8.4 hold is `c=IN IP4 0.0.0.0`. Pseudonymizing it deletes a
     /// call state from the export and takes the hold lint rule with it.
     #[test]
     fn the_unspecified_address_is_left_alone() {

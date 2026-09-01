@@ -837,7 +837,7 @@ report a healthy network in the middle of an outage.
 > `--syslog` and `--alert-json` are the equivalent boolean forms; naming the
 > channel here does the same thing. A value containing `:` is instead parsed as
 > an alert rule (`<name>:<threshold>/<window>[:<cooldown>]`, window needs an
-> `s`/`m`/`h` suffix). An unrecognised bare word draws a warning naming the
+> `s`/`m`/`h` suffix). An unrecognized bare word draws a warning naming the
 > valid channels. It used to fail silently, so a documented `--alert syslog`
 > enabled nothing at all.
 
@@ -1184,8 +1184,8 @@ CoreAudio the moment anything touches it.
 - `sipnab -N -I calls.pcap --lint --lint-suppress-file ci.sipnablint --no-cli-print` — a suppression list of the pipeline's own, for a CI job whose tolerances differ from the tree's
 - `sipnab -N -I calls.pcap --lint --lint-no-suppress --no-cli-print` — the full catalog, ignoring every suppression file, for auditing what the project has agreed to live with
 - `sipnab -N -I ring-00042.pcapng --max-metadata-file-bytes 8589934592 --report` — read the embedded names and TLS secrets out of an 8 GiB ring member you captured yourself, which the shipped ceiling refuses outright
-- `sipnab -N -I ring-00042.pcapng --max-metadata-file-bytes 8589934592 --strip-secrets sanitised.pcapng` — the same file, sanitised for handover; the copy costs roughly twice the ceiling in memory, so raise it only for a file you trust
-- `sipnab -N -I archive.pcapng.gz --max-gunzip-bytes 8589934592 --strip-secrets sanitised.pcapng` — sanitise an 8 GiB pcapng you compressed yourself, without spending the disk that decompressing it by hand would need
+- `sipnab -N -I ring-00042.pcapng --max-metadata-file-bytes 8589934592 --strip-secrets sanitized.pcapng` — the same file, sanitized for handover; the copy costs roughly twice the ceiling in memory, so raise it only for a file you trust
+- `sipnab -N -I archive.pcapng.gz --max-gunzip-bytes 8589934592 --strip-secrets sanitized.pcapng` — sanitize an 8 GiB pcapng you compressed yourself, without spending the disk that decompressing it by hand would need
 - `sipnab -N -I from-customer.pcapng.gz --max-gunzip-bytes 268435456 --report` — the opposite, for a file that arrived from outside: a quarter-gigabyte ceiling on the embedded names and secrets sipnab reads out of it, so a gzip bomb wearing a capture's name cannot take the box down
 - `sipnab -N -I isup-trunk.pcap --max-tcp-buffer 1048576 --json-dialogs --no-cli-print` — a carrier trunk whose SIP/TCP messages carry encapsulated ISUP bodies past 64 KiB: at the shipped ceiling sipnab cuts each one in half and reports it malformed, and at 1 MiB the same bytes produce the call
 - `sudo sipnab -d eth0 --max-tcp-buffer 262144` — watch a live SBC that answers with long `Record-Route` sets, holding a quarter-megabyte per TCP direction so a large response frames whole instead of arriving as two malformed fragments

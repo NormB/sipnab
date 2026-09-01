@@ -70,7 +70,7 @@ pub fn all() -> Vec<Workflow> {
                    4. `build_evidence_package` for the calls you will cite.\n\
                    \n\
                    Quote the response codes and timings the capture holds. Do not \
-                   characterise the carrier's intent, and do not state a cause the messages \
+                   characterize the carrier's intent, and do not state a cause the messages \
                    do not show.",
         },
         Workflow {

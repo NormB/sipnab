@@ -1519,7 +1519,7 @@ mod tests {
 
     /// The bracket splitter recognizes a name-addr wherever the brackets sit.
     #[test]
-    fn bracket_split_recognises_name_addr() {
+    fn bracket_split_recognizes_name_addr() {
         assert_eq!(
             split_uri_value("\"Alice\" <sip:a@b>;tag=1"),
             UriBrackets::Bracketed

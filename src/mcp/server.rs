@@ -267,6 +267,21 @@ impl SipnabMcp {
         dialog_store: Arc<RwLock<DialogStore>>,
         stream_store: Arc<RwLock<StreamStore>>,
     ) -> Self {
+        let router = Self::tool_router()
+            + Self::aggregation_router()
+            + Self::expectations_router()
+            + Self::inspect_router()
+            + Self::provenance_router()
+            + Self::compare_router()
+            + Self::endpoints_router()
+            + Self::relay_router()
+            + Self::await_condition_router();
+        // Shadowed rather than a `+ vcon_router()` term, because the module
+        // itself is absent without the feature. A mismatch between the two is
+        // a compile error rather than a tool that lists and cannot run.
+        #[cfg(feature = "vcon")]
+        let router = router + Self::vcon_router();
+
         Self {
             dialog_store,
             stream_store,
@@ -300,16 +315,7 @@ impl SipnabMcp {
             audit_sink: None,
             hep_auth_mode: None,
             subscriptions: super::subscribe::Subscriptions::new(),
-            tool_router: Self::tool_router()
-                + Self::aggregation_router()
-                + Self::expectations_router()
-                + Self::inspect_router()
-                + Self::provenance_router()
-                + Self::compare_router()
-                + Self::endpoints_router()
-                + Self::relay_router()
-                + Self::await_condition_router()
-                + Self::vcon_router(),
+            tool_router: router,
         }
     }
 
@@ -748,9 +754,9 @@ impl SipnabMcp {
     /// The only accepted input is a bare filename. Anything with a separator,
     /// a `..`, a root prefix, or a Windows drive letter is refused before any
     /// filesystem call — this is a rejection list applied to a value that must
-    /// already be a single component, not an attempt to sanitise a path.
+    /// already be a single component, not an attempt to sanitize a path.
     ///
-    /// Sanitising paths is where this class of bug lives: every clever
+    /// Sanitizing paths is where this class of bug lives: every clever
     /// normaliser eventually meets a symlink, a unicode separator, or a
     /// `..%2f`. Requiring one component and rejecting everything else has no
     /// such middle ground.
@@ -1566,7 +1572,7 @@ pub struct StartTlsCaptureParams {
     #[serde(default, alias = "flavours")]
     pub flavors: Vec<String>,
     /// Probe these libraries instead of discovering them. Each must be a path
-    /// this server can open — for a containerised process, the
+    /// this server can open — for a containerized process, the
     /// `/proc/PID/root/...` form. Empty means discover.
     #[serde(default)]
     pub libraries: Vec<String>,
@@ -1871,7 +1877,7 @@ fn rule_entry_json(rule: &crate::sip::lint::RuleMeta) -> serde_json::Value {
 
 /// Parse the `rulesets` argument, refusing an unknown name by naming the set.
 ///
-/// An unrecognised selector could reasonably be ignored. It must not be: a
+/// An unrecognized selector could reasonably be ignored. It must not be: a
 /// caller that asks for `rfc3621` and is handed the full catalog reads more
 /// findings than it selected and believes the filter worked.
 fn parse_rule_selectors(names: Option<&Vec<String>>) -> Result<Vec<RuleSelector>, rmcp::ErrorData> {
@@ -2095,11 +2101,11 @@ pub struct CaptureStatusResponse {
     /// Zero on live capture, where BPF filtered before the pipeline saw
     /// anything and there is nothing to under-report.
     pub unanalysed_sip_messages: u64,
-    /// The busiest ports carrying that unanalysed SIP, up to five.
+    /// The busiest ports carrying that unanalyzed SIP, up to five.
     ///
     /// Actionable rather than merely alarming: these are the values to pass to
     /// `--portrange`, so the answer names its own remedy.
-    pub unanalysed_busiest_ports: Vec<UnanalysedPort>,
+    pub unanalysed_busiest_ports: Vec<UnanalyzedPort>,
     /// SIP-over-WebSocket (RFC 7118) sipnab recognized and did not analyze
     /// because neither port was in the WebSocket port set.
     ///
@@ -2118,12 +2124,12 @@ pub struct CaptureStatusResponse {
     /// gated, this was wrapped in a WebSocket frame on a port sipnab was not
     /// asked to unwrap. Zero on live capture, for the same reason.
     pub unanalysed_websocket_messages: u64,
-    /// The busiest ports carrying that unanalysed SIP-over-WebSocket, up to
+    /// The busiest ports carrying that unanalyzed SIP-over-WebSocket, up to
     /// five.
     ///
     /// These are the values to pass to `--ws-portrange`, so the answer names
     /// its own remedy — `--portrange` will not recover them.
-    pub unanalysed_websocket_ports: Vec<UnanalysedPort>,
+    pub unanalysed_websocket_ports: Vec<UnanalyzedPort>,
     /// The background load filling this capture, while one runs. Null
     /// otherwise, including before any `open_capture` call.
     pub load: Option<LoadStatus>,
@@ -2443,7 +2449,7 @@ impl From<crate::output::prometheus::CaptureQuality> for CaptureQualityJson {
 /// `--portrange` for plain signaling, `--ws-portrange` for SIP-over-WebSocket.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
-pub struct UnanalysedPort {
+pub struct UnanalyzedPort {
     /// The service port.
     pub port: u16,
     /// SIP messages skipped on it.
@@ -3702,7 +3708,7 @@ impl SipnabMcp {
     /// [`narrow`](super::completion::narrow), through the same
     /// [`matches`](super::completion::matches) rule, so a Call-ID that will not
     /// be offered is never cloned. The dialog store holds up to
-    /// `--limit` entries — 100,000 by default — and materialising all of
+    /// `--limit` entries — 100,000 by default — and materializing all of
     /// them to discard most is work nobody asked for. Comparing them all is
     /// not: it is strictly less than `list_dialogs` already does under the
     /// same lock on every call.
@@ -5459,7 +5465,7 @@ impl SipnabMcp {
                     .ports
                     .iter()
                     .take(5)
-                    .map(|p| UnanalysedPort {
+                    .map(|p| UnanalyzedPort {
                         port: p.port,
                         messages: p.messages,
                     })
@@ -5469,7 +5475,7 @@ impl SipnabMcp {
                     .ports
                     .iter()
                     .take(5)
-                    .map(|p| UnanalysedPort {
+                    .map(|p| UnanalyzedPort {
                         port: p.port,
                         messages: p.messages,
                     })
@@ -5513,6 +5519,9 @@ impl SipnabMcp {
             ("metrics", cfg!(feature = "metrics")),
             ("audio", cfg!(feature = "audio")),
             ("plugins", cfg!(feature = "plugins")),
+            ("vcon", cfg!(feature = "vcon")),
+            ("bpf", cfg!(feature = "bpf")),
+            ("wasm", cfg!(feature = "wasm")),
         ] {
             if on {
                 features.push(name.to_string());
@@ -6925,7 +6934,7 @@ impl SipnabMcp {
                        in the configured file root and returns the path. The \
                        file is NOT a copy of the capture: sipnab keeps parsed \
                        messages rather than the original frames, so each message \
-                       is written as a re-synthesised Ethernet/IP/UDP frame with \
+                       is written as a re-synthesized Ethernet/IP/UDP frame with \
                        reconstructed link and IP headers. It contains no RTP, no \
                        RTCP and no non-SIP traffic, and a SIP-over-TCP message \
                        is written as UDP. Use it to preserve signaling before \
@@ -8680,7 +8689,7 @@ impl ServerHandler for SipnabMcp {
     }
 }
 
-/// Write held SIP messages to a pcap by re-synthesising a frame per message.
+/// Write held SIP messages to a pcap by re-synthesizing a frame per message.
 ///
 /// The dialog store keeps parsed messages, not the original frames, so an
 /// export rebuilds an Ethernet/IP/UDP packet around each message's raw bytes —
@@ -8961,7 +8970,7 @@ mod tests {
     /// is what it is -- and until this key existed the response was
     /// byte-identical whether one had gone past or a thousand.
     ///
-    /// Asserted at ZERO as well as present, for the reason the unanalysed-SIP
+    /// Asserted at ZERO as well as present, for the reason the unanalyzed-SIP
     /// test below gives about key presence: a field that appears only once
     /// something has happened is a field no client learns exists.
     #[tokio::test]
@@ -9007,7 +9016,7 @@ mod tests {
     /// the defect was a field that did not exist, and a client that cannot see
     /// the key cannot see the loss whatever number would have been in it.
     #[tokio::test]
-    async fn capture_status_carries_the_unanalysed_sip_count() {
+    async fn capture_status_carries_the_unanalyzed_sip_count() {
         let result = empty_server()
             .capture_status()
             .await
@@ -9016,7 +9025,7 @@ mod tests {
 
         assert!(
             v.get("unanalysed_sip_messages").is_some(),
-            "a client must be able to see that SIP went unanalysed: {v}"
+            "a client must be able to see that SIP went unanalyzed: {v}"
         );
         assert!(
             v["unanalysed_busiest_ports"].is_array(),

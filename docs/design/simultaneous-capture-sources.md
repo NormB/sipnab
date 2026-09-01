@@ -363,7 +363,7 @@ while watching its own NIC is that wedge in its smallest form.
 ### 5.1 Shape
 
 One coordinator thread, one reader thread per member, one `tx.clone()` each —
-`run_multi_capture` ([`src/capture/native.rs:735`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L735)) generalised from a device list
+`run_multi_capture` ([`src/capture/native.rs:735`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L735)) generalized from a device list
 to a source list. No new concurrency primitive, no new channel, no ordering
 guarantee that does not already hold.
 
@@ -538,7 +538,7 @@ signaling, the NIC supplies RTP, and §3.1 means dialog-to-stream binding works
 with no new correlation code.
 
 **Scope:** a `Composite(Vec<CaptureSource>)` variant; `plan` builds it when `-d`
-and `-L` both appear; `run_multi_capture` generalised from device names to source
+and `-L` both appear; `run_multi_capture` generalized from device names to source
 descriptors; `TransmitPermit::for_source` returns a permit only when **every**
 member is `Live` or `Hep`, so the security property is conjunctive rather than
 disjunctive and cannot be widened by adding a member.

@@ -472,7 +472,7 @@ mod tests {
     /// The JSON shape is part of the contract: three named fields, so a
     /// consumer can compare the instance without string surgery.
     #[test]
-    fn etag_serialises_with_named_fields() {
+    fn etag_serializes_with_named_fields() {
         let tag = CaptureIdentity::new().etag(5, 6);
         let v = serde_json::to_value(&tag).expect("serialize");
         assert_eq!(v["instance"], tag.instance);

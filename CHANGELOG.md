@@ -10,6 +10,44 @@ entry that carries them.
 
 ## [0.5.142] - 2026-09-01
 
+### Fixed
+
+- **A build without `vcon` no longer advertises the two vCon tools.** The
+  router was composed unconditionally and only the inner helpers were split on
+  the feature, so a `native,hep,api,mcp,mcp-http` binary listed `export_vcon`
+  and `validate_vcon` in `tools/list`, complete with schemas, and refused every
+  call. `tools/list` is the only contract MCP gives an agent: a tool in it that
+  can never run is worse than an absent one, because the agent plans around it
+  and the error names nothing it could have chosen differently. The tools are
+  now registered exactly where the exporter exists, and the broken state no
+  longer compiles.
+
+- **`server_capabilities` names every feature the crate declares.** It listed
+  ten and omitted `vcon`, `bpf` and `wasm` -- while sipnab's own refusal told
+  operators to consult it for precisely the feature it could not name. Its
+  comment said it "cannot claim a feature the binary does not have", which was
+  true and half the rule: nothing stopped it omitting one the binary does.
+
+- **`check-feature-deps.py` reads `all(..)` as a conjunction.** It treated every
+  feature in a `#[cfg]` as an alternative that must satisfy the module's imports
+  alone -- right for `any(..)`, and wrong for `all(..)`, where it demanded each
+  half declare the other's crates to satisfy a build that cannot exist. The
+  `any` strictness that caught the 0.5.130 break is unchanged and now has a
+  test of its own, because relaxing a gate is the moment to prove the half that
+  catches things still catches them.
+
+- **186 British spellings across 95 files.** The tree is US English and a gate
+  has said so since 0.5.105 -- by checking a list of about seventy words
+  somebody thought of. It caught `recognise`; it had never heard of
+  `containerized`, `synthesized`, `unrecognized`, `sanitized` or
+  `materializing` in their British forms, all of which were sitting in the tree
+  passing every gate this repository has. The rule is now morphological, so a
+  British spelling nobody listed is still caught, and it splits snake_case and
+  camelCase -- where fourteen of them had been hiding from a word-boundary
+  match, because `_` is a word character and `\b` never fires there. The
+  published `unanalysed_*` keys keep their spelling: those are a wire contract,
+  and correcting them is a deprecation, not a sweep.
+
 ### Added
 
 - **`validate_vcon` — check a container against the schema sipnab vendors.**

@@ -147,7 +147,7 @@ fn classify_file(path: &Path, portrange: Option<(u16, u16)>) -> Option<Tally> {
 /// before anything can report them.
 #[test]
 #[serial_test::serial(portrange_skips)]
-fn extension_method_requests_are_analysed_across_the_corpus() {
+fn extension_method_requests_are_analyzed_across_the_corpus() {
     let Some(root) = corpus_root() else { return };
 
     let mut files = 0usize;

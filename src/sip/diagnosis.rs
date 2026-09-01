@@ -643,7 +643,7 @@ pub fn diagnose_signaling_with_evidence(
 ///
 /// # Arguments
 ///
-/// * `icmp_type` / `icmp_code` — the raw bytes, so an unrecognised pair still
+/// * `icmp_type` / `icmp_code` — the raw bytes, so an unrecognized pair still
 ///   renders something rather than a claim.
 /// * `v6` — the numbering is different between RFC 792 and RFC 4443: v4 type 3
 ///   code 1 is "host unreachable", v6 type 3 code 1 is a reassembly timeout.

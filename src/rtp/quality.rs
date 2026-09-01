@@ -818,7 +818,7 @@ mod grounding_tests {
              third thing from a G.113 one and from a placeholder"
         );
         // Case is not part of the identity: an SDP `rtpmap` may spell the same
-        // codec either way, and a declaration that missed on capitalisation
+        // codec either way, and a declaration that missed on capitalization
         // would silently do nothing.
         assert_eq!(
             estimate_mos(10.0, 0.0, Some("silk")),

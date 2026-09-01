@@ -330,7 +330,7 @@ impl PcapWriter {
     /// saw the MCP tool description and never read the docs, so anything the
     /// file does not say about itself is something they will assume. The most
     /// important thing to say is when the frames were REBUILT rather than
-    /// copied: `export_capture` synthesises an Ethernet/IP/UDP frame around
+    /// copied: `export_capture` synthesizes an Ethernet/IP/UDP frame around
     /// each held SIP message, which is faithful at the SIP layer and invented
     /// below it. #103 fixed the tool description, which reaches the agent; this
     /// reaches the engineer holding the file.

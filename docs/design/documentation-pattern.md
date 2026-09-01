@@ -73,7 +73,7 @@ it is ordered for none of them.
 ## What was rejected: "novice" and "advanced" pages
 
 The obvious split is by reader skill. It does not work, for three reasons, and
-each has been observed rather than theorised:
+each has been observed rather than theorized:
 
 - **Nobody self-identifies as a novice.** A reader who has used sipnab for a
   week takes the advanced page and bounces off it. The label sorts by ego, not
@@ -176,7 +176,7 @@ as "templated". It is not, and stating an intention as an outcome is the
 failure this record was supposed to guard against. Measured 2026-08-19 across
 its 35 tool sections: 4 carry `**Returns**`, 20 have an argument table, 0 have
 a `<details>`. Rule 4's own justification — a reader jumping to their
-fourteenth tool must not re-learn the layout — is unrealised in the only page
+fourteenth tool must not re-learn the layout — is unrealized in the only page
 it was applied to.
 
 Note also that nothing enforces this rule. `task-first-docs.md` shipped its

@@ -427,7 +427,7 @@ fn the_cores_path_survives_a_truncated_file_like_the_single_threaded_path() {
 /// resolution orders the set by packet time and the failing member has to land
 /// SECOND for this to be the later-file case at all: `sip-register` (1312180642,
 /// Ethernet) < `loopback-dlt-loop` (1400000000, `DLT_LOOP`). `-I` order does not
-/// decide this. No `editcap` and no synthesised capture is involved, so the
+/// decide this. No `editcap` and no synthesized capture is involved, so the
 /// scenario is available on every machine that can run the suite.
 fn set_whose_second_file_rejects_an_ether_filter(dir: &Path) -> &'static str {
     for name in ["sip-register.pcap", "loopback-dlt-loop.pcap"] {

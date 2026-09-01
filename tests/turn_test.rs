@@ -72,7 +72,7 @@ fn turn_report() -> String {
 
 /// The whole point. 150 ChannelData frames carry RTP in both directions, and
 /// every one of them must reach the stream store as media rather than be
-/// discarded as an unrecognised datagram.
+/// discarded as an unrecognized datagram.
 #[test]
 fn relayed_media_reaches_the_stream_store_as_rtp() {
     let (stdout, stderr, code) = run(&["-N", "-I", &turn_fixture(), "--no-cli-print"]);
