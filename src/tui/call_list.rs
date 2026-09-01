@@ -1223,24 +1223,6 @@ pub fn render_column_selector(
     state: &CallListState,
     theme: &super::Theme,
 ) {
-    let popup_width: u16 = 38;
-    let popup_height: u16 = (ALL_COLUMNS.len() as u16) + 6; // columns + borders + 2-line footer
-    let w = popup_width.min(area.width);
-    let h = popup_height.min(area.height);
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    let popup_area = Rect::new(x, y, w, h);
-
-    frame.render_widget(Clear, popup_area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Columns ")
-        .style(Style::default().bg(theme.background));
-
-    let inner = block.inner(popup_area);
-    frame.render_widget(block, popup_area);
-
     let mut lines: Vec<ratatui::text::Line<'_>> = Vec::new();
     for (i, label) in COLUMN_LABELS.iter().enumerate() {
         let check = if state.visible_columns[i] { "x" } else { " " };
@@ -1263,13 +1245,43 @@ pub fn render_column_selector(
     }
     lines.push(ratatui::text::Line::from(""));
     lines.push(ratatui::text::Line::from(Span::styled(
-        "  Space: toggle  Enter: apply",
+        "  Space: toggle  Enter: apply  Esc: close",
         Style::default().fg(theme.muted),
     )));
     lines.push(ratatui::text::Line::from(Span::styled(
         "  s: save layout to config",
         Style::default().fg(theme.muted),
     )));
+
+    // Sized to what it SAYS. The width was a constant 38 and the footer that
+    // names the keys is 41 columns, so adding `Esc: close` -- which this
+    // dialog has always accepted and never mentioned -- would have truncated
+    // the line that documents it. `Paragraph` does not wrap here, so an
+    // overlong line goes off the right edge in silence.
+    let title = " Columns ";
+    let content = lines
+        .iter()
+        .map(ratatui::text::Line::width)
+        .max()
+        .unwrap_or(0);
+    // +2 for the borders, +1 so the longest line is not flush against them.
+    let desired = u16::try_from(content.max(title.len()).saturating_add(3)).unwrap_or(u16::MAX);
+    let w = desired.clamp(10, area.width.max(10));
+    let popup_height: u16 = u16::try_from(lines.len().saturating_add(2)).unwrap_or(u16::MAX);
+    let h = popup_height.min(area.height);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let popup_area = Rect::new(x, y, w, h);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().bg(theme.background));
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
 
     let visible_lines: Vec<ratatui::text::Line<'_>> =
         lines.into_iter().take(inner.height as usize).collect();

@@ -433,7 +433,9 @@ pub fn render_call_flow_direct(
     let height = area.height;
 
     if width < 30 || height < 5 {
-        buf.set_string(
+        crate::tui::render::set_string_clipped(
+            buf,
+            area,
             area.x,
             area.y,
             "Terminal too small",
@@ -444,7 +446,9 @@ pub fn render_call_flow_direct(
 
     let n = participants.len();
     if n == 0 {
-        buf.set_string(
+        crate::tui::render::set_string_clipped(
+            buf,
+            area,
             area.x,
             area.y,
             "No participants",
@@ -474,7 +478,9 @@ pub fn render_call_flow_direct(
             .min()
             .unwrap_or(0);
         if min_gap < 10 {
-            buf.set_string(
+            crate::tui::render::set_string_clipped(
+                buf,
+                area,
                 area.x,
                 area.y,
                 "Terminal too narrow for ladder",
@@ -508,7 +514,7 @@ pub fn render_call_flow_direct(
 
     // Row 1: Pipes
     for &px in &pipe_positions {
-        buf.set_string(px, area.y + 1, "\u{2502}", pipe_style); // │
+        crate::tui::render::set_string_clipped(buf, area, px, area.y + 1, "\u{2502}", pipe_style); // │
     }
 
     // Mark + Delta badge (Feature 1): render in the top-right corner
@@ -536,7 +542,7 @@ pub fn render_call_flow_direct(
             .bg(Color::Rgb(40, 35, 20))
             .add_modifier(Modifier::BOLD);
         // Render on row 1 (pipe row) at the far right — avoids overlapping endpoint labels
-        buf.set_string(badge_x, area.y + 1, &badge, badge_style);
+        crate::tui::render::set_string_clipped(buf, area, badge_x, area.y + 1, &badge, badge_style);
     }
 
     // Message rows: we expand each FormattedMessage into 1 + extra_lines rows
@@ -563,11 +569,25 @@ pub fn render_call_flow_direct(
                 let spacer_style = Style::default().fg(theme.muted).add_modifier(Modifier::DIM);
                 // Timestamp (gap label on first spacer, blank otherwise)
                 if !msg.timestamp.trim().is_empty() {
-                    buf.set_string(ts_col, y, &msg.timestamp, spacer_style);
+                    crate::tui::render::set_string_clipped(
+                        buf,
+                        area,
+                        ts_col,
+                        y,
+                        &msg.timestamp,
+                        spacer_style,
+                    );
                 }
                 // Dotted pipes at all column positions
                 for &px in &pipe_positions {
-                    buf.set_string(px, y, "\u{250A}", spacer_style); // ┊
+                    crate::tui::render::set_string_clipped(
+                        buf,
+                        area,
+                        px,
+                        y,
+                        "\u{250A}",
+                        spacer_style,
+                    ); // ┊
                 }
                 row += 1;
                 logical_row += msg_rows;
@@ -584,25 +604,46 @@ pub fn render_call_flow_direct(
             match msg.selection_state {
                 SelectionState::Selected => {
                     if !msg.timestamp.is_empty() {
-                        buf.set_string(ts_col, y, &msg.timestamp, msg.timestamp_style);
+                        crate::tui::render::set_string_clipped(
+                            buf,
+                            area,
+                            ts_col,
+                            y,
+                            &msg.timestamp,
+                            msg.timestamp_style,
+                        );
                     }
                 }
                 SelectionState::Normal => {
                     if !msg.timestamp.is_empty() {
                         let dim_ts = msg.timestamp_style.add_modifier(Modifier::DIM);
-                        buf.set_string(ts_col, y, &msg.timestamp, dim_ts);
+                        crate::tui::render::set_string_clipped(
+                            buf,
+                            area,
+                            ts_col,
+                            y,
+                            &msg.timestamp,
+                            dim_ts,
+                        );
                     }
                 }
                 SelectionState::Related => {
                     if !msg.timestamp.is_empty() {
-                        buf.set_string(ts_col, y, &msg.timestamp, msg.timestamp_style);
+                        crate::tui::render::set_string_clipped(
+                            buf,
+                            area,
+                            ts_col,
+                            y,
+                            &msg.timestamp,
+                            msg.timestamp_style,
+                        );
                     }
                 }
             }
 
             // Pipes at ALL positions
             for &px in &pipe_positions {
-                buf.set_string(px, y, "\u{2502}", pipe_style); // │
+                crate::tui::render::set_string_clipped(buf, area, px, y, "\u{2502}", pipe_style); // │
             }
 
             // Clamp src_col and dst_col to valid range
@@ -622,7 +663,7 @@ pub fn render_call_flow_direct(
                     }
                     _ => msg.style,
                 };
-                buf.set_string(bar_x, y, &padded, bar_style);
+                crate::tui::render::set_string_clipped(buf, area, bar_x, y, &padded, bar_style);
             } else {
                 // Arrow between source and destination pipes
                 let src_x = pipe_positions[src_col];
@@ -659,7 +700,14 @@ pub fn render_call_flow_direct(
                     let room = area.right().saturating_sub(start) as usize;
                     if room > 2 {
                         let text = format!("\u{21ba} {label}");
-                        buf.set_string(start, y, truncate(&text, room), style);
+                        crate::tui::render::set_string_clipped(
+                            buf,
+                            area,
+                            start,
+                            y,
+                            truncate(&text, room),
+                            style,
+                        );
                     }
                 } else {
                     // Retx fold headers carry their count ON the arrow: the
@@ -692,7 +740,14 @@ pub fn render_call_flow_direct(
                         SelectionState::Related => msg.style,
                         SelectionState::Normal => msg.style.add_modifier(Modifier::DIM),
                     };
-                    buf.set_string(arrow_x, y, &arrow_str, arrow_style);
+                    crate::tui::render::set_string_clipped(
+                        buf,
+                        area,
+                        arrow_x,
+                        y,
+                        &arrow_str,
+                        arrow_style,
+                    );
                 }
             }
 
@@ -712,7 +767,7 @@ pub fn render_call_flow_direct(
                     }
                     let avail = (right_edge - x) as usize;
                     let clipped: String = s.chars().take(avail).collect();
-                    buf.set_string(x, y, &clipped, style);
+                    crate::tui::render::set_string_clipped(buf, area, x, y, &clipped, style);
                     clipped.chars().count() as u16
                 };
             // PDD annotation
@@ -766,7 +821,7 @@ pub fn render_call_flow_direct(
             let extra_logical = logical_row + 1 + ei;
             if extra_logical >= scroll_offset && row < max_row {
                 let y = area.y + row as u16;
-                buf.set_string(area.x, y, text, *style);
+                crate::tui::render::set_string_clipped(buf, area, area.x, y, text, *style);
                 row += 1;
             }
         }
@@ -783,7 +838,14 @@ pub fn render_call_flow_direct(
     let footer_label_y = area.y + height.saturating_sub(1);
     if height >= 4 {
         for &px in &pipe_positions {
-            buf.set_string(px, footer_pipe_y, "\u{2502}", pipe_style); // │
+            crate::tui::render::set_string_clipped(
+                buf,
+                area,
+                px,
+                footer_pipe_y,
+                "\u{2502}",
+                pipe_style,
+            ); // │
         }
 
         // Footer labels — same non-overlapping cells as the header row.
@@ -850,6 +912,9 @@ fn draw_participant_labels(
     max_label: usize,
     style: Style,
 ) {
+    // No area is passed here, so the buffer itself is the honest bound.
+    // Copied before the mutable borrow.
+    let area = buf.area;
     let n = participants.len();
     for (i, p) in participants.iter().enumerate() {
         let (cell_l, cell_r) = cells[i];
@@ -872,7 +937,7 @@ fn draw_participant_labels(
         };
         // lbl_len <= cell_w, so cell_r - lbl_len >= cell_l: clamp is sound.
         let lbl_x = desired.clamp(cell_l, cell_r - lbl_len);
-        buf.set_string(lbl_x, y, &lbl, style);
+        crate::tui::render::set_string_clipped(buf, area, lbl_x, y, &lbl, style);
     }
 }
 
@@ -895,7 +960,9 @@ pub fn render_call_flow_direct_or_empty(
         }
         None => {
             let buf = frame.buffer_mut();
-            buf.set_string(
+            crate::tui::render::set_string_clipped(
+                buf,
+                area,
                 area.x,
                 area.y,
                 "Dialog not found or empty.",

@@ -1,6 +1,6 @@
 ---
 source: tests/tui_snapshot_test.rs
-assertion_line: 817
+assertion_line: 1031
 expression: output
 ---
  Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
@@ -22,7 +22,7 @@ expression: output
             │                                                      │
             │     [ Filter ]                 [ Cancel ]            │
             │                                                      │
-            │                                                      │
+            │  Tab move · Enter apply · Esc cancel                 │
             │                                                      │
             └──────────────────────────────────────────────────────┘
 

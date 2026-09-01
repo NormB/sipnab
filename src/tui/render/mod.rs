@@ -7,6 +7,7 @@
 use super::*;
 
 mod popups;
+pub(in crate::tui) use popups::set_string_clipped;
 mod status;
 
 pub(in crate::tui) use popups::*;

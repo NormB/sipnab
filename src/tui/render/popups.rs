@@ -69,6 +69,35 @@ fn path_with_cursor_spans<'a>(
 /// # Side effects
 /// Draws to `frame` (clearing the cells behind the popup); no state is
 /// mutated.
+/// `set_string` that declines to draw outside `area` instead of panicking.
+///
+/// `Buffer::set_string` panics on an out-of-bounds index. A popup whose rows
+/// are computed from a constant height indexes past the bottom as soon as the
+/// terminal is shorter than that constant, and on 2026-09-01 two of them did:
+/// the settings popup below 6 rows, and the filter popup at sizes as ordinary
+/// as 66x12. A panic takes the whole TUI with it, and resizing a terminal is
+/// not an error case.
+///
+/// Also truncates to the remaining columns, so a long value cannot run past
+/// the right edge into the border.
+pub(in crate::tui) fn set_string_clipped(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    x: u16,
+    y: u16,
+    text: impl AsRef<str>,
+    style: Style,
+) {
+    if y < area.y || y >= area.y.saturating_add(area.height) {
+        return;
+    }
+    if x < area.x || x >= area.x.saturating_add(area.width) {
+        return;
+    }
+    let remaining = area.x.saturating_add(area.width).saturating_sub(x);
+    buf.set_stringn(x, y, text.as_ref(), remaining as usize, style);
+}
+
 pub(in crate::tui) fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let popup_width = 72.min(area.width.saturating_sub(4));
 
@@ -208,18 +237,6 @@ pub(in crate::tui) fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, 
 /// mutated.
 pub(in crate::tui) fn render_name_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let multi = app.name_dialog.targets.len() > 1;
-    let popup_width = 60.min(area.width.saturating_sub(4));
-    let popup_height = (if multi { 10 } else { 8 }).min(area.height.saturating_sub(2));
-    let popup_area = centered_popup(area, popup_width, popup_height);
-
-    frame.render_widget(Clear, popup_area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Name Address ")
-        .style(Style::default().bg(app.theme.background));
-    let inner = block.inner(popup_area);
-    frame.render_widget(block, popup_area);
-
     let mut lines: Vec<Line<'_>> = Vec::new();
     // Endpoint selector row (only when more than one endpoint is offered).
     if multi {
@@ -289,6 +306,40 @@ pub(in crate::tui) fn render_name_popup(frame: &mut ratatui::Frame, area: Rect, 
         hint,
         Style::default().fg(app.theme.muted),
     )));
+
+    // Sized to what it SAYS, not to a constant. The width was 60 and the
+    // two-endpoint hint is 66 columns, so `Esc cancel` -- the only exit the
+    // popup names -- fell off the right edge. `Paragraph` does not wrap here,
+    // so an overlong line truncates in silence: nothing failed, and the one
+    // line a stuck user needs was the one that went.
+    //
+    // Measuring the built lines also covers what a constant could not: an
+    // IPv6 endpoint row, a long name, or an inline validation error, each of
+    // which is longer than anything the original 60 was chosen for.
+    let title = " Name Address ";
+    let content = lines
+        .iter()
+        .map(ratatui::text::Line::width)
+        .max()
+        .unwrap_or(0);
+    // +2 for the borders, +1 so the longest line is not flush against the
+    // right edge; the title has to fit between the corners too.
+    let desired = u16::try_from(content.max(title.len()).saturating_add(3)).unwrap_or(u16::MAX);
+    let popup_width = desired.clamp(20, area.width.saturating_sub(4).max(20));
+    let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let popup_height = rows
+        .saturating_add(2)
+        .min(area.height.saturating_sub(2))
+        .max(3);
+    let popup_area = centered_popup(area, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().bg(app.theme.background));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -589,6 +640,9 @@ pub(in crate::tui) fn render_filter_text_field(
     field: &FilterTextField<'_>,
     theme: &Theme,
 ) {
+    // The field is handed a buffer and a position, not an area, so its only
+    // honest bound is the buffer itself. Copied before the mutable borrow.
+    let bounds = buf.area;
     let label = field.label;
     let value = field.value;
     let field_width = field.field_width;
@@ -603,11 +657,11 @@ pub(in crate::tui) fn render_filter_text_field(
 
     // Paint label
     let label_area = Rect::new(x, y, label.len() as u16, 1);
-    buf.set_string(label_area.x, label_area.y, label, label_style);
+    set_string_clipped(buf, bounds, label_area.x, label_area.y, label, label_style);
 
     // Paint opening bracket
     let field_x = x + label.len() as u16;
-    buf.set_string(field_x, y, "[", bracket_style);
+    set_string_clipped(buf, bounds, field_x, y, "[", bracket_style);
 
     // Paint field content with cursor. All byte offsets below are kept on
     // char boundaries so no slice can split a multibyte UTF-8 sequence.
@@ -623,7 +677,9 @@ pub(in crate::tui) fn render_filter_text_field(
     if focused {
         // Before cursor (clipped to the visible window)
         let before = &value[..cursor.min(visible_end)];
-        buf.set_string(
+        set_string_clipped(
+            buf,
+            bounds,
             content_x,
             y,
             before,
@@ -641,7 +697,9 @@ pub(in crate::tui) fn render_filter_text_field(
         } else {
             " "
         };
-        buf.set_string(
+        set_string_clipped(
+            buf,
+            bounds,
             content_x + cursor as u16,
             y,
             cursor_char,
@@ -650,7 +708,9 @@ pub(in crate::tui) fn render_filter_text_field(
         // After cursor (clipped; the window may end before the cursor does)
         if cursor_end < visible_end {
             let after = &value[cursor_end..visible_end];
-            buf.set_string(
+            set_string_clipped(
+                buf,
+                bounds,
                 content_x + cursor_end as u16,
                 y,
                 after,
@@ -663,21 +723,44 @@ pub(in crate::tui) fn render_filter_text_field(
         let filled = value.len().max(cursor + 1).min(inner_width);
         if filled < inner_width {
             let pad = " ".repeat(inner_width - filled);
-            buf.set_string(content_x + filled as u16, y, &pad, Style::default());
+            set_string_clipped(
+                buf,
+                bounds,
+                content_x + filled as u16,
+                y,
+                &pad,
+                Style::default(),
+            );
         }
     } else {
         // Not focused: just show value dimmed
         let display = &value[..visible_end];
-        buf.set_string(content_x, y, display, Style::default().fg(theme.foreground));
+        set_string_clipped(
+            buf,
+            bounds,
+            content_x,
+            y,
+            display,
+            Style::default().fg(theme.foreground),
+        );
         // Fill remaining
         if display.len() < inner_width {
             let pad = " ".repeat(inner_width - display.len());
-            buf.set_string(content_x + display.len() as u16, y, &pad, Style::default());
+            set_string_clipped(
+                buf,
+                bounds,
+                content_x + display.len() as u16,
+                y,
+                &pad,
+                Style::default(),
+            );
         }
     }
 
     // Closing bracket (saturating so a zero-width field cannot underflow)
-    buf.set_string(
+    set_string_clipped(
+        buf,
+        bounds,
         field_x + field_width.saturating_sub(1),
         y,
         "]",
@@ -790,7 +873,14 @@ pub(in crate::tui) fn render_filter_popup(
     // Saturating: on a sub-6-column popup the 4-column margin exceeds `iw`
     // and a plain `iw - 4` would underflow (debug panic / release wrap).
     let sep = "\u{2500}".repeat(iw.saturating_sub(4) as usize);
-    buf.set_string(ix + 2, sep_y, &sep, Style::default().fg(theme.muted));
+    set_string_clipped(
+        buf,
+        inner,
+        ix + 2,
+        sep_y,
+        &sep,
+        Style::default().fg(theme.muted),
+    );
 
     // ── "All" master checkbox — ABOVE the method grid it governs ──
     let all_y = sep_y + 1;
@@ -809,8 +899,15 @@ pub(in crate::tui) fn render_filter_popup(
     } else {
         Style::default().fg(theme.foreground)
     };
-    buf.set_string(col1_x, all_y, format!("{:<10}", "All"), all_style);
-    buf.set_string(col1_x + 10, all_y, all_marker, all_style);
+    set_string_clipped(
+        buf,
+        inner,
+        col1_x,
+        all_y,
+        format!("{:<10}", "All"),
+        all_style,
+    );
+    set_string_clipped(buf, inner, col1_x + 10, all_y, all_marker, all_style);
 
     // ── Method checkboxes (two columns, 5 rows) ───────────────────
     let cb_y = all_y + 1;
@@ -833,8 +930,8 @@ pub(in crate::tui) fn render_filter_popup(
             } else {
                 Style::default().fg(theme.foreground)
             };
-            buf.set_string(col1_x, cb_y + row, &name, style);
-            buf.set_string(col1_x + 10, cb_y + row, marker, style);
+            set_string_clipped(buf, inner, col1_x, cb_y + row, &name, style);
+            set_string_clipped(buf, inner, col1_x + 10, cb_y + row, marker, style);
         }
 
         // Right column
@@ -851,8 +948,8 @@ pub(in crate::tui) fn render_filter_popup(
             } else {
                 Style::default().fg(theme.foreground)
             };
-            buf.set_string(col2_x, cb_y + row, &name, style);
-            buf.set_string(col2_x + 10, cb_y + row, marker, style);
+            set_string_clipped(buf, inner, col2_x, cb_y + row, &name, style);
+            set_string_clipped(buf, inner, col2_x + 10, cb_y + row, marker, style);
         }
     }
 
@@ -876,8 +973,23 @@ pub(in crate::tui) fn render_filter_popup(
 
     let btn_col1 = ix + 5;
     let btn_col2 = ix + iw / 2 + 5;
-    buf.set_string(btn_col1, btn_y, "[ Filter ]", filter_style);
-    buf.set_string(btn_col2, btn_y, "[ Cancel ]", cancel_style);
+    set_string_clipped(buf, inner, btn_col1, btn_y, "[ Filter ]", filter_style);
+    set_string_clipped(buf, inner, btn_col2, btn_y, "[ Cancel ]", cancel_style);
+    // A button a user can SEE is not a key they can PRESS. `Esc` has always
+    // canceled this dialog and it was never written down, so the only way to
+    // learn it was to guess -- the same defect as a hint truncated off the
+    // right edge, and indistinguishable from one at the keyboard.
+    let footer_hint = "Tab move \u{b7} Enter apply \u{b7} Esc cancel";
+    if btn_y + 2 < inner.y + inner.height {
+        set_string_clipped(
+            buf,
+            inner,
+            ix + 2,
+            btn_y + 2,
+            footer_hint,
+            Style::default().fg(theme.muted),
+        );
+    }
 
     // ── Inline parse error (dialog stays open on failure) ─────────
     if let Some(err) = &state.error {
@@ -885,7 +997,14 @@ pub(in crate::tui) fn render_filter_popup(
             .chars()
             .take((iw as usize).saturating_sub(4))
             .collect();
-        buf.set_string(ix + 2, btn_y + 1, &msg, Style::default().fg(theme.warning));
+        set_string_clipped(
+            buf,
+            inner,
+            ix + 2,
+            btn_y + 1,
+            &msg,
+            Style::default().fg(theme.warning),
+        );
     }
 }
 
@@ -974,8 +1093,32 @@ pub(in crate::tui) fn render_settings_popup(frame: &mut ratatui::Frame, area: Re
         };
 
         let row_y = iy + 1 + i as u16;
-        buf.set_string(ix + 2, row_y, format!("{:<18}", label), style);
-        buf.set_string(ix + 20, row_y, format!("[{}]", value), value_style);
+        set_string_clipped(buf, inner, ix + 2, row_y, format!("{:<18}", label), style);
+        set_string_clipped(
+            buf,
+            inner,
+            ix + 20,
+            row_y,
+            format!("[{}]", value),
+            value_style,
+        );
+    }
+
+    // The keys this popup answers to. `Esc` closes it -- the controller has
+    // always accepted it -- and until 2026-09-01 the popup never said so, so
+    // the only way to learn it was to guess or read the source. A dialog that
+    // does not name its own exit is the same defect as one that names it and
+    // truncates it: from the user's side they are identical.
+    let hint_y = iy + labels.len() as u16 + 2;
+    if hint_y < iy + inner.height {
+        set_string_clipped(
+            buf,
+            inner,
+            ix + 2,
+            hint_y,
+            "\u{2191}/\u{2193} move \u{b7} Enter toggle \u{b7} Esc close",
+            Style::default().fg(app.theme.muted),
+        );
     }
 }
 
@@ -985,6 +1128,728 @@ pub(in crate::tui) fn render_settings_popup(frame: &mut ratatui::Frame, area: Re
 mod tests {
     use super::*;
     use crate::tui::render::test_support::*;
+
+    /// Flatten a rendered frame to text, one line per row.
+    fn frame_text(buf: &ratatui::buffer::Buffer) -> String {
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    /// An `App` whose Name Address popup offers two endpoints.
+    fn app_naming_two() -> App {
+        let mut app = App::new_test();
+        app.name_dialog.targets = vec![
+            NameTarget {
+                ip: "192.0.2.10".to_string(),
+                name: String::new(),
+            },
+            NameTarget {
+                ip: "192.0.2.20".to_string(),
+                name: String::new(),
+            },
+        ];
+        app.name_dialog.active = 0;
+        app
+    }
+
+    /// The Name Address popup shows its whole hint, including how to cancel.
+    ///
+    /// Reported from the UI on 2026-09-01: pressing `N` opened a popup whose
+    /// last hint was cut off mid-word. The width was a constant 60 and the
+    /// two-endpoint hint is 66 columns, so `Esc cancel` -- the only way out
+    /// that the popup names -- fell off the right edge. `Paragraph` has no
+    /// `wrap` here, so an overlong line truncates silently rather than
+    /// flowing, which is why nothing failed.
+    ///
+    /// A popup that does not say how to close it is the worst line to lose.
+    #[test]
+    fn name_popup_shows_its_whole_hint_including_how_to_cancel() {
+        let app = app_naming_two();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_name_popup(frame, area, &app);
+            })
+            .unwrap();
+        let text = frame_text(terminal.backend().buffer());
+
+        for fragment in [
+            "Tab switch endpoint",
+            "Enter save all",
+            "empty clears",
+            "Esc cancel",
+        ] {
+            assert!(
+                text.contains(fragment),
+                "the Name Address popup truncated {fragment:?} off its hint. \
+                 The popup must be wide enough for what it says, and the \
+                 cancel key is the one line a user needs when they are \
+                 stuck.\n{text}"
+            );
+        }
+    }
+
+    /// The single-endpoint hint fits too.
+    ///
+    /// The other arm of the same branch. It happened to fit at width 60, which
+    /// is exactly why the bug survived: the common case looked right.
+    #[test]
+    fn name_popup_single_endpoint_shows_its_whole_hint() {
+        let mut app = App::new_test();
+        app.name_dialog.targets = vec![NameTarget {
+            ip: "192.0.2.10".to_string(),
+            name: String::new(),
+        }];
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_name_popup(frame, area, &app);
+            })
+            .unwrap();
+        let text = frame_text(terminal.backend().buffer());
+        for fragment in ["Enter save", "empty name clears", "Esc cancel"] {
+            assert!(
+                text.contains(fragment),
+                "the single-endpoint popup truncated {fragment:?}\n{text}"
+            );
+        }
+    }
+
+    /// Every popup entry point, rendered, with the text it must not lose.
+    ///
+    /// A popup that truncates the line naming its exit key leaves a user with
+    /// no visible way out, which is what `N` did on 2026-09-01. `Paragraph`
+    /// does not wrap here, so an overlong line vanishes off the right edge in
+    /// silence -- no panic, no warning, nothing to fail.
+    ///
+    /// Rendered at 120x40: wide enough that any truncation is the POPUP's own
+    /// sizing rather than the terminal's, which is the distinction that
+    /// matters. A popup free to be as wide as it likes and still cutting its
+    /// own text is a bug; one squeezed by an 80-column terminal is a
+    /// trade-off.
+    /// One overlay: its name, and the call that draws it into a frame.
+    type Overlay = (&'static str, fn(&mut ratatui::Frame, Rect, &App));
+
+    fn popup_renders() -> Vec<Overlay> {
+        vec![
+            ("save", |f, a, app| render_save_popup(f, a, app)),
+            ("name", |f, a, app| render_name_popup(f, a, app)),
+            ("file_open", |f, a, app| render_file_open_popup(f, a, app)),
+            ("settings", |f, a, app| render_settings_popup(f, a, app)),
+            ("filter", |f, a, app| {
+                render_filter_popup(f, a, &app.filter_dialog, &app.theme)
+            }),
+        ]
+    }
+
+    /// Every popup shows how to leave it.
+    ///
+    /// The generalized form of the `N` defect. The exit key is the one piece
+    /// of text a stuck user needs, and it is always last in the hint -- which
+    /// makes it the first thing a too-narrow popup drops.
+    #[test]
+    fn every_popup_renders_its_exit_key_in_full() {
+        let mut app = app_naming_two();
+        app.filter_dialog = FilterDialogState::default();
+        let mut checked = 0;
+
+        for (name, render) in popup_renders() {
+            let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    render(frame, area, &app);
+                })
+                .unwrap();
+            let text = frame_text(terminal.backend().buffer());
+            checked += 1;
+            assert!(
+                text.contains("Esc"),
+                "the {name} popup does not render `Esc` anywhere, so it never \
+                 tells a user how to close it -- or it named the key and cut \
+                 it off the right edge, which looks identical to a \
+                 user.\n{text}"
+            );
+        }
+        assert!(
+            checked >= 5,
+            "only {checked} popup(s) exercised; the table is not covering the \
+             module and this gate proves little"
+        );
+    }
+
+    /// The table covers every popup the module exposes.
+    ///
+    /// Without this, a popup added later is simply absent from the gate --
+    /// and an uncovered popup looks exactly like a covered one that passes.
+    #[test]
+    fn the_popup_table_covers_every_popup_entry_point() {
+        let src = include_str!("popups.rs");
+        let exposed: Vec<&str> = src
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("pub(in crate::tui) fn render_"))
+            .filter_map(|l| l.split(['(', '<']).next())
+            // Excluded, each with the reason it is not a popup entry point:
+            //   file_open_*       bodies dispatched from render_file_open_popup,
+            //                     drawn into its inner area rather than
+            //                     centering themselves;
+            //   filter_text_field one field inside the filter popup, with no
+            //                     border, no exit and nothing to close.
+            .filter(|n| {
+                !matches!(
+                    *n,
+                    "file_open_browser" | "file_open_manual" | "filter_text_field"
+                )
+            })
+            .collect();
+        let covered: Vec<&str> = popup_renders().iter().map(|(n, _)| *n).collect();
+
+        assert!(
+            exposed.len() >= 5,
+            "only {} popup entry point(s) found; the scan is wrong: \
+             {exposed:?}",
+            exposed.len()
+        );
+        for name in &exposed {
+            let stem = name.trim_end_matches("_popup");
+            assert!(
+                covered.contains(&stem),
+                "render_{name} is a popup and no row of the table renders it, \
+                 so nothing checks that it shows its exit key. Covered: \
+                 {covered:?}"
+            );
+        }
+    }
+
+    /// The name popup grows for content a constant width could not have known.
+    ///
+    /// The fix is content-driven sizing, not a bigger constant. An IPv6
+    /// endpoint row plus an inline validation error is longer than anything
+    /// the original 60 was chosen for, and a wider constant would fail the
+    /// same way one address later.
+    #[test]
+    fn name_popup_grows_for_long_addresses_and_an_error() {
+        let mut app = App::new_test();
+        app.name_dialog.targets = vec![
+            NameTarget {
+                ip: "2001:0db8:85a3:0000:0000:8a2e:0370:7334".to_string(),
+                name: "edge-proxy-frankfurt".to_string(),
+            },
+            NameTarget {
+                ip: "2001:0db8:85a3:0000:0000:8a2e:0370:99ff".to_string(),
+                name: String::new(),
+            },
+        ];
+        app.name_dialog.error = Some("a name may not contain a space".to_string());
+
+        let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_name_popup(frame, area, &app);
+            })
+            .unwrap();
+        let text = frame_text(terminal.backend().buffer());
+
+        for fragment in [
+            "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+            "a name may not contain a space",
+            "Esc cancel",
+        ] {
+            assert!(
+                text.contains(fragment),
+                "the popup cut off {fragment:?}; sizing must follow the \
+                 content, because a constant cannot know how long an address \
+                 or an error will be\n{text}"
+            );
+        }
+    }
+
+    /// A terminal too narrow for the popup does not panic.
+    ///
+    /// The other end. Content-driven sizing must still clamp: a popup wider
+    /// than the frame is an arithmetic underflow away from a crash, and the
+    /// user resizing their terminal is not an error case.
+    #[test]
+    fn name_popup_survives_a_terminal_narrower_than_its_content() {
+        let app = app_naming_two();
+        for w in [10u16, 20, 30, 40, 66, 70] {
+            let mut terminal = Terminal::new(TestBackend::new(w, 12)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    render_name_popup(frame, area, &app);
+                })
+                .unwrap_or_else(|e| panic!("width {w} panicked: {e}"));
+        }
+    }
+
+    /// The text a rendered frame actually shows, borders and blanks stripped.
+    ///
+    /// Only rows carrying a letter or digit survive, so a box-drawing border
+    /// -- whose width changes with the popup -- cannot make two renderings of
+    /// the same content look different.
+    fn content_lines(buf: &ratatui::buffer::Buffer) -> Vec<String> {
+        frame_text(buf)
+            .lines()
+            .map(|l| {
+                l.chars()
+                    .filter(|c| !"\u{2500}\u{2502}\u{250c}\u{2510}\u{2514}\u{2518}".contains(*c))
+                    .collect::<String>()
+                    .trim()
+                    .to_string()
+            })
+            .filter(|l| l.chars().any(|c| c.is_alphanumeric()))
+            .collect()
+    }
+
+    /// Every overlay, including the one that does not live in this module.
+    fn every_overlay() -> Vec<Overlay> {
+        let mut all = popup_renders();
+        all.push(("column_selector", |f, a, app| {
+            crate::tui::call_list::render_column_selector(f, a, &app.call_list, &app.theme)
+        }));
+        all
+    }
+
+    /// No popup shows MORE text when the terminal grows.
+    ///
+    /// The general detector, and the one that needs no knowledge of any
+    /// popup's strings. If a popup is complete at 100 columns, widening the
+    /// terminal to 240 cannot reveal anything new; if widening does reveal
+    /// something, the popup was clipping its own content at 100 and a user on
+    /// an ordinary terminal was reading a truncated dialog.
+    ///
+    /// This is what would have caught `N` without anyone knowing the hint's
+    /// length, and it catches the next one the same way.
+    #[test]
+    fn no_popup_shows_more_text_when_the_terminal_grows() {
+        let app = app_naming_two();
+        for (name, render) in every_overlay() {
+            let mut small = Terminal::new(TestBackend::new(100, 40)).unwrap();
+            small
+                .draw(|f| {
+                    let a = f.area();
+                    render(f, a, &app);
+                })
+                .unwrap();
+            let at_100 = content_lines(small.backend().buffer());
+
+            let mut large = Terminal::new(TestBackend::new(240, 60)).unwrap();
+            large
+                .draw(|f| {
+                    let a = f.area();
+                    render(f, a, &app);
+                })
+                .unwrap();
+            let at_240 = content_lines(large.backend().buffer());
+
+            assert_eq!(
+                at_100, at_240,
+                "the {name} popup renders different text at 100 columns than \
+                 at 240, which means it was CLIPPING its own content on the \
+                 narrower one. Size the popup to what it draws rather than to \
+                 a constant.\nat 100: {at_100:#?}\nat 240: {at_240:#?}"
+            );
+        }
+    }
+
+    /// Every overlay in the TUI is covered by these gates.
+    ///
+    /// `render_widget(Clear, ..)` is what makes something an overlay, so it is
+    /// the honest way to enumerate them — a new popup anywhere in `src/tui/`
+    /// is caught here rather than quietly going ungated. `render_column_
+    /// selector` lives in `call_list.rs` and was missed by a table that only
+    /// read this module.
+    #[test]
+    fn every_tui_overlay_is_covered_by_these_gates() {
+        let sources = [
+            ("popups", include_str!("popups.rs")),
+            ("call_list", include_str!("../call_list.rs")),
+        ];
+        let mut overlays = 0;
+        for (_where, src) in sources {
+            // The CALL form, not the bare substring: prose in this file that
+            // explains the rule would otherwise count as an overlay, and a
+            // scanner that counts its own documentation is measuring itself.
+            // Production code only: the tests below render overlays too, and
+            // a scanner that counts its own fixtures is measuring itself.
+            let production = src.split("\nmod tests {").next().unwrap_or(src);
+            overlays += production.matches("frame.render_widget(Clear").count();
+        }
+        let covered = every_overlay().len();
+        assert!(
+            overlays >= 6,
+            "only {overlays} overlay(s) found by scanning for \
+             `render_widget(Clear`; the scan is wrong and this gate proves \
+             nothing"
+        );
+        assert_eq!(
+            covered, overlays,
+            "the TUI draws {overlays} overlay(s) and these gates cover \
+             {covered}. An uncovered popup looks exactly like a covered one \
+             that passes."
+        );
+    }
+
+    /// Every overlay names the key that closes it.
+    ///
+    /// Four popups had a working `Esc` their controller accepted and their
+    /// rendering never mentioned: settings, filter, the column selector, and
+    /// the name popup, which named it and then cut it off. From the keyboard
+    /// those are the same defect.
+    #[test]
+    fn every_overlay_names_the_key_that_closes_it() {
+        let app = app_naming_two();
+        for (name, render) in every_overlay() {
+            let mut terminal = Terminal::new(TestBackend::new(140, 44)).unwrap();
+            terminal
+                .draw(|f| {
+                    let a = f.area();
+                    render(f, a, &app);
+                })
+                .unwrap();
+            let text = frame_text(terminal.backend().buffer());
+            assert!(
+                text.contains("Esc"),
+                "the {name} overlay never names `Esc`, so a user has no way \
+                 to learn how to leave it short of reading the source\n{text}"
+            );
+        }
+    }
+
+    /// Every overlay survives a terminal far too small for it.
+    ///
+    /// Content-driven sizing must still clamp. A popup wider than the frame is
+    /// one subtraction away from a panic, and resizing a terminal is not an
+    /// error case.
+    #[test]
+    fn every_overlay_survives_a_tiny_terminal() {
+        let app = app_naming_two();
+        let mut crashed = Vec::new();
+        for (name, render) in every_overlay() {
+            for (w, h) in [(1u16, 1u16), (4, 3), (10, 5), (20, 8), (40, 10), (66, 12)] {
+                // Each caught separately: a panic escaping `draw` is a real
+                // panic, not an `Err`, so without this the first crash hides
+                // every other one AND the message cannot say which overlay it
+                // was.
+                let app_ref = &app;
+                let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+                    terminal
+                        .draw(|f| {
+                            let a = f.area();
+                            render(f, a, app_ref);
+                        })
+                        .unwrap();
+                }));
+                if ok.is_err() {
+                    crashed.push(format!("  {name} at {w}x{h}"));
+                }
+            }
+        }
+        assert!(
+            crashed.is_empty(),
+            "these overlays panic on a terminal too small for them. Resizing \
+             a terminal is not an error case, and a panic takes the whole TUI \
+             with it:\n{}",
+            crashed.join("\n")
+        );
+    }
+
+    /// Every overlay draws inside the frame it was given.
+    ///
+    /// A centered popup computed from a constant can start past the right edge
+    /// on a narrow frame. ratatui clips rather than crashing, so the symptom
+    /// is a dialog that is simply not there — which reads as the key having
+    /// done nothing.
+    #[test]
+    fn every_overlay_draws_something_inside_the_frame() {
+        let app = app_naming_two();
+        for (name, render) in every_overlay() {
+            let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+            terminal
+                .draw(|f| {
+                    let a = f.area();
+                    render(f, a, &app);
+                })
+                .unwrap();
+            let drawn = content_lines(terminal.backend().buffer());
+            assert!(
+                !drawn.is_empty(),
+                "the {name} overlay drew no text at all inside a 100x40 \
+                 frame; a popup that renders nothing reads as a key that did \
+                 nothing"
+            );
+        }
+    }
+
+    // ── crashes ────────────────────────────────────────────────────
+    //
+    // A panic takes the entire TUI down mid-capture. On 2026-09-01 two
+    // popups did exactly that -- the settings popup below six rows, and the
+    // filter popup at sizes as ordinary as 66x12 -- because their rows were
+    // computed from a constant height and `Buffer::set_string` panics on an
+    // out-of-bounds index. Nothing caught it: the popups rendered fine at the
+    // sizes anyone happened to test, and resizing a terminal is not something
+    // a test does unless it is told to.
+    //
+    // Every write in `src/tui/` now goes through `set_string_clipped`, and
+    // these gates hold that in place from three directions: the helper itself
+    // is correct, nothing bypasses it, and every overlay survives every size.
+
+    /// The guard declines every write that starts outside its area.
+    ///
+    /// Each case is a different way to be out of bounds, and the answer to
+    /// all of them is to draw nothing rather than to panic.
+    #[test]
+    fn set_string_clipped_declines_every_out_of_bounds_write() {
+        let area = Rect::new(2, 2, 6, 3); // x 2..8, y 2..5
+        for (x, y, what) in [
+            (2u16, 5u16, "one row below"),
+            (2, 99, "far below"),
+            (8, 2, "one column past the right"),
+            (99, 2, "far right"),
+            (1, 2, "one column left of the area"),
+            (2, 1, "one row above"),
+            (0, 0, "the origin, outside this area"),
+            (u16::MAX, u16::MAX, "the far corner"),
+        ] {
+            let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 20, 10));
+            set_string_clipped(&mut buf, area, x, y, "XXXX", Style::default());
+            let painted: String = (0..10)
+                .flat_map(|yy| (0..20).map(move |xx| (xx, yy)))
+                .filter_map(|(xx, yy)| buf.cell((xx, yy)).map(|c| c.symbol().to_string()))
+                .collect();
+            assert!(
+                !painted.contains('X'),
+                "a write {what} was drawn anyway; the guard must decline \
+                 rather than panic OR paint"
+            );
+        }
+    }
+
+    /// A write that starts inside is truncated at the right edge.
+    ///
+    /// The other half. Declining an out-of-bounds START is not enough: a long
+    /// value beginning one column inside would run through the border and out
+    /// of the buffer.
+    #[test]
+    fn set_string_clipped_truncates_at_the_right_edge() {
+        let area = Rect::new(2, 2, 6, 3);
+        let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 20, 10));
+        set_string_clipped(&mut buf, area, 6, 3, "ABCDEFGHIJ", Style::default());
+
+        // Columns 6 and 7 are the last two inside the area.
+        assert_eq!(buf.cell((6, 3)).unwrap().symbol(), "A");
+        assert_eq!(buf.cell((7, 3)).unwrap().symbol(), "B");
+        // Column 8 is outside it and must be untouched.
+        assert_eq!(
+            buf.cell((8, 3)).unwrap().symbol(),
+            " ",
+            "the write ran past the right edge of its area and into whatever \
+             is drawn there -- a border, or another widget"
+        );
+    }
+
+    /// A zero-sized area accepts nothing.
+    ///
+    /// The degenerate case a saturating subtraction produces on a 1x1
+    /// terminal, where `inner` of a bordered block has no cells at all.
+    #[test]
+    fn set_string_clipped_accepts_nothing_into_a_zero_sized_area() {
+        for area in [
+            Rect::new(0, 0, 0, 0),
+            Rect::new(3, 3, 0, 5),
+            Rect::new(3, 3, 5, 0),
+        ] {
+            let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 20, 10));
+            set_string_clipped(&mut buf, area, area.x, area.y, "XXXX", Style::default());
+            let painted: String = (0..10)
+                .flat_map(|yy| (0..20).map(move |xx| (xx, yy)))
+                .filter_map(|(xx, yy)| buf.cell((xx, yy)).map(|c| c.symbol().to_string()))
+                .collect();
+            assert!(
+                !painted.contains('X'),
+                "an area of {}x{} has no cells and accepted a write",
+                area.width,
+                area.height
+            );
+        }
+    }
+
+    /// Multibyte text is truncated on a character boundary.
+    ///
+    /// Truncating a UTF-8 string by BYTES panics on a boundary. Every SIP
+    /// capture this tool is pointed at can carry a non-ASCII display name, so
+    /// this is a routine input, not an exotic one.
+    #[test]
+    fn set_string_clipped_truncates_multibyte_without_panicking() {
+        let area = Rect::new(0, 0, 4, 1);
+        for text in [
+            "\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}",
+            "\u{4f60}\u{597d}\u{4e16}\u{754c}",
+            "a\u{e9}b\u{4f60}c",
+        ] {
+            let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 10, 2));
+            set_string_clipped(&mut buf, area, 0, 0, text, Style::default());
+        }
+    }
+
+    /// Nothing in the TUI writes through the unguarded call.
+    ///
+    /// The source gate. The helper being correct is worthless if a renderer
+    /// added next month calls `Buffer::set_string` directly -- which is the
+    /// obvious thing to reach for, and what all 42 existing call sites did.
+    #[test]
+    fn no_tui_code_writes_through_the_unguarded_set_string() {
+        let mut offenders = Vec::new();
+        let mut scanned = 0;
+        for (name, src) in [
+            ("render/popups.rs", include_str!("popups.rs")),
+            ("call_list.rs", include_str!("../call_list.rs")),
+            (
+                "call_flow/render.rs",
+                include_str!("../call_flow/render.rs"),
+            ),
+        ] {
+            scanned += 1;
+            for (n, line) in src.lines().enumerate() {
+                let l = line.trim();
+                if l.starts_with("//") {
+                    continue;
+                }
+                // `set_stringn` takes a max width and is bounded already; the
+                // helper's own body is where the guarded call lives.
+                if l.contains(".set_string(") && !l.contains("set_stringn") {
+                    offenders.push(format!("  {name}:{}: {l}", n + 1));
+                }
+            }
+        }
+        assert!(scanned >= 3, "the scan read {scanned} file(s); it is wrong");
+        assert!(
+            offenders.is_empty(),
+            "these write through `Buffer::set_string`, which PANICS on an \
+             out-of-bounds index and took the TUI down on 2026-09-01. Use \
+             `set_string_clipped`, which declines instead:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// Every overlay survives every terminal size worth having.
+    ///
+    /// An exhaustive sweep rather than a handful of sizes, because the two
+    /// crashes found here appeared at 4x3 and at 66x12 -- one absurd, one
+    /// completely ordinary -- and no sampled list would have contained both.
+    #[test]
+    fn every_overlay_survives_an_exhaustive_size_sweep() {
+        let app = app_naming_two();
+        let mut crashed = Vec::new();
+        for (name, render) in every_overlay() {
+            for w in 1u16..=90 {
+                for h in [1u16, 2, 3, 5, 8, 12, 20, 30] {
+                    let app_ref = &app;
+                    let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+                        t.draw(|f| {
+                            let a = f.area();
+                            render(f, a, app_ref);
+                        })
+                        .unwrap();
+                    }));
+                    if ok.is_err() {
+                        crashed.push(format!("  {name} at {w}x{h}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            crashed.is_empty(),
+            "{} overlay/size combination(s) panic. A panic takes the whole \
+             TUI down, and resizing a terminal is not an error case:\n{}",
+            crashed.len(),
+            crashed
+                .iter()
+                .take(20)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    /// Overlays survive content far longer than anything they were sized for.
+    ///
+    /// The other axis. A popup can be given a 39-character IPv6 address, a
+    /// long validation error and a long name at once, on a small terminal --
+    /// which is the combination a constant width was never chosen for.
+    #[test]
+    fn overlays_survive_extreme_content_on_a_small_terminal() {
+        let mut app = App::new_test();
+        app.name_dialog.targets = (0..8)
+            .map(|i| NameTarget {
+                ip: format!("2001:0db8:85a3:0000:0000:8a2e:0370:{i:04x}"),
+                name: "x".repeat(200),
+            })
+            .collect();
+        app.name_dialog.error = Some("e".repeat(300));
+        app.save.path = "/".to_string() + &"deep/".repeat(60);
+
+        let mut crashed = Vec::new();
+        for (name, render) in every_overlay() {
+            for (w, h) in [(1u16, 1u16), (8, 4), (20, 6), (40, 10), (80, 24), (120, 40)] {
+                let app_ref = &app;
+                let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+                    t.draw(|f| {
+                        let a = f.area();
+                        render(f, a, app_ref);
+                    })
+                    .unwrap();
+                }));
+                if ok.is_err() {
+                    crashed.push(format!("  {name} at {w}x{h}"));
+                }
+            }
+        }
+        assert!(
+            crashed.is_empty(),
+            "overlays panic on oversized content:\n{}",
+            crashed.join("\n")
+        );
+    }
+
+    /// The sweep is actually drawing something.
+    ///
+    /// Anti-vacuity for every crash gate above. A render that silently drew
+    /// nothing would survive every size in the sweep and prove nothing at all
+    /// -- which is the same shape as the bug the sweep is looking for.
+    #[test]
+    fn the_crash_sweep_renders_real_content() {
+        let app = app_naming_two();
+        for (name, render) in every_overlay() {
+            let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+            t.draw(|f| {
+                let a = f.area();
+                render(f, a, &app);
+            })
+            .unwrap();
+            let drawn = content_lines(t.backend().buffer());
+            assert!(
+                drawn.len() >= 2,
+                "the {name} overlay drew {} line(s) of content at 120x40, so \
+                 the size sweep is exercising almost nothing",
+                drawn.len()
+            );
+        }
+    }
 
     /// An empty save path renders the popup (block cursor branch) without
     /// panicking.

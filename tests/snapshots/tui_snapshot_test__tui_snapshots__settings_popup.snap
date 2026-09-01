@@ -1,5 +1,6 @@
 ---
 source: tests/tui_snapshot_test.rs
+assertion_line: 1435
 expression: output
 ---
  Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
@@ -25,7 +26,7 @@ expression: output
                                    │  SDP Display:      [None]                      │
                                    │  Syntax Highlight: [ON]                        │
                                    │                                                │
-                                   │                                                │
+                                   │  ↑/↓ move · Enter toggle · Esc close           │
                                    │                                                │
                                    └────────────────────────────────────────────────┘
 
