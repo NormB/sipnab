@@ -4061,7 +4061,7 @@ shape:
       "call_id": "1-1966@10.0.2.20",
       "digest": "b6f0a1c9d84e2f7a3b5c6d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c",
       "completeness": {
-        "note": "Produced by sipnab 0.5.142 on node capture-01. ... sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "note": "Produced by sipnab 0.5.141 on node capture-01. ... sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
         "media": "none-decodable",
         "media_note": "No audio payload retained: ...",
         "max_inline_media_bytes": 5242880,
@@ -4078,7 +4078,7 @@ A run that lost something fills the same block instead:
 
 ```jsonc
 "completeness": {
-  "note": "Produced by sipnab 0.5.142 on node capture-01. ... — INCOMPLETE: 3 header line(s) exceeded the parser's length cap and were dropped, ...",
+  "note": "Produced by sipnab 0.5.141 on node capture-01. ... — INCOMPLETE: 3 header line(s) exceeded the parser's length cap and were dropped, ...",
   "media": "refused-over-budget",
   "media_note": "...",
   "max_inline_media_bytes": 1048576,

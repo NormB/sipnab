@@ -8,6 +8,35 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The commit gate lints what CI lints.** `pre-commit` ran `cargo clippy
+  --features full`; CI and `pre-push` run `--workspace --all-features
+  --all-targets`. Test binaries are not a default target, so every test file in
+  this repository was unlinted at commit time, and four separate lints reached
+  CI that way -- two on 2026-08-30 and two more on 2026-09-01, in test files
+  written that day.
+
+  The fix was deferred for a year of commits because widening the hook was
+  assumed to "roughly double its wall clock". Measured warm, on the machine
+  that runs it: the old scope 245 ms, CI's exact command 517 ms, and a bespoke
+  `--features full --all-targets` middle option **40,110 ms**. The assumption
+  was wrong, and the reason generalizes -- CI's command is cheap in the hook
+  BECAUSE pre-push and CI already use it, so it shares their warm build cache,
+  while a feature combination nothing else builds has a cache nothing else
+  warms. Run the gate, do not approximate it: the approximation was not merely
+  weaker, a different one would have been 78x slower.
+
+- **Phase two of a release no longer bumps example output.**
+  `docs/mcp-tools.md` carries sample vCon payloads reading "Produced by sipnab
+  <version>". Updating those in the publish commit made it touch a path outside
+  `ADVERTISEMENT_PATHS`, so `a_p0_marked_done_is_released_or_declared` stopped
+  recognizing it as phase two and turned `main` red immediately after 0.5.142
+  shipped. The examples are illustrative output, not download markers, and
+  nothing requires them to name the current release.
+
 ## [0.5.142] - 2026-09-01
 
 ### Fixed

@@ -2970,7 +2970,11 @@ fn no_documentation_table_repeats_a_row() {
     // 782 -> 786: RV5/RV6 in docs/mcp-tools.md -- the `validate_vcon`
     // reference section's two tables, one of them the three-verdict list --
     // counted once in docs/ and once in the site mirror.
-    const EXPECTED_TABLES: usize = 786;
+    // 786 -> 787: ONE table, in docs/design/backlog.md's GATE1 entry -- the
+    // three measured clippy scopes and their wall clocks. The backlog is not
+    // mirrored into the site, so it counts once. Attributed per file: no
+    // other page gained or lost a table.
+    const EXPECTED_TABLES: usize = 787;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

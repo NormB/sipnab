@@ -179,19 +179,31 @@ fi
 # ── 1. Clippy must pass ────────────────────────────────────────────
 # `--color never` so the greps below key on the diagnostic and not on whatever
 # CARGO_TERM_COLOR wrapped it in.
-# NARROWER THAN CI ON PURPOSE, and it says so below. This is
-# `--features full` on the default targets; CI and `.githooks/pre-push` both run
-# `--workspace --all-features --all-targets`, which additionally lints every
-# test binary. `--all-targets` roughly doubles the wall clock, and this hook
-# runs on every commit, so the expensive form lives in pre-push.
+# CI'S EXACT COMMAND, byte for byte. It used to be `--features full` on the
+# default targets, which lints the lib and the binaries and NOT a single test
+# binary -- most of what this repository is. The cost was paid four times: a
+# `needless_splitn` in a test file and an `items_after_test_module` in
+# `src/sip/mod.rs` on 0.5.135, and twice more on 2026-09-01 in test files
+# written that day. Each passed here and failed the command CI runs.
 #
-# The cost of the split is real and was paid on 0.5.135: a `needless_splitn` in
-# a test file and an `items_after_test_module` in `src/sip/mod.rs` both passed
-# here and failed CI's exact command. Printing the scope is what stops a green
-# line from reading as a green push.
-echo -n "  Clippy (default targets; pre-push covers --all-targets)... "
+# The split was kept because widening it was assumed to "roughly double the
+# wall clock". Measured 2026-09-01, warm, on the machine that runs it:
+#
+#     cargo clippy --features full                          245 ms
+#     cargo clippy --workspace --all-features --all-targets  517 ms
+#     cargo clippy --features full --all-targets          40,110 ms
+#
+# The assumption was wrong, and the reason generalizes: CI's command is cheap
+# HERE because pre-push and CI already use it, so it shares their build cache.
+# The bespoke middle option is 78x slower than the strict one, because a
+# feature combination nothing else builds has a cache nothing else warms.
+#
+# Run the gate, do not approximate it. The approximation was not merely
+# weaker; a different one would have been slower too.
+# `tests/clippy_scope_parity_test.rs` holds the three scopes equal.
+echo -n "  Clippy (CI's exact scope)... "
 set +e
-CLIPPY_OUTPUT=$(cargo clippy --features full --color never -- -D warnings 2>&1)
+CLIPPY_OUTPUT=$(cargo clippy --workspace --all-features --all-targets --color never -- -D warnings 2>&1)
 CLIPPY_RC=$?
 set -e
 if [ "$CLIPPY_RC" -ne 0 ]; then
@@ -205,7 +217,7 @@ if [ "$CLIPPY_RC" -ne 0 ]; then
     printf '%s\n' "$CLIPPY_OUTPUT" \
         | grep -E '^(error|warning)(\[[^]]*\])?:|^ +--> ' \
         | emit_capped 20 "$CLIPPY_LOG"
-    echo "  Reproduce: cargo clippy --features full -- -D warnings"
+    echo "  Reproduce: cargo clippy --workspace --all-features --all-targets -- -D warnings"
     echo "  Full output: $CLIPPY_LOG"
     exit 1
 fi

@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**27 open, 419 done** across 26 sections.
+**26 open, 420 done** across 26 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -61,7 +61,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | RE | 1 | 6 | `#########.` |
 | BA | 1 | 3 | `########..` |
 | NAT | 0 | 4 | `##########` |
-| RV | 1 | 7 | `#########.` |
+| RV | 0 | 8 | `##########` |
 | RP | 4 | 0 | `..........` |
 | HX | 1 | 2 | `#######...` |
 | AS | 6 | 1 | `#.........` |
@@ -4826,17 +4826,37 @@ must be *operated* — the same test that had PB4 declined. RV2 is the one that
 transmits, and it is written to inherit `--mcp-allow-open-capture`'s shape for
 exactly that reason.
 
-- [ ] **GATE1 — `pre-commit` clippy is narrower than CI and the gap costs a
-  cycle.** The hook runs `cargo clippy --features full -- -D warnings`; CI and
-  `pre-push` run `--workspace --all-features --all-targets`. Test binaries are
-  therefore unlinted at commit time. Measured 2026-08-30: a `needless_splitn`
-  in [`tests/sample_capture_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/sample_capture_test.rs) and an `items_after_test_module` in
-  [`src/sip/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/mod.rs) both passed the commit gate and failed CI's exact command.
+- [x] **GATE1 (done 2026-09-01, 0.5.143) — `pre-commit` clippy is narrower than
+  CI and the gap costs a cycle.** The hook ran `cargo clippy --features full
+  -- -D warnings`; CI and `pre-push` run `--workspace --all-features
+  --all-targets`. Test binaries are not a default target, so every test file
+  was unlinted at commit time. It cost four cycles: a `needless_splitn` in
+  [`tests/sample_capture_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/sample_capture_test.rs) and an `items_after_test_module` in
+  [`src/sip/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/mod.rs) on 2026-08-30, and twice more on 2026-09-01 in test
+  files written that day.
 
-  The scope is now printed rather than implied, which is the cheap half. The
-  open question is whether `--all-targets` belongs in pre-commit: it roughly
-  doubles the hook's wall clock on every commit to catch a class pre-push
-  already catches before anything leaves the machine.
+  **The open question was answered by measuring it.** The fix was deferred
+  because `--all-targets` was assumed to "roughly double the hook's wall
+  clock". Warm, on the machine that runs it:
+
+  | command | steady state |
+  |---|---:|
+  | `--features full` (the old hook) | 245 ms |
+  | `--workspace --all-features --all-targets` (CI's) | 517 ms |
+  | `--features full --all-targets` (a middle option) | 40,110 ms |
+
+  The assumption was wrong by an order of magnitude in the direction that
+  mattered, and the reason generalizes: CI's exact command is cheap in the
+  hook BECAUSE pre-push and CI already use it, so it shares their warm build
+  cache. The bespoke middle option is 78x slower than the strict one, because
+  a feature combination nothing else builds has a cache nothing else warms.
+
+  Run the gate, do not approximate it — the approximation here was not merely
+  weaker, a different one would have been slower too.
+  [`tests/clippy_scope_parity_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/clippy_scope_parity_test.rs) holds pre-commit, pre-push and
+  ci.yml to one scope, and asserts each denies warnings — scope is only half
+  of a lint gate, and one without `-D warnings` prints its findings and exits
+  0.
 
 - [x] **RV1 (done 2026-08-31, 0.5.139) — `explain_attribution`: how was this stream's endpoint learned,
   and was that path authenticated?** Ranked first because VAL8 and VAL9 turned
