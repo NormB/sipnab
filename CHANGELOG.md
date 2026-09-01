@@ -8,10 +8,21 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.140] - 2026-08-31
 
 ### Fixed
 
+- **A dropped header is disclosed instead of covered by a clean verdict
+  (VAL13).** A header line at or past the parser's 8,192-byte cap is discarded,
+  and the container reported "No omissions recorded" over it -- the field whose
+  whole job is to say data was dropped said none was. The bytes stay
+  unrecoverable by design: the cap is what stops one runaway line being unfolded
+  into memory, so disclosure is the entire remedy. All four sites that discard
+  header bytes now count the drop, two of which did not even set `parse_error`,
+  and the count reaches `capture_completeness` as `headers_dropped_oversize`.
+  It is reported as HEADERS specifically, because "something was dropped" sends
+  a reader searching frames that are all present -- the loss is inside messages
+  the container otherwise carries in full.
 - **A transfer Dialog Object carries the `start` its schema requires (VAL12).**
   Every Dialog Object in both the vendored and the published vCon schema lists
   `start` as required, and a transfer object names a `type`, so it shipped as a

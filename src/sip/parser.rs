@@ -449,6 +449,39 @@ static MAX_HEADER_LINE_LEN: std::sync::atomic::AtomicUsize =
 static MAX_HEADERS_PER_MESSAGE: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_HEADERS_PER_MESSAGE);
 
+/// Header lines this process discarded for exceeding the length cap.
+///
+/// VAL13. A header at or past [`DEFAULT_MAX_HEADER_LINE_LEN`] is dropped -- the
+/// cap exists so one malformed multi-megabyte line cannot be unfolded into
+/// memory -- and the drop was invisible past the message: `parse_error` says
+/// SOMETHING about this message was wrong, which is also what a bad
+/// `Content-Length` sets, so a consumer could not tell "a header was withheld"
+/// from any other parse complaint. The container then reported "No omissions
+/// recorded" over a capture that had silently lost data, which is the one thing
+/// a completeness field must never do.
+///
+/// Counted rather than collected: keeping the discarded lines would reintroduce
+/// the unbounded memory the cap exists to prevent. A count is what the reader
+/// needs to know their view is partial.
+static OVERSIZE_HEADERS_DROPPED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Record that one header line was dropped for exceeding the length cap.
+pub fn note_oversize_header_dropped() {
+    OVERSIZE_HEADERS_DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How many header lines this process has dropped for exceeding the cap.
+#[must_use]
+pub fn oversize_headers_dropped() -> u64 {
+    OVERSIZE_HEADERS_DROPPED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the tally. Test-only: the counter is process-global.
+pub fn reset_oversize_headers_dropped() {
+    OVERSIZE_HEADERS_DROPPED.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Set parser limits from configuration. Call once at startup.
 ///
 /// # Arguments
@@ -553,6 +586,7 @@ fn parse_headers_and_body(
                         buf.push_str(line_str.trim_start());
                     } else {
                         parse_error = true;
+                        note_oversize_header_dropped();
                     }
                 } else {
                     // New header — flush the previous one
@@ -566,6 +600,7 @@ fn parse_headers_and_body(
                     // that only guarded folded growth.
                     if line_str.len() >= max_header_line {
                         parse_error = true;
+                        note_oversize_header_dropped();
                         current_line = Cow::Borrowed("");
                     } else {
                         current_line = Cow::Borrowed(line_str);
@@ -582,6 +617,8 @@ fn parse_headers_and_body(
                             let buf = current_line.to_mut();
                             buf.push(' ');
                             buf.push_str(remainder.trim_start());
+                        } else {
+                            note_oversize_header_dropped();
                         }
                         // parse_error set below in the None→break path
                     } else {
@@ -596,6 +633,8 @@ fn parse_headers_and_body(
                         // for this truncated-message path.)
                         if remainder.len() < max_header_line {
                             current_line = Cow::Borrowed(remainder);
+                        } else {
+                            note_oversize_header_dropped();
                         }
                     }
                 }
@@ -1859,6 +1898,64 @@ Content-Length: 0\r\n\
         assert!(
             matches!(err, ParseError::NotSip { .. }),
             "expected NotSip, got {err:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod oversize_header_tests {
+    use super::*;
+
+    /// A header past the cap is dropped and COUNTED; an ordinary one is not.
+    ///
+    /// VAL13. The bytes cannot be kept -- the cap exists so one runaway line
+    /// cannot be unfolded into memory -- so the count is the only way a reader
+    /// learns their view of this message is partial. Before this, the drop
+    /// reached the outside world as `parse_error`, which a bad `Content-Length`
+    /// sets too, so nothing downstream could tell a withheld header from any
+    /// other complaint.
+    ///
+    /// Both directions live in ONE test on purpose. The tally is
+    /// process-global, so a separate negative control racing this one would
+    /// reset the counter between this test's parse and its assertion --
+    /// producing a failure that says nothing about the parser. Sequenced here,
+    /// the control still does its job: a counter that incremented on every
+    /// message would make every capture look lossy, which is this same defect
+    /// pointed the other way.
+    #[test]
+    fn an_oversize_header_is_counted_and_an_ordinary_one_is_not() {
+        let ordinary = "INVITE sip:b@example.com SIP/2.0\r\nVia: SIP/2.0/UDP 192.0.2.1\r\n\
+                        Call-ID: c1@192.0.2.1\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n";
+
+        reset_oversize_headers_dropped();
+        let _ = parse_headers_and_body(ordinary.as_bytes(), 0);
+        assert_eq!(
+            oversize_headers_dropped(),
+            0,
+            "nothing was over the cap, so nothing may be reported as dropped"
+        );
+
+        let huge = "X".repeat(DEFAULT_MAX_HEADER_LINE_LEN + 8);
+        let msg = format!(
+            "INVITE sip:b@example.com SIP/2.0\r\nVia: SIP/2.0/UDP 192.0.2.1\r\n\
+             Call-ID: c1@192.0.2.1\r\nCSeq: 1 INVITE\r\nX-Huge: {huge}\r\n\
+             Content-Length: 0\r\n\r\n"
+        );
+        reset_oversize_headers_dropped();
+        let (headers, _, parse_error) = parse_headers_and_body(msg.as_bytes(), 0);
+
+        assert!(
+            !headers
+                .iter()
+                .any(|h| h.name.eq_ignore_ascii_case("X-Huge")),
+            "the fixture is only meaningful while the header is actually dropped"
+        );
+        assert!(parse_error, "the drop still sets parse_error");
+        assert_eq!(
+            oversize_headers_dropped(),
+            1,
+            "the drop must be counted; parse_error alone cannot tell a withheld \
+             header from a bad Content-Length"
         );
     }
 }

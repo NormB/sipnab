@@ -712,6 +712,14 @@ pub struct CaptureCompleteness {
     pub gate_closed_during_run: bool,
     /// Dialogs a deny flag removed from this export.
     pub dialogs_suppressed_by_deny: u64,
+    /// Header lines dropped for exceeding the parser's length cap (VAL13).
+    ///
+    /// The bytes cannot be recovered -- the cap is what stops one runaway line
+    /// being unfolded into memory -- so the count is what tells a reader their
+    /// view of a message is partial. Reported here rather than left to
+    /// `parse_error`, which a bad `Content-Length` also sets: a consumer could
+    /// not tell a withheld header from any other parse complaint.
+    pub headers_dropped_oversize: u64,
     /// Blind spots the capture analysis ranked, or `None` when no analysis was
     /// supplied.
     ///
@@ -2308,6 +2316,7 @@ fn completeness_of(context: &ExportContext<'_>, media: &MediaVerdict) -> Capture
         dialogs_rotated: facts.retention.dialogs_rotated,
         gate_closed_during_run: facts.gate_closed_during_run,
         dialogs_suppressed_by_deny: facts.dialogs_suppressed_by_deny,
+        headers_dropped_oversize: facts.headers_dropped_oversize,
         blind_spots,
     }
 }
@@ -2395,6 +2404,19 @@ fn completeness_note(
             " — INCOMPLETE: {} dialog(s) carried a deny flag in their signaling and produced no \
              content. That is a decision recorded here, not a gap in what sipnab saw.",
             facts.dialogs_suppressed_by_deny
+        ));
+    }
+
+    if facts.headers_dropped_oversize > 0 {
+        // Named as HEADERS specifically. "Something was dropped" sends a reader
+        // looking through frames that are all present; the loss is inside
+        // messages the container otherwise carries in full.
+        partial.push_str(&format!(
+            " — INCOMPLETE: {} header line(s) exceeded the parser's length cap and were \
+             dropped, so at least one message here is missing a header it carried on the \
+             wire. The bytes are not recoverable from this container; the cap is what keeps \
+             a single runaway line from being unfolded into memory.",
+            facts.headers_dropped_oversize
         ));
     }
 
@@ -2787,6 +2809,39 @@ mod tests {
         assert!(
             json.contains("3 dialog(s) carried a deny flag"),
             "absence reading as 'nothing happened' is the failure this module              exists to refuse: {json}"
+        );
+    }
+
+    /// A dropped header is disclosed, not covered by the clean verdict.
+    ///
+    /// VAL13. A header at or past the parser's length cap is discarded -- the
+    /// cap is what stops one runaway line being unfolded into memory -- and the
+    /// container reported "No omissions recorded" over it. That is the one
+    /// thing a completeness field must never do: the field whose whole job is
+    /// to say data was dropped said none was.
+    ///
+    /// The bytes are unrecoverable by design, so disclosure is the entire
+    /// remedy. A reader who knows a header was withheld can go back to the
+    /// capture; one told nothing was omitted cannot know to.
+    #[test]
+    fn a_dropped_oversize_header_is_disclosed_in_the_note() {
+        let mut facts = clean_facts();
+        facts.headers_dropped_oversize = 3;
+        let v = export_with(&dialog_with(&[response(200, "OK")]), &facts);
+        let json = serde_json::to_string(&v).expect("serializes");
+
+        assert!(
+            !json.contains("No omissions recorded"),
+            "a capture that lost a header has not recorded no omissions: {json}"
+        );
+        assert!(
+            json.contains("header"),
+            "the note must say WHAT was dropped, not merely that something was: \
+             {json}"
+        );
+        assert!(
+            json.contains('3'),
+            "and how many, so a reader can weigh it: {json}"
         );
     }
 

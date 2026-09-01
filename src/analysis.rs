@@ -794,6 +794,14 @@ pub struct CaptureFacts {
     /// A decision recorded rather than a gap. Absent, the containers that DID
     /// get written read as the complete set for their predicate.
     pub dialogs_suppressed_by_deny: u64,
+    /// Header lines dropped for exceeding the parser's length cap.
+    ///
+    /// VAL13. The cap keeps one runaway line from being unfolded into memory,
+    /// so the bytes genuinely cannot be kept -- but a container that says "No
+    /// omissions recorded" over a capture that lost a header is asserting
+    /// something false about its own completeness, which is the one thing this
+    /// struct exists to prevent.
+    pub headers_dropped_oversize: u64,
 }
 
 impl CaptureFacts {
@@ -821,6 +829,7 @@ impl CaptureFacts {
             // process made, and the caller that made them sets them.
             gate_closed_during_run: false,
             dialogs_suppressed_by_deny: 0,
+            headers_dropped_oversize: crate::sip::parser::oversize_headers_dropped(),
         }
     }
 }

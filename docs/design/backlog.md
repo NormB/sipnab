@@ -44,13 +44,13 @@ Tiers:
 
 ## Status
 
-**42 open, 403 done** across 25 sections.
+**41 open, 404 done** across 25 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
 |---|---:|---:|---|
 | P0 | 0 | 21 | `##########` |
-| P1 | 2 | 68 | `##########` |
+| P1 | 1 | 69 | `##########` |
 | PV | 0 | 13 | `##########` |
 | P2 | 0 | 109 | `##########` |
 | P3 | 0 | 64 | `##########` |
@@ -1164,8 +1164,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   `Dialog::bare`, which is `None`. The instant was already computed for
   the signaling object beside it. A failing test was written first.
 
-- [ ] **VAL13 — headers of 8,192 bytes or more vanish while the completeness
-  note still says "No omissions recorded".** Another instance of the VAL2/VAL3
+- [x] **VAL13 (done 2026-08-31) — headers of 8,192 bytes or more vanish while the
+  completeness note still says "No omissions recorded".** Another instance of the VAL2/VAL3
   class, in the container rather than the exit code: data is dropped and the
   field whose job is to say so reports nothing was. (Agent-reported; not
   independently reproduced.)
