@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**28 open, 421 done** across 28 sections.
+**26 open, 423 done** across 28 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -66,7 +66,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | HX | 1 | 2 | `#######...` |
 | AS | 6 | 1 | `#.........` |
 | DOC | 0 | 16 | `##########` |
-| RDX | 2 | 0 | `..........` |
+| RDX | 0 | 2 | `##########` |
 | FLT | 1 | 0 | `..........` |
 | SPELL | 1 | 0 | `..........` |
 | MCPX | 1 | 6 | `#########.` |
@@ -5522,7 +5522,7 @@ class recur:
 
 ## RDX — redaction map correctness (added 2026-09-02)
 
-- [ ] **RDX1 — the redaction map records token-to-TOKEN rows, so reversing one
+- [x] **RDX1 (done 2026-09-02, 0.5.143) — the redaction map records token-to-TOKEN rows, so reversing one
   yields something that still looks like a real address.** Reproduced
   2026-09-02 with a fixed `--redact-key-file`, exporting containers from
   [`website/static/demos/sample-call.pcap`](https://github.com/NormB/sipnab/raw/main/website/static/demos/sample-call.pcap):
@@ -5546,6 +5546,13 @@ class recur:
   TWICE-tokenized one. No row matches the subject, so the field cannot be
   reversed at all.
 
+  **Fixed in 0.5.143.** `vcon.rs` substituted the Call-ID into `subject` and
+  then swept the whole string with `text()`, which found the redacted host
+  inside the token and tokenized it again. The prose AROUND the Call-ID is
+  redacted now and joined with the token, so the token never passes through
+  `text()`. Nine tests, the strongest needing no knowledge of any original: no
+  value in the map may itself be a key.
+
   **Do:** map every token to the ORIGINAL, not to whatever the previous pass
   produced, and make the address inside a Call-ID resolve the same way as the
   address beside it. The gate this owes is a round-trip: export with a fixed
@@ -5554,7 +5561,7 @@ class recur:
   catches a token-to-token row, and it is checkable without knowing any
   original.
 
-- [ ] **RDX2 — `--mcp` says it implies `--no-tui` and then refuses without
+- [x] **RDX2 (done 2026-09-02, 0.5.143) — `--mcp` says it implies `--no-tui` and then refuses without
   it.** [`src/cli.rs:2192`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L2192) reads *"Implies --no-tui"*; the binary exits 2 with
   *"--mcp implies non-interactive mode; pass -N/--no-tui as well"*. Measured
   2026-09-02 against the sibling flags whose help makes the same promise:
@@ -5569,6 +5576,13 @@ class recur:
   inconsistency rather than a wording preference. "Implies X" means the
   operator does not have to type X, and an agent host reading the help writes
   an invocation that fails on first run.
+
+  **Fixed in 0.5.143.** `--mcp` joins the three flags `normalize` already
+  sets; the stdout-conflict refusals beside it are unchanged, because MCP owns
+  stdout for the JSON-RPC wire. Six tests, including the class gate that reads
+  the help text and requires every "implies non-interactive" claim to be one
+  the binary performs -- which itself needed fixing after it PASSED a mutation
+  deleting the line it checks, by matching a comment instead of the code.
 
   **Do:** make `--mcp` normalize to non-interactive the way `--export-vcon`
   already does, and keep the refusal only where the operator asked for a TUI
