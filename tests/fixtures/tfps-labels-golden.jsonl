@@ -1,0 +1,5 @@
+{"ip":"198.51.100.10","rule":"scanner","detail":"sipvicious","first_seen":1756800000,"expires":1756803600,"unbanned_at":null,"enforced":true,"verdict":"blocked"}
+{"ip":"198.51.100.11","rule":"injection","detail":"'","first_seen":1756800100,"expires":0,"unbanned_at":1756804000,"enforced":true,"verdict":"blocked"}
+{"ip":"198.51.100.12","rule":"reg-scan","detail":"no-success","first_seen":1756800200,"expires":null,"unbanned_at":null,"enforced":false,"verdict":"would-block"}
+{"ip":"192.0.2.5","rule":"10.0.0.0/8","detail":"scanner: sipvicious","first_seen":1756800300,"expires":null,"unbanned_at":null,"enforced":false,"verdict":"exempt"}
+{"ip":"192.0.2.6","rule":"registered-peer","detail":"auth-failed: rejected","first_seen":1756800400,"expires":null,"unbanned_at":null,"enforced":false,"verdict":"exempt"}

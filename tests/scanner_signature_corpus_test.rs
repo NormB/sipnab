@@ -42,14 +42,8 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, TimeDelta, Utc};
 
-use sipnab::capture::pcap_reader::{PcapReader, decompress_capture};
-use sipnab::capture::{Packet, parse::parse_packet};
 use sipnab::security::ScannerDetector;
-use sipnab::sip::{SipMessage, is_sip_message, parser::parse_sip};
-
-/// Files larger than this are skipped: the corpus root holds archives that are
-/// not captures, and the pure-Rust reader works from a whole-file slice.
-const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
+use sipnab::sip::SipMessage;
 
 /// The detector's behavioral window, in seconds. Mirrors
 /// `BEHAVIORAL_WINDOW_SECS`, which is private to the detector.
@@ -99,92 +93,16 @@ fn corpus_root() -> Option<PathBuf> {
     corpus_support::root()
 }
 
-/// Every regular file under `root`, recursively, in sorted order.
-fn walk(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            match entry.file_type() {
-                Ok(t) if t.is_dir() => stack.push(path),
-                Ok(t) if t.is_file() => out.push(path),
-                _ => {}
-            }
-        }
-    }
-    out.sort();
-    out
-}
-
-/// Every SIP message in one capture, in the order the file holds them, or
-/// `None` when the file is not a capture this build can read.
-fn sip_messages(path: &Path) -> Option<Vec<SipMessage>> {
-    let data = std::fs::read(path).ok()?;
-    let inflated = decompress_capture(&data).ok()?;
-    let reader = PcapReader::new(&inflated).ok()?;
-
-    let mut out = Vec::new();
-    for pkt in reader {
-        let ts = DateTime::from_timestamp(
-            pkt.timestamp_secs as i64,
-            (u64::from(pkt.timestamp_usecs) * 1000).min(999_999_999) as u32,
-        )
-        .unwrap_or_default();
-        let caplen = pkt.data.len();
-        let orig_len = pkt.orig_len as usize;
-        let link_type = pkt.link_type as i32;
-        let packet = Packet::new(ts, pkt.data, caplen, orig_len, pkt.interface, link_type);
-
-        let Ok(parsed) = parse_packet(&packet) else {
-            continue;
-        };
-        if parsed.payload.is_empty() || !is_sip_message(&parsed.payload) {
-            continue;
-        }
-        if let Ok(msg) = parse_sip(
-            &parsed.payload,
-            parsed.timestamp,
-            parsed.src_addr,
-            parsed.dst_addr,
-            parsed.src_port,
-            parsed.dst_port,
-            parsed.transport,
-        ) {
-            out.push(msg);
-        }
-    }
-    Some(out)
-}
-
 /// Every readable capture under the corpus root, as `(display name, messages)`.
 ///
 /// The display name is the path relative to the corpus root — a filename, not
 /// packet content, so it carries nothing from the wire. Captures holding no SIP
 /// are dropped: they cannot support or refute anything here.
+///
+/// The walking and parsing live in `support/corpus.rs`: a second suite needed
+/// them, and a corpus reader copied into two files is a fact written twice.
 fn corpus_captures(root: &Path) -> Vec<(String, Vec<SipMessage>)> {
-    let mut out = Vec::new();
-    for path in walk(root) {
-        if path.metadata().map(|m| m.len()).unwrap_or(0) > MAX_FILE_BYTES {
-            continue;
-        }
-        let Some(msgs) = sip_messages(&path) else {
-            continue;
-        };
-        if msgs.is_empty() {
-            continue;
-        }
-        let name = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .display()
-            .to_string();
-        out.push((name, msgs));
-    }
-    out
+    corpus_support::captures(root)
 }
 
 /// One probe transaction a source opened, and what became of it.

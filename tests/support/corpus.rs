@@ -97,3 +97,104 @@ pub fn notice_line(binary: &str) -> String {
 
 /// The fragment every notice carries, for tests and for `grep`.
 pub const NOTICE_MARKER: &str = "did NOT run";
+
+// ---- Reading the corpus itself ----
+//
+// Lived in `scanner_signature_corpus_test.rs` until a second suite needed it.
+// A corpus walker copied into two files is a fact written twice: they agree
+// today and drift the first time one learns about a new capture format.
+
+use std::path::Path;
+
+use chrono::DateTime;
+
+use sipnab::capture::pcap_reader::{PcapReader, decompress_capture};
+use sipnab::capture::{Packet, parse::parse_packet};
+use sipnab::sip::{SipMessage, is_sip_message, parser::parse_sip};
+
+/// Files larger than this are skipped: the corpus root holds archives that are
+/// not captures, and the pure-Rust reader works from a whole-file slice.
+pub const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Every file under `root`, depth first, sorted for a stable order.
+pub fn walk(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => stack.push(path),
+                Ok(t) if t.is_file() => out.push(path),
+                _ => {}
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The SIP messages in one capture, or `None` when it is not a capture at all.
+pub fn sip_messages(path: &Path) -> Option<Vec<SipMessage>> {
+    let data = std::fs::read(path).ok()?;
+    let inflated = decompress_capture(&data).ok()?;
+    let reader = PcapReader::new(&inflated).ok()?;
+
+    let mut out = Vec::new();
+    for pkt in reader {
+        let ts = DateTime::from_timestamp(
+            i64::from(pkt.timestamp_secs),
+            u32::try_from((u64::from(pkt.timestamp_usecs) * 1000).min(999_999_999)).unwrap_or(0),
+        )
+        .unwrap_or_default();
+        let caplen = pkt.data.len();
+        let orig_len = pkt.orig_len as usize;
+        let link_type = pkt.link_type as i32;
+        let packet = Packet::new(ts, pkt.data, caplen, orig_len, pkt.interface, link_type);
+
+        let Ok(parsed) = parse_packet(&packet) else {
+            continue;
+        };
+        if parsed.payload.is_empty() || !is_sip_message(&parsed.payload) {
+            continue;
+        }
+        if let Ok(msg) = parse_sip(
+            &parsed.payload,
+            parsed.timestamp,
+            parsed.src_addr,
+            parsed.dst_addr,
+            parsed.src_port,
+            parsed.dst_port,
+            parsed.transport,
+        ) {
+            out.push(msg);
+        }
+    }
+    Some(out)
+}
+
+/// Every capture under `root` that holds SIP, named relative to the root.
+pub fn captures(root: &Path) -> Vec<(String, Vec<SipMessage>)> {
+    let mut out = Vec::new();
+    for path in walk(root) {
+        if path.metadata().map(|m| m.len()).unwrap_or(0) > MAX_FILE_BYTES {
+            continue;
+        }
+        let Some(msgs) = sip_messages(&path) else {
+            continue;
+        };
+        if msgs.is_empty() {
+            continue;
+        }
+        let name = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        out.push((name, msgs));
+    }
+    out
+}
