@@ -3044,7 +3044,11 @@ fn no_documentation_table_repeats_a_row() {
     // HEAD -- two in the endpoint-provenance note (the delivery-trust ladder
     // and what each rung is worth), and one each in the completeness, vCon
     // verdict and no-media notes. No page lost a table.
-    const EXPECTED_TABLES: usize = 797;
+    // 797 -> 798: one table, in docs/design/backlog.md's RDX2 entry -- the
+    // three "implies non-interactive" flags and their exit codes. RDX1's
+    // reproduction beside it is a `text` fence, not a table, so it adds none.
+    // The backlog is not mirrored into the site, so this counts once.
+    const EXPECTED_TABLES: usize = 798;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

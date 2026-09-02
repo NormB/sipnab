@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**26 open, 421 done** across 27 sections.
+**28 open, 421 done** across 28 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -66,6 +66,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | HX | 1 | 2 | `#######...` |
 | AS | 6 | 1 | `#.........` |
 | DOC | 0 | 16 | `##########` |
+| RDX | 2 | 0 | `..........` |
 | FLT | 1 | 0 | `..........` |
 | SPELL | 1 | 0 | `..........` |
 | MCPX | 1 | 6 | `#########.` |
@@ -5518,6 +5519,62 @@ class recur:
 - [x] **DOC15 (done 2026-08-30) — 44 of 51 MCP tools declare no `outputSchema`**, and 17 live
   response keys are undocumented. Config keys outside `[limits]` are also
   ungated: the `[limits]` gate is a working template covering 26 of 123.
+
+## RDX — redaction map correctness (added 2026-09-02)
+
+- [ ] **RDX1 — the redaction map records token-to-TOKEN rows, so reversing one
+  yields something that still looks like a real address.** Reproduced
+  2026-09-02 with a fixed `--redact-key-file`, exporting containers from
+  [`website/static/demos/sample-call.pcap`](https://github.com/NormB/sipnab/raw/main/website/static/demos/sample-call.pcap):
+
+  ```text
+  65.5.235.78                    -> 192.0.2.10       (token -> original)
+  239.213.65.170                 -> 65.5.235.78      (token -> ANOTHER TOKEN)
+  253602a034d0e71e@65.5.235.78   -> call-2c9d47@192.0.2.10
+  ```
+
+  The address is tokenized TWICE and the map records each hop as its own row.
+  An operator reversing `239.213.65.170` gets `65.5.235.78`, which reads as a
+  real IPv4 address and is not one. The map is the artifact somebody uses to
+  un-redact a capture they were sent, so a row whose value is another token is
+  a wrong answer that looks right -- the failure mode redaction exists to
+  prevent.
+
+  **The visible symptom is a `subject` nothing can reverse.** The container
+  renders `SIP call 253602a034d0e71e@239.213.65.170` -- the Call-ID hash with
+  the ONCE-tokenized address -- while the map keys the Call-ID against the
+  TWICE-tokenized one. No row matches the subject, so the field cannot be
+  reversed at all.
+
+  **Do:** map every token to the ORIGINAL, not to whatever the previous pass
+  produced, and make the address inside a Call-ID resolve the same way as the
+  address beside it. The gate this owes is a round-trip: export with a fixed
+  key, reverse every token in the container through the map, and assert nothing
+  reversible remains and no value is itself a key -- the second half is what
+  catches a token-to-token row, and it is checkable without knowing any
+  original.
+
+- [ ] **RDX2 — `--mcp` says it implies `--no-tui` and then refuses without
+  it.** [`src/cli.rs:2192`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L2192) reads *"Implies --no-tui"*; the binary exits 2 with
+  *"--mcp implies non-interactive mode; pass -N/--no-tui as well"*. Measured
+  2026-09-02 against the sibling flags whose help makes the same promise:
+
+  | invocation | exit |
+  |---|---:|
+  | `--export-vcon <id>` without `-N` | 0 |
+  | `--export-vcon-when <expr>` without `-N` | 0 |
+  | `--mcp` without `-N` | 2 |
+
+  Two flags honor the implication and `--mcp` alone does not, so this is an
+  inconsistency rather than a wording preference. "Implies X" means the
+  operator does not have to type X, and an agent host reading the help writes
+  an invocation that fails on first run.
+
+  **Do:** make `--mcp` normalize to non-interactive the way `--export-vcon`
+  already does, and keep the refusal only where the operator asked for a TUI
+  explicitly. A test per flag asserting that every "implies non-interactive"
+  claim in the help is true of the binary would close the class rather than
+  this one instance.
 
 ## FLT — filter vocabulary that differs between surfaces (added 2026-09-01)
 
