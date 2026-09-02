@@ -10,7 +10,31 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **Eleven engineering notes.** Post-mortems drawn from this repository's own
+  history: a tool list that advertised what the build could not run, a spelling
+  gate that checked seventy words while sixty-seven unlisted forms sat in the
+  tree, a CI process that died writing its own log, a popup that truncated the
+  only key that closes it, and an assumption about a hook's wall clock that
+  nobody had timed. Each rests on a commit, a test's own module doc, or a
+  measurement recorded beside the code.
+
 ### Fixed
+
+- **The relay seam gate could not see a leak in the case code writes it.** RP2
+  requires that no file under `src/mcp/`, `src/output/` or `src/tui/` names a
+  relay vendor, and `tests/relay_seam_test.rs` asserted exactly that. It
+  matched with `l.contains("rtpengine")`, which is case-sensitive, so
+  `pub struct RtpengineLeak;` appended to `src/output/model.rs` — the precise
+  violation the gate exists for — left it green. Rust types are PascalCase and
+  constants SCREAMING_SNAKE; the token list is lowercase, so the scan was blind
+  to every spelling a leak would actually take. Found by mutating a gate that
+  was already passing.
+
+  The comparison is case-insensitive now, with a test asserting each spelling
+  IS caught and a paired one asserting `PcapNgReader` and a comment naming the
+  vendor are NOT — a gate trained away is a gate switched off.
 
 - **The commit gate lints what CI lints.** `pre-commit` ran `cargo clippy
   --features full`; CI and `pre-push` run `--workspace --all-features

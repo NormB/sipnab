@@ -691,7 +691,18 @@ fn wiki_intra_docs_links_resolve() {
     // `validate_vcon` index row, `export_vcon`'s filter parameter pointing at
     // `list_dialogs` for the DSL vocabulary rather than restating it, and
     // `validate_vcon`'s feature refusal pointing at `server_capabilities`.
-    const EXPECTED_WIKI_LINKS: usize = 626;
+    // 626 -> 657 by growing the cookbook from 28 recipes to 59. Attributed per
+    // file with this gate's own rules -- `docs/` only, code blocks stripped,
+    // same-page anchors counted: `docs/examples.md` +31 and every other page in
+    // the walk held its count, measured on the diff before this number moved.
+    // All 31 are rows in the page's "What do you want to do?" table, one per new
+    // recipe, which is what makes a recipe reachable rather than merely present.
+    // The new recipes cross-reference each other by number in prose rather than
+    // by link, and their one outbound citation is an RFC URL this extractor does
+    // not walk, so the index rows are the whole delta. The generated site mirror
+    // gains the same 31 and is deliberately NOT in this figure -- the extractor
+    // reads `docs/` only.
+    const EXPECTED_WIKI_LINKS: usize = 657;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

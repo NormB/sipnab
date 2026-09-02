@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**26 open, 420 done** across 26 sections.
+**26 open, 421 done** across 27 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -62,10 +62,11 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | BA | 1 | 3 | `########..` |
 | NAT | 0 | 4 | `##########` |
 | RV | 0 | 8 | `##########` |
-| RP | 4 | 0 | `..........` |
+| RP | 3 | 1 | `##........` |
 | HX | 1 | 2 | `#######...` |
 | AS | 6 | 1 | `#.........` |
 | DOC | 0 | 16 | `##########` |
+| FLT | 1 | 0 | `..........` |
 | SPELL | 1 | 0 | `..........` |
 | MCPX | 1 | 6 | `#########.` |
 | P5 | 7 | 13 | `######....` |
@@ -5006,9 +5007,28 @@ section stays four entries instead of becoming a mirror of RV.
   stays under 0.8 MB. A text protocol has its own denial-of-service shapes — an
   unterminated line, a cookie of unbounded length — and needs the equivalent.
 
-- [ ] **RP2 — encapsulate the relay so adding another RTP engine is easy and
-  well defined. This is a stated architectural requirement, not a
-  refactoring preference.** Today the vocabulary lives under `src/rtpengine/` and is named for
+- [x] **RP2 (done 2026-09-01) — encapsulate the relay so adding another RTP
+  engine is easy and well defined. This is a stated architectural requirement,
+  not a refactoring preference.**
+
+  **Closed after finding the gate did not hold.** The seam landed with 0.5.142
+  (`src/relay/`, `ControlDecoder`, `DecodedControl`) and
+  [`tests/relay_seam_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/relay_seam_test.rs) claimed all three acceptance tests. Verified
+  by mutation rather than by reading: `pub struct RtpengineLeak;` appended to
+  [`src/output/model.rs`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs) — a vendor name in a consuming layer, the exact
+  violation acceptance test 2 exists for — and the gate stayed **green**.
+
+  `vendor_code_lines` matched with `l.contains("rtpengine")`, which is
+  case-sensitive, and a Rust type is `RtpengineLeak` or `RtpEngineSession` or
+  `RTPENGINE_PORT`. The scan could not see any spelling code would actually
+  use. Same shape as the US-English gate that could not see inside snake_case:
+  a matcher blind to the form the code takes is not a weaker gate, it is one
+  switched off for the case that matters.
+
+  The comparison is case-insensitive now, and two tests hold it — one asserting
+  every spelling a leak would take IS caught, one asserting `PcapNgReader` and
+  a comment naming the vendor are NOT, since a gate trained away is a gate
+  switched off. Re-run against the same mutation, it fails and names the file. Today the vocabulary lives under `src/rtpengine/` and is named for
   one implementation. `EndpointAssertion::relay_asserted` and `Reconciler` are
   not conceptually rtpengine-specific; the module boundary is.
 
@@ -5498,6 +5518,35 @@ class recur:
 - [x] **DOC15 (done 2026-08-30) — 44 of 51 MCP tools declare no `outputSchema`**, and 17 live
   response keys are undocumented. Config keys outside `[limits]` are also
   ungated: the `[limits]` gate is a working template covering 26 of 123.
+
+## FLT — filter vocabulary that differs between surfaces (added 2026-09-01)
+
+- [ ] **FLT1 — `--export-vcon-when` refuses the aliases `--filter` accepts.**
+  Found while writing cookbook recipe 51, and measured 2026-09-01 against the
+  built binary:
+
+  | command | exit |
+  |---|---:|
+  | `--filter problems` | 0 |
+  | `--export-vcon-when problems` | 1, *"not a valid filter expression: unexpected input at position 0"* |
+  | `--export-vcon-when "state == 'Failed'"` | 0 |
+
+  [`docs/cli-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md) says `EXPR` "is the language `--filter` already
+  speaks", and [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) described the two as taking one vocabulary.
+  They do not: `--filter` runs `expand_alias` first
+  ([`src/app/bootstrap.rs:2157`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2157)) and `vcon_selection`
+  ([`src/app/batch.rs:5434`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5434)) parses raw. The doc claim is corrected;
+  the behavior is not, and the flag is the one that is wrong -- reusing the
+  filter language is the stated design, and ten `DIAGNOSTIC_ALIASES` are part
+  of that language.
+
+  **Not a one-line fix, which is why it is an item rather than a patch.**
+  `expand_alias` needs an `AliasThresholds`, built by `cli.alias_thresholds(config)`,
+  and `vcon_selection` is handed a `&Cli` with no `Config` in scope. The work
+  is threading the thresholds to that call site, then a test per alias
+  asserting both surfaces resolve it identically -- `all_aliases_expand_and_parse`
+  in [`src/sip/dsl.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs) is the shape to copy, and the gate owed is one that
+  fails when a NEW surface parses a filter without expanding first.
 
 ## SPELL — British spellings the gates still cannot see (added 2026-09-01)
 

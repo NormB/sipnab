@@ -77,9 +77,69 @@ fn vendor_code_lines(src: &str) -> Vec<String> {
     src.lines()
         .map(str::trim)
         .filter(|l| !l.starts_with("//"))
-        .filter(|l| VENDOR_TOKENS.iter().any(|v| l.contains(v)))
+        .filter(|l| {
+            // Case-INSENSITIVE, because a Rust type is never spelled the way
+            // this list spells it. `contains("rtpengine")` could not see
+            // `RtpengineLeak`, `RtpEngineSession` or `RTPENGINE_PORT`, which
+            // are the only forms a leak into a consuming layer would actually
+            // take. The gate passed on the exact violation it exists for.
+            let lower = l.to_ascii_lowercase();
+            VENDOR_TOKENS
+                .iter()
+                .any(|v| lower.contains(&v.to_ascii_lowercase()))
+        })
         .map(str::to_string)
         .collect()
+}
+
+/// The scanner sees a vendor name in the case CODE actually spells it.
+///
+/// `contains("rtpengine")` is case-sensitive, and Rust types are PascalCase.
+/// `pub struct RtpengineLeak;` added to `src/output/model.rs` passed this gate
+/// on 2026-09-01 -- the exact violation it exists to prevent, in the exact
+/// form a leak would take, because a type is never spelled the way the token
+/// list spells it.
+///
+/// Same shape as a spelling gate that could not see inside snake_case: a
+/// matcher blind to the form the code uses is not a weaker gate, it is a gate
+/// that is off for the case that matters.
+#[test]
+fn the_vendor_scan_sees_every_case_a_leak_would_use() {
+    for spelling in [
+        "pub struct RtpengineLeak;",
+        "pub struct RtpEngineSession;",
+        "let x: RTPENGINE_PORT = 0;",
+        "use crate::rtpengine::NgCommand;",
+        "fn decode_Bencode() {}",
+    ] {
+        assert!(
+            !vendor_code_lines(spelling).is_empty(),
+            "the vendor scan missed {spelling:?}. A consuming layer could name \
+             the vendor in that spelling and this gate would report the seam \
+             intact."
+        );
+    }
+}
+
+/// It still ignores what is not a vendor name.
+///
+/// The paired half. Lowercasing the comparison must not turn the scan into
+/// something that flags `PcapNgReader` -- the reason `ng` is not a bare token
+/// in the first place. A gate trained away is a gate switched off.
+#[test]
+fn the_vendor_scan_ignores_names_that_merely_look_similar() {
+    for innocent in [
+        "let r = PcapNgReader::new(f);",
+        "// rtpengine is on the other side of this boundary",
+        "/// The relay, which rtpengine implements first.",
+        "let engine = MediaEngine::default();",
+        "let encoded = encode_base64(x);",
+    ] {
+        assert!(
+            vendor_code_lines(innocent).is_empty(),
+            "the vendor scan flagged {innocent:?}, which names no vendor"
+        );
+    }
 }
 
 /// The scanners read a real tree.

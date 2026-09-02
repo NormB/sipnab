@@ -33,6 +33,42 @@ mod markdown;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // cargo's, quoted by the engineering notes that describe a gate or a
+    // build. `--all-features`, `--all-targets`, `--workspace`, `--features`,
+    // `--fix` and `--test` are cargo's; `--preserve` is `cp`'s, named while
+    // explaining which spellings are GNU-only. Scoped per note, so the same
+    // name written as if it were a sipnab flag anywhere else still fails.
+    (
+        "all-features",
+        &["website/content/notes/the-assumption-nobody-timed.md"],
+    ),
+    (
+        "all-targets",
+        &["website/content/notes/the-assumption-nobody-timed.md"],
+    ),
+    (
+        "workspace",
+        &["website/content/notes/the-assumption-nobody-timed.md"],
+    ),
+    (
+        "fix",
+        &["website/content/notes/the-assumption-nobody-timed.md"],
+    ),
+    (
+        "features",
+        &[
+            "website/content/notes/the-assumption-nobody-timed.md",
+            "website/content/notes/the-tool-list-that-promised-what-the-build-lacked.md",
+        ],
+    ),
+    (
+        "test",
+        &["website/content/notes/seventy-five-percent-of-a-test-binary.md"],
+    ),
+    (
+        "preserve",
+        &["website/content/notes/the-fixture-was-what-broke.md"],
+    ),
     // `--git` is cargo's. The build-and-release page carries the
     // `cargo install --git ... --tag` line the site-build gate prints when zola
     // is missing, because Zola publishes no aarch64 Linux binary and building
@@ -2773,7 +2809,12 @@ fn no_documentation_table_repeats_a_row() {
     // and `website/content/api-reference.md` (the OpenAPI page, which sits at
     // the top level rather than under docs/ because the docs-nav gate requires
     // every website/content/docs page to appear in both nav lists).
-    const EXPECTED_MARKDOWN_FILES: usize = 180;
+    // 180 -> 191: eleven engineering notes under `website/content/notes/`,
+    // post-mortems drawn from this repository's own history. Attributed
+    // against the staged diff: `--diff-filter=A` lists exactly eleven new
+    // `.md` paths and every one is in that directory, so no other page was
+    // added or removed.
+    const EXPECTED_MARKDOWN_FILES: usize = 191;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -2974,7 +3015,13 @@ fn no_documentation_table_repeats_a_row() {
     // three measured clippy scopes and their wall clocks. The backlog is not
     // mirrored into the site, so it counts once. Attributed per file: no
     // other page gained or lost a table.
-    const EXPECTED_TABLES: usize = 787;
+    // 787 -> 792: five tables, attributed per file against HEAD -- one in
+    // docs/design/backlog.md (FLT1's measured exits) and one each in four
+    // engineering notes: the clippy wall-clock comparison, the debug-info
+    // split, the three-surfaces capture table, and the field-vs-container
+    // byte counts. No page lost a table, and the notes are not mirrored into
+    // the site, so each counts once.
+    const EXPECTED_TABLES: usize = 792;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

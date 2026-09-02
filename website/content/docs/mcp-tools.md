@@ -3949,7 +3949,7 @@ Unlike its file-writing neighbors this tool writes nothing and needs no
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `call_id` | string | A Call-ID the store holds. An unknown one fails with `invalid_params` (-32602) naming the value. | Give `filter` instead. |
-| `filter` | string | A filter alias or a raw DSL expression, the vocabulary [`list_dialogs`](#list-dialogs) and `--export-vcon-when` take. Every matching dialog comes back. | Give `call_id` instead. |
+| `filter` | string | A filter alias or a raw DSL expression, the vocabulary [`list_dialogs`](#list-dialogs) takes. The `--export-vcon-when` flag answers the same question but accepts the DSL expression ONLY -- it rejects an alias, which is [FLT1](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md). Every matching dialog comes back. | Give `call_id` instead. |
 | `limit` | integer | 1 to `--mcp-max-rows` (1000 by default). | 50. |
 
 Give `call_id` or `filter`, never both. The CLI refuses the same pair, because

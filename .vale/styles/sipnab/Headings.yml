@@ -84,6 +84,15 @@ exceptions:
   - SSRC
   - STIR
   - SHAKEN
+  # Tunnel and browser-transport terms the cookbook heads recipes with. GTP-U
+  # is 3GPP's user-plane encapsulation and VXLAN the data-center one; WebSocket
+  # is RFC 6455's, which RFC 7118 carries SIP over, and WebRTC is the browser
+  # stack that speaks it. All four are spelled this way by the specifications
+  # that define them, so "Websocket" or "Vxlan" would rename a protocol.
+  - GTP-U
+  - VXLAN
+  - WebRTC
+  - WebSocket
   # NAT traversal, in the same family as the media acronyms above: STUN asks
   # the network for the endpoint's reflexive address, TURN relays media when
   # it cannot be sent directly.

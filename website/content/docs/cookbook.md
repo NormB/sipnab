@@ -47,6 +47,37 @@ are new, recipe 1 is the broadest starting point.
 | Collect HEP *and* forward it upstream | [26. Run sipnab as a HEP relay](#26-run-sipnab-as-a-hep-relay) |
 | Settle "we sent it" / "we never got it" | [27. Compare the same call at two nodes](#27-compare-the-same-call-at-two-nodes) |
 | Keep a capture running across reboots | [28. Run sipnab as a service](#28-run-sipnab-as-a-service) |
+| Work out why a capture shows almost no SIP | [29. Read a capture whose SIP is not on port 5060](#29-read-a-capture-whose-sip-is-not-on-port-5060) |
+| Chase calls that answer and then drop | [30. Find calls that answered and were never acknowledged](#30-find-calls-that-answered-and-were-never-acknowledged) |
+| Decide what counts as bad audio on my network | [31. Set the quality thresholds to your own network](#31-set-the-quality-thresholds-to-your-own-network) |
+| Send a vendor only the calls that concern them | [32. Export one customer's calls as a smaller capture](#32-export-one-customer-s-calls-as-a-smaller-capture) |
+| See what a STIR/SHAKEN token actually claims | [33. Check what a STIR/SHAKEN Identity header actually claims](#33-check-what-a-stir-shaken-identity-header-actually-claims) |
+| Audit how the phones authenticate | [34. Detect weak digest authentication on a registrar](#34-detect-weak-digest-authentication-on-a-registrar) |
+| Read SIP split across TCP segments | [35. Read SIP that arrives in TCP segments or IP fragments](#35-read-sip-that-arrives-in-tcp-segments-or-ip-fragments) |
+| See the WebRTC leg of a call | [36. Read SIP over WebSocket from a WebRTC gateway](#36-read-sip-over-websocket-from-a-webrtc-gateway) |
+| Capture SIP inside a mobile or fabric tunnel | [37. Read SIP carried inside a GTP-U or VXLAN tunnel](#37-read-sip-carried-inside-a-gtp-u-or-vxlan-tunnel) |
+| Find every call that mentions a string | [38. Search a capture for a header or a body string](#38-search-a-capture-for-a-header-or-a-body-string) |
+| Read a call that spans several capture files | [39. Collect a directory of rotated captures into one analysis](#39-collect-a-directory-of-rotated-captures-into-one-analysis) |
+| Hand the same packets to Wireshark | [40. Open the same evidence in Wireshark](#40-open-the-same-evidence-in-wireshark) |
+| Read the timers behind a slow call | [41. Measure the gap between consecutive messages](#41-measure-the-gap-between-consecutive-messages) |
+| Prove which command produced a report | [42. Record which invocation produced a report](#42-record-which-invocation-produced-a-report) |
+| Stop a week-long capture from eating the box | [43. Keep a long-running capture inside a memory budget](#43-keep-a-long-running-capture-inside-a-memory-budget) |
+| Capture overnight without filling the disk | [44. Run a capture that stops on its own](#44-run-a-capture-that-stops-on-its-own) |
+| Explain one-way findings on a VoLTE trunk | [45. Check whether comfort noise explains a one-way finding](#45-check-whether-comfort-noise-explains-a-one-way-finding) |
+| Catch calls placed at three in the morning | [46. Detect fraud placed outside business hours](#46-detect-fraud-placed-outside-business-hours) |
+| Read a load test that reuses one Call-ID | [47. Follow a load generator's traffic by transaction, not by call](#47-follow-a-load-generator-s-traffic-by-transaction-not-by-call) |
+| Capture without running as root | [48. Run a live capture without giving sipnab root](#48-run-a-live-capture-without-giving-sipnab-root) |
+| Move eleven flags into a config file | [49. Configure sipnab from a file instead of a long command line](#49-configure-sipnab-from-a-file-instead-of-a-long-command-line) |
+| Stop typing flags from memory | [50. Install shell completions](#50-install-shell-completions) |
+| Ship failed calls to an archive without the numbers | [51. Export every failed call as a redacted vCon in one pass](#51-export-every-failed-call-as-a-redacted-vcon-in-one-pass) |
+| Validate a vCon before a store refuses it | [52. Check a vCon against the schema before a store rejects it](#52-check-a-vcon-against-the-schema-before-a-store-rejects-it) |
+| Export a whole set of calls in one agent call | [53. Export a vCon per failed call in one round trip](#53-export-a-vcon-per-failed-call-in-one-round-trip) |
+| Know what a media-address claim is worth | [54. Find out where a stream's endpoint came from](#54-find-out-where-a-stream-s-endpoint-came-from) |
+| Expose MCP to an agent I do not host | [55. Set up the MCP server for a hosted agent](#55-set-up-the-mcp-server-for-a-hosted-agent) |
+| Let an agent read TLS with no keys | [56. Read TLS from an agent, with no keys and no restart](#56-read-tls-from-an-agent-with-no-keys-and-no-restart) |
+| Get a count an agent cannot miscount | [57. Ask the capture how many calls failed](#57-ask-the-capture-how-many-calls-failed) |
+| Get the facts behind a MOS score | [58. Ask why the MOS is what it is](#58-ask-why-the-mos-is-what-it-is) |
+| Decrypt TLS from a server private key | [59. Decrypt TLS with the server's private key](#59-decrypt-tls-with-the-server-s-private-key) |
 | Just find a command to copy | [Look up a one-liner by task](#look-up-a-one-liner-by-task) |
 
 ### Where a recipe fits
@@ -1801,6 +1832,1047 @@ journalctl -u sipnab -f
 - `--syslog` is what makes `journalctl` useful. Without it the interesting output goes to stdout, where journald merges it without structure.
 - Granting `CAP_NET_RAW` via `AmbientCapabilities` is what lets the unit run without being root at all. Do not add `User=root` back "to be safe" — that undoes it.
 - A live run with no `-O` writes no capture file. If you want the packets kept, say where.
+
+---
+
+## 29. Read a capture whose SIP is not on port 5060
+
+**Problem:** A trunk capture shows almost no SIP. The calls are in the file. The signaling is on 5070, or 5080, or whatever port the SBC uses.
+
+`--portrange` gates signaling only. sipnab skips SIP whose source and destination both sit outside the range, and that traffic then appears in no message count, no dialog and no output format.
+
+Widen the gate to everything the file holds:
+
+```bash
+sipnab -N -I capture.pcap --portrange 1-65535 --report --no-cli-print
+```
+
+Or name the range you actually run, which keeps a busy file fast:
+
+```bash
+sipnab -N -I capture.pcap --portrange 5060-5090 --report --no-cli-print
+```
+
+**What to look for:**
+
+- sipnab counts the SIP the gate discarded and names the busiest ports it was on, so a default run tells you what to widen to instead of reporting a quiet capture.
+- Media is never gated by `--portrange`, because RTP uses SDP-negotiated dynamic ports. A too-narrow signaling range does not hide the streams; it hides the calls they belong to, and the streams then arrive as orphans.
+
+**Pitfalls:**
+
+- On a **live** device the range becomes the BPF filter when you supply no filter of your own. There the kernel drops the traffic, so nothing downstream — this counter included — can see it was ever there.
+- SIP over WebSocket has a gate of its own, `--ws-portrange`. Widening this one does not widen that one (recipe 36).
+
+---
+
+## 30. Find calls that answered and were never acknowledged
+
+**Problem:** Calls answer and drop a second later, or the switch logs "no ACK". A `200 OK` with no `ACK` behind it is a call both sides' CDRs record as connected and nobody could speak on.
+
+Two timers decide when sipnab treats silence as a fault rather than as a capture that stopped early:
+
+```bash
+sipnab -N -I capture.pcap --ack-timeout 5 --analyze
+```
+
+`--no-final-response-timeout` does the same for an `INVITE` that never drew a final response at all:
+
+```bash
+sipnab -N -I capture.pcap --no-final-response-timeout 30 --analyze
+```
+
+**What to look for:**
+
+- The defaults are the RFC 3261 timers: Timer H (32 s) for the missing ACK, Timer C (180 s) for the missing final response. A capture shorter than the timer cannot distinguish a fault from a truncation, which is exactly why sipnab does not call it one.
+- Lower them when the capture is short and the calls are local. A five-second `--ack-timeout` on a LAN is a real finding; the same number on an international trunk is a stopwatch running against the network.
+
+**Pitfalls:**
+
+- Lowering `--no-final-response-timeout` reports **every call still ringing when the capture stopped**, which on a live tap is a normal state and not a fault. Read it against how the capture ended.
+- These change what sipnab reports, not what the capture holds. A missing ACK that arrived after the last packet in the file is missing from the file, not from the network.
+
+---
+
+## 31. Set the quality thresholds to your own network
+
+**Problem:** Every stream shows yellow, or nothing ever does. The shipped thresholds describe a general network, and yours is not one.
+
+The eight quality knobs carry no built-in command-line default, so a value you do not pass leaves the config file's value in charge:
+
+```bash
+sipnab -N -I capture.pcap --mos-warn 4.0 --mos-bad 3.2 --jitter-warn-ms 20 --jitter-bad-ms 50 --loss-warn-pct 1.0 --loss-bad-pct 3.0 --report --no-cli-print
+```
+
+Round-trip time has its own pair, read from RTCP when the capture carries it:
+
+```bash
+sipnab -N -I capture.pcap --rtt-warn-ms 150 --rtt-bad-ms 300 --report --no-cli-print
+```
+
+The one MOS input a passive tap cannot measure is the one-way delay. Declare it rather than letting the default stand:
+
+```bash
+sipnab -N -I capture.pcap --one-way-delay 40 --report --no-cli-print
+```
+
+**What to look for:**
+
+- A MOS built on an assumed delay is only as good as the assumption. `media_diagnostics` (recipe 58) reports `delay.assumed: true` when nothing supplied one, which is the flag to read before quoting a score to a carrier.
+- `--pdd-threshold` defaults to ITU-T E.721's target for an **international** connection, because a capture does not say what kind of call it holds. A network that knows its traffic is local or toll wants a tighter number.
+
+**Pitfalls:**
+
+- Thresholds change which figures the output colors and which ones it reports. They do not change the measurement, so widening one to quiet a report hides the finding rather than fixing it.
+- `--one-way-delay` is a declaration about the observed path. Declaring one you have not measured trades an honest default for a confident wrong number.
+
+---
+
+## 32. Export one customer's calls as a smaller capture
+
+**Problem:** A vendor wants the packets, and the file is 4 GB of everyone's traffic. Sending all of it is both slow and a disclosure.
+
+`-O` writes the packets that survived the filter, so a filtered read is also an extraction:
+
+```bash
+sipnab -N -I capture.pcap --filter "from.user == '1001' OR to.user == '1001'" -O one-customer.pcap --no-cli-print
+```
+
+The same as pcapng, which is the format that can also carry decryption secrets:
+
+```bash
+sipnab -N -I capture.pcap --filter "from.user == '1001'" -O one-customer.pcapng --pcapng --no-cli-print
+```
+
+**What to look for:**
+
+- Read the output back before you send it. A file that reconstructs the same dialogs is one the far end can work with; one that does not means the filter cut a leg off the call.
+- `--pcapng` is worth the extra bytes when the capture carried decryption secrets, because pcapng is the format that can carry them (recipe 7c).
+
+**Pitfalls:**
+
+- A filter selects **dialogs**, so a call whose INVITE was outside the capture has no dialog to match and its packets are not written.
+- sipnab refuses to write its output over its input. Name a different path, in a different directory if you are working in place.
+
+---
+
+## 33. Check what a STIR/SHAKEN Identity header actually claims
+
+**Problem:** Somebody is spoofing a number, or a carrier says your calls arrive with a bad attestation, and the argument is about what the header actually held.
+
+`--stir-shaken` decodes the [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224) `Identity` header's PASSporT and reports what it claims:
+
+```bash
+sipnab -N -I capture.pcap --stir-shaken --no-cli-print
+```
+
+Each decoded token prints one line:
+
+```text
+STIR/SHAKEN: attest=A orig=+15551234567 dest=["+15559876543"] verified=NotChecked
+```
+
+**What to look for:**
+
+- `attest=A` means the originator **claimed** full attestation. Nothing here confirms the claim, and a forged Identity header decodes exactly like a genuine one — so this is evidence about what the originator claimed, never grounds for trusting a calling number.
+- `verified=Expired` is the one check sipnab applies locally: [RFC 8224 §4.4](https://www.rfc-editor.org/rfc/rfc8224#section-4.4) `iat` freshness, against the capture timestamp of the packet carrying the header. An old pcap therefore reports the tokens that were still fresh at the moment they crossed the tap.
+- No `STIR/SHAKEN:` line at all means no `Identity` header reached the capture point. On an inbound trunk that is itself the finding.
+
+**Pitfalls:**
+
+- sipnab makes no outbound request to analyze a capture, so it never fetches the certificate the token references and never checks the signature over it. `verified=NotChecked` is the honest answer, not a failure.
+- sipnab logs the line at `info`. `--quiet` floors the log at `warn` and hides it, and so does the TUI.
+
+---
+
+## 34. Detect weak digest authentication on a registrar
+
+**Problem:** An audit asks whether the phones authenticate properly, and nobody can answer from the switch's configuration alone because the challenge is what the wire actually carried.
+
+`--digest-leak` reads the 401/407 challenges and the `Authorization` headers answering them, and reports four weaknesses: an MD5 algorithm, a nonce reused across challenges, a challenge with no `qop`, and a response with no `cnonce` where the challenge offered `qop`.
+
+```bash
+sipnab -N -I capture.pcap --digest-leak --alert-json --no-cli-print
+```
+
+Findings arrive as one JSON object per detection:
+
+```text
+{"alert":"digest","detail":"WeakAlgorithm: challenge uses algorithm=MD5 (should be SHA-256+)","src":"203.0.113.101","ts":"2026-05-05T12:34:56Z"}
+```
+
+Group the accused sources and get a firewall rule with the evidence beside it:
+
+```bash
+sipnab -N -I capture.pcap --digest-leak --recommend-block fail2ban --quiet
+```
+
+**What to look for:**
+
+- `WeakAlgorithm` with **no** `algorithm` parameter in the challenge is the same finding as `algorithm=MD5`: [RFC 2617](https://www.rfc-editor.org/rfc/rfc2617) makes MD5 the default when the parameter is absent, so silence is a choice.
+- `NonceReuse` across challenges is the one to act on first. A nonce that repeats is a replay window, and it usually means a registrar cluster whose nodes do not share nonce state.
+
+**Pitfalls:**
+
+- **The detector needs an alert channel or it prints nothing.** `--digest-leak` on its own arms the detection and has nowhere to put it; pass `--alert-json`, or `--alert syslog`, or read it through `--recommend-block`. A run with neither looks exactly like a clean capture.
+- This is a configuration audit, not a credential dump. sipnab reports the weakness in the exchange; it never prints the `response` hash, which is an offline attack against the subscriber's password.
+
+---
+
+## 35. Read SIP that arrives in TCP segments or IP fragments
+
+**Problem:** A capture full of SIP over TCP shows half the messages, or a large INVITE with many codecs and ICE candidates never parses.
+
+sipnab reassembles IP fragments and TCP segments by default, and two limits bound what that costs:
+
+```bash
+sipnab -N -I capture.pcap --max-reassembly 500 --reassembly-ttl 15 --report --no-cli-print
+```
+
+sipnab drops a message larger than the TCP buffer rather than growing one into memory. Raise it for a switch that sends very large bodies:
+
+```bash
+sipnab -N -I capture.pcap --max-tcp-buffer 262144 --report --no-cli-print
+```
+
+Turn reassembly off when the capture is pure single-packet UDP and reassembly is only overhead:
+
+```bash
+sipnab -N -I capture.pcap --no-reassembly --report --no-cli-print
+```
+
+**What to look for:**
+
+- `--report` counts frames no decoder could read separately from frames that were never captured. A capture that lost the second half of every large INVITE reports differently from one that never saw them.
+- sipnab holds an incomplete datagram or half-read stream for `--reassembly-ttl` seconds and then sweeps it. On a lossy path that sweep is where a truncated message goes, and its count is what tells you the path is lossy.
+
+**Pitfalls:**
+
+- `--no-reassembly` is the inverse of sipgrep's `-a`. On a TCP or TLS capture it does not make the run faster in any useful sense; it makes every multi-segment message unparseable.
+- A `--snaplen` that cut the frame short is a different problem with the same symptom. Reassembly cannot restore bytes the capture never took (recipe 22).
+
+---
+
+## 36. Read SIP over WebSocket from a WebRTC gateway
+
+**Problem:** A WebRTC leg is invisible. The browser talks SIP over WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)) to Kamailio, OpenSIPS or Janus, and the capture shows TCP and no calls.
+
+The shipped WebSocket port set — 80, 443, 8080, 8443 — is the browser's view of the web, not a deployment's. Behind a reverse proxy sipnab sees whichever port the proxy forwards to:
+
+```bash
+sipnab -N -I capture.pcap --ws-portrange 1-65535 --report --no-cli-print
+```
+
+Or name the port the gateway actually listens on:
+
+```bash
+sipnab -N -I capture.pcap --ws-portrange 5066-5066 --report --no-cli-print
+```
+
+**What to look for:**
+
+- sipnab tallies the SIP-over-WebSocket it declined to unwrap and names the ports it was on, so a run with the default set still tells you where the traffic is.
+- A range **replaces** the shipped set, exactly as `--portrange` replaces the default signaling ports. Naming 5066 alone stops unwrapping 443.
+
+**Pitfalls:**
+
+- WSS is TLS. Unwrapping the WebSocket framing needs the TLS decrypted first — a keylog (recipe 7) or a uprobe (recipe 7g) — and `--ws-portrange` alone does nothing for it.
+- A browser leg carries no RTP that a server-side tap can see when the media goes peer to peer. Put the capture where the media is, or read the relay's account of it (recipe 54).
+
+---
+
+## 37. Read SIP carried inside a GTP-U or VXLAN tunnel
+
+**Problem:** On a mobile core or a data-center fabric the SIP is real and the capture is empty, because every packet is an outer UDP header with the call inside it.
+
+`--capture-tunnels` takes all traffic on the tunnel ports so the inner SIP reaches sipnab. With no value it covers GTP-U (2152), VXLAN (4789) and GENEVE (6081):
+
+```bash
+sudo sipnab -N -d eth0 --capture-tunnels
+```
+
+Name the ports yourself for a non-standard deployment — Linux's pre-IANA VXLAN port, for instance:
+
+```bash
+sudo sipnab -N -d eth0 --capture-tunnels=8472
+```
+
+It applies to a file too, where the tunnel is already in the bytes:
+
+```bash
+sipnab -N -I capture.pcap --capture-tunnels --report --no-cli-print
+```
+
+**What to look for:**
+
+- Without the flag the auto-generated filter still sees VLAN, QinQ, PPPoE and MPLS-encapsulated SIP. Those cost nothing to add and are already on. Tunnels are the case that is off.
+- The dialogs come out with the **inner** addresses, which are the ones the SIP layer used and the ones a routing argument is about.
+
+**Pitfalls:**
+
+- This is not a narrowing filter. BPF cannot walk a GTP-U extension-header chain to reach the inner port, so the only way to cover these is to take everything on the port — on a mobile core, that is the entire user plane. Size `-B` for it (recipe 43).
+- Ignored when you supply your own BPF expression. Your filter is then the whole filter, tunnel ports included or not.
+
+---
+
+## 38. Search a capture for a header or a body string
+
+**Problem:** You know a string that identifies the traffic — a `P-Asserted-Identity`, an `X-` header your SBC adds, a trunk group name — and not which calls carry it.
+
+`-e` is the sngrep/sipgrep match expression: a regex against the whole raw message. Once any message in a dialog matches, sipnab shows every later message of that dialog too:
+
+```bash
+sipnab -N -I capture.pcap -e 'X-Trunk-Group' -i
+```
+
+Whole words only, with two messages of context after each hit:
+
+```bash
+sipnab -N -I capture.pcap -e 'INVITE' -w -A 2
+```
+
+Multi-line headers folded into one line before matching, which is what a regex spanning a wrapped `Contact` needs:
+
+```bash
+sipnab -N -I capture.pcap -e 'User-Agent' -i --single-line
+```
+
+Everything that does **not** match, for finding the odd one out:
+
+```bash
+sipnab -N -I capture.pcap -v -e 'OPTIONS' --report --no-cli-print
+```
+
+**What to look for:**
+
+- `-e` matches the message text; `--filter` matches the reconstructed dialog. Use `-e` for "which calls mention this string" and `--filter` for "which calls behaved this way". `payload` in the filter DSL is the bridge: it matches when any message in the dialog contains the value.
+- Add `--hexdump` when the argument is about bytes rather than text — a header with trailing whitespace, or a body whose line endings are wrong.
+
+**Pitfalls:**
+
+- `-e` is a regex, so `.` and `+` in a phone number or a header name match more than you meant. Escape them or add `-w`.
+- The trailing positional argument is a **BPF** filter, not a match expression. `sipnab -I capture.pcap INVITE` asks libpcap to compile `INVITE` and fails; the match expression needs `-e`.
+
+---
+
+## 39. Collect a directory of rotated captures into one analysis
+
+**Problem:** `tcpdump -C -W` left you 27 files and the call you want crosses three of them.
+
+`-I` takes a file, a **directory** or a **glob**, and it is repeatable. sipnab reads the files in the order their packets arrived, never by filename — a ring buffer wraps, so `tg.pcap7` can hold older traffic than `tg.pcap0`:
+
+```bash
+sipnab -N -I '/var/captures/*.pcap' --report --no-cli-print
+```
+
+Descend into subdirectories, which is off by default:
+
+```bash
+sipnab -N -I '/var/captures/*.pcap' --recursive --report --no-cli-print
+```
+
+**What to look for:**
+
+- One store serves the whole set, so a dialog whose INVITE is in one file and whose BYE is in another comes out as one call.
+- `sipnab -N -I /var/captures --input-name 'tg.pcap[0-4]'` narrows a **directory** to the files worth reading. sipnab matches the pattern against the filename alone, so it behaves the same at every depth under `--recursive` — and sipnab refuses the pair when `-I` names one file directly, rather than filtering nothing and saying nothing.
+
+**Pitfalls:**
+
+- `-l`/`--limit` bounds dialogs for the whole **run**, not per file. A 27-file directory reaches the cap 27 times sooner than one file does, and eviction drops the oldest dialogs — the worst ones to lose for a post-mortem. Raise it (recipe 43).
+- `--recursive` is off on purpose: descending silently can analyze several times the traffic you pointed at, and nothing in the output would say so.
+
+---
+
+## 40. Open the same evidence in Wireshark
+
+**Problem:** The argument has moved to a layer sipnab does not decode, or the person you are arguing with only trusts Wireshark.
+
+`--tshark-filter` prints a ready-to-run tshark command for this capture and this display filter:
+
+```bash
+sipnab -N -I capture.pcap --tshark-filter 'sip.Method == "INVITE"' --no-cli-print
+```
+
+```text
+tshark -r capture.pcap -Y 'sip.Method == "INVITE"' -V
+```
+
+Narrow it to one call, using a Call-ID you already have:
+
+```bash
+sipnab -N -I capture.pcap --tshark-filter 'sip.Call-ID == "abc123@host"' --no-cli-print
+```
+
+**What to look for:**
+
+- Pair it with recipe 20. A frame pointer names one frame and a digest proves it is the same file; the tshark command puts that frame in front of somebody who wants to see the whole stack under it.
+- The printed command is text. Read it, edit the filter, and run it yourself — sipnab does not run it for you.
+- `sipnab -N -I capture.pcap --wireshark` is the same idea for the GUI: it builds a display filter naming every Call-ID in the capture and hands it to Wireshark.
+
+**Pitfalls:**
+
+- `--wireshark` needs Wireshark installed and a display. On a capture host it usually has neither, which is why `--tshark-filter` prints a command instead of trying.
+- A tshark display filter is not sipnab's filter DSL and not a BPF expression. All three languages appear in this cookbook, and none of them accepts the syntax of the other two.
+
+---
+
+## 41. Measure the gap between consecutive messages
+
+**Problem:** The ladder looks correct and the call still feels slow, or a retransmission argument needs the actual timers rather than "it looked immediate".
+
+`--delta-time` replaces the wall clock in front of each message with the gap since the previous one:
+
+```bash
+sipnab -N -I capture.pcap --delta-time
+```
+
+```text
++0.000s 192.0.2.20:5060 -> 192.0.2.15:5060 INVITE UDP
++0.512s 192.0.2.15:5060 -> 192.0.2.20:5060 100 Trying UDP
+```
+
+Add the full header block of the bodyless messages, which otherwise print as a one-line summary:
+
+```bash
+sipnab -N -I capture.pcap --delta-time --show-empty
+```
+
+Group the messages by call first, so the gaps you are reading belong to one ladder:
+
+```bash
+sipnab -N -I capture.pcap --group-by call-id --delta-time
+```
+
+**What to look for:**
+
+- 500 ms, then 1 s, then 2 s, then 4 s between copies of one request is RFC 3261's Timer A backing off. That is a retransmission, and it says the first copy never reached anything that would answer it — not that the sender is chatty.
+- A long gap before `180 Ringing` is post-dial delay and belongs to the far end. A long gap before `100 Trying` belongs to the next hop, which should answer immediately.
+
+**Pitfalls:**
+
+- Without `--group-by`, a busy capture interleaves twenty calls and the "gap" is the time to the next message of **any** of them.
+- sipnab computes each delta from capture timestamps. Two captures from two machines are only comparable if their clocks are (recipe 27).
+
+---
+
+## 42. Record which invocation produced a report
+
+**Problem:** A report from three weeks ago says the capture was clean, and nobody can say which file, which filter or which port range produced it.
+
+`--run-provenance-file` appends one JSON line per run, at startup — before sipnab loads the config and before it opens any capture device:
+
+```bash
+sipnab -N -I capture.pcap --run-provenance-file runs.jsonl --report --no-cli-print
+```
+
+Under systemd, point it somewhere durable — `--run-provenance-file /var/log/sipnab/runs.jsonl` — and every restart appends rather than replaces.
+
+```json
+{"record":"run","seq":1,"argv":["sipnab","-N","-I","capture.pcap","--report"],
+ "cwd":"/var/captures","user":"sipnab","uid":993,
+ "version":"0.5.142 (d2965454) features: native,tui,audio,tls,hep,api,mcp,metrics,plugins,vcon",
+ "capture":{"instance":"3f9b0718d158c64087d09c-1","node":"capture-01"},
+ "started":"2026-05-05T12:34:56Z"}
+```
+
+**What to look for:**
+
+- `capture.instance` is the identifier every MCP and REST answer carries, so it joins an artifact back to the command that made it.
+- `features` is the build, not the flags. A report missing a section because the binary lacked the Cargo feature reads identically to a clean one, and this line is where that difference shows up.
+
+**Pitfalls:**
+
+- **A record sipnab cannot write stops the run.** That is deliberate: a best-effort line's absence would mean either "not enabled" or "the disk was full", and nobody could tell which. Stopping costs nothing, because sipnab has read no packet yet.
+- sipnab opens the file for append and never truncates it, and creates it mode 0600 — argv holds capture paths, and a path holds a customer's name.
+
+---
+
+## 43. Keep a long-running capture inside a memory budget
+
+**Problem:** A capture that should run for a week dies on day three under the out-of-memory killer.
+
+Five caps bound what a run retains, and each bounds a different thing:
+
+```bash
+sipnab -N -I capture.pcap --limit 20000 --max-streams 4000 --max-lost-sequences 4000 --findings-history 500 --report --no-cli-print
+```
+
+The in-flight queue between capture and processing has a budget of its own, separate from the kernel ring `-B` sizes:
+
+```bash
+sudo sipnab -N -d eth0 --buffer-budget 128 -B 128
+```
+
+**What to look for:**
+
+- `-l`/`--limit` is **not** a concurrency limit. Nothing removes a completed dialog, so the bound scales with uptime rather than with load: a box carrying five concurrent calls still evicts once 100,000 calls have completed.
+- The eviction count appears wherever a dialog count appears, so a run that hit a cap says so rather than quietly answering from a truncated store.
+
+**Pitfalls:**
+
+- Eviction drops the **oldest** dialogs, which are the ones a post-mortem wants. On a long run, prefer rotating output files (recipe 44) over relying on the store to hold a week.
+- `--max-groups` bounds `--group-by` keys and is a separate map from `--limit`. A run that groups a week of traffic by source address needs both raised.
+
+---
+
+## 44. Run a capture that stops on its own
+
+**Problem:** A capture running over a weekend either fills the disk or waits for somebody to stop it at the wrong moment.
+
+Stop after a packet count, a wall-clock duration, or a size:
+
+```bash
+sudo sipnab -N -d eth0 -n 500000 --duration 8h --autostop filesize:2048 -O /var/capture/sip.pcapng --pcapng
+```
+
+Or keep capturing forever inside a fixed budget, by rotating and deleting the oldest chunks:
+
+```bash
+sudo sipnab -N -d eth0 -O /var/capture/sip.pcapng --pcapng --split filesize:50 --split-keep 8
+```
+
+**What to look for:**
+
+- `filesize` counts **MiB**, the same unit `--split filesize` and `-B` use, so `filesize:2048` stops at what a file browser calls 2 GiB.
+- `-n`/`--count` counts every packet received from the capture source. On a HEP listener that includes packets later dropped by the allowlist, the rate limiter or authentication.
+
+**Pitfalls:**
+
+- `--split-keep` **deletes** capture files. It touches only the files that running process created and named, so anything else in the directory stays — but leave it off whenever the capture is evidence you cannot retake.
+- A run killed mid-capture leaves behind whatever it had not yet deleted, and the next run does not adopt it.
+
+---
+
+## 45. Check whether comfort noise explains a one-way finding
+
+**Problem:** A mobile or VoLTE trunk reports one-way audio on calls that were fine, or a trunk that really is one-way reports nothing.
+
+`--cn-suppression-ratio` is the share of a call's packets that must be comfort noise before sipnab accepts comfort noise as the explanation for media in one direction. It is the one threshold that **suppresses** a finding, so getting it wrong fails silently:
+
+```bash
+sipnab -N -I capture.pcap --cn-suppression-ratio 0.6 --report --no-cli-print
+```
+
+Lower it where a call carrying any comfort noise at all is still expected to be bidirectional:
+
+```bash
+sipnab -N -I capture.pcap --cn-suppression-ratio 0.1 --one-way --json-dialogs
+```
+
+**What to look for:**
+
+- A trunk with aggressive voice activity detection routinely passes 30 % comfort noise, and above the ratio one-way audio is never reported on it. If a trunk has stopped producing one-way findings entirely, this is the first knob to check.
+- `media_diagnostics` (recipe 58) counts the comfort-noise frames and the silence periods per stream, which is the measurement this ratio governs.
+
+**Pitfalls:**
+
+- Refused at 0 and above 1 by name, in the flag and in the config file, so a config file is not the lenient way in.
+- Raising it is a statement about the trunk, not about the call. Set it per capture source rather than globally.
+
+---
+
+## 46. Detect fraud placed outside business hours
+
+**Problem:** The international bill jumped and the calls all happened at 03:00.
+
+`--fraud-detect` runs the volume, wangiri and sequential-dialing heuristics. `--business-hours` adds the off-hours detector, which is otherwise unreachable — with no window declared there is no "outside" for a call to fall in:
+
+```bash
+sipnab -N -I capture.pcap --fraud-detect --business-hours 8-18 --alert-json --no-cli-print
+```
+
+A wrapping range is the overnight window:
+
+```bash
+sipnab -N -I capture.pcap --fraud-detect --business-hours 22-6 --alert-json --no-cli-print
+```
+
+**What to look for:**
+
+- The window is whole **UTC** hours. A site that works 08:00–18:00 local is a different pair of numbers, and getting it wrong moves the alert rather than silencing it.
+- Off-hours volume from a single extension is the classic compromised-handset signature. Feed the source to recipe 10's block recommendation before banning it, so a night-shift desk is not the thing you disconnect.
+
+**Pitfalls:**
+
+- `--business-hours` without `--fraud-detect` arms nothing: the second flag is what runs the detector.
+- As with every detector on this page, an alert channel is what makes the findings visible. `--alert-json`, `--alert syslog` or `--recommend-block` — with none of them the run is silent.
+
+---
+
+## 47. Follow a load generator's traffic by transaction, not by call
+
+**Problem:** A SIPp run or a proxy under test reuses one `Call-ID` across hundreds of transactions, and the whole capture reconstructs as a single enormous dialog.
+
+`--dialog-track branch` groups by SIP transaction — the `Via` branch — instead of by `Call-ID`:
+
+```bash
+sipnab -N -I capture.pcap --dialog-track branch --report --no-cli-print
+```
+
+**What to look for:**
+
+- A single ordinary call yields **several** units under `branch`: RFC 3261 gives the ACK to a 2xx a new branch and the BYE another. That is the transaction view, not a miscount.
+- Compare the two counts. A capture whose `call-id` count is 1 and whose `branch` count is 400 is a load generator; one where they are close is ordinary traffic.
+
+**Pitfalls:**
+
+- sipnab computes every dialog-level diagnosis — one-way audio, codec asymmetry, PDD — per tracked unit. Under `branch` those units are transactions, so a per-call figure is not what you get.
+- Switch back to `call-id` (the default) before quoting durations or MOS at anyone.
+
+---
+
+## 48. Run a live capture without giving sipnab root
+
+**Problem:** Security refuses to sign off on a packet capture running as root, and `sudo sipnab` on every invocation is what the procedure currently says.
+
+Grant the binary the two capabilities live capture needs, once:
+
+```bash
+sipnab --setup-caps
+```
+
+Then run it as an ordinary user. sipnab opens its capture devices first and drops privileges afterwards, so name the user and a directory to confine it to:
+
+```bash
+sudo sipnab -N -d eth0 --user sipnab --chroot /var/empty
+```
+
+**What to look for:**
+
+- `--setup-caps` sets `cap_net_raw,cap_net_admin+ep` via `setcap` and exits, re-invoking itself through `sudo` when it is not already root. After it, `sudo` is no longer part of the daily command.
+- Under systemd, `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` does the same job for the unit (recipe 28). Do not add `User=root` back "to be safe" — that undoes it.
+
+**Pitfalls:**
+
+- **`setcap` does not survive a new binary.** Every upgrade, every rebuild, every package update drops it, and the failure looks like a permissions problem that appeared from nowhere. Re-run `--setup-caps` after an upgrade.
+- sipnab opens anything it must reach by path — a keylog FIFO, an output file, a config — **before** the drop and the chroot. A path under `/run` is unreachable afterwards (recipe 7f).
+- `--no-priv-drop` keeps the privileges. It exists for the cases that genuinely need them, such as the kill-child forging responses, and it is not the way to fix a permissions error.
+
+---
+
+## 49. Configure sipnab from a file instead of a long command line
+
+**Problem:** The capture command has grown to eleven flags, three of them thresholds, and it now lives in four places that disagree.
+
+Print the configuration this invocation would actually use, and exit:
+
+```bash
+sipnab -D
+```
+
+Point at a file explicitly, which is what a systemd unit should do rather than relying on search order:
+
+```bash
+sipnab --dump-config --config /etc/sipnab/sipnab.toml
+```
+
+Ignore every config file, which is how you prove a behavior comes from the flags and not from a file you forgot:
+
+```bash
+sipnab -D --no-config
+```
+
+**What to look for:**
+
+- A flag beats the file. Several knobs deliberately carry no built-in flag default precisely so that "not typed" and "typed the default" stay distinguishable and the config key has something to override — the eight quality thresholds (recipe 31) and `--mcp-max-rows` among them.
+- `-D` is the fastest way to settle "is this host reading the config I think it is". It answers before any capture starts.
+
+**Pitfalls:**
+
+- `-D` dumps the **effective** configuration, which includes values that came from a file you did not name. Add `--no-config` to see the flags alone.
+- A config file is per host; the tool set an MCP server registers is per client. That is why `--mcp-tools` has an ordinary flag default and the row caps do not.
+
+---
+
+## 50. Install shell completions
+
+**Problem:** sipnab has a long flag for nearly everything on this page, and you are typing them from memory.
+
+```bash
+sipnab --completions bash
+```
+
+Write it where your shell looks for it:
+
+```bash
+sipnab --completions zsh
+```
+
+**What to look for:**
+
+- Accepted shells are `bash`, `elvish`, `fish`, `powershell` and `zsh`. The script goes to stdout, so redirect it: `sipnab --completions bash > /etc/bash_completion.d/sipnab`.
+- sipnab generates the completions from the same flag definitions `--help` prints, so they cannot drift from the binary that produced them.
+
+**Pitfalls:**
+
+- Regenerate after an upgrade. A completion file from an older build offers flags the new binary may have renamed, which is the one failure mode a completion has.
+- Completions know the flags, not your captures. They do not complete a Call-ID or a filter expression.
+
+---
+
+## 51. Export every failed call as a redacted vCon in one pass
+
+**Problem:** A conversation archive, a compliance store or an agent pipeline wants the calls that failed — as containers, not as a pcap — and the subscriber numbers may not leave the building in the clear.
+
+`--export-vcon-when` takes a filter and writes one container per matching dialog into a directory, with `--redact` turning every identity into a keyed pseudonym:
+
+```bash
+sipnab -N -I capture.pcap --export-vcon-when "state == 'Failed'" --export-vcon-dir ./vcons --redact --vcon-digest
+```
+
+Write the reversal table, keep three leading digits of each number, and cap what a container may inline:
+
+```bash
+sipnab -N -I capture.pcap --export-vcon-when "response_code >= 400" --export-vcon-dir ./vcons --redact --redact-map ./redact-map.json --redact-keep-prefix 3 --vcon-max-inline-media 2
+```
+
+`--vcon-digest` prints a `sha256sum`-format line per container, so `sipnab ... --vcon-digest > SHA256SUMS` and a later `sha256sum -c SHA256SUMS` both work with no glue:
+
+```text
+fcce469e74ae2242e892faaf1952cb3f13764dde0280366e3edc2fd43a30bfd3  1-1966_192.0.2.20-1cc03f18.vcon.json
+```
+
+**What to look for:**
+
+- Redaction is **not** masking. Every identity becomes a token that is equal exactly when the original was equal, and addresses go through a prefix-preserving map — so "these forty failures came from one subscriber" and "the media went to a subnet no SDP advertised" are both still answerable on the output.
+- Two things go entirely rather than becoming tokens, because no pseudonym of them carries diagnostic value: digest credentials and inline audio.
+- Redaction affects the **serialized container only**. The TUI, the reports and every in-process analysis keep the real values, so a redacted export and a live triage session read the same capture.
+- Every run draws a fresh redaction key unless you pass `--redact-key-file`, and that default is the safe one: the tokens join against no other export and nothing anywhere can reverse them. Supply a file when tokens must stay stable across captures or across hosts — the whole file is the secret, trailing newline included — and understand what that buys whoever holds it.
+
+**Pitfalls:**
+
+- **`--export-vcon-when` takes a raw DSL expression, not an alias.** `--filter problems` works; `--export-vcon-when problems` fails at parse time, naming the position of the offending token. Spell the expression out.
+- `--redact-map` is the reversal of every pseudonym the run produced, so it is exactly as sensitive as the capture. sipnab creates it mode 0600 and **refuses to overwrite** an existing one, because that file may be the map for containers already sent somewhere.
+- `--redact-keep-prefix` publishes that many leading digits of a real subscriber number in the clear. Zero is the default for that reason; three buys you NANP area-code analysis and costs three digits.
+- `--vcon-max-inline-media` bounds inline audio (5 MiB by default, a figure measured against a real store that answered 204 and dropped a larger payload). Over the budget sipnab refuses the media **out loud**, and `capture_completeness.media` says so rather than letting an absent recording read as a silent call.
+
+---
+
+## 52. Check a vCon against the schema before a store rejects it
+
+**Problem:** A conserver refuses a container and reports the refusal to whoever POSTed it — never to whoever built it. A validation pass over 4,216 real containers found 2 the schema rejects, with nothing on any surface saying so.
+
+Run sipnab as an MCP server over the capture, and ask `validate_vcon` before you hand anything to a store:
+
+```bash
+sipnab -N --mcp -I capture.pcap --quiet
+```
+
+```jsonc
+// validate_vcon { "call_id": "1-1966@192.0.2.20" }
+{
+  "verdict": "valid",
+  "schema_path": "tests/schemas/vcon.schema.json",
+  "errors": [],
+  "deviations": [],
+  "explanations": []
+}
+```
+
+Pass a container somebody else produced — one a store already rejected — as an object rather than a Call-ID:
+
+```jsonc
+// validate_vcon { "container": { "vcon": "0.4.0", "dialog": [ { "type": "transfer" } ] } }
+{
+  "verdict": "invalid",
+  "errors": [
+    { "instance_path": "/dialog/0", "keyword": "required",
+      "detail": "missing required properties: start" }
+  ],
+  "deviations": []
+}
+```
+
+**What to look for:**
+
+- **There are three verdicts, and the middle one carries the point.** `valid-except-documented-deviation` means every finding is a shape sipnab emits deliberately that the schema rejects: §4.3 of the draft says a Dialog Object with no parameters is possible, the working group agreed that shape in issue #20 after IETF 124, and the draft's own Appendix B schema forbids it because every Dialog Object requires a `start`. sipnab emits one — the consultative leg of an attended transfer, which the observed leg never saw.
+- The exemption is **narrow**. Only a Dialog Object with no members at all counts. A typed object missing `start` is an ordinary error, and it is exactly the defect the corpus pass found; folding the two together would teach a producer that a missing `start` is fine.
+- A container that disagrees with the schema is an **answer**, not a tool error. The call fails only when the request is wrong: neither argument, both, an unknown Call-ID, or a `container` that is not a JSON object.
+
+**Pitfalls:**
+
+- The validator reads the vendored schema file rather than a transcription of it, and it refuses to guess: a keyword outside the draft-07 subset the file uses makes every validation report `invalid` naming the keyword. Re-vendoring a richer schema fails loudly instead of quietly certifying less than it claims.
+- Needs a build carrying the non-default `vcon` Cargo feature. Without it the tool refuses by name; `server_capabilities` lists what a given binary has.
+
+---
+
+## 53. Export a vCon per failed call in one round trip
+
+**Problem:** An agent asked for "every failed call as a container" lists the dialogs and then issues one export per row — on a real capture, hundreds of round trips to do what one invocation does.
+
+`export_vcon` takes a **filter** as well as a `call_id`, and returns the whole matching set inline:
+
+```bash
+sipnab -N --mcp -I capture.pcap --retain-audio --mcp-max-rows 200 --quiet
+```
+
+```jsonc
+// export_vcon { "filter": "state == 'Failed'", "limit": 50 }
+{
+  "returned": 2,
+  "total_matched": 7,
+  "truncated": true,
+  "containers": [
+    { "call_id": "1-1966@192.0.2.20",
+      "digest": "b6f0a1c9d84e2f7a3b5c6d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c",
+      "completeness": { "media": "carried", "complete": true, "omissions": [] },
+      "container": {} }
+  ]
+}
+```
+
+**What to look for:**
+
+- `total_matched` counts the whole store, so it is the number to page against — `returned` is only what this call fitted under `limit`.
+- Give `call_id` **or** `filter`, never both. A request naming a dialog and a rule for choosing dialogs has two answers and names neither, and the CLI refuses the same pair.
+- A filter matching nothing answers with an empty set. "No call failed" is a finding, and a refusal there would make a clean capture look like a broken request.
+- Every container comes back with its SHA-256, computed exactly as `--vcon-digest` computes it — one function — so a store's ledger entry compares against this value directly. The digest identifies the **document**: re-exporting one call produces a second document with a new digest and the same `uuid`, so deduplicate on the `uuid`.
+
+**Pitfalls:**
+
+- `--retain-audio` is what puts audio inside the containers, and it **requires `--mcp`**: the MCP server is the only batch-mode consumer that can read the buffers back. Without it `capture_completeness.media` reads `none-decodable`, which reports the run and never claims the call was silent.
+- Unlike its file-writing neighbors this tool writes nothing and needs no `--mcp-file-root`. It returns the container inline and the agent decides what to do with it.
+- There is no `format` parameter. A vCon is a JSON container defined by the draft, and a Markdown arm would render a document whose whole purpose is to travel between machines.
+
+---
+
+## 54. Find out where a stream's endpoint came from
+
+**Problem:** A report gives the address a call's media went through. Whether that came from SDP the two parties exchanged, from a relay sipnab asked, or from a mirrored datagram anybody on the segment could have sent decides what the claim is worth — and every other surface renders the three identically.
+
+Start the server with the relay's control address, and opt in to the one tool that transmits:
+
+```bash
+sudo sipnab -N --mcp -d eth0 --rtpengine-control 127.0.0.1:22222 --mcp-allow-relay-query --quiet
+```
+
+`explain_attribution` answers for one call, endpoint by endpoint:
+
+```jsonc
+// explain_attribution { "call_id": "1-1966@192.0.2.20" }
+{
+  "endpoints": [
+    { "address": "192.0.2.10", "port": 10000,
+      "asserted_by": "signaled",
+      "delivery_trust": "not-relay-asserted",
+      "delivery_note": "the parties' own claim in SDP, not a relay's statement about its allocation" }
+  ],
+  "unauthenticated_endpoints": 0
+}
+```
+
+`reconcile_orphans` says **why** a stream has no dialog, rather than counting the ones that do not:
+
+```jsonc
+// reconcile_orphans { "limit": 2 }
+{ "orphans": [ { "ssrc": 305419896, "reason": "never-named" } ],
+  "total_orphans": 4, "relay_was_consulted": false }
+```
+
+`query_relay` asks the relay itself about a call that was already up when the capture started, and `decode_ng` decodes one captured relay control message and says which path carried it.
+
+**What to look for:**
+
+- `delivery_trust`, strongest first: `asked` (sipnab asked the relay over its control socket, so no third party could answer), `hmac-verified`, `plain-secret`, `port-gated-only` — **the source is not authenticated** — and `not-relay-asserted`, the parties' own SDP claim. With no posture configured sipnab reports the weakest reading, because a tool whose job is telling you what a claim is worth must not round up in the absence of information.
+- `reconcile_orphans` has three verdicts and the difference is the point: `relay-asserted-but-no-dialog` means the **signaling** is missing, not the media; `signaled-but-no-dialog` means the capture missed the dialog or its SDP predates the capture; `never-named` means nothing in the capture named the endpoint at all.
+- `relay_was_consulted: false` beside a `never-named` verdict means **nobody asked** — an absence of evidence, not evidence of absence.
+
+**Pitfalls:**
+
+- `query_relay` needs three things and says which one is missing: `--mcp-allow-relay-query`, the relay control flag, and a **live** source. A run reading a file can obtain no transmit permit.
+- **There is no address parameter, deliberately.** The destination comes from `--rtpengine-control` and from nowhere else. An address sipnab could otherwise infer is one it learned from packets — a host that was a relay during the capture and may be somebody's laptop now.
+- `--rtpengine-control` transmits `list` and `query` and nothing else, structurally so: `offer`, `answer`, `delete` and `start recording` each change a production relay, and none is representable on that path.
+
+---
+
+## 55. Set up the MCP server for a hosted agent
+
+**Problem:** The agent driving sipnab is not on your laptop and not run by you, and "loopback with no token" stops being the deployment.
+
+Every knob below is a separate decision, and the defaults are the conservative half of each:
+
+```bash
+sipnab -N --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 --mcp-signing-key-file /etc/sipnab/mcp.key --mcp-token-ttl 900 --mcp-rate-limit-per-peer 20 --mcp-max-rows 200 --mcp-max-body-bytes 8192 --mcp-audit-file /var/log/sipnab/mcp-audit.jsonl --mcp-tools core --mcp-file-root /var/lib/sipnab/captures --quiet
+```
+
+Mint a short-lived token from the same signing key, rather than sharing a static secret:
+
+```bash
+sipnab --mint-token --token-scope read --token-id agent-a --mcp-signing-key-file /etc/sipnab/mcp.key --mcp-token-ttl 900
+```
+
+**What to look for:**
+
+- `--mcp-tools core` registers a small set that still answers a whole call. sipnab sends every registered tool's name, description and JSON schema on `tools/list`, and the model then carries them in context for the whole session, before the agent has asked anything — on a client with a small context window that fixed cost is worth cutting.
+- `--mcp-rate-limit-per-peer` and `--mcp-max-concurrent` answer different questions. That one bounds calls **in flight**; this one bounds their **arrival rate**. An agent that never exceeds the concurrency cap and simply loops as fast as sipnab answers holds one slot at a time and asks again the moment it frees up, which the concurrency cap alone does not bound.
+- `--mcp-audit-file` is the durable copy of what an agent looked at. The same record already rides the ordinary log, but that is a console view: `SIPNAB_LOG` filters it and `--quiet` suppresses it, and the question comes later, from somebody who did not choose the log level.
+
+**Pitfalls:**
+
+- **sipnab refuses a tool call it cannot write to the audit file.** An audit trail that silently skipped what it could not record would be worse than none, so a full disk stops the answers rather than the recording.
+- `--mcp-file-root` is the whole security model for the file tools, and it is not negotiable: they take a **filename**, never a path, and sipnab rejects anything containing a separator, a `..` or an absolute prefix before touching the filesystem. An agent-supplied path is an arbitrary file write wearing a feature's clothes.
+- A peer is the source IP over HTTP — the address, not the socket, so reconnecting does not mint a fresh allowance — and the pipe itself over stdio.
+- The write verbs still appear in `tools/list` when you omit their flags, because sipnab registers tools unconditionally and refuses the **call** instead. Seeing `shutdown_server` listed does not mean an agent can stop your capture.
+
+---
+
+## 56. Read TLS from an agent, with no keys and no restart
+
+**Problem:** Somebody wants an agent to look at SIP over TLS on a host you cannot restart. Whether that is even possible is a property of the host, and asking it is a smaller act than doing it.
+
+`list_tls_libraries` stays available whatever else is off, so an agent can always report what a capture **would** see:
+
+```bash
+sudo sipnab -N --mcp -d eth0 --quiet
+```
+
+```jsonc
+// list_tls_libraries { }
+{
+  "supported": true,
+  "privileged": true,
+  "libraries": [
+    { "flavor": "OpenSSL", "path": "/usr/lib/libssl.so.3", "inode": 21143,
+      "process_count": 12, "symbol": "SSL_write",
+      "probe_path": "/proc/954/root/usr/lib/libssl.so.3" },
+    { "flavor": "wolfSSL", "path": "/usr/lib/libwolfssl.so.42.2.0", "inode": 17433084,
+      "process_count": 1, "symbol": "wolfSSL_write", "probe_path": null }
+  ],
+  "unreachable_count": 1
+}
+```
+
+Actually installing the probes is a separate opt-in, and the most consequential one on this surface:
+
+```bash
+sudo sipnab -N --mcp -d eth0 --mcp-allow-tls-capture --quiet
+```
+
+```jsonc
+// start_tls_capture { "flavors": ["openssl"] }
+// stop_tls_capture  { }
+{ "running": false, "messages": 412, "lost": 0, "uptime_sec": 96 }
+```
+
+**What to look for:**
+
+- **Read `privileged` before believing an empty list.** Unprivileged, `/proc/<pid>/maps` is readable only for the server's own processes, so a short list is evidence about privilege rather than about the host. The `summary` field says which of the two produced the answer, so a relayed conclusion does not lose it.
+- **`probe_path: null` is a finding, not a blank.** That library is carrying traffic sipnab cannot capture — usually a containerized process whose `/proc/<pid>/root` this server cannot read. Reporting it is what keeps a capture from looking complete when it is not.
+- `inode` is there because `path` is not unique. The same string names different files in different mount namespaces, and on an ordinary host with containers several distinct `libssl.so.3` files coexist.
+- `lost` on the stop is the number the kernel dropped because the reader fell behind — messages that existed and are missing, which is a different fact from a quiet trunk and the only one you cannot discover any other way.
+
+**Pitfalls:**
+
+- **Keep calling `stop_tls_capture` until `running` is false.** The stop is a request: the worker owns the probes and removes them on its way out, a kernel round trip per probe. Probes left installed cost every process that maps the library, and they outlive sipnab.
+- Three refusals arrive before any kernel state exists, each naming itself: not root (a server started with `--user` has already dropped privileges and cannot attach probes later), a live source already running (sipnab's stores have one writer), and a capture still loading (poll `capture_status` until `load.done`).
+- An attach failure arrives **later**, not from the start call: a background thread installs the probes and the call returns as soon as it starts. Poll to see whether messages actually arrive.
+- The uprobe path costs you the addresses. See recipe 7g for what a dialog from this source can and cannot say, and 7h for the backend that pairs the write with its socket.
+
+---
+
+## 57. Ask the capture how many calls failed
+
+**Problem:** An agent asked "how many calls failed?" fetches rows and tallies them in its head. Counting is the operation a language model gets wrong most reliably, and a truncated page makes a confident wrong total.
+
+`aggregate_dialogs` counts inside the store and returns the buckets:
+
+```bash
+sipnab -N --mcp -I capture.pcap --mcp-max-rows 200 --quiet
+```
+
+```jsonc
+// aggregate_dialogs { "group_by": "response_code", "filter": "state == 'Failed'" }
+{
+  "group_by": "response_code",
+  "buckets": [ { "value": "503", "count": 412 }, { "value": "486", "count": 77 } ],
+  "other_count": 11,
+  "distinct_values": 6,
+  "total_matched": 500
+}
+```
+
+`get_capture_report` is the whole-capture analysis — the one `--report` prints — for the questions that are about the capture rather than about one call:
+
+```jsonc
+// get_capture_report { "format": "json" }
+{ "findings": [], "dialogs_examined": 2, "streams_examined": 2,
+  "frames_read": 852, "complete": true }
+```
+
+**What to look for:**
+
+- **The buckets plus `other_count` always equal `total_matched`.** A truncated aggregate that does not say what it left out is a wrong total rather than a partial one, so nothing is silently dropped — including nulls, which become the literal `(none)`, because "how many dialogs carry no User-Agent" is a real question.
+- **Read `complete` before the findings.** It is `false` when the capture lost packets, hit a retention cap, or held frames no decoder could read, and a findings list from such a capture is a **floor, not a total**. It also reads `false` while a load is still running and for a source whose read stopped before its end.
+- Legal `group_by` values are `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip` and `rtp.codec`. Anything else fails naming the legal set.
+
+**Pitfalls:**
+
+- One dimension, and no time bucketing. That is a deliberate cap: two dimensions is a pivot table, and a pivot table wants a UI. Narrow the window with `filter` instead.
+- Grouping by `from.user`, `to.user` or `ua` returns **fenced** values, because those are text the packet's sender wrote. A state name, a status code, an address or a codec is sipnab's own derivation and comes back verbatim.
+- `markdown` and `text` renderings of the report have no envelope to carry the completeness flags, so they state it in the document — an `INCOMPLETE RUN` block, the same one `--report` appends. Ask for `json` when you want the booleans as fields.
+
+---
+
+## 58. Ask why the MOS is what it is
+
+**Problem:** "The MOS is 3.6." A score is a conclusion, and the argument with a carrier is about the facts underneath it.
+
+`rtp_stats` gives the score. `media_diagnostics` gives the inputs, each labeled with what kind of number it is:
+
+```bash
+sipnab -N --mcp -I capture.pcap --quiet
+```
+
+```jsonc
+// media_diagnostics { "call_id": "1-1966@192.0.2.20" }
+{
+  "applicable": true,
+  "streams": [
+    { "ssrc": "0x343da99b", "codec": "PCMU", "packets": 425,
+      "qos": { "marking_observed": true, "dscp": 0, "name": "CS0 / default (best effort)" },
+      "jitter": { "grounded": true, "clock_basis": "rfc3551", "clock_rate_hz": 8000,
+                  "measured_ms": 0.0054 },
+      "delay": { "source": "assumed", "assumed": true, "one_way_ms": 100.0 },
+      "silence": { "cn_frames": 0, "periods": 0, "total_ms": 0 } }
+  ]
+}
+```
+
+**What to look for:**
+
+- **Read `applicable` first.** It is `false` when no RTP stream belongs to the dialog, and the response then carries almost nothing. An empty `streams` array would read as "sipnab checked the media and it was fine", which is a different claim from "no media reached the capture point".
+- Three things in the answer above read together. The media is in the **default queue**, so it competes with bulk traffic — the most common cause of jitter that adding bandwidth does not fix. The jitter figure **is** a measurement, because payload type 0 has a clock rate [RFC 3551](https://www.rfc-editor.org/rfc/rfc3551) fixes. And the delay behind the MOS is a **default**, not anything this capture showed, so the score is only as good as that assumption (recipe 31).
+- `jitter.grounded: false` means the stream supplied no clock rate and sipnab fell back to a default. Jitter is an RTP-timestamp difference divided by that rate, so a wrong divisor gives a **different quantity**, not a rough one — and an ungrounded stream reports no `measured_ms` at all.
+- `qos.remarked_to` appears only when the stream's last packet carries a different code point from its first: an SBC or a policy boundary rewriting the marking in flight. Its presence is the finding, and a steady stream omits it rather than repeating the same number.
+
+**Pitfalls:**
+
+- `endpoint_reported` — what the far end said over RTCP — sits apart from everything beside it and feeds nothing. Nobody authenticates RTCP, anyone can forge it, and a report describes the path from the sender to **the reporter**, which on a mid-path capture is a different segment from the one sipnab watches. The two disagreeing is normal and informative.
+- `marking_observed: false` on a HEP-fed stream is not a missing marking. sipnab saw no IP header, because a mirror carries the message and not the frame.
+
+---
+
+## 59. Decrypt TLS with the server's private key
+
+**Problem:** You hold the SIP server's TLS private key and no keylog, because nobody was running one when the calls happened.
+
+`-k`/`--tls-key` takes the PEM private key and uses it to recover the pre-master secret:
+
+```bash
+sudo sipnab -N -d eth0 -k /etc/sipnab/server-key.pem
+```
+
+The same key reads a capture you already recorded: `sipnab -N -I capture.pcap -k /etc/sipnab/server-key.pem --report`. sipnab refuses to start when it cannot read the key, rather than capturing everything and decrypting nothing.
+
+**What to look for:**
+
+- This works for **TLS 1.2 RSA key exchange only** — the handshakes with no forward secrecy, where the client encrypts the pre-master secret to the server's key, so that key recovers it afterwards.
+- If the decryption produces nothing, look at the cipher suite in the handshake before suspecting the key. An ECDHE or DHE suite is doing exactly the job it exists to do.
+
+**Pitfalls:**
+
+- **Forward secrecy is the normal case now, and it defeats this.** ECDHE and DHE handshakes need `--keylog` (recipe 7) or a uprobe (recipe 7g); a server key cannot recover them, and no flag changes that.
+- TLS 1.3 removed RSA key exchange entirely. On a TLS 1.3 capture this flag has nothing to do.
+- A server private key is a larger secret than a keylog: a keylog decrypts the sessions it covers, and this decrypts every session that key ever protected. sipnab disables core dumps once decryption is active, for the same reason it does with a keylog.
 
 ---
 

@@ -2203,7 +2203,16 @@ fn line_citations_point_at_the_code_they_name() {
     // point at `DialogState::Registered` because the premise it rested on was
     // wrong. `Expired` existed all along; nothing could reach it. Attributed
     // against HEAD both times.
-    let expected = 203;
+    // 203 -> 204: FLT1 cites both halves of the filter-vocabulary split it
+    // reports -- `src/app/bootstrap.rs:2157`, where `--filter` expands an
+    // alias, and `src/app/batch.rs:5434`, where `--export-vcon-when` parses
+    // raw. TWO citations were added and the count moves by ONE, which is this
+    // checker working as documented: it counts a citation only where it can
+    // resolve the line to a symbol, and one of the two lands on a line inside
+    // a function body rather than at one it extracts. Attributed against
+    // HEAD: the staged diff adds exactly these two `#L` anchors and removes
+    // none.
+    let expected = 204;
     assert_eq!(
         checked, expected,
         "the drift checker examined {checked} citations, not the {expected} \
