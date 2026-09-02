@@ -23,18 +23,51 @@
 
     {{ section.content | safe }}
 
-    <ul class="note-list">
-      {% for p in section.pages %}
-      <li class="note-list-item">
-        <p class="note-meta">
-          {% if p.extra.kind %}<span class="note-kind note-kind-{{ p.extra.kind }}">{{ p.extra.kind }}</span>{% endif %}
-          {% if p.date %}<time class="note-date" datetime="{{ p.date }}">{{ p.date | date(format="%e %B %Y") }}</time>{% endif %}
-        </p>
-        <h2><a href="{{ p.permalink }}">{{ p.title }}</a></h2>
-        {% if p.description %}<p>{{ p.description }}</p>{% endif %}
-      </li>
-      {% endfor %}
-    </ul>
+    {# How-tos and features are what a reader came for, so they are open. The
+       post-mortems below are a record worth keeping and a poor front page:
+       sixteen accounts of what broke bury the pages that tell somebody how to
+       do their job. They sit behind a disclosure the reader opens
+       deliberately -- native <details>, so it works with JavaScript off and
+       announces its own state to a screen reader. #}
+    {% set howtos = section.pages | filter(attribute="extra.kind", value="howto") %}
+    {% if howtos | length > 0 %}
+    <section class="note-group">
+      <h2 class="note-group-title">How-to</h2>
+      <ul class="note-list">
+        {% for p in howtos %}
+        {{ macros::note_row(p=p, kind="howto") }}
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
+    {% set features = section.pages | filter(attribute="extra.kind", value="feature") %}
+    {% if features | length > 0 %}
+    <section class="note-group">
+      <h2 class="note-group-title">Features</h2>
+      <ul class="note-list">
+        {% for p in features %}
+        {{ macros::note_row(p=p, kind="feature") }}
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
+    {% set postmortems = section.pages | filter(attribute="extra.kind", value="postmortem") %}
+    {% if postmortems | length > 0 %}
+    <details class="note-archive">
+      <summary>
+        <span class="note-archive-title">Post-mortems</span>
+        <span class="note-archive-count">{{ postmortems | length }}</span>
+        <span class="note-archive-hint">what broke, and what the gate did not catch</span>
+      </summary>
+      <ul class="note-list">
+        {% for p in postmortems %}
+        {{ macros::note_row(p=p, kind="postmortem") }}
+        {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
   </article>
 </div>
 {% endblock content %}

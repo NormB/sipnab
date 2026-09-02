@@ -1923,16 +1923,42 @@ sipnab -N -I capture.pcap --one-way-delay 40 --report --no-cli-print
 
 **Problem:** A vendor wants the packets, and the file is 4 GB of everyone's traffic. Sending all of it is both slow and a disclosure.
 
-`-O` writes the packets that survived the filter, so a filtered read is also an extraction:
+**Only the BPF expression narrows `-O`.** It writes each packet as it arrives,
+inside the capture loop, before any dialog is complete enough to judge --
+nothing can tell whether a call matches `from.user == '1001'` until sipnab has
+seen and correlated its INVITE. So `--filter` does not reach it.
+Measured: `-O` under a filter matching nothing and `-O` with no filter at all
+produce a byte-identical file.
+
+That matters here more than anywhere else on this page, because the thing you
+are about to do is mail the result to somebody else. Narrow with the positional
+BPF expression, which runs in the kernel before sipnab sees a packet:
 
 ```bash
-sipnab -N -I capture.pcap --filter "from.user == '1001' OR to.user == '1001'" -O one-customer.pcap --no-cli-print
+sipnab -N -I capture.pcap -O one-customer.pcap --no-cli-print "host 192.0.2.10"
 ```
 
 The same as pcapng, which is the format that can also carry decryption secrets:
 
 ```bash
-sipnab -N -I capture.pcap --filter "from.user == '1001'" -O one-customer.pcapng --pcapng --no-cli-print
+sipnab -N -I capture.pcap -O one-customer.pcapng --pcapng --no-cli-print "host 192.0.2.10"
+```
+
+BPF is a network-level language: it selects by address, port and protocol, not
+by SIP user. If the subset you need is a SIP-level one, you have two honest
+options and neither is `-O`. Export the dialogs as vCon containers, which IS
+dialog-filtered:
+
+```bash
+sipnab -N -I capture.pcap --export-vcon-when "from.user == '1001'" --export-vcon-dir ./out
+```
+
+Or export those dialogs with the identifiers replaced. `--redact` rewrites an
+exported CONTAINER, not a pcap -- there is no redacted-capture path, and the
+run refuses rather than pretending:
+
+```bash
+sipnab -N -I capture.pcap --export-vcon-when "from.user == '1001'" --export-vcon-dir ./out --redact
 ```
 
 **What to look for:**

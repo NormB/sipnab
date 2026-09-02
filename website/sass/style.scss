@@ -1353,6 +1353,94 @@ input:focus-visible,
     .note-date { margin: 0; font-size: inherit; }
   }
 
+  // A heading over each open group. The index leads with what a reader came
+  // for -- how to do a job, and what a capability does -- so those carry a
+  // plain heading and stay expanded.
+  .note-group {
+    margin: 2.5rem 0 0;
+
+    + .note-group { margin-top: 3rem; }
+  }
+
+  .note-group-title {
+    margin: 0;
+    font-size: 0.8rem;
+    font-family: $font-mono;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: $text-dim;
+  }
+
+  // The post-mortem archive: a record worth keeping and a poor front page.
+  // Sixteen accounts of what broke bury the pages that tell somebody how to do
+  // their job, so they collapse behind a disclosure the reader opens on
+  // purpose. `details` is native: it works with JavaScript off and announces
+  // its own expanded state without an aria attribute to keep in sync.
+  .note-archive {
+    margin: 3rem 0 0;
+    border-top: 1px solid $border;
+
+    > summary {
+      display: flex;
+      align-items: baseline;
+      gap: 0.6rem;
+      padding: 1rem 0;
+      cursor: pointer;
+      list-style: none;
+      color: $text-dim;
+
+      // The default triangle sits at a different offset in every engine, so
+      // it is replaced with one that lines up with the text on all of them.
+      &::-webkit-details-marker { display: none; }
+
+      &::before {
+        content: "\25b8";
+        display: inline-block;
+        color: $ayu-orange;
+        transition: transform 120ms ease;
+      }
+
+      &:hover .note-archive-title { color: $text; }
+
+      &:focus-visible {
+        outline: 2px solid $link;
+        outline-offset: 3px;
+        border-radius: 3px;
+      }
+    }
+
+    &[open] > summary::before { transform: rotate(90deg); }
+
+    // Reduced motion: the rotation is decoration, and the marker still says
+    // which way it points without animating there.
+    @media (prefers-reduced-motion: reduce) {
+      > summary::before { transition: none; }
+    }
+
+    .note-archive-title {
+      font-family: $font-mono;
+      font-size: 0.8rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .note-archive-count {
+      font-family: $font-mono;
+      font-size: 0.68rem;
+      padding: 0.1rem 0.45rem;
+      border: 1px solid rgba($ayu-orange, 0.45);
+      border-radius: 99px;
+      color: $ayu-orange;
+    }
+
+    .note-archive-hint {
+      font-size: 0.85rem;
+      color: $text-dim;
+    }
+
+    .note-list { margin-top: 0; }
+  }
+
   .note-kind {
     font-family: $font-mono;
     font-size: 0.68rem;

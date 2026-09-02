@@ -281,7 +281,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // workers. Scoped to the two TLS pages, as the others here are.
     (
         "libssl",
-        &["docs/tls-capture.md", "website/content/docs/tls-capture.md"],
+        &[
+            "docs/tls-capture.md",
+            "website/content/docs/tls-capture.md",
+            // The TLS feature note names the same trap for the same reason:
+            // an unqualified `ecapture tls -m keylog` instruments whatever
+            // library curl maps, and a reader who cannot see the flag cannot
+            // fix an empty keylog.
+            "website/content/notes/reading-tls-without-a-certificate.md",
+        ],
     ),
     (
         "pid",
@@ -289,7 +297,13 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     ),
     (
         "keylogfile",
-        &["docs/tls-capture.md", "website/content/docs/tls-capture.md"],
+        &[
+            "docs/tls-capture.md",
+            "website/content/docs/tls-capture.md",
+            // The TLS feature note shows the pipe that keeps secrets off
+            // disk, and a half-quoted `ecapture` line is not runnable.
+            "website/content/notes/reading-tls-without-a-certificate.md",
+        ],
     ),
     // `--release` and `--target` are cargo's too, and appear for the same
     // reason: `cargo build --release --target wasm32-unknown-unknown` is what
@@ -2814,7 +2828,12 @@ fn no_documentation_table_repeats_a_row() {
     // against the staged diff: `--diff-filter=A` lists exactly eleven new
     // `.md` paths and every one is in that directory, so no other page was
     // added or removed.
-    const EXPECTED_MARKDOWN_FILES: usize = 191;
+    // 191 -> 205: fourteen more engineering notes -- eight how-tos and six
+    // feature notes, rebalancing a section that was sixteen post-mortems
+    // against one of each. Attributed against the staged diff:
+    // `--diff-filter=A` lists exactly fourteen new `.md` paths and every one
+    // is under `website/content/notes/`.
+    const EXPECTED_MARKDOWN_FILES: usize = 205;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -3021,7 +3040,11 @@ fn no_documentation_table_repeats_a_row() {
     // split, the three-surfaces capture table, and the field-vs-container
     // byte counts. No page lost a table, and the notes are not mirrored into
     // the site, so each counts once.
-    const EXPECTED_TABLES: usize = 792;
+    // 792 -> 797: five tables in four new notes, attributed per file against
+    // HEAD -- two in the endpoint-provenance note (the delivery-trust ladder
+    // and what each rung is worth), and one each in the completeness, vCon
+    // verdict and no-media notes. No page lost a table.
+    const EXPECTED_TABLES: usize = 797;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

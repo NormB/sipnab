@@ -1,3 +1,17 @@
+{# One row on the notes index: the kind chip, the date, the title and the
+   one-line description. Shared so the open sections and the collapsed
+   post-mortem archive cannot drift into rendering the same thing two ways. #}
+{% macro note_row(p, kind) %}
+<li class="note-list-item">
+  <p class="note-meta">
+    <span class="note-kind note-kind-{{ kind }}">{{ kind }}</span>
+    {% if p.date %}<time class="note-date" datetime="{{ p.date }}">{{ p.date | date(format="%e %B %Y") }}</time>{% endif %}
+  </p>
+  <h3><a href="{{ p.permalink }}">{{ p.title }}</a></h3>
+  {% if p.description %}<p>{{ p.description }}</p>{% endif %}
+</li>
+{% endmacro %}
+
 {# Left-sidebar navigation group: a titled section of doc-page links, with the
    active page's on-page section anchors nested beneath it. #}
 {# Left-sidebar group built from a Zola section rather than a hand-listed set

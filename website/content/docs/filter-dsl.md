@@ -377,9 +377,16 @@ traffic. For broader task recipes beyond the DSL, see the
 sipnab -N -I capture.pcap --filter "rtp.mos < 3.0 AND rtp.packets > 0 AND state == 'Completed'" --json
 ```
 
-`rtp.packets > 0` is not optional here: without it the `0.0` that a call with no
-RTP reports for `rtp.mos` satisfies the threshold, and the answer is every
-signaling-only dialog in the capture. Only completed calls -- in-progress calls
+`rtp.packets > 0` no longer guards against a `0.0`: an unmeasured `rtp.mos` is
+UNKNOWN, and an unknown value matches no threshold in either direction --
+`compare_opt_num` returns `false` for an absent field, and
+`a_dialog_with_no_rtp_does_not_match_a_mos_threshold` in [`src/sip/dsl.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs) holds that. This page
+used to say the clause was mandatory because a signaling-only dialog reported
+`0.0` and satisfied the threshold. That was true before the fix and is not
+true now. The clause is still worth keeping for a different reason: it excludes
+calls that carried too few packets for the E-model to mean anything, which is a
+judgment about sample size rather than a guard against a phantom zero. Only
+completed calls -- in-progress calls
 may not have enough RTP data for an accurate MOS calculation. MOS values follow
 the ITU-T G.107 E-model: 4.0+ is toll quality, 3.5-4.0 is acceptable, below 3.0
 is noticeable degradation.

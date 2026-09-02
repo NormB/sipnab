@@ -420,3 +420,125 @@ fn call_report_names_a_dialog_regardless_of_the_filter() {
         "--call-report must still report the Call-ID it was given"
     );
 }
+
+// ── -O is not a dialog-level extractor ──────────────────────────────
+//
+// `-O` writes each packet as it arrives, inside the capture loop, BEFORE any
+// dialog is complete enough to judge. A dialog predicate cannot apply there:
+// whether a call matches `from.user == '1001'` is unknowable until its INVITE
+// has been seen and correlated. So `--filter` does not narrow `-O`, and that
+// is a design constraint rather than a defect.
+//
+// The defect was the page that said otherwise. Cookbook recipe 32, "Export one
+// customer's calls as a smaller capture", opened by naming the risk -- "the
+// file is 4 GB of everyone's traffic. Sending all of it is both slow and a
+// disclosure" -- and then told the reader `-O` "writes the packets that
+// survived the filter". Measured 2026-09-02: `-O` under a filter matching
+// nothing and `-O` with no filter at all produce a BYTE-IDENTICAL file, same
+// SHA-256. Following that recipe to send a vendor one customer's calls ships
+// every call in the capture.
+//
+// Two gates, because the behavior and the claim about it can each drift.
+
+/// `--filter` does not narrow `-O`, and the pin says so out loud.
+///
+/// Pinning behavior nobody should rely on, so that if it ever DOES start
+/// filtering, whoever changed it is told that a documentation page and a
+/// disclosure warning depend on the old answer.
+#[test]
+fn a_dialog_filter_does_not_narrow_the_output_capture() {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("o_filter_pin");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let filtered = dir.join("filtered.pcap");
+    let plain = dir.join("plain.pcap");
+
+    run_ok(&[
+        "-N",
+        "-I",
+        BRANCH,
+        "--no-cli-print",
+        "--filter",
+        "from.user == 'no-such-user-anywhere'",
+        "-O",
+        filtered.to_str().expect("path"),
+    ]);
+    run_ok(&[
+        "-N",
+        "-I",
+        BRANCH,
+        "--no-cli-print",
+        "-O",
+        plain.to_str().expect("path"),
+    ]);
+
+    let a = std::fs::read(&filtered).expect("read filtered output");
+    let b = std::fs::read(&plain).expect("read unfiltered output");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        !a.is_empty(),
+        "the output capture is empty; this pin is measuring nothing"
+    );
+    assert_eq!(
+        a, b,
+        "`-O` now honors `--filter`. That is a BEHAVIOR CHANGE with a \
+         documentation consequence: cookbook recipe 32 and the redaction \
+         how-to both tell a reader that `-O` does NOT narrow, and one of them \
+         exists because the opposite claim was a disclosure hazard. Update \
+         both, then change this pin."
+    );
+}
+
+/// No page tells a reader that `-O` writes what the filter selected.
+///
+/// The gate that matters. The behavior above is defensible; the claim is what
+/// put a capture of everyone's traffic in an email to a vendor.
+#[test]
+fn no_page_claims_the_output_capture_is_filtered() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let out = std::process::Command::new("git")
+        .args(["ls-files", "docs/", "website/content/"])
+        .current_dir(root)
+        .output()
+        .expect("git ls-files");
+
+    // Phrases that promise a dialog-filtered `-O`. Each is a sentence a reader
+    // would act on, not a passing mention.
+    const CLAIMS: &[&str] = &[
+        "writes the packets that survived the filter",
+        "-O writes only the matching",
+        "filtered read is also an extraction",
+    ];
+
+    let mut offenders = Vec::new();
+    let mut scanned = 0;
+    for f in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+        if !f.ends_with(".md") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(root.join(f)) else {
+            continue;
+        };
+        scanned += 1;
+        for claim in CLAIMS {
+            if text.contains(claim) {
+                offenders.push(format!("  {f}: {claim:?}"));
+            }
+        }
+    }
+    assert!(
+        scanned >= 100,
+        "only {scanned} page(s) scanned; the walk is wrong and this gate \
+         proves nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "these pages tell a reader that `-O` writes what `--filter` selected. \
+         It does not -- it writes every packet the BPF expression let through, \
+         because it writes inside the capture loop before any dialog can be \
+         judged. A reader following that advice to share \"one customer's \
+         calls\" sends the whole capture:\n{}",
+        offenders.join("\n")
+    );
+}
