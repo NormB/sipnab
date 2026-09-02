@@ -2065,7 +2065,7 @@ sipnab -N -I capture.pcap --no-reassembly --report --no-cli-print
 
 **Pitfalls:**
 
-- `--no-reassembly` is the inverse of sipgrep's `-a`. On a TCP or TLS capture it does not make the run faster in any useful sense; it makes every multi-segment message unparseable.
+- `--no-reassembly` is the inverse of segment reassembly. On a TCP or TLS capture it does not make the run faster in any useful sense; it makes every multi-segment message unparseable.
 - A `--snaplen` that cut the frame short is a different problem with the same symptom. Reassembly cannot restore bytes the capture never took (recipe 22).
 
 ---
@@ -2136,7 +2136,7 @@ sipnab -N -I capture.pcap --capture-tunnels --report --no-cli-print
 
 **Problem:** You know a string that identifies the traffic — a `P-Asserted-Identity`, an `X-` header your SBC adds, a trunk group name — and not which calls carry it.
 
-`-e` is the sngrep/sipgrep match expression: a regex against the whole raw message. Once any message in a dialog matches, sipnab shows every later message of that dialog too:
+`-e` is the positional match expression: a regex against the whole raw message. Once any message in a dialog matches, sipnab shows every later message of that dialog too:
 
 ```bash
 sipnab -N -I capture.pcap -e 'X-Trunk-Group' -i

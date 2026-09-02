@@ -271,7 +271,7 @@ pub struct DialogStore {
     capacity_dialogs_evicted: u64,
     /// Mutation counter for cache invalidation — see [`Self::generation`].
     generation: u64,
-    /// Header names used for B2BUA leg correlation (sngrep `sip.xcid`). A
+    /// Header names used for B2BUA leg correlation (`sip.xcid`). A
     /// candidate dialog whose message carries one of these headers pointing at
     /// another dialog's Call-ID (or vice versa) is correlated at score 100.
     /// Defaults to `["X-Call-ID"]`.
@@ -607,7 +607,7 @@ impl DialogStore {
         self
     }
 
-    /// Override the correlation header names (sngrep `sip.xcid`). An empty list
+    /// Override the correlation header names (`sip.xcid`). An empty list
     /// is ignored so the default `["X-Call-ID"]` is preserved. Builder-style:
     /// returns `self` for chaining after [`new`](Self::new).
     #[must_use]

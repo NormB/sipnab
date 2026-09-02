@@ -768,7 +768,7 @@ pub(in crate::tui) fn render_filter_text_field(
     );
 }
 
-/// Render the filter dialog as a centered popup overlay (sngrep-style).
+/// Render the filter dialog as a centered popup overlay.
 ///
 /// Layout, drawn to scale at the fixed 56-column by 20-row popup size set
 /// below, so every column stop in the figure is the one the code paints:

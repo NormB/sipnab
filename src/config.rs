@@ -345,7 +345,7 @@ pub struct Config {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
 pub struct SipConfig {
-    /// Header names used for B2BUA leg correlation (sngrep `sip.xcid`).
+    /// Header names used for B2BUA leg correlation (`sip.xcid`).
     /// Defaults to `["X-Call-ID"]` when unset or empty. Set to add
     /// carrier-specific headers, e.g. `["X-Call-ID", "X-CID"]`.
     pub xcid_headers: Option<Vec<String>>,

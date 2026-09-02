@@ -1213,7 +1213,7 @@ pub fn launch(
     let source = match source {
         Some(s) => s,
         None => {
-            // Auto-detect default network interface (matches sngrep behavior)
+            // Auto-detect default network interface
             match capture::device::find_default_device() {
                 Ok(device) => {
                     tracing::info!("Auto-detected capture device: {}", device);

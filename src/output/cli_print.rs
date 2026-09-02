@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! sipgrep-style colored terminal output for SIP messages.
+//! Colored terminal output for SIP messages.
 //!
 //! Formats SIP messages with ANSI color codes for method-based highlighting,
 //! timestamp display, and optional payload truncation. Designed for live
-//! capture output similar to `sipgrep` and `sngrep`.
+//! conventional terminal capture output.
 
 use std::fmt::Write as _;
 use std::io::{self, Write};
@@ -51,7 +51,7 @@ pub struct OutputOptions {
     /// If `true`, show messages even when the body is empty.
     pub show_empty: bool,
     /// If `true`, annotate the transport tag with the IANA IP protocol number
-    /// (`sipgrep -N`), e.g. `UDP(17)`.
+    ///, e.g. `UDP(17)`.
     pub show_proto_number: bool,
 }
 
@@ -69,7 +69,7 @@ impl Default for OutputOptions {
     }
 }
 
-/// Print a SIP message in sipgrep-style colored format to stdout.
+/// Print a SIP message in colored format to stdout.
 ///
 /// Format: `timestamp src:port -> dst:port method/status_code`
 ///
@@ -190,7 +190,7 @@ pub fn format_sip_message(
         );
     }
 
-    // Transport tag (optionally annotated with the IP proto number, sipgrep -N)
+    // Transport tag (optionally annotated with the IP proto number)
     out.push(' ');
     out.push_str(msg.transport.as_str());
     if opts.show_proto_number {
@@ -253,7 +253,7 @@ fn should_use_color(mode: ColorMode) -> bool {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
-/// Tests for the sipgrep-style formatter: color selection, delta-time,
+/// Tests for the formatter: color selection, delta-time,
 /// truncation, proto-number annotation, and show-empty semantics.
 #[cfg(test)]
 mod tests {

@@ -62,7 +62,7 @@ impl SipMatcher {
     /// matches across header lines; when true, `.` only matches within a
     /// single line.
     ///
-    /// The `payload_pattern` argument is intended for the sipgrep-style
+    /// The `payload_pattern` argument is intended for the
     /// positional match expression that tests against the full raw message.
     ///
     /// # Errors
@@ -806,7 +806,7 @@ mod tests {
         );
     }
 
-    // ── -e / --match wiring (sngrep/sipgrep positional match-expression) ──
+    // ── -e / --match wiring (positional match-expression) ──
 
     /// `-e PATTERN` behaves exactly like a positional payload pattern.
     #[test]

@@ -1,6 +1,5 @@
 ---
 source: tests/tui_snapshot_test.rs
-assertion_line: 1243
 expression: output
 ---
  Cur┌ Save Capture ────────────────────────────────────────────────────────┐
@@ -12,7 +11,7 @@ expression: output
   [ │      PCAP-NG Modern format with metadata and annotations             │s
     │                                                                      │
     │  SIP-Specific                                                        │
-    │      TXT     Plain text SIP messages (sngrep-compatible)             │
+    │      TXT     Plain text SIP messages                                 │
     │      SIPp    Replayable SIPp scenario for QA testing                 │
     │                                                                      │
     │  Structured/Analytics                                                │

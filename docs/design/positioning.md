@@ -1,4 +1,4 @@
-# Where sipnab sits: between sngrep and Homer
+# Where sipnab sits: between the terminal viewer and Homer
 
 **Status:** DECISION. Taken 2026-08-10. This page exists to **decline**
 features, not to describe them — if it only ever ratifies what was already
@@ -18,7 +18,7 @@ claims.
 
 Two tools own the ends of this space and neither reaches the middle.
 
-**sngrep** is local. You are logged into one box, you run it, you see that
+**the terminal viewer** is local. You are logged into one box, you run it, you see that
 box's SIP. Zero infrastructure, seconds to first use, and it stops at the
 machine boundary. It displays; it does not analyze.
 
@@ -28,7 +28,7 @@ and a deployment project before the first packet.
 
 The middle wants three properties at once that neither provides:
 
-| | sngrep | **the gap** | Homer |
+| | the terminal viewer | **the gap** | Homer |
 |---|---|---|---|
 | reach | one box you are on | **many nodes, no agent to deploy** | many nodes |
 | infrastructure | none | **none** | collector + DB + UI |
@@ -36,8 +36,8 @@ The middle wants three properties at once that neither provides:
 | retention | none | **minutes to hours** | weeks |
 | time to first use | seconds | **seconds** | a project |
 
-The wedge is not "lighter Homer" and not "better sngrep". It is **multi-node
-reach with zero infrastructure**. That slot is open because sngrep never tried
+The wedge is not "lighter Homer" and not "better the terminal viewer". It is **multi-node
+reach with zero infrastructure**. That slot is open because the terminal viewer never tried
 to leave the box and Homer never tried to avoid the database.
 
 ## 2. What already fits, verified
@@ -62,18 +62,18 @@ touches production.
 ## 3. What the position demands
 
 **RTCP over `--hep-send`.** Without media quality a remote viewer is *worse
-than sngrep run locally*, because sngrep sees RTP and this would not. The
+than the terminal viewer run locally*, because the terminal viewer sees RTP and this would not. The
 receiver already decodes protocol type 5, so this is a sender-side gap rather
 than an architectural one. Verify end-to-end that received RTCP reaches the MOS
 calculation; the decode path is confirmed, the full path is not.
 
-**Multi-node correlation.** Without it, sipnab-plus-HEP is "sngrep that can see
+**Multi-node correlation.** Without it, sipnab-plus-HEP is "the terminal viewer that can see
 one remote box" — a convenience, not a category. This is the differentiator,
 and it needs provenance, which
 [`multi-capture-comparison.md`](multi-capture-comparison.md) already found
 missing for the two-capture view. Same prerequisite, so do not solve it twice.
 
-**Bounded on-disk retention.** sngrep keeps nothing, Homer keeps weeks, the
+**Bounded on-disk retention.** the terminal viewer keeps nothing, Homer keeps weeks, the
 middle keeps *this shift*. Today `--split` rotates output files and nothing
 bounds the set, so "keep the last 2 GB and let me search it" does not exist.
 This is the feature that makes it a scope with a memory rather than a live view
@@ -100,9 +100,9 @@ The end state of that path is a worse Homer.
 
 ## 6. Consequence for the published materials
 
-The site currently leads with throughput: 2.31M pkts/s, 12.2× sipgrep, the
+The site currently leads with throughput: 2.31M pkts/s, 12.2× the CLI matcher, the
 homepage tiles. **That is a local-tool argument.** It competes on
-sngrep-and-sipgrep turf, which is the position this page says sipnab is not
+the terminal viewer-and-the CLI matcher turf, which is the position this page says sipnab is not
 taking.
 
 The number stays; what it argues changes. Throughput is what lets **one binary
@@ -121,5 +121,5 @@ Stated so the position can lose rather than absorb every outcome:
   drifting into Homer's slot one requirement at a time. Treat the second such
   argument as the signal, not the fifth.
 - **The analysis is not the reason people choose it.** If users want it purely
-  as a faster sngrep and ignore lint, triage and correlation, then the local
+  as a faster the terminal viewer and ignore lint, triage and correlation, then the local
   tool position is the real one and §6 is wrong.

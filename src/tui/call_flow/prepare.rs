@@ -1164,7 +1164,7 @@ fn detect_auth_sequence(messages: &[SipMessage], start: usize) -> Option<usize> 
 
 /// Build a label string for a message (e.g., "INVITE (SDP)" or "200 OK").
 ///
-/// Appends "(SDP)" when the message body contains SDP, matching sngrep style.
+/// Appends "(SDP)" when the message body contains SDP.
 pub fn format_message_label(msg: &SipMessage) -> String {
     let has_sdp = msg
         .content_type()

@@ -27,8 +27,8 @@ use std::path::Path;
 /// unimplemented, its help text and its documentation must say so too —
 /// otherwise this list becomes the place where a lie is kept tidy.
 const ACCEPTED_WITHOUT_A_READER: &[(&str, &str)] = &[(
-    "_sngrep_r",
-    "sngrep compatibility: -r is accepted and ignored on purpose, so a \
+    "_compat_r",
+    "Compatibility: -r is accepted and ignored on purpose, so a \
          muscle-memory invocation does not fail. The leading underscore marks it, \
          and CLI_REFERENCE documents it as a no-op.",
 )];

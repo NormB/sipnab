@@ -2441,7 +2441,7 @@ impl HepSender {
     /// Signaling alone is half an answer. A remote viewer that receives only
     /// SIP can say a call connected and nothing about whether it sounded like
     /// anything — no MOS, no jitter, no loss — which makes it *worse* than
-    /// running sngrep on the box, because sngrep at least sees the media.
+    /// running a capture tool on the box, because that at least sees the media.
     /// The receiving side of this module has understood protocol type 5 since
     /// it was written — the protocol-type chunk carries `1=SIP, 5=RTCP,
     /// 32=RTP` — and only the sender never emitted it.

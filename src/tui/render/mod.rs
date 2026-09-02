@@ -103,7 +103,7 @@ pub(in crate::tui) fn render_app(
         return fb;
     }
 
-    // Layout: 3 status lines at top (sngrep-style), main content, F-key bar at bottom
+    // Layout: 3 status lines at top, main content, F-key bar at bottom
     let [
         status1_area,
         status2_area,
@@ -119,7 +119,7 @@ pub(in crate::tui) fn render_app(
     ])
     .areas(area);
 
-    // Status lines at top (sngrep-style) — use cached counts
+    // Status lines at top — use cached counts
     render_status_line1(frame, status1_area, app);
     render_status_line2(frame, status2_area, app);
     render_status_line3(frame, status3_area, app);
@@ -191,7 +191,7 @@ pub(in crate::tui) fn render_app(
                 let cid = call_id.clone();
                 let sel = app.flow.selected;
 
-                // Horizontal split: ladder on left, raw detail on right (sngrep
+                // Horizontal split: ladder on left, raw detail on right (
                 // style). The ladder width is widened past the configured split
                 // when a multi-leg (B2BUA) flow needs it, so packed participant
                 // columns don't truncate their method/status arrow labels.
@@ -503,7 +503,7 @@ pub(in crate::tui) fn render_app(
         }
     }
 
-    // F-key bar (sngrep-style, context-sensitive) at bottom
+    // F-key bar (context-sensitive) at bottom
     render_fkey_bar(
         frame,
         fkey_area,

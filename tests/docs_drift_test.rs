@@ -3374,7 +3374,7 @@ fn no_documentation_table_repeats_a_row() {
         // detection/decap, packet path and stores, TUI derived state). Not
         // mirrored to the site, so four and not eight.
         // Raised 534 -> 535 on 2026-08-14 by ONE table in docs/design/backlog.md:
-        // the `TK` section's comparison of what sngrep's eBPF commits changed
+        // the `TK` section's comparison of what the upstream eBPF commits changed
         // against what sipnab already does, so neither is rebuilt by mistake.
         // Not doubled by a site mirror — docs/design/ is not published.
         // Raised 573 -> 575 by the STUN/SDP evidence table in

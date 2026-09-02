@@ -153,9 +153,9 @@ pub struct ParallelConfig {
     pub dialog_tracking: crate::sip::dialog_store::DialogTracking,
     /// Skip RTP/RTCP processing (`--no-rtp`).
     pub no_rtp: bool,
-    /// Suppress the bad-parse diagnostic (`--quiet-bad-parse`, sipgrep `-x`).
+    /// Suppress the bad-parse diagnostic (`--quiet-bad-parse`).
     pub quiet_bad_parse: bool,
-    /// Correlation header names for B2BUA leg matching (sngrep `sip.xcid`).
+    /// Correlation header names for B2BUA leg matching (`sip.xcid`).
     /// Empty falls back to the `DialogStore` default (`["X-Call-ID"]`).
     pub xcid_headers: Vec<String>,
     /// How far apart, in milliseconds, two legs of one call may be created and

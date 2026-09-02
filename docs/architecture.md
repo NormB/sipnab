@@ -76,7 +76,7 @@ src/
 │   ├── batch.rs          # BatchRunner: batch/offline receive loop, reports
 │   ├── servers.rs        # API + MCP servers on one shared tokio runtime
 │   └── tui_mode.rs       # TUI mode entry
-├── cli.rs                # clap definitions (sngrep + sipgrep flag superset)
+├── cli.rs                # clap definitions (the terminal SIP tools flag superset)
 ├── config.rs             # sipnabrc parsing/merging (toml_edit for surgical writes)
 ├── pipeline.rs           # THE shared per-packet protocol router (all four paths)
 ├── parallel.rs           # --cores N: shard-by-host-pair offline reconstruction

@@ -19,7 +19,7 @@ Tiers:
   production traffic. Cross-referenced to PA where the two overlap rather than
   merged, because they were written from different vantage points.
 - **TK — TLS key acquisition program**: the 2026-08-14 answer to
-  [sngrep#447](https://github.com/irontec/sngrep/issues/447), reading
+  [the terminal viewer#447](https://github.com/irontec/the terminal viewer/issues/447), reading
   SIP-over-TLS with no certificate and no daemon restart. Ranked `TK1`..`TK7` by
   dependency order, outside the P0-P5 scale for the same reason `PA` is — but
   `TK1`–`TK3` are P0/P1-severity defects that exist today, and the section says
@@ -2658,7 +2658,7 @@ output path.
   larger and wants PA1's structured-hints refactor first, not because it
   matters less: it is the feature that clears a healthcare, financial or
   government security review, and the one that makes agent-assisted VoIP triage
-  viable as a service. sngrep, Wireshark and Homer were all designed for
+  viable as a service. the terminal viewer, Wireshark and Homer were all designed for
   on-prem eyes-only use, pre-LLM. The threat model "my analysis tool is about to
   POST my customers' PII to a vendor" dates to roughly 2024.
   - **Inventory:** `From` / `To` / `P-Asserted-Identity` / `Remote-Party-ID` /
@@ -3671,7 +3671,7 @@ was a defect with a reproduction rather than a proposal.
 | DOC-03 | accepted, P2 | Replace the contradictory "one static binary" positioning. |
 | DOC-04 | accepted, P2 | Split and refresh the MCP learning path. Navigation cost, not proven-wrong instructions. |
 | DOC-06 | accepted, P2 | Turn core recipes into executable documentation. |
-| DOC-05 | accepted, P3 | Publish an sngrep/sipgrep compatibility matrix. |
+| DOC-05 | accepted, P3 | Publish an the terminal SIP tools compatibility matrix. |
 | DOC-07 | accepted, P3 | Separate active design guidance from archives. |
 | DEV-01 | accepted, P2 | The developer page's integration-test count is stale. Derive it or delete it rather than re-typing a number that ages. |
 | DEV-02 | accepted, P2 | Provide a contributor toolchain bootstrap. This session lost time to exactly this: a fresh worktree has no Vale style package, so pre-push died with `style 'Google' does not exist` and nothing wrong in the prose. |
@@ -3687,7 +3687,7 @@ symbols must be re-resolved before patching.
 
 <!-- Added 2026-08-14. Design: docs/superpowers/specs/2026-08-14-ebpf-tls-capture-design.md -->
 
-Origin: [irontec/sngrep#447](https://github.com/irontec/sngrep/issues/447), "TLS
+Origin: [irontec/the terminal viewer#447](https://github.com/irontec/the terminal viewer/issues/447), "TLS
 capture using eBPF" — read SIP-over-TLS on a live host **without the server
 certificate and without restarting the SIP daemon**.
 
@@ -3703,11 +3703,11 @@ AF_XDP, on the **network** side of the tap, and `CT12` says "does not reopen".
 A uprobe on userspace `libssl` is a different hook at a different layer: it does
 not touch the capture path, steals no packets, and drops no direction.
 
-### Prior art: sngrep shipped this on 2026-08-12, and its design decides ours
+### Prior art: the terminal viewer shipped this on 2026-08-12, and its design decides ours
 
-[`c9d872c`](https://github.com/irontec/sngrep/commit/c9d872c3e64a45bad0888751a919bfdcea20b33a)
+[`c9d872c`](https://github.com/irontec/the terminal viewer/commit/c9d872c3e64a45bad0888751a919bfdcea20b33a)
 ("capture: add eBPF based capture of SIP over TLS") and
-[`f2bbde9`](https://github.com/irontec/sngrep/commit/f2bbde973c3011cdbced534b1fdfb9972483d348)
+[`f2bbde9`](https://github.com/irontec/the terminal viewer/commit/f2bbde973c3011cdbced534b1fdfb9972483d348)
 are the reference implementation of the request this section answers. Read the
 first commit message before starting `TK6` or `TK7`; four of its decisions are
 load-bearing and two of them retire work planned here.
@@ -3716,7 +3716,7 @@ load-bearing and two of them retire work planned here.
    OpenSSL a memory BIO — **Kamailio among them** — keep no socket there, so
    reading the descriptor out of the BIO by struct offset captures nothing for
    them, and needs an offset table maintained per OpenSSL release besides.
-   sngrep reads addresses from `struct sock` in `tcp_sendmsg`/`tcp_recvmsg` and
+   the terminal viewer reads addresses from `struct sock` in `tcp_sendmsg`/`tcp_recvmsg` and
    matches them to the plaintext **per thread**. That works for both styles of
    application and survives OpenSSL upgrades untouched. **This retires the
    version-keyed offset table in `TK6` and the `(pid, fd)` map in `TK7`** — do
@@ -3731,7 +3731,7 @@ load-bearing and two of them retire work planned here.
    device and inode**, so one uprobe attaches per distinct library however many
    processes map it.
 
-Two further notes. sngrep marks packets as TLS **before** the WebSocket check so
+Two further notes. the terminal viewer marks packets as TLS **before** the WebSocket check so
 SIP over WSS is reported as WSS. And its C build has to keep the libbpf and
 libpcap halves in separate translation units, because both define `struct
 bpf_insn` and neither guards against the other — a hazard `aya` removes, since
@@ -3739,12 +3739,12 @@ sipnab links no libbpf at all.
 
 **What sipnab already has, verified in this tree — do not rebuild it:**
 
-| sngrep's change | sipnab |
+| the terminal viewer's change | sipnab |
 |---|---|
 | eBPF source adopts the capture devices' link type instead of claiming Ethernet | Not needed as posed. The pcapng writer already gives **each source and link type its own IDB** (`pcapng_two_sources_same_link_type_get_their_own_idbs`, `pcapng_same_interface_new_link_type_gets_its_own_idb`), so sources need not agree at all; plain pcap refuses a foreign link type with an error rather than silently writing nothing (`plain_pcap_refuses_a_foreign_link_type`) |
 | Frame builder learns the two Linux cooked headers from the `any` device, picked at runtime | Already handled: `DLT_LINUX_SLL` (16) and `DLT_LINUX_SLL2` (20), including the `pcap_compile` differences between cooked v1 and v2 ([`bootstrap.rs:1718-1825`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1718-L1825)) |
 | Saving refused whenever more than one capture source existed | Not a sipnab defect; `--multi-device` writes through the per-source IDB path above |
-| Plaintext wrapped in a synthetic frame and fed to the ordinary parser | This is `TK7`, and sipnab adds what sngrep does not: an explicit origin, so frame-pointer evidence never cites an offset that does not exist |
+| Plaintext wrapped in a synthetic frame and fed to the ordinary parser | This is `TK7`, and sipnab adds what the alternatives do not: an explicit origin, so frame-pointer evidence never cites an offset that does not exist |
 
 `TK1`–`TK3` are **P0/P1-severity defects** kept here rather than in the severity
 sections so the program reads as one piece — the same reason `PA` and `PB` sit
@@ -3967,7 +3967,7 @@ SIP/2.0 200 OK..Via: SIP/2.0/TLS 127.0.0.1:44444
 ```
 
 No certificate, no daemon restart, no keylog, and no BPF program. That is
-sngrep#447's request satisfied against the exact software class it was filed
+the terminal viewer#447's request satisfied against the exact software class it was filed
 about. The first line the probe returned on that run was pointer garbage from a
 zero-length write, which is the content filter earning its place rather than a
 curiosity.
@@ -4053,7 +4053,7 @@ host. The packaged instance is untouched.
   make, having no decryptor to check against.
 
   **No struct-offset table.** An earlier draft of this entry planned one, keyed
-  by OpenSSL version. sngrep's implementation shows it is both fragile and
+  by OpenSSL version. the terminal viewer's implementation shows it is both fragile and
   avoidable — see the prior-art section above. Take the addresses from
   `struct sock` in `tcp_sendmsg`/`tcp_recvmsg`, matched per thread.
 
@@ -4091,7 +4091,7 @@ host. The packaged instance is untouched.
 
   **That gap is exactly the 5-tuple.** A uprobe on `SSL_write` sees the bytes an
   application handed its TLS library and nothing about the socket beneath, which
-  is why uprobe dialogs today name a process instead of a peer. sngrep solves it
+  is why uprobe dialogs today name a process instead of a peer. the terminal viewer solves it
   by hooking `tcp_sendmsg`/`tcp_recvmsg`, reading the addresses out of
   `struct sock`, and matching them to the plaintext **per thread** — and
   per-thread correlation across two hooks needs a program and a map, which means
@@ -5685,7 +5685,7 @@ Surveyed against Callcenter.js, the Zapier VoIP.ms and VoIPstudio connectors,
 analysis peer found — [VoIPmonitor MCP](https://github.com/emaktel/mcp-voipmonitor).
 
 Two framing facts, because they decide what belongs here. First, no Homer,
-HEPIC, sngrep or captagent MCP server exists; sipnab's 35 tools are the deepest
+HEPIC, the terminal viewer or captagent MCP server exists; sipnab's 35 tools are the deepest
 SIP-analysis MCP surface found, and the nearest analysis peer exposes four.
 Second, almost everything the commercial servers do is CALL CONTROL —
 originate, bridge, hold, transfer, send SMS, provision accounts. sipnab
@@ -5775,7 +5775,7 @@ ones that fit an analysis tool.
   but takes no `orphaned` filter, and [`docs/filter-dsl.md`](https://github.com/NormB/sipnab/blob/main/docs/filter-dsl.md) redirects the
   question to `--report` or `/v1/streams?orphaned=true`. So an agent is told
   three orphaned streams exist and cannot list them. Orphaned media is the
-  signature of an RTP proxy or NAT fault and one of the few findings sngrep
+  signature of an RTP proxy or NAT fault and one of the few findings the terminal viewer
   cannot produce.
 
   **Do:** an `orphaned` filter on `rtp_stats` and a `get_capture_report
@@ -5810,7 +5810,7 @@ ones that fit an analysis tool.
   reads `SIPNAB_CONFIG` and `HOME` from the environment
   ([`config.rs:1660`](https://github.com/NormB/sipnab/blob/main/src/config.rs#L1660), [`:1928`](https://github.com/NormB/sipnab/blob/main/src/config.rs#L1928)) but never expands `${VAR}` **inside a
   config value**, so a path cannot be written relative to whoever is running.
-  Prior art: [sngrep PR 539](https://github.com/irontec/sngrep/pull/539) (open,
+  Prior art: [the terminal viewer PR 539](https://github.com/irontec/the terminal viewer/pull/539) (open,
   unmerged), whose motivating case is `set savepath /home/${SUDO_USER}` — after
   `sudo -i`, saving to the invoking user's directory rather than root's.
   Unrelated to the `TK` program; recorded here because it arrived with those

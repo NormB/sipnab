@@ -142,7 +142,7 @@ This decision governs the answer to "should sipnab support reading from X?" wher
 
 ### D22 — Competitive Feature Borrowing Discipline
 
-When other tools (Pcaptix, sngrep, sipgrep, Wireshark, commercial voice-quality analyzers like Sevana AQuA) ship features sipnab doesn't have, the question is not "should we have feature parity?" — it's "does this feature strengthen sipnab's identity, or push it toward becoming a clone?"
+When other tools (Pcaptix, the terminal SIP tools Wireshark, commercial voice-quality analyzers like Sevana AQuA) ship features sipnab doesn't have, the question is not "should we have feature parity?" — it's "does this feature strengthen sipnab's identity, or push it toward becoming a clone?"
 
 **Borrow when:**
 - The feature is industry-standard and operators expect it (per-call asymmetry checks, perceptual MOS, quality timelines)
@@ -650,12 +650,12 @@ Add the third capture source so an MCP-driven agent can query a Homer-fed view.
 - [ ] **Capture source identification in `stats()`:** report the active source (`{type: "live", device: "eth0"}`, `{type: "file", path: "/tmp/x.pcap"}`, `{type: "hep", bind: "0.0.0.0:9060"}`) so the agent knows what it's looking at.
 
 **Gate — 8.5 is done when:**
-- [ ] `sipnab --mcp --hep-listen 127.0.0.1:9060` accepts HEP packets from a sender (use `sipgrep --hep-send` or `kamailio` siphash test data) and tools return the dialogs
+- [ ] `sipnab --mcp --hep-listen 127.0.0.1:9060` accepts HEP packets from a sender (use a HEP sender or `kamailio` siphash test data) and tools return the dialogs
 - [ ] `sipnab --mcp -I <pcap>` after pcap EOF still responds to MCP tool calls (does not exit)
 - [ ] `stats()` correctly reports the active source type for each of the three modes
 
 **Tests — 8.5 deliverables (D24):**
-- [ ] `tests/mcp/hep_listen.rs` — `--mcp --hep-listen 127.0.0.1:9060` accepts HEP from a fixture sender (`sipgrep --hep-send` or a Rust-side HEP synthesizer), and tools return the resulting dialogs
+- [ ] `tests/mcp/hep_listen.rs` — `--mcp --hep-listen 127.0.0.1:9060` accepts HEP from a fixture sender (an external HEP sender or a Rust-side HEP synthesizer), and tools return the resulting dialogs
 - [ ] `tests/mcp/post_mortem_pcap.rs` — after pcap EOF, `tail_dialogs` returns `source_exhausted: true` and remaining tools (`list_dialogs`, `get_dialog_report`, `rtp_stats`) continue to respond identically
 - [ ] `tests/mcp/source_identification.rs` — `stats()` reports the active source as `{type, ...}` for each of live/file/hep modes (table-driven test across all three)
 
@@ -1134,7 +1134,7 @@ Add a perceptual quality score derived from decoded audio, complementary to the 
 
 **Milestone (12.1–12.2):** new docs site live at `sipnab.com/docs/` (or equivalent), Diátaxis taxonomy defined, sidebar navigation reflecting the eventual structure, all existing 10 docs migrated and re-categorized, search and versioning working.
 
-**Milestone (12.3–12.7):** every existing CLI flag, MCP tool, REST endpoint, and config option has reference documentation; at least three audience-targeted tutorials exist; concept pages cover architecture, design philosophy, comparisons against sngrep/sipgrep/Pcaptix; cookbook holds at least 12 how-to recipes drawn from across the roadmap.
+**Milestone (12.3–12.7):** every existing CLI flag, MCP tool, REST endpoint, and config option has reference documentation; at least three audience-targeted tutorials exist; concept pages cover architecture, design philosophy, comparisons against Pcaptix; cookbook holds at least 12 how-to recipes drawn from across the roadmap.
 
 **Release target:**
 - 12.1, 12.2 (★ priority): **before Phase 8.6 ships** — so all Phase 8 docs land in the new structure from day one. Roughly aligned with v0.4.0-rc1.
@@ -1147,7 +1147,7 @@ Add a perceptual quality score derived from decoded audio, complementary to the 
 - [ ] Every REST endpoint has an OpenAPI spec entry (gated by Phase 9.1 — interlocks with this phase)
 - [ ] At least three tutorials exist, each completable end-to-end in under 15 minutes by someone new to sipnab
 - [ ] Glossary covers SIP/RTP/SDP terminology that appears in the docs (PDD, MOS, SBC, B2BUA, etc.)
-- [ ] Comparison page exists comparing sipnab against sngrep, sipgrep, and Pcaptix on a feature matrix
+- [ ] Comparison page exists comparing sipnab against the terminal SIP tools and Pcaptix on a feature matrix
 - [ ] Link checking and spell checking pass in CI
 - [ ] Every public Rust API in `lib.rs` has rustdoc — `cargo doc --no-deps` produces complete coverage
 - [ ] Search works (Algolia DocSearch or built-in lunr.js fallback)
@@ -1244,7 +1244,7 @@ The four-quadrant framework (tutorials / how-to guides / reference / explanation
     - Dialog state machine
     - RTP quality model (E-model + perceptual MOS)
     - Security model
-    - Comparison: sipnab vs sngrep vs sipgrep vs Pcaptix
+    - Comparison: sipnab vs the terminal viewer vs the CLI matcher vs Pcaptix
     - Design philosophy and non-goals
   Deployment
     - Single-host
@@ -1356,8 +1356,8 @@ Explain *why* sipnab is the way it is. The current docs explain *what* sipnab do
 - [ ] **Security model** — `docs/concepts/security-model.md`: privilege drop, process isolation, defense-in-depth limits, decryption material handling, MCP/REST authentication, the redaction options. References D15–D19.
 - [ ] **Design philosophy and non-goals** — `docs/concepts/philosophy.md`: what sipnab is and isn't. Adapted from v6 plan's Non-Goals section, written for a public audience. Why the TUI matters. Why MCP not gRPC. Why open source.
 - [ ] **Comparison pages**:
-  - `docs/concepts/vs-sngrep.md` — sipnab is the spiritual successor to sngrep with what's added; honest about what sngrep still does better (smaller binary, simpler install)
-  - `docs/concepts/vs-sipgrep.md` — feature equivalence and additions
+  - `docs/concepts/vs-the terminal viewer.md` — sipnab is the spiritual successor to the terminal viewers, with what's added, and honest about what they still do better (smaller binary, simpler install)
+  - `docs/concepts/vs-the CLI matcher.md` — feature equivalence and additions
   - `docs/concepts/vs-pcaptix.md` — sipnab vs commercial Pcaptix; honest assessment of where each fits (CLI vs desktop, security analysis vs voice QoE specialty)
   - `docs/concepts/vs-wireshark.md` — sipnab is not a Wireshark replacement; it generates tshark commands to bridge
 
@@ -1408,9 +1408,9 @@ Recipe-style how-to guides for specific tasks. Drawn from the diagnostic recipes
 Beyond docs, the website itself needs a homepage, comparison narrative, deployment showcase, and the quality-tooling infrastructure that enforces D23 going forward.
 
 **Marketing surface:**
-- [ ] **Homepage redesign** — clear positioning ("SIP & RTP capture, analysis, and security — replaces sngrep + sipgrep with one binary, plus AI-agent-callable analysis"), three-feature highlight, install command, GitHub stars, license badges, screenshot of the TUI
+- [ ] **Homepage redesign** — clear positioning ("SIP & RTP capture, analysis, and security — one binary for capture, analysis and security, plus AI-agent-callable analysis"), three-feature highlight, install command, GitHub stars, license badges, screenshot of the TUI
 - [ ] **Feature page** — `/features/` — bulleted feature list with screenshots/diagrams
-- [ ] **Comparison page** — `/compare/` — sipnab vs sngrep / sipgrep / Pcaptix / Wireshark feature matrix; honest about what sipnab does and doesn't do
+- [ ] **Comparison page** — `/compare/` — sipnab vs Pcaptix / Wireshark feature matrix; honest about what sipnab does and doesn't do
 - [ ] **Deployment showcase** — `/deployments/` — case-study-style pages showing single-host, fleet, observability-stack, AI-agent topologies
 - [ ] **Blog** — minimal, optional. If included, first post is the OpenSIPS Summit follow-up referenced in Phase 8.6
 

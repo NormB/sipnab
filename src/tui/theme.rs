@@ -156,7 +156,7 @@ pub struct Keymap {
 }
 
 impl Default for Keymap {
-    /// The built-in sngrep-style bindings listed on each field.
+    /// The built-in default bindings listed on each field.
     fn default() -> Self {
         Self {
             quit: KeyCode::Char('q'),

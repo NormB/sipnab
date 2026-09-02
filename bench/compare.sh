@@ -86,7 +86,7 @@ echo "host:    $(uname -sm), $(nproc) cores"
 echo
 
 missing=""
-for t in sngrep sipgrep; do
+for t in the terminal viewer the CLI matcher; do
   command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
 done
 if ! command -v voipmonitor >/dev/null 2>&1 \
@@ -97,15 +97,15 @@ fi
 printf '%-34s %9s %9s   %s\n' tool "pkts/s" "wall(s)" "what it reconstructs"
 printf '%-34s %9s %9s   %s\n' ---- --------- --------- --------------------
 
-if command -v sngrep >/dev/null 2>&1; then
-  w=$(time_tool sngrep -I "$CORPUS" -r -N -q) \
-    && emit "sngrep $(sngrep --version 2>&1 | sed -n 's/.*sngrep - \([0-9.]*\).*/\1/p')" \
+if command -v the terminal viewer >/dev/null 2>&1; then
+  w=$(time_tool the terminal viewer -I "$CORPUS" -r -N -q) \
+    && emit "the terminal viewer $(the terminal viewer --version 2>&1 | sed -n 's/.*the terminal viewer - \([0-9.]*\).*/\1/p')" \
             "SIP dialogs; no RTP-stream reconstruction headless" "$w"
 fi
 
-if command -v sipgrep >/dev/null 2>&1; then
-  w=$(time_tool sipgrep -I "$CORPUS" -C -G) \
-    && emit "sipgrep $(sipgrep -V 2>&1 | sed -n 's/.*V\([0-9.]*\).*/\1/p')" \
+if command -v the CLI matcher >/dev/null 2>&1; then
+  w=$(time_tool the CLI matcher -I "$CORPUS" -C -G) \
+    && emit "the CLI matcher $(the CLI matcher -V 2>&1 | sed -n 's/.*V\([0-9.]*\).*/\1/p')" \
             "grep-style SIP match + Call-ID grouping; no RTP" "$w"
 fi
 

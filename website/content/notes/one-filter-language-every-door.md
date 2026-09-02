@@ -85,7 +85,7 @@ matching dialogs with the RTP tables beneath holding only their streams.
 a lookup by name is not a listing.
 
 The per-message match is a different tool. `-e`/`--match` is the
-sngrep-style match expression — it selects matching messages and then follows
+match expression — it selects matching messages and then follows
 the dialog, emitting everything after the first match. The `payload` DSL field
 is the per-dialog version, true when any message in the dialog matches, and it
 composes inside a larger expression the way a flag cannot.

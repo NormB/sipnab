@@ -347,7 +347,7 @@ fn advertised_cell(
 
 /// Render the RTP stream list table into the given area.
 ///
-/// Uses sngrep-style: borderless, bold-on-cyan header, reverse-video highlight.
+/// Borderless, bold-on-cyan header, reverse-video highlight.
 /// No title line -- status is rendered separately at the top of the screen.
 /// Only the visible viewport window is formatted (placeholder rows keep the
 /// stateful selection index correct); keys whose streams were evicted from
@@ -381,7 +381,7 @@ pub fn render_stream_list(
     // The entire area is used for the table (no title line)
     let table_area = area;
 
-    // sngrep header style: bold on header-color background
+    // Header style: bold on header-color background
     let header_style = Style::default()
         .bg(theme.header)
         .add_modifier(Modifier::BOLD);
@@ -496,7 +496,7 @@ pub fn render_stream_list(
         Constraint::Length(7),  // Status
     ];
 
-    // sngrep-style: no borders, reverse video for selected row
+    // No borders, reverse video for selected row
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)

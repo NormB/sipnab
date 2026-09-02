@@ -1323,7 +1323,7 @@ mod tests {
     /// Checking one row limits the JSON export to that dialog only.
     #[test]
     fn json_save_honors_selection() {
-        // sngrep parity: checking rows limits the export to the selected
+        // Checking rows limits the export to the selected
         // dialogs (the [*] checkbox group). Here only call-1 is checked.
         let mut app = app_with_dialogs();
         app.call_list.move_to_top(); // cursor on row 0 (call-1)

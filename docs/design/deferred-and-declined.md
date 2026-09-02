@@ -953,7 +953,7 @@ it never sees ciphertext. Until someone asks for that, this stays declined.
 ### Prior art that confirms the cost, and softens one argument
 
 [`pcap-sip`](https://gitlab.com/wisteriabg/pcap-sip/) (Sergey Safarov, the
-author of sngrep PR 539) is a Rust SIP capture workspace that implements this
+author of the terminal viewer PR 539) is a Rust SIP capture workspace that implements this
 exact feature with [`aya`](https://aya-rs.dev). Read 2026-08-15. It is
 **GPL-3.0-or-later** and sipnab is MIT OR Apache-2.0, so nothing there can be
 vendored, copied or derived from — this entry records what it demonstrates,
@@ -984,7 +984,7 @@ target, and only one of them owes a table.
 **A correction to this section, made the same day it was written.** The
 paragraph here first claimed that in-kernel filtering was the one thing that
 would make `aya` worth its cost, since these probes see every process that maps
-the library and sngrep prefilters in kernel space for exactly that reason. That
+the library and the terminal viewer prefilters in kernel space for exactly that reason. That
 was wrong, and measurement rather than argument settled it: **tracefs filters do
 content matching in the kernel already.**
 

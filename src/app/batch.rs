@@ -2988,7 +2988,7 @@ impl BatchRunner {
         let security_max_age = cli.security_sweep_max_age(&config);
 
         // Shared buffered stdout sink for every per-message emitter (JSON,
-        // sipgrep-style text, fail2ban, hexdump). Flushed whenever the packet
+        // text, fail2ban, hexdump). Flushed whenever the packet
         // channel goes idle — live output stays real-time — and at end of
         // capture; `--line-buffer` flushes after every message.
         let mut sink = output::BatchSink::stdout(cli.output_args.line_buffer);
@@ -3823,7 +3823,7 @@ fn mcp_stdio_client_gone(
 ///
 /// This implements two overlapping selection rules:
 ///
-/// * **Dialog-following** (sngrep/sipgrep `-e`): when `follow_dialogs` is set, a
+/// * **Dialog-following** (`-e`): when `follow_dialogs` is set, a
 ///   `direct_match` arms the message's dialog, and every later message of an
 ///   armed dialog is emitted regardless of its own content. Followed messages
 ///   are not "trailing context" and never spend the `-A` budget.
@@ -4107,7 +4107,7 @@ fn process_parsed_packet(
                 }
             }
 
-            // Targeted scanner kill (sipgrep -K): kill any request whose source
+            // Targeted scanner kill: kill any request whose source
             // matches a --kill-target, independent of UA/behavioral detection.
             if !kill_targets.is_empty()
                 && sip_msg.is_request
@@ -4524,7 +4524,7 @@ fn try_tls_decrypt(
 
 /// Dispatch a matched SIP message to the configured output backend
 /// (pretty JSON, NDJSON, fail2ban event, raw text dump, or the default
-/// sipgrep-style print).
+/// plain print).
 ///
 /// # Arguments
 ///
@@ -9594,7 +9594,7 @@ mod tests {
             sink.into_inner()
         };
 
-        // Default sipgrep-style print: byte-identical to format_sip_message.
+        // Default plain print: byte-identical to format_sip_message.
         let out = sink_bytes(&base_cli(), None);
         assert_eq!(
             String::from_utf8(out).expect("utf8"),

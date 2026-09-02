@@ -52,13 +52,13 @@
 
 ## Scope
 
-sipnab unifies the capabilities of **sngrep** (interactive TUI flow viewer) and **sipgrep** (CLI regex matcher with dialog reports) into a single binary, treats SIP signaling and RTP media as **equal peers**, then adds features neither tool provides. One tool replaces two, with zero memory leaks and zero CPU waste by construction.
+sipnab unifies the capabilities of an **interactive TUI flow viewer** and a **CLI regex matcher with dialog reports** into a single binary, treats SIP signaling and RTP media as **equal peers**, then adds features neither tool provides. One tool replaces two, with zero memory leaks and zero CPU waste by construction.
 
 **Tagline:** sipnab — SIP & RTP capture, analysis, and security
 
 ### Feature Origin Map
 
-| Feature Area | sngrep | sipgrep | sipnab NEW |
+| Feature Area | the terminal viewer | the CLI matcher | sipnab NEW |
 |---|---|---|---|
 | Interactive TUI (call list, ladder, raw view) | ✅ | — | Enhanced |
 | Live pcap capture | ✅ | ✅ | ✅ |
@@ -203,7 +203,7 @@ sipnab captures network traffic, decrypts TLS/SRTP, injects packets (scanner kil
 ```
 src/
 ├── main.rs
-├── cli.rs                   # clap CLI — unified sngrep + sipgrep flags
+├── cli.rs                   # clap CLI — unified the terminal SIP tools flags
 ├── config.rs                # Config file parsing
 ├── capture/
 │   ├── mod.rs               # Capture orchestration, source management
@@ -252,7 +252,7 @@ src/
 │   └── alerting.rs          # Rule-based alerting engine + event exec hooks
 ├── output/
 │   ├── mod.rs               # Output mode dispatcher
-│   ├── cli_print.rs         # sipgrep-style colored terminal output
+│   ├── cli_print.rs         # colored terminal output
 │   ├── dialog_report.rs     # Dialog summary report (-G)
 │   ├── call_report.rs       # Structured call diagnosis report (--call-report)
 │   ├── json.rs              # JSON / NDJSON streaming output
@@ -324,10 +324,10 @@ These decisions are foundational — they constrain every implementation phase t
 
 ### D1 — One binary, two modes
 
-VoIP engineers currently reach for sngrep (interactive TUI), sipgrep (CLI regex grep), ngrep (generic packet grep), tshark (Wireshark CLI), or tcpdump (raw capture) depending on the task. sipnab collapses the first two into a single binary with identical capture and parsing code paths:
+VoIP engineers currently reach for an interactive TUI, a CLI regex grep, ngrep (generic packet grep), tshark (Wireshark CLI), or tcpdump (raw capture) depending on the task. sipnab collapses the first two into a single binary with identical capture and parsing code paths:
 
-- `sipnab` with no flags → interactive TUI (sngrep mode)
-- `sipnab -N` → CLI output (sipgrep mode)
+- `sipnab` with no flags → interactive TUI (the terminal viewer mode)
+- `sipnab -N` → CLI output (the CLI matcher mode)
 - `sipnab -N --json` → structured pipeline mode (new)
 
 This means one SIP parser, one dialog engine, one reassembly implementation — tested once, used everywhere. No divergence between "the grep tool parsed it differently than the TUI tool."
@@ -357,7 +357,7 @@ This is a deliberate tradeoff: slightly more complex parser code in exchange for
 
 ### D4 — Rust ownership eliminates the C bug classes by construction
 
-The 12 bugs found in sngrep's C codebase fall into categories that Rust's type system makes structurally impossible:
+The 12 bugs found in the terminal viewer's C codebase fall into categories that Rust's type system makes structurally impossible:
 
 **Use-after-free (MEM-1):** Rust's borrow checker prevents using a reference after the owning value is dropped or moved. There is no equivalent of "free a pointer then pass it to another function."
 
@@ -423,11 +423,11 @@ Capture threads own their reassembly state — no shared mutable state between c
 > §2d; the lock-ordering rules the batch path actually follows are in
 > [`invariants.md`](../internals/invariants.md) §2.
 
-This eliminates the global `capture_lock` mutex from sngrep that blocked the capture thread during every TUI redraw.
+This eliminates a global `capture_lock` mutex that would block the capture thread during every TUI redraw.
 
 ### D6 — Adaptive TUI refresh
 
-sngrep redraws at a fixed 5 Hz (200ms `halfdelay`), rebuilding the filtered call list from scratch on every frame. sipnab uses an event-driven approach:
+the terminal viewer redraws at a fixed 5 Hz (200ms `halfdelay`), rebuilding the filtered call list from scratch on every frame. sipnab uses an event-driven approach:
 
 1. **Data-driven refresh:** The capture→main channel delivers a "new data available" signal. The TUI only redraws when there is actually new data to show.
 2. **Incremental filtering:** New dialogs are appended to the filtered list. The full filter is only re-run when the filter expression itself changes.
@@ -539,7 +539,7 @@ sipnab never attempts to break or weaken encryption. It decrypts only when the o
 
 ### D13 — RTP is a first-class citizen, not a child of SIP
 
-In every existing SIP analysis tool (sngrep, sipgrep, Homer), RTP is subordinate to SIP: you find a dialog first, then optionally look at its media. This matches the protocol hierarchy (SIP negotiates, RTP carries) but not the debugging reality. Most VoIP problems are RTP problems — one-way audio, quality degradation, orphaned streams, NAT traversal failures — and they often present without a captured SIP dialog in scope.
+In every existing SIP analysis tool, including Homer, RTP is subordinate to SIP: you find a dialog first, then optionally look at its media. This matches the protocol hierarchy (SIP negotiates, RTP carries) but not the debugging reality. Most VoIP problems are RTP problems — one-way audio, quality degradation, orphaned streams, NAT traversal failures — and they often present without a captured SIP dialog in scope.
 
 sipnab treats RTP streams as **top-level entities** that peer with SIP dialogs:
 
@@ -552,9 +552,9 @@ StreamStore ──────── stores RtpStream objects, keyed by SSRC + s
 
 **Consequences of this design:**
 
-1. **RTP capture is on by default.** The `-r` flag from sngrep is inverted: sipnab captures RTP unless `--no-rtp` is specified. The performance cost is negligible — RTP header parsing is 12 bytes of fixed-format data.
+1. **RTP capture is on by default.** The `-r` flag is inverted from the conventional meaning: sipnab captures RTP unless `--no-rtp` is specified. The performance cost is negligible — RTP header parsing is 12 bytes of fixed-format data.
 
-2. **Orphaned streams are visible.** An RTP stream with no matching SIP dialog (because SIP went through a different path, or the capture started mid-call) appears in the Stream List view and in JSON output. sngrep makes these invisible.
+2. **Orphaned streams are visible.** An RTP stream with no matching SIP dialog (because SIP went through a different path, or the capture started mid-call) appears in the Stream List view and in JSON output. the terminal viewer makes these invisible.
 
 3. **RTP discovery does not require SDP.** SDP tells sipnab where media *should* go. Heuristic detection finds where media *actually* goes — even-port UDP with RTP v2 header structure, valid payload type, incrementing sequence numbers. After NAT, after RTPEngine, after any middlebox that rewrites media addresses, the actual stream is discoverable.
 
@@ -820,8 +820,8 @@ SIP in the wild is messy. Carriers send malformed headers. TCP segments arrive o
 - **Malformed SIP:** If a packet looks like SIP (first line matches) but headers are unparseable, store it as a raw message with `parse_error: true`. The TUI shows it in the call flow with a warning badge. It counts in statistics. It is never silently dropped.
 - **Truncated packets:** If a pcap frame is shorter than its declared length, parse what is available and mark the message as truncated. Log at DEBUG level.
 - **Invalid UTF-8 in SIP payload:** SIP is supposed to be UTF-8 but real-world traffic includes Latin-1, Windows-1252, and raw bytes. The parser operates on `&[u8]` and uses `String::from_utf8_lossy` for display. Matching operates on bytes, not decoded strings.
-- **Reassembly overflow:** If IP fragments or TCP segments exceed 64KB assembled size, discard and log at WARN. The reassembly entry is removed and its memory freed (this is the bug sngrep had — MEM-3).
-- **Reassembly timeout:** Stale entries (no new fragment/segment for 30s) are swept every 5s and dropped. This prevents the unbounded memory growth from sngrep's MEM-5.
+- **Reassembly overflow:** If IP fragments or TCP segments exceed 64KB assembled size, discard and log at WARN. The reassembly entry is removed and its memory freed (this is the bug the terminal viewer had — MEM-3).
+- **Reassembly timeout:** Stale entries (no new fragment/segment for 30s) are swept every 5s and dropped. This prevents the unbounded memory growth from the terminal viewer's MEM-5.
 - **Pcap read errors:** Log at ERROR, skip the packet, continue reading. A single corrupt frame does not abort the capture.
 - **Permission errors:** If the capture device cannot be opened, print a clear error ("run with sudo or add CAP_NET_RAW") and exit non-zero. Do not silently fall back to a different device.
 
@@ -846,7 +846,7 @@ Testing is not a phase — every phase includes its own tests. This section defi
 | **Fuzz tests** | Crash discovery in parsers and reassembly | **Phase 1 onward** (not deferred) | `cargo-fuzz`, 1 hour per CI run, 24h before each release milestone |
 | **Property tests** | Invariants: "any valid SIP message round-trips through parser," "jitter is always ≥ 0" | Phase 2 onward | `proptest` or `quickcheck` |
 | **Performance tests** | Throughput benchmarks against targets, regression detection | Phase 1 and 2 exit, then CI | `criterion` benchmarks, fail on >10% regression |
-| **Comparison tests** | Same pcap through sipnab vs sngrep/sipgrep, diff outputs | Phase 2 onward | Custom test harness, sngrep installed in CI |
+| **Comparison tests** | Same pcap through sipnab vs the terminal SIP tools, diff outputs | Phase 2 onward | Custom test harness, the terminal viewer installed in CI |
 | **Security tests** | Malformed input corpus, oversized messages, hash flooding, ReDoS patterns, scanner-kill amplification | Phase 2 onward | Dedicated `tests/security/` directory |
 | **TUI snapshot tests** | Render views to TestBackend buffer, snapshot with `insta`, detect layout/color regressions | Phase 3 onward | `ratatui::backend::TestBackend` + `insta` crate |
 | **TUI state machine tests** | Key events → App state transitions, navigation, filter application, selection | Phase 3 onward | Unit tests on `App` struct, no terminal needed |
@@ -920,7 +920,7 @@ user = "sipnab"                 # drop-to user after device open
 chroot = ""                     # chroot dir (empty = disabled)
 
 [theme]
-# sngrep-compatible color defaults
+# the terminal viewer-compatible color defaults
 highlight = "white_on_blue"
 invite = "green"
 bye = "red"
@@ -933,7 +933,7 @@ filter = "F7"
 save = "F2"
 ```
 
-sngrep's `~/.sngreprc` format is NOT supported. A migration note in the README explains the differences.
+the terminal viewer's `the legacy per-user INI config` format is NOT supported. A migration note in the README explains the differences.
 
 ---
 
@@ -943,13 +943,13 @@ Three release milestones replace the monolithic march to v0.1.0. Each milestone 
 
 | Milestone | Scope | Content | Target |
 |---|---|---|---|
-| **v0.1.0-alpha** — "sipgrep replacement + VoIP diagnosis" | Phases 1 + 2 | CLI mode: capture, parse, filter, filter DSL, `--json`, `--report`, `--call-report`, RTP stream tracking, transaction timing/PDD, one-way audio detection, NAT mismatch detection, multi-leg correlation, SDP timeline, concurrent call tracking, diagnostic filter aliases, event exec hooks. No TUI, no security features, no decryption, no API. | 9-12 weeks |
-| **v0.2.0-beta** — "sngrep replacement" | + Phase 3 + Phase 4 | Interactive TUI with diagnosis indicators and multi-leg ladder, scanner detection/kill, fraud alerting, digest leak detection, fail2ban output. | 15-20 weeks |
+| **v0.1.0-alpha** — "the CLI matcher replacement + VoIP diagnosis" | Phases 1 + 2 | CLI mode: capture, parse, filter, filter DSL, `--json`, `--report`, `--call-report`, RTP stream tracking, transaction timing/PDD, one-way audio detection, NAT mismatch detection, multi-leg correlation, SDP timeline, concurrent call tracking, diagnostic filter aliases, event exec hooks. No TUI, no security features, no decryption, no API. | 9-12 weeks |
+| **v0.2.0-beta** — "the terminal viewer replacement" | + Phase 3 + Phase 4 | Interactive TUI with diagnosis indicators and multi-leg ladder, scanner detection/kill, fraud alerting, digest leak detection, fail2ban output. | 15-20 weeks |
 | **v0.3.0** — "full vision" | + Phase 5 + Phase 6 + Phase 7 | TLS/SRTP decryption, Prometheus (with PDD/timing/concurrent call metrics), STIR/SHAKEN, REST API, daemon mode, packaging. | 24-35 weeks |
 
 **Why milestones matter:**
 - v0.1.0-alpha is usable on day one for the most common VoIP engineering tasks: "show me the SIP on this interface, filtered by caller, with RTP quality, tell me why this call failed, find the one-way audio, show me what the SBC changed."
-- The `--call-report` and `--problems` flags alone make v0.1.0-alpha more useful than sipgrep for troubleshooting.
+- The `--call-report` and `--problems` flags alone make v0.1.0-alpha more useful than the CLI matcher for troubleshooting.
 - Early users find parser bugs before a TUI is built on top.
 - Each milestone has its own GitHub release, changelog, and can attract contributors.
 - Motivation: external validation before the halfway point.
@@ -983,9 +983,9 @@ Phase 1 ─────────► Phase 2 ─────────► Ph
 
 ## CLI Design — Unified Flag Set
 
-sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked without `-N`, it launches the TUI. With `-N`, it operates in CLI print mode like sipgrep.
+sipnab accepts the full conventional flag set. When invoked without `-N`, it launches the TUI. With `-N`, it operates in CLI print mode like the CLI matcher.
 
-### sngrep-compatible flags
+### the terminal viewer-compatible flags
 
 | Flag | Description |
 |---|---|
@@ -994,7 +994,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 | `-O <pcap>` | Write matched packets to pcap |
 | `-B <mb>` | Pcap buffer size in MB |
 | `-c` | Only INVITE dialogs |
-| `-r` | Accepted for sngrep compat (no-op: RTP is captured by default). Use `--no-rtp` to disable |
+| `-r` | Accepted for the terminal viewer compat (no-op: RTP is captured by default). Use `--no-rtp` to disable |
 | `-l <limit>` | Dialog limit (default: 100,000) |
 | `-i` | Case-insensitive match |
 | `-v` | Invert match |
@@ -1011,35 +1011,35 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 | `-T <file>` | Text dump to file |
 | `-t` | Capture telephone-event RTP |
 
-### sipgrep-compatible flags
+### the CLI matcher-compatible flags
 
 | Flag | Description |
 |---|---|
-| `--from <pattern>` | Match From header user (sipgrep `-f`) |
-| `--to <pattern>` | Match To header user (sipgrep `-t`) |
-| `--contact <pattern>` | Match Contact header (sipgrep `-c`) |
-| `--ua <pattern>` | Match User-Agent header (sipgrep `-j`) |
-| `--kill-scanner` | Auto-respond 200 to friendly-scanner (sipgrep `-J`). Launches isolated child process (D16) — **shipped as a worker thread, not a process; see the D16 annotation.** |
-| `--kill-ua <name>` | Kill scanner with custom UA match (sipgrep `-j` + `-J`) |
+| `--from <pattern>` | Match From header user (the CLI matcher `-f`) |
+| `--to <pattern>` | Match To header user (the CLI matcher `-t`) |
+| `--contact <pattern>` | Match Contact header (the CLI matcher `-c`) |
+| `--ua <pattern>` | Match User-Agent header (the CLI matcher `-j`) |
+| `--kill-scanner` | Auto-respond 200 to friendly-scanner. Launches isolated child process (D16) — **shipped as a worker thread, not a process; see the D16 annotation.** |
+| `--kill-ua <name>` | Kill scanner with custom UA match (the CLI matcher `-j` + `-J`) |
 | `--kill-response <code>` | Response code for kill mode (default: 200) |
-| `--report` | Print dialog report on exit (sipgrep `-G`) |
-| `--dialog-track` | Enable dialog tracking in CLI mode (sipgrep `-g`) |
-| `--replay` | Replay pcap with original timing (sipgrep `-D`) |
-| `--delta-time` | Print delta timestamps (sipgrep `-T`) |
-| `--after <n>` | Print N trailing context packets after match (sipgrep `-A`) |
-| `--autostop <cond>` | Stop after condition: `duration:N` or `filesize:N` (sipgrep `-q`) |
-| `--split <cond>` | Rotate pcap output: `duration:N` or `filesize:N` (sipgrep `-Q`) |
-| `--portrange <range>` | SIP port range (default: 5060-5061) (sipgrep `-P`) |
-| `--word` | Word-regex match (sipgrep `-w`) |
-| `--line-buffer` | Line-buffered stdout (sipgrep `-l`) |
-| `--single-line` | Single-line match mode (sipgrep `-M`) |
-| `--no-dialog` | Disable dialog matching (sipgrep `-m`) |
-| `--show-empty` | Show empty packets (sipgrep `-e`) |
-| `--snaplen <n>` | Set capture snaplen (sipgrep `-s`) |
-| `--payload-limit <n>` | Max payload display size (sipgrep `-S`) |
-| `--bpf-file <file>` | Read BPF filter from file (sipgrep `-F`) |
-| `--duration <secs>` | Capture for N seconds then exit (sipgrep `-z`) |
-| `--count <n>` | Capture N packets then exit (sipgrep `-n`) |
+| `--report` | Print dialog report on exit (the CLI matcher `-G`) |
+| `--dialog-track` | Enable dialog tracking in CLI mode (the CLI matcher `-g`) |
+| `--replay` | Replay pcap with original timing (the CLI matcher `-D`) |
+| `--delta-time` | Print delta timestamps |
+| `--after <n>` | Print N trailing context packets after match (the CLI matcher `-A`) |
+| `--autostop <cond>` | Stop after condition: `duration:N` or `filesize:N` (the CLI matcher `-q`) |
+| `--split <cond>` | Rotate pcap output: `duration:N` or `filesize:N` (the CLI matcher `-Q`) |
+| `--portrange <range>` | SIP port range (default: 5060-5061) (the CLI matcher `-P`) |
+| `--word` | Word-regex match (the CLI matcher `-w`) |
+| `--line-buffer` | Line-buffered stdout (the CLI matcher `-l`) |
+| `--single-line` | Single-line match mode (the CLI matcher `-M`) |
+| `--no-dialog` | Disable dialog matching (the CLI matcher `-m`) |
+| `--show-empty` | Show empty packets (the CLI matcher `-e`) |
+| `--snaplen <n>` | Set capture snaplen (the CLI matcher `-s`) |
+| `--payload-limit <n>` | Max payload display size |
+| `--bpf-file <file>` | Read BPF filter from file (the CLI matcher `-F`) |
+| `--duration <secs>` | Capture for N seconds then exit (the CLI matcher `-z`) |
+| `--count <n>` | Capture N packets then exit (the CLI matcher `-n`) |
 
 ### sipnab new flags
 
@@ -1180,7 +1180,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 - [ ] `capture::writer` — pcap/pcap-ng output
   - Basic write (`-O`)
   - Rotation by filesize or duration (`--split filesize:20`, `--split duration:120`)
-  - SIGUSR1-triggered rotation (sngrep compat)
+  - SIGUSR1-triggered rotation (the terminal viewer compat)
   - PCAP-NG output format (`--pcapng`)
 - [ ] `capture::hep` — HEP v2/v3 (Homer)
   - HEP listener mode (`-L`, default bind: 127.0.0.1 per D18)
@@ -1227,7 +1227,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 - [ ] Ethernet / VLAN (802.1Q) / SLL / NFLOG header parsing via `etherparse`
 - [ ] IPv4 and IPv6 header parsing
 - [ ] Encapsulation stripping (iterate until transport layer reached):
-  - IP-in-IP tunnels (proto 4) — sngrep had this, carrier networks use it
+  - IP-in-IP tunnels (proto 4) — the terminal viewer had this, carrier networks use it
   - GRE encapsulation (proto 47) — common in MPLS/carrier paths
   - Double VLAN tagging (QinQ / 802.1ad)
 - [ ] IP fragment reassembly
@@ -1292,7 +1292,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 **Release target:** Completes v0.1.0-alpha (first usable release).
 
 **Exit criteria — Phase 2 is done when:**
-- [ ] SIP parser handles all test pcaps from sngrep test suite (11 pcaps)
+- [ ] SIP parser handles all test pcaps from the terminal viewer test suite (11 pcaps)
 - [ ] Compact header forms work (`i`=Call-ID, `f`=From, `t`=To, `v`=Via, `m`=Contact, `l`=Content-Length)
 - [ ] Header folding (multi-line headers with WSP continuation) parsed correctly
 - [ ] Multiple Via headers stacked correctly for proxied traffic
@@ -1366,7 +1366,7 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 - [ ] **Fuzz targets:** SIP parser, SDP parser. Run in CI.
 
 **Gate — 2.1 is done when:**
-- [ ] All 11 sngrep test pcaps parse without errors or panics
+- [ ] All 11 the terminal viewer test pcaps parse without errors or panics
 - [ ] Compact header test: message using `i`, `f`, `t`, `v`, `m`, `l`, `c`, `e`, `k`, `s` produces identical field values as long-form equivalent
 - [ ] Header folding test: multi-line Via header unfolds correctly
 - [ ] Multiple same-name headers: 3 Via headers returns all 3 in order
@@ -1393,12 +1393,12 @@ sipnab accepts **all** sngrep flags and **all** sipgrep flags. When invoked with
 ### 2.2 — Matching Engine
 
 - [ ] `sip::matcher` — unified matching for all filter types
-- [ ] Payload regex match (sngrep `<match expression>`)
+- [ ] Payload regex match (the terminal viewer `<match expression>`)
 - [ ] Word-boundary regex (`--word`)
 - [ ] Case-insensitive matching (`-i`)
 - [ ] Inverted matching (`-v`)
 - [ ] Multi-line vs single-line match mode (`--single-line`)
-- [ ] Header-specific filters (sipgrep-style):
+- [ ] Header-specific filters ():
   - `--from <pattern>` — From URI user part
   - `--to <pattern>` — To URI user part
   - `--contact <pattern>` — Contact header
@@ -1657,7 +1657,7 @@ RTP is parsed and tracked from Phase 2 onward — it is not deferred to a later 
 
 ### 2.6 — CLI Output Modes (Non-TUI)
 
-- [ ] `output::cli_print` — sipgrep-style colored terminal output
+- [ ] `output::cli_print` — colored terminal output
   - Timestamp + source → destination arrow
   - SIP first line (method/response)
   - Matched content highlighting
@@ -1672,7 +1672,7 @@ RTP is parsed and tracked from Phase 2 onward — it is not deferred to a later 
   - **Associated RTP streams: SSRC, codec, packets, jitter, loss, MOS**
   - **Orphaned streams listed separately at end of report**
   - Tabular output
-- [ ] No-interface mode (`-N`) — dialog count to stdout (sngrep compat)
+- [ ] No-interface mode (`-N`) — dialog count to stdout (the terminal viewer compat)
 - [ ] Quiet mode (`-q`) — suppress count output
 - [ ] Text dump mode (`-T <file>`) — all messages to text file
 - [ ] `output::hexdump` — raw hex+ASCII dump (`--hexdump`):
@@ -1803,12 +1803,12 @@ RTP is parsed and tracked from Phase 2 onward — it is not deferred to a later 
 
 ## Phase 3 — Interactive TUI
 
-**Goal:** Full sngrep-equivalent interactive terminal UI.
+**Goal:** Full the terminal viewer-equivalent interactive terminal UI.
 **Milestone:** `sudo sipnab -d eth0` launches interactive call list with ladder diagram.
 **Release target:** Contributes to v0.2.0-beta.
 
 **Exit criteria — Phase 3 is done when:**
-- [ ] All sngrep F-key shortcuts work (F1 help, F2 save, F3 search, F7 filter, F8 settings, F10 columns)
+- [ ] All the terminal viewer F-key shortcuts work (F1 help, F2 save, F3 search, F7 filter, F8 settings, F10 columns)
 - [ ] Call list displays and scrolls 100K dialogs with keypress-to-render < 50ms
 - [ ] **Stream list displays and scrolls 50K streams with keypress-to-render < 50ms**
 - [ ] **Tab switches between Call List and Stream List in < 50ms**
@@ -1832,7 +1832,7 @@ RTP is parsed and tracked from Phase 2 onward — it is not deferred to a later 
   - 500ms poll when idle (no changes for 5 cycles)
   - Immediate wake on keypress
 - [ ] Panel stack manager (push/pop views)
-- [ ] Theme system (sngrep-compatible color defaults)
+- [ ] Theme system (the terminal viewer-compatible color defaults)
 - [ ] Configurable keybindings
 - [ ] Scrollbar widget
 - [ ] Mouse support (optional, crossterm feature)
@@ -1854,7 +1854,7 @@ RTP is parsed and tracked from Phase 2 onward — it is not deferred to a later 
 - [ ] Rustdoc on `tui/mod.rs`, `tui/theme.rs`
 - [ ] `docs/tui-guide.md` — TUI overview: navigation, panel system, views available, how to switch between Call List and Stream List
 - [ ] [`docs/keybindings.md`](https://github.com/NormB/sipnab/blob/main/docs/keybindings.md) — all default keybindings, how to customize in config file
-- [ ] `docs/themes.md` — theme system: available color names, how to customize, sngrep-compatible defaults
+- [ ] `docs/themes.md` — theme system: available color names, how to customize, the terminal viewer-compatible defaults
 
 ### 3.2 — Call List View (F1-F10 keybindings)
 
@@ -2692,17 +2692,17 @@ SDP a=crypto (SDES)  ──► SRTP master key ──► decrypt RTP headers + p
 ### 7.1 — Cross-Cutting Tests (per-phase tests already complete)
 
 - [ ] **Extended fuzz testing:** `cargo-fuzz` on all parsers and reassembly — run for ≥ 24 hours with no crashes
-- [ ] **Comparison benchmarks:** same pcap files through sipnab, sngrep, and sipgrep — document throughput, memory, and correctness differences
+- [ ] **Comparison benchmarks:** same pcap files through sipnab and the alternatives — document throughput, memory, and correctness differences
 - [ ] **Real-world validation:** run sipnab on a production SIP server (Planet Networks) for 24 hours, compare dialog counts against OpenSIPS CDR records
 - [ ] **Pcap corpus complete:** ≥ 50 pcaps covering all documented scenarios
-- [ ] **sngrep regression:** verify sipnab produces identical dialog counts and state for all 11 sngrep test pcaps
+- [ ] **the terminal viewer regression:** verify sipnab produces identical dialog counts and state for all 11 the terminal viewer test pcaps
 - [ ] **Security test suite:** malformed input corpus, oversized messages, hash flooding attempts, ReDoS patterns, scanner-kill amplification tests, API fuzzing
 - [ ] **Privilege separation verification:** end-to-end test confirming main process drops privileges, scanner kill child is isolated, API child cannot access capture fd
 
 **Gate — 7.1 is done when:**
 - [ ] Fuzz: 24-hour run on all parsers (SIP, SDP, RTP, RTCP, HEP, TCP reassembly, IP reassembly, filter DSL) — zero crashes
-- [ ] Comparison: sipnab dialog count matches sngrep for all 11 test pcaps
-- [ ] Comparison: sipnab throughput ≥ sngrep for same pcap (documented benchmark results)
+- [ ] Comparison: sipnab dialog count matches the terminal viewer for all 11 test pcaps
+- [ ] Comparison: sipnab throughput ≥ the terminal viewer for same pcap (documented benchmark results)
 - [ ] Real-world: 24-hour production run dialog count within 1% of OpenSIPS CDR count
 - [ ] Pcap corpus: ≥ 50 pcaps, each with documented expected output
 - [ ] Security test suite: all malformed input, overflow, ReDoS, amplification tests pass
@@ -2711,7 +2711,7 @@ SDP a=crypto (SDES)  ──► SRTP master key ──► decrypt RTP headers + p
 **Docs — 7.1 deliverables:**
 - [ ] `docs/testing.md` — test suite documentation: how to run tests, test categories, pcap fixture inventory, fuzz testing instructions, benchmark instructions
 - [ ] `docs/internals/security-testing.md` — security test cases: what is tested, expected behavior, how to add new security tests
-- [ ] `benchmarks/README.md` — benchmark results: throughput, memory, comparison with sngrep/sipgrep
+- [ ] `benchmarks/README.md` — benchmark results: throughput, memory, comparison with the terminal SIP tools
 
 ### 7.2 — CI/CD (GitHub Actions)
 
@@ -2769,7 +2769,7 @@ SDP a=crypto (SDES)  ──► SRTP master key ──► decrypt RTP headers + p
 - [ ] SECURITY.md: vulnerability reporting process, security model overview
 - [ ] sipnab.com (GitHub Pages):
   - Landing page with demo GIF
-  - Feature comparison: sipnab vs sngrep vs sipgrep
+  - Feature comparison: sipnab vs the terminal viewer vs the CLI matcher
   - Install guide (all platforms)
   - User manual
   - Filter DSL reference guide
@@ -2777,12 +2777,12 @@ SDP a=crypto (SDES)  ──► SRTP master key ──► decrypt RTP headers + p
   - API reference
   - Blog: "Why we built sipnab"
 - [ ] CHANGELOG.md, CONTRIBUTING.md (CONTRIBUTING.md shipped in Phase 1, updated here)
-- [ ] **Migration guide for sngrep users:**
-  - Keybinding comparison table (sngrep key → sipnab key)
-  - CLI flag translation table (every sngrep flag → sipnab equivalent)
-  - Config file migration (sngrep `.sngreprc` INI format → sipnab TOML, with a converter script)
+- [ ] **Migration guide for the terminal viewer users:**
+  - Keybinding comparison table (the terminal viewer key → sipnab key)
+  - CLI flag translation table (every the terminal viewer flag → sipnab equivalent)
+  - Config file migration (the terminal viewer `the legacy per-user INI config` INI format → sipnab TOML, with a converter script)
   - Behavioral differences: what sipnab does differently by design
-  - Known incompatibilities: sngrep features intentionally not replicated and why
+  - Known incompatibilities: the terminal viewer features intentionally not replicated and why
 
 **Gate — 7.4 is done when:**
 - [ ] README.md: feature matrix accurate (cross-referenced with actual `--help` output)
@@ -2790,13 +2790,13 @@ SDP a=crypto (SDES)  ──► SRTP master key ──► decrypt RTP headers + p
 - [ ] sipnab.com builds and deploys (GitHub Pages or equivalent)
 - [ ] sipnab.com/legal content reviewed and published
 - [ ] Man page: `man sipnab` complete with all flags, examples, and SEE ALSO section
-- [ ] Migration guide: every sngrep flag accounted for with sipnab equivalent or "not supported" explanation
+- [ ] Migration guide: every the terminal viewer flag accounted for with sipnab equivalent or "not supported" explanation
 - [ ] CHANGELOG.md: complete for v0.1.0-alpha through v0.3.0
 
 **Docs — 7.4 deliverables:**
 - [ ] All user-facing documentation finalized and cross-linked (docs/ directory)
 - [ ] sipnab.com website content (landing page, feature comparison, install guide, user manual, all guides)
-- [ ] `docs/migration-sngrep.md` — sngrep migration guide (keybindings, flags, config, behavioral differences)
+- [ ] `docs/migration-the terminal viewer.md` — the terminal viewer migration guide (keybindings, flags, config, behavioral differences)
 - [ ] CHANGELOG.md — all changes from v0.1.0-alpha through v0.3.0
 - [ ] Doc review: all docs proofread for technical accuracy, tested examples verified
 

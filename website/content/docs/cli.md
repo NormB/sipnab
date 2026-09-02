@@ -227,14 +227,14 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--buffer-budget` | `<MIB>` | `64` | Memory budget for the in-flight capture→processing queue. The queue grows under load up to this budget (capped, never OOM) and shrinks when idle; overrides `[capture] buffer_budget_mb` |
 | `--snaplen` | `<BYTES>` | `65535` | Snapshot length for packet capture (bytes) |
 | `--capture-profile` | `signaling\|full` | -- | Picks a `--snaplen` for you. `signaling` uses 1500, keeping every SIP header whole while dropping the bulk of an RTP stream; `full` uses 65535, which is what sipnab has always done. A large snaplen costs on EVERY packet — the kernel copy and the ring occupancy — and that is what makes a busy server drop, so the saving is real. It is a named profile rather than a smaller default because truncation is not free: it breaks `--retain-audio`, WAV export and Opus decode, which need RTP payload and not just headers, and it degrades `-O` re-emit to truncated frames. 1500 rather than a tighter 200-400: one INVITE with a full `Record-Route` set, a long `Contact`, ISUP encapsulation or a fat SDP offer passes 400 bytes routinely, and a snaplen that cuts a header makes the message stop parsing — reporting the peer that sent a valid message as broken. An explicit `--snaplen` overrides it. See `sipnab_capture_snapped_frames_total` for how much of a capture arrived truncated |
-| `-S`, `--limitlen` | `<BYTES>` | -- | Parse only the first N bytes of each packet (sipgrep `-S`). Caps what the SIP parser and matchers inspect, independent of `--snaplen` (capture length) and `--payload-limit` (display truncation) |
-| `--no-reassembly` | -- | off | Disable IP-fragment and TCP-segment reassembly; sipnab parses every packet standalone (inverse of sipgrep `-a`). Useful for pure single-packet UDP scanning |
-| `-x`, `--quiet-bad-parse` | -- | off | Suppress the per-packet "SIP parse error" diagnostic emitted when a SIP-looking packet fails to parse (sipgrep `-x`). sipnab drops the packet either way; this only silences the notice on a noisy link |
+| `-S`, `--limitlen` | `<BYTES>` | -- | Parse only the first N bytes of each packet. Caps what the SIP parser and matchers inspect, independent of `--snaplen` (capture length) and `--payload-limit` (display truncation) |
+| `--no-reassembly` | -- | off | Disable IP-fragment and TCP-segment reassembly; sipnab parses every packet standalone (inverse of segment reassembly). Useful for pure single-packet UDP scanning |
+| `-x`, `--quiet-bad-parse` | -- | off | Suppress the per-packet "SIP parse error" diagnostic emitted when a SIP-looking packet fails to parse. sipnab drops the packet either way; this only silences the notice on a noisy link |
 | `--portrange` | `<RANGE>` | `5060-5061` | SIP **signaling** port range. Media is never gated — RTP uses SDP-negotiated dynamic ports. The default is narrow and carriers routinely run SIP on 5070, 5080 and elsewhere, so widen it or analyze a fraction of the file — see the note below |
 | `--ws-portrange` | `<RANGE>` | `80, 443, 8080, 8443` | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)), as one inclusive `START-END` range in the same grammar as `--portrange`. The shipped set is the browser's view of the web, not a deployment's: Kamailio, OpenSIPS and Janus each default to WSS outside it, and behind a reverse proxy sipnab sees whichever port the proxy forwards to — so the whole WebRTC signaling leg stays invisible. A range **replaces** the shipped set, exactly as `--portrange` replaces the default signaling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. Config: `[capture] ws_ports` |
 | `--multi-device` | -- | off | Open one capture per interface named in a comma-separated `-d` list, e.g. `-d eth0,docker0 --multi-device`. It does **not** enumerate interfaces for you: with a single `-d` (or none) it falls back to an ordinary single capture. On Linux the zero-argument default already sniffs every interface via the `any` pseudo-device |
 | `--no-rtp` | -- | off | Disable RTP capture and analysis |
-| `-p`, `--no-promisc` | -- | off | Do not put the interface into promiscuous mode (sipgrep `-p`). Promisc is on by default for a named device; the `any` pseudo-device is never promiscuous |
+| `-p`, `--no-promisc` | -- | off | Do not put the interface into promiscuous mode. Promisc is on by default for a named device; the `any` pseudo-device is never promiscuous |
 | `--bpf-file` | `<FILE>` | -- | Read BPF filter from a file |
 | `--capture-tunnels` | `[<PORTS>]` | off | Also capture **all** traffic on the UDP tunnel ports, so SIP inside GTP-U, VXLAN or GENEVE reaches sipnab. Bare flag means `2152,4789,6081`; pass a list for non-standard ports (`--capture-tunnels=8472`). Off by default because it is not a narrowing filter — BPF cannot walk a GTP-U extension-header chain to the inner port, so covering these means taking the whole port, which on a mobile core is the entire user plane. Ignored when you supply your own filter |
 | `-n`, `--count` | `<N>` | -- | Stop after receiving N packets (counts every packet received, including any a HEP listener later drops by allowlist, rate limit, or auth) |
@@ -309,7 +309,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > | Linux | the `any` pseudo-device | **every interface at once**, loopback included |
 > | macOS / BSD | libpcap's default device, from the routing table; otherwise the first non-loopback interface | **one interface** |
 >
-> On Linux this is deliberate and matches sngrep: a SIP proxy often talks to
+> On Linux this is deliberate and matches the terminal viewer: a SIP proxy often talks to
 > itself over loopback, so capturing only `eth0` silently misses it. Pass
 > `-d any` to say so explicitly. Promiscuous mode does not apply to `any`, so
 > `--no-promisc` changes nothing there.
@@ -406,7 +406,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 **Examples**
 
 - `sudo sipnab --device eth0 --output capture.pcap --portrange 5060-5080 --count 10000` — record up to 10000 packets from eth0 into a pcap, watching a widened SIP port range
-- `sudo sipnab --device eth0 --buffer 16 --buffer-budget 128 --snaplen 2048 --quiet-bad-parse` — live-capture a busy link with bigger kernel and queue buffers, a capped snapshot length, and parse-error notices silenced (sipgrep -x)
+- `sudo sipnab --device eth0 --buffer 16 --buffer-budget 128 --snaplen 2048 --quiet-bad-parse` — live-capture a busy link with bigger kernel and queue buffers, a capped snapshot length, and parse-error notices silenced (the CLI matcher -x)
 - `sudo sipnab -N -d eth0,eth1 --multi-device --output capture.pcap --autostop filesize:100` — capture on two named interfaces at once, headlessly, stopping once the output file reaches 100 MiB. `--multi-device` needs the list; without one it is a no-op
 - `sipnab -N --input capture.pcap --replay --no-rtp` — replay a pcap at its original timing with RTP capture and analysis disabled
 - `sudo sipnab -N -d eth0 --capture-profile signaling --output signaling.pcap` — record signaling on a busy link: 1500 bytes keeps every SIP header whole while dropping the bulk of each RTP packet, which is where the ring pressure comes from. Check `sipnab_capture_snapped_frames_total` afterwards to see how many frames arrived short
@@ -416,8 +416,8 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 - `sipnab -N --input 'captures/tg.pcap[0-4]' --report` — analyze the first five members of a ring buffer with a glob sipnab expands itself, no shell needed
 - `sipnab -N --input a.pcap --input b.pcap --json-dialogs --no-cli-print` — read two named captures as a single set, ordered by their packets
 - `sipnab -N --input /var/captures/ --input-name 'edge1-*' --recursive --json` — pick one host's captures out of a tree holding several
-- `sipnab -N --input capture.pcap --limitlen 512 --no-reassembly --quiet-bad-parse` — scan a pcap sipgrep-style: parse only the first 512 bytes of each packet, every packet standalone (no reassembly), without parse-error noise
-- `sudo sipnab --device eth0 --bpf-file sip.bpf --no-promisc --duration 5m` — capture for 5 minutes using a BPF filter read from sip.bpf, without putting the interface into promiscuous mode (sipgrep -p)
+- `sipnab -N --input capture.pcap --limitlen 512 --no-reassembly --quiet-bad-parse` — scan a pcap quickly: parse only the first 512 bytes of each packet, every packet standalone (no reassembly), without parse-error noise
+- `sudo sipnab --device eth0 --bpf-file sip.bpf --no-promisc --duration 5m` — capture for 5 minutes using a BPF filter read from sip.bpf, without putting the interface into promiscuous mode (the CLI matcher -p)
 - `sudo sipnab -N --device eth0 --capture-tunnels --buffer 64 --duration 5m` — capture SIP traveling inside GTP-U, VXLAN or GENEVE as well as the encapsulations the auto-filter already covers. This takes **every** packet on ports 2152, 4789 and 6081, so the same command widens the kernel buffer; check the drop counters in the summary before trusting a long run
 - `sudo sipnab -N --device eth0 --capture-tunnels=8472 --portrange 5060-5080 --report` — cover a Linux VXLAN fabric on its pre-IANA port 8472 instead of the three defaults, across a widened signaling range
 - `sudo sipnab --device eth0 --portrange 5060-5090 --buffer 8 --buffer-budget 256 --duration 1h` — monitor an hour of traffic across a wide SIP port range with enlarged capture buffers
@@ -481,7 +481,7 @@ stop log lines corrupting the alternate screen, so redirect stderr if you do.
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `-e`, `--match` | `<PATTERN>` | -- | SIP payload match-expression (the sngrep/sipgrep positional match expression). Regex tested against the whole raw message; once any message in a dialog matches, sipnab shows the rest of that dialog too (dialog-following). Honors `-i`/`-v`/`-w`/`--single-line`. Independent of the trailing `<BPF_FILTER>` positional |
+| `-e`, `--match` | `<PATTERN>` | -- | SIP payload match-expression (the positional match expression). Regex tested against the whole raw message; once any message in a dialog matches, sipnab shows the rest of that dialog too (dialog-following). Honors `-i`/`-v`/`-w`/`--single-line`. Independent of the trailing `<BPF_FILTER>` positional |
 | `-i`, `--ignore-case` | -- | off | Case-insensitive matching for header filters and patterns |
 | `-v`, `--invert` | -- | off | Invert the match: show messages that do NOT match |
 | `-w`, `--word` | -- | off | Match whole words only |
@@ -594,12 +594,12 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--delta-time` | -- | off | Show delta time between consecutive messages |
 | `-A`, `--after` | `<N>` | -- | Show N messages after each match (like `grep -A`) |
 | `--show-empty` (`--full`) | -- | off | Show the full header block of bodyless messages (responses, OPTIONS, REGISTER, ACK, BYE); by default they show only the summary line |
-| `--proto-number` | -- | off | Annotate the transport tag with the IANA IP protocol number, e.g. `UDP(17)` / `TCP(6)` (sipgrep `-N`). Long-only because `-N` is `--no-tui` here; TLS/WS report their TCP carrier's number (6) |
+| `--proto-number` | -- | off | Annotate the transport tag with the IANA IP protocol number, e.g. `UDP(17)` / `TCP(6)`. Long-only because `-N` is `--no-tui` here; TLS/WS report their TCP carrier's number (6) |
 | `--line-buffer` | -- | off | Flush output after each line (useful for piping) |
 | `--color` | `<WHEN>` | `auto` | Color output mode: `auto`, `always`, `never` |
 | `--from-to-mode` | `<MODE>` | `default` | Default TUI From/To column display: `default` (user else host:port), `host-port`, `user`, `user-host-port`. Cycle at runtime with `u`. Overrides `[display] from_to` |
 | `--payload-limit` | `<BYTES>` | -- | Maximum payload bytes to display |
-| `-T`, `--text-dump` | -- | off | Dump raw SIP message text (like sipgrep `-T`) |
+| `-T`, `--text-dump` | -- | off | Dump raw SIP message text (like the CLI matcher `-T`) |
 | `--no-cli-print` | -- | off | Suppress per-message CLI output (useful with `--report` / `--call-report` so only the post-capture summary reaches stdout) |
 | `--wireshark` | -- | off | Launch Wireshark with a display filter for the current capture |
 | `--tshark-filter` | `<EXPR>` | -- | Generate a tshark-compatible display filter string |
@@ -799,10 +799,10 @@ report a healthy network in the middle of an outage.
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--kill-scanner` | -- | off | Detect SIP scanning (known UA signatures + behavioral rate/enumeration), alert on it, and send the kill response back to the scanner (sipgrep `-J`/`-j`) |
+| `--kill-scanner` | -- | off | Detect SIP scanning (known UA signatures + behavioral rate/enumeration), alert on it, and send the kill response back to the scanner (the CLI matcher `-J`/`-j`) |
 | `--kill-ua` | `<PATTERN>` | -- | Add a custom scanner User-Agent pattern (regex) to `--kill-scanner` detection. **Refused without it**: `--kill-scanner` (or `[security] kill_scanner = true`) builds the detector that reads this pattern, so given alone it would feed nothing and the run would report no scanners — which is what a clean capture looks like. sipnab does not arm the detector for you, because on a live capture `--kill-scanner` also arms the response path |
 | `--kill-response` | `<CODE>` | `200` | SIP response code for the kill response (100-699) |
-| `-K`, `--kill-target` | `<ADDR[:PORT-RANGE]>` | -- | Targeted kill (sipgrep `-K`): send the kill response to any SIP request whose source matches ADDR and an optional port range (`192.0.2.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection. Repeatable; spawns the kill worker on its own (no `--kill-scanner` needed) |
+| `-K`, `--kill-target` | `<ADDR[:PORT-RANGE]>` | -- | Targeted kill: send the kill response to any SIP request whose source matches ADDR and an optional port range (`192.0.2.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection. Repeatable; spawns the kill worker on its own (no `--kill-scanner` needed) |
 | `--kill-spoof` | `<MODE>` | `auto` | Source-address strategy for the kill response (Linux only; other platforms always `ephemeral`). `auto` forges the victim's ip:port via a raw socket when `CAP_NET_RAW` is available (so the reply appears to come from the targeted SIP port), falling back to an ephemeral source otherwise; `raw` requires the spoof and errors when it cannot open the raw socket; `ephemeral` never spoofs |
 | `--kill-rate-limit` | `<N>` | `10` | Scanner-kill responses per second sipnab may put on the wire. This bounds the one feature that answers an address out of the capture, and the sender of each packet sipnab answers chose the address that answer goes to, so there is no unlimited setting and sipnab rejects `0`. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. Config: `[security] kill_rate_limit` |
 | `--fraud-detect` | -- | off | Enable fraud detection heuristics |

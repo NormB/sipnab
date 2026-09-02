@@ -10026,7 +10026,7 @@ mod tests {
 
     /// Build a server holding two streams: one linked to a dialog, one
     /// orphaned. Orphaned media is the signature of an RTP proxy or a NAT
-    /// fault, and it is one of the few findings sngrep cannot produce.
+    /// fault, and it is one of the few findings a message-only view cannot produce.
     fn server_with_one_orphan_and_one_linked() -> SipnabMcp {
         use crate::rtp::parser::RtpHeader;
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));

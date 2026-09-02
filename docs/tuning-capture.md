@@ -318,7 +318,7 @@ performance one. `find_default_device()` returns `"any"` on Linux
 ([`src/capture/device.rs:35-40`](https://github.com/NormB/sipnab/blob/main/src/capture/device.rs#L35-L40)), for the reason written beside it:
 
 ```text
-// On Linux, "any" captures all interfaces — this is what sngrep does.
+// On Linux, "any" captures all interfaces — this is what the terminal viewer does.
 // SIP servers often listen on loopback, so capturing only eth0 misses traffic.
 ```
 

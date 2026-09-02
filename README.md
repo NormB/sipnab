@@ -64,8 +64,8 @@ node — nothing goes on the production hosts, and there is no collector, no
 database and no web UI to operate.
 
 On one box it still does what you expect. sipnab honors every
-[sngrep](https://github.com/irontec/sngrep) keybinding and accepts the
-[sipgrep](https://github.com/sipcapture/sipgrep) flags, in one Rust binary that
+[the terminal viewer](https://github.com/irontec/the terminal viewer) keybinding and accepts the
+[the CLI matcher](https://github.com/sipcapture/the CLI matcher) flags, in one Rust binary that
 adds first-class RTP quality monitoring, VoIP diagnostic aliases, security
 analysis, and an MCP server an AI agent can drive.
 
@@ -121,7 +121,7 @@ RTP as they happen:
 - **Extended flow** -- merge correlated dialog legs into a single ladder (`F4`/`x`)
 - **RTP stream list** -- jitter, loss, MOS scores (Tab to switch)
 
-sipnab honors every sngrep keybinding. Press `F1` for the full shortcut reference.
+sipnab honors every the terminal viewer keybinding. Press `F1` for the full shortcut reference.
 
 ## Prerequisites
 

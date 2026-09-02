@@ -1186,9 +1186,9 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
-    // sngrep parity: every call-list row shows a [ ]/[*] selection checkbox
+    // Every call-list row shows a [ ]/[*] selection checkbox
     // so users can see and pick which dialogs to act on (e.g. save).
-    /// Every row renders a selection checkbox: the checked row shows [*], others [ ] (sngrep parity).
+    /// Every row renders a selection checkbox: the checked row shows [*], others [ ] .
     #[test]
     fn call_list_selection_checkbox_visible() {
         let backend = TestBackend::new(80, 24);

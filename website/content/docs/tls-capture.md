@@ -100,7 +100,7 @@ before you spend time on them.
 
 ## 3. No keys at all: read the plaintext in the process
 
-This is the method the [sngrep feature request](https://github.com/irontec/sngrep/issues/447)
+This is the method the [the terminal viewer feature request](https://github.com/irontec/the terminal viewer/issues/447)
 asks for — TLS visibility with no recompile and no certificate — and it is
 what sipnab does here.
 

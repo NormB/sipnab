@@ -9,7 +9,7 @@ to a rounded-rect by some platforms.
 ## What sipnab is (context for the design)
 
 sipnab is an open-source SIP & RTP (VoIP) capture and analysis tool —
-think "sngrep + sipgrep, rebuilt in Rust": an interactive terminal UI,
+think "the terminal SIP tools, rebuilt in Rust": an interactive terminal UI,
 a CLI, a REST API, and an in-browser WebAssembly analyzer. The audience
 is VoIP/telecom engineers and SREs who live in terminals. The aesthetic
 of the whole brand is "beautiful terminal", not "corporate SaaS".

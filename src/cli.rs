@@ -2,8 +2,9 @@
 
 //! Command-line argument parsing for sipnab.
 //!
-//! Uses clap derive to define the full unified flag set, combining sngrep and
-//! sipgrep flags along with sipnab-specific additions for security analysis,
+//! Uses clap derive to define the full unified flag set, combining the flags of
+//! the established terminal SIP tools with sipnab-specific additions for
+//! security analysis,
 //! RTP quality monitoring, and event-driven automation.
 
 use clap::Parser;
@@ -216,7 +217,7 @@ pub fn compiled_features() -> Vec<&'static str> {
 
 /// SIP & RTP capture, analysis, and security tool.
 ///
-/// sipnab unifies the capabilities of sngrep and sipgrep into a single binary
+/// sipnab unifies the capabilities of the established terminal SIP tools into a single binary
 /// with added security analysis, RTP quality monitoring, and machine-readable
 /// output formats.
 #[derive(Parser, Debug, Clone)]
@@ -225,7 +226,7 @@ pub fn compiled_features() -> Vec<&'static str> {
     version = build_version(),
     about = "SIP & RTP capture, analysis, and security",
     long_about = "sipnab — SIP & RTP capture, analysis, and security tool.\n\n\
-        Unifies sngrep + sipgrep with added security analysis, RTP quality \
+        Live capture, call-flow TUI and text search, with security analysis, RTP quality \
         monitoring, and machine-readable output.",
     after_help = "EXAMPLES:\n  \
         sipnab -d eth0                    Capture on eth0\n  \
@@ -432,7 +433,7 @@ pub struct CaptureArgs {
     )]
     pub capture_profile: Option<CaptureProfile>,
 
-    /// Parse only the first N bytes of each packet (sipgrep -S). Caps what the
+    /// Parse only the first N bytes of each packet. Caps what the
     /// SIP parser and matchers inspect, independent of the capture snaplen
     /// (`--snaplen`) and the display truncation (`--payload-limit`).
     #[arg(
@@ -444,12 +445,12 @@ pub struct CaptureArgs {
     pub limitlen: Option<usize>,
 
     /// Disable IP-fragment and TCP-segment reassembly; every packet is parsed
-    /// standalone. The inverse of sipgrep's `-a`. Useful for pure single-packet
+    /// standalone. Useful for pure single-packet
     /// UDP scanning where reassembly is only overhead.
     #[arg(help_heading = "Capture", long = "no-reassembly")]
     pub no_reassembly: bool,
 
-    /// Quiet bad-parse packets (sipgrep -x): suppress the per-packet
+    /// Quiet bad-parse packets: suppress the per-packet
     /// diagnostic emitted when a SIP-looking packet fails to parse. The packet
     /// is dropped either way; this only silences the "SIP parse error" notice
     /// on a noisy link (visible under -v / debug logging).
@@ -506,7 +507,7 @@ pub struct CaptureArgs {
     #[arg(help_heading = "Capture", long)]
     pub no_rtp: bool,
 
-    /// Do not put the interface into promiscuous mode (sipgrep -p). By default
+    /// Do not put the interface into promiscuous mode. By default
     /// promiscuous mode is enabled for a named device (never for the "any"
     /// pseudo-device, which does not support it).
     #[arg(help_heading = "Capture", short = 'p', long = "no-promisc")]
@@ -603,9 +604,9 @@ pub struct ModeArgs {
     #[arg(help_heading = "Mode", short = 'c', long = "calls-only")]
     pub calls_only: bool,
 
-    /// Compatibility no-op (sngrep -r flag).
+    /// Compatibility no-op.
     #[arg(help_heading = "Mode", short = 'r', hide = true)]
-    pub _sngrep_r: bool,
+    pub _compat_r: bool,
 
     /// Decode telephone-event (DTMF) RTP payloads and log each event, with the
     /// digit VALUE masked as `x`.
@@ -735,7 +736,7 @@ pub struct NameResolutionArgs {
 /// 2 MiB libtest thread stack.
 #[derive(clap::Args, Debug, Clone)]
 pub struct MatchingArgs {
-    /// SIP payload match-expression (the sngrep/sipgrep positional match
+    /// SIP payload match-expression (the positional match
     /// expression). A regex tested against the whole raw SIP message; once any
     /// message in a dialog matches, every later message of that dialog is shown
     /// too (dialog-following). Honors -i/-v/-w/--single-line. Separate from the
@@ -1198,7 +1199,7 @@ pub struct OutputArgs {
     pub show_empty: bool,
 
     /// Annotate the transport tag with the IANA IP protocol number, e.g.
-    /// `UDP(17)` / `TCP(6)` (sipgrep -N). `-N` itself is `--no-tui` here, so
+    /// `UDP(17)` / `TCP(6)`. `-N` itself is `--no-tui` here, so
     /// this flag is long-only. TLS/WS report their TCP carrier's number (6).
     #[arg(help_heading = "Output", long = "proto-number")]
     pub proto_number: bool,
@@ -1230,7 +1231,7 @@ pub struct OutputArgs {
     #[arg(help_heading = "Output", long, value_name = "BYTES")]
     pub payload_limit: Option<usize>,
 
-    /// Dump raw SIP message text (like sipgrep -T).
+    /// Dump raw SIP message text.
     #[arg(help_heading = "Output", short = 'T', long = "text-dump")]
     pub text_dump: bool,
 
@@ -1553,7 +1554,7 @@ pub struct SecurityArgs {
     #[arg(help_heading = "Security", long, value_name = "CODE", value_parser = clap::value_parser!(u16).range(100..=699))]
     pub kill_response: Option<u16>,
 
-    /// Targeted scanner kill (sipgrep -K): send the kill response to any SIP
+    /// Targeted scanner kill: send the kill response to any SIP
     /// request whose source matches ADDR and an optional port range, e.g.
     /// `10.0.0.1:5060-5090` or `[::1]:5060`, regardless of UA/behavioral
     /// detection. Repeatable. Spawns the kill worker on its own; `--kill-scanner`
@@ -3379,7 +3380,7 @@ impl Cli {
     pub const DEFAULT_MCP_MAX_WAIT_SECONDS: u64 = 60;
     /// Default color mode. `auto` means "color when stdout is a terminal".
     pub const DEFAULT_COLOR: &'static str = "auto";
-    /// Default scanner-kill response code. `200 OK` is the sipgrep default: it
+    /// Default scanner-kill response code. `200 OK` is the conventional default: it
     /// ends the scan without telling the scanner anything about the target.
     pub const DEFAULT_KILL_RESPONSE: u16 = 200;
     /// Default HEP global ingest ceiling — see [`Self::DEFAULT_DIALOG_LIMIT`].

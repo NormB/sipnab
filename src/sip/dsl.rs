@@ -227,7 +227,7 @@ enum Field {
     /// `call_id` — the dialog's Call-ID.
     CallId,
     /// `payload` — raw text of any SIP message in the dialog
-    /// (sngrep-style whole-message grep).
+    /// (whole-message grep).
     Payload,
     /// `src.ip` — source IP of the initial message.
     SrcIp,
@@ -1580,7 +1580,7 @@ fn eval_compare(
             compare_str(&ua, op, value)
         }
         Field::CallId => compare_str(&dialog.call_id, op, value),
-        // Any message in the dialog whose raw content matches (sngrep-style
+        // Any message in the dialog whose raw content matches (
         // payload filter: greps the whole SIP message text). Matched on the
         // raw bytes directly — no per-message lossy UTF-8 allocation.
         Field::Payload => dialog

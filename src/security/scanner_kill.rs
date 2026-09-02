@@ -12,7 +12,7 @@ use std::net::IpAddr;
 use crate::capture::parse::InputOrigin;
 use crate::sip::SipMessage;
 
-/// A targeted-kill directive (sipgrep `-K` / `--kill-target`): an IP address
+/// A targeted-kill directive (`--kill-target`): an IP address
 /// and an optional inclusive source-port range. A SIP request whose source
 /// matches is killed regardless of UA/behavioral scanner detection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -463,7 +463,7 @@ mod tests {
         assert!(text.starts_with("SIP/2.0 699 Unknown\r\n"));
     }
 
-    // ── KillTarget (sipgrep -K targeted kill) ────────────────────────
+    // ── KillTarget (targeted kill) ───────────────────────────────────
 
     /// Construct an IPv4 `IpAddr` from four octets.
     fn ip4(a: u8, b: u8, c: u8, d: u8) -> IpAddr {

@@ -94,7 +94,7 @@ pub const SIP_START_TOKENS: [&str; 15] = [
 
 /// The tracefs filter for one band: in-kernel length AND content matching.
 ///
-/// **This is the filter doing the work sngrep needs a BPF program for.** These
+/// **This is the filter doing the work a BPF program would otherwise do.** These
 /// probes sit on every process that maps the library, so a filter is what makes
 /// the feature affordable rather than an optimization — and the kernel
 /// evaluates it BEFORE recording the event, so a non-SIP write costs a glob

@@ -570,7 +570,6 @@ shellcheck
 should_quit
 sigstore
 sipcli
-sipgrep
 siphash
 sipnab
 sipnabrc
@@ -582,7 +581,6 @@ sipsak
 siptrace
 sipvicious
 snaplen
-sngrep
 socat
 softclient
 Solarized

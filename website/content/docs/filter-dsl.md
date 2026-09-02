@@ -59,7 +59,7 @@ All 33 addressable fields, organized by type.
 **Valid `state` values:** `Trying`, `Ringing`, `InCall`, `Completed`, `Canceled`, `Failed`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`
 
 > **`payload` vs `-e`/`--match`:** the `payload` field matches per dialog (true
-> if any message matches). The `-e`/`--match` flag is the sngrep/sipgrep-style
+> if any message matches). The `-e`/`--match` flag is the
 > per-message match-expression: it selects the matching messages and then
 > *follows the dialog* — every message after the first match in that dialog is
 > emitted too. Use `-e` for grep-style streaming output; use `payload` inside a

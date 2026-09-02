@@ -363,7 +363,7 @@ pub enum SaveFormat {
     Pcap,
     /// PCAP-NG format.
     PcapNg,
-    /// Plain text SIP messages (sngrep-compatible .txt/.sip).
+    /// Plain text SIP messages (.txt/.sip).
     Txt,
     /// JSON — full call detail with parsed headers, timings, RTP stats.
     Json,
@@ -468,7 +468,7 @@ impl SaveFormat {
         match self {
             Self::Pcap => "Universal baseline (Wireshark, tcpdump, Homer)",
             Self::PcapNg => "Modern format with metadata and annotations",
-            Self::Txt => "Plain text SIP messages (sngrep-compatible)",
+            Self::Txt => "Plain text SIP messages",
             Self::Json => "Full call detail for ELK, ClickHouse, etc.",
             Self::Ndjson => "Streaming-friendly for large captures",
             Self::Csv => "Summary rows for spreadsheets and BI tools",
@@ -484,7 +484,7 @@ impl SaveFormat {
 // ── Filter dialog state ────────────────────────────────────────────
 
 /// SIP methods displayed as checkboxes in the filter dialog.
-/// Arranged in two columns matching sngrep's layout.
+/// Arranged in two columns.
 pub(in crate::tui) const FILTER_METHODS: [&str; 10] = [
     "REGISTER",
     "OPTIONS",
@@ -642,7 +642,7 @@ pub(in crate::tui) struct CallFlowViewState {
     /// [`Self::raw_preview`] is on; navigation keys act on the focused pane.
     pub(in crate::tui) detail_focused: bool,
     /// Whether the raw preview split is active.
-    /// Default is `true` (matching sngrep: split view on by default).
+    /// Default is `true`: split view on by default.
     pub(in crate::tui) raw_preview: bool,
     /// Split percentage for the raw preview (right) pane (10..=80, default 40).
     pub(in crate::tui) raw_preview_pct: u16,
@@ -832,7 +832,7 @@ impl NameDialogState {
     }
 }
 
-/// Structured state for the sngrep-style filter dialog.
+/// Structured state for the filter dialog.
 #[derive(Debug, Clone)]
 pub struct FilterDialogState {
     /// SIP From header filter text.

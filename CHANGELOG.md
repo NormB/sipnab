@@ -8,6 +8,39 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **`scanner_detect` can be scored against an external oracle.**
+  `docs/design/threat-mitigation-hooks.md` §7 names a labeled corpus — real
+  traffic with known scanners marked, measured for both false-positive and
+  false-negative rate — as the prerequisite for every automated-response
+  decision this project has deferred, and says sipnab cannot build one alone:
+  nothing in a capture says which source was hostile. A new corpus test reads
+  labels exported by an external enforcement tool and scores the detector
+  against them, alongside the existing suite that scores alerts against an
+  oracle derived from the packets themselves.
+
+  The tool supplying those labels is optional software, in the same category as
+  rtpengine, OpenSIPS or Kamailio: a machine might run several, or none. There
+  is no new dependency in the manifest, the labels are read as plain JSON, and
+  a test asserts it stays that way. With nothing configured the suite skips, as
+  its sibling does without `SIPNAB_CORPUS`.
+
+### Changed
+
+- **The comparison framing no longer names two specific tools.** Documentation,
+  help text, code comments and the site described flags, TUI conventions and
+  positioning by reference to two other projects by name. The behaviour they
+  described is unchanged and is now described on its own terms. One internal
+  CLI field was renamed with them; no user-facing flag changed, and the hidden
+  `-r` compatibility no-op still works exactly as before.
+
+- The corpus capture reader moved to `tests/support/corpus.rs`. A second suite
+  needed it, and a corpus walker copied into two files agrees until one of them
+  learns about a new capture format.
+
 ## [0.5.144] - 2026-09-02
 
 ### Fixed
@@ -1334,7 +1367,7 @@ carried in the source tarball and the docs, not in the code.
   agent the audio inline and a program none -- and the two carried DIFFERENT
   uuids for one dialog, which a store reads as two observations of two calls.
 - **`--export-vcon` examples on the vCon page could never have worked.** They
-  used `-r`, a hidden sngrep compatibility no-op that swallows everything after
+  used `-r`, a hidden the terminal viewer compatibility no-op that swallows everything after
   it into the BPF filter.
 - **Four places said a vCon carries no audio**, after media landed -- and a
   test REQUIRED that sentence on the TUI help screen, so correcting the screen
@@ -3048,7 +3081,7 @@ carried in the source tarball and the docs, not in the code.
   the per-peer cap into a global lock, where the first sender in a window takes
   the only slot.
 - **The homepage leads with MCP.** The demo strip opened on seven terminal
-  recordings, which argue "a better sngrep" — the local-tool position
+  recordings, which argue "a better the terminal viewer" — the local-tool position
   `docs/design/positioning.md` declines. Four MCP examples now come first,
   labeled by what an agent asks rather than by the tool it calls: why a call
   failed, which RFC a dialog breaks, the captured bytes behind an answer, and
@@ -3990,7 +4023,7 @@ Remote capture becomes usable on more than one box, and on RHEL.
   report media quality — loss, jitter, MOS — rather than only whether calls
   connect. The receiving half of `capture/hep.rs` has understood type 5 since
   it was written; only the sender never emitted it, which made a remote viewer
-  strictly worse than running sngrep on the box, because sngrep at least sees
+  strictly worse than running the terminal viewer on the box, because the terminal viewer at least sees
   the media.
 
   **RTP is not forwarded.** RFC 3550 §6.2 holds RTCP to a small fraction of
@@ -8531,7 +8564,7 @@ artifact every number on the benchmarks page is measured against.
 ### Changed
 - **Benchmarks re-measured on the 0.5.47 release artifact**, checksum-verified,
   on an idle host: 1.06M / 2.32M / 2.03M / 1.89M pkts/s at 1 / 2 / 4 / 8 cores.
-  Homepage tiles now quote 2.32M pkts/s and 11.0× sngrep, both traceable to a
+  Homepage tiles now quote 2.32M pkts/s and 11.0× the terminal viewer, both traceable to a
   row on the page they link to, and both gated against it.
 - **The "packet path is unchanged since 0.5.18" claim is now a measurement.**
   Twenty-nine releases carried it on judgement while a gate mechanically
@@ -8561,7 +8594,7 @@ artifact every number on the benchmarks page is measured against.
   quoted 2.32M pkts/s, the 2-core peak, which is the least stable point on the
   curve: a clean-clone rerun of the published recipe got 2.23M and replicates
   spanned 2.32–2.36M. Both tiles now quote the four-core operating point
-  (2.06M pkts/s, 11.1× sngrep) from a single comparison run, and are gated
+  (2.06M pkts/s, 11.1× the terminal viewer) from a single comparison run, and are gated
   against the page they link to.
 - **The wiki published a working link to the wrong page.** `build-wiki.py`
   resolved links by basename, so every `README.md` in the repo collapsed onto
@@ -9645,11 +9678,11 @@ build provenance and the reworked website/download experience.
 
 ### Added
 
-- **Display**: `--proto-number` (sipgrep `-N`) — annotate the transport tag
+- **Display**: `--proto-number` — annotate the transport tag
   with the IANA IP protocol number (`UDP(17)`, `TCP(6)`). TLS and WS report
   their TCP carrier's number, since the number identifies the IP-layer
   transport, not the SIP framing.
-- **Capture**: `-x` / `--quiet-bad-parse` (sipgrep `-x`) — suppress the
+- **Capture**: `-x` / `--quiet-bad-parse` — suppress the
   per-packet SIP parse-error diagnostic for SIP-looking-but-unparseable
   packets. The packet is dropped either way; only the notice is silenced.
 
@@ -9660,22 +9693,22 @@ build provenance and the reworked website/download experience.
 - **TUI**: the F10 column selector now saves the current column layout with
   `s`, writing `[display] visible_columns` into your sipnabrc so it persists
   across runs (previously the layout had to be hand-edited into the config).
-- **Capture**: `-S` / `--limitlen <BYTES>` (sipgrep `-S`) — parse only the
+- **Capture**: `-S` / `--limitlen <BYTES>` — parse only the
   first N bytes of each packet, independent of the capture snaplen and the
   display truncation.
 - **Capture**: `--no-reassembly` — disable IP-fragment and TCP-segment
-  reassembly (inverse of sipgrep `-a`); every packet is parsed standalone.
+  reassembly (inverse of segment reassembly); every packet is parsed standalone.
 
 ## [0.5.8] - 2026-07-16
 
 ### Added
 
 - **Capture**: `-p` / `--no-promisc` — do not put the interface into
-  promiscuous mode (sipgrep `-p`). Promiscuous mode stays on by default for a
+  promiscuous mode. Promiscuous mode stays on by default for a
   named device (never for the `any` pseudo-device). Also settable via
   `[capture] promisc`.
 - **SIP**: `[sip] xcid_headers` — configurable B2BUA leg-correlation header
-  names (sngrep `sip.xcid`). Defaults to `["X-Call-ID"]`; add carrier-specific
+  names (`sip.xcid`). Defaults to `["X-Call-ID"]`; add carrier-specific
   headers (e.g. `["X-Call-ID", "X-CID"]`) so multi-leg calls correlate.
 - **HEP**: `--hep-auth <KEY>` (Homer authenticate-key `0x000e` chunk, also read
   from `SIPNAB_HEP_AUTH`) and `--hep-id <ID>` (capture-agent id `0x000c` chunk,
@@ -9687,7 +9720,7 @@ build provenance and the reworked website/download experience.
 ### Added
 
 - **Security**: `-K` / `--kill-target <ADDR[:PORT-RANGE]>` — targeted scanner
-  kill (sipgrep `-K`). Sends the kill response to any SIP request whose source
+  kill. Sends the kill response to any SIP request whose source
   matches the given address and an optional port range (e.g.
   `192.0.2.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection.
   Repeatable; spawns the kill worker on its own, so `--kill-scanner` is not
@@ -9697,7 +9730,7 @@ build provenance and the reworked website/download experience.
 
 ### Added
 
-- **Matching**: new `-e` / `--match <PATTERN>` flag — the sngrep/sipgrep
+- **Matching**: new `-e` / `--match <PATTERN>` flag — the the terminal SIP tools
   payload match-expression. A regex is tested against the whole raw SIP
   message; once any message in a dialog matches, every later message of that
   dialog is emitted too (dialog-following). Honors `-i`/`-v`/`-w`/
@@ -9878,7 +9911,7 @@ build provenance and the reworked website/download experience.
 > - TUI: call/stream-list selection clamped on display-list shrink
 >   (slice-out-of-range panic when a narrowed list got shorter).
 > - TUI: Enter with two or more starred rows opens one chronologically
->   merged flow of all of them (sngrep-style), with per-row dialog
+>   merged flow of all of them (), with per-row dialog
 >   attribution in detail/raw/naming.
 > - TUI: a persisted search query that narrows the list is shown on the
 >   status line (`Search: /q`) and cleared by F9 with the filter.
@@ -10155,7 +10188,7 @@ the shared shape. **Wire changes:**
   and shards in one thread (`run_offline_parallel_file` + `peek_host_pair`),
   eliminating the separate capture-reader thread and the semaphore-capped channel
   between read and shard. This lifts the `--cores 2` peak (carrier 40k corpus,
-  aarch64: ~1.81M pkts/s — **2.4× sngrep** while fully reconstructing calls + RTP
+  aarch64: ~1.81M pkts/s — **2.4× the terminal viewer** while fully reconstructing calls + RTP
   streams). `--cores 2` is the sweet spot; past 2–3 the single sequential pcap
   reader (and SoC memory bandwidth) is the ceiling — not CPU count.
 
@@ -10190,8 +10223,8 @@ the shared shape. **Wire changes:**
   codegen with full symbols for perf/valgrind.
 
   Combined result (40k-call carrier corpus, aarch64): **`sipnab --cores 2` runs at
-  ~1.57M pkts/s — 1.87× faster than sngrep** (840k) while reconstructing all calls
-  and full RTP-stream stats (which sngrep does not). The sweet spot is 2–3 cores;
+  ~1.57M pkts/s — 1.87× faster than the terminal viewer** (840k) while reconstructing all calls
+  and full RTP-stream stats (which the terminal viewer does not). The sweet spot is 2–3 cores;
   higher core counts regress (the single dispatcher + store merge is the next
   bottleneck).
 
@@ -10324,7 +10357,7 @@ tests-first (red → green) with adversarial-input coverage.
   Over TCP, message boundaries are delimited by `Content-Length`, not packet
   boundaries, so one segment can carry several complete messages. The reassembly
   consumer previously wrapped each flush as a single message and parsed only the
-  first, silently dropping the rest — the classic sngrep (#466) weakness. The TCP
+  first, silently dropping the rest — the classic the terminal viewer (#466) weakness. The TCP
   branch of `PacketProcessor::process` now frames the reassembled stream
   message-by-message (`frame_tcp_sip`: scan to `\r\n\r\n`/`\n\n`, read
   `Content-Length` incl. compact `l`, `message_end = headers_end + CL`), emitting
@@ -10735,7 +10768,7 @@ performance, usability); roadmap and per-item status in `TODO.md`.
 
 ### Added
 - `docs/keybindings.md` -- full TUI keyboard shortcut reference
-- README TUI section describing sngrep-compatible features
+- README TUI section describing the terminal viewer-compatible features
 
 ## [0.3.0] - 2026-04-10
 

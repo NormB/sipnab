@@ -215,12 +215,12 @@ transcripts in CI.
 supported client and one fixture, and has exact initialize/tool-list expectations.
 Every shell/config snippet is tested or labeled with its tested version/status.
 
-#### DOC-05 — Publish an explicit sngrep/sipgrep compatibility matrix
+#### DOC-05 — Publish an explicit the terminal SIP tools compatibility matrix
 
 **Priority / type / effort:** P2 / claim-clarity improvement / M
 
-**Evidence:** `README.md:18-20,160` claims every sngrep keybinding and acceptance
-of sipgrep flags. [`docs/keybindings.md:1-24`](https://github.com/NormB/sipnab/blob/main/docs/keybindings.md#L1-L24) documents Sipnab's mappings rather
+**Evidence:** `README.md:18-20,160` claims every the terminal viewer keybinding and acceptance
+of the CLI matcher flags. [`docs/keybindings.md:1-24`](https://github.com/NormB/sipnab/blob/main/docs/keybindings.md#L1-L24) documents Sipnab's mappings rather
 than an upstream comparison, and CLI reference sections only label individual
 compatible flags (`docs/cli-reference.md:224-231,476`). The `-N` collision is
 notable ([`docs/cli-reference.md:576`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md#L576)).

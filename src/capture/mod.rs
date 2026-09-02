@@ -910,7 +910,7 @@ pub struct PacketProcessor {
     /// through as individual packets instead of being reassembled/reframed.
     reassembly: bool,
     /// When `Some(n)` (`-S`/`--limitlen`), each emitted packet's payload is
-    /// truncated to `n` bytes before upper-layer parsing — the sipgrep `-S`
+    /// truncated to `n` bytes before upper-layer parsing — the snap-length
     /// "look at only the first N bytes" cap, independent of the capture snaplen.
     parse_limit: Option<usize>,
 }
@@ -1706,7 +1706,7 @@ mod tests {
     #[test]
     fn no_reassembly_passes_tcp_segment_through_unframed() {
         // Two SIP messages packed in one TCP segment: with reassembly OFF
-        // (sipgrep -a inverse) the raw segment emerges as a single packet,
+        // the raw segment emerges as a single packet,
         // not reframed into individual messages.
         let mut payload = opts("a");
         payload.extend(opts("b"));

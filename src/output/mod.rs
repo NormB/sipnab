@@ -3,7 +3,7 @@
 //! Output formatting for SIP/RTP analysis results.
 //!
 //! This module provides multiple output backends:
-//! - `cli_print` — sipgrep-style colored terminal output
+//! - `cli_print` — colored terminal output
 //! - `hexdump` — Raw hex+ASCII packet dump
 //! - `json` — JSON/NDJSON structured output
 //! - `model` — canonical compact dialog/stream projections (all surfaces)

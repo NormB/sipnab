@@ -157,7 +157,7 @@ truth and require new registrations to be added here.
 
 Expansion rewrites the header *name* seen in the TUI/JSON (`r:` renders as
 `Refer-To`). `msg.raw` retains the original bytes, so hexdump/raw views and
-pcap export are unaffected. This matches sngrep behavior and the existing
+pcap export are unaffected. This matches the terminal viewer behavior and the existing
 handling of the core ten. **Decision: keep normalizing; no config knob.**
 
 ## 4. TDD plan (mandatory order)

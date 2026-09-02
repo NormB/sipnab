@@ -2,7 +2,7 @@
 
 //! Interactive terminal UI for sipnab.
 //!
-//! Provides the sngrep-replacement mode: a full-screen TUI with call list,
+//! Provides the full-screen terminal mode: a TUI with call list,
 //! RTP stream list, call flow ladder diagrams, and raw message viewing.
 //! Built on [`ratatui`] + [`crossterm`] with adaptive refresh rates
 //! (100ms active, 500ms idle, immediate on keypress).

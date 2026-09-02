@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The three sngrep-style status lines and the context-sensitive
+//! The three status lines and the context-sensitive
 //! F-key bar.
 
 use crate::tui::*;
@@ -96,7 +96,7 @@ fn fit_bpf_to_cols(bpf: &str, cols: usize) -> String {
     out
 }
 
-/// Render status line 1 (sngrep-style): `Current Mode: Online (any)    Dialogs: N (N displayed)`
+/// Render status line 1: `Current Mode: Online (any)    Dialogs: N (N displayed)`
 ///
 /// The mode is colored good/bad for online/offline; a bold `PAUSED`
 /// indicator and the `[A]` autoscroll marker are appended when active.
@@ -161,7 +161,7 @@ pub(in crate::tui) fn render_status_line1(frame: &mut ratatui::Frame, area: Rect
     frame.render_widget(line1, area);
 }
 
-/// Render status line 2 (sngrep-style): `Match Expression: <expr>    BPF Filter: <bpf>`
+/// Render status line 2: `Match Expression: <expr>    BPF Filter: <bpf>`
 ///
 /// # Arguments
 /// * `frame` - Frame to draw into.
@@ -215,7 +215,7 @@ pub(in crate::tui) fn render_status_line2(frame: &mut ratatui::Frame, area: Rect
     frame.render_widget(line2, area);
 }
 
-/// Render status line 3 (sngrep-style): `Display Filter: <filter>` or search/error overlay.
+/// Render status line 3: `Display Filter: <filter>` or search/error overlay.
 ///
 /// Priority order: an active search input (`/query`) wins; then a status
 /// message (error-colored when it contains "error"/"fail", info otherwise);
@@ -531,7 +531,7 @@ pub(in crate::tui) fn fkey_bar_items(
     }
 }
 
-/// Render the sngrep-style F-key bar at the bottom of the screen.
+/// Render the F-key bar at the bottom of the screen.
 ///
 /// Format: `Esc Quit  Enter Show  F2 Save  ...`
 /// Key names in bold white, labels in default. Full-width dark background.

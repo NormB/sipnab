@@ -1859,7 +1859,7 @@ pub struct PipelineOptions {
     /// `None` disables the gate (live capture, where BPF already filtered).
     pub sip_portrange: Option<(u16, u16)>,
     /// Suppress the per-packet "SIP parse error" diagnostic for SIP-looking
-    /// packets that fail to parse (`--quiet-bad-parse`, sipgrep `-x`). The
+    /// packets that fail to parse (`--quiet-bad-parse`). The
     /// packet is dropped either way; only the notice is silenced.
     pub quiet_bad_parse: bool,
 }

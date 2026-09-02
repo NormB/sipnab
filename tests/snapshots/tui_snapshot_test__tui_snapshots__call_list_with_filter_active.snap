@@ -1,6 +1,5 @@
 ---
 source: tests/tui_snapshot_test.rs
-assertion_line: 884
 expression: output
 ---
  Current Mode: Online (any)    Dialogs: 3 (1 displayed)  [A]

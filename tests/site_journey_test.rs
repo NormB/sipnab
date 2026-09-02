@@ -1733,7 +1733,7 @@ fn published_binary_size_matches_the_enforced_ceiling() {
 /// The homepage throughput tiles must quote figures that appear on the
 /// benchmarks page, and name the release those figures were measured on.
 ///
-/// The tiles read "2.5M pkts/s" and "12.5x sngrep (measured v0.5.18)" for
+/// The tiles read "2.5M pkts/s" and "12.5x the alternative (measured v0.5.18)" for
 /// twenty-nine releases. Both came from a table on a corpus nobody could
 /// rebuild, and nothing tied the tile to the page it linked to — so the
 /// headline numbers on the front page were unfalsifiable by construction.
@@ -1758,7 +1758,7 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
     // the two tiles to be read as one result.
     // Re-measured on the released 0.5.89 artifact, 2026-08-08, after the
     // regression bisected to 0.5.84 was partly fixed: 2.06 -> 1.89M pkts/s and
-    // 11.1 -> 9.9x sngrep. Updated here and on the benchmarks page in the same
+    // 11.1 -> 9.9x the alternative. Updated here and on the benchmarks page in the same
     // commit, which is what this gate exists to force.
     // Re-measured on the released 0.5.104 artifact, 2026-08-17: 2.31M at four
     // cores (replicates 2.31/2.31/2.26M), updated together with the page —
@@ -1778,7 +1778,7 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
     // as 105% of baseline and passed. THIS gate is the other half: it forces
     // the tile and the page to move together, but neither is measured in CI,
     // so bench/baseline.json is what has to catch the number changing.
-    // The second tile used to read "12.2x sngrep". It was dropped on
+    // The second tile used to read a speed multiple. It was dropped on
     // 2026-08-10: it argued sipnab's headline claim as a RATIO AGAINST A
     // COMPETITOR, which both advertised that competitor on the most-visited
     // page and framed sipnab as an alternative to a local tool -- the position
@@ -1827,7 +1827,7 @@ fn homepage_throughput_tiles_match_the_benchmarks_page() {
 /// The homepage's MCP tool count must equal the number of tools the server
 /// actually registers.
 ///
-/// DERIVED, not restated. This tile replaced "12.2x sngrep" on 2026-08-10, and
+/// DERIVED, not restated. This tile replaced a speed multiple on 2026-08-10, and
 /// the tile it replaced is the cautionary tale: a hand-typed headline number
 /// that stayed on the front page for twenty-nine releases because nothing
 /// produced it. Counting the `name = "..."` registrations means adding a tool

@@ -358,7 +358,7 @@ pub struct CallListDisplay<'a> {
 
 /// Return true if `dialog` matches the case-insensitive search query,
 /// scanning the same fields the call list displays plus raw message bodies
-/// (the sngrep/Wireshark-style full-text fallback).
+/// (the Wireshark-style full-text fallback).
 ///
 /// # Arguments
 ///
@@ -570,7 +570,7 @@ pub(crate) fn elide_middle(s: &str, width: Option<usize>) -> String {
     format!("{head_s}\u{2026}{tail_s}")
 }
 
-/// Uses sngrep-style: borderless, bold-on-cyan header, reverse-video
+/// Borderless, bold-on-cyan header, reverse-video
 /// selected row, full-width layout. No title line -- status is rendered
 /// separately at the top of the screen. When the displayed list is
 /// empty, an empty header plus an offline/live-specific hint is drawn
@@ -678,7 +678,7 @@ pub fn render_call_list(
     // only the rows actually drawn are resolved against the store.
     let row_ids = display.rows;
 
-    // Always render the header, even when empty (sngrep style).
+    // Always render the header, even when empty.
     // Show a help message below the header if there are no dialogs.
     if row_ids.is_empty() {
         let empty_table = Table::new(Vec::<Row>::new(), widths)
@@ -749,7 +749,7 @@ pub fn render_call_list(
         .map(|(vis_idx, dialog)| {
             let idx = scroll_offset + vis_idx; // original index in full list
 
-            // sngrep-style selection checkbox: [*] when checked, [ ] otherwise.
+            // Selection checkbox: [*] when checked, [ ] otherwise.
             // The checkbox marks which dialogs an action (e.g. save) applies to.
             let checkbox = if state.selected_rows.contains(dialog.call_id.as_str()) {
                 "[*]"
@@ -757,7 +757,7 @@ pub fn render_call_list(
                 "[ ]"
             };
 
-            // Method cell colors (sngrep style)
+            // Method cell colors
             let method_style = match dialog.method.as_str() {
                 "INVITE" => Style::default().fg(theme.good),
                 "BYE" => Style::default().fg(theme.bad),
@@ -913,7 +913,7 @@ pub fn render_call_list(
     state.table_state.select(Some(relative_selected));
     *state.table_state.offset_mut() = 0; // rows are pre-sliced, offset is 0
 
-    // sngrep-style: no borders, reverse video for selected row
+    // No borders, reverse video for selected row
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)

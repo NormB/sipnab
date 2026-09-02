@@ -18,7 +18,7 @@ number on the benchmarks page.
 |---|---|
 | `carrier.py` | generates the synthetic carrier corpus (stdlib Python 3, no deps) |
 | `scaling.sh` | sipnab throughput + peak RSS across `--cores` values |
-| `compare.sh` | sipnab against sngrep / sipgrep / voipmonitor on one corpus |
+| `compare.sh` | sipnab against the terminal viewer / the CLI matcher / voipmonitor on one corpus |
 | `live-capture.sh` | live-capture loss under synthetic load in a private netns (root) |
 
 ## Reproducing the published tables
@@ -212,7 +212,7 @@ Three things keep the container measurement fair, and all three matter:
   carrying both directions. sipnab itself will read those files back
   (`sipnab -N -I <spooled>.pcap --report`), which is a convenient cross-check.
 
-What remains asymmetric: voipmonitor runs containerized while sngrep, sipgrep
+What remains asymmetric: voipmonitor runs containerized while the terminal SIP tools
 and sipnab run natively. On Linux that is namespaces, not virtualization, so
 CPU-bound parsing is near native — but the cost, whatever it is, lands on
 voipmonitor's number.

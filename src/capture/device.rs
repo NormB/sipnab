@@ -3,14 +3,14 @@
 //! Network interface auto-detection for live capture.
 //!
 //! When no `-d` or `-I` flag is provided, sipnab auto-detects a suitable
-//! network interface — matching sngrep's zero-argument startup behavior.
+//! network interface, so a zero-argument start is useful.
 
 use anyhow::Result;
 
 /// Find the default capture device.
 ///
 /// On Linux, defaults to the "any" pseudo-device which captures on ALL
-/// interfaces (including loopback). This matches sngrep behavior — SIP
+/// interfaces (including loopback). This is the useful default — SIP
 /// traffic may be on any interface, especially loopback for local proxies.
 ///
 /// On macOS/BSD, uses pcap's default device (based on routing table),
@@ -33,7 +33,7 @@ use anyhow::Result;
 /// full device list (system calls into the OS capture subsystem). No I/O
 /// on Linux.
 pub fn find_default_device() -> Result<String> {
-    // On Linux, "any" captures all interfaces — this is what sngrep does.
+    // On Linux, "any" captures all interfaces, which is what we want.
     // SIP servers often listen on loopback, so capturing only eth0 misses traffic.
     if cfg!(target_os = "linux") {
         return Ok("any".to_string());
