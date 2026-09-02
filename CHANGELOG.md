@@ -8,6 +8,23 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Backlog bookkeeping only; nothing here reaches a binary.** RDX1 and RDX2
+  shipped in 0.5.143 and their entries were never checked off, so the status
+  table said 28 open while two of them were released. A table that overstates
+  what is left makes somebody plan around finished work, which is the same
+  defect as one that understates it.
+
+  An audit of all 26 remaining items against the source found no other
+  mismarked entry. Two looked closeable and were not: `asserted_by` exists but
+  carries `signaled`/`media-relay` -- the KIND of assertion rather than which
+  relay made it, which is exactly what RP3 asks for -- and AF_XDP is documented
+  as declined, but that is CT13's decision, while CT6 asks for the alternate
+  libpcap device-name syntax in `docs/install.md`, which says nothing about it.
+
 ## [0.5.143] - 2026-09-02
 
 ### Added
