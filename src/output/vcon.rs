@@ -1088,10 +1088,27 @@ impl crate::output::redact::Redact for Vcon {
         // Taken BEFORE the dialog objects are redacted, so the value fed to
         // the map is the original.
         let call_id = dialog.first().map(|d| d.sip_call_id.clone());
-        if let Some(id) = call_id.filter(|id| !id.is_empty()) {
-            *subject = subject.replace(&id, &r.opaque(&id));
+        match call_id.filter(|id| !id.is_empty() && subject.contains(id.as_str())) {
+            Some(id) => {
+                // Redact the prose AROUND the Call-ID and join with the token,
+                // so the token itself never goes through `text()`.
+                //
+                // It used to: the Call-ID was substituted and then the whole
+                // string was swept, which found the redacted host inside the
+                // token -- it looks like an ordinary address -- and tokenized
+                // it a SECOND time. The map then recorded both hops, and
+                // reversing the outer one yielded another token that read as a
+                // real IPv4 address. `redaction_map_reverses_test` holds the
+                // invariant that no value in the map is itself a key.
+                let token = r.opaque(&id);
+                let redacted_parts: Vec<String> = subject
+                    .split(id.as_str())
+                    .map(|part| r.text(part))
+                    .collect();
+                *subject = redacted_parts.join(&token);
+            }
+            None => *subject = r.text(subject),
         }
-        *subject = r.text(subject);
 
         // §4.1 says redaction happened, in the format's own vocabulary. A
         // withheld container keeps its own marker: nothing survived it to

@@ -4338,9 +4338,14 @@ impl Cli {
     /// `--vcon-out` the container is elsewhere and suppressing `--json` beside
     /// it would discard output the operator asked for.
     fn normalize(&mut self) {
+        // `--mcp` is here for the same reason the three below are: its help
+        // says "Implies --no-tui", and it used to refuse the operator for not
+        // typing what it had promised to set. An agent host reading that help
+        // wrote an invocation that failed on first run.
         if self.output_args.call_report.is_some()
             || self.output_args.export_vcon.is_some()
             || self.output_args.export_vcon_when.is_some()
+            || self.mcp_args.mcp
         {
             self.mode_args.no_tui = true;
         }
@@ -4523,11 +4528,10 @@ impl Cli {
         // MCP mode owns stdout (JSON-RPC wire); reject any flag
         // combination that would also try to write to stdout.
         if self.mcp_args.mcp {
-            if !self.mode_args.no_tui {
-                return Err(crate::Error::CliValidation(
-                    "--mcp implies non-interactive mode; pass -N/--no-tui as well".to_string(),
-                ));
-            }
+            // No `!no_tui` refusal here: `normalize` sets it, which is what
+            // "Implies --no-tui" means. The stdout conflicts below are a
+            // different question -- those flags would write to the wire MCP
+            // owns, and the operator asked for them explicitly.
             let stdout_flags: Vec<&str> = [
                 (self.output_args.json, "--json"),
                 (self.output_args.json_pretty, "--json-pretty"),
@@ -5704,6 +5708,212 @@ mod tests {
         assert!(
             !cli.output_args.no_cli_print,
             "the containers go to a directory, so stdout is still the              operator's -- suppressing it would discard output they asked for"
+        );
+    }
+
+    /// `--mcp` implies `-N`, as its own help has always said.
+    ///
+    /// The help reads "Implies --no-tui" and the binary used to exit 2
+    /// demanding it anyway. `--export-vcon` and `--export-vcon-when` make the
+    /// same promise and keep it, so `--mcp` was the outlier, and an agent host
+    /// reading the help wrote an invocation that failed on first run.
+    #[test]
+    fn mcp_normalizes_to_non_interactive_as_its_help_promises() {
+        let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--mcp"]);
+        assert!(
+            cli.mode_args.no_tui,
+            "--mcp says `Implies --no-tui` in its own help; it must set it \
+             rather than refuse the operator for not typing it"
+        );
+    }
+
+    /// Every flag whose help claims to imply non-interactive actually does.
+    ///
+    /// The class rather than the instance. A help string is a promise, and a
+    /// promise nothing checks is the one that drifts -- this is how `--mcp`
+    /// came to say "implies" while refusing.
+    #[test]
+    fn every_flag_that_claims_to_imply_no_tui_actually_implies_it() {
+        let cases: &[(&str, &[&str])] = &[
+            ("--mcp", &["sipnab", "-I", "x.pcap", "--mcp"]),
+            (
+                "--export-vcon",
+                &["sipnab", "-I", "x.pcap", "--export-vcon", "a@b"],
+            ),
+            (
+                "--export-vcon-when",
+                &[
+                    "sipnab",
+                    "-I",
+                    "x.pcap",
+                    "--export-vcon-when",
+                    "response_code >= 400",
+                    "--export-vcon-dir",
+                    "/tmp/out",
+                ],
+            ),
+            (
+                "--call-report",
+                &["sipnab", "-I", "x.pcap", "--call-report", "a@b"],
+            ),
+        ];
+        for (flag, argv) in cases {
+            let cli = Cli::parse_from_args(argv.iter().copied());
+            assert!(
+                cli.mode_args.no_tui,
+                "{flag} does not set no_tui, so its \"implies non-interactive\" \
+                 claim is false and an operator who believed the help gets a \
+                 refusal"
+            );
+        }
+    }
+
+    /// Removing the refusal did not remove the guard beside it.
+    ///
+    /// The `!no_tui` refusal and the stdout-conflict refusal sat in one block.
+    /// Deleting the first must not weaken the second: MCP owns stdout for the
+    /// JSON-RPC wire, and a flag that also writes there corrupts the protocol
+    /// rather than merely printing twice.
+    #[test]
+    fn mcp_still_refuses_a_flag_that_would_write_to_its_wire() {
+        for flag in ["--json", "--json-pretty", "--report", "--stun"] {
+            let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--mcp", flag]);
+            assert!(
+                cli.validate().is_err(),
+                "`--mcp {flag}` must be refused: both write to stdout, and MCP \
+                 needs it for the JSON-RPC wire"
+            );
+        }
+    }
+
+    /// No help text claims an implication the binary does not perform.
+    ///
+    /// The class gate. `--mcp` said "Implies --no-tui" and refused anyway,
+    /// because a help string is a promise and nothing was checking it. This
+    /// reads the doc comments and requires every flag that claims to imply
+    /// non-interactive mode to be one `normalize` actually sets.
+    #[test]
+    fn no_help_text_claims_an_implication_the_binary_does_not_perform() {
+        // Production source only. This test's own doc comment quotes the
+        // string it searches for, and scanning the whole file made the gate
+        // match its own documentation and report `<unknown>`. A scanner that
+        // counts its own prose is measuring itself -- the fourth instance of
+        // that shape in this repository, after the vendor scan, the overlay
+        // count and the disclosure tag.
+        let whole = include_str!("cli.rs");
+        let src = whole.split("\nmod tests {").next().unwrap_or(whole);
+        let normalize_at = src
+            .find("fn normalize(&mut self)")
+            .expect("cli.rs no longer has a normalize function");
+        let normalize_end = src[normalize_at..]
+            .find("\n    }")
+            .map_or(src.len(), |e| normalize_at + e);
+        // CODE lines only. The comment inside `normalize` names the flags it
+        // sets and why, so matching the raw body made this gate pass on a
+        // mutation that deleted the very line it checks for -- it was reading
+        // the explanation instead of the assignment.
+        let normalize: String = src[normalize_at..normalize_end]
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Doc lines promising the implication, and the field they sit above.
+        let lines: Vec<&str> = src.lines().collect();
+        let mut promises = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let l = line.trim();
+            if !l.starts_with("///") {
+                continue;
+            }
+            if !l.contains("Implies --no-tui") && !l.contains("Implies -N") {
+                continue;
+            }
+            // The next `pub <field>:` below the doc block.
+            let field = lines[i..]
+                .iter()
+                .take(30)
+                .find_map(|c| c.trim().strip_prefix("pub "))
+                .and_then(|c| c.split(':').next())
+                .unwrap_or("<unknown>");
+            promises.push(field.to_string());
+        }
+
+        assert!(
+            !promises.is_empty(),
+            "no flag claims to imply --no-tui; the scan is wrong and this gate \
+             proves nothing"
+        );
+        for field in &promises {
+            assert!(
+                normalize.contains(field.as_str()),
+                "`{field}` says it implies --no-tui and `normalize` does not \
+                 set it, so the help makes a promise the binary breaks"
+            );
+        }
+    }
+
+    /// The implication scan reads assignments, not the comments beside them.
+    ///
+    /// Written because the gate above passed a mutation that deleted the line
+    /// it checks for: `normalize` carries a comment naming the flags it sets,
+    /// and matching the raw body found the explanation instead of the code.
+    /// That is the fourth gate in this repository to read prose as if it were
+    /// source, so it gets a test of its own rather than a resolution to be
+    /// careful.
+    #[test]
+    fn the_implication_scan_reads_code_and_not_comments() {
+        // A body whose ONLY mention of the field is in a comment must not
+        // count as setting it.
+        let commented = "// sets self.mcp_args.mcp\nlet x = 1;";
+        let code_only: String = commented
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code_only.contains("mcp"),
+            "stripping comments left the field name behind, so the gate can \
+             still be satisfied by a comment: {code_only:?}"
+        );
+
+        let real = "self.mcp_args.mcp = true;";
+        let kept: String = real
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            kept.contains("mcp"),
+            "stripping comments removed real code; the gate would then report \
+             every flag as unfulfilled"
+        );
+    }
+
+    /// Implicit and explicit `-N` reach the same state.
+    ///
+    /// `--mcp` now sets `no_tui` itself. If the implicit path differed from
+    /// the explicit one in any other field, an operator who stopped typing
+    /// `-N` would get a quietly different run -- which is worse than the
+    /// refusal it replaced.
+    #[test]
+    fn mcp_with_and_without_an_explicit_no_tui_agree() {
+        let implicit = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--mcp"]);
+        let explicit = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--mcp", "-N"]);
+
+        assert_eq!(
+            implicit.mode_args.no_tui, explicit.mode_args.no_tui,
+            "the implied -N differs from the typed one"
+        );
+        assert_eq!(
+            implicit.output_args.no_cli_print, explicit.output_args.no_cli_print,
+            "`--mcp` alone suppresses CLI printing differently from `--mcp -N`, \
+             so dropping the flag changes what the run writes"
+        );
+        assert_eq!(
+            implicit.validate().is_ok(),
+            explicit.validate().is_ok(),
+            "one form validates and the other does not"
         );
     }
 

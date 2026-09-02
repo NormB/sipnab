@@ -8,6 +8,45 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.143] - 2026-09-02
+
+### Fixed
+
+- **The redaction map reversed some tokens to OTHER tokens.** `--redact-map` is
+  the artifact somebody uses to un-redact a capture they were sent, and it is
+  written 0600 because it is as sensitive as the capture itself. It was only
+  worth that if reversing a token yielded the value it stood for, and for
+  addresses inside a Call-ID it did not:
+
+  ```text
+  65.5.235.78                  -> 192.0.2.10     token -> original
+  239.213.65.170               -> 65.5.235.78    token -> ANOTHER TOKEN
+  ```
+
+  `vcon.rs` replaced the Call-ID in `subject` with its token and then ran the
+  whole string through `text()` again, so the redacted host inside the token --
+  which reads as an ordinary address -- was tokenized a second time. Reversing
+  the outer one returned `65.5.235.78`, which looks like a real IPv4 address
+  and is not one: a wrong answer wearing the shape of a right one, in the one
+  file whose whole job is to be authoritative. The visible symptom was a
+  `subject` no row could reverse, because the container carried the
+  once-tokenized address while the map keyed the twice-tokenized one.
+
+  The prose around the Call-ID is redacted now and joined with the token, so
+  the token never passes through `text()`. Nine tests hold it, including one
+  that needs no knowledge of any original: **no value in the map may itself be
+  a key**.
+
+- **`--mcp` said it implies `--no-tui` and then refused without it.** Its help
+  has always read "Implies --no-tui"; the binary exited 2 demanding the flag it
+  had promised to set, while `--export-vcon`, `--export-vcon-when` and
+  `--call-report` all make the same promise and keep it. An agent host reading
+  the help wrote an invocation that failed on first run. `--mcp` now normalizes
+  the way the other three do, and the stdout-conflict refusals beside it are
+  unchanged -- MCP owns stdout for the JSON-RPC wire. A gate now reads the help
+  text and requires every "implies non-interactive" claim to be one the binary
+  performs, which closes the class rather than the instance.
+
 ## [Unreleased]
 
 ### Added

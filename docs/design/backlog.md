@@ -5597,13 +5597,32 @@ class recur:
   filter language is the stated design, and ten `DIAGNOSTIC_ALIASES` are part
   of that language.
 
-  **Not a one-line fix, which is why it is an item rather than a patch.**
-  `expand_alias` needs an `AliasThresholds`, built by `cli.alias_thresholds(config)`,
-  and `vcon_selection` is handed a `&Cli` with no `Config` in scope. The work
-  is threading the thresholds to that call site, then a test per alias
-  asserting both surfaces resolve it identically -- `all_aliases_expand_and_parse`
-  in [`src/sip/dsl.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs) is the shape to copy, and the gate owed is one that
-  fails when a NEW surface parses a filter without expanding first.
+  **The seam, found 2026-09-02 while scoping the fix.** The answer is not to
+  thread `AliasThresholds` down to `vcon_selection`. It is that
+  `--export-vcon-when` should not be parsing a raw string at selection time at
+  all: `generate_reports` ALREADY receives `filter: Option<&FilterExpr>`, an
+  expression the plan resolved through `build_filter_expr(cli, config)` -- the
+  one path that expands aliases and honors the operator's `[diagnosis]`
+  thresholds. `--filter` goes through it and `--export-vcon-when` does not,
+  which is the whole defect stated structurally.
+
+  **Do:** resolve `--export-vcon-when` in the plan beside `--filter`, and pass
+  the resolved `FilterExpr` down instead of the raw string. That touches
+  `plan()`, `generate_reports`, `export_vcon`, `export_vcon_selection` and
+  `vcon_selection`, which is why it is an item rather than a patch -- but it
+  removes a second parse rather than adding a second threshold path.
+
+  Explicitly NOT acceptable: expanding with a default `Config`.
+  `alias_thresholds` reads each flag, then the `[diagnosis]` key, then the
+  built-in, so a default would silently ignore an operator's tuning and make
+  `--export-vcon-when problems` mean something different from `--filter
+  problems` for exactly the people who configured it. That is the same class
+  of divergence this item exists to close.
+
+  The gate owed is a test per alias asserting both surfaces resolve it
+  identically -- `all_aliases_expand_and_parse` in [`src/sip/dsl.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs) is the
+  shape to copy -- plus one that fails when a NEW surface parses a filter
+  without going through the plan.
 
 ## SPELL — British spellings the gates still cannot see (added 2026-09-01)
 
