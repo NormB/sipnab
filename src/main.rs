@@ -175,6 +175,7 @@ fn main() {
             plan.portrange,
             paths,
             plan.filter_expr.as_ref(),
+            plan.vcon_filter_expr.as_ref(),
         );
         return;
     }
@@ -207,6 +208,7 @@ fn main() {
                 BatchProcessing {
                     matcher: plan.matcher,
                     filter_expr: plan.filter_expr,
+                    vcon_filter_expr: plan.vcon_filter_expr,
                     output_opts: plan.output_opts,
                     event_exec: plan.event_exec,
                     input_files: plan.input_files,

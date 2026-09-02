@@ -96,6 +96,17 @@ pub struct RunPlan {
     pub matcher: SipMatcher,
     /// Compiled `--filter` DSL expression, when given.
     pub filter_expr: Option<FilterExpr>,
+    /// Compiled `--export-vcon-when` expression, when given.
+    ///
+    /// Resolved HERE rather than at selection time, through the same
+    /// `build_filter_expr` path `--filter` uses, because that is the one place
+    /// a diagnostic alias expands and the operator's `[diagnosis]` thresholds
+    /// are honored. `--export-vcon-when` used to parse its raw string in
+    /// `vcon_selection`, so `--filter problems` worked and
+    /// `--export-vcon-when problems` did not -- a divergence between two
+    /// surfaces of one language, which `cli-reference.md` describes as the
+    /// same language.
+    pub vcon_filter_expr: Option<FilterExpr>,
     /// Per-message output formatting options.
     pub output_opts: OutputOptions,
     /// `--on-*` event execution engine.
@@ -774,6 +785,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // Filter DSL expression (--filter or diagnostic aliases), falling back
     // to config.filter.expression.
     let filter_expr = build_filter_expr(cli, config)?;
+    let vcon_filter_expr = build_vcon_filter_expr(cli, config)?;
 
     // Output options.
     let output_opts = OutputOptions {
@@ -977,6 +989,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         },
         matcher,
         filter_expr,
+        vcon_filter_expr,
         output_opts,
         event_exec,
         mode,
@@ -2210,6 +2223,32 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
     }
 
     Ok(None)
+}
+
+/// The `--export-vcon-when` predicate, resolved the way `--filter` is.
+///
+/// Same expansion, same thresholds, same error shape -- the point of the
+/// function is that there is no SECOND way for a filter to become a
+/// `FilterExpr`.
+///
+/// # Errors
+///
+/// Returns a `PlanError` (exit code 2) when the expression, or the alias it
+/// expands to, fails to parse. Reported before the capture opens, so a typo
+/// fails the run rather than leaving an empty directory a reader takes for
+/// "nothing matched".
+fn build_vcon_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, PlanError> {
+    let Some(ref expr) = cli.output_args.export_vcon_when else {
+        return Ok(None);
+    };
+    let thresholds = cli.alias_thresholds(config);
+    let resolved = crate::sip::dsl::expand_alias(expr, &thresholds).unwrap_or_else(|| expr.clone());
+    match FilterExpr::parse(&resolved) {
+        Ok(f) => Ok(Some(f)),
+        Err(e) => Err(PlanError::arg(format!(
+            "--export-vcon-when is not a valid filter expression: {e}"
+        ))),
+    }
 }
 
 // ── Capture config builder ──────────────────────────────────────────

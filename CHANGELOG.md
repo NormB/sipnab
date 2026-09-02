@@ -10,6 +10,22 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--export-vcon-when` accepts the aliases `--filter` accepts.**
+  `cli-reference.md` says the flag takes "the language `--filter` already
+  speaks"; `--filter problems` exited 0 and `--export-vcon-when problems`
+  exited 1, because `--filter` was resolved through `build_filter_expr(cli,
+  config)` -- the one path that expands the ten diagnostic aliases and honors
+  the operator's `[diagnosis]` thresholds -- while the vCon path parsed its raw
+  string at selection time.
+
+  The fix is not a second expansion site. `RunPlan` carries the resolved
+  predicate now, built beside `--filter`'s and threaded down, so there is one
+  place a filter becomes a `FilterExpr` and no second place to keep in step. A
+  gate walks every flag whose help claims the filter language and requires the
+  plan to resolve it, which closes the class rather than this instance.
+
 ### Changed
 
 - **Backlog bookkeeping only; nothing here reaches a binary.** RDX1 and RDX2

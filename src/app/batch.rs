@@ -278,6 +278,8 @@ pub struct BatchProcessing {
     pub matcher: SipMatcher,
     /// Compiled `--filter` DSL expression, when given.
     pub filter_expr: Option<FilterExpr>,
+    /// Compiled `--export-vcon-when` expression, resolved by the plan.
+    pub vcon_filter_expr: Option<FilterExpr>,
     /// Per-message output formatting options.
     pub output_opts: OutputOptions,
     /// `--on-*` event execution engine.
@@ -908,6 +910,7 @@ pub fn run_cores_file(
     portrange: (u16, u16),
     paths: &[PathBuf],
     filter: Option<&FilterExpr>,
+    vcon_filter: Option<&FilterExpr>,
 ) {
     if paths.is_empty() {
         // Unreachable through `main`: `RunMode::CoresFile` requires `-I`, and
@@ -931,6 +934,7 @@ pub fn run_cores_file(
                 &r.dialog_store,
                 &r.stream_store,
                 filter,
+                vcon_filter,
                 r.total_count,
                 None,
             );
@@ -2092,6 +2096,7 @@ pub fn run(
             &result.dialog_store,
             &result.stream_store,
             batch.filter_expr.as_ref(),
+            batch.vcon_filter_expr.as_ref(),
             result.total_count,
             None,
         );
@@ -2164,6 +2169,8 @@ pub struct BatchRunner {
     matcher: SipMatcher,
     /// Compiled `--filter` DSL expression, when given.
     filter_expr: Option<FilterExpr>,
+    /// Compiled `--export-vcon-when` expression, resolved by the plan.
+    vcon_filter_expr: Option<FilterExpr>,
     /// Per-message output formatting options.
     output_opts: OutputOptions,
     /// `--on-*` event execution engine.
@@ -2281,6 +2288,7 @@ impl BatchRunner {
         let preopened_keylog = batch.keylog_source;
         let input_files = batch.input_files;
         let filter_expr = batch.filter_expr;
+        let vcon_filter_expr = batch.vcon_filter_expr;
         let output_opts = batch.output_opts;
         let event_exec = batch.event_exec;
         // 16. Output writer placeholder for -O — opened lazily on the first
@@ -2816,6 +2824,7 @@ impl BatchRunner {
             config: config.clone(),
             matcher,
             filter_expr,
+            vcon_filter_expr,
             output_opts,
             event_exec,
             writer,
@@ -2882,6 +2891,7 @@ impl BatchRunner {
             config,
             matcher,
             filter_expr,
+            vcon_filter_expr,
             output_opts,
             mut event_exec,
             mut writer,
@@ -3473,6 +3483,7 @@ impl BatchRunner {
                 &ds_guard,
                 &ss_guard,
                 filter_expr.as_ref(),
+                vcon_filter_expr.as_ref(),
                 total_count,
                 gate,
             ) {
@@ -4713,6 +4724,7 @@ pub fn generate_reports(
     dialog_store: &DialogStore,
     stream_store: &StreamStore,
     filter: Option<&FilterExpr>,
+    vcon_filter: Option<&FilterExpr>,
     frames_read: u64,
     gate: Option<&crate::output::persistence::PersistenceGate>,
 ) -> bool {
@@ -4956,7 +4968,14 @@ pub fn generate_reports(
     }
 
     // --export-vcon <call-id>: one observed dialog as a vCon container.
-    if !export_vcon(cli, dialog_store, stream_store, frames_read, gate) {
+    if !export_vcon(
+        cli,
+        vcon_filter,
+        dialog_store,
+        stream_store,
+        frames_read,
+        gate,
+    ) {
         return false;
     }
     true
@@ -5089,13 +5108,14 @@ fn write_redaction_map(
 #[cfg(feature = "vcon")]
 fn export_vcon_selection(
     cli: &Cli,
+    vcon_filter: Option<&crate::sip::dsl::FilterExpr>,
     dialog_store: &DialogStore,
     stream_store: &StreamStore,
     frames_read: u64,
     gate: Option<&crate::output::persistence::PersistenceGate>,
 ) -> bool {
     let (selection, suppressed_by_deny, denied) =
-        match vcon_selection(cli, dialog_store, stream_store) {
+        match vcon_selection(cli, vcon_filter, dialog_store, stream_store) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("{e:#}");
@@ -5415,6 +5435,7 @@ fn vcon_file_name(call_id: &str) -> String {
 #[cfg(feature = "vcon")]
 fn vcon_selection<'a>(
     cli: &Cli,
+    resolved: Option<&crate::sip::dsl::FilterExpr>,
     dialog_store: &'a DialogStore,
     stream_store: &'a StreamStore,
 ) -> anyhow::Result<(
@@ -5430,9 +5451,25 @@ fn vcon_selection<'a>(
         ));
     };
     let deny = cli.output_args.content_deny_header.as_deref();
-    let parsed = crate::sip::dsl::FilterExpr::parse(expr)
-        .map_err(|e| anyhow::anyhow!("--export-vcon-when is not a valid filter expression: {e}"))?;
-    let selection = crate::sip::dsl::select_dialogs(Some(&parsed), dialog_store, stream_store);
+    // The PLAN resolved this, through the same path `--filter` goes through --
+    // the one place a diagnostic alias expands and the operator's
+    // `[diagnosis]` thresholds are read. Parsing the raw string here instead
+    // is what made `--filter problems` work and `--export-vcon-when problems`
+    // fail, though cli-reference.md calls them one language.
+    //
+    // The fallback parse is for callers with no plan (tests), and it is a
+    // parse of the same string the plan would have resolved.
+    let fallback;
+    let parsed = match resolved {
+        Some(p) => p,
+        None => {
+            fallback = crate::sip::dsl::FilterExpr::parse(expr).map_err(|e| {
+                anyhow::anyhow!("--export-vcon-when is not a valid filter expression: {e}")
+            })?;
+            &fallback
+        }
+    };
+    let selection = crate::sip::dsl::select_dialogs(Some(parsed), dialog_store, stream_store);
     // Deny is applied AFTER the predicate and can only remove. Every input
     // other than the command line narrows: nothing read off the network can
     // add a dialog the invocation did not already permit, which is why there
@@ -5535,6 +5572,7 @@ fn dialog_carries_header(dialog: &crate::sip::dialog::SipDialog, header: &str) -
 #[cfg(feature = "vcon")]
 fn export_vcon(
     cli: &Cli,
+    vcon_filter: Option<&crate::sip::dsl::FilterExpr>,
     dialog_store: &DialogStore,
     stream_store: &StreamStore,
     frames_read: u64,
@@ -5549,7 +5587,14 @@ fn export_vcon(
         return true;
     }
     if cli.output_args.export_vcon_when.is_some() {
-        return export_vcon_selection(cli, dialog_store, stream_store, frames_read, gate);
+        return export_vcon_selection(
+            cli,
+            vcon_filter,
+            dialog_store,
+            stream_store,
+            frames_read,
+            gate,
+        );
     }
     let Some(call_id) = cli.output_args.export_vcon.as_deref() else {
         return true;
@@ -5666,6 +5711,7 @@ fn export_vcon(
 #[cfg(not(feature = "vcon"))]
 fn export_vcon(
     cli: &Cli,
+    _vcon_filter: Option<&FilterExpr>,
     _dialog_store: &DialogStore,
     _stream_store: &StreamStore,
     _frames_read: u64,
@@ -5814,7 +5860,8 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 400".to_owned());
 
-        let (picked, _, _) = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
+        let (picked, _, _) =
+            vcon_selection(&cli, None, &dialogs, &streams).expect("a valid predicate");
         let ids: Vec<&str> = picked
             .dialogs
             .iter()
@@ -5844,7 +5891,7 @@ mod tests {
         // `let Err(..) else` rather than `expect_err`: that would need `Debug`
         // on `DialogSelection`, and widening a shared type's derives to suit
         // one test's ergonomics is a cost the type pays forever.
-        let Err(err) = vcon_selection(&cli, &dialogs, &streams) else {
+        let Err(err) = vcon_selection(&cli, None, &dialogs, &streams) else {
             panic!("an unparseable expression is an error, not an empty result");
         };
 
@@ -5966,7 +6013,8 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 599".to_owned());
 
-        let (picked, _, _) = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
+        let (picked, _, _) =
+            vcon_selection(&cli, None, &dialogs, &streams).expect("a valid predicate");
 
         assert!(
             picked.dialogs.is_empty(),
@@ -5992,7 +6040,7 @@ mod tests {
         let streams = StreamStore::new(16);
         let cli = Cli::parse_from_args(["sipnab"]);
 
-        let picked = vcon_selection(&cli, &dialogs, &streams)
+        let picked = vcon_selection(&cli, None, &dialogs, &streams)
             .expect("no predicate is not an error")
             .0;
 
@@ -6021,7 +6069,8 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
 
-        let (picked, _, _) = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
+        let (picked, _, _) =
+            vcon_selection(&cli, None, &dialogs, &streams).expect("a valid predicate");
         let names: std::collections::HashSet<String> = picked
             .dialogs
             .iter()
@@ -6262,6 +6311,7 @@ mod tests {
 
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_first_flagged("X-No-Record", "1"),
             &StreamStore::new(16),
             7,
@@ -6290,6 +6340,7 @@ mod tests {
 
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_first_flagged("X-No-Record", "1"),
             &StreamStore::new(16),
             7,
@@ -6324,6 +6375,7 @@ mod tests {
 
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6353,6 +6405,7 @@ mod tests {
 
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6388,6 +6441,7 @@ mod tests {
 
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6493,6 +6547,7 @@ mod tests {
 
         let ok = export_vcon(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6533,6 +6588,7 @@ mod tests {
 
         assert!(export_vcon(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6562,6 +6618,7 @@ mod tests {
 
         assert!(export_vcon(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6599,6 +6656,7 @@ mod tests {
         let ungated = tempfile::tempdir().expect("temp dir");
         assert!(export_vcon(
             &cli_exporting_to(ungated.path(), "response_code >= 200"),
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6608,6 +6666,7 @@ mod tests {
         let gated = tempfile::tempdir().expect("temp dir");
         assert!(export_vcon(
             &cli_exporting_to(gated.path(), "response_code >= 200"),
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6641,6 +6700,7 @@ mod tests {
         gate.set(false);
         assert!(export_vcon(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6658,6 +6718,7 @@ mod tests {
         gate.set(true);
         assert!(export_vcon(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6686,6 +6747,7 @@ mod tests {
         let gate = crate::output::persistence::PersistenceGate::new(false);
         assert!(export_vcon(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6709,6 +6771,7 @@ mod tests {
         let cli = cli_exporting_to(&dir, "response_code >= 200");
         let ok = export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6732,14 +6795,16 @@ mod tests {
         let dialogs = two_dialogs_one_failed();
         let streams = StreamStore::new(16);
 
-        let expected = vcon_selection(&cli, &dialogs, &streams)
+        let expected = vcon_selection(&cli, None, &dialogs, &streams)
             .expect("a valid predicate")
             .0
             .dialogs
             .len();
         assert!(expected >= 2, "the fixture holds two calls");
 
-        assert!(export_vcon_selection(&cli, &dialogs, &streams, 7, None));
+        assert!(export_vcon_selection(
+            &cli, None, &dialogs, &streams, 7, None
+        ));
 
         let written: Vec<_> = std::fs::read_dir(tmp.path())
             .expect("readable")
@@ -6765,6 +6830,7 @@ mod tests {
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6802,6 +6868,7 @@ mod tests {
         let cli = cli_exporting_to(&blocked, "response_code >= 200");
         let ok = export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6825,6 +6892,7 @@ mod tests {
         // deliberately no export_vcon_dir
         let ok = export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6846,6 +6914,7 @@ mod tests {
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6880,6 +6949,7 @@ mod tests {
         let cli = cli_exporting_to(tmp.path(), "response_code >= 599");
         let ok = export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -6904,9 +6974,13 @@ mod tests {
         let dialogs = two_dialogs_one_failed();
         let streams = StreamStore::new(16);
 
-        assert!(export_vcon_selection(&cli, &dialogs, &streams, 7, None));
+        assert!(export_vcon_selection(
+            &cli, None, &dialogs, &streams, 7, None
+        ));
         let first = std::fs::read_dir(tmp.path()).expect("readable").count();
-        assert!(export_vcon_selection(&cli, &dialogs, &streams, 7, None));
+        assert!(export_vcon_selection(
+            &cli, None, &dialogs, &streams, 7, None
+        ));
         let second = std::fs::read_dir(tmp.path()).expect("readable").count();
 
         assert_eq!(
@@ -6929,6 +7003,7 @@ mod tests {
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             4242,
@@ -7121,7 +7196,7 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
 
-        let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
+        let ids: Vec<String> = vcon_selection(&cli, None, &dialogs, &streams)
             .expect("a valid predicate")
             .0
             .dialogs
@@ -7143,7 +7218,7 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("nonexistent_field == 'x'".to_owned());
 
-        let Err(err) = vcon_selection(&cli, &dialogs, &streams) else {
+        let Err(err) = vcon_selection(&cli, None, &dialogs, &streams) else {
             panic!("a field the DSL does not define is not a valid expression");
         };
         assert!(
@@ -7185,6 +7260,7 @@ mod tests {
         let a = tempfile::tempdir().expect("temp dir");
         assert!(export_vcon_selection(
             &cli_exporting_to(a.path(), "response_code >= 486"),
+            None,
             &dialogs,
             &streams,
             7,
@@ -7193,6 +7269,7 @@ mod tests {
         let b = tempfile::tempdir().expect("temp dir");
         assert!(export_vcon_selection(
             &cli_exporting_to(b.path(), "response_code >= 486"),
+            None,
             &dialogs,
             &streams,
             7,
@@ -7218,6 +7295,7 @@ mod tests {
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             4242,
@@ -7261,7 +7339,8 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some("rtp.codec == 'PCMU'".to_owned());
 
-        let (picked, _, _) = vcon_selection(&cli, &dialogs, &streams).expect("a valid predicate");
+        let (picked, _, _) =
+            vcon_selection(&cli, None, &dialogs, &streams).expect("a valid predicate");
         assert!(
             picked.dialogs.is_empty(),
             "no streams means no dialog carries PCMU"
@@ -7281,7 +7360,7 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.output_args.export_vcon_when = Some(String::new());
 
-        match vcon_selection(&cli, &dialogs, &streams) {
+        match vcon_selection(&cli, None, &dialogs, &streams) {
             Err(_) => {}
             Ok((sel, _, _)) => assert!(
                 sel.dialogs.is_empty(),
@@ -7300,6 +7379,7 @@ mod tests {
         let cli = cli_exporting_to(&target, "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -7327,15 +7407,18 @@ mod tests {
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         let dialogs = two_dialogs_one_failed();
         let streams = StreamStore::new(16);
-        assert!(export_vcon_selection(&cli, &dialogs, &streams, 7, None));
+        assert!(export_vcon_selection(
+            &cli, None, &dialogs, &streams, 7, None
+        ));
 
-        let expected: std::collections::HashSet<String> = vcon_selection(&cli, &dialogs, &streams)
-            .expect("valid")
-            .0
-            .dialogs
-            .iter()
-            .map(|(d, _)| vcon_file_name(&d.call_id))
-            .collect();
+        let expected: std::collections::HashSet<String> =
+            vcon_selection(&cli, None, &dialogs, &streams)
+                .expect("valid")
+                .0
+                .dialogs
+                .iter()
+                .map(|(d, _)| vcon_file_name(&d.call_id))
+                .collect();
         let actual: std::collections::HashSet<String> = std::fs::read_dir(tmp.path())
             .expect("readable")
             .flatten()
@@ -7510,6 +7593,7 @@ mod tests {
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -7544,6 +7628,7 @@ mod tests {
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -7570,6 +7655,7 @@ mod tests {
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -7671,6 +7757,7 @@ mod tests {
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -7712,6 +7799,7 @@ mod tests {
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -7751,6 +7839,7 @@ mod tests {
         let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_one_failed(),
             &StreamStore::new(16),
             7,
@@ -7898,6 +7987,7 @@ mod tests {
 
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_first_flagged("X-No-Record", "1"),
             &StreamStore::new(16),
             7,
@@ -7928,6 +8018,7 @@ mod tests {
 
         assert!(export_vcon_selection(
             &cli,
+            None,
             &two_dialogs_first_flagged("X-No-Record", "1"),
             &StreamStore::new(16),
             7,
@@ -7979,7 +8070,7 @@ mod tests {
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
         cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
 
-        let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
+        let ids: Vec<String> = vcon_selection(&cli, None, &dialogs, &streams)
             .expect("valid")
             .0
             .dialogs
@@ -8017,7 +8108,7 @@ mod tests {
         cli.output_args.export_vcon_when = Some("response_code >= 599".to_owned());
         cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
 
-        let (picked, _, _) = vcon_selection(&cli, &dialogs, &streams).expect("valid");
+        let (picked, _, _) = vcon_selection(&cli, None, &dialogs, &streams).expect("valid");
 
         assert!(
             picked.dialogs.is_empty(),
@@ -8042,7 +8133,7 @@ mod tests {
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
         cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
 
-        let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
+        let ids: Vec<String> = vcon_selection(&cli, None, &dialogs, &streams)
             .expect("valid")
             .0
             .dialogs
@@ -8072,7 +8163,7 @@ mod tests {
             cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
             cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
 
-            let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
+            let ids: Vec<String> = vcon_selection(&cli, None, &dialogs, &streams)
                 .expect("valid")
                 .0
                 .dialogs
@@ -8097,7 +8188,7 @@ mod tests {
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
         // no content_deny_header
 
-        let n = vcon_selection(&cli, &dialogs, &streams)
+        let n = vcon_selection(&cli, None, &dialogs, &streams)
             .expect("valid")
             .0
             .dialogs
@@ -8254,7 +8345,7 @@ mod tests {
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
         cli.output_args.content_deny_header = Some("X-No-Record".to_owned());
 
-        let n = vcon_selection(&cli, &store, &streams)
+        let n = vcon_selection(&cli, None, &store, &streams)
             .expect("valid")
             .0
             .dialogs
@@ -8279,7 +8370,7 @@ mod tests {
         cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
         cli.output_args.content_deny_header = Some("x-NO-record".to_owned());
 
-        let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
+        let ids: Vec<String> = vcon_selection(&cli, None, &dialogs, &streams)
             .expect("valid")
             .0
             .dialogs
@@ -8307,7 +8398,7 @@ mod tests {
             cli.output_args.export_vcon_when = Some("response_code >= 200".to_owned());
             cli.output_args.content_deny_header = Some(header.to_owned());
 
-            let ids: Vec<String> = vcon_selection(&cli, &dialogs, &streams)
+            let ids: Vec<String> = vcon_selection(&cli, None, &dialogs, &streams)
                 .expect("valid")
                 .0
                 .dialogs
@@ -9569,12 +9660,12 @@ mod tests {
         // Empty --report summary path.
         let mut cli = base_cli();
         cli.output_args.report = true;
-        generate_reports(&cli, &dialog_store, &stream_store, None, 0, None);
+        generate_reports(&cli, &dialog_store, &stream_store, None, None, 0, None);
 
         // --call-report for an unknown Call-ID hits the "not found" warn arm.
         let mut cli = base_cli();
         cli.output_args.call_report = Some("does-not-exist".to_string());
-        generate_reports(&cli, &dialog_store, &stream_store, None, 0, None);
+        generate_reports(&cli, &dialog_store, &stream_store, None, None, 0, None);
 
         // Insert a dialog, then --call-report finds it across all formats.
         let call_id = "report-1@example.com";
@@ -9601,7 +9692,7 @@ mod tests {
             let mut cli = base_cli();
             cli.output_args.call_report = Some(call_id.to_string());
             setup(&mut cli);
-            generate_reports(&cli, &dialog_store, &stream_store, None, 0, None);
+            generate_reports(&cli, &dialog_store, &stream_store, None, None, 0, None);
         }
     }
 
