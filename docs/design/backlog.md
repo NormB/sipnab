@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**26 open, 423 done** across 28 sections.
+**25 open, 424 done** across 28 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -67,7 +67,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | AS | 6 | 1 | `#.........` |
 | DOC | 0 | 16 | `##########` |
 | RDX | 0 | 2 | `##########` |
-| FLT | 1 | 0 | `..........` |
+| FLT | 0 | 1 | `##########` |
 | SPELL | 1 | 0 | `..........` |
 | MCPX | 1 | 6 | `#########.` |
 | P5 | 7 | 13 | `######....` |
@@ -240,7 +240,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   silently negates most of CT2's benefit on exactly the busy servers CT2
   targets, and because it makes `-B` advice misleading until fixed.
   **Done:** immediate mode is now a decision, not a constant.
-  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2320`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2320)) is
+  `immediate_mode_for(mode)` ([`src/app/bootstrap.rs:2368`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2368)) is
   `matches!(mode, RunMode::Tui)` and is the only place that answers the
   question; `bootstrap.rs:537` assigns its result to
   `CaptureConfig::immediate_mode`, and [`src/capture/live.rs:219-220`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L219-L220) passes that
@@ -812,7 +812,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   reconstruction path is offline-only. Cheap, and it removes a silent
   expectation mismatch on exactly the busy-server workload where someone would
   reach for it. **Done:** `cores_ignored_warning`
-  ([`src/app/bootstrap.rs:2810`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2810)) returns the message and the reason —
+  ([`src/app/bootstrap.rs:2849`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2849)) returns the message and the reason —
   `--multi-device` opens one capture per interface, or the run captures live
   rather than reading a saved file — and `bootstrap.rs:492` warns with it.
   Warned rather than refused, because the run is correct, just single-threaded,
@@ -1652,7 +1652,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   truncation breaks `--retain-audio`/WAV export and Opus decode (they need RTP
   payload, not just headers), and it degrades `-O` pcap re-emit to truncated
   frames. **Two of three "Do:" items are done, and this line claimed neither
-  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3008`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3008),
+  until 2026-08-06.** `snaplen_truncation_warning` ([`src/app/bootstrap.rs:3056`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3056),
   tagged `(CT3)`) warns when a truncating snaplen feeds `-O`; a matching
   `snaplen_audio_retention_warning` now warns when it feeds `--retain-audio`
   instead, since that path is retained *audio*, not a re-emitted pcap, and
@@ -5592,7 +5592,7 @@ class recur:
 
 ## FLT — filter vocabulary that differs between surfaces (added 2026-09-01)
 
-- [ ] **FLT1 — `--export-vcon-when` refuses the aliases `--filter` accepts.**
+- [x] **FLT1 (done 2026-09-02) — `--export-vcon-when` refuses the aliases `--filter` accepts.**
   Found while writing cookbook recipe 51, and measured 2026-09-01 against the
   built binary:
 
@@ -5620,7 +5620,14 @@ class recur:
   thresholds. `--filter` goes through it and `--export-vcon-when` does not,
   which is the whole defect stated structurally.
 
-  **Do:** resolve `--export-vcon-when` in the plan beside `--filter`, and pass
+  **Fixed.** `RunPlan` gained `vcon_filter_expr`, resolved by
+  `build_vcon_filter_expr(cli, config)` beside `build_filter_expr`, and the
+  expression is threaded to `vcon_selection` instead of parsed there. Seven
+  tests, including one that walks every flag whose doc says it takes the filter
+  language and requires the plan to mention it -- so a THIRD surface cannot
+  arrive with its own parse, which is how these two diverged unnoticed.
+
+  **Was:** resolve `--export-vcon-when` in the plan beside `--filter`, and pass
   the resolved `FilterExpr` down instead of the raw string. That touches
   `plan()`, `generate_reports`, `export_vcon`, `export_vcon_selection` and
   `vcon_selection`, which is why it is an item rather than a patch -- but it
