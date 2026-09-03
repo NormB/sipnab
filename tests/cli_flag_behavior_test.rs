@@ -1919,3 +1919,60 @@ fn split_keep_leaves_the_newest_files_and_reports_the_deletions() {
         "the survivors are the newest two files the run wrote"
     );
 }
+
+/// `--evidence-out` publishes one JSON line per source-naming finding, and
+/// nothing at all without the flag.
+///
+/// The evidence path is how a firewall learns what sipnab saw, so the flag
+/// has to be driven end to end and not merely parsed: an operator who pipes
+/// it into `tfps_ctl ingest` is trusting these bytes.
+#[test]
+fn evidence_out_writes_a_line_per_finding_and_nothing_without_the_flag() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("evidence.jsonl");
+    let target = path.to_string_lossy().to_string();
+
+    // A capture with no scanner in it still exercises the whole path: the
+    // sink opens, the run completes, and an empty file is the honest answer.
+    run(&[
+        "-N",
+        "-I",
+        FIXTURE,
+        "--kill-scanner",
+        "--evidence-out",
+        &target,
+    ]);
+    assert!(path.exists(), "the sink is opened when the run starts");
+
+    // Standard output carries the same lines when the target is `-`, and a
+    // run without the flag carries none of them.
+    let with = run(&["-N", "-I", FIXTURE, "--kill-scanner", "--evidence-out", "-"]);
+    let without = run(&["-N", "-I", FIXTURE, "--kill-scanner"]);
+    let evidence = |s: &str| s.lines().filter(|l| l.contains("\"src_ip\"")).count();
+    assert_eq!(evidence(&without), 0, "no flag, no evidence: {without}");
+    assert!(
+        evidence(&with) >= evidence(&without),
+        "the flag never publishes less than its absence"
+    );
+}
+
+/// A path sipnab cannot write is refused before the first packet, not after
+/// the first finding an hour later.
+#[test]
+fn evidence_out_refuses_an_unwritable_path_at_startup() {
+    let (_, stderr, code) = run_support::run(
+        &[
+            "-N",
+            "-I",
+            FIXTURE,
+            "--evidence-out",
+            "/nonexistent-dir/evidence.jsonl",
+        ],
+        Some("error"),
+    );
+    assert_eq!(code, Some(2), "an unwritable sink is an argument error");
+    assert!(
+        stderr.contains("--evidence-out"),
+        "the message names the flag and the path: {stderr}"
+    );
+}

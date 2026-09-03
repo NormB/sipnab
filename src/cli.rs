@@ -1609,6 +1609,16 @@ pub struct SecurityArgs {
     #[arg(help_heading = "Security", long)]
     pub fraud_detect: bool,
 
+    /// Publish every finding that names a source as JSON Lines, for a system that
+    /// decides what to do with it. `-` is standard output, for
+    /// `| tfps_ctl ingest`; a path is appended to. sipnab still bans nothing.
+    #[arg(
+        help_heading = "Security",
+        long = "evidence-out",
+        value_name = "PATH|-"
+    )]
+    pub evidence_out: Option<String>,
+
     /// Destination countries `--fraud-detect` reports an INVITE to, as ISO
     /// 3166-1 alpha-2 codes (`DO,VG,MA`). Numbers are read through the common
     /// international prefixes (`+`, `00`, `011`); a number with none is domestic

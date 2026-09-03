@@ -15,6 +15,8 @@ pub mod destination;
 #[cfg(feature = "native")]
 pub mod detectors;
 pub mod digest_leak;
+#[cfg(feature = "native")]
+pub mod evidence;
 pub mod fraud_detect;
 pub mod kill_packet;
 pub mod recommend;

@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 255 | 130 | 45 | 79 | 1 |
+| CLI flags | 256 | 131 | 45 | 79 | 1 |
 | HTTP routes | 17 | 17 | -- | 0 | 0 |
 | MCP tools | 63 | 63 | -- | 0 | 0 |
 
@@ -201,8 +201,9 @@ behind them.
 | `--kill-target` | `-K` |  | Security | e2e | `tests/offline_never_transmits_test.rs` |  |  |
 | `--kill-spoof` |  | `MODE` | Security | e2e | `tests/offline_never_transmits_test.rs` |  |  |
 | `--hep-allow-kill` |  |  | Security | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
-| `--tfps-ctl` |  | `PATH` | Security | referenced | `src/security/tfps.rs`, `tests/tfps_contract_test.rs` +1 |  |  |
+| `--tfps-ctl` |  | `PATH` | Security | e2e | `tests/mcp_protocol_features_test.rs` |  |  |
 | `--fraud-detect` |  |  | Security | parsed | `src/cli.rs` |  |  |
+| `--evidence-out` |  |  | Security | referenced | `src/app/batch.rs` |  |  |
 | `--fraud-destination` |  |  | Security | parsed | `src/cli.rs` |  |  |
 | `--reg-flood` |  |  | Security | e2e | `tests/cli_flag_behavior_test.rs` | **behavior** | reg_flood_threshold_decides_when_a_burst_is_a_flood (tests/threshold_wiring_test.rs); an inert flag fails it |
 | `--reg-flood-threshold` |  | `N` | Security | e2e | `tests/cli_flag_behavior_test.rs` | **behavior** | same test, third run: the flag silences a burst the config key raised |
@@ -416,12 +417,12 @@ behind them.
 | `start_tls_capture` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
 | `stop_tls_capture` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
 | `tail_dialogs` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_open_capture_test.rs` +3 |
-| `tfps_ban` | exercised | `tests/tfps_surfaces_test.rs` |
-| `tfps_banned` | exercised | `tests/tfps_surfaces_test.rs` |
-| `tfps_dropped` | exercised | `tests/tfps_surfaces_test.rs` |
-| `tfps_labels` | exercised | `tests/tfps_surfaces_test.rs` |
-| `tfps_status` | exercised | `tests/tfps_surfaces_test.rs` |
-| `tfps_unban` | exercised | `tests/tfps_surfaces_test.rs` |
+| `tfps_ban` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
+| `tfps_banned` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
+| `tfps_dropped` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
+| `tfps_labels` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
+| `tfps_status` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
+| `tfps_unban` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `timeline` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |
 | `top_talkers` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `triage_call` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +2 |

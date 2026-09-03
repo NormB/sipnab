@@ -386,6 +386,10 @@ struct DeferredEffects {
     out: DeferredOutput,
     /// Alert firings, in the order they were raised.
     alerts: Vec<DeferredAlert>,
+    /// Where `--evidence-out` publishes findings, when the operator asked for
+    /// it. Opened once when the run starts, so a bad path fails then and not
+    /// an hour into a capture.
+    evidence: Option<sec::evidence::EvidenceSink>,
 }
 
 /// One `AlertEngine::fire` call raised while the store guards were held.
@@ -510,6 +514,7 @@ impl DeferredEffects {
         Self {
             out: DeferredOutput::new(),
             alerts: Vec::new(),
+            evidence: None,
         }
     }
 
@@ -2265,6 +2270,9 @@ pub struct BatchRunner {
     servers: Option<crate::app::servers::ServerHandles>,
     /// Split/autostop policy resolved from the CLI.
     policy: CapturePolicy,
+    /// Where `--evidence-out` publishes findings. Opened in `new`, so an
+    /// unwritable path is an error before the first packet, not an hour in.
+    evidence: Option<sec::evidence::EvidenceSink>,
 }
 
 impl BatchRunner {
@@ -2887,6 +2895,17 @@ impl BatchRunner {
             message: e.to_string(),
         })?;
 
+        // Fail before the first packet: an operator who mistyped the path
+        // should learn now, not after an hour of capture and a lost finding.
+        let evidence = match cli.security_args.evidence_out.as_deref() {
+            None => None,
+            Some(target) => Some(sec::evidence::EvidenceSink::open(target).map_err(|e| {
+                crate::app::bootstrap::PlanError {
+                    exit_code: 2,
+                    message: format!("--evidence-out {target}: {e}"),
+                }
+            })?),
+        };
         Ok(Self {
             cli,
             config: config.clone(),
@@ -2919,6 +2938,7 @@ impl BatchRunner {
             policy,
             relay_orphans,
             relay_thread,
+            evidence,
         })
     }
 
@@ -2986,6 +3006,7 @@ impl BatchRunner {
             policy,
             relay_orphans,
             relay_thread,
+            evidence,
         } = self;
         // Reused across packets so the hand-off costs no allocation per packet.
         let mut new_orphans: Vec<(std::net::IpAddr, u16)> = Vec::new();
@@ -3067,6 +3088,7 @@ impl BatchRunner {
         // once and reused, so its buffers are allocated once for the run.
         // See `DeferredEffects`.
         let mut effects = DeferredEffects::new();
+        effects.evidence = evidence;
 
         // 18. Main receive loop
         let start = std::time::Instant::now();
@@ -3972,6 +3994,7 @@ fn process_parsed_packet(
     let DeferredEffects {
         out,
         alerts: pending_alerts,
+        evidence: evidence_sink,
     } = effects;
     // Hexdump output (applies to all packets)
     if cli.output_args.hexdump && cli.mode_args.no_tui {
@@ -4121,6 +4144,8 @@ fn process_parsed_packet(
                     out,
                     pending_alerts,
                     scanner_kill_handle,
+                    evidence_sink,
+                    policy,
                 );
             }
 
@@ -4343,8 +4368,36 @@ fn apply_detector_effect(
     out: &mut DeferredOutput,
     pending_alerts: &mut Vec<DeferredAlert>,
     kill_handle: &Option<ScannerKillHandle>,
+    evidence: &mut Option<sec::evidence::EvidenceSink>,
+    policy: sec::detectors::Policy,
 ) {
     use sec::detectors::{DetectorKind, Effect, JailLine};
+    if let (
+        Effect::Alert {
+            detector,
+            src_ip,
+            detail,
+        },
+        Some(sink),
+    ) = (&effect, evidence.as_mut())
+    {
+        // The same origin rule the jail log follows: under HEP the inner
+        // address is the sender's claim, and publishing it invites a ban on
+        // an address of their choosing.
+        if sec::evidence::publishable(policy.origin, policy.hep_allow_kill) {
+            let line = sec::evidence::Evidence {
+                src_ip: *src_ip,
+                rule: sec::evidence::rule_for(*detector).to_string(),
+                evidence: detail.clone(),
+                ts: Some(at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            };
+            if let Err(e) = sink.write(&line) {
+                // Best effort, and never silent: a lost finding is a ban that
+                // will not happen, and the operator has to know which.
+                tracing::warn!(%src_ip, error = %e, "could not publish evidence");
+            }
+        }
+    }
     match effect {
         Effect::Alert {
             detector,

@@ -12,6 +12,16 @@ entry that carries them.
 
 ### Added
 
+- **`--evidence-out`: sipnab publishes findings, and something else decides.**
+  sipnab does not ban, and the reason stands: a firewall entry is a state
+  change on another system with a lifetime sipnab neither sets nor knows. That
+  is an argument about who applies a ban, not about who may say what they saw.
+  Every finding that names a source can now be written as JSON Lines, in the
+  shape a golden fixture fixes and the TFPS repository holds a byte-identical
+  copy of, for `| tfps_ctl ingest` or any other reader. The sink opens when the
+  run starts, so an unwritable path is an error before the first packet. A
+  HEP-carried finding publishes nothing without `--hep-allow-kill`, the same
+  rule the jail log follows and for the same reason.
 - **TFPS surfaces: six MCP tools, six REST routes, one locator.** The
   toll-fraud prevention system (TFPS) that may run beside sipnab condemns
   sources and enforces the decision in the firewall; sipnab never bans anything,
