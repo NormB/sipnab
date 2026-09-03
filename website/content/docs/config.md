@@ -149,7 +149,7 @@ Security detection defaults.
 | `fraud_detect` | boolean | `false` | Enable fraud detection heuristics |
 | `alert` | array of strings | `[]` | Alert channels: `"syslog"`, `"json"`, `"exec"` |
 | `alert_exec` | string | -- | Command to execute on alert |
-| `reg_flood_threshold` | integer | `50` | REGISTER requests per second from one source before `--reg-flood` reports a flood. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets, and it fires all through a re-REGISTER storm on a registrar that just restarted. `--reg-flood-threshold` overrides it. `0` fails validation and names the key |
+| `reg_flood_threshold` | integer | `50` | Challenged failures per second from one source before `--reg-flood` reports a flood: REGISTERs that carried credentials and drew a `401` or `407` on the same transaction. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets. Counted in capture time, so a file replays as the traffic it recorded. `--reg-flood-threshold` overrides it. `0` fails validation and names the key |
 | `kill_rate_limit` | integer | `10` | Scanner-kill responses per second sipnab may put on the wire. This bounds the one feature that answers an address out of the capture, and whoever forged the source address chose where each response goes, so there is no unlimited setting and `0` fails validation. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. `--kill-rate-limit` overrides it |
 | `business_hours` | string | -- | Business hours as `"START-END"` in whole UTC hours, for example `"8-18"`. A wrapping range such as `"22-6"` is the overnight window. This is what makes the off-hours fraud detection reachable: with no window declared there is no outside for a call to fall in. `--business-hours` overrides it |
 | `fraud_short_call_secs` | integer | `3` | Measured call duration below which `--fraud-detect` counts a completed call as short for wangiri detection. Three seconds is under a normal ring-no-answer on some carriers, which reports ordinary unanswered calls as lures. `--fraud-short-call` overrides it |
@@ -547,7 +547,7 @@ kill_response = 403                # Reply to scanners with 403
 fraud_detect = true                # Heuristic fraud detection
 alert = ["syslog", "json"]        # Send alerts to syslog and JSON log
 alert_exec = "/usr/local/bin/sipnab-alert.sh"  # Custom alert handler
-reg_flood_threshold = 10           # REGISTER/sec from one source that is a flood
+reg_flood_threshold = 10           # Refused credentialed REGISTERs/sec that is a flood
 kill_rate_limit = 10               # Kill responses/sec sipnab may transmit
 business_hours = "8-18"            # Enables off-hours fraud detection (UTC hours)
 scanner_window_secs = 60           # Wide enough to hold a sweep paced at one probe/10s

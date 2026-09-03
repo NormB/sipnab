@@ -17,6 +17,8 @@ use std::io::{BufRead, BufReader};
 use std::net::UdpSocket;
 use std::process::{Child, Command, Stdio};
 
+#[path = "support/pcap_build.rs"]
+mod pcap_build;
 #[path = "support/mod.rs"]
 mod support;
 use std::sync::mpsc;
@@ -24,7 +26,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
+use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3, parse_hep};
 
 include!("support/timeout.rs");
 
@@ -417,6 +419,73 @@ fn hep_send_forwards_captured_sip_as_hep3() {
         .expect("collector must receive a forwarded HEP datagram");
     assert!(n >= 6, "datagram too short to be HEP3");
     assert_eq!(&buf[..4], b"HEP3", "forwarded datagram must be HEP3");
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// `--hep-send` on a TCP trunk stamps every SIP datagram with IP protocol
+/// 6, through the real binary and the real batch loop.
+///
+/// The unit tests in `capture::hep` pin `HepSender::forward_parsed`. This
+/// pins that the loop hands it the packet the pipeline delivered, because the
+/// literal `TransportProto::Udp` that recorded a TCP trunk as UDP lived in
+/// that loop, nine hundred lines long, where no unit test could see it.
+#[test]
+fn hep_send_stamps_tcp_sip_as_ip_protocol_6() {
+    let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
+    collector.set_read_timeout(Some(test_timeout(5))).unwrap();
+    let target = format!("127.0.0.1:{}", collector.local_addr().unwrap().port());
+
+    // INVITE, ACK and BYE from the client, a 200 from the far side, all over
+    // one TCP connection with PSH on every segment.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pcap = dir.path().join("tcp_trunk.pcap");
+    pcap_build::write_pcap(
+        &pcap,
+        &pcap_build::tcp_sip_call_with_body("tcp-trunk-1", 40, true),
+    );
+
+    let mut sender = Command::new(env!("CARGO_BIN_EXE_sipnab"));
+    support::discard_coverage_profile(&mut sender);
+    let mut child = sender
+        .args([
+            "-N",
+            "-I",
+            pcap.to_str().unwrap(),
+            "--hep-send",
+            &target,
+            "--quiet",
+        ])
+        .env("SIPNAB_LOG", "warn")
+        .env("NO_COLOR", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sipnab --hep-send");
+
+    let mut buf = [0u8; 65535];
+    let mut sip_datagrams = 0;
+    while let Ok((n, _from)) = collector.recv_from(&mut buf) {
+        let pkt = parse_hep(&buf[..n]).expect("forwarded datagram must be HEP3");
+        if pkt.protocol != HepProtocol::Sip {
+            continue;
+        }
+        sip_datagrams += 1;
+        assert_eq!(
+            pkt.ip_protocol, 6,
+            "SIP from a TCP trunk reached the collector stamped IP protocol {}: the \
+             forwarding loop recorded the trunk as UDP",
+            pkt.ip_protocol
+        );
+        if sip_datagrams == 4 {
+            break;
+        }
+    }
+    assert!(
+        sip_datagrams >= 1,
+        "control: no SIP datagram reached the collector, so nothing above was checked"
+    );
 
     let _ = child.kill();
     let _ = child.wait();

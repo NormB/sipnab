@@ -620,6 +620,235 @@ fn hep_parse_decodes_encapsulated_sip_from_a_capture() {
     );
 }
 
+/// A registration flood carried by HEP is not written to the fail2ban jail
+/// log, and the same flood off the wire is.
+///
+/// `--hep-listen 0.0.0.0:9060 --hep-allow 198.51.100.0/24 --reg-flood --fail2ban`:
+/// any host in that range, or a UDP source spoofed into it, can send HEP-wrapped
+/// REGISTERs whose inner source is the customer's SBC, and the jail bans the
+/// SBC. The inner addresses are the sender's claim. The kill path has refused
+/// to act on that claim without `--hep-allow-kill` since SN-01; the ban path
+/// wrote the line unconditionally, and a firewall rule outlives the process
+/// that asked for it.
+///
+/// Driven against a real `--hep-listen` on loopback with real HEP datagrams,
+/// because that listener is the path that tags addressing as HEP-asserted.
+/// The run is stopped with SIGTERM, the shutdown path the listener is known
+/// to take cleanly. Both directions are asserted: the finding still reaches
+/// stderr (a human is told), the jail line does not (a firewall is not), the
+/// run says so once at startup, `--hep-allow-kill` admits the line, and the
+/// same flood read off the wire is written without any opt-in.
+#[cfg(all(feature = "hep", target_os = "linux"))]
+#[test]
+fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
+    use chrono::Utc;
+    use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
+    use std::io::Read;
+
+    const SBC: [u8; 4] = [10, 1, 0, 1];
+    const REGISTRAR: [u8; 4] = [10, 2, 0, 1];
+    const SILENT_BY_DESIGN: &str = "writes nothing for detections carried by HEP";
+    let endpoint = |src: [u8; 4], dst: [u8; 4]| HepEndpoint {
+        src_addr: std::net::IpAddr::from(src),
+        dst_addr: std::net::IpAddr::from(dst),
+        src_port: 5060,
+        dst_port: 5060,
+        transport: sipnab::net::TransportProto::Udp,
+    };
+    let register = |i: usize| {
+        format!(
+            "REGISTER sip:10.2.0.1 SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.1.0.1:5060;branch=z9hG4bKf2b{i}\r\n\
+             Max-Forwards: 70\r\n\
+             From: <sip:alice@10.1.0.1>;tag=f{i}\r\n\
+             To: <sip:alice@10.2.0.1>\r\n\
+             Call-ID: f2b-{i}@10.1.0.1\r\n\
+             CSeq: 1 REGISTER\r\n\
+             Authorization: Digest username=\"alice\", realm=\"10.2.0.1\", nonce=\"n\", \
+             uri=\"sip:10.2.0.1\", response=\"0\"\r\n\
+             Content-Length: 0\r\n\r\n"
+        )
+    };
+    let refusal = |i: usize| {
+        format!(
+            "SIP/2.0 401 Unauthorized\r\n\
+             Via: SIP/2.0/UDP 10.1.0.1:5060;branch=z9hG4bKf2b{i}\r\n\
+             From: <sip:alice@10.1.0.1>;tag=f{i}\r\n\
+             To: <sip:alice@10.2.0.1>;tag=t{i}\r\n\
+             Call-ID: f2b-{i}@10.1.0.1\r\n\
+             CSeq: 1 REGISTER\r\n\
+             Content-Length: 0\r\n\r\n"
+        )
+    };
+    // Three refused registrations: one more than a threshold of 2 allows.
+    let exchange: Vec<(String, [u8; 4], [u8; 4])> = (0..3)
+        .flat_map(|i| [(register(i), SBC, REGISTRAR), (refusal(i), REGISTRAR, SBC)])
+        .collect();
+
+    /// Bind an ephemeral UDP port and release it, so the listener can take it.
+    fn free_udp_port() -> u16 {
+        let s = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let p = s.local_addr().expect("read it back").port();
+        drop(s);
+        p
+    }
+
+    /// Whether a UDP socket is bound to 127.0.0.1:`port`, read from the
+    /// kernel's own table rather than inferred from a log line.
+    fn udp_port_bound(port: u16) -> bool {
+        let needle = format!("0100007F:{port:04X}");
+        std::fs::read_to_string("/proc/net/udp")
+            .map(|t| t.lines().any(|l| l.contains(&needle)))
+            .unwrap_or(false)
+    }
+
+    // Run the listener, deliver `exchange` to it as HEP, stop it, and return
+    // (stdout, stderr).
+    let listen = |extra: &[&str]| -> (String, String) {
+        let port = free_udp_port();
+        let bind = format!("127.0.0.1:{port}");
+        let mut args = vec![
+            "-N",
+            "--hep-listen",
+            &bind,
+            "--hep-parse",
+            "--reg-flood",
+            "--reg-flood-threshold",
+            "2",
+            "--fail2ban",
+        ];
+        args.extend_from_slice(extra);
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .args(&args)
+            .env("NO_COLOR", "1")
+            .env("SIPNAB_LOG", "warn")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn sipnab");
+
+        let ready_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !udp_port_bound(port) {
+            assert!(
+                std::time::Instant::now() < ready_by,
+                "the HEP listener never bound {bind}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("sender socket");
+        for (sip, src, dst) in &exchange {
+            let hep = build_hep_v3(
+                &endpoint(*src, *dst),
+                Utc::now(),
+                HepProtocol::Sip,
+                0,
+                None,
+                sip.as_bytes(),
+            );
+            sock.send_to(&hep, &bind).expect("send HEP");
+        }
+        // Let the datagrams drain through the receive loop, then stop the run
+        // the way an operator does.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let status = std::process::Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .expect("run kill");
+        assert!(status.success(), "kill -TERM failed");
+        let exit_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if child.try_wait().expect("try_wait").is_some() {
+                break;
+            }
+            if std::time::Instant::now() >= exit_by {
+                let _ = child.kill();
+                panic!("sipnab did not exit within 30 s of SIGTERM");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        child
+            .stdout
+            .take()
+            .expect("stdout piped")
+            .read_to_string(&mut stdout)
+            .expect("read stdout");
+        child
+            .stderr
+            .take()
+            .expect("stderr piped")
+            .read_to_string(&mut stderr)
+            .expect("read stderr");
+        (stdout, stderr)
+    };
+
+    let (stdout, stderr) = listen(&[]);
+    assert!(
+        stderr
+            .lines()
+            .any(|l| l.contains("[ALERT]") && l.contains("reg_flood")),
+        "the flood must still reach a human on stderr -- only the jail line is \
+         origin-gated:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("reg_flood src="),
+        "a HEP-carried flood reached the jail log: the inner source address is the \
+         sender's claim, and this line bans it:\n{stdout}"
+    );
+    assert!(
+        stderr.contains(SILENT_BY_DESIGN),
+        "an operator running --fail2ban over HEP input without the opt-in must be told \
+         at startup that the jail log stays empty by design:\n{stderr}"
+    );
+
+    let (stdout, stderr) = listen(&["--hep-allow-kill"]);
+    assert!(
+        stdout.contains("reg_flood src=10.1.0.1 count=3"),
+        "--hep-allow-kill must admit the HEP-carried flood to the jail log, the same \
+         way it admits it to the wire:\n{stdout}"
+    );
+    assert!(
+        !stderr.contains(SILENT_BY_DESIGN),
+        "with the opt-in given, the startup warning is wrong:\n{stderr}"
+    );
+
+    // Control: the same six messages read off the wire, with no opt-in.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let wire_pcap = dir.path().join("wire-flood.pcap");
+    let frames: Vec<(Vec<u8>, u64)> = exchange
+        .iter()
+        .enumerate()
+        .map(|(i, (sip, src, dst))| {
+            (
+                pcap_build::udp_frame(*src, *dst, 5060, 5060, sip.as_bytes()),
+                i as u64 * 10_000,
+            )
+        })
+        .collect();
+    pcap_build::write_pcap_at(&wire_pcap, &frames, 1);
+    let (stdout, stderr, code) = run_support::run(
+        &[
+            "-N",
+            "-I",
+            wire_pcap.to_str().expect("utf-8 path"),
+            "--reg-flood",
+            "--reg-flood-threshold",
+            "2",
+            "--fail2ban",
+        ],
+        Some("warn"),
+    );
+    assert_eq!(code, Some(0), "the wire run failed:\n{stderr}");
+    assert!(
+        stdout.contains("reg_flood src=10.1.0.1 count=3"),
+        "control: the same flood read off the wire must reach the jail log, else the \
+         gate above is vacuous:\n{stdout}"
+    );
+}
+
 /// A capture truncated by a full disk must not report success.
 ///
 /// `src/capture/writer.rs` has unit tests proving the writer surfaces ENOSPC,

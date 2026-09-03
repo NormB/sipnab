@@ -42,6 +42,7 @@ use std::net::IpAddr;
 use chrono::{DateTime, TimeDelta, Utc};
 use regex::{Regex, RegexBuilder};
 
+use crate::lru::LruMap;
 use crate::sip::SipMessage;
 
 /// Known SIP scanner User-Agent patterns (case-insensitive).
@@ -277,21 +278,11 @@ struct BehavioralState {
     /// Most recent activity from this source, in capture time (used for
     /// sweeping).
     last_seen: DateTime<Utc>,
-    /// Monotonic counter of when this source was last touched, used to pick
-    /// the eviction victim.
-    ///
-    /// Not a timestamp, because capture timestamps TIE: two packets can share
-    /// a microsecond, and a replay of one crafted message repeated is entirely
-    /// legitimate input. Under a tie `min_by_key` returns whichever entry the
-    /// hash order happened to visit first, so which source the memory cap
-    /// evicted became unpredictable — and the source being evicted is the one
-    /// whose detection state is discarded.
-    last_used: u64,
 }
 
 impl BehavioralState {
-    /// An empty window opened at `now`, stamped with the use counter.
-    fn new(now: DateTime<Utc>, last_used: u64) -> Self {
+    /// An empty window opened at `now`.
+    fn new(now: DateTime<Utc>) -> Self {
         Self {
             transactions: HashMap::new(),
             unkeyed_probes: 0,
@@ -299,7 +290,6 @@ impl BehavioralState {
             established: false,
             first_seen: now,
             last_seen: now,
-            last_used,
         }
     }
 
@@ -417,15 +407,17 @@ pub struct ScannerAlert {
 /// pattern cannot blow up compilation.
 const REGEX_SIZE_LIMIT: usize = 1_000_000;
 
-/// Maximum entries in the behavioral tracking map.
+/// Maximum entries in the behavioral tracking map. Past it, admitting a new
+/// source evicts the least recently used one, in constant time: see
+/// [`LruMap`].
 const MAX_BEHAVIORAL_ENTRIES: usize = 10_000;
 
 /// Detects SIP scanners via UA signature matching and behavioral heuristics.
 pub struct ScannerDetector {
     /// Compiled regex patterns for known scanner User-Agents.
     known_patterns: Vec<Regex>,
-    /// Per-source behavioral tracking state.
-    behavioral: HashMap<IpAddr, BehavioralState>,
+    /// Per-source behavioral tracking state, least recently used first.
+    behavioral: LruMap<IpAddr, BehavioralState>,
     /// Capture time of the most recent message checked — the detector's
     /// "now". `None` before the first message.
     ///
@@ -458,9 +450,6 @@ pub struct ScannerDetector {
     /// for why a capture of requests alone must not be read as a capture of
     /// probes nobody answered.
     responses_seen: bool,
-    /// Ticks once per tracked source touched; the value stamped into
-    /// [`BehavioralState::last_used`] to order eviction.
-    use_counter: u64,
     /// The trigger points this detector applies.
     thresholds: ScannerThresholds,
 }
@@ -511,10 +500,9 @@ impl ScannerDetector {
 
         Self {
             known_patterns: patterns,
-            behavioral: HashMap::new(),
+            behavioral: LruMap::new(MAX_BEHAVIORAL_ENTRIES),
             latest_packet: None,
             responses_seen: false,
-            use_counter: 0,
             thresholds,
         }
     }
@@ -573,29 +561,14 @@ impl ScannerDetector {
             let now = msg.timestamp;
             let thresholds = self.thresholds;
 
-            // Cap the behavioral map to prevent memory exhaustion (H4)
-            if self.behavioral.len() >= MAX_BEHAVIORAL_ENTRIES
-                && !self.behavioral.contains_key(&msg.src_addr)
-            {
-                // Evict the least recently used entry.
-                if let Some(oldest_ip) = self
-                    .behavioral
-                    .iter()
-                    .min_by_key(|(_, s)| s.last_used)
-                    .map(|(&ip, _)| ip)
-                {
-                    self.behavioral.remove(&oldest_ip);
-                }
-            }
-
-            self.use_counter += 1;
-            let use_counter = self.use_counter;
+            // The map is capped (H4). Admitting a new source past
+            // MAX_BEHAVIORAL_ENTRIES evicts the least recently used one, in
+            // constant time, so a flood that fills the map does not make
+            // every packet after it pay for a scan of the whole map.
             let responses_seen = self.responses_seen;
             let state = self
                 .behavioral
-                .entry(msg.src_addr)
-                .or_insert_with(|| BehavioralState::new(now, use_counter));
-            state.last_used = use_counter;
+                .get_or_insert_with(msg.src_addr, || BehavioralState::new(now));
 
             // Reset window if expired. `signed_duration_since` rather than a
             // subtraction that could go negative: an out-of-order packet
@@ -732,7 +705,7 @@ impl ScannerDetector {
     /// anything: neither has a relationship to protect.
     #[must_use]
     pub fn established(&self, src: &IpAddr) -> bool {
-        self.behavioral.get(src).is_some_and(|s| s.established)
+        self.behavioral.peek(src).is_some_and(|s| s.established)
     }
 
     /// Remove behavioral tracking entries whose last activity is older than

@@ -139,6 +139,12 @@ fn reason_phrase(code: u16) -> &'static str {
 /// authentication an attacker could steer the kill response at a chosen
 /// victim (SSRF-style). Live/pcap traffic, whose addressing comes from an
 /// observed IP header, is always eligible.
+///
+/// The same answer gates the `--fail2ban` jail line. A line names the
+/// packet's source address and a jail bans it, so a line written for a
+/// sender-asserted address is a ban the sender chose -- and unlike a kill
+/// response, which ends with the transaction, the ban outlives this
+/// process. Both paths call this one function: a rule written twice drifts.
 pub fn kill_response_eligible(origin: InputOrigin, hep_allow_kill: bool) -> bool {
     match origin {
         // sipnab read the addressing off the wire itself.

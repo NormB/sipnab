@@ -20,6 +20,88 @@ entry that carries them.
   live worktree empty. It passed when run by hand, because by hand there was
   nothing to leak. The probe now scrubs those variables, and a worktree whose
   work is committed but merged nowhere is no longer counted as abandoned.
+- **`--hep-send` stamps each message with the transport it arrived on.** The
+  forwarding loop re-parsed every SIP message with a literal UDP transport
+  before handing it to the sender, so `-d eth0 --hep-send homer:9060` on a TCP
+  or TLS trunk delivered every message with IP protocol 17 and the collector
+  recorded the trunk as UDP. The message now goes as the pipeline delivered
+  it — addresses, ports, transport and timestamp — with 6 for TCP, TLS and
+  WebSocket, 17 for UDP and 132 for SCTP, exactly as RTCP already did, and
+  the second parse of every message on the hot path is gone with it. The
+  forwarding decision lives in one function a test can reach, and a message
+  the first-line check recognizes as SIP now reaches the collector even when
+  the full parser rejects it: a malformed message is something the collector
+  should see, not something to hide.
+
+- **A spoofed-source flood no longer makes every later packet pay for a scan
+  of the detector maps.** Each security detector caps its per-source map at
+  ten thousand entries, and each one chose the entry to evict with
+  `min_by_key` over the whole map — ten thousand comparisons per packet once
+  the map was full, on the capture thread, inside the per-packet critical
+  section that holds both store write locks, while every MCP and API reader
+  waited and the kernel's drop counter climbed. The registration flood,
+  scanner and fraud detectors' source maps, the alert engine's cooldown, event
+  and per-source exec-budget maps, and the flood detector's per-source open
+  transactions now evict their least recently used entry in constant time.
+  Measured on the flood detector: admitting a source to a full map cost 371
+  times what admitting one to an empty map cost; it now costs 1.3 times. The
+  alert engine's event map was also only trimmed after a key reached its
+  rule's threshold, so under a rule like `scanner:5/1m` a flood of sources
+  that each fired once grew it without bound; it is bounded by construction.
+
+- **`--digest-leak` no longer reports a retransmitted 401 as nonce reuse.**
+  The detector kept one set of nonces with no notion of a transaction, so a
+  REGISTER over lossy UDP whose 401 was lost — the client retransmits, and RFC
+  3261 section 17.2.2 requires the registrar to answer with the same final
+  response — produced `nonce reused across challenges (replay risk)` against a
+  healthy registrar, and `--alert-exec` spawned a command for it. A nonce is
+  now remembered with the transaction it was issued on (Call-ID, CSeq and top
+  Via branch); the same nonce on that transaction again is the retransmission
+  and counts for nothing, and the same nonce on any other transaction is still
+  reported, once.
+
+- **`--reg-flood` no longer reports a registrar's own customers.** The
+  detector counted REGISTERs and fired when the count from one source crossed
+  the threshold, so a customer SBC re-registering two hundred phones after a
+  registrar restart — every one answered `200 OK` — produced a `reg_flood`
+  line, and `--fail2ban` handed the trunk to the firewall. It now counts
+  challenged failures: a REGISTER that carried `Authorization` or
+  `Proxy-Authorization` and drew a `401` or `407` on the same transaction. A
+  REGISTER on its own is never evidence, a challenge to a REGISTER without
+  credentials is the first half of every registration and counts for nothing,
+  and any `2xx` to a REGISTER clears the source's count. The alert and the
+  fail2ban line carry the failure count that crossed the threshold; the alert
+  detail reads `auth_failures=N registers=M threshold=T`.
+
+- **`--reg-flood` measures its window in capture time.** It used the wall
+  clock, so `sipnab -I yesterday.pcap --reg-flood --fail2ban -N` — which reads
+  a file as fast as the disk delivers it — saw a phone that re-registered once
+  a minute for an hour as sixty REGISTERs in one second and wrote a ban line
+  for it. The window and the sweep now follow the packets' own timestamps, as
+  the scanner detector's already did, so a file replays as the traffic it
+  recorded.
+
+- **A 401 flood cannot exhaust the registration flood detector's memory.** The
+  cap on tracked sources applied only where a REGISTER created an entry; a
+  `401` or `407` toward any destination created one too, uncapped, so a flood
+  of challenges aimed at a /16 of addresses grew the map without bound before
+  the first sweep. A response now updates an existing source's state and never
+  creates one, and a flood of responses can no longer evict a source in the
+  middle of the brute force it is counting.
+
+- **`--fail2ban` no longer writes jail lines for detections carried by HEP
+  unless `--hep-allow-kill` is set.** A HEP sender asserts the inner source
+  and destination addresses. The kill path has refused to act on that claim
+  without the opt-in since SN-01; the ban path wrote the line regardless, so
+  `--hep-listen 0.0.0.0:9060 --hep-allow 198.51.100.0/24 --reg-flood --fail2ban`
+  let any host in that range — or a UDP source spoofed into it — send HEP-wrapped
+  REGISTERs naming the customer's SBC as their source and have the jail ban
+  the SBC. All three jail-line sites (scanner detection, `-K` match,
+  registration flood) now pass the same origin predicate as the kill path:
+  wire-origin traffic is always written, HEP-origin traffic only under
+  `--hep-allow-kill`, uprobe-origin traffic never. The finding itself still
+  reaches the alert path, and a run that pairs `--fail2ban` with HEP input
+  and no opt-in says at startup that its jail log stays empty by design.
 
 ## [0.5.145] - 2026-09-03
 

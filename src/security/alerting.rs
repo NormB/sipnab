@@ -11,11 +11,12 @@
 //! - Window suffixes: `s` (seconds), `m` (minutes), `h` (hours)
 //! - Default cooldown: window x 2
 
-use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+
+use crate::lru::LruMap;
 
 #[cfg(feature = "native")]
 use tracing::warn;
@@ -398,8 +399,8 @@ pub struct Finding {
 /// Key an alert is tracked under: the source and the rule it matched.
 type AlertKey = (IpAddr, String);
 
-/// Recent event times for one key, newest last, with its LRU tick.
-type EventWindow = (std::collections::VecDeque<DateTime<Utc>>, u64);
+/// Recent event times for one key, newest last.
+type EventWindow = std::collections::VecDeque<DateTime<Utc>>;
 
 /// A sink handed each finding as it fires, for optional narration.
 ///
@@ -427,23 +428,20 @@ pub struct AlertEngine {
     /// milliseconds of wall time, so a wall-clock cooldown never expires and a
     /// wall-clock window never closes — the same defect that made the scanner
     /// detectors treat a replayed trunk as a flood.
-    /// Value is `(last fired in capture time, LRU sequence)`. The sequence
-    /// exists because capture stamps TIE — the same microsecond, or a
-    /// replayed message — and evicting by `min_by_key` on a tied timestamp
-    /// makes which source loses its state depend on hash order. The same
-    /// defect was found and fixed in the scanner detector; this is the
-    /// counter, not a second scheme.
-    cooldowns: HashMap<AlertKey, (DateTime<Utc>, u64)>,
+    /// Value is when the pair last fired, in capture time. Bounded by
+    /// [`MAX_COOLDOWN_ENTRIES`]: admitting a new pair past it evicts the one
+    /// that fired least recently, in constant time.
+    cooldowns: LruMap<AlertKey, DateTime<Utc>>,
     /// Recent event times per (source IP, rule name), newest last.
     ///
     /// Only the most recent `threshold` stamps are kept: if the oldest of those
     /// still falls inside the window then the threshold is met, and any older
     /// event cannot change that. That caps the memory a noisy source can cost
-    /// at the threshold it configured.
-    events: HashMap<AlertKey, EventWindow>,
-    /// Monotonic tick handed out on every touch, so eviction is true LRU
-    /// and never depends on iteration order when capture stamps tie.
-    lru: u64,
+    /// at the threshold it configured. The map itself is bounded at
+    /// [`MAX_COOLDOWN_ENTRIES`] by construction -- it used to be trimmed only
+    /// after a key reached its threshold, so sources that never did grew it
+    /// without bound -- evicting the least recently seen key in constant time.
+    events: LruMap<AlertKey, EventWindow>,
     /// Optional external command template to execute on alert.
     /// After construction, legacy `%variable` placeholders are rewritten to
     /// `$SIPNAB_*` env var references. Values are passed via environment
@@ -467,12 +465,11 @@ pub struct AlertEngine {
     exec_rate: TumblingWindow<DateTime<Utc>>,
     /// Per-source `--alert-exec` budget, in CAPTURE time.
     ///
-    /// Value is `(budget, LRU sequence)`. The sequence is the same monotonic
-    /// tick the cooldown and event maps evict on, and for the same reason:
-    /// capture stamps tie, and `min_by_key` over a tied timestamp makes which
-    /// source loses its state depend on hash order.
+    /// Bounded by [`MAX_EXEC_SOURCE_ENTRIES`], evicting the source least
+    /// recently consulted, in constant time, as the cooldown and event maps
+    /// do.
     #[cfg(feature = "native")]
-    exec_per_source: HashMap<IpAddr, (TumblingWindow<DateTime<Utc>>, u64)>,
+    exec_per_source: LruMap<IpAddr, TumblingWindow<DateTime<Utc>>>,
     /// `--alert-exec` invocations that did not run, by reason.
     #[cfg(feature = "native")]
     exec_drops: ExecDropCounts,
@@ -501,9 +498,8 @@ impl AlertEngine {
         Self {
             rules,
             narrator: None,
-            cooldowns: HashMap::new(),
-            events: HashMap::new(),
-            lru: 0,
+            cooldowns: LruMap::new(MAX_COOLDOWN_ENTRIES),
+            events: LruMap::new(MAX_COOLDOWN_ENTRIES),
             exec_cmd: exec_cmd.map(|c| migrate_alert_template(&c)),
             syslog_enabled: false,
             json_output: false,
@@ -512,7 +508,7 @@ impl AlertEngine {
             #[cfg(feature = "native")]
             exec_rate: TumblingWindow::new(DEFAULT_EXEC_PER_SECOND, 1),
             #[cfg(feature = "native")]
-            exec_per_source: HashMap::new(),
+            exec_per_source: LruMap::new(MAX_EXEC_SOURCE_ENTRIES),
             #[cfg(feature = "native")]
             exec_drops: ExecDropCounts::default(),
             #[cfg(feature = "native")]
@@ -620,11 +616,9 @@ impl AlertEngine {
         // Record the event, keeping at most `threshold` stamps: if the oldest
         // of those is inside the window the threshold is met, and an older one
         // could not change that. Bounded by the operator's own threshold.
-        self.lru = self.lru.wrapping_add(1);
-        let tick = self.lru;
-        let entry = self.events.entry(key.clone()).or_default();
-        entry.1 = tick;
-        let seen = &mut entry.0;
+        let seen = self
+            .events
+            .get_or_insert_with(key.clone(), std::collections::VecDeque::new);
         seen.push_back(now);
         while seen.len() > threshold as usize {
             seen.pop_front();
@@ -642,40 +636,20 @@ impl AlertEngine {
             return false;
         }
 
-        // Bound the events map the same way the cooldowns map is bounded — a
-        // source per key is attacker-influenced on a live interface.
-        if self.events.len() >= MAX_COOLDOWN_ENTRIES
-            && let Some(oldest_key) = self
-                .events
-                .iter()
-                .filter(|(k, _)| **k != key)
-                .min_by_key(|(_, (_, tick))| *tick)
-                .map(|(k, _)| k.clone())
-        {
-            self.events.remove(&oldest_key);
-        }
-
         // Check cooldown
-        if let Some((last_fired, _)) = self.cooldowns.get(&key)
+        if let Some(last_fired) = self.cooldowns.peek(&key)
             && now.signed_duration_since(*last_fired)
                 < chrono::Duration::from_std(cooldown).unwrap_or(chrono::Duration::MAX)
         {
             return false; // Still in cooldown
         }
 
-        // Evict oldest cooldown entry if at capacity
-        if self.cooldowns.len() >= MAX_COOLDOWN_ENTRIES
-            && let Some(oldest_key) = self
-                .cooldowns
-                .iter()
-                .min_by_key(|(_, (_, tick))| *tick)
-                .map(|(k, _)| k.clone())
-        {
-            self.cooldowns.remove(&oldest_key);
-        }
-
-        // Record this firing
-        self.cooldowns.insert(key, (now, tick));
+        // Record this firing. The event and cooldown maps are bounded at
+        // MAX_COOLDOWN_ENTRIES by construction -- a source per key is
+        // attacker-influenced on a live interface -- and admitting a key
+        // past the cap evicts the least recently used one in constant time,
+        // which matters because this runs on the capture thread.
+        self.cooldowns.insert(key, now);
 
         // Count it here, past the cooldown, so the metric matches what an
         // operator actually saw. Counting at entry would report every
@@ -741,7 +715,7 @@ impl AlertEngine {
 
         // Execute command if configured — pass data via env vars, never interpolated
         #[cfg(feature = "native")]
-        self.run_alert_exec(alert_type, src_ip, &sanitized_detail, now, tick);
+        self.run_alert_exec(alert_type, src_ip, &sanitized_detail, now);
 
         true
     }
@@ -768,7 +742,6 @@ impl AlertEngine {
         src_ip: IpAddr,
         detail: &str,
         now: DateTime<Utc>,
-        tick: u64,
     ) {
         if self.exec_cmd.is_none() {
             return;
@@ -782,7 +755,7 @@ impl AlertEngine {
         // Per-source first, then global. The order is what keeps a single
         // noisy peer from spending the budget every other peer needs: a source
         // that is over its own limit never touches the global window at all.
-        if !self.source_allows_exec(src_ip, now, tick) {
+        if !self.source_allows_exec(src_ip, now) {
             self.note_exec_drop(ExecDropReason::SourceLimited, alert_type, src_ip);
             return;
         }
@@ -809,7 +782,7 @@ impl AlertEngine {
                 // Book the budgets only now: an allowed-but-failed spawn did
                 // not use the capacity it was granted.
                 self.exec_rate.record();
-                if let Some((window, _)) = self.exec_per_source.get_mut(&src_ip) {
+                if let Some(window) = self.exec_per_source.get_mut(&src_ip) {
                     window.record();
                 }
                 self.exec_spawned = self.exec_spawned.saturating_add(1);
@@ -823,28 +796,17 @@ impl AlertEngine {
     }
 
     /// Whether `src_ip` has `--alert-exec` budget left in its own window,
-    /// creating and LRU-touching its bucket.
+    /// creating and touching its bucket.
     #[cfg(feature = "native")]
-    fn source_allows_exec(&mut self, src_ip: IpAddr, now: DateTime<Utc>, tick: u64) -> bool {
-        // Bound the map the way the cooldown and event maps are bounded, and
-        // on the same monotonic tick rather than on the capture stamp.
-        if !self.exec_per_source.contains_key(&src_ip)
-            && self.exec_per_source.len() >= MAX_EXEC_SOURCE_ENTRIES
-            && let Some(oldest) = self
-                .exec_per_source
-                .iter()
-                .min_by_key(|(_, (_, seq))| *seq)
-                .map(|(k, _)| *k)
-        {
-            self.exec_per_source.remove(&oldest);
-        }
-
-        let entry = self.exec_per_source.entry(src_ip).or_insert((
-            TumblingWindow::new(MAX_EXEC_PER_SOURCE_PER_MINUTE, 60),
-            tick,
-        ));
-        entry.1 = tick;
-        entry.0.allows(now)
+    fn source_allows_exec(&mut self, src_ip: IpAddr, now: DateTime<Utc>) -> bool {
+        // Bounded like the cooldown and event maps: admitting a new source
+        // past MAX_EXEC_SOURCE_ENTRIES evicts the least recently consulted
+        // one, in constant time.
+        self.exec_per_source
+            .get_or_insert_with(src_ip, || {
+                TumblingWindow::new(MAX_EXEC_PER_SOURCE_PER_MINUTE, 60)
+            })
+            .allows(now)
     }
 
     /// Book one suppressed `--alert-exec`, logging at each order of magnitude.
@@ -1558,26 +1520,25 @@ mod tests {
 
         for i in 0..MAX_EXEC_PER_SOURCE_PER_MINUTE {
             assert!(
-                engine.source_allows_exec(noisy, at(0), u64::from(i)),
+                engine.source_allows_exec(noisy, at(0)),
                 "spawn {i} is inside the per-source budget"
             );
             engine
                 .exec_per_source
                 .get_mut(&noisy)
                 .expect("bucket exists after allows")
-                .0
                 .record();
         }
         assert!(
-            !engine.source_allows_exec(noisy, at(0), 100),
+            !engine.source_allows_exec(noisy, at(0)),
             "a fourth spawn in one capture minute is over the per-source budget"
         );
         assert!(
-            engine.source_allows_exec(quiet, at(0), 101),
+            engine.source_allows_exec(quiet, at(0)),
             "a different source must keep its own budget"
         );
         assert!(
-            engine.source_allows_exec(noisy, at(60), 102),
+            engine.source_allows_exec(noisy, at(60)),
             "a capture minute later the source's window has rolled"
         );
     }
@@ -1601,7 +1562,7 @@ mod tests {
 
         for attempt in 1..=3u64 {
             assert!(
-                engine.source_allows_exec(misidentified, at(0), attempt),
+                engine.source_allows_exec(misidentified, at(0)),
                 "spawn {attempt} of 3 must sit inside the per-source budget; \
                  if this fails MAX_EXEC_PER_SOURCE_PER_MINUTE dropped below 3 \
                  and --alert-exec quietly stops firing for real alerts"
@@ -1610,12 +1571,11 @@ mod tests {
                 .exec_per_source
                 .get_mut(&misidentified)
                 .expect("bucket exists after allows")
-                .0
                 .record();
         }
 
         assert!(
-            !engine.source_allows_exec(misidentified, at(0), 4),
+            !engine.source_allows_exec(misidentified, at(0)),
             "a 4th spawn for one source inside one capture minute must be \
              refused; if this fails MAX_EXEC_PER_SOURCE_PER_MINUTE was raised, \
              and one misidentified peer now forks more of the operator's \
@@ -1636,24 +1596,23 @@ mod tests {
         let victim = test_ip();
 
         // Spend the victim's whole budget, oldest tick in the map.
-        for i in 0..MAX_EXEC_PER_SOURCE_PER_MINUTE {
-            assert!(engine.source_allows_exec(victim, at(0), u64::from(i)));
+        for _ in 0..MAX_EXEC_PER_SOURCE_PER_MINUTE {
+            assert!(engine.source_allows_exec(victim, at(0)));
             engine
                 .exec_per_source
                 .get_mut(&victim)
                 .expect("bucket exists after allows")
-                .0
                 .record();
         }
         assert!(
-            !engine.source_allows_exec(victim, at(0), 10),
+            !engine.source_allows_exec(victim, at(0)),
             "control: the victim is out of budget, else the check below is vacuous"
         );
 
         // Flood distinct sources until the map has to evict.
         for i in 0..=MAX_EXEC_SOURCE_ENTRIES {
             let ip = IpAddr::V4(std::net::Ipv4Addr::from(0x0b00_0000 + i as u32));
-            engine.source_allows_exec(ip, at(0), 1000 + i as u64);
+            engine.source_allows_exec(ip, at(0));
         }
         assert!(
             engine.exec_per_source.len() <= MAX_EXEC_SOURCE_ENTRIES,
@@ -1661,7 +1620,7 @@ mod tests {
             engine.exec_per_source.len()
         );
         assert!(
-            engine.source_allows_exec(victim, at(0), u64::MAX),
+            engine.source_allows_exec(victim, at(0)),
             "cap regressed: the victim's spent budget survived the flood"
         );
     }
@@ -1677,5 +1636,68 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&line).expect("still valid JSON");
         assert!(v.get("injected").is_none(), "no injected field");
         assert_eq!(v["detail"], r#"ua="evil","injected":1"#);
+    }
+
+    /// A source address in the 12.0.0.0/8 test range, distinct per `i`.
+    fn flood_ip(i: usize) -> IpAddr {
+        IpAddr::V4(std::net::Ipv4Addr::from(0x0c00_0000 + i as u32))
+    }
+
+    /// A flood of distinct sources under a rule whose threshold none of them
+    /// reaches must not grow the event map without bound. The map was
+    /// trimmed only after a key REACHED its threshold, so ten thousand and
+    /// one sources firing once each under `scanner:5/1m` held ten thousand
+    /// and one windows, and a spoofed-source flood on a live interface was a
+    /// remote allocation with no ceiling.
+    #[test]
+    fn the_event_map_stays_bounded_when_no_source_reaches_its_threshold() {
+        let rule = AlertRule::parse("scanner:5/1m").expect("a valid rule");
+        let mut engine = AlertEngine::new(vec![rule], None);
+        for i in 0..=MAX_COOLDOWN_ENTRIES {
+            assert!(
+                !engine.fire("scanner", flood_ip(i), "probe", at(0)),
+                "control: one event of the five required never fires"
+            );
+        }
+        assert!(
+            engine.events.len() <= MAX_COOLDOWN_ENTRIES,
+            "the event map holds {} windows for a cap of {MAX_COOLDOWN_ENTRIES}: \
+             a flood of sources that never reach a threshold grew it without bound",
+            engine.events.len()
+        );
+    }
+
+    /// The cooldown map stays bounded under a flood of sources that all
+    /// fire, and the source that fired least recently is the one forgotten.
+    #[test]
+    fn the_cooldown_map_stays_bounded_and_forgets_the_least_recent_firing() {
+        let mut engine = AlertEngine::new(vec![], None);
+        for i in 0..MAX_COOLDOWN_ENTRIES {
+            assert!(engine.fire("scanner", flood_ip(i), "probe", at(0)));
+        }
+        assert_eq!(
+            engine.cooldowns.len(),
+            MAX_COOLDOWN_ENTRIES,
+            "fixture: at the cap"
+        );
+        // One more source. The first to fire is the least recently fired.
+        assert!(engine.fire("scanner", flood_ip(MAX_COOLDOWN_ENTRIES), "probe", at(0)));
+        assert_eq!(
+            engine.cooldowns.len(),
+            MAX_COOLDOWN_ENTRIES,
+            "the cap holds"
+        );
+        assert!(
+            !engine
+                .cooldowns
+                .contains_key(&(flood_ip(0), "scanner".to_string())),
+            "the least recently fired source must be the one forgotten"
+        );
+        assert!(
+            engine
+                .cooldowns
+                .contains_key(&(flood_ip(1), "scanner".to_string())),
+            "the next-oldest firing survives"
+        );
     }
 }

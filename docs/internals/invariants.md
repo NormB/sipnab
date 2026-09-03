@@ -215,6 +215,21 @@ one-at-a-time removal from the index is O(n) under sustained pressure) and
 `rotate=false` drops new arrivals once full. The stream store evicts
 oldest-out at `max_streams`. TCP/IP reassembly caps entries, per-datagram size
 and per-stream buffered bytes in [`reassembly.rs`](../../src/capture/reassembly.rs).
+The digest detector in [`digest_leak.rs`](../../src/security/digest_leak.rs)
+remembers at most `MAX_NONCE_ENTRIES` (10,000) challenge nonce values, each
+with the transaction that carried it, and drops an arbitrary one to admit the
+next. The per-source maps of the other four security detectors are
+[`LruMap`](../../src/lru.rs)s: `MAX_SOURCE_ENTRIES` (10,000) sources in the
+registration flood detector and `MAX_PENDING_PER_SOURCE` (1,024) open
+transactions under each, `MAX_BEHAVIORAL_ENTRIES` (10,000) in the scanner
+detector, `MAX_PATTERN_ENTRIES` (10,000) in the fraud detector, and
+`MAX_COOLDOWN_ENTRIES` (10,000) for both the alert engine's cooldown and
+event maps, with `MAX_EXEC_SOURCE_ENTRIES` the same figure for its per-source
+exec budgets. Admitting a key past the cap evicts the least recently used
+entry in constant time. Each of these used to pick its victim with
+`min_by_key` over the whole map, ten thousand comparisons per packet once a
+spoofed-source flood had filled it, on the capture thread under both store
+write locks.
 
 **Fails as.** Memory growth under a scan that looks like a leak, on a process
 that is often running as a long-lived capture.

@@ -95,7 +95,7 @@ decisions downstream read the source as a scalar:
 ### 2.3 How a packet reaches the pipeline
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:253`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L253)), `capture_files`
-([`src/capture/file.rs:310`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L310)), `capture_hep` ([`src/capture/hep.rs:1831`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1831)), the
+([`src/capture/file.rs:310`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L310)), `capture_hep` ([`src/capture/hep.rs:1856`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1856)), the
 uprobe reader — builds a `Packet` ([`src/capture/packet.rs:452`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L452)) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
@@ -405,7 +405,7 @@ One consequence to accept rather than fix: **the channel carries no
 end-of-source marker.** `Item` is `One` or `Many` ([`src/capture/channel.rs:130`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L130))
 and nothing else, so a consumer cannot tell "the HEP sender stopped" from "the
 HEP sender is quiet". A `--hep-listen` run already has the same blind spot, which
-`IdleWatch` ([`src/capture/hep.rs:1693`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1693)) papers over with a log line after a
+`IdleWatch` ([`src/capture/hep.rs:1718`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1718)) papers over with a log line after a
 silence threshold. A composite run inherits both the blind spot and the paper.
 
 **Backpressure is shared and the accounting is asymmetric.** `PacketTx::send`

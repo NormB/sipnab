@@ -13,6 +13,7 @@ use std::net::IpAddr;
 
 use chrono::{DateTime, TimeDelta, Timelike, Utc};
 
+use crate::lru::LruMap;
 use crate::sip::SipMessage;
 use crate::sip::dialog::{DialogState, SipDialog};
 
@@ -119,26 +120,17 @@ struct CallPattern {
     /// chased the burst upward and suppressed the very alert it exists to
     /// raise.
     baseline_sampled_at: DateTime<Utc>,
-    /// Monotonic counter of when this source was last touched, used to pick
-    /// the eviction victim.
-    ///
-    /// Not a timestamp, because capture timestamps TIE: two packets can share
-    /// a microsecond. Under a tie `min_by_key` returns whichever entry the
-    /// hash order happened to visit first, so which source the memory cap
-    /// evicted — whose detection state is discarded — became unpredictable.
-    last_used: u64,
 }
 
 impl CallPattern {
-    /// An empty pattern first seen at `now`, stamped with the use counter.
-    fn new(now: DateTime<Utc>, last_used: u64) -> Self {
+    /// An empty pattern first seen at `now`.
+    fn new(now: DateTime<Utc>) -> Self {
         Self {
             calls: Vec::new(),
             short_calls: HashMap::new(),
             refused_calls: HashMap::new(),
             baseline_rate: None,
             baseline_sampled_at: now,
-            last_used,
         }
     }
 
@@ -187,7 +179,8 @@ pub struct FraudAlert {
     pub detail: String,
 }
 
-/// Maximum entries in the call patterns map.
+/// Maximum entries in the call patterns map. Past it, admitting a new source
+/// evicts the least recently used one, in constant time: see [`LruMap`].
 const MAX_PATTERN_ENTRIES: usize = 10_000;
 
 /// The trigger points of the four fraud heuristics.
@@ -282,8 +275,8 @@ impl Default for FraudThresholds {
 
 /// Detects toll fraud patterns in SIP call traffic.
 pub struct FraudDetector {
-    /// Per-source call pattern tracking.
-    call_patterns: HashMap<IpAddr, CallPattern>,
+    /// Per-source call pattern tracking, least recently used first.
+    call_patterns: LruMap<IpAddr, CallPattern>,
     /// The trigger points this detector applies.
     thresholds: FraudThresholds,
     /// Configured business hours as `(start_hour, end_hour)` in 24h format.
@@ -309,9 +302,6 @@ pub struct FraudDetector {
     /// Never moves backwards — one reordered packet must not rewind the sweep
     /// horizon.
     latest_packet: Option<DateTime<Utc>>,
-    /// Ticks once per tracked source touched; the value stamped into
-    /// [`CallPattern::last_used`] to order eviction.
-    use_counter: u64,
 }
 
 impl FraudDetector {
@@ -335,36 +325,20 @@ impl FraudDetector {
     ///   reproduces [`Self::new`].
     pub fn with_thresholds(business_hours: Option<(u8, u8)>, thresholds: FraudThresholds) -> Self {
         Self {
-            call_patterns: HashMap::new(),
+            call_patterns: LruMap::new(MAX_PATTERN_ENTRIES),
             business_hours,
             thresholds,
             latest_packet: None,
-            use_counter: 0,
         }
     }
 
     /// The per-source pattern for `src`, first seen at `now`, creating it if
-    /// needed and enforcing the entry cap (H4) by evicting the least recently
-    /// used source.
+    /// needed. The entry cap (H4) is the map's own: admitting a new source
+    /// past MAX_PATTERN_ENTRIES evicts the least recently used one, in
+    /// constant time.
     fn pattern_for(&mut self, src: IpAddr, now: DateTime<Utc>) -> &mut CallPattern {
-        if self.call_patterns.len() >= MAX_PATTERN_ENTRIES
-            && !self.call_patterns.contains_key(&src)
-            && let Some(oldest) = self
-                .call_patterns
-                .iter()
-                .min_by_key(|(_, p)| p.last_used)
-                .map(|(&ip, _)| ip)
-        {
-            self.call_patterns.remove(&oldest);
-        }
-        self.use_counter += 1;
-        let use_counter = self.use_counter;
-        let pattern = self
-            .call_patterns
-            .entry(src)
-            .or_insert_with(|| CallPattern::new(now, use_counter));
-        pattern.last_used = use_counter;
-        pattern
+        self.call_patterns
+            .get_or_insert_with(src, || CallPattern::new(now))
     }
 
     /// Record a finished call whose measured duration was short, and report

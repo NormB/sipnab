@@ -127,7 +127,9 @@ pub fn format_scanner_event(src_ip: &str, ua: Option<&str>, method: Option<&str>
 /// # Arguments
 ///
 /// * `src_ip` — Source IP of the flood; sanitized before formatting.
-/// * `count` — Number of REGISTERs observed in the detection window.
+/// * `count` — Challenged failures in the detection window: credentialed
+///   REGISTERs the registrar refused. This is the figure that crossed the
+///   threshold, not the REGISTER count.
 ///
 /// # Returns
 ///

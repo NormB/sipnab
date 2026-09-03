@@ -5606,7 +5606,7 @@ class recur:
   speaks", and [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) described the two as taking one vocabulary.
   They do not: `--filter` runs `expand_alias` first
   ([`src/app/bootstrap.rs:2157`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2157)) and `vcon_selection`
-  ([`src/app/batch.rs:5434`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5434)) parses raw. The doc claim is corrected;
+  ([`src/app/batch.rs:5477`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5477)) parses raw. The doc claim is corrected;
   the behavior is not, and the flag is the one that is wrong -- reusing the
   filter language is the stated design, and ten `DIAGNOSTIC_ALIASES` are part
   of that language.

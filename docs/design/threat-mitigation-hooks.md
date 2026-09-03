@@ -52,6 +52,23 @@ sites emit, all behind a detector, all in
 [`src/app/batch.rs`](../../src/app/batch.rs): a scanner detection (`:1860`), a
 `-K/--kill-target` match (`:1909`), and a registration flood (`:1967`).
 
+The registration flood site has since moved to section 5's terms. `--reg-flood`
+counted REGISTERs and fired on the count, which is the scanner signature's
+defect under another name: the peer that sends the most REGISTERs is the
+customer's SBC re-registering every phone after a registrar restart, each one
+accepted. It now counts *challenged failures* — a REGISTER that carried
+credentials and drew a `401` or `407` on the same transaction — clears the
+count on any `2xx` to a REGISTER, and measures its window in capture time, so a
+replayed file cannot ban a phone for re-registering once a minute for an hour.
+
+All three emit sites also pass the origin gate the kill path uses,
+`kill_response_eligible`, so a detection carried by HEP reaches the jail log
+only under `--hep-allow-kill`, exactly as it reaches the wire. A jail line
+names an address the sender asserted, a ban on it is a ban the sender chose,
+and condition (d) below says that ban outlives the process. The ban path had
+no such gate while the kill path did, which inverted the order those
+conditions ask for.
+
 The fix also had to handle a second-order problem, and the handling is worth
 copying. `--fail2ban` on its own now arms no detector, so it emits nothing — and
 an operator who asked for a jail log and receives an empty file will read it as

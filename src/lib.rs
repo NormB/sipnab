@@ -56,6 +56,7 @@ pub mod crypto;
 pub mod error;
 pub mod expect;
 pub mod llmnr;
+pub mod lru;
 pub mod names;
 pub mod net;
 #[cfg(not(target_arch = "wasm32"))]

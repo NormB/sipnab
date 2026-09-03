@@ -200,7 +200,13 @@ fn every_flag_alias_is_documented() {
 /// it exists. `MAX_EXPRESSION_NODES` was in this set until DOC7 moved it into
 /// the filter reference, which is the worked example of how the number comes
 /// down.
-const UNDOCUMENTED_CEILINGS: usize = 106;
+///
+/// 106 -> 100 on 2026-09-03: the six detector-map ceilings -- the flood,
+/// scanner and fraud detectors' source maps, the flood detector's per-source
+/// open transactions, and the alert engine's cooldown and exec-budget maps --
+/// named in `docs/internals/invariants.md` section 4 when they moved to
+/// constant-time eviction.
+const UNDOCUMENTED_CEILINGS: usize = 100;
 
 #[test]
 fn undocumented_numeric_ceilings_do_not_increase() {

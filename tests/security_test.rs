@@ -839,59 +839,133 @@ fn fraud_detector_caps_call_pattern_entries() {
     );
 }
 
-/// H4: Registration flood detector source tracking must be capped. Alert fires
-/// when REGISTERs exceed the threshold within the 1s window.
-#[test]
-#[serial_test::serial]
-fn reg_flood_detector_caps_source_entries() {
-    let raw = build_sip(
+/// One credentialed REGISTER from `src` on transaction `n`, and the 401 that
+/// refuses it. The registration flood detector counts the pair as one
+/// challenged failure for `src`; the REGISTER alone is never the evidence.
+///
+/// Each pair is stamped one microsecond after the last, so "the oldest
+/// entry" is a fact about the capture rather than about HashMap iteration
+/// order, and ten thousand of them still sit inside one one-second window.
+fn refused_registration(n: u32, src: IpAddr) -> (sipnab::sip::SipMessage, sipnab::sip::SipMessage) {
+    let at = ts() + chrono::TimeDelta::microseconds(i64::from(n));
+    let via = format!("Via: SIP/2.0/UDP 10.9.0.1:5060;branch=z9hG4bK-reg-{n}");
+    let call_id = format!("Call-ID: reg-{n}@test");
+    let register = build_sip(
         "REGISTER sip:registrar@example.com SIP/2.0",
         &[
+            via.as_str(),
             "From: <sip:user@example.com>;tag=r1",
             "To: <sip:user@example.com>",
-            "Call-ID: reg-cap@test",
+            call_id.as_str(),
+            "CSeq: 1 REGISTER",
+            "Authorization: Digest username=\"user\", realm=\"example.com\", nonce=\"abc\", \
+             uri=\"sip:example.com\", response=\"0000\"",
+            "Content-Length: 0",
+        ],
+        b"",
+    );
+    let refusal = build_sip(
+        "SIP/2.0 401 Unauthorized",
+        &[
+            via.as_str(),
+            "From: <sip:user@example.com>;tag=r1",
+            "To: <sip:user@example.com>;tag=r2",
+            call_id.as_str(),
             "CSeq: 1 REGISTER",
             "Content-Length: 0",
         ],
         b"",
     );
-    let base = sipnab::sip::parse_sip(
-        &raw,
-        ts(),
-        localhost(),
-        localhost(),
-        5060,
-        5060,
-        TransportProto::Udp,
-    )
-    .expect("parse");
-    let probe = |detector: &mut RegFloodDetector, ip: IpAddr| {
-        let mut msg = base.clone();
-        msg.src_addr = ip;
-        detector.check(&msg)
+    let parse = |raw: &[u8], s: IpAddr, d: IpAddr| {
+        sipnab::sip::parse_sip(raw, at, s, d, 5060, 5060, TransportProto::Udp).expect("parse")
     };
+    (
+        parse(&register, src, localhost()),
+        parse(&refusal, localhost(), src),
+    )
+}
 
-    // Control: with threshold 5, the 6th REGISTER alerts (5 do not).
+/// One challenged failure for `ip`: the REGISTER, which must never alert on
+/// its own, then the refusal, whose verdict is returned.
+fn challenged_failure(
+    detector: &mut RegFloodDetector,
+    seq: &mut u32,
+    ip: IpAddr,
+) -> Option<sipnab::security::RegFloodAlert> {
+    *seq += 1;
+    let (register, refusal) = refused_registration(*seq, ip);
+    assert!(
+        detector.check(&register).is_none(),
+        "a REGISTER raised the alert on its own: a request is a volume, and only the \
+         registrar's answer to it is an outcome"
+    );
+    detector.check(&refusal)
+}
+
+/// H4: Registration flood detector source tracking must be capped. The alert
+/// fires when challenged FAILURES -- credentialed REGISTERs the registrar
+/// refused -- exceed the threshold within the 1s window.
+#[test]
+#[serial_test::serial]
+fn reg_flood_detector_caps_source_entries() {
+    let mut seq = 0u32;
+
+    // Control: with threshold 5, the 6th challenged failure alerts (5 do not).
     let mut control = RegFloodDetector::new(5);
     for _ in 0..5 {
-        assert!(probe(&mut control, victim_ip()).is_none());
+        assert!(challenged_failure(&mut control, &mut seq, victim_ip()).is_none());
     }
     assert!(
-        probe(&mut control, victim_ip()).is_some(),
-        "control: a 6th REGISTER must alert, else the eviction check is vacuous"
+        challenged_failure(&mut control, &mut seq, victim_ip()).is_some(),
+        "control: a 6th challenged failure must alert, else the eviction check is vacuous"
     );
 
-    // Seed the victim to 5 REGISTERs (one below threshold), oldest.
+    // Seed the victim to 5 failures (one below threshold), oldest.
     let mut detector = RegFloodDetector::new(5);
     for _ in 0..5 {
-        assert!(probe(&mut detector, victim_ip()).is_none());
+        assert!(challenged_failure(&mut detector, &mut seq, victim_ip()).is_none());
     }
     for ip in 1..=H4_CAP + 1 {
-        let _ = probe(&mut detector, IpAddr::V4(Ipv4Addr::from(ip)));
+        let _ = challenged_failure(&mut detector, &mut seq, IpAddr::V4(Ipv4Addr::from(ip)));
     }
     assert!(
-        probe(&mut detector, victim_ip()).is_none(),
+        challenged_failure(&mut detector, &mut seq, victim_ip()).is_none(),
         "cap regressed: victim source state survived the flood and re-alerted"
+    );
+}
+
+/// A flood of responses must not be able to evict a tracked source.
+///
+/// The cap is applied where entries are created, and a response never
+/// creates one. The shipped code created an entry for every 401 aimed at a
+/// destination this detector had never seen a REGISTER from -- uncapped, on
+/// the branch the cap did not reach -- so ten thousand stray challenges made
+/// the one real source the oldest entry, and the next REGISTER from anyone
+/// evicted its state in the middle of the brute force it was counting.
+#[test]
+#[serial_test::serial]
+fn reg_flood_response_flood_cannot_evict_a_tracked_source() {
+    let mut seq = 0u32;
+    let mut detector = RegFloodDetector::new(5);
+    for _ in 0..5 {
+        assert!(challenged_failure(&mut detector, &mut seq, victim_ip()).is_none());
+    }
+    // A 401 toward every address in a range, none of them answering a
+    // REGISTER this detector saw.
+    for ip in 1..=H4_CAP + 1 {
+        seq += 1;
+        let (_, refusal) = refused_registration(seq, IpAddr::V4(Ipv4Addr::from(ip)));
+        assert!(detector.check(&refusal).is_none());
+    }
+    // One more source registers. If the responses created entries, the map
+    // is at its cap and this evicts the oldest -- the victim.
+    seq += 1;
+    let (newcomer, _) = refused_registration(seq, IpAddr::V4(Ipv4Addr::new(10, 200, 0, 1)));
+    let _ = detector.check(&newcomer);
+    assert!(
+        challenged_failure(&mut detector, &mut seq, victim_ip()).is_some(),
+        "the victim's five failures were lost: a flood of responses to addresses that \
+         never registered filled the map and evicted the one source that did"
     );
 }
 

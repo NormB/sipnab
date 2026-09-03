@@ -541,13 +541,13 @@ pub struct SecurityConfig {
     pub alert: Option<Vec<String>>,
     /// Command to execute on alert.
     pub alert_exec: Option<String>,
-    /// REGISTER requests per second from one source before a registration
-    /// flood is reported (default: 50).
+    /// Challenged failures per second from one source before a registration
+    /// flood is reported (default: 50): REGISTERs that carried credentials
+    /// and drew a 401 or 407 on the same transaction.
     ///
     /// The default is a carrier-registrar figure. It is invisible to the
-    /// ten-a-second brute force a small PBX actually sees, and it is noise on
-    /// a registrar riding out a re-REGISTER storm, so the right value belongs
-    /// to the registrar being watched rather than to sipnab.
+    /// ten-a-second brute force a small PBX actually sees, so the right value
+    /// belongs to the registrar being watched rather than to sipnab.
     pub reg_flood_threshold: Option<u32>,
     /// Scanner-kill responses per second sipnab may put on the wire
     /// (default: 10).

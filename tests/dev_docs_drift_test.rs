@@ -623,7 +623,11 @@ fn linked_code_targets_exist() {
     // `rtpengine-control-plane.md` -- `src/relay/mod.rs`, `src/relay/types.rs`
     // and `src/app/servers.rs`, the seam's declaration, vocabulary and
     // composition root.
-    const EXPECTED_CODE_LINKS: usize = 407;
+    // 407 -> 408: one link, `internals/invariants.md` section 4 naming
+    // `src/security/digest_leak.rs` for the nonce map's bound.
+    // 408 -> 409: one more in the same section, `src/lru.rs`, the map the
+    // detectors' per-source caps now evict through.
+    const EXPECTED_CODE_LINKS: usize = 409;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

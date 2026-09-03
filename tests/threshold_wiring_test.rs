@@ -81,20 +81,39 @@ fn arg(path: &Path) -> String {
 
 // ── SIP message builders ────────────────────────────────────────────────
 
-/// A `REGISTER` from the caller, numbered so each has its own Call-ID.
+/// A credentialed `REGISTER` from the caller, numbered so each has its own
+/// Call-ID and transaction branch. The `Authorization` header is what makes
+/// the registrar's 401 a refusal rather than the challenge every registration
+/// opens with.
 fn register(i: usize) -> Vec<u8> {
     let msg = format!(
         "REGISTER sip:10.2.0.1 SIP/2.0\r\n\
          Via: SIP/2.0/UDP 10.1.0.1:5060;branch=z9hG4bKreg{i}\r\n\
          Max-Forwards: 70\r\n\
-         From: <sip:alice@10.1.0.1>;tag=r{i}\r\n\
+         From: <sip:alice@10.1.0.1>;tag=treg{i}\r\n\
          To: <sip:alice@10.2.0.1>\r\n\
          Call-ID: reg-{i}@10.1.0.1\r\n\
          CSeq: 1 REGISTER\r\n\
          Contact: <sip:alice@10.1.0.1:5060>\r\n\
+         Authorization: Digest username=\"alice\", realm=\"10.2.0.1\", nonce=\"abc\", \
+         uri=\"sip:10.2.0.1\", response=\"0000\"\r\n\
          Content-Length: 0\r\n\r\n"
     );
     udp_frame(A, B, 5060, 5060, msg.as_bytes())
+}
+
+/// The registrar refusing `register(i)`: a 401 on the same transaction.
+fn refused_register(i: usize) -> Vec<u8> {
+    response(
+        401,
+        "Unauthorized",
+        &format!("reg-{i}@10.1.0.1"),
+        &format!("reg{i}"),
+        "alice",
+        "1 REGISTER",
+        None,
+        true,
+    )
 }
 
 /// An `INVITE` to `to_user`, optionally carrying an SDP offer.
@@ -303,15 +322,21 @@ fn scan(pcap: &str, extra: &[&str]) -> String {
 
 // ── [security] reg_flood_threshold ──────────────────────────────────────
 
-/// The declared REGISTER rate is what decides whether a burst is a flood.
+/// The declared failure rate is what decides whether a burst is a flood.
 ///
-/// Five REGISTERs land inside one window. The shipped 50/s cannot see them —
-/// which is the complaint: 50/s is a carrier-registrar figure and a small PBX
-/// is brute-forced at ten. A declared 2/s does see them.
+/// Five credentialed REGISTERs, each refused, land inside one window. The
+/// shipped 50/s cannot see them — which is the complaint: 50/s is a
+/// carrier-registrar figure and a small PBX is brute-forced at ten. A
+/// declared 2/s does see them.
 #[test]
 fn reg_flood_threshold_decides_when_a_burst_is_a_flood() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let frames: Vec<(Vec<u8>, u64)> = (0..5).map(|i| (register(i), i as u64 * 10_000)).collect();
+    let frames: Vec<(Vec<u8>, u64)> = (0..5)
+        .flat_map(|i| {
+            let at = i as u64 * 10_000;
+            [(register(i), at), (refused_register(i), at + 1_000)]
+        })
+        .collect();
     let pcap = arg(&write_capture(&dir, "regflood", &frames));
     let cfg = arg(&write_config(&dir, "[security]\nreg_flood_threshold = 2\n"));
 

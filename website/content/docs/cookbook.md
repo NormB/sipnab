@@ -1069,7 +1069,7 @@ sudo sipnab -N -d eth0 \
 
 `--fail2ban` is a boolean flag — it switches sipnab's stdout to fail2ban-friendly log lines. Pipe to a file (or run under systemd and capture the unit's stdout).
 
-`--fail2ban` writes **detections**, so it needs a detector switched on beside it: `--kill-scanner` for `scanner_detected`, `--reg-flood` for `reg_flood`. On its own it selects the format and nothing produces lines for it, and a jail reading an always-empty file never says so.
+`--fail2ban` writes **detections**, so it needs a detector switched on beside it: `--kill-scanner` for `scanner_detected`, `--reg-flood` for `reg_flood`. On its own it selects the format and nothing produces lines for it, and a jail reading an always-empty file never says so. Detections carried by HEP input never reach the log without `--hep-allow-kill`, for the reason the kill path has always refused them: the inner addresses are the sender's claim, and a jail line would ban whatever address the sender chose. sipnab warns once at startup when `--fail2ban` meets HEP input without the opt-in, so the empty file is not mistaken for an all-clear.
 
 ```bash
 # Run sipnab with fail2ban-format output, write to a logfile
@@ -2035,7 +2035,7 @@ sipnab -N -I capture.pcap --digest-leak --recommend-block fail2ban --quiet
 **What to look for:**
 
 - `WeakAlgorithm` with **no** `algorithm` parameter in the challenge is the same finding as `algorithm=MD5`: [RFC 2617](https://www.rfc-editor.org/rfc/rfc2617) makes MD5 the default when the parameter is absent, so silence is a choice.
-- `NonceReuse` across challenges is the one to act on first. A nonce that repeats is a replay window, and it usually means a registrar cluster whose nodes do not share nonce state.
+- `NonceReuse` across challenges is the one to act on first. A nonce that repeats is a replay window, and it usually means a registrar cluster whose nodes do not share nonce state. A 401 the registrar retransmitted -- the same Call-ID, CSeq and Via branch -- is the same challenge arriving twice, and does not count.
 
 **Pitfalls:**
 

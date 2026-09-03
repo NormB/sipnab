@@ -1584,10 +1584,12 @@ pub struct SecurityArgs {
     pub kill_spoof: KillSpoof,
 
     /// Allow scanner-kill to send active responses for packets received via
-    /// the HEP listener. OFF by default: a HEP sender asserts the inner
-    /// src/dst addresses, so absent `--hep-auth` an attacker could aim the
-    /// kill response at a victim of their choosing (SN-01). Only enable when
-    /// HEP input is authenticated and trusted.
+    /// the HEP listener, and admit HEP-carried detections to the `--fail2ban`
+    /// jail log. OFF by default: a HEP sender asserts the inner src/dst
+    /// addresses, so absent `--hep-auth` an attacker could aim the kill
+    /// response at a victim of their choosing (SN-01), or have the jail ban
+    /// an address of their choosing. Only enable when HEP input is
+    /// authenticated and trusted.
     #[arg(help_heading = "Security", long = "hep-allow-kill")]
     pub hep_allow_kill: bool,
 
@@ -1595,21 +1597,29 @@ pub struct SecurityArgs {
     #[arg(help_heading = "Security", long)]
     pub fraud_detect: bool,
 
-    /// Detect registration flood attacks.
+    /// Detect registration floods: credentialed REGISTERs the registrar keeps
+    /// refusing. sipnab reports a source when the REGISTERs it sent with
+    /// `Authorization` that drew a `401`/`407` on the same transaction exceed
+    /// `--reg-flood-threshold` inside one second of capture time. A REGISTER
+    /// on its own is never evidence, so a re-REGISTER storm the registrar
+    /// accepts after a restart is the customer's SBC and not a flood, and any
+    /// `2xx` to a REGISTER clears the source's count.
     #[arg(help_heading = "Security", long)]
     pub reg_flood: bool,
 
-    /// REGISTER requests per second from one source before `--reg-flood`
-    /// reports a flood.
+    /// Challenged failures per second from one source before `--reg-flood`
+    /// reports a flood: REGISTERs that carried credentials and drew a `401`
+    /// or `407`.
     ///
     /// No clap `default_value`, so `[security] reg_flood_threshold` can take
     /// effect; the default lives in [`Cli::DEFAULT_REG_FLOOD_THRESHOLD`] and
     /// is applied by [`Self::reg_flood_threshold`].
     ///
     /// The shipped 50/s is a carrier-registrar figure: it never sees the
-    /// ten-a-second brute force a small PBX gets, and it fires all through a
-    /// re-REGISTER storm on a registrar recovering from a restart. The right
-    /// value is a property of the registrar being watched.
+    /// ten-a-second brute force a small PBX gets. The right value is a
+    /// property of the registrar being watched. Counted in capture time, so a
+    /// file replays as the traffic it recorded rather than as fast as the disk
+    /// reads it.
     #[arg(
         help_heading = "Security",
         long = "reg-flood-threshold",

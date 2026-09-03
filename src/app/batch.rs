@@ -2474,6 +2474,24 @@ impl BatchRunner {
             );
         }
 
+        // The jail line passes the same origin gate as the kill response: a
+        // HEP sender asserts the inner addresses, so a detection carried by
+        // HEP names whatever source the sender chose, and a ban on that name
+        // is a ban the sender picked. Nothing HEP-origin reaches the log
+        // without the opt-in -- and an operator watching a HEP feed with
+        // --fail2ban would otherwise read the empty file as an all-clear.
+        if cli.output_args.fail2ban
+            && !cli.security_args.hep_allow_kill
+            && (cli.hep_args.hep_listen.is_some() || cli.hep_args.hep_parse)
+        {
+            tracing::warn!(
+                "--fail2ban writes nothing for detections carried by HEP: the inner \
+                 addresses are the sender's claim, and a jail line would ban whatever \
+                 address it chose. Pass --hep-allow-kill to admit them once the feed is \
+                 authenticated (--hep-auth) and trusted."
+            );
+        }
+
         // 17a-2. Spawn scanner-kill worker thread (D16: process isolation)
         let scanner_kill_handle: Option<ScannerKillHandle> =
             match (kill_worker_active, transmit_permit) {
@@ -3276,53 +3294,15 @@ impl BatchRunner {
                     // ordering identical to emitting inline.
                     effects.drain(&mut sink, &engines.alerts, &mut event_exec);
 
-                    // --hep-send: forward matched SIP messages via HEP
+                    // --hep-send: SIP as protocol type 1, RTCP as type 5,
+                    // nothing else. What is stamped and what is skipped is
+                    // decided in `HepSender::forward_parsed`, where a test can
+                    // reach it.
                     #[cfg(feature = "hep")]
                     if let Some(ref sender) = hep_sender
-                        && sip::is_sip_message(&effective_pp.payload)
-                        && let Ok(sip_msg) = sip::parse_sip(
-                            &effective_pp.payload,
-                            effective_pp.timestamp,
-                            effective_pp.src_addr,
-                            effective_pp.dst_addr,
-                            effective_pp.src_port,
-                            effective_pp.dst_port,
-                            crate::capture::parse::TransportProto::Udp,
-                        )
-                        && let Err(e) = sender.send(&sip_msg)
+                        && let Err(e) = sender.forward_parsed(effective_pp)
                     {
-                        tracing::debug!("HEP send failed: {e}");
-                    }
-
-                    // --hep-send: and the RTCP alongside it, as protocol type 5.
-                    //
-                    // Separate `if` rather than an `else` on the one above: the SIP
-                    // arm can fall through for reasons that are not "this was not
-                    // SIP" (a parse failure), and an `else` would then hand a
-                    // malformed SIP datagram to the RTCP detector. These are two
-                    // independent questions about the same bytes.
-                    //
-                    // RTP is not forwarded — see `HepSender::send_rtcp`.
-                    #[cfg(feature = "hep")]
-                    if let Some(ref sender) = hep_sender
-                        && !sip::is_sip_message(&effective_pp.payload)
-                        && crate::pipeline::is_rtcp_packet(
-                            &effective_pp.payload,
-                            effective_pp.dst_port,
-                        )
-                        && let Err(e) = sender.send_rtcp(
-                            &crate::capture::hep::HepEndpoint {
-                                src_addr: effective_pp.src_addr,
-                                dst_addr: effective_pp.dst_addr,
-                                src_port: effective_pp.src_port,
-                                dst_port: effective_pp.dst_port,
-                                transport: effective_pp.transport,
-                            },
-                            effective_pp.timestamp,
-                            &effective_pp.payload,
-                        )
-                    {
-                        tracing::debug!("HEP RTCP send failed: {e}");
+                        tracing::debug!("HEP forward failed: {e:#}");
                     }
                 }
             }
@@ -4075,7 +4055,16 @@ fn process_parsed_packet(
                     ),
                     at: sip_msg.timestamp,
                 });
-                if cli.output_args.fail2ban {
+                // The jail line names the packet's source address, and under
+                // HEP that address is the sender's claim. Same gate as the kill
+                // response below, and for the same reason -- with the difference
+                // that a ban outlives this process, so the bar is not lower.
+                if cli.output_args.fail2ban
+                    && sec::scanner_kill::kill_response_eligible(
+                        pp.input_origin,
+                        cli.security_args.hep_allow_kill,
+                    )
+                {
                     let event = output::format_scanner_event(
                         &alert.src_ip.to_string(),
                         alert.ua.as_deref(),
@@ -4127,7 +4116,13 @@ fn process_parsed_packet(
                     ),
                     at: sip_msg.timestamp,
                 });
-                if cli.output_args.fail2ban {
+                // Same origin gate as the scanner detection above.
+                if cli.output_args.fail2ban
+                    && sec::scanner_kill::kill_response_eligible(
+                        pp.input_origin,
+                        cli.security_args.hep_allow_kill,
+                    )
+                {
                     let event =
                         output::format_scanner_event(&sip_msg.src_addr.to_string(), ua, method);
                     out.write_str(&event);
@@ -4186,16 +4181,24 @@ fn process_parsed_packet(
                 pending_alerts.push(DeferredAlert {
                     kind: "reg_flood",
                     src_ip: alert.src_ip,
+                    // The failures are what crossed the threshold; the
+                    // REGISTER count is the shape of the traffic around them.
                     detail: format!(
-                        "count={} threshold={}",
-                        alert.register_count, alert.threshold
+                        "auth_failures={} registers={} threshold={}",
+                        alert.auth_fail_count, alert.register_count, alert.threshold
                     ),
                     at: sip_msg.timestamp,
                 });
-                if cli.output_args.fail2ban {
+                // Same origin gate as the scanner detection above.
+                if cli.output_args.fail2ban
+                    && sec::scanner_kill::kill_response_eligible(
+                        pp.input_origin,
+                        cli.security_args.hep_allow_kill,
+                    )
+                {
                     let event = output::format_reg_flood_event(
                         &alert.src_ip.to_string(),
-                        alert.register_count,
+                        alert.auth_fail_count,
                     );
                     out.write_str(&event);
                     out.write_str("\n");
@@ -9561,6 +9564,347 @@ mod tests {
     }
 
     // ── dispatch_sip_output ────────────────────────────────────────────
+
+    // ── The jail line and where its address came from ────────────────
+
+    /// Raw bytes of a REGISTER from 10.0.0.1 on transaction `branch`,
+    /// carrying an `Authorization` header when `with_credentials` is set.
+    fn register_bytes(branch: &str, with_credentials: bool) -> Vec<u8> {
+        let auth = if with_credentials {
+            "Authorization: Digest username=\"u\", realm=\"r\", nonce=\"n\", uri=\"sip:r\", \
+             response=\"0\"\r\n"
+        } else {
+            ""
+        };
+        format!(
+            "REGISTER sip:10.0.0.2 SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch={branch}\r\n\
+             From: <sip:u@10.0.0.2>;tag=f1\r\n\
+             To: <sip:u@10.0.0.2>\r\n\
+             Call-ID: {branch}@10.0.0.1\r\n\
+             CSeq: 1 REGISTER\r\n\
+             Max-Forwards: 70\r\n\
+             {auth}Content-Length: 0\r\n\r\n"
+        )
+        .into_bytes()
+    }
+
+    /// Raw bytes of the registrar's 401 answering `register_bytes(branch, ..)`.
+    fn challenge_bytes(branch: &str) -> Vec<u8> {
+        format!(
+            "SIP/2.0 401 Unauthorized\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch={branch}\r\n\
+             From: <sip:u@10.0.0.2>;tag=f1\r\n\
+             To: <sip:u@10.0.0.2>;tag=t1\r\n\
+             Call-ID: {branch}@10.0.0.1\r\n\
+             CSeq: 1 REGISTER\r\n\
+             Content-Length: 0\r\n\r\n"
+        )
+        .into_bytes()
+    }
+
+    /// Raw bytes of an OPTIONS from 10.0.0.1 announcing a scanner's
+    /// User-Agent, which the signature rule matches on sight.
+    fn scanner_options_bytes() -> Vec<u8> {
+        b"OPTIONS sip:10.0.0.2 SIP/2.0\r\n\
+          Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-scan\r\n\
+          From: <sip:x@10.0.0.1>;tag=s1\r\n\
+          To: <sip:x@10.0.0.2>\r\n\
+          Call-ID: scan@10.0.0.1\r\n\
+          CSeq: 1 OPTIONS\r\n\
+          Max-Forwards: 70\r\n\
+          User-Agent: friendly-scanner\r\n\
+          Content-Length: 0\r\n\r\n"
+            .to_vec()
+    }
+
+    /// A UDP `ParsedPacket` carrying `payload` from `src` to `dst` on 5060,
+    /// with its addressing attributed to `origin`.
+    fn parsed_sip_from(
+        origin: crate::capture::parse::InputOrigin,
+        payload: Vec<u8>,
+        src: [u8; 4],
+        dst: [u8; 4],
+    ) -> ParsedPacket {
+        let mut pp = parsed_sip_packet(payload, 5060, 5060);
+        pp.src_addr = IpAddr::V4(Ipv4Addr::from(src));
+        pp.dst_addr = IpAddr::V4(Ipv4Addr::from(dst));
+        pp.input_origin = origin;
+        pp
+    }
+
+    /// Three credentialed REGISTERs from 10.0.0.1, each refused by 10.0.0.2:
+    /// one more challenged failure than a threshold of 2 allows.
+    fn refused_registrations(origin: crate::capture::parse::InputOrigin) -> Vec<ParsedPacket> {
+        (0..3)
+            .flat_map(|i| {
+                let branch = format!("z9hG4bK-f2b-{i}");
+                [
+                    parsed_sip_from(
+                        origin,
+                        register_bytes(&branch, true),
+                        [10, 0, 0, 1],
+                        [10, 0, 0, 2],
+                    ),
+                    parsed_sip_from(
+                        origin,
+                        challenge_bytes(&branch),
+                        [10, 0, 0, 2],
+                        [10, 0, 0, 1],
+                    ),
+                ]
+            })
+            .collect()
+    }
+
+    /// Detection engines with nothing armed; each test arms what it needs.
+    fn unarmed_engines() -> DetectionEngines {
+        DetectionEngines {
+            scanner: None,
+            fraud: None,
+            digest: None,
+            reg_flood: None,
+            alerts: Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None))),
+            kill_handle: None,
+            kill_response_code: 0,
+            kill_targets: Vec::new(),
+        }
+    }
+
+    /// A `-N --fail2ban` command line.
+    fn fail2ban_cli() -> Cli {
+        let mut cli = base_cli();
+        cli.output_args.fail2ban = true;
+        cli
+    }
+
+    /// Drive `packets` through the headless loop with `engines`, returning
+    /// what reached the per-message sink and how many alert firings were
+    /// queued on the way -- the two halves of a detection: the line a jail
+    /// bans on, and the finding a human reads. Only the first is
+    /// origin-gated, and a test of the gate has to show the second survived.
+    fn drive_detections(
+        cli: &Cli,
+        engines: &mut DetectionEngines,
+        packets: &[ParsedPacket],
+    ) -> (String, usize) {
+        let portrange = (5060, 5061);
+        let matcher = SipMatcher::new(cli, None).expect("matcher");
+        let filter_expr: Option<FilterExpr> = None;
+        let output_opts = OutputOptions {
+            color: output::ColorMode::Never,
+            ..Default::default()
+        };
+        let ctx = BatchContext {
+            matcher: &matcher,
+            filter_expr: &filter_expr,
+            output_opts: &output_opts,
+            cli,
+            no_rtp: false,
+            after_count: 0,
+            portrange,
+        };
+        let mut dialog_store = DialogStore::new(100, false);
+        let mut stream_store = StreamStore::new(100);
+        let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
+        let mut event_exec = EventExecEngine::new(
+            None,
+            None,
+            0,
+            0.0,
+            crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+        );
+        let mut counters = PacketCounters {
+            sip_count: 0,
+            rtp_count: 0,
+            prev_timestamp: None,
+            trailing_remaining: 0,
+            followed_dialogs: std::collections::HashSet::new(),
+            dtmf_count: 0,
+        };
+        let mut effects = DeferredEffects::new();
+        let mut sink = output::BatchSink::new(Vec::new(), false);
+        let mut queued = 0usize;
+        for pp in packets {
+            let mut state = ProcessingState {
+                dialog_store: &mut dialog_store,
+                stream_store: &mut stream_store,
+                rtp_heuristic: &mut rtp_heuristic,
+                event_exec: &mut event_exec,
+                #[cfg(feature = "tls")]
+                srtp: None,
+                #[cfg(feature = "tls")]
+                dtls: None,
+                group: None,
+            };
+            process_parsed_packet(pp, &ctx, &mut state, engines, &mut counters, &mut effects);
+            queued += effects.alerts.len();
+            effects.drain(&mut sink, &engines.alerts, &mut event_exec);
+        }
+        sink.flush();
+        (
+            String::from_utf8(sink.into_inner()).expect("output is utf-8"),
+            queued,
+        )
+    }
+
+    /// A registration flood carried by HEP never reaches the jail log
+    /// without the opt-in, and still reaches the alert path.
+    ///
+    /// `--hep-listen 0.0.0.0:9060 --hep-allow 198.51.100.0/24 --reg-flood
+    /// --fail2ban`: any host in that range, or a UDP source spoofed into it, sends
+    /// HEP-wrapped REGISTERs whose inner source is the customer's SBC, and
+    /// the jail bans the SBC. The kill path has refused sender-asserted
+    /// addressing without `--hep-allow-kill` since SN-01; the ban path wrote
+    /// the line unconditionally, and a firewall rule outlives the process
+    /// that asked for it.
+    #[test]
+    fn hep_origin_reg_flood_never_reaches_the_jail_log() {
+        use crate::capture::parse::InputOrigin;
+        let mut cli = fail2ban_cli();
+        let armed = || {
+            let mut engines = unarmed_engines();
+            engines.reg_flood = Some(RegFloodDetector::new(2));
+            engines
+        };
+
+        let (out, queued) =
+            drive_detections(&cli, &mut armed(), &refused_registrations(InputOrigin::Hep));
+        assert!(
+            queued >= 1,
+            "the detection must still reach the alert path -- tier 1 is not origin-gated \
+             -- but {queued} firings were queued"
+        );
+        assert!(
+            !out.contains("reg_flood src="),
+            "a registration flood whose addressing a HEP sender asserted reached the jail \
+             log:\n{out}"
+        );
+
+        // Control: the same flood read off the wire is written.
+        let (out, _) = drive_detections(
+            &cli,
+            &mut armed(),
+            &refused_registrations(InputOrigin::Wire),
+        );
+        assert!(
+            out.contains("reg_flood src=10.0.0.1 count=3"),
+            "control: a wire-origin flood must reach the jail log, else the gate above is \
+             vacuous:\n{out}"
+        );
+
+        // Opt-in: --hep-allow-kill admits HEP-origin detections to the log the
+        // same way it admits them to the wire.
+        cli.security_args.hep_allow_kill = true;
+        let (out, _) =
+            drive_detections(&cli, &mut armed(), &refused_registrations(InputOrigin::Hep));
+        assert!(
+            out.contains("reg_flood src=10.0.0.1 count=3"),
+            "--hep-allow-kill must admit a HEP-origin flood to the jail log:\n{out}"
+        );
+    }
+
+    /// The scanner-signature site: same rule.
+    #[test]
+    fn hep_origin_scanner_detection_never_reaches_the_jail_log() {
+        use crate::capture::parse::InputOrigin;
+        let cli = fail2ban_cli();
+        let armed = || {
+            let mut engines = unarmed_engines();
+            engines.scanner = Some(ScannerDetector::new(&[]));
+            engines
+        };
+        let probe = |origin| {
+            vec![parsed_sip_from(
+                origin,
+                scanner_options_bytes(),
+                [10, 0, 0, 1],
+                [10, 0, 0, 2],
+            )]
+        };
+
+        let (out, queued) = drive_detections(&cli, &mut armed(), &probe(InputOrigin::Hep));
+        assert_eq!(
+            queued, 1,
+            "the signature match must still be queued as an alert"
+        );
+        assert!(
+            !out.contains("scanner_detected"),
+            "a scanner detection whose addressing a HEP sender asserted reached the jail \
+             log:\n{out}"
+        );
+
+        let (out, _) = drive_detections(&cli, &mut armed(), &probe(InputOrigin::Wire));
+        assert!(
+            out.contains("scanner_detected src=10.0.0.1"),
+            "control: a wire-origin detection must reach the jail log:\n{out}"
+        );
+    }
+
+    /// The `-K/--kill-target` site: same rule. The operator named the
+    /// address, which is why `-K` may transmit at all -- but under HEP the
+    /// address a packet claims to come from is still the sender's word, and
+    /// a jail line names that claim.
+    #[test]
+    fn hep_origin_kill_target_match_never_reaches_the_jail_log() {
+        use crate::capture::parse::InputOrigin;
+        let cli = fail2ban_cli();
+        let armed = || {
+            let mut engines = unarmed_engines();
+            engines.kill_targets =
+                vec![sec::scanner_kill::KillTarget::parse("10.0.0.1").expect("target")];
+            engines
+        };
+        let request = |origin| {
+            vec![parsed_sip_from(
+                origin,
+                register_bytes("z9hG4bK-kt", false),
+                [10, 0, 0, 1],
+                [10, 0, 0, 2],
+            )]
+        };
+
+        let (out, queued) = drive_detections(&cli, &mut armed(), &request(InputOrigin::Hep));
+        assert_eq!(
+            queued, 1,
+            "the kill-target match must still be queued as an alert"
+        );
+        assert!(
+            !out.contains("scanner_detected"),
+            "a kill-target match whose addressing a HEP sender asserted reached the jail \
+             log:\n{out}"
+        );
+
+        let (out, _) = drive_detections(&cli, &mut armed(), &request(InputOrigin::Wire));
+        assert!(
+            out.contains("scanner_detected src=10.0.0.1"),
+            "control: a wire-origin match must reach the jail log:\n{out}"
+        );
+    }
+
+    /// A uprobe read carries no addressing at all, and no opt-in reaches it:
+    /// `--hep-allow-kill` is about HEP, and bytes lifted out of a process
+    /// name no socket a firewall could ban.
+    #[test]
+    fn uprobe_origin_never_reaches_the_jail_log_even_with_the_opt_in() {
+        use crate::capture::parse::InputOrigin;
+        let mut cli = fail2ban_cli();
+        cli.security_args.hep_allow_kill = true;
+        let mut engines = unarmed_engines();
+        engines.reg_flood = Some(RegFloodDetector::new(2));
+
+        let (out, queued) = drive_detections(
+            &cli,
+            &mut engines,
+            &refused_registrations(InputOrigin::Uprobe),
+        );
+        assert!(queued >= 1, "the detection must still reach the alert path");
+        assert!(
+            !out.contains("reg_flood src="),
+            "a uprobe-origin flood reached the jail log under --hep-allow-kill, which is an \
+             opt-in about HEP and must not reach input that has no address at all:\n{out}"
+        );
+    }
 
     /// Every output backend (default text, JSON, pretty JSON, fail2ban, raw
     /// dump, suppressed, line-buffered) produces its expected bytes.

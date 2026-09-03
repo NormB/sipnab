@@ -32,6 +32,7 @@ use chrono::{DateTime, TimeZone, Utc};
 
 use super::CaptureConfig;
 use super::packet::{Packet, PreParsed};
+use super::parse::ParsedPacket;
 use crate::net::TransportProto;
 use crate::signals;
 
@@ -1268,6 +1269,17 @@ fn parse_hep_v2(data: &[u8]) -> Result<HepPacket> {
 
 // ── HEP v3 builder (for sender) ─────────────────────────────────────
 
+/// What [`HepSender::forward_parsed`] did with a packet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Forwarded {
+    /// Sent as HEP protocol type 1.
+    Sip,
+    /// Sent as HEP protocol type 5.
+    Rtcp,
+    /// Neither SIP nor RTCP: nothing was sent.
+    Nothing,
+}
+
 /// Network endpoint pair for HEP packet construction.
 pub struct HepEndpoint {
     /// Source IP address of the original packet.
@@ -1287,6 +1299,19 @@ pub struct HepEndpoint {
     /// [`TransportProto::Tls`] "so the pipeline parses (and reports) the true
     /// transport origin" — both reached the collector labeled UDP.
     pub transport: TransportProto,
+}
+
+impl From<&ParsedPacket> for HepEndpoint {
+    /// The 5-tuple of a captured packet, as the collector should record it.
+    fn from(pp: &ParsedPacket) -> Self {
+        Self {
+            src_addr: pp.src_addr,
+            dst_addr: pp.dst_addr,
+            src_port: pp.src_port,
+            dst_port: pp.dst_port,
+            transport: pp.transport,
+        }
+    }
 }
 
 impl HepEndpoint {
@@ -2465,6 +2490,40 @@ impl HepSender {
         self.send_payload(endpoint, timestamp, HepProtocol::Rtcp, payload)
     }
 
+    /// Forward one captured packet: SIP as HEP protocol type 1, RTCP as type
+    /// 5, and anything else not at all.
+    ///
+    /// The whole of what `--hep-send` does with a packet, in one place a test
+    /// can reach with a [`ParsedPacket`] built by hand. It lived inline in
+    /// the batch loop, nine hundred lines long, where the transport it stamped
+    /// was a literal no test could see: the loop re-parsed each SIP message
+    /// with `TransportProto::Udp` and handed the sender that, so a TCP or TLS
+    /// trunk reached the collector recorded as UDP. The endpoint is built from
+    /// the packet the pipeline delivered -- addresses, ports, transport and
+    /// timestamp -- exactly as the RTCP branch always did, and the bytes go
+    /// as the wire carried them. Nothing is parsed twice.
+    ///
+    /// Two questions about the same bytes, asked in order: SIP first, then
+    /// RTCP. RTP is deliberately not forwarded; see [`Self::send_rtcp`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the UDP send fails.
+    pub fn forward_parsed(&self, pp: &ParsedPacket) -> Result<Forwarded> {
+        let endpoint = HepEndpoint::from(pp);
+        if crate::sip::is_sip_message(&pp.payload) {
+            self.send_payload(&endpoint, pp.timestamp, HepProtocol::Sip, &pp.payload)
+                .context("forwarding SIP")?;
+            return Ok(Forwarded::Sip);
+        }
+        if crate::pipeline::is_rtcp_packet(&pp.payload, pp.dst_port) {
+            self.send_payload(&endpoint, pp.timestamp, HepProtocol::Rtcp, &pp.payload)
+                .context("forwarding RTCP")?;
+            return Ok(Forwarded::Rtcp);
+        }
+        Ok(Forwarded::Nothing)
+    }
+
     /// Shared by every public send. The permit-guarded [`Self::transmit`] is
     /// reached from here and nowhere else, so adding a protocol does not add a
     /// second answer to "what can put bytes on the network".
@@ -2628,6 +2687,136 @@ mod tests {
             pkt.protocol,
             HepProtocol::Sip,
             "SIP must stay protocol type 1"
+        );
+    }
+
+    /// A captured packet carrying `payload` on `transport` to `dst_port`,
+    /// with no provenance: the shape the batch loop hands `forward_parsed`.
+    fn captured(payload: &[u8], transport: TransportProto, dst_port: u16) -> ParsedPacket {
+        ParsedPacket {
+            timestamp: Utc::now(),
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            src_port: 5060,
+            dst_port,
+            transport,
+            payload: bytes::Bytes::copy_from_slice(payload),
+            frame: None,
+            frame_bytes: None,
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 0,
+            dscp: None,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
+        }
+    }
+
+    /// A collector on loopback that gives up after `wait`, and a sender
+    /// aimed at it.
+    fn collector_and_sender(wait: std::time::Duration) -> (UdpSocket, HepSender) {
+        let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
+        collector
+            .set_read_timeout(Some(wait))
+            .expect("set read timeout");
+        let dest = collector.local_addr().expect("collector addr").to_string();
+        let sender = HepSender::new(&dest, 7, None, HepAuthMode::Plain).expect("build sender");
+        (collector, sender)
+    }
+
+    /// Forward `pp` to a fresh collector and parse the datagram that arrives.
+    fn forward_and_receive(pp: &ParsedPacket) -> (Forwarded, HepPacket) {
+        let (collector, sender) = collector_and_sender(std::time::Duration::from_secs(5));
+        let what = sender.forward_parsed(pp).expect("forward");
+        let mut buf = [0u8; 2048];
+        let n = collector
+            .recv(&mut buf)
+            .expect("a datagram reaches the collector");
+        (what, parse_hep(&buf[..n]).expect("parse the datagram"))
+    }
+
+    /// A SIP request as the wire carries it.
+    const OPTIONS: &[u8] = b"OPTIONS sip:a@b SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
+
+    /// The failure this shipped with. `-d eth0 --hep-send homer:9060` on a
+    /// TCP trunk: the batch loop re-parsed every message with a literal
+    /// `TransportProto::Udp` before handing it to the sender, so the IP
+    /// protocol chunk read 17 for every message and the collector recorded
+    /// the trunk as UDP. The endpoint had already learned to carry the
+    /// transport; the loop threw it away one line earlier. TCP SIP reaches
+    /// this point reassembled and stamped `Tcp`, so the chunk must read 6.
+    #[test]
+    fn forward_parsed_stamps_a_tcp_message_as_ip_protocol_6() {
+        let (what, pkt) = forward_and_receive(&captured(OPTIONS, TransportProto::Tcp, 5060));
+        assert_eq!(what, Forwarded::Sip);
+        assert_eq!(pkt.protocol, HepProtocol::Sip, "SIP stays protocol type 1");
+        assert_eq!(
+            pkt.ip_protocol, 6,
+            "SIP captured over TCP reached the collector stamped IP protocol {}: a TCP \
+             trunk recorded as UDP",
+            pkt.ip_protocol
+        );
+    }
+
+    /// SIP recovered from TLS is stamped `Tls` by the pipeline so the true
+    /// transport is reported; on the wire it rode TCP, and a collector
+    /// filtering `proto=tcp` must find it.
+    #[test]
+    fn forward_parsed_stamps_a_tls_message_as_ip_protocol_6() {
+        let (what, pkt) = forward_and_receive(&captured(OPTIONS, TransportProto::Tls, 5061));
+        assert_eq!(what, Forwarded::Sip);
+        assert_eq!(pkt.protocol, HepProtocol::Sip, "SIP stays protocol type 1");
+        assert_eq!(
+            pkt.ip_protocol, 6,
+            "SIP recovered from TLS reached the collector stamped IP protocol {}",
+            pkt.ip_protocol
+        );
+        assert_eq!(pkt.dst_port, 5061, "the inner endpoint survives");
+    }
+
+    /// Control: a UDP message still stamps 17, so the fix is not "always 6".
+    #[test]
+    fn forward_parsed_stamps_a_udp_message_as_ip_protocol_17() {
+        let (what, pkt) = forward_and_receive(&captured(OPTIONS, TransportProto::Udp, 5060));
+        assert_eq!(what, Forwarded::Sip);
+        assert_eq!(pkt.protocol, HepProtocol::Sip, "SIP stays protocol type 1");
+        assert_eq!(pkt.ip_protocol, 17, "SIP over UDP is IP protocol 17");
+        assert_eq!(pkt.payload, OPTIONS, "the message crosses verbatim");
+    }
+
+    /// An RTCP report on the classic odd port goes as protocol type 5 with
+    /// its own transport, through the same entry point the batch loop uses.
+    #[test]
+    fn forward_parsed_sends_rtcp_as_protocol_type_5() {
+        // Receiver Report: version 2, PT 201, length 1, one SSRC.
+        let rtcp: &[u8] = &[0x80, 201, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01];
+        let (what, pkt) = forward_and_receive(&captured(rtcp, TransportProto::Udp, 5001));
+        assert_eq!(what, Forwarded::Rtcp);
+        assert_eq!(pkt.protocol, HepProtocol::Rtcp, "RTCP is protocol type 5");
+        assert_eq!(pkt.ip_protocol, 17);
+        assert_eq!(pkt.payload, rtcp, "the report crosses verbatim");
+    }
+
+    /// RTP is neither SIP nor RTCP and must not leave the machine: nothing is
+    /// sent, and the sender says so.
+    #[test]
+    fn forward_parsed_sends_nothing_for_rtp() {
+        // RTP: version 2, PT 0 (PCMU), sequence 1, on the even media port.
+        let rtp: &[u8] = &[
+            0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xff, 0xff,
+        ];
+        let (collector, sender) = collector_and_sender(std::time::Duration::from_millis(200));
+        let what = sender
+            .forward_parsed(&captured(rtp, TransportProto::Udp, 5000))
+            .expect("forward");
+        assert_eq!(what, Forwarded::Nothing);
+        let mut buf = [0u8; 2048];
+        assert!(
+            collector.recv(&mut buf).is_err(),
+            "a datagram reached the collector for an RTP packet: media is being forwarded"
         );
     }
 
