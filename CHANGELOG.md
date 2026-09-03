@@ -10,6 +10,16 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--hep-parse` no longer lets a forged inner source pass the origin gate.**
+  Unwrapping a HEP datagram read from a pcap or interface cloned the outer
+  packet, so the inner SIP -- whose addressing the remote HEP sender asserted --
+  inherited `Wire` and was eligible for both a jail line and a kill response.
+  That is the hole the origin gate closes for `--hep-listen`; it is now closed
+  for `--hep-parse` too. The unwrapped packet carries `InputOrigin::Hep`, so a
+  kill or jail line needs `--hep-allow-kill`, the same opt-in as the listener.
+
 ### Changed
 
 - **The manual pre-push path is pinned as stdin-safe.** Run by hand,

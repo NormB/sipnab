@@ -4706,6 +4706,13 @@ fn unwrap_hep(pp: &ParsedPacket) -> Option<ParsedPacket> {
         protocol: hep.protocol.to_byte(),
         correlation_id: hep.correlation_id.clone(),
     });
+    // The inner addressing was asserted by the HEP sender, not observed on the
+    // wire, so it is Hep however the wrapper arrived. Under --hep-parse the
+    // wrapper is read from a pcap or interface (Wire) and cloned; without this
+    // the inner source inherited Wire and passed the kill/jail origin gate,
+    // leaving --hep-parse the hole kill_response_eligible closes for
+    // --hep-listen.
+    unwrapped.input_origin = crate::capture::parse::InputOrigin::Hep;
     Some(unwrapped)
 }
 
@@ -6202,6 +6209,38 @@ mod tests {
         assert_eq!(
             out.hep.and_then(|h| h.correlation_id).as_deref(),
             Some("corr-42")
+        );
+    }
+
+    /// An unwrapped HEP packet's addressing is sender-asserted, so it must carry
+    /// `InputOrigin::Hep` -- even under `--hep-parse`.
+    ///
+    /// `--hep-listen` sets this already, in the network parser. `--hep-parse`
+    /// reads the wrapper off a pcap or interface, where the outer packet is
+    /// `Wire`, and unwraps by cloning -- so the inner addressing, which the
+    /// remote sender asserted rather than sipnab observing, inherited `Wire`.
+    /// Left that way it passed `kill_response_eligible`, and a forged inner
+    /// source was eligible for both a jail line and a kill response: the exact
+    /// hole the origin gate closes for `--hep-listen`, open on the parse path.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn unwrapping_hep_marks_the_addressing_as_sender_asserted() {
+        let pp = hep_datagram(
+            crate::rtpengine::NG_HEP_CAPTURE_PROTO,
+            b"d3:foo3:bare",
+            None,
+        );
+        assert_eq!(
+            pp.input_origin,
+            crate::capture::parse::InputOrigin::Wire,
+            "the wrapper itself arrives off the wire under --hep-parse",
+        );
+        let out = unwrap_hep(&pp).expect("a HEP datagram unwraps");
+        assert_eq!(
+            out.input_origin,
+            crate::capture::parse::InputOrigin::Hep,
+            "the inner addressing is the sender's assertion, not observed; leaving \
+             it Wire lets a forged inner source pass the kill/jail origin gate",
         );
     }
 
