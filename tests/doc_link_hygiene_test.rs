@@ -450,3 +450,120 @@ fn bracketed_refs_in_tables_are_real_links() {
         offenders.join("\n  ")
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Owed: a bulk rename rewrote two tool names INSIDE URLs as well as in prose.
+//
+// Nine links became 404s -- `github.com/sipcapture/the` among them -- and this
+// file did not notice, because it checked that links EXIST and never that they
+// are well formed. CI's external link checker found them, minutes after the
+// push, which is the slowest possible place to learn it.
+//
+// A word-boundary substitution cannot tell a sentence from a URL. The cheap
+// invariant it violates is that a URL has no spaces in it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Every inline markdown link, as `(file, line, text, url)`.
+fn markdown_links() -> Vec<(String, usize, String, String)> {
+    let re = regex::Regex::new(r"\[([^\]]*)\]\(([^)]*)\)").expect("link regex");
+    let mut out = Vec::new();
+    // `markdown_files()` walks docs/ only. Two of the nine URLs this gate is
+    // owed for were in README.md, which that walk cannot see -- a gate blind to
+    // the most-read file in the repository. Found by mutation, not by review.
+    let mut corpus = markdown_files();
+    for extra in ["README.md", "CHANGELOG.md", "CONTRIBUTING.md"] {
+        let p = repo().join(extra);
+        if p.is_file() {
+            corpus.push(p);
+        }
+    }
+    for f in corpus {
+        let Ok(body) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        let name = f
+            .strip_prefix(repo())
+            .unwrap_or(&f)
+            .to_string_lossy()
+            .to_string();
+        for (i, line) in body.lines().enumerate() {
+            for c in re.captures_iter(line) {
+                out.push((name.clone(), i + 1, c[1].to_string(), c[2].to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// A URL cannot contain a space. The single check that would have caught all
+/// nine at once, before the push rather than after it.
+#[test]
+fn no_link_url_contains_whitespace() {
+    let bad: Vec<String> = markdown_links()
+        .into_iter()
+        .filter(|(_, _, _, url)| url.split_whitespace().count() > 1 || url.trim() != url)
+        .map(|(f, l, _, url)| format!("{f}:{l}  {url:?}"))
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "{} link target(s) contain whitespace, so they cannot resolve. This is what \
+         a prose substitution looks like when it reaches a URL:\n  {}",
+        bad.len(),
+        bad.join("\n  ")
+    );
+}
+
+/// Neither half of a link may be emptied.
+///
+/// A substitution that replaces a phrase with nothing produces `[](url)` or
+/// `[text]()`, both of which render broken and neither of which any spelling or
+/// prose check notices. The same pass left an empty `()` in a sentence
+/// elsewhere, so this is that defect seen from the other side.
+#[test]
+fn no_link_has_an_empty_text_or_an_empty_target() {
+    let bad: Vec<String> = markdown_links()
+        .into_iter()
+        .filter(|(_, _, text, url)| text.trim().is_empty() || url.trim().is_empty())
+        .map(|(f, l, text, url)| format!("{f}:{l}  [{text}]({url})"))
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "{} link(s) lost one half to an edit:\n  {}",
+        bad.len(),
+        bad.join("\n  ")
+    );
+}
+
+/// A URL is not prose. An encoded article or a replaced phrase inside a path is
+/// a sentence that ended up where an address belongs.
+#[test]
+fn no_link_url_reads_like_a_sentence() {
+    const PROSE: &[&str] = &["/the%20", "%20the%20", "/the-terminal-viewer/"];
+    let bad: Vec<String> = markdown_links()
+        .into_iter()
+        .filter(|(_, _, _, url)| PROSE.iter().any(|p| url.contains(p)))
+        .map(|(f, l, _, url)| format!("{f}:{l}  {url:?}"))
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "link target(s) contain prose:\n  {}",
+        bad.join("\n  ")
+    );
+}
+
+/// POSITIVE CONTROL. Three assertions over an empty list would pass while the
+/// extractor read nothing -- which is how this file missed the nine.
+#[test]
+fn the_link_extractor_actually_finds_links() {
+    let links = markdown_links();
+    assert!(
+        links.len() > 100,
+        "only {} markdown links found; the extractor is not reading what it \
+         thinks it is, and every check above is vacuous",
+        links.len()
+    );
+    assert!(
+        links.iter().any(|(_, _, _, u)| u.starts_with("http")),
+        "no absolute URL found at all"
+    );
+}
