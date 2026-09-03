@@ -480,6 +480,17 @@ for commit in $tag_commits; do
 		exit 1
 	fi
 	printf '%bOK%b\n' "$GREEN" "$NC"
+	# CI green is not the whole story: CodeQL is a separate workflow whose
+	# findings never blocked anything, and nine alerts rode through three tags.
+	printf '  tag -> %s: code scanning ... ' "$short"
+	if cs_out=$(python3 scripts/code-scanning-clean.py --sha "$commit" 2>&1); then
+		printf '%bOK%b\n' "$GREEN" "$NC"
+	else
+		printf '%bFAIL%b\n' "$RED" "$NC"
+		printf '%s\n' "$cs_out" | sed 's/^/    /'
+		printf 'Fix the code, wait for CodeQL to re-analyze, then tag. Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+		exit 1
+	fi
 
 	# A tag starts phase ONE of a two-phase release. Phase two -- moving
 	# `published_version` so a visitor is offered the thing -- lands in a

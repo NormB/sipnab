@@ -38,6 +38,9 @@ use std::process::Command;
 /// needs is a hole cut for nothing, and it is how an allowlist quietly becomes
 /// the place British spellings go to be permitted.
 const NOT_A_SUFFIX: &[&str] = &[
+    // The plural of "analysis", not a verb: GitHub's own endpoint is
+    // `code-scanning/analyses`. The verb forms with that suffix still count.
+    "analyses",
     "advertise",
     "advertised",
     "advertises",

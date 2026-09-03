@@ -4186,7 +4186,7 @@ fn packaging_scripts_reference_existing_paths() {
     // repository-root, and the spec lives under e2e/. The step now says
     // `./tests/...`, which is both unambiguous to a reader and, because the
     // preceding character is a slash, not a root-relative candidate.
-    const EXPECTED_REFERENCES: usize = 81;
+    const EXPECTED_REFERENCES: usize = 82;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

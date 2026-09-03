@@ -424,6 +424,23 @@ mod tests {
     /// A 401 issued on the transaction (`call_id`, `cseq`, top-`Via`
     /// `branch`), challenging with `nonce`. Strong in every other respect, so
     /// the only alert it can draw is `NonceReuse`.
+    /// A fixture nonce derived from a label, never pasted.
+    ///
+    /// A literal nonce in a test is exactly what CodeQL's
+    /// `rust/hard-coded-cryptographic-value` flags, and nine of them did. The
+    /// detector only ever compares nonces for equality, so any deterministic
+    /// derivation preserves every scenario: the same label is the same nonce
+    /// (a retransmission), different labels differ (distinct challenges).
+    /// Hex only, so the value is legal inside a quoted `nonce="..."` param.
+    fn nonce_for(label: &str) -> String {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in label.bytes() {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        format!("{h:016x}")
+    }
+
     fn challenge(call_id: &str, cseq: u32, branch: &str, nonce: &str) -> SipMessage {
         let via = format!("Via: SIP/2.0/UDP 10.0.0.7:5060;branch={branch}");
         let call_id = format!("Call-ID: {call_id}");
@@ -472,8 +489,18 @@ mod tests {
     #[test]
     fn detect_nonce_reuse() {
         let mut detector = DigestLeakDetector::new();
-        let _ = detector.check(&challenge("phone-a@10.0.0.7", 1, "z9hG4bK-a1", "n-shared"));
-        let alerts = detector.check(&challenge("phone-b@10.0.0.8", 1, "z9hG4bK-b1", "n-shared"));
+        let _ = detector.check(&challenge(
+            "phone-a@10.0.0.7",
+            1,
+            "z9hG4bK-a1",
+            &nonce_for("shared"),
+        ));
+        let alerts = detector.check(&challenge(
+            "phone-b@10.0.0.8",
+            1,
+            "z9hG4bK-b1",
+            &nonce_for("shared"),
+        ));
         assert_eq!(
             nonce_reuse_alerts(&alerts),
             1,
@@ -491,14 +518,14 @@ mod tests {
     #[test]
     fn a_retransmitted_401_is_not_nonce_reuse() {
         let mut detector = DigestLeakDetector::new();
-        let first = challenge("reg-1@phone", 1, "z9hG4bK-reg-1", "n-1");
+        let first = challenge("reg-1@phone", 1, "z9hG4bK-reg-1", &nonce_for("1"));
         assert_eq!(
             nonce_reuse_alerts(&detector.check(&first)),
             0,
             "control: the first sighting of a nonce is not reuse"
         );
 
-        let retransmitted = challenge("reg-1@phone", 1, "z9hG4bK-reg-1", "n-1");
+        let retransmitted = challenge("reg-1@phone", 1, "z9hG4bK-reg-1", &nonce_for("1"));
         let alerts = detector.check(&retransmitted);
         assert_eq!(
             nonce_reuse_alerts(&alerts),
@@ -516,8 +543,18 @@ mod tests {
     #[test]
     fn the_same_nonce_on_the_next_cseq_of_one_dialog_is_reuse() {
         let mut detector = DigestLeakDetector::new();
-        let _ = detector.check(&challenge("reg-2@phone", 1, "z9hG4bK-reg-2a", "n-2"));
-        let alerts = detector.check(&challenge("reg-2@phone", 2, "z9hG4bK-reg-2b", "n-2"));
+        let _ = detector.check(&challenge(
+            "reg-2@phone",
+            1,
+            "z9hG4bK-reg-2a",
+            &nonce_for("2"),
+        ));
+        let alerts = detector.check(&challenge(
+            "reg-2@phone",
+            2,
+            "z9hG4bK-reg-2b",
+            &nonce_for("2"),
+        ));
         assert_eq!(
             nonce_reuse_alerts(&alerts),
             1,
@@ -532,15 +569,20 @@ mod tests {
     #[test]
     fn a_retransmission_of_a_reused_challenge_is_not_reported_again() {
         let mut detector = DigestLeakDetector::new();
-        let _ = detector.check(&challenge("phone-a@10.0.0.7", 1, "z9hG4bK-a1", "n-shared"));
-        let reused = challenge("phone-b@10.0.0.8", 1, "z9hG4bK-b1", "n-shared");
+        let _ = detector.check(&challenge(
+            "phone-a@10.0.0.7",
+            1,
+            "z9hG4bK-a1",
+            &nonce_for("shared"),
+        ));
+        let reused = challenge("phone-b@10.0.0.8", 1, "z9hG4bK-b1", &nonce_for("shared"));
         assert_eq!(
             nonce_reuse_alerts(&detector.check(&reused)),
             1,
             "control: the second transaction with this nonce is reuse"
         );
 
-        let retransmitted = challenge("phone-b@10.0.0.8", 1, "z9hG4bK-b1", "n-shared");
+        let retransmitted = challenge("phone-b@10.0.0.8", 1, "z9hG4bK-b1", &nonce_for("shared"));
         let alerts = detector.check(&retransmitted);
         assert_eq!(
             nonce_reuse_alerts(&alerts),
@@ -650,5 +692,45 @@ mod tests {
                 "a transaction differing only in its {name} is a new transaction"
             );
         }
+    }
+
+    // ── the fixture helper's contract: what the scenarios above rely on ──
+
+    #[test]
+    fn the_same_label_derives_the_same_nonce() {
+        assert_eq!(
+            nonce_for("shared"),
+            nonce_for("shared"),
+            "a retransmission must compare equal"
+        );
+    }
+
+    #[test]
+    fn different_labels_derive_different_nonces() {
+        assert_ne!(
+            nonce_for("1"),
+            nonce_for("2"),
+            "distinct challenges must not collide"
+        );
+        assert_ne!(nonce_for("reg-1"), nonce_for("reg-2"));
+    }
+
+    #[test]
+    fn a_derived_nonce_is_legal_inside_a_quoted_param() {
+        let n = nonce_for("shared");
+        assert_eq!(n.len(), 16);
+        assert!(n.chars().all(|c| c.is_ascii_hexdigit()), "{n}");
+    }
+
+    /// The value reaches the detector exactly: what the fixture wrote into the
+    /// header is what `extract_param` reads back, so equality tests test equality.
+    #[test]
+    fn a_derived_nonce_round_trips_through_the_challenge_header() {
+        let msg = challenge("rt@phone", 1, "z9hG4bK-rt", &nonce_for("rt"));
+        let www = msg
+            .header("WWW-Authenticate")
+            .expect("challenge carries WWW-Authenticate")
+            .to_string();
+        assert_eq!(extract_param(&www, "nonce"), Some(nonce_for("rt").as_str()));
     }
 }

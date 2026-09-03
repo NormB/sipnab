@@ -3890,7 +3890,7 @@ mod tests {
         // An auth key with backslashes / colons / slashes must round-trip
         // verbatim in the 0x000e chunk (no escaping or truncation).
         let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
-        let key = "k3y\\with:special/chars";
+        let key = "k3y\\with:special/chars"; // material: fixture -- the key-file parser under test must accept these bytes
         let pkt = build_hep_v3(&v4_endpoint(), ts, HepProtocol::Sip, 7, Some(key), b"X");
         assert_eq!(
             find_hep_chunk(&pkt, 0x0000, 0x000e).as_deref(),

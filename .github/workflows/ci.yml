@@ -578,6 +578,25 @@ jobs:
   # Single aggregate gate for branch protection: green only if every other
   # job succeeded. Require just this check so the protection rule survives
   # matrix changes without re-listing per-job contexts.
+  code-scanning-clean:
+    name: Code scanning has no open alerts
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # CodeQL runs in its own workflow beside this one, so wait for ITS
+      # analysis of this commit before judging; a verdict about the previous
+      # commit's analysis is not a verdict about this one.
+      - name: Refuse open alerts on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/code-scanning-clean.py --repo "${{ github.repository }}" --ref "${{ github.ref }}" --sha "${{ github.sha }}" --wait-secs 1500
+
   ci-success:
     # Bounds how long this job can hold the main-branch concurrency
     # group, which never supersedes. Observed: 0.0 min, but it waits on 9 needs.
@@ -590,7 +609,8 @@ jobs:
     # so install-sh and deb-package could both fail with the one required
     # check on main still green.
     needs: [check, install-sh, deb-package, rpm-packaging, homebrew-formula,
-            tsan-verdict, bench-scripts, features, audit, fuzz-check]
+            tsan-verdict, bench-scripts, features, audit, fuzz-check,
+            code-scanning-clean]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded

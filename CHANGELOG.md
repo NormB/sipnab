@@ -8,6 +8,36 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **Nine CodeQL alerts, and the configuration that claimed to suppress them.**
+  `rust/hard-coded-cryptographic-value` flagged nine test fixtures in
+  `digest_leak` that built a 401 challenge with a pasted nonce. The CodeQL
+  config excluded that rule "inside `#[cfg(test)]` modules" with
+  `tags contain: test` -- which filters a query's metadata tags, and no
+  security query carries one, so the filter matched nothing and the alerts
+  rode through three tagged releases under a comment saying they were
+  suppressed. The fixtures now derive their nonces from a label (equal labels
+  compare equal, which is all the detector ever checks), and the config says
+  plainly that inline test code cannot be excluded.
+
+### Changed
+
+- **Open code-scanning alerts block CI and block a tag, through one script.**
+  CodeQL ran as its own workflow and its findings went to a tab; the only
+  required check was "CI success", and the tag hook checked CI but never
+  alerts. `scripts/code-scanning-clean.py` waits for CodeQL's analysis of the
+  commit in question and fails on any open alert; CI's aggregate requires it,
+  and the pre-push tag check calls the same script. A gate that cannot read
+  the answer exits 2, never 0.
+- **A local gate for pasted cryptographic material.** Before the hook, in
+  under a second: no string literal may be handed to anything named nonce,
+  secret, password, salt or a key assignment, in production code or in tests.
+  A fixture whose subject is the literal names itself with
+  `// material: fixture -- <why>`, and nothing else is exempt.
+
 ## [0.5.147] - 2026-09-03
 
 ### Added

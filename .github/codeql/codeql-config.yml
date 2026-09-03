@@ -21,18 +21,16 @@ paths-ignore:
   - website/static/wasm
   - fuzz/corpus
 
-query-filters:
-  # `assert!(cond, "...{}", value)` reads as a write to stderr, so every
-  # assertion message naming the value it checked becomes a cleartext-logging
-  # alert. That is what an assertion message is FOR. Suppressed only inside
-  # `#[cfg(test)]` modules, where the values are fixtures -- production logging
-  # of real material is still reported.
-  - exclude:
-      id: rust/cleartext-logging
-      tags contain: test
-  # Protocol constants and zero-initialized buffers. SRTP key-derivation
-  # labels and `[0u8; N]` scratch space are neither secrets nor choices; the
-  # RFC fixes the first and the next two lines overwrite the second.
-  - exclude:
-      id: rust/hard-coded-cryptographic-value
-      tags contain: test
+# There is NO config that scopes a rule to inline `#[cfg(test)]` modules. Two
+# exclusions here once read `tags contain: test`, meaning to suppress a rule
+# inside test code; `tags contain` matches the QUERY's metadata tags, and
+# neither `rust/cleartext-logging` nor `rust/hard-coded-cryptographic-value`
+# carries a `test` tag (measured against github/codeql: both carry `security`
+# and CWE ids only). The filters matched nothing, and nine hard-coded-nonce
+# alerts on test fixtures rode through three tagged releases under a comment
+# saying they were suppressed.
+#
+# So test code is kept clean at the source instead: fixtures derive their
+# cryptographic material rather than paste it, and
+# tests/hardcoded_crypto_material_test.rs fails a commit that pastes one.
+# `paths-ignore` above is path-based and does work.

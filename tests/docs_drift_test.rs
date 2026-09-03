@@ -4235,7 +4235,10 @@ fn the_tree_spells_in_us_english() {
         "initialisation",
         "analyse",
         "analysed",
-        "analyses",
+        // The plural of analysis is deliberately absent: it is spelled the
+        // same as the British verb form, and GitHub's own endpoint is
+        // code-scanning/analyses. A list cannot tell noun from verb; the
+        // other verb forms carry the gate.
         "analysing",
         "catalogue",
         "catalogues",
