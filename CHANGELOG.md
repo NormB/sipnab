@@ -8,6 +8,18 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **The manual pre-push path is pinned as stdin-safe.** Run by hand,
+  `.githooks/pre-push` blocks at its git-protocol refspec loop when stdin is
+  left open, which reads as a frozen gate. Tests now hold `scripts/preflight.sh`
+  free of any such loop (the safe manual path) and pin the hook's single stdin
+  read to that one refspec loop, so no future edit can add an earlier read that
+  blocks a manual run before a gate prints. The fix is to run `preflight.sh`, or
+  push through git, rather than invoking the hook directly.
+
 ## [0.5.146] - 2026-09-03
 
 ### Fixed
