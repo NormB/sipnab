@@ -191,6 +191,8 @@ fn schema() -> &'static Value {
             // shipped a broken file, and every validation below would be
             // meaningless. Fail where the fact is, not in a caller that
             // cannot act on it.
+            // gate: panic because SCHEMA_TEXT is a compile-time constant, not
+            // input, and every test that validates a vCon parses it first.
             panic!("the vendored vCon schema is not valid JSON: {e}")
         })
     })

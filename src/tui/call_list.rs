@@ -884,6 +884,9 @@ pub fn render_call_list(
                     10 => Cell::from(Span::raw(format_duration_ms(
                         (dialog.updated_at - dialog.created_at).num_milliseconds(),
                     ))),
+                    // gate: unreachable because `i` is drawn from
+                    // `0..COLUMN_LABELS.len()` and each of those eleven indices
+                    // has an arm above; the snapshot suite renders them all.
                     _ => unreachable!("column index {i} out of range"),
                 })
                 .collect();

@@ -142,17 +142,20 @@ pub fn parse(input: &[u8]) -> Result<NgMessage<'_>> {
     let body = bencode::decode(&input[sep + 1..])?;
     // A non-dictionary body is not an `ng` message. Checked rather than
     // assumed, because every accessor below would silently return `None` on
-    // one and the message would look like an empty but valid command.
-    ensure!(
-        matches!(body, Value::Dict(_)),
-        "ng: body is a {}, not a dictionary",
-        match body {
-            Value::Int(_) => "integer",
-            Value::Bytes(_) => "byte string",
-            Value::List(_) => "list",
-            Value::Dict(_) => unreachable!("guarded by this very match"),
-        }
-    );
+    // one and the message would look like an empty but valid command. One
+    // match both names the kind and decides, so no arm "cannot happen": the
+    // earlier shape spelled the dictionary case as an `unreachable!` inside
+    // the message of an `ensure!` that had already excluded it -- true, and
+    // still a panic on a production path.
+    let kind = match body {
+        Value::Dict(_) => None,
+        Value::Int(_) => Some("integer"),
+        Value::Bytes(_) => Some("byte string"),
+        Value::List(_) => Some("list"),
+    };
+    if let Some(kind) = kind {
+        bail!("ng: body is a {kind}, not a dictionary");
+    }
 
     let command = match body.get_bytes(b"command") {
         None => None,

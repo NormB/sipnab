@@ -128,6 +128,8 @@ fn main() {
         &loaded.config.crash,
     ));
     if cli.config_args.panic_selftest {
+        // gate: panic because --panic-selftest exists to exercise the crash
+        // hook installed just above; the panic is the feature.
         panic!("panic-selftest: intentional panic to verify crash handling");
     }
 
@@ -220,6 +222,8 @@ fn main() {
                 launched.raw_kill_sock,
             );
         }
+        // gate: unreachable because step 8 above returns for CoresFile before
+        // the capture is launched, so this match never sees it.
         RunMode::CoresFile => unreachable!("handled before launch"),
     }
 }

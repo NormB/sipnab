@@ -81,3 +81,11 @@ path = "fuzz_targets/siprec.rs"
 [[bin]]
 name = "fuzz_rtpengine_ng"
 path = "fuzz_targets/rtpengine_ng.rs"
+
+[[bin]]
+name = "fuzz_stun"
+path = "fuzz_targets/stun.rs"
+
+[[bin]]
+name = "fuzz_llmnr"
+path = "fuzz_targets/llmnr.rs"

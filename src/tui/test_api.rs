@@ -82,6 +82,9 @@ impl App {
                 break;
             }
             if std::time::Instant::now() >= deadline {
+                // gate: panic because this is a test helper whose only callers
+                // are the integration suites, and a load that never settles
+                // must fail the test rather than hang it.
                 panic!("background pcap load did not settle within 30s");
             }
             std::thread::sleep(std::time::Duration::from_millis(2));

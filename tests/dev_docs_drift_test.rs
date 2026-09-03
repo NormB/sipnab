@@ -2216,7 +2216,19 @@ fn line_citations_point_at_the_code_they_name() {
     // a function body rather than at one it extracts. Attributed against
     // HEAD: the staged diff adds exactly these two `#L` anchors and removes
     // none.
-    let expected = 204;
+    // 204 -> 210: docs/design/positioning.md, which had carried two line
+    // citations this checker could not resolve -- `batch.rs:2273` beside a
+    // flag name and `hep.rs:59` beside a chunk table -- and so had drifted
+    // unseen (the first now sits at :3281, the second at :61). Re-anchoring
+    // it wrote every citation beside the symbol it is about, which is what
+    // makes a citation checkable: `CHUNK_PROTO_TYPE` (hep.rs:61),
+    // `HepSender::send_rtcp` (:2459), `send_rtcp_puts_protocol_type_5_on_the_
+    // wire` (:2551), `StreamStore::process_rtcp` (stream_store.rs:810),
+    // `rtcp_unknown_ssrc_is_noop` (:3431) and `MosDelay::resolve`
+    // (quality.rs:540). Six new resolvable citations, none removed; measured
+    // per page against HEAD: positioning.md 0 -> 6, and the sibling
+    // threat-mitigation-hooks.md, re-anchored in the same change, 2 -> 2.
+    let expected = 210;
     assert_eq!(
         checked, expected,
         "the drift checker examined {checked} citations, not the {expected} \

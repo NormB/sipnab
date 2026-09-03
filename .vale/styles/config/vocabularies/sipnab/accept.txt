@@ -754,3 +754,4 @@ zeroizes
 zeroizing
 zsh
 debounce
+llmnr

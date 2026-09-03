@@ -635,6 +635,9 @@ pub fn start_servers(
             persistence_gate,
         }))
     }
+    // gate: unreachable because `Prepared` has no variants without those
+    // features, so the vector is always empty and the early return above
+    // has already fired.
     #[cfg(not(any(feature = "api", feature = "mcp")))]
     unreachable!("prepared is uninstantiable without the api/mcp features")
 }

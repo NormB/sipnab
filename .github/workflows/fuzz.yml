@@ -46,6 +46,9 @@ jobs:
           - fuzz_dtls
           - fuzz_tcp_reassembly
           - fuzz_siprec
+          - fuzz_rtpengine_ng
+          - fuzz_stun
+          - fuzz_llmnr
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

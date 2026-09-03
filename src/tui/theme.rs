@@ -224,6 +224,9 @@ impl Keymap {
             "extended_flow" => self.extended_flow = code,
             "clear_calls" => self.clear_calls = code,
             "column_selector" => self.column_selector = code,
+            // gate: unreachable because every caller iterates `Self::fields`,
+            // and `set_field_accepts_every_name_fields_produces` holds the
+            // two lists together.
             _ => unreachable!("unknown keymap field {name}"),
         }
     }
@@ -404,6 +407,32 @@ pub(super) const FORCED_DRAW_AFTER_SKIPS: u32 = 3;
 #[cfg(test)]
 mod keymap_collision_tests {
     use super::*;
+
+    /// Every name `fields` produces is one `set_field` accepts, and sets
+    /// the field `fields` reports under that name.
+    ///
+    /// The two are one list written twice, and `set_field`'s fallthrough
+    /// arm is an `unreachable!` resting on their agreement. A field added
+    /// to one and not the other used to be a panic inside the startup
+    /// collision probe; here it is a failing test.
+    #[test]
+    fn set_field_accepts_every_name_fields_produces() {
+        let km = Keymap::default();
+        for (name, _) in km.fields() {
+            let mut probe = km.clone();
+            probe.set_field(name, KeyCode::Null);
+            let now = probe
+                .fields()
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, code)| *code);
+            assert_eq!(
+                now,
+                Some(KeyCode::Null),
+                "set_field({name:?}) did not set the field fields() reports under that name"
+            );
+        }
+    }
 
     /// A rebind onto a hardcoded view literal silently never fires (the
     /// literal match arm wins). from_config callers surface these warnings

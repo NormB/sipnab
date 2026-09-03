@@ -137,7 +137,7 @@ src/
 ├── wasm.rs               # wasm-bindgen browser surface (wasm feature)
 └── test_utils.rs         # shared SIP message builder for tests
 crates/sipnab-audio/      # rodio/ALSA playback plugin, dlopen'd (no libasound NEEDED)
-fuzz/                     # cargo-fuzz targets (16), out-of-workspace; weekly run via .github/workflows/fuzz.yml
+fuzz/                     # cargo-fuzz targets (18), out-of-workspace; weekly run via .github/workflows/fuzz.yml
 tests/property_test.rs    # proptest properties (SIP/SDP round-trip, filter-DSL total-function)
 harness/                  # docker-compose e2e (opensips + rtpengine + sipp)
 ```

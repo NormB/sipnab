@@ -102,6 +102,31 @@ entry that carries them.
   `--hep-allow-kill`, uprobe-origin traffic never. The finding itself still
   reaches the alert path, and a run that pairs `--fail2ban` with HEP input
   and no opt-in says at startup that its jail log stays empty by design.
+### Changed
+
+- **The production-panic gate now covers the macro spellings of "abort here".**
+  `scripts/check-unwrap.py` banned `.unwrap()` and `.expect()` on production
+  paths and nothing else. `panic!`, `unreachable!`, `todo!` and
+  `unimplemented!` end the process exactly as an unwrap does, and a clippy
+  restriction-lint measurement found zero of the former under `src/` beside
+  nine sites of the latter that no gate had ever looked at. All four macros
+  are now reported. A site that genuinely cannot be reached keeps the macro
+  only with a `// gate: <macro> because <reason>` comment on the line above
+  it: the marker must name the macro it covers and give a reason, and one
+  that gives none is reported rather than honored. Of the nine sites, two are
+  rewritten so the macro is gone (`rtpengine::ng::parse` decides the body's
+  kind in one match; `header_form::reformat_headers` treats the as-captured
+  mode as "leave the name alone", which is what it already did) and seven
+  carry a reason, each re-read to confirm no wire or user input reaches it.
+
+- **Fuzz targets for the STUN and LLMNR decoders.** `stun::parse` and the
+  ChannelData framing checks run on every UDP datagram that is not SIP, and
+  `llmnr::parser::parse_llmnr` on every datagram touching port 5355, yet
+  neither had a coverage-guided target. `fuzz_stun` and `fuzz_llmnr` join the
+  weekly run, and the always-on smoke fuzz in `cargo test` drives the same
+  entry points. Sixty seconds of each locally produced no crash. The weekly
+  workflow's matrix now lists every target: it had never listed
+  `fuzz_rtpengine_ng`, which landed after the matrix was last edited.
 
 ## [0.5.145] - 2026-09-03
 

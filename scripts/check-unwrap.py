@@ -1,7 +1,25 @@
 #!/usr/bin/env python3
-"""Fail if `.unwrap()` or `.expect()` appears on a production path under src/.
+"""Fail if `.unwrap()`, `.expect()`, `panic!`, `unreachable!`, `todo!` or
+`unimplemented!` appears on a production path under src/.
 
 Run from the repo root:  python3 scripts/check-unwrap.py
+
+The four macros joined the ban on 2026-09-02. The scan covered the two method
+spellings of "abort here" and none of the macro spellings, and a clippy
+restriction-lint measurement found zero of the former under src/ beside six
+sites of the latter that nothing had ever looked at. A site that genuinely
+cannot be reached stays, with a comment that names the macro and says why:
+
+    // gate: unreachable because the index is drawn from 0..LABELS.len()
+    _ => unreachable!("column index {i} out of range"),
+
+on the same line, or in the comment block directly above the site (an
+attribute line between them is stepped over, since comments go above
+attributes). The reason is mandatory and at least three words: a marker
+that gives none is a waiver nobody explained, and it is REPORTED, not
+honored. The marker must name the macro it covers, so one cannot be copied
+from a `panic!` onto an `unreachable!` without saying so. scripts/tests/
+test_check_unwrap.py drives every one of those rules.
 Prints each violation on stderr and the count on stdout, and EXITS NON-ZERO
 when there is any. The exit status is the signal the hook reads — an earlier
 draft had the hook parse `2>&1 | tail -1`, which merges unbuffered stderr with
@@ -58,6 +76,46 @@ if len(ROOTS) < 2:
 # a doc comment or inside a panic message is no longer a violation.
 _CODE, _STR, _RAW, _BLOCK = 0, 1, 2, 3
 _START = (_CODE, 0)
+
+# The macro spellings of "abort here". Matched on the STRIPPED line, so a
+# mention inside a string or a comment is prose, and with a boundary on the
+# left so `my_panic!` -- somebody's own macro -- is not the standard one.
+# `core::panic!` and `std::panic!` are, and `::` is not an identifier char.
+_ABORT = re.compile(r'(?<![A-Za-z0-9_])(panic|unreachable|todo|unimplemented)!\s*\(')
+# The per-site exception: `// gate: <macro> because <reason>`. Searched on
+# the RAW line, because it lives in a comment and the stripping removed it.
+_GATE_MARK = re.compile(r'//\s*gate:\s*(panic|unreachable|todo|unimplemented)\s+because\b(.*)$')
+# Fewer words than this after `because` is a marker, not a reason.
+_REASON_WORDS = 3
+
+
+def gate_marker(raw_lines, i):
+    """The `gate:` marker covering the site on 1-based line `i`, or None.
+
+    Returns `(macro, reason)`. Looked for on the line itself first, then
+    upward through the contiguous block of line comments directly above it.
+    Attribute lines (`#[...]`) are stepped over, not stopped at, because the
+    natural place for the comment is above the `#[cfg(...)]` that gates the
+    site. Anything else -- code, a blank line -- ends the block: the marker
+    is local to ONE site, and a marker that reached past code would exempt
+    whatever happened to follow it.
+    """
+    m = _GATE_MARK.search(raw_lines[i - 1])
+    if m:
+        return m.group(1), m.group(2).strip()
+    j = i - 2
+    while j >= 0:
+        s = raw_lines[j].strip()
+        if s.startswith('#['):
+            j -= 1
+            continue
+        if not s.startswith('//'):
+            return None
+        m = _GATE_MARK.search(s)
+        if m:
+            return m.group(1), m.group(2).strip()
+        j -= 1
+    return None
 
 # The only characters that can begin a non-code region. Jumping to the next one
 # with a regex keeps this a per-region loop rather than a per-character one:
@@ -300,6 +358,23 @@ for src_root in ROOTS:
               # is to write something less safe than the literal it guards.
               #
               # A reason is mandatory. A bare waiver is the thing nobody reads.
+              # The abort macros. Checked before the unwrap waiver below,
+              # because that waiver is a statement about `.unwrap()` and
+              # says nothing about a `panic!` on the same lines.
+              abort = _ABORT.search(code)
+              if abort:
+                  macro = abort.group(1)
+                  mark = gate_marker(_lines, i)
+                  if mark is None or mark[0] != macro:
+                      count += 1
+                      print(f'  {rel}:{i}: {line.strip()}', file=sys.stderr)
+                  elif len(mark[1].split()) < _REASON_WORDS:
+                      count += 1
+                      print(
+                          f'  {rel}:{i}: {macro}!() carries a gate: marker with no '
+                          f'reason; a waiver nobody explained',
+                          file=sys.stderr,
+                      )
               if _waived_until is not None and i <= _waived_until:
                   continue
               if stripped.startswith('#[expect('):

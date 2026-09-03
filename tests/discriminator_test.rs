@@ -592,3 +592,89 @@ fn the_unwrap_ban_refuses_to_run_against_a_corpus_it_cannot_see() {
          them"
     );
 }
+
+/// The unwrap ban also bans the macro spellings of "abort here".
+///
+/// `panic!`, `unreachable!`, `todo!` and `unimplemented!` end the process the
+/// way an unwrap does, and the scanner never looked at them: a clippy
+/// restriction-lint measurement found zero unwraps under `src/` beside nine
+/// such sites. Pinned by name so the widening cannot quietly narrow again.
+#[test]
+fn the_unwrap_ban_names_the_four_abort_macros_and_the_gate_marker() {
+    let src = read(&repo().join("scripts/check-unwrap.py"));
+    assert!(!src.is_empty(), "scripts/check-unwrap.py must be readable");
+    let pattern = src
+        .lines()
+        .find(|l| l.starts_with("_ABORT = "))
+        .expect("check-unwrap.py no longer defines _ABORT, the abort-macro pattern");
+    for macro_name in ["panic", "unreachable", "todo", "unimplemented"] {
+        assert!(
+            pattern.contains(macro_name),
+            "check-unwrap.py's abort pattern no longer names {macro_name}!: {pattern}"
+        );
+    }
+    assert!(
+        src.contains("gate:") && src.contains("because"),
+        "check-unwrap.py has lost the `// gate: <macro> because <reason>` marker; \
+         every documented exception in src/ is now a violation, or the whole \
+         check is gone"
+    );
+}
+
+/// The abort-macro marker does not exempt a site that gives no reason.
+///
+/// The exception mechanism's one hard rule, held from the suite the hook runs
+/// on every commit rather than only from `scripts/tests/`, which it runs when
+/// `scripts/` changed. A marker that exempted a site with no reason would be
+/// a magic word, and a gate with a magic word is a gate with a hole in it.
+/// The control runs first: with a reason, the same site is accepted, so a
+/// scanner that rejects everything cannot pass this.
+#[test]
+fn the_unwrap_ban_does_not_exempt_an_abort_site_with_no_reason() {
+    let dir = tempfile::tempdir().expect("a scratch workspace");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).expect("src");
+    std::fs::create_dir_all(root.join("crates/sipnab-audio/src")).expect("member src");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\".\", \"crates/sipnab-audio\"]\n",
+    )
+    .expect("manifest");
+    std::fs::write(
+        root.join("crates/sipnab-audio/src/lib.rs"),
+        "pub fn audio() -> u8 { 1 }\n",
+    )
+    .expect("member lib.rs");
+    let scan = |marker: &str| {
+        let body = format!(
+            "pub fn prod(x: u8) -> u8 {{\n    match x {{\n        0 => 1,\n        \
+             {marker}\n        _ => unreachable!(),\n    }}\n}}\n"
+        );
+        std::fs::write(root.join("src/lib.rs"), body).expect("lib.rs");
+        let out = Command::new("python3")
+            .arg(repo().join("scripts/check-unwrap.py"))
+            .current_dir(root)
+            .output()
+            .expect("python3 must be available to run the unwrap ban");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (rc, err) = scan("// gate: unreachable because the caller masks every other value");
+    assert_eq!(
+        rc,
+        Some(0),
+        "a marker with a reason must exempt the site:\n{err}"
+    );
+    let (rc, err) = scan("// gate: unreachable because");
+    assert_eq!(
+        rc,
+        Some(1),
+        "a marker with no reason must not exempt the site:\n{err}"
+    );
+    assert!(
+        err.contains("src/lib.rs:5:") && err.contains("no reason"),
+        "the report must name the site and say the marker gave no reason:\n{err}"
+    );
+}

@@ -18,6 +18,8 @@
 #      workspace member rather than the literal path src/.
 #   6. That scoping survives braces written inside strings, char literals and
 #      comments -- which is where it used to fail open.
+#   6b. The abort macros are reported, and a `gate:` marker excuses a site
+#      only when it gives a reason.
 #
 # The hook is EXECUTED, in a throwaway git repo with `cargo` stubbed onto PATH.
 # It used to be grepped instead, and the greps are what let two of the exact
@@ -738,6 +740,40 @@ if [ "$SCAN_RC" -eq 2 ] && printf '%s' "$SCAN_OUT" | grep -q 'ended in lexer sta
 else
 	bad "an unterminated string must make the scanner refuse to answer; got rc=$SCAN_RC and: $SCAN_OUT"
 fi
+
+# ── Scenario 6b: the abort macros, and the marker that excuses one site ────
+# `panic!`, `unreachable!`, `todo!` and `unimplemented!` end the process the
+# way an unwrap does, and the scanner never looked at them. A site that
+# cannot be reached keeps the macro only under `// gate: <macro> because
+# <reason>`, and the reason is the part that matters: a marker without one
+# is reported, not honored. scripts/tests/test_check_unwrap.py holds the
+# full rule set; these three are its shape, kept beside the unwrap cases so
+# both halves of one scanner are exercised by one harness.
+scan_v 'pub fn prod(x: u8) -> u8 {
+    match x {
+        0 => 1,
+        _ => unreachable!(),
+    }
+}'
+reports 4 "a bare unreachable!() on a production path is reported"
+
+scan_v 'pub fn prod(x: u8) -> u8 {
+    match x {
+        0 => 1,
+        // gate: unreachable because the caller masks every other value
+        _ => unreachable!(),
+    }
+}'
+quiet "an unreachable!() under a gate: marker that gives a reason is accepted"
+
+scan_v 'pub fn prod(x: u8) -> u8 {
+    match x {
+        0 => 1,
+        // gate: unreachable because
+        _ => unreachable!(),
+    }
+}'
+reports 5 "a gate: marker with no reason does not exempt the site"
 
 # The hook must read the scanner's EXIT STATUS, not parse merged output: stderr
 # is unbuffered and stdout is not, so a violation line can arrive after the

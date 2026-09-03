@@ -139,8 +139,9 @@ git config core.hooksPath .githooks
 
 **`pre-commit`** runs nine numbered gates, starting at 0: `cargo fmt --all --
 --check`, clippy (`--features full`, `-D warnings`), the full
-`cargo test --features full` suite, no `unwrap()`/`expect()` in production
-code, WASM exports in sync with the site's JS, the homepage test count plus the
+`cargo test --features full` suite, no `unwrap()`/`expect()` or abort macro
+(`panic!`, `unreachable!`, `todo!`, `unimplemented!`) in production code,
+WASM exports in sync with the site's JS, the homepage test count plus the
 site version matching `Cargo.toml`, no TODO stubs, and an advisory
 developer-docs coupling notice. Gates 0-5b block the commit. Gate 6 prints
 `WARN: N TODO/FIXME comments` and falls through — a count, not a veto — and
@@ -189,7 +190,11 @@ This project enforces consistent style through tooling and convention:
   `src/error.rs`); `anyhow` is for binary/`app/` orchestration only.
   `.unwrap()`/`.expect()` are banned on library production paths (enforced
   by `clippy::unwrap_used`) and acceptable only on compile-time-known
-  values (regex literals) or in tests.
+  values (regex literals) or in tests. `panic!`, `unreachable!`, `todo!`
+  and `unimplemented!` are banned there too, by `scripts/check-unwrap.py`.
+  A site that genuinely cannot be reached keeps the macro only with a
+  `// gate: <macro> because <reason>` comment directly above it; the
+  scanner reports a marker that names no reason.
 - **Rustdoc on public types.** Every `pub fn`, `pub struct`, and `pub enum` must have a `///` doc comment.
 - **No `unsafe` without justification.** If `unsafe` is required, add a `// SAFETY:` comment explaining the invariant.
 

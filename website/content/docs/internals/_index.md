@@ -149,7 +149,8 @@ followed symlinks.
 
 **The gate suite** — the self-enforcing checks that run without anyone asking:
 the numbered gates in [`.githooks/pre-commit`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-commit)
-(clippy, the full test suite, no `unwrap()`/`expect()` in production, WASM
+(clippy, the full test suite, no `unwrap()`/`expect()` or abort macro in
+production, WASM
 exports in sync, the homepage *test count*, sub-gate 5b for the site version —
 a different claim from the crate version — no TODO stubs, and an
 advisory notice when a commit touches code these pages cite. The TODO scan and

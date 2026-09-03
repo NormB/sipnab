@@ -440,13 +440,16 @@ if [ "$TEST_RC" -ne 0 ] || echo "$TEST_OUTPUT" | grep -q "FAILED\|error\["; then
 fi
 echo -e "${GREEN}OK${NC}"
 
-# ── 3. No unwrap()/expect() in production code ────────────────────
-echo -n "  No unwrap/expect in production... "
+# ── 3. No unwrap()/expect()/panic!/unreachable! in production code ─
+echo -n "  No unwrap/expect/panic in production... "
 # The script's EXIT STATUS is the signal; it prints offenders to stderr.
 if ! UNWRAP_OUT=$(python3 scripts/check-unwrap.py 2>&1); then
     echo -e "${RED}FAIL${NC}"
     echo "$UNWRAP_OUT"
-    echo "Found unwrap()/expect() in production code. Use ? or match instead."
+    echo "Found unwrap()/expect()/panic!/unreachable!/todo!/unimplemented! in"
+    echo "production code. Return an error instead, or -- for a site that"
+    echo "genuinely cannot be reached -- say why on the line above it:"
+    echo "  // gate: <macro> because <reason>"
     exit 1
 fi
 echo -e "${GREEN}OK${NC}"

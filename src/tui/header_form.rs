@@ -134,7 +134,9 @@ pub fn reformat_headers(raw: &str, mode: HeaderFormMode) -> Cow<'_, str> {
                 .iter()
                 .find(|(_, full)| name.eq_ignore_ascii_case(full))
                 .map(|(short, _)| short.to_string()),
-            HeaderFormMode::AsCaptured => unreachable!(),
+            // Returned before the loop. If that guard ever moved, "leave the
+            // name alone" is the right answer for this mode anyway.
+            HeaderFormMode::AsCaptured => None,
         };
         match replacement {
             Some(new_name) if new_name != name => {

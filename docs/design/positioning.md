@@ -3,7 +3,8 @@
 **Status:** DECISION. Taken 2026-08-10. This page exists to **decline**
 features, not to describe them — if it only ever ratifies what was already
 built, it has failed at its job.
-**Verified against:** `c3befb9`, working tree.
+**Verified against:** `fcabc436`, working tree. First taken against `c3befb9`;
+the §2 facts and every line citation were re-verified 2026-09-02.
 **Backlog:** the four items this page authorizes are tracked separately; §5
 ranks them and §6 lists what it refuses.
 
@@ -46,8 +47,8 @@ to leave the box and Homer never tried to avoid the database.
 |---|---|---|
 | Single binary, no database | — | ships |
 | Receives HEP from Kamailio/OpenSIPS/Asterisk | `-L`/`--hep-listen`, [`hep.rs`](../../src/capture/hep.rs) | ships — **nothing need be installed on production** |
-| Sender-side HEP | `--hep-send`, [`batch.rs:2273`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2273) | ships, **SIP only** — guarded on `sip::is_sip_message` |
-| RTCP understood on the wire | [`hep.rs:59`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L59) — `1=SIP, 5=RTCP, 32=RTP` | receiver decodes it; the sender never emits it |
+| Sender-side HEP | `--hep-send`, [`batch.rs:3281`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3281) (SIP) and [`batch.rs:3297`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3297) (RTCP) | ships — SIP as protocol type 1 and RTCP as type 5 since 0.5.92; RTP is never forwarded |
+| RTCP understood on the wire | `CHUNK_PROTO_TYPE` ([`hep.rs:61`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L61)) — `1=SIP, 5=RTCP, 32=RTP` | ships — the receiver decodes type 5 and `HepSender::send_rtcp` ([`hep.rs:2484`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L2484)) emits it, pinned by `send_rtcp_puts_protocol_type_5_on_the_wire` ([`hep.rs:2610`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L2610)) |
 | Bounded memory | `--limit` (100k dialogs, oldest-first), `--max-streams` (50k) | ships |
 | Conformance lint with RFC citations, triage, MOS diagnosis | — | ships |
 | Frame pointers with verifiable digests | `--show-frame` | ships |
@@ -61,11 +62,22 @@ touches production.
 
 ## 3. What the position demands
 
-**RTCP over `--hep-send`.** Without media quality a remote viewer is *worse
-than the terminal viewer run locally*, because the terminal viewer sees RTP and this would not. The
-receiver already decodes protocol type 5, so this is a sender-side gap rather
-than an architectural one. Verify end-to-end that received RTCP reaches the MOS
-calculation; the decode path is confirmed, the full path is not.
+**Media quality at the HEP receiver.** Without media quality a remote viewer is
+*worse than the terminal viewer run locally*, because the terminal viewer sees
+RTP and this would not. The sender-side half of this closed in 0.5.92: RTCP
+travels over `--hep-send` as protocol type 5 (§2). The receiver-side half is
+open, and it is what decides whether the remote viewer shows a MOS at all.
+`--hep-send` never forwards RTP, and `StreamStore::process_rtcp`
+([`stream_store.rs:810`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L810)) files a report only
+against a stream whose SSRC it has already seen from the media itself — a
+report for an unknown SSRC records nothing, which `rtcp_unknown_ssrc_is_noop`
+([`stream_store.rs:3431`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L3431)) pins. So a
+viewer fed by HEP alone decodes every RTCP report and can show no quality figure
+for any of them. Received RTCP reaches the MOS delay term (`MosDelay::resolve`,
+[`quality.rs:540`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L540)) only when the same
+process also sees the media, which is the `-L` plus `-d` arrangement of cookbook
+recipe 6d. This was established 2026-09-02 by reading the path, not by running
+it end to end; the end-to-end run is still owed.
 
 **Multi-node correlation.** Without it, sipnab-plus-HEP is "the terminal viewer that can see
 one remote box" — a convenience, not a category. This is the differentiator,
@@ -94,7 +106,9 @@ The end state of that path is a worse Homer.
 
 ## 5. Order
 
-1. RTCP over `--hep-send` — small, and unblocks judging the rest in real use
+1. Media quality from RTCP alone at the HEP receiver — the sender half shipped
+   in 0.5.92; the receiver files a report only against media it has seen (§3).
+   The prerequisite for judging the rest in real use
 2. Multi-node correlation — the differentiator; shares provenance with §3
 3. Bounded on-disk retention — the "this shift" primitive
 

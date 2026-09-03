@@ -3,7 +3,8 @@
 **Status:** DESIGN, with one hard rule that applies immediately (section 3).
 **Verified against:** `63b771b` plus an uncommitted in-flight change to
 [`src/security/scanner_detect.rs`](https://github.com/NormB/sipnab/blob/main/src/security/scanner_detect.rs) that section 4 describes and deliberately does
-not cite by line, because it is moving.
+not cite by line, because it was moving. Every line citation on this page was
+re-anchored against `fcabc436` on 2026-09-02; the prose was not re-verified then.
 **Relationship to [`deferred-and-declined.md`](deferred-and-declined.md) §3.**
 That page covered the *action ledger* — a durable record of what sipnab did — and
 deferred it behind a decision about cross-run persistence. This page is about the
@@ -49,8 +50,8 @@ expecting a "detection" for a normal call's INVITE, ACK and BYE.
 
 The fix removed per-message emission from both output paths. Today exactly three
 sites emit, all behind a detector, all in
-[`src/app/batch.rs`](../../src/app/batch.rs): a scanner detection (`:1860`), a
-`-K/--kill-target` match (`:1909`), and a registration flood (`:1967`).
+[`src/app/batch.rs`](../../src/app/batch.rs): a scanner detection (`:4064`), a
+`-K/--kill-target` match (`:4112`), and a registration flood (`:4183`).
 
 The registration flood site has since moved to section 5's terms. `--reg-flood`
 counted REGISTERs and fired on the count, which is the scanner signature's
@@ -74,7 +75,7 @@ copying. `--fail2ban` on its own now arms no detector, so it emits nothing — a
 an operator who asked for a jail log and receives an empty file will read it as
 "nothing attacked me". That is the most dangerous way for a security tool to be
 silent, so it says so, once, at startup
-([`batch.rs:721-728`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L721-L728)):
+([`batch.rs:2468-2475`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2468-L2475)):
 
 > "--fail2ban writes scanner detections, but no detector is running, so this run
 > will emit nothing. An empty jail log means 'nothing was detected', not
@@ -88,7 +89,7 @@ safety.**
 
 The obvious repair for the above — arm the existing behavioral scanner detector
 from `--fail2ban` — was measured before it was made, and the measurement is
-recorded in the tree at [`batch.rs:698-706`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L698-L706):
+recorded in the tree at [`batch.rs:2436-2444`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2436-L2444):
 
 > on a real carrier trunk […] produces 7008 detections naming 180 peers, because
 > the behavioral signature counts OPTIONS and the busiest "scanners" are the
@@ -102,9 +103,9 @@ name on them, which makes them harder to disbelieve.
 
 The signature as committed counts REGISTER, OPTIONS and INVITE toward one
 per-source counter
-(`git show HEAD:src/security/scanner_detect.rs`, the method gate at its `:234`),
-against `BEHAVIORAL_THRESHOLD = 10` (`:34`) and `ENUMERATION_THRESHOLD = 5`
-distinct targets (`:41`) in a `BEHAVIORAL_WINDOW_SECS = 5` window (`:48`).
+(`git show HEAD:src/security/scanner_detect.rs`, the method gate at its `:572`),
+against `BEHAVIORAL_THRESHOLD = 10` (`:61`) and `ENUMERATION_THRESHOLD = 5`
+distinct targets (`:69`) in a `BEHAVIORAL_WINDOW_SECS = 5` window (`:146`).
 A device sending OPTIONS keepalives to 5 peers at better than 2 per second is
 indistinguishable from a scanner under that rule — and that describes a healthy
 SBC exactly.
@@ -120,7 +121,7 @@ suite.
 This is already how the tree behaves, and it should be written down as policy
 rather than left as a judgement call that happened to go well once. The
 `scanner_detector` is `Some` only when the kill path is active
-([`batch.rs:707-716`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L707-L716)), and the comment above it declines
+([`batch.rs:2445-2461`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2445-L2461)), and the comment above it declines
 to arm it from `--fail2ban` "until the signature can tell a keepalive from an
 enumeration". That is the rule being applied. Section 4 is what it takes to
 satisfy it.
@@ -182,7 +183,7 @@ Two tiers, and the boundary is not about detector confidence. It is about
 ### Tier 1 — alert a human. The default for everything.
 
 Every detection reaches `tracing::warn!` under the `sipnab::alert` target
-([`alerting.rs:323`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L323)), optionally a JSON line on
+([`alerting.rs:721`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L721)), optionally a JSON line on
 stderr, optionally syslog, and the in-memory findings ring buffer
 (`DEFAULT_FINDINGS_HISTORY = 1000`, [`alerting.rs:268`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L268)).
 Being wrong here costs a log line.
@@ -207,7 +208,7 @@ does this and the numbers are the model: a global limiter at
 `DEFAULT_RATE_LIMIT = 10` per second
 ([`process_isolation.rs:990`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L990)) and a
 per-destination limiter at `MAX_PER_DST_PER_MINUTE = 3`
-([`:712`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L712)), both applied before any send. The
+([`:731`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L731)), both applied before any send. The
 per-destination cap is the one that matters: it bounds the damage to *one* peer
 when the signature is wrong about that peer, which is the failure that actually
 happens. A global-only limiter would happily spend its whole budget on a single
@@ -223,7 +224,7 @@ the process that asked for it.
 And the standing rule that already holds across all of it: **every arming flag
 is off by default** — `--kill-scanner`, `-K`, `--hep-allow-kill`, `--fail2ban`,
 `--alert-exec`, `--on-dialog-exec`, `--on-quality-exec`
-([`cli.rs:645-798`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L645-L798)). Nothing in this document proposes
+([`cli.rs:1334-2008`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1334-L2008)). Nothing in this document proposes
 changing that, and nothing should.
 
 ## 6. Three blind spots that make the tiers unverifiable
@@ -237,7 +238,7 @@ their current state, because a threshold nobody can audit is not a threshold.
 ([`process_isolation.rs:330-345`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L330-L345)) — and offers
 it on a 256-slot channel. Commit `56c6645` fixed the serious half of this: the
 offer is now `try_send`, and a full channel calls `note_unobserved_outcome()`
-([`:461`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L461), fired at [`:849`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L849))
+([`:461`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L461), fired at [`:868`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L868))
 instead of blocking. Before that fix, outcome 257 stalled the worker, which
 stopped draining requests, which blocked `send_kill` on the capture thread while
 it held the dialog and stream write locks every MCP tool reads — a wedge of the
@@ -303,10 +304,10 @@ traffic. Only a real capture showed that. A synthetic flood from one address
 would have made the global limiter look sufficient.
 
 **And the record itself cannot answer the question.** `Finding`
-([`alerting.rs:143-152`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L143-L152)) carries `rule_name`,
+([`alerting.rs:387-397`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L387-L397)) carries `rule_name`,
 `src_ip`, `detail` and `timestamp`, and **no field recording whether an action
 was taken.** Findings are written after the cooldown check
-([`:307-317`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L307-L317)), so suppressed firings are absent
+([`:694-704`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L694-L704)), so suppressed firings are absent
 from history. Asked "did we ban this peer, and why", sipnab today cannot answer
 from its own state.
 

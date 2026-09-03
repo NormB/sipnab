@@ -266,6 +266,78 @@ fn fuzz_rtcp_parser_no_panic() {
     });
 }
 
+/// A well-formed STUN Binding Request seed: cookie, transaction ID and one
+/// SOFTWARE attribute, so mutation starts inside the attribute walk.
+fn stun_seed() -> Vec<u8> {
+    let mut v = vec![0x00, 0x01, 0x00, 0x08, 0x21, 0x12, 0xa4, 0x42];
+    v.extend_from_slice(&[
+        0xb7, 0xe7, 0xa7, 0x01, 0xbc, 0x34, 0xd6, 0x86, 0xfa, 0x87, 0xdf, 0xae,
+    ]);
+    v.extend_from_slice(&[0x80, 0x22, 0x00, 0x04]);
+    v.extend_from_slice(b"fuzz");
+    v
+}
+
+/// A TURN ChannelData frame seed: channel 0x4001 carrying four bytes.
+fn channel_data_seed() -> Vec<u8> {
+    vec![0x40, 0x01, 0x00, 0x04, 0xde, 0xad, 0xbe, 0xef]
+}
+
+/// An LLMNR query seed: one A question for `host`, no answers.
+fn llmnr_seed() -> Vec<u8> {
+    let mut v = vec![
+        0x12, 0x34, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+    v.extend_from_slice(b"\x04host\x00");
+    v.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
+    v
+}
+
+/// 40k random/mutated inputs through the STUN decoder and the ChannelData framing checks never panic.
+#[test]
+fn fuzz_stun_no_panic() {
+    // Every UDP payload that is not SIP goes through these before RTP is
+    // considered, so the bytes are whatever another host sent.
+    use sipnab::stun::{
+        ChannelDataFraming, channel_data_payload, channel_data_payload_framed, is_channel_data,
+        is_channel_data_framed, parse,
+    };
+    let stun = stun_seed();
+    let channel_data = channel_data_seed();
+    let seeds: &[&[u8]] = &[&stun, &channel_data];
+    pound("stun", seeds, ITERS, |d| {
+        if let Some(msg) = parse(d) {
+            let _ = msg.method_name();
+            let _ = msg.is_binding_request();
+            let _ = msg.is_auth_challenge();
+            let _ = msg.is_allocate_request();
+        }
+        let _ = channel_data_payload(d);
+        let _ = channel_data_payload_framed(d, ChannelDataFraming::Stream);
+        let _ = is_channel_data(d);
+        let _ = is_channel_data_framed(d, ChannelDataFraming::Stream);
+    });
+}
+
+/// 40k random/mutated inputs through `is_llmnr_packet` and `parse_llmnr` never panic.
+#[test]
+fn fuzz_llmnr_parser_no_panic() {
+    // Claimed during classification before any media check, on every
+    // datagram touching port 5355; the port pair is read before the bytes.
+    use sipnab::llmnr::{PORT, is_llmnr_packet, parser::parse_llmnr, parser::rtype_name};
+    let seed = llmnr_seed();
+    let seeds: &[&[u8]] = &[&seed];
+    pound("llmnr_parser", seeds, ITERS, |d| {
+        let _ = is_llmnr_packet(d, PORT, 40_000);
+        let _ = is_llmnr_packet(d, 40_000, PORT);
+        if let Ok(msg) = parse_llmnr(d) {
+            for answer in &msg.answers {
+                let _ = rtype_name(answer.rtype);
+            }
+        }
+    });
+}
+
 /// 40k purely random inputs through `parse_hep` never panic.
 #[cfg(feature = "hep")]
 #[test]
