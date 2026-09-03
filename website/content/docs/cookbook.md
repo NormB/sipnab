@@ -1181,6 +1181,20 @@ fail2ban-regex /var/log/sipnab/fail2ban.log /etc/fail2ban/filter.d/sipnab.conf
 sudo sipnab -N -d eth0 --fraud-detect --alert syslog
 ```
 
+Where a call is going is a signal the shape-based heuristics cannot see. Name
+the destinations you never expect to dial and sipnab reports an INVITE to one
+the moment it sees it, no pattern required:
+
+```bash
+sipnab -d eth0 -N --fraud-detect --fraud-destination DO,VG,MA
+```
+
+sipnab reads numbers through the common international prefixes and resolves
+them by the longest calling code, so `+1 809 555 0100` is the Dominican Republic
+and not the United States. A number dialed with no prefix is domestic and never
+matches, and every other fraud finding now names the resolved destination beside
+its detail.
+
 `--fraud-detect` runs three heuristics over INVITE traffic per source IP: **VolumeSpike** (call rate far above the rolling baseline), **Wangiri** (repeated short calls to the same number prefix), and **SequentialScanning** (consecutive destination numbers). Alerts fire through the same alert engine as the scanner detectors, so `--alert syslog` and `--alert-exec` both work.
 
 You should see alert lines like:

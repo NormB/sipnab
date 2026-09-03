@@ -1597,6 +1597,17 @@ pub struct SecurityArgs {
     #[arg(help_heading = "Security", long)]
     pub fraud_detect: bool,
 
+    /// Destination countries `--fraud-detect` reports an INVITE to, as ISO
+    /// 3166-1 alpha-2 codes (`DO,VG,MA`). Numbers are read through the common
+    /// international prefixes (`+`, `00`, `011`); a number with none is domestic
+    /// and never matches. Absent: no destination alerts, and nothing changes.
+    #[arg(
+        help_heading = "Security",
+        long = "fraud-destination",
+        value_name = "ISO,..."
+    )]
+    pub fraud_destination: Option<String>,
+
     /// Detect registration floods: credentialed REGISTERs the registrar keeps
     /// refusing. sipnab reports a source when the REGISTERs it sent with
     /// `Authorization` that drew a `401`/`407` on the same transaction exceed
@@ -3357,6 +3368,18 @@ impl FromToModeArg {
     }
 }
 
+/// `DO, gb,,do` → `["DO", "GB"]`: one rule for the flag and the config key.
+pub fn parse_destination_list(raw: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for part in raw.split(',') {
+        let iso = part.trim().to_ascii_uppercase();
+        if !iso.is_empty() && !out.contains(&iso) {
+            out.push(iso);
+        }
+    }
+    out
+}
+
 impl Cli {
     /// Built-in caps, used when neither the CLI nor `[limits]` names one.
     ///
@@ -3923,6 +3946,17 @@ impl Cli {
             Some(spec) => crate::config::parse_business_hours(spec).map(Some),
             None => Ok(None),
         }
+    }
+
+    /// The `--fraud-destination` watch list: upper-cased, trimmed, empty entries
+    /// dropped, duplicates removed, first-seen order kept. Empty when absent.
+    pub fn fraud_destinations(&self) -> Vec<String> {
+        parse_destination_list(
+            self.security_args
+                .fraud_destination
+                .as_deref()
+                .unwrap_or(""),
+        )
     }
 
     /// Fraud trigger points: each flag, else its `[security]` key, else the
@@ -4753,6 +4787,17 @@ mod tests {
 
     /// `--color` rejects an out-of-set value at PARSE time rather than silently
     /// falling back to `auto` in the downstream match.
+    #[test]
+    fn fraud_destination_list_is_normalized() {
+        let cli = Cli::parse_from(["sipnab", "--fraud-destination", "do, GB ,,do,vg"]);
+        assert_eq!(cli.fraud_destinations(), ["DO", "GB", "VG"]);
+        let none = Cli::parse_from(["sipnab"]);
+        assert!(
+            none.fraud_destinations().is_empty(),
+            "absent flag: an empty watch list"
+        );
+    }
+
     #[test]
     fn color_rejects_unknown_value_at_parse_time() {
         let err = Cli::try_parse_from(["sipnab", "--color", "bogus"])

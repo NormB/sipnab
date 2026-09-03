@@ -563,6 +563,8 @@ pub struct SecurityConfig {
     /// Short calls to one destination prefix before wangiri is reported
     /// (default: 3).
     pub fraud_wangiri_calls: Option<u32>,
+    /// Destination countries `--fraud-detect` reports an INVITE to (`--fraud-destination`).
+    pub fraud_destination: Option<String>,
     /// Consecutive refused numbers before sequential scanning is reported
     /// (default: 3).
     pub fraud_sequential_calls: Option<u64>,

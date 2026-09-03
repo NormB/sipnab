@@ -703,10 +703,16 @@ fn build_fraud_detector(cli: &Cli, config: &Config) -> Option<FraudDetector> {
         tracing::error!("{e}; off-hours fraud detection is OFF for this run");
         None
     });
-    Some(FraudDetector::with_thresholds(
-        business_hours,
-        cli.fraud_thresholds(config),
-    ))
+    let mut watch = cli.fraud_destinations();
+    if watch.is_empty() {
+        watch = crate::cli::parse_destination_list(
+            config.security.fraud_destination.as_deref().unwrap_or(""),
+        );
+    }
+    Some(
+        FraudDetector::with_thresholds(business_hours, cli.fraud_thresholds(config))
+            .with_destination_watch(crate::security::destination::DialPlan::common(), watch),
+    )
 }
 
 /// Whether a `--fail2ban` run has nothing armed that could ever write a jail

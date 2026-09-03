@@ -71,7 +71,9 @@ skip = */target/*,*/.git/*,*.lock,website/public/*,*/website/public/*,*/js/*,*.m
 #                "yes"/"use". It is neither: it is the thing being forbidden,
 #                quoted by the gate that forbids it, and that file may not
 #                contain a whole British word for exactly the same reason.
-ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor,Sourc,medias,nam,sme,thirdparty,yse
+# FO is the Faroe Islands' ISO 3166-1 alpha-2 code, a row in the ported
+# calling-code table in src/security/destination.rs -- data, not prose.
+ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor,Sourc,medias,nam,sme,thirdparty,yse,FO
 #
 # Deliberately NOT ignored: "cappable", which codespell wanted to make "capable".
 # It appeared in "both are small, and both are cappable", where the meaning is

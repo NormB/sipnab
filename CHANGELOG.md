@@ -10,6 +10,18 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **`--fraud-destination <ISO,...>`: the fraud detector knows where a call is
+  going.** The one capability the cross-project review found missing: every
+  heuristic reasoned about call shape and none could say the destination. A new
+  `security::destination` module ports the TFPS project's dial-plan stripping and
+  longest-prefix country lookup (Apache-2.0; ported rather than depended on, so a
+  machine without TFPS is unchanged and the no-`tfps`-in-the-manifest gate still
+  holds). An INVITE to a watched country is reported on sight, and every fraud
+  finding carries the resolved destination. `+1 809` resolves to `DO`, not `US`;
+  a number with no international prefix is domestic and never matches.
+
 ### Fixed
 
 - **`--hep-parse` no longer lets a forged inner source pass the origin gate.**
@@ -21,6 +33,13 @@ entry that carries them.
   kill or jail line needs `--hep-allow-kill`, the same opt-in as the listener.
 
 ### Changed
+
+- **Two gates for two ways a change slips its paperwork.** Every `[security]`
+  config key the program reads must have a row in `docs/config-reference.md`;
+  the docs-drift tests paired flags with their rows, never config keys, and a
+  key was added, wired and tested without one. And `security::destination` must
+  stay unconditional while `detectors` keeps its feature gate: a scripted
+  insert beneath the attribute line moved the gate onto the wrong module.
 
 - **The manual pre-push path is pinned as stdin-safe.** Run by hand,
   `.githooks/pre-push` blocks at its git-protocol refspec loop when stdin is

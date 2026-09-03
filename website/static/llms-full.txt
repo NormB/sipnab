@@ -1179,6 +1179,20 @@ fail2ban-regex /var/log/sipnab/fail2ban.log /etc/fail2ban/filter.d/sipnab.conf
 sudo sipnab -N -d eth0 --fraud-detect --alert syslog
 ```
 
+Where a call is going is a signal the shape-based heuristics cannot see. Name
+the destinations you never expect to dial and sipnab reports an INVITE to one
+the moment it sees it, no pattern required:
+
+```bash
+sipnab -d eth0 -N --fraud-detect --fraud-destination DO,VG,MA
+```
+
+sipnab reads numbers through the common international prefixes and resolves
+them by the longest calling code, so `+1 809 555 0100` is the Dominican Republic
+and not the United States. A number dialed with no prefix is domestic and never
+matches, and every other fraud finding now names the resolved destination beside
+its detail.
+
 `--fraud-detect` runs three heuristics over INVITE traffic per source IP: **VolumeSpike** (call rate far above the rolling baseline), **Wangiri** (repeated short calls to the same number prefix), and **SequentialScanning** (consecutive destination numbers). Alerts fire through the same alert engine as the scanner detectors, so `--alert syslog` and `--alert-exec` both work.
 
 You should see alert lines like:
@@ -8827,6 +8841,7 @@ report a healthy network in the middle of an outage.
 | `--kill-spoof` | `<MODE>` | `auto` | Source-address strategy for the kill response (Linux only; other platforms always `ephemeral`). `auto` forges the victim's ip:port via a raw socket when `CAP_NET_RAW` is available (so the reply appears to come from the targeted SIP port), falling back to an ephemeral source otherwise; `raw` requires the spoof and errors when it cannot open the raw socket; `ephemeral` never spoofs |
 | `--kill-rate-limit` | `<N>` | `10` | Scanner-kill responses per second sipnab may put on the wire. This bounds the one feature that answers an address out of the capture, and the sender of each packet sipnab answers chose the address that answer goes to, so there is no unlimited setting and sipnab rejects `0`. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. Config: `[security] kill_rate_limit` |
 | `--fraud-detect` | -- | off | Enable fraud detection heuristics |
+| `--fraud-destination` | `<ISO,...>` | off | Destination countries `--fraud-detect` reports an INVITE to, as ISO 3166-1 alpha-2 codes (`DO,VG,MA`). sipnab reads numbers through the common international prefixes (`+`, `00`, `011`) and resolves them by longest calling code, so `+1 809` is `DO`, not `US`; a number with no prefix is domestic and never matches. Every fraud finding also names the resolved destination. Absent: nothing changes. Config: `[security] fraud_destination` |
 | `--business-hours` | `<START-END>` | -- | Business hours in whole UTC hours, for example `8-18`, or `22-6` for an overnight window. This is what makes the off-hours fraud detection reachable: with no window declared there is no outside for a call to fall in. Needs `--fraud-detect`. Config: `[security] business_hours` |
 | `--fraud-short-call` | `<SECS>` | `3` | Measured duration below which `--fraud-detect` counts a completed call as short for wangiri detection. Three seconds is under a normal ring-no-answer on some carriers. Config: `[security] fraud_short_call_secs` |
 | `--fraud-wangiri-calls` | `<N>` | `3` | Short calls to one destination prefix before `--fraud-detect` reports wangiri. Config: `[security] fraud_wangiri_calls` |
@@ -8871,7 +8886,9 @@ report a healthy network in the middle of an outage.
 - `sipnab -N -I capture.pcap --stir-shaken --digest-leak --alert-json` — offline audit of a pcap for digest leaks and STIR/SHAKEN attestation claims (as the originator presented them — sipnab checks no signature), emitting structured JSON alerts
 - `sudo sipnab -N -d eth0 --reg-flood --reg-flood-threshold 10 --fraud-detect --business-hours 8-18 --fraud-short-call 1` — tune the detectors to a small PBX: ten REGISTERs a second is a brute force here, calls outside office hours are worth a line, and a one-second call is the only one short enough to be a lure
 - `sudo sipnab -N -d eth0 --reg-flood --reg-flood-threshold 400 --fraud-detect --business-hours 22-6` — the carrier-registrar shape instead: only a genuine flood clears 400 REGISTERs a second, and the quiet window is overnight
-- `sipnab -N -I trunk.pcap --fraud-detect --fraud-short-call 6 --fraud-wangiri-calls 5 --fraud-sequential-calls 6` — audit a wholesale trunk where short calls are ordinary, so a lure needs five of them and a dial-plan walk needs six consecutive dead numbers
+- `sipnab -N -I trunk.pcap --fraud-detect --fraud-short-call 6 --fraud-wangiri-calls 5 --fraud-sequential-calls 6`
+- `sipnab -d eth0 -N --fraud-detect --fraud-destination DO,VG,MA` — an SBC that never dials the Dominican Republic, the British Virgin Islands or Morocco, three destinations where premium-rate fraud concentrates; the first INVITE to any of them alerts on sight
+- `sipnab -N -I trunk.pcap --fraud-detect --fraud-destination CU,KP --json` — replay a trunk capture and write every INVITE to an embargoed destination as one JSON line, for the audit that asked whether any call ever went there — audit a wholesale trunk where short calls are ordinary, so a lure needs five of them and a dial-plan walk needs six consecutive dead numbers
 - `sipnab -N -I pbx.pcap --fraud-detect --fraud-wangiri-calls 2 --fraud-sequential-calls 2 --fraud-volume-multiplier 3 --fraud-volume-min-calls 4` — the sensitive form for a small PBX, where two short calls to one prefix and four calls in a minute are already unusual
 - `sipnab -N -I trunk.pcap --fraud-detect --fraud-volume-multiplier 20 --fraud-volume-min-calls 200` — a busy carrier trunk, where a spike has to be twenty times its own baseline and 200 calls a minute before it means anything
 - `sipnab -N -I trunk.pcap --fraud-detect --fraud-wangiri-window 900 --fraud-short-call 5` — hunt a paced lure: three short calls to one prefix over fifteen minutes, which the shipped sixty-second window forgets between calls
@@ -11605,6 +11622,7 @@ Security detection defaults.
 | `business_hours` | string | -- | Business hours as `"START-END"` in whole UTC hours, for example `"8-18"`. A wrapping range such as `"22-6"` is the overnight window. This is what makes the off-hours fraud detection reachable: with no window declared there is no outside for a call to fall in. `--business-hours` overrides it |
 | `fraud_short_call_secs` | integer | `3` | Measured call duration below which `--fraud-detect` counts a completed call as short for wangiri detection. Three seconds is under a normal ring-no-answer on some carriers, which reports ordinary unanswered calls as lures. `--fraud-short-call` overrides it |
 | `fraud_wangiri_calls` | integer | `3` | Short calls to one destination prefix before `--fraud-detect` reports wangiri. `--fraud-wangiri-calls` overrides it |
+| `fraud_destination` | string | -- | Destination countries `--fraud-detect` reports an INVITE to, as comma-separated ISO 3166-1 alpha-2 codes (`DO,VG,MA`). sipnab reads numbers through the common international prefixes (`+`, `00`, `011`) and resolves them by longest calling code, so `+1 809` is `DO`, not `US`; a number with no prefix is domestic and never matches. `--fraud-destination` overrides it |
 | `fraud_sequential_calls` | integer | `3` | Consecutive refused numbers before `--fraud-detect` reports sequential scanning. `--fraud-sequential-calls` overrides it |
 | `fraud_volume_multiplier` | integer | `5` | Multiple of a source's own baseline call rate that `--fraud-detect` reports as a volume spike. `--fraud-volume-multiplier` overrides it |
 | `fraud_volume_min_calls` | integer | `6` | Calls a source must place inside the volume window before `--fraud-detect` reports a spike at all. `--fraud-volume-min-calls` overrides it |
