@@ -595,7 +595,7 @@ jobs:
       - name: Refuse open alerts on this commit
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/code-scanning-clean.py --repo "${{ github.repository }}" --ref "${{ github.ref }}" --sha "${{ github.sha }}" --wait-secs 1500
+        run: python3 scripts/code-scanning-clean.py --repo "${{ github.repository }}" --ref "${{ github.ref }}" --sha "${{ github.sha }}" --category /language:rust --wait-secs 1500
 
   ci-success:
     # Bounds how long this job can hold the main-branch concurrency

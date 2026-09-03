@@ -41,9 +41,21 @@ def open_alerts(alerts):
     return [a for a in alerts if isinstance(a, dict) and a.get("state") == "open"]
 
 
-def analysis_covers(analyses, sha):
-    """Whether any listed analysis is of this exact commit."""
-    return any(isinstance(a, dict) and a.get("commit_sha") == sha for a in analyses)
+def analysis_covers(analyses, sha, category):
+    """Whether the analysis that produces the alerts -- `category` -- has run on
+    this exact commit. CodeQL uploads one analysis per language and the fast
+    ones land in seconds; an `actions` analysis of the SHA says nothing about
+    Rust alerts, and judging on it is judging the previous commit's Rust run."""
+    return any(
+        isinstance(a, dict) and a.get("commit_sha") == sha and a.get("category") == category
+        for a in analyses
+    )
+
+
+def instance_on(alert, sha):
+    """Whether the alert's most recent instance was found on this commit."""
+    inst = alert.get("most_recent_instance", {}) or {}
+    return inst.get("commit_sha") == sha
 
 
 def describe(alert):
@@ -73,13 +85,20 @@ def gh_paginated(path):
     return merged
 
 
-def judge(alerts, analyses, sha):
+def judge(alerts, analyses, sha, category):
     """(exit code, message) for the given API answers."""
     if alerts is None or analyses is None:
         return 2, "code scanning: the API answer could not be read (not JSON) -- refusing to judge"
-    if not analysis_covers(analyses, sha):
-        return 2, f"code scanning: no CodeQL analysis of {sha[:8]} exists yet -- refusing to judge"
+    if not analysis_covers(analyses, sha, category):
+        return 2, f"code scanning: no CodeQL analysis of {sha[:8]} in {category} exists yet -- refusing to judge"
     bad = open_alerts(alerts)
+    stale = [a for a in bad if not instance_on(a, sha)]
+    if stale:
+        # The analysis of this commit exists, yet these alerts' most recent
+        # instance is on an older one: the scanner has not re-evaluated them
+        # here. Judging them now is judging the previous commit -- the exact
+        # mistake this script's first run made. Wait, do not fail.
+        return 2, f"code scanning: {len(stale)} open alert(s) not yet re-evaluated on {sha[:8]} -- refusing to judge"
     if bad:
         lines = "\n".join(describe(a) for a in bad)
         return 1, f"code scanning: {len(bad)} open alert(s) on {sha[:8]}:\n{lines}"
@@ -92,6 +111,7 @@ def main():
     ap.add_argument("--repo", default="NormB/sipnab")
     ap.add_argument("--ref", default="refs/heads/main")
     ap.add_argument("--wait-secs", type=int, default=0, help="live mode: wait this long for an analysis of --sha")
+    ap.add_argument("--category", default="/language:rust", help="the analysis category whose alerts are judged")
     ap.add_argument("--alerts-json", help="fixture mode: read alerts from this file")
     ap.add_argument("--analyses-json", help="fixture mode: read analyses from this file")
     a = ap.parse_args()
@@ -99,18 +119,18 @@ def main():
     if a.alerts_json or a.analyses_json:
         alerts = parse(open(a.alerts_json).read()) if a.alerts_json else []
         analyses = parse(open(a.analyses_json).read()) if a.analyses_json else []
-        rc, msg = judge(alerts, analyses, a.sha)
+        rc, msg = judge(alerts, analyses, a.sha, a.category)
     else:
         deadline = time.time() + a.wait_secs
         while True:
             analyses = gh_paginated(f"repos/{a.repo}/code-scanning/analyses?ref={a.ref}&per_page=100")
-            if analyses is not None and analysis_covers(analyses, a.sha):
+            if analyses is not None and analysis_covers(analyses, a.sha, a.category):
                 break
             if time.time() >= deadline:
                 break
             time.sleep(30)
         alerts = gh_paginated(f"repos/{a.repo}/code-scanning/alerts?state=open&ref={a.ref}&per_page=100")
-        rc, msg = judge(alerts, analyses, a.sha)
+        rc, msg = judge(alerts, analyses, a.sha, a.category)
     print(msg)
     sys.exit(rc)
 

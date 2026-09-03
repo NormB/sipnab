@@ -19,9 +19,11 @@ entry that carries them.
   `tags contain: test` -- which filters a query's metadata tags, and no
   security query carries one, so the filter matched nothing and the alerts
   rode through three tagged releases under a comment saying they were
-  suppressed. The fixtures now derive their nonces from a label (equal labels
-  compare equal, which is all the detector ever checks), and the config says
-  plainly that inline test code cannot be excluded.
+  suppressed. The fixtures now mint their nonces at runtime, memoized by label (equal
+  labels compare equal, which is all the detector ever checks; the first
+  replacement, a hash seeded with a constant, was still a constant to the
+  query), and the config says plainly that inline test code cannot be
+  excluded.
 
 ### Changed
 

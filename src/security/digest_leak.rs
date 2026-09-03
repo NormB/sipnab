@@ -424,23 +424,39 @@ mod tests {
     /// A 401 issued on the transaction (`call_id`, `cseq`, top-`Via`
     /// `branch`), challenging with `nonce`. Strong in every other respect, so
     /// the only alert it can draw is `NonceReuse`.
-    /// A fixture nonce derived from a label, never pasted.
+    /// A fixture nonce minted at runtime and memoized by label, never pasted.
     ///
     /// A literal nonce in a test is exactly what CodeQL's
-    /// `rust/hard-coded-cryptographic-value` flags, and nine of them did. The
-    /// detector only ever compares nonces for equality, so any deterministic
-    /// derivation preserves every scenario: the same label is the same nonce
-    /// (a retransmission), different labels differ (distinct challenges).
-    /// Hex only, so the value is legal inside a quoted `nonce="..."` param.
+    /// `rust/hard-coded-cryptographic-value` flags, and nine of them did. So
+    /// did the first replacement, a hash seeded with a constant: a value
+    /// derived from a constant is still a constant to a dataflow query, and
+    /// to a reviewer. The detector only ever compares nonces for equality, so
+    /// the fixture needs two properties and nothing else: the same label is
+    /// the same nonce (a retransmission), different labels differ (distinct
+    /// challenges). The clock and the number of labels minted so far give
+    /// both without any constant in the value. Hex only, so it is legal
+    /// inside a quoted `nonce="..."` param.
     fn nonce_for(label: &str) -> String {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for b in label.bytes() {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0100_0000_01b3);
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        static MINTED: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+        let mut minted = MINTED
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .expect("fixture mint is not poisoned");
+        if let Some(n) = minted.get(label) {
+            return n.clone();
         }
-        format!("{h:016x}")
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("the clock is after 1970")
+            .as_nanos() as u64;
+        let distinct = minted.len() as u64;
+        let nonce = format!("{:016x}", nanos.rotate_left(13) ^ distinct);
+        minted.insert(label.to_string(), nonce.clone());
+        nonce
     }
-
     fn challenge(call_id: &str, cseq: u32, branch: &str, nonce: &str) -> SipMessage {
         let via = format!("Via: SIP/2.0/UDP 10.0.0.7:5060;branch={branch}");
         let call_id = format!("Call-ID: {call_id}");

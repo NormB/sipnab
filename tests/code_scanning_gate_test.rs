@@ -55,11 +55,19 @@ fn run(alerts: &str, analyses: &str, sha: &str) -> (i32, String) {
 
 const SHA: &str = "35c31afe0000000000000000000000000000abcd";
 fn analysis_for(sha: &str) -> String {
-    format!(r#"[{{"commit_sha": "{sha}", "tool": {{"name": "CodeQL"}}, "results_count": 0}}]"#)
+    analysis_in("/language:rust", sha)
+}
+fn analysis_in(category: &str, sha: &str) -> String {
+    format!(
+        r#"[{{"commit_sha": "{sha}", "category": "{category}", "tool": {{"name": "CodeQL"}}, "results_count": 0}}]"#
+    )
 }
 fn alert(rule: &str, path: &str, state: &str) -> String {
+    alert_on(rule, path, state, SHA)
+}
+fn alert_on(rule: &str, path: &str, state: &str, sha: &str) -> String {
     format!(
-        r#"{{"number": 344, "state": "{state}", "rule": {{"id": "{rule}", "severity": "warning"}}, "most_recent_instance": {{"location": {{"path": "{path}", "start_line": 475}}, "message": {{"text": "This hard-coded value is used as a nonce."}}}}}}"#
+        r#"{{"number": 344, "state": "{state}", "rule": {{"id": "{rule}", "severity": "warning"}}, "most_recent_instance": {{"commit_sha": "{sha}", "location": {{"path": "{path}", "start_line": 475}}, "message": {{"text": "This hard-coded value is used as a nonce."}}}}}}"#
     )
 }
 
@@ -119,6 +127,65 @@ fn an_unreadable_answer_is_reported_not_passed() {
     assert_eq!(rc, 2, "{out}");
 }
 
+/// CodeQL runs one analysis per language; the fast ones finish in seconds.
+/// The alerts come from the Rust one, so only ITS analysis of the commit
+/// counts -- an `actions` analysis of this SHA says nothing about Rust alerts.
+#[test]
+fn an_analysis_in_another_category_does_not_count_as_this_commits_verdict() {
+    let (rc, out) = run("[]", &analysis_in("/language:actions", SHA), SHA);
+    assert_eq!(rc, 2, "{out}");
+    assert!(out.to_lowercase().contains("no codeql analysis"), "{out}");
+}
+
+/// Both present: the Rust one is what unlocks the verdict.
+#[test]
+fn the_rust_analysis_among_others_unlocks_the_verdict() {
+    let both = format!(
+        "[{},{}]",
+        analysis_in("/language:actions", SHA).trim_matches(|c| c == '[' || c == ']'),
+        analysis_in("/language:rust", SHA).trim_matches(|c| c == '[' || c == ']')
+    );
+    let (rc, out) = run("[]", &both, SHA);
+    assert_eq!(rc, 0, "{out}");
+}
+
+/// An open alert whose most recent instance is on an OLDER commit has not
+/// been re-evaluated here: the scanner has not spoken about this commit's
+/// version of that code. The first run of this gate failed nine such alerts
+/// as if they were this commit's; they were the previous commit's.
+#[test]
+fn an_alert_not_yet_re_evaluated_on_this_commit_is_not_a_failure() {
+    let older = "15c4626200000000000000000000000000000000";
+    let alerts = format!(
+        "[{}]",
+        alert_on(
+            "rust/hard-coded-cryptographic-value",
+            "src/x.rs",
+            "open",
+            older
+        )
+    );
+    let (rc, out) = run(&alerts, &analysis_for(SHA), SHA);
+    assert_eq!(rc, 2, "{out}");
+    assert!(out.contains("not yet re-evaluated"), "{out}");
+}
+
+/// The same alert, once the scanner has found it on THIS commit, fails.
+#[test]
+fn an_alert_found_on_this_commit_fails() {
+    let alerts = format!(
+        "[{}]",
+        alert_on(
+            "rust/hard-coded-cryptographic-value",
+            "src/x.rs",
+            "open",
+            SHA
+        )
+    );
+    let (rc, out) = run(&alerts, &analysis_for(SHA), SHA);
+    assert_eq!(rc, 1, "{out}");
+}
+
 /// CI requires the gate: a job runs the script and the aggregate needs it.
 #[test]
 fn ci_success_requires_the_code_scanning_gate() {
@@ -130,6 +197,10 @@ fn ci_success_requires_the_code_scanning_gate() {
     assert!(
         ci.contains("security-events: read"),
         "the job cannot read alerts without security-events: read"
+    );
+    assert!(
+        ci.contains("--category /language:rust"),
+        "CI must name the category whose alerts it judges"
     );
     let i = ci.find("name: CI success").expect("aggregate job");
     let needs = &ci[i..ci[i..].find("runs-on:").map(|j| i + j).unwrap_or(ci.len())];
