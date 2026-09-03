@@ -102,6 +102,15 @@ entry that carries them.
   `--hep-allow-kill`, uprobe-origin traffic never. The finding itself still
   reaches the alert path, and a run that pairs `--fail2ban` with HEP input
   and no opt-in says at startup that its jail log stays empty by design.
+- **Two gates read the wrong repository from inside a hook.** Under
+  `git commit`, the pre-commit hook inherits `GIT_DIR`, `GIT_INDEX_FILE` and
+  `GIT_WORK_TREE` for the repository being committed to, and a child `git`
+  started in another directory inherits them too. The abandoned-worktree gate
+  reported on the parent and blocked every commit while a worktree was in
+  use; the staged-inputs gate's fixtures staged into the parent's temporary
+  index during a partial commit. Both now scrub those variables before they
+  spawn git.
+
 ### Changed
 
 - **The production-panic gate now covers the macro spellings of "abort here".**
@@ -127,6 +136,11 @@ entry that carries them.
   entry points. Sixty seconds of each locally produced no crash. The weekly
   workflow's matrix now lists every target: it had never listed
   `fuzz_rtpengine_ng`, which landed after the matrix was last edited.
+- **A tracked file may not carry a merge-conflict marker.** A squash left
+  `<<<<<<<`/`>>>>>>>` in two files, they were staged, and fmt, Vale,
+  codespell, clippy and the whole suite ran over them without noticing. A gate
+  now scans every tracked text file for the two markers that never occur
+  legitimately.
 
 ## [0.5.145] - 2026-09-03
 

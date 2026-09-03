@@ -47,17 +47,57 @@ fn run_in(dir: &Path) -> (i32, String) {
 /// diff --cached` reports, and a fake index would test the fake.
 struct Scratch(PathBuf);
 
+/// A `git` that acts on the fixture and nothing else.
+///
+/// # The defect this exists for
+///
+/// Under `git commit` the pre-commit hook runs with `GIT_DIR`, `GIT_INDEX_FILE`
+/// and `GIT_WORK_TREE` set for the repository being committed to, and a child
+/// git inherits them: `git add` in a fixture directory then writes to the REAL
+/// repository's index. A partial commit surfaced it — its temporary index is
+/// where the fixture's staging went, and two tests here failed reading state
+/// they had never written. The worktree gate in `repo_hygiene_test` had the
+/// identical hole, found the same day.
+fn scrubbed_git(dir: &std::path::Path) -> Command {
+    let mut c = Command::new("git");
+    c.current_dir(dir);
+    for var in [
+        "GIT_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_WORK_TREE",
+        "GIT_PREFIX",
+        "GIT_COMMON_DIR",
+    ] {
+        c.env_remove(var);
+    }
+    c
+}
+
+/// The scrub must actually be applied, or the fixtures write to the real repo.
+#[test]
+fn fixture_git_scrubs_the_hooks_environment() {
+    let c = scrubbed_git(std::path::Path::new("."));
+    let removed: Vec<&std::ffi::OsStr> = c
+        .get_envs()
+        .filter(|(_, v)| v.is_none())
+        .map(|(k, _)| k)
+        .collect();
+    for var in ["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"] {
+        assert!(
+            removed.iter().any(|k| *k == var),
+            "{var} not scrubbed: under `git commit`, a fixture's `git add` would stage \
+             into the repository being committed to"
+        );
+    }
+}
+
 impl Scratch {
     fn new(name: &str) -> Self {
         let dir = std::env::temp_dir().join(format!("sipnab-staged-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).expect("mkdir");
         let git = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(&dir)
-                .output()
-                .expect("git");
+            scrubbed_git(&dir).args(args).output().expect("git");
         };
         git(&["init", "-q"]);
         git(&["config", "user.email", "t@example.invalid"]);
@@ -69,11 +109,7 @@ impl Scratch {
         Self(dir)
     }
     fn git(&self, args: &[&str]) {
-        Command::new("git")
-            .args(args)
-            .current_dir(&self.0)
-            .output()
-            .expect("git");
+        scrubbed_git(&self.0).args(args).output().expect("git");
     }
     fn write(&self, rel: &str, body: &str) {
         std::fs::write(self.0.join(rel), body).expect("write");

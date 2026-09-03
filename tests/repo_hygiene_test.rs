@@ -236,6 +236,67 @@ fn no_worktree_is_abandoned_with_nothing_worth_keeping() {
     );
 }
 
+/// Whether a file body still carries merge-conflict markers.
+///
+/// Only the two markers that never occur legitimately: `<<<<<<< ` and
+/// `>>>>>>> ` at line start. A bare `=======` is a setext underline in
+/// Markdown, so it is not evidence on its own.
+fn has_conflict_markers(body: &str) -> bool {
+    body.lines()
+        .any(|l| l.starts_with("<<<<<<< ") || l.starts_with(">>>>>>> "))
+}
+
+/// No tracked file may carry a merge-conflict marker.
+///
+/// # The defect this exists for
+///
+/// A squash merge left `<<<<<<< HEAD` / `=======` / `>>>>>>>` in CHANGELOG.md
+/// and index.html, the files were staged, and the full pre-commit hook ran
+/// fmt, Vale, codespell, clippy and the whole test suite over them without
+/// noticing. Only the homepage count ratchet flinched, and only because the
+/// two sides of one block named different numbers. A gate that lets a
+/// conflict marker through to a commit is missing the one thing every reader
+/// would spot first.
+#[test]
+fn no_tracked_file_carries_a_conflict_marker() {
+    let out = Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(repo())
+        .output()
+        .expect("git ls-files");
+    let mut bad = Vec::new();
+    for rel in String::from_utf8_lossy(&out.stdout).split('\0') {
+        if rel.is_empty() {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(repo().join(rel)) else {
+            continue; // binary or unreadable: not a text file to scan
+        };
+        if has_conflict_markers(&body) {
+            bad.push(rel.to_string());
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "tracked file(s) still carry merge-conflict markers: {bad:?}"
+    );
+}
+
+/// POSITIVE CONTROL: the predicate must see a marker when one is there, and
+/// must not mistake a Markdown underline for one.
+#[test]
+fn the_conflict_marker_predicate_sees_markers_and_not_underlines() {
+    assert!(has_conflict_markers(
+        "a\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> other\n"
+    ));
+    assert!(has_conflict_markers(">>>>>>> theirs\n"));
+    assert!(
+        !has_conflict_markers("Title\n=======\n\nbody\n"),
+        "a setext underline is not a marker"
+    );
+    assert!(!has_conflict_markers("no markers here\n"));
+}
+
 // ── the script: driven against fixtures, because it deletes ─────────────
 
 /// A throwaway tree for the cleaner to act on.
