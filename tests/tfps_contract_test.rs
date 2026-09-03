@@ -576,6 +576,14 @@ fn an_explicit_path_that_cannot_run_is_an_error_naming_it() {
 /// waits it out rather than reporting a peer that is there as one it cannot
 /// run. Reproduced deterministically: the test holds the write handle open
 /// itself and lets go after 50 ms.
+///
+/// Linux only, and the reason is the reproduction rather than the behavior.
+/// `ETXTBSY` on `execve` while a writable descriptor is open is a Linux
+/// guarantee; macOS does not enforce it, so the exec there succeeds at once,
+/// nothing is retried, and the test measures a wait that never had to happen.
+/// The retry path itself is not platform-specific -- only this way of
+/// provoking it is.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_peer_busy_being_written_is_retried_not_refused() {
     let fake = FakeCtl::echoing(STATUS);
