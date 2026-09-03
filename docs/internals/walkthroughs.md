@@ -174,7 +174,10 @@ sequenceDiagram
    **(unenforced — [`resource_bounds_test`](../../tests/resource_bounds_test.rs)
    is three hand-written scenarios over `DialogStore` and `RtpStream`. It has no
    way to discover your module.)**
-3. Emit through the alert engine in
+3. Run its check from `run_detectors` in
+   [`security/detectors.rs`](../../src/security/detectors.rs), which returns
+   the finding as an `Effect` for the batch loop to file, and emit through the
+   alert engine in
    [`alerting.rs`](../../src/security/alerting.rs) rather than printing, so
    every sink (CLI, TUI, `fail2ban`, MCP `security_findings`) gets it. A new
    rule name also belongs in `SECURITY_FINDING_KINDS`

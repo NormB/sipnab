@@ -849,6 +849,40 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
     );
 }
 
+/// `--reg-flood --fail2ban` arms a producer of jail lines, so the startup
+/// warning that this run "will emit nothing" must stay quiet -- and with no
+/// producer armed it must print. The warning looked at the scanner detector
+/// alone, so `sipnab -d eth0 --reg-flood --fail2ban -N` announced an empty
+/// jail log and then wrote `reg_flood src=` lines into it.
+///
+/// Through the real binary: the predicate is unit-tested beside the warning,
+/// and this pins that the run consults it with the flood detector it
+/// actually built rather than with the flag alone.
+#[test]
+fn the_empty_jail_log_warning_is_silent_when_reg_flood_is_armed() {
+    const SILENCE_WARNING: &str = "An empty jail log means";
+
+    let (_, stderr, code) = run_support::run(
+        &["-N", "-I", FIXTURE, "--reg-flood", "--fail2ban"],
+        Some("warn"),
+    );
+    assert_eq!(code, Some(0), "the --reg-flood run failed:\n{stderr}");
+    assert!(
+        !stderr.contains(SILENCE_WARNING),
+        "--reg-flood writes jail lines, so the run must not announce that it \
+         will emit nothing:\n{stderr}"
+    );
+
+    // Control: with no producer armed, the warning is the one thing the run
+    // can say about the empty log it is about to leave behind.
+    let (_, stderr, code) = run_support::run(&["-N", "-I", FIXTURE, "--fail2ban"], Some("warn"));
+    assert_eq!(code, Some(0), "the unarmed run failed:\n{stderr}");
+    assert!(
+        stderr.contains(SILENCE_WARNING),
+        "control: nothing armed must still warn of the coming silence:\n{stderr}"
+    );
+}
+
 /// A capture truncated by a full disk must not report success.
 ///
 /// `src/capture/writer.rs` has unit tests proving the writer surfaces ENOSPC,

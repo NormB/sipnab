@@ -627,7 +627,9 @@ fn linked_code_targets_exist() {
     // `src/security/digest_leak.rs` for the nonce map's bound.
     // 408 -> 409: one more in the same section, `src/lru.rs`, the map the
     // detectors' per-source caps now evict through.
-    const EXPECTED_CODE_LINKS: usize = 409;
+    // 409 -> 410: one link, `internals/walkthroughs.md` naming
+    // `src/security/detectors.rs` as where a new detector's check is run.
+    const EXPECTED_CODE_LINKS: usize = 410;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

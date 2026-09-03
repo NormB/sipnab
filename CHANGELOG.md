@@ -20,6 +20,15 @@ entry that carries them.
   live worktree empty. It passed when run by hand, because by hand there was
   nothing to leak. The probe now scrubs those variables, and a worktree whose
   work is committed but merged nowhere is no longer counted as abandoned.
+- **`--fail2ban` no longer warns that the run will emit nothing when
+  `--reg-flood` is armed.** The startup warning about an empty jail log
+  consulted the scanner detector alone, so `sipnab -d eth0 --reg-flood
+  --fail2ban -N` announced "this run will emit nothing" and then wrote
+  `reg_flood src=` lines into the log it had just called empty. The warning
+  now consults every producer of a jail line — a scanner detection, a
+  `-K`/`--kill-target` match and a registration flood — and prints only when
+  all three are absent, which is the rule the CLI reference already stated.
+  Its text names both detections and every flag that arms one.
 - **`--hep-send` stamps each message with the transport it arrived on.** The
   forwarding loop re-parsed every SIP message with a literal UDP transport
   before handing it to the sender, so `-d eth0 --hep-send homer:9060` on a TCP
@@ -141,6 +150,21 @@ entry that carries them.
   codespell, clippy and the whole suite ran over them without noticing. A gate
   now scans every tracked text file for the two markers that never occur
   legitimately.
+
+### Changed
+
+- **The security detectors run as one function that returns what should
+  happen.** `process_parsed_packet` in the batch loop ran the scanner,
+  `--kill-target`, fraud, digest-leak and registration-flood checks inline —
+  filing findings, writing jail lines and handing responses to the kill
+  worker across a hundred and thirty lines of a function over five hundred
+  lines long — so the wiring of each detector was visible only to a test that
+  drove the whole loop. `security::detectors::run_detectors` now takes the
+  armed detectors, the message, its dialog and the run's policy, and returns
+  a list of effects (a finding to file, a jail line to write, a kill to send)
+  that the loop applies. Behavior is unchanged: the same checks in the same
+  order, the origin gate at the same five points, and every rule name still
+  assigned where the finding is filed. Each wire has a unit test of its own.
 
 ## [0.5.145] - 2026-09-03
 

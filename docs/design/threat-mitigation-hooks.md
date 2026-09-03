@@ -77,9 +77,9 @@ an operator who asked for a jail log and receives an empty file will read it as
 silent, so it says so, once, at startup
 ([`batch.rs:2468-2475`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2468-L2475)):
 
-> "--fail2ban writes scanner detections, but no detector is running, so this run
-> will emit nothing. An empty jail log means 'nothing was detected', not
-> 'nothing happened'. […]"
+> "--fail2ban writes scanner and registration-flood detections, but no detector
+> is running, so this run will emit nothing. An empty jail log means 'nothing was
+> detected', not 'nothing happened'. […]"
 
 **The generalizable lesson: a mitigation path that produces no output must say so
 out loud, because silence on a security surface is indistinguishable from

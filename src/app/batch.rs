@@ -709,6 +709,36 @@ fn build_fraud_detector(cli: &Cli, config: &Config) -> Option<FraudDetector> {
     ))
 }
 
+/// Whether a `--fail2ban` run has nothing armed that could ever write a jail
+/// line, so the operator should be told at startup that the log will stay
+/// empty by design.
+///
+/// Three sites write a jail line, each behind its own producer: a scanner
+/// detection (`--kill-scanner` / `--kill-ua`), a `-K`/`--kill-target` match,
+/// and a registration flood (`--reg-flood`). The warning is right only when
+/// all three are absent. It used to read the scanner detector alone, so
+/// `-d eth0 --reg-flood --fail2ban -N` announced "this run will emit nothing"
+/// and then wrote `reg_flood src=` lines into the log it had just called
+/// empty -- the exact false claim the warning exists to prevent, pointed the
+/// other way.
+///
+/// A function of three booleans rather than of the detectors themselves, so
+/// every combination is a unit test and the rule cannot be re-derived from
+/// the flags at the call site.
+///
+/// # Arguments
+///
+/// * `scanner` — a scanner detector is armed.
+/// * `kill_target` — at least one `-K`/`--kill-target` directive was given.
+/// * `reg_flood` — a registration-flood detector is armed.
+///
+/// # Returns
+///
+/// `true` when no jail line can be written by this run.
+fn fail2ban_would_emit_nothing(scanner: bool, kill_target: bool, reg_flood: bool) -> bool {
+    !scanner && !kill_target && !reg_flood
+}
+
 /// Build the alert engine with every operator-set budget applied.
 ///
 /// A function rather than four statements inline, so the budgets are testable
@@ -2462,15 +2492,34 @@ impl BatchRunner {
             None
         };
 
+        // Built here, ahead of the warning below, because it is one of the
+        // three producers that warning has to consult.
+        let reg_flood_detector = if cli.security_args.reg_flood {
+            Some(RegFloodDetector::new(cli.reg_flood_threshold(config)))
+        } else {
+            None
+        };
+
         // An operator who asked for fail2ban output and gets an empty file will
         // read it as "nothing attacked me", which is the most dangerous way for
-        // a security tool to be silent. Say so once, at the start.
-        if cli.output_args.fail2ban && scanner_detector.is_none() {
+        // a security tool to be silent. Say so once, at the start -- and only
+        // when it is true: every producer of a jail line is consulted, not the
+        // scanner detector alone, so `--reg-flood --fail2ban` is not told its
+        // log will stay empty and then handed lines for it.
+        if cli.output_args.fail2ban
+            && fail2ban_would_emit_nothing(
+                scanner_detector.is_some(),
+                !kill_targets.is_empty(),
+                reg_flood_detector.is_some(),
+            )
+        {
             tracing::warn!(
-                "--fail2ban writes scanner detections, but no detector is running, so this \
-                 run will emit nothing. An empty jail log means 'nothing was detected', not \
-                 'nothing happened'. Add --kill-scanner to detect (offline it only reports; \
-                 it never transmits), or --kill-ua <substring> to match a specific agent."
+                "--fail2ban writes scanner and registration-flood detections, but no \
+                 detector is running, so this run will emit nothing. An empty jail log \
+                 means 'nothing was detected', not 'nothing happened'. Add --kill-scanner \
+                 to detect scanners (offline it only reports; it never transmits), \
+                 --kill-ua <substring> to match a specific agent, -K/--kill-target <addr> \
+                 to name one, or --reg-flood to detect registration floods."
             );
         }
 
@@ -2504,12 +2553,6 @@ impl BatchRunner {
 
         let digest_detector = if cli.security_args.digest_leak {
             Some(DigestLeakDetector::new())
-        } else {
-            None
-        };
-
-        let reg_flood_detector = if cli.security_args.reg_flood {
-            Some(RegFloodDetector::new(cli.reg_flood_threshold(config)))
         } else {
             None
         };
@@ -4040,169 +4083,38 @@ fn process_parsed_packet(
                 true
             };
 
-            // Security detection: scanner
-            if let Some(det) = scanner_detector
-                && let Some(alert) = det.check(&sip_msg)
-            {
-                pending_alerts.push(DeferredAlert {
-                    kind: "scanner",
-                    src_ip: alert.src_ip,
-                    detail: format!(
-                        "method={} ua={} detection={}",
-                        output::render_absent(alert.method.as_deref()),
-                        output::render_absent(alert.ua.as_deref()),
-                        alert.detection_method
-                    ),
-                    at: sip_msg.timestamp,
-                });
-                // The jail line names the packet's source address, and under
-                // HEP that address is the sender's claim. Same gate as the kill
-                // response below, and for the same reason -- with the difference
-                // that a ban outlives this process, so the bar is not lower.
-                if cli.output_args.fail2ban
-                    && sec::scanner_kill::kill_response_eligible(
-                        pp.input_origin,
-                        cli.security_args.hep_allow_kill,
-                    )
-                {
-                    let event = output::format_scanner_event(
-                        &alert.src_ip.to_string(),
-                        alert.ua.as_deref(),
-                        alert.method.as_deref(),
-                    );
-                    out.write_str(&event);
-                    out.write_str("\n");
-                }
-
-                // D16: Send kill response via isolated worker thread.
-                // SN-01: HEP-origin packets are ineligible unless the operator
-                // opted in (--hep-allow-kill), since their src/dst are
-                // sender-asserted and unauthenticated absent --hep-auth.
-                if let Some(handle) = &scanner_kill_handle
-                    && sec::scanner_kill::kill_response_eligible(
-                        pp.input_origin,
-                        cli.security_args.hep_allow_kill,
-                    )
-                    && let Some(response_bytes) =
-                        sec::scanner_kill::build_scanner_response(&sip_msg, kill_response_code)
-                {
-                    let _ = handle.send_kill(KillRequest::SendResponse {
-                        dst_addr: sip_msg.src_addr,
-                        dst_port: sip_msg.src_port,
-                        src_addr: sip_msg.dst_addr,
-                        src_port: sip_msg.dst_port,
-                        response_bytes,
-                    });
-                }
-            }
-
-            // Targeted scanner kill: kill any request whose source
-            // matches a --kill-target, independent of UA/behavioral detection.
-            if !kill_targets.is_empty()
-                && sip_msg.is_request
-                && kill_targets
-                    .iter()
-                    .any(|t| t.matches(sip_msg.src_addr, sip_msg.src_port))
-            {
-                let method = sip_msg.method.as_ref().map(|m| m.as_str());
-                let ua = sip_msg.user_agent();
-                pending_alerts.push(DeferredAlert {
-                    kind: "scanner",
-                    src_ip: sip_msg.src_addr,
-                    detail: format!(
-                        "method={} ua={} detection=kill-target",
-                        output::render_absent(method),
-                        output::render_absent(ua)
-                    ),
-                    at: sip_msg.timestamp,
-                });
-                // Same origin gate as the scanner detection above.
-                if cli.output_args.fail2ban
-                    && sec::scanner_kill::kill_response_eligible(
-                        pp.input_origin,
-                        cli.security_args.hep_allow_kill,
-                    )
-                {
-                    let event =
-                        output::format_scanner_event(&sip_msg.src_addr.to_string(), ua, method);
-                    out.write_str(&event);
-                    out.write_str("\n");
-                }
-                // SN-01: same HEP-origin ineligibility as behavioral kill above.
-                if let Some(handle) = &scanner_kill_handle
-                    && sec::scanner_kill::kill_response_eligible(
-                        pp.input_origin,
-                        cli.security_args.hep_allow_kill,
-                    )
-                    && let Some(response_bytes) =
-                        sec::scanner_kill::build_scanner_response(&sip_msg, kill_response_code)
-                {
-                    let _ = handle.send_kill(KillRequest::SendResponse {
-                        dst_addr: sip_msg.src_addr,
-                        dst_port: sip_msg.src_port,
-                        src_addr: sip_msg.dst_addr,
-                        src_port: sip_msg.dst_port,
-                        response_bytes,
-                    });
-                }
-            }
-
-            // Security detection: fraud
-            if let Some(det) = fraud_detector
-                && let Some(call_id) = sip_msg.call_id()
-                && let Some(dialog) = dialog_store.get(call_id)
-                && let Some(alert) = det.check(&sip_msg, dialog)
-            {
-                pending_alerts.push(DeferredAlert {
-                    kind: "fraud",
-                    src_ip: alert.src_ip,
-                    detail: format!("{:?}: {}", alert.alert_type, alert.detail),
-                    at: sip_msg.timestamp,
-                });
-            }
-
-            // Security detection: digest leak
-            if let Some(det) = digest_detector {
-                let leaks = det.check(&sip_msg);
-                for alert in &leaks {
-                    pending_alerts.push(DeferredAlert {
-                        kind: "digest",
-                        src_ip: sip_msg.src_addr,
-                        detail: format!("{:?}: {}", alert.vulnerability, alert.detail),
-                        at: sip_msg.timestamp,
-                    });
-                }
-            }
-
-            // Security detection: registration flood
-            if let Some(det) = reg_flood_detector
-                && let Some(alert) = det.check(&sip_msg)
-            {
-                pending_alerts.push(DeferredAlert {
-                    kind: "reg_flood",
-                    src_ip: alert.src_ip,
-                    // The failures are what crossed the threshold; the
-                    // REGISTER count is the shape of the traffic around them.
-                    detail: format!(
-                        "auth_failures={} registers={} threshold={}",
-                        alert.auth_fail_count, alert.register_count, alert.threshold
-                    ),
-                    at: sip_msg.timestamp,
-                });
-                // Same origin gate as the scanner detection above.
-                if cli.output_args.fail2ban
-                    && sec::scanner_kill::kill_response_eligible(
-                        pp.input_origin,
-                        cli.security_args.hep_allow_kill,
-                    )
-                {
-                    let event = output::format_reg_flood_event(
-                        &alert.src_ip.to_string(),
-                        alert.auth_fail_count,
-                    );
-                    out.write_str(&event);
-                    out.write_str("\n");
-                }
+            // Security detection: every armed detector runs here, under the
+            // guards, and returns what should follow rather than doing it;
+            // the effects are applied right below. The fraud detector reads
+            // the dialog this message belongs to, looked up only when it is
+            // armed, so an unarmed run pays no hash lookup for it.
+            let dialog = if fraud_detector.is_some() {
+                sip_msg.call_id().and_then(|id| dialog_store.get(id))
+            } else {
+                None
+            };
+            let mut detectors = sec::detectors::Detectors {
+                scanner: scanner_detector.as_mut(),
+                fraud: fraud_detector.as_mut(),
+                digest: digest_detector.as_mut(),
+                reg_flood: reg_flood_detector.as_mut(),
+                kill_targets,
+            };
+            let policy = sec::detectors::Policy {
+                fail2ban: cli.output_args.fail2ban,
+                hep_allow_kill: cli.security_args.hep_allow_kill,
+                origin: pp.input_origin,
+                kill_armed: scanner_kill_handle.is_some(),
+                kill_response_code,
+            };
+            for effect in sec::detectors::run_detectors(&mut detectors, &sip_msg, dialog, policy) {
+                apply_detector_effect(
+                    effect,
+                    sip_msg.timestamp,
+                    out,
+                    pending_alerts,
+                    scanner_kill_handle,
+                );
             }
 
             // STIR/SHAKEN extraction (I1)
@@ -4391,6 +4303,101 @@ fn process_parsed_packet(
                         crate::rtp::quality::MosDelay::from_capture(stream_store),
                     );
                 }
+            }
+        }
+    }
+}
+
+/// Perform one effect a detector asked for: file the finding under its rule
+/// name, queue the jail line, or hand the response to the kill worker.
+///
+/// The rule names are assigned here and nowhere else. `security::detectors`
+/// says which detector fired; this is where a finding meets the vocabulary the
+/// alert engine, `--alert` rules and the MCP `security_findings` tool share
+/// (`SECURITY_FINDING_KINDS`, pinned to these literals by
+/// `security_findings_kinds_match_the_names_the_detectors_file_under`).
+///
+/// # Arguments
+///
+/// * `effect` — what the detector decided.
+/// * `at` — capture time of the message, which every threshold and cooldown
+///   in the alert engine is measured against.
+/// * `out` — the deferred per-message output a jail line joins.
+/// * `pending_alerts` — the findings queued for the alert engine.
+/// * `kill_handle` — the kill worker, when one is running.
+///
+/// # Side effects
+///
+/// Pushes onto `out` or `pending_alerts`, or sends on the kill worker's
+/// channel; a failed send is reported by the handle itself, once.
+fn apply_detector_effect(
+    effect: sec::detectors::Effect,
+    at: chrono::DateTime<chrono::Utc>,
+    out: &mut DeferredOutput,
+    pending_alerts: &mut Vec<DeferredAlert>,
+    kill_handle: &Option<ScannerKillHandle>,
+) {
+    use sec::detectors::{DetectorKind, Effect, JailLine};
+    match effect {
+        Effect::Alert {
+            detector,
+            src_ip,
+            detail,
+        } => pending_alerts.push(match detector {
+            DetectorKind::Scanner => DeferredAlert {
+                kind: "scanner",
+                src_ip,
+                detail,
+                at,
+            },
+            DetectorKind::Fraud => DeferredAlert {
+                kind: "fraud",
+                src_ip,
+                detail,
+                at,
+            },
+            DetectorKind::Digest => DeferredAlert {
+                kind: "digest",
+                src_ip,
+                detail,
+                at,
+            },
+            DetectorKind::RegFlood => DeferredAlert {
+                kind: "reg_flood",
+                src_ip,
+                detail,
+                at,
+            },
+        }),
+        Effect::JailLine(line) => {
+            let event = match line {
+                JailLine::Scanner { src_ip, ua, method } => output::format_scanner_event(
+                    &src_ip.to_string(),
+                    ua.as_deref(),
+                    method.as_deref(),
+                ),
+                JailLine::RegFlood { src_ip, count } => {
+                    output::format_reg_flood_event(&src_ip.to_string(), count)
+                }
+            };
+            out.write_str(&event);
+            out.write_str("\n");
+        }
+        Effect::Kill {
+            dst_addr,
+            dst_port,
+            src_addr,
+            src_port,
+            response_bytes,
+        } => {
+            if let Some(handle) = kill_handle {
+                let _ = handle.send_kill(KillRequest::SendResponse {
+                    dst_addr,
+                    dst_port,
+                    src_addr,
+                    src_port,
+                    response_bytes,
+                });
             }
         }
     }
@@ -9564,6 +9571,71 @@ mod tests {
     }
 
     // ── dispatch_sip_output ────────────────────────────────────────────
+
+    // ── The startup warning about an empty jail log ──────────────────
+
+    /// With nothing armed that writes a jail line, the warning must print:
+    /// an empty jail log reads as "nothing attacked me", and startup is the
+    /// one moment the run can say otherwise. The negative control for the
+    /// three producer tests below.
+    #[test]
+    fn fail2ban_with_no_producer_armed_warns_of_the_coming_silence() {
+        assert!(
+            fail2ban_would_emit_nothing(false, false, false),
+            "nothing armed: the run really will emit nothing, and must say so"
+        );
+    }
+
+    /// `--reg-flood --fail2ban` writes `reg_flood src=` lines, so the run
+    /// must not announce that it will emit nothing. It did: the warning
+    /// looked at the scanner detector alone, so `-d eth0 --reg-flood
+    /// --fail2ban -N` printed "this run will emit nothing" and then wrote
+    /// jail lines.
+    #[test]
+    fn an_armed_reg_flood_detector_is_a_jail_line_producer() {
+        assert!(
+            !fail2ban_would_emit_nothing(false, false, true),
+            "--reg-flood writes jail lines; the warning would be a false claim"
+        );
+    }
+
+    /// A `-K`/`--kill-target` match writes a `scanner_detected` line with no
+    /// scanner detector present, so it is a producer too.
+    #[test]
+    fn a_kill_target_is_a_jail_line_producer() {
+        assert!(
+            !fail2ban_would_emit_nothing(false, true, false),
+            "-K writes jail lines; the warning would be a false claim"
+        );
+    }
+
+    /// `--kill-scanner` / `--kill-ua` arm the scanner detector, the one
+    /// producer the warning always knew about.
+    #[test]
+    fn an_armed_scanner_detector_is_a_jail_line_producer() {
+        assert!(
+            !fail2ban_would_emit_nothing(true, false, false),
+            "--kill-scanner writes jail lines; the warning would be a false claim"
+        );
+    }
+
+    /// Every combination of the three producers: the warning is right
+    /// exactly when all of them are absent.
+    #[test]
+    fn the_warning_is_right_exactly_when_every_producer_is_absent() {
+        for scanner in [false, true] {
+            for kill_target in [false, true] {
+                for reg_flood in [false, true] {
+                    let armed = scanner || kill_target || reg_flood;
+                    assert_eq!(
+                        fail2ban_would_emit_nothing(scanner, kill_target, reg_flood),
+                        !armed,
+                        "scanner={scanner} kill_target={kill_target} reg_flood={reg_flood}"
+                    );
+                }
+            }
+        }
+    }
 
     // ── The jail line and where its address came from ────────────────
 
