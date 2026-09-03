@@ -1089,7 +1089,8 @@ input:focus-visible,
 }
 
 // =============================================================================
-// Standards-based quality metrics
+// Standards-based quality metrics and standards implemented: one card per
+// standard, the metrics or capabilities it grounds listed inside it
 // =============================================================================
 
 .metrics {
@@ -1130,41 +1131,75 @@ input:focus-visible,
   }
 }
 
-.metric-std {
-  display: inline-block;
-  font-family: $font-mono;
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  color: $accent;
-  background: $accent-glow;
-  border: 1px solid rgba($accent, 0.25);
-  border-radius: 999px;
-  padding: 0.15rem 0.6rem;
-  margin-bottom: 0.85rem;
-  // Now a link to the standard's document; keep the badge look, brighten on hover.
-  text-decoration: none;
-  transition: background 0.15s ease, border-color 0.15s ease;
-  &:hover {
-    color: $accent;
-    background: rgba($accent, 0.22);
-    border-color: rgba($accent, 0.5);
-  }
-}
-
 .metric-name {
-  font-size: 1.25rem;
+  font-family: $font-mono;
+  font-size: 1.15rem;
   font-weight: 700;
-  color: $text;
-  margin: 0 0 0.4rem;
+  color: $accent;
+  margin: 0 0 0.3rem;
   letter-spacing: -0.01em;
 }
 
-.metric-desc {
-  font-size: 0.875rem;
+// The standard is the card's title, and the title is the link to the document
+// itself. One card per standard: the pill badge that used to carry the name
+// let one RFC head two cards with different text, which read as a
+// contradiction.
+.metric-std {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid rgba($accent, 0.35);
+  transition: border-color 0.15s ease;
+
+  &:hover {
+    border-color: $accent;
+  }
+}
+
+.metric-topic {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   color: $text-dim;
-  line-height: 1.6;
+  margin: 0 0 0.9rem;
+}
+
+.metric-list {
+  list-style: none;
   margin: 0;
+  padding: 0;
+
+  li {
+    position: relative;
+    padding-left: 1rem;
+    font-size: 0.875rem;
+    color: $text-dim;
+    line-height: 1.6;
+
+    & + li {
+      margin-top: 0.55rem;
+    }
+
+    &::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0.62em;
+      width: 0.4rem;
+      height: 0.4rem;
+      border-radius: 50%;
+      background: $accent;
+      opacity: 0.7;
+    }
+
+    strong {
+      color: $text;
+      font-weight: 600;
+    }
+
+    code {
+      font-size: 0.8rem;
+    }
+  }
 }
 
 // =============================================================================

@@ -39,6 +39,25 @@ entry that carries them.
   secret, password, salt or a key assignment, in production code or in tests.
   A fixture whose subject is the literal names itself with
   `// material: fixture -- <why>`, and nothing else is exempt.
+- **The homepage's standards band says what the code does, one card per
+  standard.** The "Quality Metrics" band carried six cards from the day it
+  landed, laid out one per metric, so G.107, RFC 3550 and RFC 3611 each headed
+  two cards with different text -- read as a contradiction -- and nothing held
+  any of them to `src/`: the MOS card promised a 1-5 scale for an estimator
+  that clamps to 4.5, the "Burst / Gap Loss" card described
+  `analyze_burst_gap`, which no surface calls, and the round trip derived from
+  RTCP, the far end's own reception reports, the G.113 impairment table and
+  the G.114 delay guidance were all emitted and never shown. The band is now
+  five cards -- G.107, G.113, G.114, RFC 3550, RFC 3611 -- each titled by the
+  standard, linked to it, and listing the metrics it grounds; a sibling
+  "Standards Implemented" band does the same for SIP, SDP, RTP payload types,
+  DTMF events, SRTP, TLS, STUN, HEP and vCon, so a transport is not filed as a
+  quality metric. Ten gates in `tests/site_journey_test.rs` hold the cards to a
+  canonical table naming the code symbol behind every item, the field the
+  program emits for every metric, the exact string behind every specific
+  claim, and a citation in both `docs/` and the built site mirror; one card
+  per standard is enforced, and a control page wrong in all nine ways must be
+  reported for all nine.
 
 ## [0.5.147] - 2026-09-03
 

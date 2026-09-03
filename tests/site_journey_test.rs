@@ -1871,6 +1871,1307 @@ fn homepage_mcp_tool_tile_matches_the_server() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Homepage standards cards <-> the code that implements them, the docs that
+// cite them, the site mirror built from those docs, and the fields the program
+// emits.
+// ---------------------------------------------------------------------------
+
+/// One `<li>` of a standards card: the metric or capability it names, and the
+/// prose after it with entities decoded and tags stripped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CardItem {
+    title: String,
+    desc: String,
+}
+
+/// One `metric-card` on the homepage: the section it sits in, the standard
+/// its title names (text and href), and the items it lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StandardCard {
+    section: String,
+    label: String,
+    href: String,
+    items: Vec<CardItem>,
+}
+
+/// Tags removed and the entities the cards use decoded, so `Annex&nbsp;B` on
+/// the page compares against the `Annex B` the code says.
+fn decode_html(s: &str) -> String {
+    let no_tags = regex::Regex::new(r"<[^>]+>").unwrap().replace_all(s, "");
+    no_tags
+        .replace("&nbsp;", " ")
+        .replace("&mdash;", "\u{2014}")
+        .replace("&ndash;", "\u{2013}")
+        .replace("&minus;", "\u{2212}")
+        .replace("&sect;", "\u{00a7}")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Every `metric-card` inside every `<section class="metrics" id="...">`.
+///
+/// Total, never judging: a card with no badge comes back with an empty
+/// `label` and `href`, and [`standard_card_violations`] decides what that
+/// means. A parser that dropped the card it could not read would hide exactly
+/// the card this gate exists to see.
+fn standard_cards(html: &str) -> Vec<StandardCard> {
+    let section_re =
+        regex::Regex::new(r#"(?s)<section class="metrics" id="([a-z-]+)">(.*?)</section>"#)
+            .unwrap();
+    let badge_re =
+        regex::Regex::new(r#"<a class="metric-std" href="([^"]*)"[^>]*>([^<]*)</a>"#).unwrap();
+    let item_re = regex::Regex::new(r"(?s)<li><strong>([^<]*)</strong>(.*?)</li>").unwrap();
+    let mut cards = Vec::new();
+    for section in section_re.captures_iter(html) {
+        for chunk in section[2].split(r#"<div class="metric-card"#).skip(1) {
+            let (href, label) = badge_re
+                .captures(chunk)
+                .map(|c| (c[1].to_string(), decode_html(&c[2])))
+                .unwrap_or_default();
+            let items = item_re
+                .captures_iter(chunk)
+                .map(|c| CardItem {
+                    title: decode_html(&c[1]),
+                    desc: decode_html(&c[2]),
+                })
+                .collect();
+            cards.push(StandardCard {
+                section: section[1].to_string(),
+                label,
+                href,
+                items,
+            });
+        }
+    }
+    cards
+}
+
+/// One metric or capability a card lists, and what earns it.
+struct CanonicalItem {
+    /// The `<strong>` text, exactly.
+    title: &'static str,
+    /// A repo-relative source file and a string it must contain: the symbol
+    /// or citation that implements the item.
+    code: (&'static str, &'static str),
+    /// The JSON key the program emits for it. Required for a quality metric;
+    /// empty for a protocol capability, which is not a number.
+    field: &'static str,
+    /// Every specific claim the description makes -- a formula, a section, a
+    /// table, a version -- each with the file that must carry the exact
+    /// string, so the page is never more specific than the implementation.
+    claims: &'static [(&'static str, &'static str)],
+}
+
+/// One card the homepage must carry: a standard, its own URL, and the items
+/// the code earns under it.
+struct CanonicalStandard {
+    /// `id` of the `<section class="metrics">` the card sits in.
+    section: &'static str,
+    /// The title text, exactly as the page renders it.
+    label: &'static str,
+    /// The standard's own URL, exactly.
+    href: &'static str,
+    items: &'static [CanonicalItem],
+}
+
+/// The standards the homepage advertises: one card per standard, each item
+/// pinned to the code that implements it and the field that carries it.
+///
+/// Adding a card or an item means adding a row here, and a row needs a code
+/// path; deleting the code, the row or the card without the other two fails
+/// the same tests. The band carried six cards from the day it landed with
+/// nothing holding them to `src/`: the MOS card promised a 1-5 scale for an
+/// estimator that clamps to 4.5, a "Burst / Gap Loss" card described
+/// `analyze_burst_gap`, which no surface calls, and the round trip derived
+/// from RTCP, the far end's own reception reports and the G.113 impairment
+/// table were all emitted and never shown.
+const HOMEPAGE_STANDARDS: &[CanonicalStandard] = &[
+    CanonicalStandard {
+        section: "metrics",
+        label: "ITU-T G.107",
+        href: "https://www.itu.int/rec/T-REC-G.107",
+        items: &[
+            CanonicalItem {
+                title: "MOS",
+                code: ("src/rtp/quality.rs", "fn r_to_mos(r: f64) -> f64"),
+                field: "mos",
+                claims: &[
+                    ("93.2", "src/rtp/quality.rs"),
+                    ("Annex B", "src/rtp/quality.rs"),
+                    ("[1.0, 4.5]", "src/rtp/quality.rs"),
+                ],
+            },
+            CanonicalItem {
+                title: "Delay input",
+                code: ("src/rtp/quality.rs", "pub fn resolve_one_way_delay("),
+                field: "delay",
+                claims: &[("100 ms", "docs/config-reference.md")],
+            },
+        ],
+    },
+    CanonicalStandard {
+        section: "metrics",
+        label: "ITU-T G.113",
+        href: "https://www.itu.int/rec/T-REC-G.113",
+        items: &[CanonicalItem {
+            title: "MOS grounding",
+            code: ("src/rtp/quality.rs", "pub fn mos_grounding("),
+            field: "mos_grounding",
+            claims: &[("Table I.1", "src/rtp/quality.rs")],
+        }],
+    },
+    CanonicalStandard {
+        section: "metrics",
+        label: "ITU-T G.114",
+        href: "https://www.itu.int/rec/T-REC-G.114",
+        items: &[CanonicalItem {
+            title: "Round-trip verdict",
+            code: ("src/config.rs", "pub rtt_warn_ms: Option<f64>"),
+            field: "round_trip_note",
+            claims: &[("150 ms", "src/config.rs"), ("400 ms", "src/config.rs")],
+        }],
+    },
+    CanonicalStandard {
+        section: "metrics",
+        label: "RFC 3550",
+        href: "https://www.rfc-editor.org/rfc/rfc3550",
+        items: &[
+            CanonicalItem {
+                title: "Jitter",
+                code: ("src/rtp/stream.rs", "jitter estimate (RFC 3550 algorithm)"),
+                field: "jitter_ms",
+                claims: &[],
+            },
+            CanonicalItem {
+                title: "Packet loss",
+                code: (
+                    "src/rtp/stream.rs",
+                    "lost packets from sequence number gaps",
+                ),
+                field: "loss_pct",
+                claims: &[],
+            },
+            CanonicalItem {
+                title: "Round-trip time",
+                code: ("src/rtp/rtcp.rs", "pub fn rtt_from_sender_report_echo("),
+                field: "round_trip_ms",
+                claims: &[("\u{00a7}6.4.1", "src/rtp/rtcp.rs")],
+            },
+            CanonicalItem {
+                title: "Reception reports",
+                code: ("src/rtp/stream_store.rs", "pub fn remote_report("),
+                field: "endpoint_reported",
+                claims: &[],
+            },
+        ],
+    },
+    CanonicalStandard {
+        section: "metrics",
+        label: "RFC 3611",
+        href: "https://www.rfc-editor.org/rfc/rfc3611",
+        items: &[
+            CanonicalItem {
+                title: "VoIP Metrics",
+                code: ("src/rtp/rtcp.rs", "fn parse_voip_metrics("),
+                field: "endpoint_reported",
+                claims: &[
+                    ("PT=207", "src/rtp/rtcp.rs"),
+                    ("Section 4.7", "src/rtp/rtcp.rs"),
+                ],
+            },
+            CanonicalItem {
+                title: "XR round trip",
+                code: ("src/rtp/rtcp.rs", "XrVoipMetrics,"),
+                field: "round_trip_source",
+                claims: &[],
+            },
+        ],
+    },
+    CanonicalStandard {
+        section: "standards",
+        label: "RFC 3261",
+        href: "https://www.rfc-editor.org/rfc/rfc3261",
+        items: &[
+            CanonicalItem {
+                title: "Parsing",
+                code: ("src/sip/parser.rs", "RFC 3261"),
+                field: "",
+                claims: &[],
+            },
+            CanonicalItem {
+                title: "Dialogs and timing",
+                code: ("src/sip/timing.rs", "Post-Dial Delay (PDD)"),
+                field: "",
+                claims: &[],
+            },
+            CanonicalItem {
+                title: "Lint",
+                code: ("src/sip/lint/message.rs", "RFC 3261"),
+                field: "",
+                claims: &[],
+            },
+        ],
+    },
+    CanonicalStandard {
+        section: "standards",
+        label: "RFC 8866",
+        href: "https://www.rfc-editor.org/rfc/rfc8866",
+        items: &[
+            CanonicalItem {
+                title: "Offer/answer parsing",
+                code: ("src/sip/sdp.rs", "RFC 8866"),
+                field: "",
+                claims: &[],
+            },
+            CanonicalItem {
+                title: "SDP timeline",
+                code: ("src/sip/sdp_timeline.rs", "pub fn track_sdp("),
+                field: "",
+                claims: &[],
+            },
+        ],
+    },
+    CanonicalStandard {
+        section: "standards",
+        label: "RFC 3551",
+        href: "https://www.rfc-editor.org/rfc/rfc3551",
+        items: &[CanonicalItem {
+            title: "Codec identification",
+            code: ("src/rtp/stream_store.rs", "per RFC 3551 Tables 4 and 5"),
+            field: "",
+            claims: &[("Tables 4 and 5", "src/rtp/stream_store.rs")],
+        }],
+    },
+    CanonicalStandard {
+        section: "standards",
+        label: "RFC 4733",
+        href: "https://www.rfc-editor.org/rfc/rfc4733",
+        items: &[
+            CanonicalItem {
+                title: "Digit extraction",
+                code: ("src/rtp/dtmf.rs", "RFC 4733 telephone-event"),
+                field: "",
+                claims: &[],
+            },
+            CanonicalItem {
+                title: "Masking",
+                code: ("src/rtp/dtmf.rs", "pub const MASKED_DIGIT"),
+                field: "",
+                claims: &[],
+            },
+        ],
+    },
+    CanonicalStandard {
+        section: "standards",
+        label: "RFC 3711",
+        href: "https://www.rfc-editor.org/rfc/rfc3711",
+        items: &[
+            CanonicalItem {
+                title: "Decryption",
+                code: ("src/rtp/srtp.rs", "pub fn decrypt_srtp_payload("),
+                field: "",
+                claims: &[],
+            },
+            CanonicalItem {
+                title: "Authentication",
+                code: ("src/rtp/srtp.rs", "pub fn verify_srtp_auth_tag("),
+                field: "",
+                claims: &[],
+            },
+        ],
+    },
+    CanonicalStandard {
+        section: "standards",
+        label: "RFC 8446",
+        href: "https://www.rfc-editor.org/rfc/rfc8446",
+        items: &[
+            CanonicalItem {
+                title: "TLS 1.3",
+                code: ("src/capture/decrypt.rs", "RFC 8446"),
+                field: "",
+                claims: &[("TLS 1.3", "src/capture/decrypt.rs")],
+            },
+            CanonicalItem {
+                title: "TLS 1.2",
+                code: ("src/capture/decrypt.rs", "RFC 5246"),
+                field: "",
+                claims: &[("TLS 1.2", "src/capture/decrypt.rs")],
+            },
+        ],
+    },
+    CanonicalStandard {
+        section: "standards",
+        label: "RFC 5389",
+        href: "https://www.rfc-editor.org/rfc/rfc5389",
+        items: &[CanonicalItem {
+            title: "Binding diagnosis",
+            code: ("src/stun.rs", "RFC 5389"),
+            field: "",
+            claims: &[],
+        }],
+    },
+    CanonicalStandard {
+        section: "standards",
+        label: "HEP v3",
+        href: "https://github.com/sipcapture/HEP",
+        items: &[
+            CanonicalItem {
+                title: "Send",
+                code: ("src/capture/hep.rs", "pub fn build_hep_v3("),
+                field: "",
+                claims: &[],
+            },
+            CanonicalItem {
+                title: "Receive",
+                code: ("src/capture/hep.rs", "pub fn parse_hep("),
+                field: "",
+                claims: &[],
+            },
+        ],
+    },
+    CanonicalStandard {
+        section: "standards",
+        label: "draft-ietf-vcon-vcon-core",
+        href: "https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/",
+        items: &[
+            CanonicalItem {
+                title: "Export",
+                code: ("src/output/vcon.rs", "draft-ietf-vcon-vcon-core"),
+                field: "",
+                claims: &[],
+            },
+            CanonicalItem {
+                title: "Audio inline",
+                code: (
+                    "src/output/vcon.rs",
+                    "pub const CONTENT_HASH_PREFIX: &str = \"sha512-\"",
+                ),
+                field: "",
+                claims: &[],
+            },
+        ],
+    },
+];
+
+/// Where a standard badge may link. Anything else -- a blog, a vendor mirror,
+/// a wiki -- is a page about the standard, not the standard.
+const STANDARD_HOSTS: &[&str] = &[
+    "https://www.rfc-editor.org/rfc/",
+    "https://www.itu.int/rec/",
+    "https://github.com/sipcapture/HEP",
+    "https://datatracker.ietf.org/doc/",
+];
+
+/// The identifiers a piece of card text names: `RFC 3611`, `G.107`, `HEP v3`,
+/// `draft-ietf-vcon-vcon-core`. Empty when it names nothing a reader could look
+/// up.
+fn standard_identifiers(text: &str) -> Vec<String> {
+    regex::Regex::new(r"RFC \d{4}|[A-Z]\.\d{3}|HEP v\d|draft-[a-z0-9-]+")
+        .unwrap()
+        .find_iter(text)
+        .map(|m| m.as_str().to_string())
+        .collect()
+}
+
+/// The one URL a standard identifier resolves to, or `None` for a kind this
+/// gate does not know how to resolve.
+fn canonical_url(id: &str) -> Option<String> {
+    if let Some(n) = id.strip_prefix("RFC ") {
+        Some(format!("https://www.rfc-editor.org/rfc/rfc{n}"))
+    } else if id.starts_with("HEP v") {
+        Some("https://github.com/sipcapture/HEP".to_string())
+    } else if id.starts_with("draft-") {
+        Some(format!("https://datatracker.ietf.org/doc/{id}/"))
+    } else if regex::Regex::new(r"^[A-Z]\.\d{3}$").unwrap().is_match(id) {
+        Some(format!("https://www.itu.int/rec/T-REC-{id}"))
+    } else {
+        None
+    }
+}
+
+/// The specific claims a description makes: a formula constant, an annex, a
+/// table, a section, a payload type, a version, a millisecond figure. Each
+/// must be in the item's `claims`, and each claim in the file it names.
+fn specific_claims(desc: &str) -> Vec<String> {
+    regex::Regex::new(concat!(
+        r"Annex [A-Z]\b|Appendix [IVX]+\b|Tables? [IVX0-9]+(?:\.[0-9]+)?(?: and [0-9]+)?",
+        r"|PT=?\s?[0-9]+|\u{00a7}[0-9]+(?:\.[0-9]+)*|Section [0-9]+(?:\.[0-9]+)*|BT=[0-9]+",
+        r"|\[[0-9.]+, [0-9.]+\]|[0-9]+ ms|[0-9]+\.[0-9]+|Eq\.? ?\(?[0-9A-Z-]+\)?",
+    ))
+    .unwrap()
+    .find_iter(desc)
+    .map(|m| m.as_str().to_string())
+    .collect()
+}
+
+/// The ways a standards card can be wrong. One kind per test below, and the
+/// whole-gate control demands one of each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Kind {
+    /// One standard identifier titles more than one card.
+    DuplicateTitle,
+    /// The link leaves the standard's own host.
+    BadHost,
+    /// The title names one document and the link points at another.
+    TitleUrlMismatch,
+    /// A card or item with no canonical row, or a row whose code is gone.
+    UnmappedItem,
+    /// A canonical row the page no longer carries.
+    MissingFromPage,
+    /// A standard the page cites and `docs/*.md` does not.
+    Uncited,
+    /// A standard the template cites and the built site mirror does not.
+    MirrorDrift,
+    /// A quality metric with no emitted field, or a field the output docs do
+    /// not carry.
+    UnemittedField,
+    /// A claim more specific than the code or doc it maps to.
+    OverSpecificClaim,
+}
+
+const ALL_KINDS: &[Kind] = &[
+    Kind::DuplicateTitle,
+    Kind::BadHost,
+    Kind::TitleUrlMismatch,
+    Kind::UnmappedItem,
+    Kind::MissingFromPage,
+    Kind::Uncited,
+    Kind::MirrorDrift,
+    Kind::UnemittedField,
+    Kind::OverSpecificClaim,
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Violation {
+    kind: Kind,
+    message: String,
+}
+
+/// The three bodies of text a card is held to.
+struct Corpora<'a> {
+    /// `docs/*.md`, the hand-written documentation.
+    docs: &'a str,
+    /// `website/content/**/*.md` -- the pages `scripts/build-site-pages.py`
+    /// mirrors from `docs/` plus the site-only pages kept beside them -- and
+    /// `website/static/llms-full.txt`, which the script concatenates from the
+    /// mirrored pages alone.
+    mirror: &'a str,
+    /// The output schema: `docs/output-formats.md` and the two references it
+    /// points at for per-field detail, `docs/rest-api.md` and
+    /// `docs/mcp-tools.md`.
+    output_docs: &'a str,
+}
+
+/// Everything wrong with a set of homepage cards. Empty means the page,
+/// [`HOMEPAGE_STANDARDS`], the code, the docs, the mirror and the emitted
+/// fields all agree.
+///
+/// `file_has(file, needle)` says whether a repo-relative file contains a
+/// string; it is injected so a control can run the checker against a tree
+/// that has or lacks whatever the control needs.
+fn standard_card_violations(
+    cards: &[StandardCard],
+    canon: &[CanonicalStandard],
+    corpora: &Corpora<'_>,
+    file_has: &dyn Fn(&str, &str) -> bool,
+) -> Vec<Violation> {
+    let mut out = Vec::new();
+    let mut push = |kind: Kind, message: String| out.push(Violation { kind, message });
+
+    // 1. One card per standard.
+    let mut titles: BTreeMap<String, usize> = BTreeMap::new();
+    for card in cards {
+        if let Some(id) = standard_identifiers(&card.label).into_iter().next() {
+            *titles.entry(id).or_default() += 1;
+        }
+    }
+    for (id, n) in titles.iter().filter(|(_, n)| **n > 1) {
+        push(
+            Kind::DuplicateTitle,
+            format!(
+                "{id} is the title of {n} cards — the layout is one card per standard, \
+                 with every metric it grounds listed inside that one card"
+            ),
+        );
+    }
+
+    for card in cards {
+        let who = format!("#{} card {:?}", card.section, card.label);
+
+        // 2. The standard's own host.
+        if !STANDARD_HOSTS.iter().any(|h| card.href.starts_with(h)) {
+            push(
+                Kind::BadHost,
+                format!(
+                    "{who} links to {:?}, which is not the standard's own home",
+                    card.href
+                ),
+            );
+        }
+
+        // 3. Title <-> link target.
+        let title_id = standard_identifiers(&card.label).into_iter().next();
+        match title_id.as_deref().and_then(canonical_url) {
+            None => push(
+                Kind::TitleUrlMismatch,
+                format!("{who} names no standard this gate can resolve to a URL"),
+            ),
+            Some(expected) if expected != card.href => push(
+                Kind::TitleUrlMismatch,
+                format!(
+                    "{who} links to {:?}; the document it names lives at {expected:?}",
+                    card.href
+                ),
+            ),
+            Some(_) => {}
+        }
+
+        // 6 and 7. Every standard the card cites, in the title or an item.
+        let mut cited: Vec<String> = standard_identifiers(&card.label);
+        for item in &card.items {
+            cited.extend(standard_identifiers(&item.desc));
+        }
+        cited.sort();
+        cited.dedup();
+        for id in &cited {
+            if !corpora.docs.contains(id.as_str()) {
+                push(
+                    Kind::Uncited,
+                    format!(
+                        "{who} cites {id}, which no file under docs/ cites — the homepage \
+                         claims what the documentation does not"
+                    ),
+                );
+            }
+            if !corpora.mirror.contains(id.as_str()) {
+                push(
+                    Kind::MirrorDrift,
+                    format!(
+                        "{who} cites {id}, which the built site mirror (website/content, \
+                         llms-full.txt) does not — rerun scripts/build-site-pages.py, or \
+                         the site-only page never got the citation"
+                    ),
+                );
+            }
+        }
+
+        // 4 and 9. Every item maps to a row, and claims no more than it.
+        let rows: Vec<&CanonicalStandard> = canon
+            .iter()
+            .filter(|c| c.section == card.section && c.label == card.label)
+            .collect();
+        let Some(row) = rows.first() else {
+            push(
+                Kind::UnmappedItem,
+                format!(
+                    "{who} is not in HOMEPAGE_STANDARDS — a card needs a row naming the \
+                     code that implements each thing it lists"
+                ),
+            );
+            continue;
+        };
+        for item in &card.items {
+            let Some(spec) = row.items.iter().find(|i| i.title == item.title) else {
+                push(
+                    Kind::UnmappedItem,
+                    format!(
+                        "{who} lists {:?}, which no HOMEPAGE_STANDARDS item maps to a code \
+                         symbol — a badge never names what the code does not do",
+                        item.title
+                    ),
+                );
+                continue;
+            };
+            // The title is part of the claim: "TLS 1.3" names a version.
+            let said = format!("{} {}", item.title, item.desc);
+            for claim in specific_claims(&said) {
+                if !spec.claims.iter().any(|(c, _)| c.contains(claim.as_str())) {
+                    push(
+                        Kind::OverSpecificClaim,
+                        format!(
+                            "{who} item {:?} claims {claim:?}, which its HOMEPAGE_STANDARDS \
+                             row does not map to a file — a claim that specific needs the \
+                             exact string in the code or doc it rests on",
+                            item.title
+                        ),
+                    );
+                }
+            }
+            for (claim, file) in spec.claims {
+                if !said.contains(claim) {
+                    push(
+                        Kind::OverSpecificClaim,
+                        format!(
+                            "{who} item {:?} no longer says {claim:?}, which its row maps \
+                             to {file} — drop the claim from the row or restore it",
+                            item.title
+                        ),
+                    );
+                }
+                if !file_has(file, claim) {
+                    push(
+                        Kind::OverSpecificClaim,
+                        format!(
+                            "{who} item {:?} claims {claim:?} and {file} does not contain \
+                             that exact string — the page is more specific than the \
+                             implementation",
+                            item.title
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    for row in canon {
+        let who = format!("HOMEPAGE_STANDARDS row #{} {:?}", row.section, row.label);
+
+        // 3, table side: the row's own URL is the canonical one.
+        let expected = standard_identifiers(row.label)
+            .into_iter()
+            .next()
+            .and_then(|id| canonical_url(&id));
+        if expected.as_deref() != Some(row.href) {
+            push(
+                Kind::TitleUrlMismatch,
+                format!(
+                    "{who} carries href {:?}; the document it names lives at {expected:?}",
+                    row.href
+                ),
+            );
+        }
+
+        // 5. Every row, and every item of it, is on the page.
+        let on_page: Vec<&StandardCard> = cards
+            .iter()
+            .filter(|c| c.section == row.section && c.label == row.label)
+            .collect();
+        match on_page.as_slice() {
+            [card] => {
+                for spec in row.items {
+                    if !card.items.iter().any(|i| i.title == spec.title) {
+                        push(
+                            Kind::MissingFromPage,
+                            format!(
+                                "{who} names {:?} and the card no longer lists it — an \
+                                 implemented standard cannot silently vanish from the section",
+                                spec.title
+                            ),
+                        );
+                    }
+                }
+            }
+            others => push(
+                Kind::MissingFromPage,
+                format!(
+                    "{who} has {} card(s) on the page, not one — an implemented standard \
+                     cannot silently vanish from the section",
+                    others.len()
+                ),
+            ),
+        }
+
+        for spec in row.items {
+            // 4, table side: the symbol the row names exists in the tree.
+            if !file_has(spec.code.0, spec.code.1) {
+                push(
+                    Kind::UnmappedItem,
+                    format!(
+                        "{who} item {:?} points at {}:{:?}, which is not there — the code \
+                         that earned the item is gone",
+                        spec.title, spec.code.0, spec.code.1
+                    ),
+                );
+            }
+            // 8. A quality metric is a field the program emits and documents.
+            if spec.field.is_empty() {
+                if row.section == "metrics" {
+                    push(
+                        Kind::UnemittedField,
+                        format!(
+                            "{who} item {:?} is a quality metric with no emitted field — a \
+                             badge never names a metric the JSON does not carry",
+                            spec.title
+                        ),
+                    );
+                }
+            } else {
+                let ticked = format!("`{}`", spec.field);
+                let quoted = format!("\"{}\"", spec.field);
+                if !corpora.output_docs.contains(&ticked) && !corpora.output_docs.contains(&quoted)
+                {
+                    push(
+                        Kind::UnemittedField,
+                        format!(
+                            "{who} item {:?} names field {:?}, which docs/output-formats.md \
+                             and the references it points at (rest-api.md, mcp-tools.md) \
+                             never document as an output field",
+                            spec.title, spec.field
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Every `.md` under a directory, recursively, sorted, as one string.
+fn markdown_corpus(rel: &str) -> String {
+    let mut files = Vec::new();
+    let mut dirs = vec![repo().join(rel)];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {rel}: {e}")) {
+            let p = entry.expect("dir entry").path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
+                files.push(p);
+            }
+        }
+    }
+    files.sort();
+    assert!(
+        files.len() > 20,
+        "only {} markdown files under {rel} — the corpus reader broke, so every \
+         citation check is against nothing",
+        files.len()
+    );
+    files
+        .iter()
+        .map(|p| std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display())))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The prose of every top-level `docs/*.md`: the corpus a homepage standard
+/// must also be cited in. Top level only — `docs/design/` is a plan, not a
+/// claim.
+fn docs_prose() -> String {
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(repo().join("docs"))
+        .expect("read docs/")
+        .map(|e| e.expect("dir entry").path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+        .collect();
+    files.sort();
+    assert!(
+        files.len() > 20,
+        "only {} files under docs/*.md — the corpus reader broke, so every \
+         citation check is against nothing",
+        files.len()
+    );
+    files
+        .iter()
+        .map(|p| std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display())))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// What the site serves: the pages `scripts/build-site-pages.py` builds from
+/// `docs/`, the site-only pages beside them, and the `llms-full.txt` it
+/// concatenates from the mirrored pages.
+fn site_mirror() -> String {
+    format!(
+        "{}\n{}",
+        markdown_corpus("website/content"),
+        read("website/static/llms-full.txt")
+    )
+}
+
+/// The output schema as the docs describe it. `output-formats.md` describes
+/// the shapes and points at the REST and MCP references for the per-field
+/// tables, so the three together are where a field is documented or is not.
+fn output_schema_docs() -> String {
+    let formats = read("docs/output-formats.md");
+    for pointed_at in ["rest-api.md", "mcp-tools.md"] {
+        assert!(
+            formats.contains(pointed_at),
+            "docs/output-formats.md no longer points at {pointed_at} — the field \
+             corpus below rests on that reference being the schema the docs name"
+        );
+    }
+    format!(
+        "{formats}\n{}\n{}",
+        read("docs/rest-api.md"),
+        read("docs/mcp-tools.md")
+    )
+}
+
+/// Does a repo-relative file contain a string? `false` for a file that is not
+/// there, which is the answer the gate wants for a deleted module.
+fn tree_has(file: &str, needle: &str) -> bool {
+    std::fs::read_to_string(repo().join(file)).is_ok_and(|t| t.contains(needle))
+}
+
+/// The homepage's cards, checked that the parser saw every one of them: a
+/// parser that sees fewer cards than the page carries judges a subset, and
+/// the card it dropped is the one free to rot.
+fn homepage_cards(html: &str) -> Vec<StandardCard> {
+    let cards = standard_cards(html);
+    let on_page = html.matches(r#"class="metric-card"#).count();
+    assert_eq!(
+        cards.len(),
+        on_page,
+        "the page has {on_page} metric-card elements and the parser found {} — a \
+         card outside a `<section class=\"metrics\" id=...>` is a card this gate \
+         cannot see",
+        cards.len()
+    );
+    assert!(
+        cards.len() >= 5,
+        "only {} cards parsed — the band had six from the day it landed, so the \
+         parser stopped matching",
+        cards.len()
+    );
+    assert!(
+        cards.iter().all(|c| !c.items.is_empty()),
+        "a card lists nothing: {:?} — a standard with no implemented item under it \
+         is a badge, not a claim",
+        cards.iter().find(|c| c.items.is_empty()).map(|c| &c.label)
+    );
+    cards
+}
+
+/// The real page against the real tree, docs, mirror and output docs.
+fn homepage_violations() -> Vec<Violation> {
+    let html = read("website/templates/index.html");
+    let docs = docs_prose();
+    let mirror = site_mirror();
+    let output_docs = output_schema_docs();
+    standard_card_violations(
+        &homepage_cards(&html),
+        HOMEPAGE_STANDARDS,
+        &Corpora {
+            docs: &docs,
+            mirror: &mirror,
+            output_docs: &output_docs,
+        },
+        &tree_has,
+    )
+}
+
+/// The real page with one edit applied, for a control. The edit must land:
+/// a mutation that never applied looks exactly like a passing check. A needle
+/// is the card's own text, never a bare URL — the demo wall above the band
+/// links the same RFCs, and the first match is the wrong one.
+fn homepage_with(from: &str, to: &str) -> String {
+    let html = read("website/templates/index.html");
+    assert!(
+        html.contains(from),
+        "control edit did not apply: index.html no longer contains {from:?}"
+    );
+    html.replacen(from, to, 1)
+}
+
+/// The real card for a standard, verbatim, for a control that needs to
+/// duplicate or append one.
+fn homepage_card_html(label: &str) -> String {
+    let html = read("website/templates/index.html");
+    let needle = format!(r#">{label}</a>"#);
+    let at = html
+        .find(&needle)
+        .unwrap_or_else(|| panic!("index.html has no card titled {label:?}"));
+    let start = html[..at]
+        .rfind(r#"<div class="metric-card"#)
+        .expect("card open tag before the title");
+    let end = at
+        + html[at..]
+            .find("</ul>")
+            .expect("card list close after the title")
+        + 4;
+    let close = html[end..].find("</div>").expect("card close tag") + 6;
+    html[start..end + close].to_string()
+}
+
+/// Violations of one kind, as one message, for an assertion.
+fn of_kind(violations: &[Violation], kind: Kind) -> Vec<String> {
+    violations
+        .iter()
+        .filter(|v| v.kind == kind)
+        .map(|v| v.message.clone())
+        .collect()
+}
+
+fn assert_none_of_kind(violations: &[Violation], kind: Kind) {
+    let hits = of_kind(violations, kind);
+    assert!(
+        hits.is_empty(),
+        "{} homepage standards card(s) fail the {kind:?} check:\n  {}",
+        hits.len(),
+        hits.join("\n  ")
+    );
+}
+
+/// The checker run against a control page with the real corpora, so the only
+/// thing wrong is what the control put there.
+fn control_violations(html: &str) -> Vec<Violation> {
+    let docs = docs_prose();
+    let mirror = site_mirror();
+    let output_docs = output_schema_docs();
+    standard_card_violations(
+        &standard_cards(html),
+        HOMEPAGE_STANDARDS,
+        &Corpora {
+            docs: &docs,
+            mirror: &mirror,
+            output_docs: &output_docs,
+        },
+        &tree_has,
+    )
+}
+
+/// Gate 1: No standard is the title of more than one card.
+///
+/// The band's first layout was one card per metric, so RFC 3611 sat on two
+/// cards with different text, G.107 on two and RFC 3550 on two; the owner read
+/// it as an inconsistency, which it was. One card per standard, the metrics it
+/// grounds inside it.
+#[test]
+fn homepage_no_standard_titles_more_than_one_card() {
+    assert_none_of_kind(&homepage_violations(), Kind::DuplicateTitle);
+
+    // Control: the real RFC 3611 card, twice.
+    let card = homepage_card_html("RFC 3611");
+    let page = homepage_with(&card, &format!("{card}\n{card}"));
+    let hits = of_kind(&control_violations(&page), Kind::DuplicateTitle);
+    assert!(
+        hits.iter()
+            .any(|m| m.contains("RFC 3611") && m.contains("2 cards")),
+        "two RFC 3611 cards passed the one-card-per-standard check: {hits:?}"
+    );
+}
+
+/// Gate 2: Every link goes to the standard's own host: rfc-editor.org for an RFC,
+/// itu.int for an ITU-T recommendation, the sipcapture HEP repository, the
+/// IETF datatracker for a draft. A mirror or a blog is a page about the
+/// standard, not the standard.
+#[test]
+fn homepage_standard_links_go_to_the_standards_own_host() {
+    assert_none_of_kind(&homepage_violations(), Kind::BadHost);
+
+    // Control: the same RFC on a host that is not the RFC Editor.
+    let page = homepage_with(
+        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3261""#,
+        r#"class="metric-std" href="https://tools.ietf.org/html/rfc3261""#,
+    );
+    let hits = of_kind(&control_violations(&page), Kind::BadHost);
+    assert!(
+        hits.iter().any(|m| m.contains("tools.ietf.org")),
+        "a link off the standard's host passed: {hits:?}"
+    );
+}
+
+/// Gate 3: The document a title names is the document the link opens: `RFC 3611`
+/// ends in `rfc3611`, `ITU-T G.107` in `T-REC-G.107`, `HEP v3` is the
+/// sipcapture spec, a draft name is its datatracker page.
+#[test]
+fn homepage_standard_title_matches_its_link_target() {
+    assert_none_of_kind(&homepage_violations(), Kind::TitleUrlMismatch);
+
+    // Control: a title one RFC off its link.
+    let page = homepage_with(
+        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3611""#,
+        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3612""#,
+    );
+    let hits = of_kind(&control_violations(&page), Kind::TitleUrlMismatch);
+    assert!(
+        hits.iter()
+            .any(|m| m.contains("rfc3612") && m.contains("rfc3611")),
+        "a title/link mismatch passed: {hits:?}"
+    );
+}
+
+/// Gate 4: Every metric or capability a card names maps, in [`HOMEPAGE_STANDARDS`],
+/// to a code symbol that exists in the tree. A card cannot name what the code
+/// does not do, and the table cannot name code that is gone.
+#[test]
+fn homepage_card_items_map_to_code_that_exists() {
+    assert_none_of_kind(&homepage_violations(), Kind::UnmappedItem);
+
+    // Control: a metric nobody implemented, on an otherwise real card.
+    let page = homepage_with(
+        "<li><strong>Jitter</strong>",
+        "<li><strong>Foo score</strong> &mdash; not a thing.</li>\n        <li><strong>Jitter</strong>",
+    );
+    let hits = of_kind(&control_violations(&page), Kind::UnmappedItem);
+    assert!(
+        hits.iter().any(|m| m.contains("Foo score")),
+        "an item with no code path passed: {hits:?}"
+    );
+
+    // And the table side: a row pointing at a symbol the tree lacks.
+    let docs = docs_prose();
+    let mirror = site_mirror();
+    let output_docs = output_schema_docs();
+    let html = read("website/templates/index.html");
+    let hits = standard_card_violations(
+        &standard_cards(&html),
+        HOMEPAGE_STANDARDS,
+        &Corpora {
+            docs: &docs,
+            mirror: &mirror,
+            output_docs: &output_docs,
+        },
+        &|file, needle| {
+            !(file == "src/rtp/rtcp.rs" && needle.contains("rtt_from_sender_report_echo"))
+                && tree_has(file, needle)
+        },
+    );
+    let hits = of_kind(&hits, Kind::UnmappedItem);
+    assert!(
+        hits.iter()
+            .any(|m| m.contains("rtt_from_sender_report_echo") && m.contains("not there")),
+        "a row whose symbol is gone passed: {hits:?}"
+    );
+}
+
+/// Gate 5: The reverse of 4: every row of [`HOMEPAGE_STANDARDS`], and every item of
+/// it, is on the page. An implemented standard cannot vanish from the section
+/// by deleting its card.
+#[test]
+fn homepage_carries_every_standard_the_canonical_table_names() {
+    assert_none_of_kind(&homepage_violations(), Kind::MissingFromPage);
+
+    // Control: the SRTP card deleted.
+    let card = homepage_card_html("RFC 3711");
+    let page = homepage_with(&card, "");
+    let hits = of_kind(&control_violations(&page), Kind::MissingFromPage);
+    assert!(
+        hits.iter()
+            .any(|m| m.contains("RFC 3711") && m.contains("0 card(s)")),
+        "a deleted card passed: {hits:?}"
+    );
+
+    // And one item deleted from a card that stays.
+    let page = homepage_with(
+        "<li><strong>Masking</strong>",
+        "<li><strong>Masking-gone</strong>",
+    );
+    let hits = of_kind(&control_violations(&page), Kind::MissingFromPage);
+    assert!(
+        hits.iter()
+            .any(|m| m.contains("\"Masking\"") && m.contains("no longer lists")),
+        "a deleted item passed: {hits:?}"
+    );
+}
+
+/// Gate 6: Every standard a card cites, in its title or an item, is cited by name
+/// in `docs/*.md`. The homepage does not claim what the documentation does
+/// not.
+#[test]
+fn homepage_standards_are_cited_in_the_docs() {
+    assert_none_of_kind(&homepage_violations(), Kind::Uncited);
+
+    // Control: an unassigned RFC, which the docs must not cite either.
+    assert!(
+        !docs_prose().contains("RFC 9999"),
+        "docs/ cites RFC 9999; pick another unassigned number for this control"
+    );
+    let card = homepage_card_html("RFC 3711")
+        .replace("RFC 3711", "RFC 9999")
+        .replace("rfc3711", "rfc9999");
+    let real = homepage_card_html("RFC 3711");
+    let page = homepage_with(&real, &format!("{real}\n{card}"));
+    let hits = of_kind(&control_violations(&page), Kind::Uncited);
+    assert!(
+        hits.iter().any(|m| m.contains("RFC 9999")),
+        "an uncited standard passed: {hits:?}"
+    );
+}
+
+/// Gate 7: The built site mirror cites every standard the template cites. There is
+/// no rendered copy of the homepage under `website/content`; what
+/// `scripts/build-site-pages.py` builds there is the docs, kept beside the
+/// site-only pages, and `llms-full.txt` from the mirrored pages. A citation
+/// added to `docs/` and not rebuilt, or added to a mirrored page and not to
+/// its site-only twin, is the drift this catches.
+#[test]
+fn homepage_standards_are_cited_in_the_site_mirror() {
+    assert_none_of_kind(&homepage_violations(), Kind::MirrorDrift);
+
+    // Control: the mirror without one citation the template makes.
+    let mirror = site_mirror();
+    assert!(
+        mirror.contains("RFC 8446"),
+        "the mirror does not cite RFC 8446 — this control cannot remove what is not there"
+    );
+    let mirror = mirror.replace("RFC 8446", "RFC ----");
+    let docs = docs_prose();
+    let output_docs = output_schema_docs();
+    let html = read("website/templates/index.html");
+    let hits = standard_card_violations(
+        &standard_cards(&html),
+        HOMEPAGE_STANDARDS,
+        &Corpora {
+            docs: &docs,
+            mirror: &mirror,
+            output_docs: &output_docs,
+        },
+        &tree_has,
+    );
+    let hits = of_kind(&hits, Kind::MirrorDrift);
+    assert!(
+        hits.iter().any(|m| m.contains("RFC 8446")),
+        "a citation missing from the mirror passed: {hits:?}"
+    );
+}
+
+/// Gate 8: Every quality metric a card names is a field the program emits, as the
+/// output docs document it: `docs/output-formats.md` or the REST and MCP
+/// references it points at. A badge never names a metric the JSON does not
+/// carry — which is how a "Burst / Gap Loss" card once described a function
+/// no surface calls.
+#[test]
+fn homepage_metrics_are_fields_the_program_emits() {
+    assert_none_of_kind(&homepage_violations(), Kind::UnemittedField);
+
+    // Control: the output docs without one field the table names.
+    let output_docs = output_schema_docs();
+    assert!(
+        output_docs.contains("`round_trip_ms`") || output_docs.contains("\"round_trip_ms\""),
+        "the output docs do not carry round_trip_ms — this control cannot remove it"
+    );
+    let output_docs = output_docs.replace("round_trip_ms", "round_trip_--");
+    let docs = docs_prose();
+    let mirror = site_mirror();
+    let html = read("website/templates/index.html");
+    let hits = standard_card_violations(
+        &standard_cards(&html),
+        HOMEPAGE_STANDARDS,
+        &Corpora {
+            docs: &docs,
+            mirror: &mirror,
+            output_docs: &output_docs,
+        },
+        &tree_has,
+    );
+    let hits = of_kind(&hits, Kind::UnemittedField);
+    assert!(
+        hits.iter().any(|m| m.contains("round_trip_ms")),
+        "a metric with no documented field passed: {hits:?}"
+    );
+}
+
+/// Gate 9: A description that names a formula, a section, a table, a payload type
+/// or a version has that exact string in the file its row maps it to. The
+/// page is never more specific than the implementation.
+#[test]
+fn homepage_card_claims_are_no_more_specific_than_the_code() {
+    assert_none_of_kind(&homepage_violations(), Kind::OverSpecificClaim);
+
+    // Control: an annex the code never mentions, on the real jitter item.
+    let page = homepage_with(
+        "<li><strong>Jitter</strong> &mdash;",
+        "<li><strong>Jitter</strong> &mdash; per Annex&nbsp;Q,",
+    );
+    let hits = of_kind(&control_violations(&page), Kind::OverSpecificClaim);
+    assert!(
+        hits.iter().any(|m| m.contains("Annex Q")),
+        "an unmapped claim passed: {hits:?}"
+    );
+
+    // And a mapped claim the file no longer carries.
+    let docs = docs_prose();
+    let mirror = site_mirror();
+    let output_docs = output_schema_docs();
+    let html = read("website/templates/index.html");
+    let hits = standard_card_violations(
+        &standard_cards(&html),
+        HOMEPAGE_STANDARDS,
+        &Corpora {
+            docs: &docs,
+            mirror: &mirror,
+            output_docs: &output_docs,
+        },
+        &|file, needle| needle != "Annex B" && tree_has(file, needle),
+    );
+    let hits = of_kind(&hits, Kind::OverSpecificClaim);
+    assert!(
+        hits.iter()
+            .any(|m| m.contains("Annex B") && m.contains("does not contain")),
+        "a claim the code stopped making passed: {hits:?}"
+    );
+}
+
+/// Gate 10: Positive control on the whole gate: one page with one wrong card of
+/// every kind above is reported with all nine reasons, so an edit that breaks
+/// the checker cannot pass vacuously.
+#[test]
+fn homepage_standards_gate_reports_every_kind_of_wrong_card() {
+    let mut page = read("website/templates/index.html");
+    let mut edit = |from: &str, to: &str| {
+        assert!(
+            page.contains(from),
+            "control edit did not apply: the page no longer contains {from:?}"
+        );
+        page = page.replacen(from, to, 1);
+    };
+    // Duplicate: the RFC 3611 card twice.
+    let xr = homepage_card_html("RFC 3611");
+    edit(&xr, &format!("{xr}\n{xr}"));
+    // Bad host: SIP linked off the RFC Editor.
+    edit(
+        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3261""#,
+        r#"class="metric-std" href="https://tools.ietf.org/html/rfc3261""#,
+    );
+    // Mismatch: SDP linked to the next RFC.
+    edit(
+        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc8866""#,
+        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc8867""#,
+    );
+    // Unmapped item, and an over-specific claim, on the RTP card.
+    edit(
+        "<li><strong>Jitter</strong> &mdash;",
+        "<li><strong>Foo score</strong> &mdash; not a thing.</li>\n\
+         <li><strong>Jitter</strong> &mdash; per Annex&nbsp;Q,",
+    );
+    // Missing: the SRTP card gone.
+    let srtp = homepage_card_html("RFC 3711");
+    edit(&srtp, "");
+    // Uncited: an unassigned RFC.
+    let ghost = homepage_card_html("RFC 5389")
+        .replace("RFC 5389", "RFC 9999")
+        .replace("rfc5389", "rfc9999");
+    let stun = homepage_card_html("RFC 5389");
+    edit(&stun, &format!("{stun}\n{ghost}"));
+
+    // Mirror drift and an unemitted field come from the corpora, not the page.
+    let docs = docs_prose();
+    let mirror = site_mirror().replace("RFC 8446", "RFC ----");
+    let output_docs = output_schema_docs().replace("round_trip_ms", "round_trip_--");
+    let violations = standard_card_violations(
+        &standard_cards(&page),
+        HOMEPAGE_STANDARDS,
+        &Corpora {
+            docs: &docs,
+            mirror: &mirror,
+            output_docs: &output_docs,
+        },
+        &tree_has,
+    );
+    let seen: BTreeSet<String> = violations.iter().map(|v| format!("{:?}", v.kind)).collect();
+    let missing: Vec<String> = ALL_KINDS
+        .iter()
+        .map(|k| format!("{k:?}"))
+        .filter(|k| !seen.contains(k))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the all-wrong control page was not reported for {missing:?}; the checker \
+         is blind to that kind. Reported:\n  {}",
+        violations
+            .iter()
+            .map(|v| format!("{:?}: {}", v.kind, v.message))
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    );
+}
+
 /// The homepage states its automated-test count twice, and both must agree.
 ///
 /// `.githooks/pre-commit` already checks both places against a real `cargo

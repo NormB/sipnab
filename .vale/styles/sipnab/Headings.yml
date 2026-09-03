@@ -24,6 +24,7 @@ match: $sentence
 indicators:
   - ":"
 exceptions:
+  - TFPS
   # --- Google's originals, kept so this is a superset ---
   - Azure
   - Boolean

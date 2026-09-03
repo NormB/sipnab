@@ -8,7 +8,7 @@ Wire sipnab into your wider stack: forward captured traffic to HEP/Homer, run ex
 
 ## HEP Protocol
 
-sipnab supports HEP v2/v3 (Homer Encapsulation Protocol) for integration with Homer/SIPCAPTURE.
+sipnab supports HEP v2/v3 (Homer Encapsulation Protocol, [specification](https://github.com/sipcapture/HEP)) for integration with Homer/SIPCAPTURE.
 
 ### Receiving HEP
 

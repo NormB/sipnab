@@ -755,3 +755,6 @@ zeroizing
 zsh
 debounce
 llmnr
+TFPS
+unban
+unbans
