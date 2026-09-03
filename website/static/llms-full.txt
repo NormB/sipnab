@@ -3952,7 +3952,7 @@ per SIP message and grows with the call):
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.145 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.146 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -5412,7 +5412,7 @@ sipnab -D
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```text
-sipnab 0.5.145 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+sipnab 0.5.146 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
 ```
 
 This is the fastest way to confirm a build carries the feature set
@@ -12491,7 +12491,7 @@ itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.145 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.146 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    ```
 
    If `mcp` is missing you have a source build without features — rebuild
@@ -13575,7 +13575,7 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
-  "version": "0.5.145",
+  "version": "0.5.146",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -14125,7 +14125,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.145"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.146"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -15974,7 +15974,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.145",
+  "version": "0.5.146",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -19041,7 +19041,7 @@ The container example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](http
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.145 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.146 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -22400,7 +22400,7 @@ and a consumer parses it before indexing into it.
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.145 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.146 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
