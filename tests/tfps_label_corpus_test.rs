@@ -37,10 +37,14 @@
 //! ```
 //!
 //! The corpus and the labels both describe real traffic and are assumed to
-//! contain PII: neither is committed, and nothing derived from a packet or a
-//! label — address, Call-ID, user part — is ever printed. Counts and rule names
-//! only. The committed fixture is synthetic, from RFC 5737's documentation
-//! ranges, and exists to pin the format the two projects agreed on.
+//! contain PII: neither is committed. The run prints the SOURCE ADDRESSES under
+//! each outcome -- recalled, missed, false positive, flagged but unlabeled --
+//! to the operator who owns both files, because a count alone was how
+//! "recalled 1 of 15" got attributed to the wrong address by hand. Nothing
+//! else derived from a packet or a label -- Call-ID, user part, header text --
+//! is printed, and no output of this run is committed. The committed fixture
+//! is synthetic, from RFC 5737's documentation ranges, and exists to pin the
+//! format the two projects agreed on.
 #![cfg(feature = "native")]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -82,16 +86,27 @@ pub enum Ground {
 }
 
 /// The score, and the evidence needed to distrust it.
+///
+/// Every outcome carries the addresses behind it, not a count. A count is
+/// what the harness used to print, and it was read backwards: "recalled 1 of
+/// 15" says one source was caught and leaves a human to guess which.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Score {
     pub hostile: usize,
     pub benign: usize,
     /// Hostile sources sipnab also flagged.
-    pub recalled: usize,
+    pub recalled: BTreeSet<String>,
+    /// Hostile sources that appear in the corpus and were not flagged.
+    ///
+    /// "Appear in the corpus" is the whole of the definition. A hostile
+    /// source TFPS saw in a window the pcaps do not cover was never shown to
+    /// the detector, and charging it as a miss would score the capture's
+    /// coverage rather than the detector.
+    pub missed: BTreeSet<String>,
     /// Benign sources sipnab flagged anyway.
-    pub false_positives: usize,
+    pub false_positives: BTreeSet<String>,
     /// Sources sipnab flagged that the labels say nothing about at all.
-    pub unlabeled: usize,
+    pub flagged_unlabeled: BTreeSet<String>,
 }
 
 /// Parse the export. One JSON object per line.
@@ -164,22 +179,45 @@ fn ground_truth(labels: &[Label]) -> BTreeMap<String, Ground> {
 }
 
 /// Score what sipnab flagged against that ground truth.
-fn score(truth: &BTreeMap<String, Ground>, flagged: &BTreeSet<String>) -> Score {
+///
+/// # Arguments
+///
+/// * `truth` — every labeled source and which side it is on.
+/// * `flagged` — every source sipnab reported.
+/// * `present` — every source address that sent at least one SIP message in
+///   the corpus. A hostile source outside this set is not a miss: the detector
+///   was never shown it.
+fn score(
+    truth: &BTreeMap<String, Ground>,
+    flagged: &BTreeSet<String>,
+    present: &BTreeSet<String>,
+) -> Score {
     let mut s = Score::default();
-    for g in truth.values() {
+    for (ip, g) in truth {
         match g {
-            Ground::Hostile => s.hostile += 1,
+            Ground::Hostile => {
+                s.hostile += 1;
+                if !flagged.contains(ip) && present.contains(ip) {
+                    s.missed.insert(ip.clone());
+                }
+            }
             Ground::Benign => s.benign += 1,
         }
     }
     for ip in flagged {
         match truth.get(ip) {
-            Some(Ground::Hostile) => s.recalled += 1,
-            Some(Ground::Benign) => s.false_positives += 1,
-            // Counted separately and never folded into either rate. TFPS saw a
-            // window sipnab did not, or the reverse; calling that a false
-            // positive would charge the detector for a source nobody labeled.
-            None => s.unlabeled += 1,
+            Some(Ground::Hostile) => {
+                s.recalled.insert(ip.clone());
+            }
+            Some(Ground::Benign) => {
+                s.false_positives.insert(ip.clone());
+            }
+            // Kept apart and never folded into either rate. TFPS saw a window
+            // sipnab did not, or the reverse; calling that a false positive
+            // would charge the detector for a source nobody labeled.
+            None => {
+                s.flagged_unlabeled.insert(ip.clone());
+            }
         }
     }
     s
@@ -269,6 +307,17 @@ mod tests {
         );
     }
 
+    /// Every hostile and benign source of the fixture is in the corpus.
+    fn everyone_present() -> BTreeSet<String> {
+        ground_truth(&parse_labels(GOLDEN).unwrap())
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// The score NAMES each source under its outcome. A count alone was how
+    /// "recalled 1 of 15" got read as the wrong address: the harness said one
+    /// source was caught and a human guessed which, and guessed backwards.
     #[test]
     fn the_score_separates_recall_from_false_positives() {
         let t = ground_truth(&parse_labels(GOLDEN).unwrap());
@@ -277,25 +326,65 @@ mod tests {
             "192.0.2.5".to_string(),     // benign, flagged anyway
             "203.0.113.99".to_string(),  // nothing is known about it
         ]);
-        let s = score(&t, &flagged);
+        let s = score(&t, &flagged, &everyone_present());
         assert_eq!(s.hostile, 2);
         assert_eq!(s.benign, 3);
-        assert_eq!(s.recalled, 1);
-        assert_eq!(s.false_positives, 1);
+        assert_eq!(s.recalled, BTreeSet::from(["198.51.100.10".to_string()]));
         assert_eq!(
-            s.unlabeled, 1,
+            s.missed,
+            BTreeSet::from(["198.51.100.12".to_string()]),
+            "the other hostile source was in the corpus and not flagged"
+        );
+        assert_eq!(s.false_positives, BTreeSet::from(["192.0.2.5".to_string()]));
+        assert_eq!(
+            s.flagged_unlabeled,
+            BTreeSet::from(["203.0.113.99".to_string()]),
             "a flagged source the labels say nothing about is neither a hit nor a miss"
         );
     }
 
+    /// A hostile source that never appears in the pcaps is not a miss.
+    ///
+    /// TFPS saw a window sipnab did not. Charging the detector for a source it
+    /// was never shown would score the capture's coverage, not the detector,
+    /// and make every corpus narrower than the ban log read as a detector
+    /// failure.
+    #[test]
+    fn a_hostile_source_absent_from_the_corpus_is_not_a_miss() {
+        let t = ground_truth(&parse_labels(GOLDEN).unwrap());
+        // Only one of the two hostile sources ever sent a packet.
+        let present = BTreeSet::from(["198.51.100.10".to_string()]);
+        let s = score(&t, &BTreeSet::new(), &present);
+        assert_eq!(
+            s.missed,
+            BTreeSet::from(["198.51.100.10".to_string()]),
+            "the hostile source that WAS in the corpus and went unflagged is the miss"
+        );
+        assert!(
+            !s.missed.contains("198.51.100.12"),
+            "198.51.100.12 is hostile but sent nothing sipnab could have seen"
+        );
+        assert_eq!(
+            s.hostile, 2,
+            "absence from the corpus does not change the labels"
+        );
+    }
+
     /// NEGATIVE CONTROL. A detector that flags nothing must score zero recall
-    /// and zero false positives — not an empty score that reads as perfect.
+    /// and zero false positives — not an empty score that reads as perfect —
+    /// and every hostile source in the corpus is then a named miss.
     #[test]
     fn flagging_nothing_scores_no_recall_rather_than_no_error() {
         let t = ground_truth(&parse_labels(GOLDEN).unwrap());
-        let s = score(&t, &BTreeSet::new());
-        assert_eq!(s.recalled, 0);
-        assert_eq!(s.false_positives, 0);
+        let s = score(&t, &BTreeSet::new(), &everyone_present());
+        assert!(s.recalled.is_empty());
+        assert!(s.false_positives.is_empty());
+        assert!(s.flagged_unlabeled.is_empty());
+        assert_eq!(
+            s.missed,
+            BTreeSet::from(["198.51.100.10".to_string(), "198.51.100.12".to_string()]),
+            "flagging nothing misses every hostile source the corpus holds"
+        );
         assert!(
             s.hostile > 0,
             "the ground truth must not be empty, or this proves nothing"
@@ -356,38 +445,63 @@ fn scanner_detect_is_scored_against_the_ban_log() {
 
     let truth = ground_truth(&labels);
     let mut flagged: BTreeSet<String> = BTreeSet::new();
+    // Every source that sent anything: the population the detector was shown,
+    // which is what decides whether an unflagged hostile source is a miss.
+    let mut present: BTreeSet<String> = BTreeSet::new();
     for (_, msgs) in &captures {
         let mut det = ScannerDetector::new(&[]);
         for msg in msgs {
+            present.insert(msg.src_addr.to_string());
             if let Some(alert) = det.check(msg) {
                 flagged.insert(alert.src_ip.to_string());
             }
         }
     }
 
-    let s = score(&truth, &flagged);
+    let s = score(&truth, &flagged, &present);
 
     // The join has to be checked before the score is believed. Two observation
     // points that barely agree about addresses are not one estate seen twice —
     // a NAT or an SBC between them breaks the join, and neither tool says so.
-    let overlap = s.recalled + s.false_positives;
+    let labeled_in_corpus = truth.keys().filter(|ip| present.contains(*ip)).count();
     assert!(
-        overlap > 0,
+        labeled_in_corpus > 0,
         "not one labeled source appears in the capture: the label file and the \
          corpus do not describe the same traffic, and any score over them would \
          be arithmetic on a failed join"
     );
 
-    // Counts and rule names only: both inputs are real traffic and assumed to
-    // carry PII.
+    // Addresses under each outcome, to the operator who owns both files.
+    // Nothing else from a packet or a label is printed.
+    let names = |set: &BTreeSet<String>| set.iter().cloned().collect::<Vec<_>>().join(", ");
     eprintln!("labeled: {} hostile, {} benign", s.hostile, s.benign);
-    eprintln!("sipnab flagged {} sources", flagged.len());
-    eprintln!("  recalled {} of {} hostile", s.recalled, s.hostile);
     eprintln!(
-        "  false positives {} of {} benign",
-        s.false_positives, s.benign
+        "  {labeled_in_corpus} labeled sources appear in the corpus ({} sources sent SIP)",
+        present.len()
     );
-    eprintln!("  flagged but unlabeled: {}", s.unlabeled);
+    eprintln!("sipnab flagged {} sources", flagged.len());
+    eprintln!(
+        "  recalled {} of {} hostile: [{}]",
+        s.recalled.len(),
+        s.hostile,
+        names(&s.recalled)
+    );
+    eprintln!(
+        "  missed (hostile, in the corpus, not flagged) {}: [{}]",
+        s.missed.len(),
+        names(&s.missed)
+    );
+    eprintln!(
+        "  false positives {} of {} benign: [{}]",
+        s.false_positives.len(),
+        s.benign,
+        names(&s.false_positives)
+    );
+    eprintln!(
+        "  flagged but unlabeled {}: [{}]",
+        s.flagged_unlabeled.len(),
+        names(&s.flagged_unlabeled)
+    );
     eprintln!("rule breakdown: {:?}", rule_breakdown(&labels));
 
     // §6 of the review, made automatic: if the labels are dominated by one rule

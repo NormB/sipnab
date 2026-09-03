@@ -46,6 +46,12 @@ use crate::lru::LruMap;
 use crate::sip::SipMessage;
 
 /// Known SIP scanner User-Agent patterns (case-insensitive).
+///
+/// Each entry is here because it was seen, not because a list somewhere
+/// carries it. `pplsip` was measured on live traffic on 2026-09-03: one INVITE
+/// to a toll-fraud number, banned by the TFPS peer on the same host, missed by
+/// this detector. TFPS's full signature list is not imported -- an entry that
+/// nobody here has watched fire is a guess wearing a test.
 const KNOWN_SCANNER_PATTERNS: &[&str] = &[
     "friendly-scanner",
     "sipvicious",
@@ -54,6 +60,7 @@ const KNOWN_SCANNER_PATTERNS: &[&str] = &[
     "sundayddr",
     "VaxSIPUserAgent",
     "sip-scan",
+    "pplsip",
 ];
 
 /// Number of probe transactions from the same source within the behavioral
@@ -807,6 +814,26 @@ mod tests {
         assert!(alert.is_some(), "should detect sipvicious");
         let alert = alert.unwrap();
         assert_eq!(alert.detection_method, "ua_pattern");
+    }
+
+    /// `pplsip` is detected via signature match, on an INVITE.
+    ///
+    /// Measured on live traffic on 2026-09-03: the TFPS peer banned
+    /// `51.178.122.178` for one INVITE to a toll-fraud number carrying
+    /// `User-Agent: pplsip`, and this detector -- which knew `friendly-scanner`
+    /// -- let it through. One signature, added because it was measured, not
+    /// imported from anyone's list.
+    #[test]
+    fn detect_pplsip_invite_ua() {
+        let mut detector = ScannerDetector::new(&[]);
+        let msg = make_request_with_ua("INVITE", "pplsip", scanner_ip());
+
+        let alert = detector.check(&msg);
+        assert!(alert.is_some(), "should detect pplsip");
+        let alert = alert.unwrap();
+        assert_eq!(alert.detection_method, "ua_pattern");
+        assert_eq!(alert.ua.as_deref(), Some("pplsip"));
+        assert_eq!(alert.method.as_deref(), Some("INVITE"));
     }
 
     /// A benign User-Agent does not trigger a signature alert.

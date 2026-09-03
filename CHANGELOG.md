@@ -58,6 +58,18 @@ entry that carries them.
   claim, and a citation in both `docs/` and the built site mirror; one card
   per standard is enforced, and a control page wrong in all nine ways must be
   reported for all nine.
+- **`pplsip` is a known scanner signature.** Measured on live traffic on
+  2026-09-03: the TFPS peer banned a source for one INVITE to a toll-fraud
+  number carrying `User-Agent: pplsip`, and sipnab's scanner detector -- which
+  knows `friendly-scanner` and `sipvicious` -- let it through. One signature,
+  added because it was measured; nobody's list was imported wholesale.
+- **The TFPS label harness names its sources.** `tfps_label_corpus_test`
+  reported "recalled 1 of 15" and nothing else, and the one recalled address was
+  inferred by hand, backwards. The score now carries the addresses under each
+  outcome and prints them: `recalled`, `missed`, `false_positives` and
+  `flagged_unlabeled`. A miss is a hostile source that appears in the corpus
+  and went unflagged; a hostile source TFPS saw in a window the pcaps do not
+  cover is not charged to the detector.
 
 ## [0.5.147] - 2026-09-03
 
