@@ -8,6 +8,19 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The abandoned-worktree gate could block every commit while a worktree was
+  in use.** Under `git commit` the pre-commit hook inherits `GIT_DIR`,
+  `GIT_INDEX_FILE` and `GIT_WORK_TREE` for the repository being committed to,
+  and the gate's child `git status` — started inside another worktree —
+  inherited them too, so it reported on the parent repository and called a
+  live worktree empty. It passed when run by hand, because by hand there was
+  nothing to leak. The probe now scrubs those variables, and a worktree whose
+  work is committed but merged nowhere is no longer counted as abandoned.
+
 ## [0.5.145] - 2026-09-03
 
 ### Added

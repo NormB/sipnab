@@ -105,6 +105,79 @@ fn the_working_tree_holds_no_conflict_or_snapshot_detritus() {
 /// sat here holding no uncommitted work at all — pure cost. This reports only
 /// the ones that are safe to remove, because a worktree with work in it is not
 /// mess, it is somebody's session.
+/// A `git` invocation inside a worktree that reports on THAT worktree.
+///
+/// # The defect this exists for
+///
+/// Under `git commit`, the pre-commit hook runs with `GIT_DIR`,
+/// `GIT_INDEX_FILE` and `GIT_WORK_TREE` set for the repository being committed
+/// to. A child `git status` spawned with `current_dir(worktree)` inherits them
+/// and silently reports on the PARENT repository instead: measured, a worktree
+/// with 22 changed files answered "4" (the parent's staged files) with the
+/// variables leaked in, and "0" with the hook's temporary index. So the gate
+/// called a live agent's worktree abandoned, and blocked every commit for as
+/// long as the worktree existed — while passing when run by hand, because by
+/// hand there is nothing to leak.
+fn worktree_git(path: &str) -> Command {
+    let mut c = Command::new("git");
+    c.current_dir(path);
+    for var in [
+        "GIT_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_WORK_TREE",
+        "GIT_PREFIX",
+        "GIT_COMMON_DIR",
+    ] {
+        c.env_remove(var);
+    }
+    c
+}
+
+/// Whether a worktree holds anything a person would miss.
+///
+/// Uncommitted changes obviously. Commits not yet merged anywhere too: a
+/// worktree whose work is all committed on its own branch is not empty, it is
+/// finished and waiting — the previous check read that as abandoned.
+fn worth_keeping(dirty_lines: usize, commits_ahead: usize) -> bool {
+    dirty_lines > 0 || commits_ahead > 0
+}
+
+/// The probe must scrub the hook's variables, or it reports the wrong repo.
+#[test]
+fn the_worktree_probe_scrubs_the_hooks_git_environment() {
+    let c = worktree_git(".");
+    let removed: Vec<&std::ffi::OsStr> = c
+        .get_envs()
+        .filter(|(_, v)| v.is_none())
+        .map(|(k, _)| k)
+        .collect();
+    for var in ["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"] {
+        assert!(
+            removed.iter().any(|k| *k == var),
+            "{var} is not scrubbed; under `git commit` the probe would report the \
+             parent repository and call a live worktree abandoned"
+        );
+    }
+}
+
+/// Committed-but-unmerged work counts. Only nothing-at-all is abandoned.
+#[test]
+fn a_worktree_is_kept_for_uncommitted_or_unmerged_work_and_dropped_for_neither() {
+    assert!(
+        worth_keeping(22, 0),
+        "uncommitted changes are worth keeping"
+    );
+    assert!(
+        worth_keeping(0, 1),
+        "a commit nobody has merged is worth keeping"
+    );
+    assert!(worth_keeping(3, 2));
+    assert!(
+        !worth_keeping(0, 0),
+        "nothing uncommitted and nothing unmerged is disk cost"
+    );
+}
+
 #[test]
 fn no_worktree_is_abandoned_with_nothing_worth_keeping() {
     let out = Command::new("git")
@@ -122,13 +195,34 @@ fn no_worktree_is_abandoned_with_nothing_worth_keeping() {
         if Path::new(path) == repo() {
             continue; // the checkout we are running in
         }
-        let dirty = Command::new("git")
+        let dirty_lines = worktree_git(path)
             .args(["status", "--porcelain"])
-            .current_dir(path)
             .output()
-            .map(|o| !o.stdout.is_empty())
-            .unwrap_or(true); // unreadable: assume it matters, never delete
-        if !dirty {
+            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
+            .unwrap_or(1); // unreadable: assume it matters, never delete
+        let commits_ahead = worktree_git(path)
+            .args(["rev-list", "--count", "@{upstream}..HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+            .unwrap_or_else(|| {
+                // No upstream: count against the main checkout's HEAD instead.
+                worktree_git(path)
+                    .args([
+                        "rev-list",
+                        "--count",
+                        "HEAD",
+                        "--not",
+                        "--remotes",
+                        "--branches=main",
+                    ])
+                    .output()
+                    .ok()
+                    .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+                    .unwrap_or(1)
+            });
+        if !worth_keeping(dirty_lines, commits_ahead) {
             abandoned.push(path.to_string());
         }
     }
