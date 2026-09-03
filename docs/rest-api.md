@@ -943,6 +943,12 @@ answer to whether a capture is recording.
 
 ---
 
+> **The peer this needs.** These read TFPS through its `tfps_ctl` program in a
+> JSON mode that no released TFPS publishes yet: that work sits on a branch
+> nobody has merged, and nobody has proposed it upstream. Against a released
+> TFPS these report a peer they cannot read, which is the honest answer
+> rather than a fault. sipnab's side waits for the other.
+
 ### GET /v1/tfps/status
 
 Ask whether the toll-fraud prevention system (TFPS) runs on this host, and

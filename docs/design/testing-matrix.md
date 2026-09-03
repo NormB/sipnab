@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 256 | 131 | 45 | 79 | 1 |
+| CLI flags | 256 | 132 | 45 | 78 | 1 |
 | HTTP routes | 17 | 17 | -- | 0 | 0 |
 | MCP tools | 63 | 63 | -- | 0 | 0 |
 
@@ -57,7 +57,7 @@ was driving all of them.
 
 ## What a person found that the detector could not
 
-The generator understates. Of the 79 flags it could only call
+The generator understates. Of the 78 flags it could only call
 `referenced`, a read of the tests found 64 with a real behavior test --
 evidence that arrives through a config-file equivalent sharing the flag's
 resolver, through a golden file, or through a library-level test, none of
@@ -195,7 +195,7 @@ behind them.
 | `--max-streams` |  | `N` | RTP | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--max-lost-sequences` |  | `N` | RTP | referenced | `src/cli.rs` | **behavior** | via config key: probe_max_lost_sequences moves the burst count 333 -> 33 |
 | `--quality-threshold` |  | `MOS` | RTP | referenced | `tests/cli_options_test.rs` | **parse-only** | asserts exit 0 only; no test drives it with --on-quality-exec and observes the hook firing |
-| `--kill-scanner` |  |  | Security | e2e | `tests/cli_test.rs`, `tests/offline_never_transmits_test.rs` |  |  |
+| `--kill-scanner` |  |  | Security | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_test.rs` +1 |  |  |
 | `--kill-ua` |  | `PATTERN` | Security | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` +3 | **behavior** | FIXED THIS PASS. Was a silent no-op without --kill-scanner; now refused, and kill_ua_pattern_reaches_the_detector_that_reads_it asserts the match |
 | `--kill-response` |  | `CODE` | Security | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--kill-target` | `-K` |  | Security | e2e | `tests/offline_never_transmits_test.rs` |  |  |
@@ -203,7 +203,7 @@ behind them.
 | `--hep-allow-kill` |  |  | Security | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--tfps-ctl` |  | `PATH` | Security | e2e | `tests/mcp_protocol_features_test.rs` |  |  |
 | `--fraud-detect` |  |  | Security | parsed | `src/cli.rs` |  |  |
-| `--evidence-out` |  |  | Security | referenced | `src/app/batch.rs` |  |  |
+| `--evidence-out` |  |  | Security | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--fraud-destination` |  |  | Security | parsed | `src/cli.rs` |  |  |
 | `--reg-flood` |  |  | Security | e2e | `tests/cli_flag_behavior_test.rs` | **behavior** | reg_flood_threshold_decides_when_a_burst_is_a_flood (tests/threshold_wiring_test.rs); an inert flag fails it |
 | `--reg-flood-threshold` |  | `N` | Security | e2e | `tests/cli_flag_behavior_test.rs` | **behavior** | same test, third run: the flag silences a burst the config key raised |

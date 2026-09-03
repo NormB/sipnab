@@ -91,6 +91,12 @@ ordinary update.
 **[Security](#security)**
 
 
+> **The peer this needs.** These read TFPS through its `tfps_ctl` program in a
+> JSON mode that no released TFPS publishes yet: that work sits on a branch
+> nobody has merged, and nobody has proposed it upstream. Against a released
+> TFPS these report a peer they cannot read, which is the honest answer
+> rather than a fault. sipnab's side waits for the other.
+
 | Tool | Parameters | Returns |
 |---|---|---|
 | [`security_findings`](#security-findings) | `kinds?`, `since?`, `limit?` | Recent `scanner` / `fraud` / `digest` / `reg_flood` findings, plus the detectors this server runs |

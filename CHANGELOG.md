@@ -8,6 +8,21 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The documentation instructed a peer command no released TFPS has.** The
+  TFPS surfaces shipped in 0.5.148 were built against a TFPS branch that adds
+  JSON output and an `ingest` subcommand. Nobody has merged that branch and
+  nobody has proposed it upstream, so a reader following sipnab's own example
+  piped findings into a `tfps_ctl` with no `ingest`, and read tool descriptions
+  promising JSON a released `tfps_ctl` never emits. The example no longer names
+  an unreleased command, each surface says plainly which peer capability it
+  waits for, and a gate now fails any document that instructs a `tfps_ctl`
+  subcommand or flag outside the released set. A feature may ship ahead of its
+  peer; instructions may not.
+
 ## [0.5.148] - 2026-09-03
 
 ### Added

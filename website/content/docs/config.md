@@ -209,6 +209,12 @@ alert_exec = "/usr/local/bin/sipnab-alert.sh"
 
 ### `[tfps]`
 
+> **The peer this needs.** These read TFPS through its `tfps_ctl` program in a
+> JSON mode that no released TFPS publishes yet: that work sits on a branch
+> nobody has merged, and nobody has proposed it upstream. Against a released
+> TFPS these report a peer they cannot read, which is the honest answer
+> rather than a fault. sipnab's side waits for the other.
+
 Where the toll-fraud prevention system (TFPS) is, when one runs on this host.
 
 TFPS is optional peer software: it condemns sources and enforces that
