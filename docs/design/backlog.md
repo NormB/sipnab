@@ -19,7 +19,7 @@ Tiers:
   production traffic. Cross-referenced to PA where the two overlap rather than
   merged, because they were written from different vantage points.
 - **TK — TLS key acquisition program**: the 2026-08-14 answer to
-  [the terminal viewer#447](https://github.com/irontec/the terminal viewer/issues/447), reading
+  a long-standing upstream feature request, reading
   SIP-over-TLS with no certificate and no daemon restart. Ranked `TK1`..`TK7` by
   dependency order, outside the P0-P5 scale for the same reason `PA` is — but
   `TK1`–`TK3` are P0/P1-severity defects that exist today, and the section says
@@ -3687,7 +3687,7 @@ symbols must be re-resolved before patching.
 
 <!-- Added 2026-08-14. Design: docs/superpowers/specs/2026-08-14-ebpf-tls-capture-design.md -->
 
-Origin: [irontec/the terminal viewer#447](https://github.com/irontec/the terminal viewer/issues/447), "TLS
+Origin: irontec/the terminal viewer#447, "TLS
 capture using eBPF" — read SIP-over-TLS on a live host **without the server
 certificate and without restarting the SIP daemon**.
 
@@ -3705,9 +3705,9 @@ not touch the capture path, steals no packets, and drops no direction.
 
 ### Prior art: the terminal viewer shipped this on 2026-08-12, and its design decides ours
 
-[`c9d872c`](https://github.com/irontec/the terminal viewer/commit/c9d872c3e64a45bad0888751a919bfdcea20b33a)
+`c9d872c`
 ("capture: add eBPF based capture of SIP over TLS") and
-[`f2bbde9`](https://github.com/irontec/the terminal viewer/commit/f2bbde973c3011cdbced534b1fdfb9972483d348)
+`f2bbde9`
 are the reference implementation of the request this section answers. Read the
 first commit message before starting `TK6` or `TK7`; four of its decisions are
 load-bearing and two of them retire work planned here.
@@ -5810,7 +5810,7 @@ ones that fit an analysis tool.
   reads `SIPNAB_CONFIG` and `HOME` from the environment
   ([`config.rs:1660`](https://github.com/NormB/sipnab/blob/main/src/config.rs#L1660), [`:1928`](https://github.com/NormB/sipnab/blob/main/src/config.rs#L1928)) but never expands `${VAR}` **inside a
   config value**, so a path cannot be written relative to whoever is running.
-  Prior art: [the terminal viewer PR 539](https://github.com/irontec/the terminal viewer/pull/539) (open,
+  Prior art: the terminal viewer PR 539 (open,
   unmerged), whose motivating case is `set savepath /home/${SUDO_USER}` — after
   `sudo -i`, saving to the invoking user's directory rather than root's.
   Unrelated to the `TK` program; recorded here because it arrived with those

@@ -63,9 +63,8 @@ signaling to a single sipnab listener and that one process answers for every
 node — nothing goes on the production hosts, and there is no collector, no
 database and no web UI to operate.
 
-On one box it still does what you expect. sipnab honors every
-[the terminal viewer](https://github.com/irontec/the terminal viewer) keybinding and accepts the
-[the CLI matcher](https://github.com/sipcapture/the CLI matcher) flags, in one Rust binary that
+On one box it still does what you expect. sipnab honors the conventional terminal keybindings and accepts the
+established flag set, in one Rust binary that
 adds first-class RTP quality monitoring, VoIP diagnostic aliases, security
 analysis, and an MCP server an AI agent can drive.
 
