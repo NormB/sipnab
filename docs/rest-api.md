@@ -943,6 +943,283 @@ answer to whether a capture is recording.
 
 ---
 
+### GET /v1/tfps/status
+
+Ask whether the toll-fraud prevention system (TFPS) runs on this host, and
+what it reports about itself.
+
+TFPS is optional peer software: it condemns sources and enforces that decision
+in the firewall, and sipnab never bans anything. Point sipnab at it with
+`--tfps-ctl /path/to/tfps_ctl` or `[tfps] ctl` in the config file, or leave
+`tfps_ctl` on `PATH`. sipnab looks for it only when one of these routes runs —
+it probes nothing at startup, and a machine without TFPS logs nothing.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:8080/v1/tfps/status | jq .
+```
+
+On a machine without TFPS, every `/v1/tfps/` route answers `200` with the same
+two fields and nothing else — a result, not a failure of this server:
+
+```json
+{
+  "installed": false,
+  "reason": "tfps_ctl not found on PATH; pass --tfps-ctl or [tfps] ctl"
+}
+```
+
+With TFPS installed, the answer names the executable that answered and carries
+its status:
+
+```json
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "status": {
+    "enforcement": "active",
+    "mode": "native",
+    "interface": "eth0",
+    "blocked_now": 3,
+    "db": "/var/lib/tfps/tfps.db",
+    "version": "0.1.0"
+  }
+}
+```
+
+Every field is present on every answer and `null` when TFPS does not know it:
+`enforcement` is `inactive` when TFPS could open no block map, and `mode` and
+`interface` are then `null`. A `tfps_ctl` that exits non-zero, hangs past ten
+seconds, or prints something other than the agreed JSON answers `502 Bad
+Gateway` as `application/problem+json`, with its standard error verbatim in
+`detail`.
+
+---
+
+### GET /v1/tfps/banned
+
+List every source TFPS holds condemned right now.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:8080/v1/tfps/banned | jq .
+```
+
+```json
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "rows": [
+    {
+      "ip": "198.51.100.10",
+      "rule": "user-agent",
+      "detail": "pplsip",
+      "first_seen": "2026-09-03T16:40:00Z",
+      "expires": "2026-09-03T17:40:00Z",
+      "enforced": true
+    },
+    {
+      "ip": "198.51.100.12",
+      "rule": null,
+      "detail": null,
+      "first_seen": null,
+      "expires": null,
+      "enforced": true
+    }
+  ],
+  "total": 2,
+  "returned": 2,
+  "truncated": false
+}
+```
+
+`rows` holds at most `--api-max-rows` entries. `total` is how many TFPS
+returned, and `truncated` says whether the cap withheld any. `detail` is what
+the rule saw — for `user-agent`, the `User-Agent` the scanner sent, verbatim.
+`rule`, `detail` and `first_seen` are `null` for a block that predates any
+audit row, and `expires` is `null` for a ban that does not lapse.
+
+---
+
+### GET /v1/tfps/dropped
+
+Read what the TFPS enforcement has dropped, per condemned source.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:8080/v1/tfps/dropped | jq .
+```
+
+```json
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "rows": [
+    {
+      "ip": "198.51.100.10",
+      "dropped": 30,
+      "events": 4,
+      "last_seen": "2026-09-03T16:41:00Z",
+      "rule": "user-agent",
+      "last_request": "OPTIONS sip:100@198.51.100.1 SIP/2.0"
+    }
+  ],
+  "total": 1,
+  "returned": 1,
+  "truncated": false
+}
+```
+
+`last_request` is the last request line the source sent, verbatim. It and
+`rule` are `null` when TFPS recorded none. Bounded by `--api-max-rows` like
+`/v1/tfps/banned`.
+
+---
+
+### GET /v1/tfps/labels
+
+Read the TFPS verdict log: one row per decision it reached about a source. This
+is the export the label corpus harness scores sipnab's scanner detector
+against.
+
+| Query parameter | Meaning |
+|---|---|
+| `limit` | Rows TFPS returns, newest first, passed through as `--limit N`. `0` or absent sends none, and TFPS answers with the whole log, which is its own default for the export; `--api-max-rows` then bounds the page. |
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/tfps/labels?limit=250" | jq .
+```
+
+```json
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "rows": [
+    {
+      "ip": "198.51.100.10",
+      "rule": "scanner",
+      "detail": "sipvicious",
+      "first_seen": 1756800000,
+      "expires": 1756803600,
+      "unbanned_at": null,
+      "enforced": true,
+      "verdict": "blocked"
+    }
+  ],
+  "total": 1,
+  "returned": 1,
+  "truncated": false
+}
+```
+
+`verdict` is `blocked` (condemned and enforced), `would-block` (condemned while
+observing only) or `exempt` (tripped a rule and TFPS trusted it anyway).
+`expires` is Unix seconds: `0` for never, `null` when TFPS blocked nothing.
+`unbanned_at` carries a value only when an operator lifted the block.
+
+---
+
+### POST /v1/tfps/ban
+
+Ask TFPS to condemn one source.
+
+**An operator action relayed through sipnab, not a decision sipnab makes.**
+TFPS refuses its host's own addresses and anything in its `ignoreip`,
+answers with what it did, and sipnab reports that answer as given, refusal
+included. The automated path — sipnab's own findings reaching TFPS as they
+happen — is a separate channel, and nothing sipnab detects ever comes through
+this route.
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"ip":"198.51.100.20","ttl_secs":3600}' \
+  http://127.0.0.1:8080/v1/tfps/ban | jq .
+```
+
+```json
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "action": {
+    "ip": "198.51.100.20",
+    "action": "ban",
+    "applied": true,
+    "refused": null,
+    "expires": "2026-09-03T17:40:10Z",
+    "source": "operator"
+  }
+}
+```
+
+**Body shape:** a JSON object with `ip`, required and an IPv4 address, because
+the TFPS block map is IPv4 and TFPS answers `refused: "invalid"` to anything
+else. `ttl_secs` is optional: seconds the ban lasts, `0` for forever, and the
+TFPS default of an hour when absent. The TFPS `ban` command records no
+free-text reason, so the body carries none. Anything else — a missing or malformed
+`ip`, an unknown key, an array — answers `400` and TFPS is never asked. The
+address and the duration reach `tfps_ctl` as arguments and never through a
+shell.
+
+A ban TFPS refuses is `200` with `applied: false` and `refused` saying why in
+the words TFPS uses — `self`, `ignoreip` or `invalid` — even though `tfps_ctl`
+signals the refusal with exit 1. That is the answer TFPS gave, not an error:
+
+```json
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "action": {
+    "ip": "192.0.2.1",
+    "action": "ban",
+    "applied": false,
+    "refused": "self",
+    "expires": null,
+    "source": "operator"
+  }
+}
+```
+
+---
+
+### POST /v1/tfps/unban
+
+Ask TFPS to release one condemned source. The same operator action in the
+other direction, reported as given.
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"ip":"198.51.100.20"}' \
+  http://127.0.0.1:8080/v1/tfps/unban | jq .
+```
+
+```json
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "action": {
+    "ip": "198.51.100.20",
+    "action": "unban",
+    "applied": true,
+    "refused": null,
+    "expires": null,
+    "source": "operator"
+  }
+}
+```
+
+**Body shape:** a JSON object with exactly `ip`. Anything else answers `400`.
+A source that was not blocked comes back `200` with `applied: false` and
+`refused: "not-blocked"`.
+
+All six `/v1/tfps/` routes sit behind the same authentication as every other
+`/v1/` route. What a firewall is dropping is not a public fact, and a route
+that can ask for a ban is not one an unauthenticated caller reaches.
+
+---
+
 ### GET /v1/streams
 
 List all tracked RTP streams with quality metrics.
@@ -1473,6 +1750,7 @@ all three counters.
 | `400` | Malformed request (e.g. invalid SSRC on `/v1/streams/{id}`) |
 | `401` | Missing/invalid/expired/revoked bearer token |
 | `404` | Unknown `call_id` or stream id |
+| `502` | The toll-fraud prevention peer a `/v1/tfps/` route asked exited non-zero, hung, or answered off the contract; `detail` carries its standard error |
 | `503` | Rejected by the rate limiter or the connection cap (**not** 429) |
 
 ## Recipes (curl + jq)

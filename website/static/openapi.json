@@ -2044,6 +2044,676 @@
         ],
         "type": "object"
       },
+      "TfpsAction": {
+        "description": "`tfps_ctl ban --json`, `unban --json`, and every line `ingest` answers\nwith: what TFPS did about one address.",
+        "properties": {
+          "action": {
+            "description": "`ban` or `unban`.",
+            "type": "string"
+          },
+          "applied": {
+            "description": "Whether the firewall was written. False for a refusal and a dry run.",
+            "type": "boolean"
+          },
+          "expires": {
+            "description": "When the block lapses, RFC 3339; `null` for never, for an unban, and\nfor anything refused.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ip": {
+            "description": "The address, or `null` when the input did not name a valid one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refused": {
+            "description": "Why not: `self`, `ignoreip`, `not-blocked`, `invalid`; `null` when it\nwas applied.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "description": "Who asked: `operator` for the two commands, `sipnab` for `ingest`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "applied",
+          "source"
+        ],
+        "type": "object"
+      },
+      "TfpsActionAnswer": {
+        "description": "`tfps_ban`'s and `tfps_unban`'s answer, on every surface.",
+        "properties": {
+          "action": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TfpsAction",
+                "description": "What TFPS did, when it was asked -- a refusal included."
+              }
+            ]
+          },
+          "installed": {
+            "description": "Whether a `tfps_ctl` was found to ask.",
+            "type": "boolean"
+          },
+          "reason": {
+            "description": "Why not, when `installed` is false.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tfps_ctl": {
+            "description": "The executable that answered, when one did.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "installed"
+        ],
+        "type": "object"
+      },
+      "TfpsBanRequest": {
+        "additionalProperties": false,
+        "description": "The body `POST /v1/tfps/ban` accepts.\n\n`deny_unknown_fields` for the reason `PersistenceRequest` gives: a caller\nwho misspells `ttl_secs` is told, rather than getting a ban of the wrong\nduration.",
+        "properties": {
+          "ip": {
+            "description": "The source to condemn, an IPv4 address (TFPS's block map is IPv4).",
+            "type": "string"
+          },
+          "ttl_secs": {
+            "description": "How long the ban lasts, in seconds; `0` is forever. Absent takes\nTFPS's default of an hour. TFPS's `ban` takes no reason.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "ip"
+        ],
+        "type": "object"
+      },
+      "TfpsBanned": {
+        "description": "One row of `tfps_ctl banned --json`.",
+        "properties": {
+          "detail": {
+            "description": "What the rule saw. For `user-agent` this is the sender's own text.\n`null` when unknown.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enforced": {
+            "description": "Whether the firewall holds it, or TFPS is only observing.",
+            "type": "boolean"
+          },
+          "expires": {
+            "description": "When it lapses, RFC 3339; `null` for a ban that does not.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "first_seen": {
+            "description": "When the ban began, RFC 3339; `null` when unknown.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ip": {
+            "description": "The condemned source.",
+            "type": "string"
+          },
+          "rule": {
+            "description": "The TFPS rule that condemned it; `null` when the block predates the\naudit row that would say.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "ip",
+          "enforced"
+        ],
+        "type": "object"
+      },
+      "TfpsDropped": {
+        "description": "One row of `tfps_ctl dropped --json`.",
+        "properties": {
+          "dropped": {
+            "description": "Packets the enforcement dropped.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "events": {
+            "description": "Events TFPS recorded for the source.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ip": {
+            "description": "The source whose packets were dropped.",
+            "type": "string"
+          },
+          "last_request": {
+            "description": "The last request line the source sent -- the sender's own text;\n`null` when none was recorded.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_seen": {
+            "description": "The most recent, RFC 3339.",
+            "type": "string"
+          },
+          "rule": {
+            "description": "The rule behind the block; `null` when unknown.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "ip",
+          "dropped",
+          "events",
+          "last_seen"
+        ],
+        "type": "object"
+      },
+      "TfpsLabel": {
+        "description": "One row of `tfps_ctl log --json`: a verdict about one source.\n\nThe same shape `tests/fixtures/tfps-labels-golden.jsonl` pins for the\nlabel harness, which reads it structurally rather than through this type\nfor the reason its header gives.",
+        "properties": {
+          "detail": {
+            "description": "What the rule saw.",
+            "type": "string"
+          },
+          "enforced": {
+            "description": "Whether the firewall held it.",
+            "type": "boolean"
+          },
+          "expires": {
+            "description": "Unix seconds when a block lapses; `0` for never; `null` when nothing\nwas blocked.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "first_seen": {
+            "description": "Unix seconds when the verdict was reached.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ip": {
+            "description": "The source the verdict is about.",
+            "type": "string"
+          },
+          "rule": {
+            "description": "The rule that reached it.",
+            "type": "string"
+          },
+          "unbanned_at": {
+            "description": "Unix seconds when an operator lifted the block, when one did.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "verdict": {
+            "description": "`blocked`, `would-block` or `exempt`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ip",
+          "rule",
+          "detail",
+          "first_seen",
+          "enforced",
+          "verdict"
+        ],
+        "type": "object"
+      },
+      "TfpsListAnswer_TfpsBanned": {
+        "description": "A list answer -- `tfps_banned`, `tfps_dropped`, `tfps_labels` -- bounded\nby the door's row cap.\n\nThe rows sit under `rows`, beside `total` (how many the peer returned),\n`returned` (how many are here) and `truncated`, the same page shape every\nlist-style tool on the MCP surface answers with.",
+        "properties": {
+          "installed": {
+            "description": "Whether a `tfps_ctl` was found to ask.",
+            "type": "boolean"
+          },
+          "reason": {
+            "description": "Why not, when `installed` is false.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "returned": {
+            "description": "Rows in `rows`.",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rows": {
+            "description": "The rows, at most the door's row cap of them.",
+            "items": {
+              "description": "One row of `tfps_ctl banned --json`.",
+              "properties": {
+                "detail": {
+                  "description": "What the rule saw. For `user-agent` this is the sender's own text.\n`null` when unknown.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "enforced": {
+                  "description": "Whether the firewall holds it, or TFPS is only observing.",
+                  "type": "boolean"
+                },
+                "expires": {
+                  "description": "When it lapses, RFC 3339; `null` for a ban that does not.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "first_seen": {
+                  "description": "When the ban began, RFC 3339; `null` when unknown.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "ip": {
+                  "description": "The condemned source.",
+                  "type": "string"
+                },
+                "rule": {
+                  "description": "The TFPS rule that condemned it; `null` when the block predates the\naudit row that would say.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "ip",
+                "enforced"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "tfps_ctl": {
+            "description": "The executable that answered, when one did.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total": {
+            "description": "Rows the peer returned before the cap.",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "truncated": {
+            "description": "Whether the cap withheld any.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "installed"
+        ],
+        "type": "object"
+      },
+      "TfpsListAnswer_TfpsDropped": {
+        "description": "A list answer -- `tfps_banned`, `tfps_dropped`, `tfps_labels` -- bounded\nby the door's row cap.\n\nThe rows sit under `rows`, beside `total` (how many the peer returned),\n`returned` (how many are here) and `truncated`, the same page shape every\nlist-style tool on the MCP surface answers with.",
+        "properties": {
+          "installed": {
+            "description": "Whether a `tfps_ctl` was found to ask.",
+            "type": "boolean"
+          },
+          "reason": {
+            "description": "Why not, when `installed` is false.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "returned": {
+            "description": "Rows in `rows`.",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rows": {
+            "description": "The rows, at most the door's row cap of them.",
+            "items": {
+              "description": "One row of `tfps_ctl dropped --json`.",
+              "properties": {
+                "dropped": {
+                  "description": "Packets the enforcement dropped.",
+                  "format": "int64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "events": {
+                  "description": "Events TFPS recorded for the source.",
+                  "format": "int64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "ip": {
+                  "description": "The source whose packets were dropped.",
+                  "type": "string"
+                },
+                "last_request": {
+                  "description": "The last request line the source sent -- the sender's own text;\n`null` when none was recorded.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "last_seen": {
+                  "description": "The most recent, RFC 3339.",
+                  "type": "string"
+                },
+                "rule": {
+                  "description": "The rule behind the block; `null` when unknown.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "ip",
+                "dropped",
+                "events",
+                "last_seen"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "tfps_ctl": {
+            "description": "The executable that answered, when one did.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total": {
+            "description": "Rows the peer returned before the cap.",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "truncated": {
+            "description": "Whether the cap withheld any.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "installed"
+        ],
+        "type": "object"
+      },
+      "TfpsListAnswer_TfpsLabel": {
+        "description": "A list answer -- `tfps_banned`, `tfps_dropped`, `tfps_labels` -- bounded\nby the door's row cap.\n\nThe rows sit under `rows`, beside `total` (how many the peer returned),\n`returned` (how many are here) and `truncated`, the same page shape every\nlist-style tool on the MCP surface answers with.",
+        "properties": {
+          "installed": {
+            "description": "Whether a `tfps_ctl` was found to ask.",
+            "type": "boolean"
+          },
+          "reason": {
+            "description": "Why not, when `installed` is false.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "returned": {
+            "description": "Rows in `rows`.",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rows": {
+            "description": "The rows, at most the door's row cap of them.",
+            "items": {
+              "description": "One row of `tfps_ctl log --json`: a verdict about one source.\n\nThe same shape `tests/fixtures/tfps-labels-golden.jsonl` pins for the\nlabel harness, which reads it structurally rather than through this type\nfor the reason its header gives.",
+              "properties": {
+                "detail": {
+                  "description": "What the rule saw.",
+                  "type": "string"
+                },
+                "enforced": {
+                  "description": "Whether the firewall held it.",
+                  "type": "boolean"
+                },
+                "expires": {
+                  "description": "Unix seconds when a block lapses; `0` for never; `null` when nothing\nwas blocked.",
+                  "format": "int64",
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "first_seen": {
+                  "description": "Unix seconds when the verdict was reached.",
+                  "format": "int64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "ip": {
+                  "description": "The source the verdict is about.",
+                  "type": "string"
+                },
+                "rule": {
+                  "description": "The rule that reached it.",
+                  "type": "string"
+                },
+                "unbanned_at": {
+                  "description": "Unix seconds when an operator lifted the block, when one did.",
+                  "format": "int64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "verdict": {
+                  "description": "`blocked`, `would-block` or `exempt`.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "ip",
+                "rule",
+                "detail",
+                "first_seen",
+                "enforced",
+                "verdict"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "tfps_ctl": {
+            "description": "The executable that answered, when one did.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total": {
+            "description": "Rows the peer returned before the cap.",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "truncated": {
+            "description": "Whether the cap withheld any.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "installed"
+        ],
+        "type": "object"
+      },
+      "TfpsStatus": {
+        "description": "`tfps_ctl status --json`.",
+        "properties": {
+          "blocked_now": {
+            "description": "Sources blocked at this moment.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "db": {
+            "description": "The database TFPS answered from.",
+            "type": "string"
+          },
+          "enforcement": {
+            "description": "`active` when bans reach the firewall, `inactive` when no block map\ncould be opened -- and the reason for that goes to TFPS's stderr.",
+            "type": "string"
+          },
+          "interface": {
+            "description": "The interface enforcement applies to; `null` when unknown.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "description": "How the firewall is driven, in TFPS's vocabulary (`native`, ...);\n`null` when it could not look.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "description": "The TFPS version.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "enforcement",
+          "blocked_now",
+          "db",
+          "version"
+        ],
+        "type": "object"
+      },
+      "TfpsStatusAnswer": {
+        "description": "`tfps_status`'s answer, on every surface.\n\nOne type, serialized by the MCP tool and the REST route alike, so the two\ndoors cannot drift apart. `installed: false` carries `reason` and nothing\nelse; `installed: true` carries which executable answered and its answer.",
+        "properties": {
+          "installed": {
+            "description": "Whether a `tfps_ctl` was found to ask.",
+            "type": "boolean"
+          },
+          "reason": {
+            "description": "Why not, when `installed` is false.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TfpsStatus",
+                "description": "What it said, when it did."
+              }
+            ]
+          },
+          "tfps_ctl": {
+            "description": "The executable that answered, when one did.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "installed"
+        ],
+        "type": "object"
+      },
+      "TfpsUnbanRequest": {
+        "additionalProperties": false,
+        "description": "The body `POST /v1/tfps/unban` accepts.",
+        "properties": {
+          "ip": {
+            "description": "The source to release.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ip"
+        ],
+        "type": "object"
+      },
       "TimingSummary": {
         "description": "Transaction timing, as carried by every dialog summary.",
         "properties": {
@@ -2160,7 +2830,7 @@
       "name": "sipnab",
       "url": "https://sipnab.com"
     },
-    "description": "Read-only HTTP access to the dialogs, RTP streams, analysis and Prometheus metrics of a running sipnab capture, plus the one write the surface has: closing the persistence gate.\n\nThe server reads the same in-memory stores as the capture pipeline, in the same process. There is no database and no history: every answer describes the capture as it stands.",
+    "description": "Read-only HTTP access to the dialogs, RTP streams, analysis and Prometheus metrics of a running sipnab capture, plus three writes: closing the persistence gate, and relaying an operator's ban or release to the toll-fraud prevention peer when one is installed.\n\nThe server reads the same in-memory stores as the capture pipeline, in the same process. There is no database and no history: every answer describes the capture as it stands.",
     "license": {
       "name": "MIT OR Apache-2.0"
     },
@@ -2952,6 +3622,403 @@
           "streams"
         ]
       }
+    },
+    "/v1/tfps/ban": {
+      "post": {
+        "description": "An operator action relayed through sipnab, not a decision sipnab makes: TFPS refuses its host's own addresses and anything in its `ignoreip`, and answers with what it did -- applied, or refused and why -- which is reported as given. The automated path from sipnab's own findings to TFPS is a separate channel, never this route.\n\nA machine without TFPS answers `200` with `installed: false`.",
+        "operationId": "post_tfps_ban",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TfpsBanRequest"
+              }
+            }
+          },
+          "description": "The source, and optionally how long. Unknown keys are refused, and so is a JSON array.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TfpsActionAnswer"
+                }
+              }
+            },
+            "description": "`installed: false` with `reason`, or `installed: true` with what TFPS did under `action`. A refusal is `applied: false` with `refused` saying why, not an error."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body was not a JSON object with an `ip` that is an address, or it carried an unknown key."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "`tfps_ctl` failed; `detail` carries its standard error verbatim."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Ask TFPS to condemn a source",
+        "tags": [
+          "tfps"
+        ]
+      }
+    },
+    "/v1/tfps/banned": {
+      "get": {
+        "description": "The sources TFPS currently condemns: address, the rule that condemned it, what that rule saw, when the ban began and lapses, and whether the firewall holds it. Bounded by `--api-max-rows`; `total` and `truncated` say what was withheld.\n\nA machine without TFPS answers `200` with `installed: false`.",
+        "operationId": "get_tfps_banned",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TfpsListAnswer_TfpsBanned"
+                }
+              }
+            },
+            "description": "`installed: false` with `reason`, or the bounded page under `rows`."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "`tfps_ctl` failed; `detail` carries its standard error verbatim."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List the sources TFPS condemns",
+        "tags": [
+          "tfps"
+        ]
+      }
+    },
+    "/v1/tfps/dropped": {
+      "get": {
+        "description": "Per condemned source, how many packets TFPS's enforcement has dropped, how many events it recorded, when it last saw the source, the rule behind the block and the last request line the source sent. Bounded by `--api-max-rows`.\n\nA machine without TFPS answers `200` with `installed: false`.",
+        "operationId": "get_tfps_dropped",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TfpsListAnswer_TfpsDropped"
+                }
+              }
+            },
+            "description": "`installed: false` with `reason`, or the bounded page under `rows`."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "`tfps_ctl` failed; `detail` carries its standard error verbatim."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Read what TFPS's enforcement dropped",
+        "tags": [
+          "tfps"
+        ]
+      }
+    },
+    "/v1/tfps/labels": {
+      "get": {
+        "description": "One row per decision TFPS reached about a source: `blocked`, `would-block` (observing only) or `exempt`, with the rule, what it saw, when, and whether an operator later lifted the block. The same export the label corpus harness scores sipnab's scanner detector against. `limit` passes through to TFPS (`0` is everything); `--api-max-rows` bounds the page.\n\nA machine without TFPS answers `200` with `installed: false`.",
+        "operationId": "get_tfps_labels",
+        "parameters": [
+          {
+            "description": "Rows TFPS returns; `0` or absent asks for the whole log. The server's\n`--api-max-rows` then bounds the page.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TfpsListAnswer_TfpsLabel"
+                }
+              }
+            },
+            "description": "`installed: false` with `reason`, or the bounded page under `rows`."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "`tfps_ctl` failed; `detail` carries its standard error verbatim."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Read TFPS's verdict log",
+        "tags": [
+          "tfps"
+        ]
+      }
+    },
+    "/v1/tfps/status": {
+      "get": {
+        "description": "Whether the toll-fraud prevention system on this host is installed and enforcing, and what it reports: enforcement state, firewall mode, interface, sources blocked right now, its database and version.\n\nA machine without TFPS answers `200` with `installed: false` and a reason. That is a result: TFPS is optional peer software, and its absence is the ordinary case.",
+        "operationId": "get_tfps_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TfpsStatusAnswer"
+                }
+              }
+            },
+            "description": "`installed: false` with `reason`, or `installed: true` with which `tfps_ctl` answered and its `status`."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "`tfps_ctl` exited non-zero, hung, or answered something off the contract. `detail` carries its standard error verbatim."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Read the TFPS peer's status",
+        "tags": [
+          "tfps"
+        ]
+      }
+    },
+    "/v1/tfps/unban": {
+      "post": {
+        "description": "An operator action relayed through sipnab. TFPS answers with what it did, and the answer is reported as given.\n\nA machine without TFPS answers `200` with `installed: false`.",
+        "operationId": "post_tfps_unban",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TfpsUnbanRequest"
+              }
+            }
+          },
+          "description": "The source to release. Unknown keys are refused, and so is a JSON array.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TfpsActionAnswer"
+                }
+              }
+            },
+            "description": "`installed: false` with `reason`, or `installed: true` with what TFPS did under `action`."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body was not a JSON object with an `ip` that is an address, or it carried an unknown key."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "`tfps_ctl` failed; `detail` carries its standard error verbatim."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Ask TFPS to release a source",
+        "tags": [
+          "tfps"
+        ]
+      }
     }
   },
   "servers": [
@@ -2976,6 +4043,10 @@
     {
       "description": "Liveness, metrics, and the persistence gate",
       "name": "operations"
+    },
+    {
+      "description": "The toll-fraud prevention peer on this host, when one is installed: what it condemns, what it dropped, its verdict log, and an operator's ban or release relayed to it",
+      "name": "tfps"
     }
   ]
 }

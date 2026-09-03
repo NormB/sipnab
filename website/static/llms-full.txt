@@ -4100,6 +4100,283 @@ answer to whether a capture is recording.
 
 ---
 
+### GET /v1/tfps/status
+
+Ask whether the toll-fraud prevention system (TFPS) runs on this host, and
+what it reports about itself.
+
+TFPS is optional peer software: it condemns sources and enforces that decision
+in the firewall, and sipnab never bans anything. Point sipnab at it with
+`--tfps-ctl /path/to/tfps_ctl` or `[tfps] ctl` in the config file, or leave
+`tfps_ctl` on `PATH`. sipnab looks for it only when one of these routes runs —
+it probes nothing at startup, and a machine without TFPS logs nothing.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:8080/v1/tfps/status | jq .
+```
+
+On a machine without TFPS, every `/v1/tfps/` route answers `200` with the same
+two fields and nothing else — a result, not a failure of this server:
+
+```json
+{
+  "installed": false,
+  "reason": "tfps_ctl not found on PATH; pass --tfps-ctl or [tfps] ctl"
+}
+```
+
+With TFPS installed, the answer names the executable that answered and carries
+its status:
+
+```json
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "status": {
+    "enforcement": "active",
+    "mode": "native",
+    "interface": "eth0",
+    "blocked_now": 3,
+    "db": "/var/lib/tfps/tfps.db",
+    "version": "0.1.0"
+  }
+}
+```
+
+Every field is present on every answer and `null` when TFPS does not know it:
+`enforcement` is `inactive` when TFPS could open no block map, and `mode` and
+`interface` are then `null`. A `tfps_ctl` that exits non-zero, hangs past ten
+seconds, or prints something other than the agreed JSON answers `502 Bad
+Gateway` as `application/problem+json`, with its standard error verbatim in
+`detail`.
+
+---
+
+### GET /v1/tfps/banned
+
+List every source TFPS holds condemned right now.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:8080/v1/tfps/banned | jq .
+```
+
+```json
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "rows": [
+    {
+      "ip": "198.51.100.10",
+      "rule": "user-agent",
+      "detail": "pplsip",
+      "first_seen": "2026-09-03T16:40:00Z",
+      "expires": "2026-09-03T17:40:00Z",
+      "enforced": true
+    },
+    {
+      "ip": "198.51.100.12",
+      "rule": null,
+      "detail": null,
+      "first_seen": null,
+      "expires": null,
+      "enforced": true
+    }
+  ],
+  "total": 2,
+  "returned": 2,
+  "truncated": false
+}
+```
+
+`rows` holds at most `--api-max-rows` entries. `total` is how many TFPS
+returned, and `truncated` says whether the cap withheld any. `detail` is what
+the rule saw — for `user-agent`, the `User-Agent` the scanner sent, verbatim.
+`rule`, `detail` and `first_seen` are `null` for a block that predates any
+audit row, and `expires` is `null` for a ban that does not lapse.
+
+---
+
+### GET /v1/tfps/dropped
+
+Read what the TFPS enforcement has dropped, per condemned source.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:8080/v1/tfps/dropped | jq .
+```
+
+```json
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "rows": [
+    {
+      "ip": "198.51.100.10",
+      "dropped": 30,
+      "events": 4,
+      "last_seen": "2026-09-03T16:41:00Z",
+      "rule": "user-agent",
+      "last_request": "OPTIONS sip:100@198.51.100.1 SIP/2.0"
+    }
+  ],
+  "total": 1,
+  "returned": 1,
+  "truncated": false
+}
+```
+
+`last_request` is the last request line the source sent, verbatim. It and
+`rule` are `null` when TFPS recorded none. Bounded by `--api-max-rows` like
+`/v1/tfps/banned`.
+
+---
+
+### GET /v1/tfps/labels
+
+Read the TFPS verdict log: one row per decision it reached about a source. This
+is the export the label corpus harness scores sipnab's scanner detector
+against.
+
+| Query parameter | Meaning |
+|---|---|
+| `limit` | Rows TFPS returns, newest first, passed through as `--limit N`. `0` or absent sends none, and TFPS answers with the whole log, which is its own default for the export; `--api-max-rows` then bounds the page. |
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/tfps/labels?limit=250" | jq .
+```
+
+```json
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "rows": [
+    {
+      "ip": "198.51.100.10",
+      "rule": "scanner",
+      "detail": "sipvicious",
+      "first_seen": 1756800000,
+      "expires": 1756803600,
+      "unbanned_at": null,
+      "enforced": true,
+      "verdict": "blocked"
+    }
+  ],
+  "total": 1,
+  "returned": 1,
+  "truncated": false
+}
+```
+
+`verdict` is `blocked` (condemned and enforced), `would-block` (condemned while
+observing only) or `exempt` (tripped a rule and TFPS trusted it anyway).
+`expires` is Unix seconds: `0` for never, `null` when TFPS blocked nothing.
+`unbanned_at` carries a value only when an operator lifted the block.
+
+---
+
+### POST /v1/tfps/ban
+
+Ask TFPS to condemn one source.
+
+**An operator action relayed through sipnab, not a decision sipnab makes.**
+TFPS refuses its host's own addresses and anything in its `ignoreip`,
+answers with what it did, and sipnab reports that answer as given, refusal
+included. The automated path — sipnab's own findings reaching TFPS as they
+happen — is a separate channel, and nothing sipnab detects ever comes through
+this route.
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"ip":"198.51.100.20","ttl_secs":3600}' \
+  http://127.0.0.1:8080/v1/tfps/ban | jq .
+```
+
+```json
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "action": {
+    "ip": "198.51.100.20",
+    "action": "ban",
+    "applied": true,
+    "refused": null,
+    "expires": "2026-09-03T17:40:10Z",
+    "source": "operator"
+  }
+}
+```
+
+**Body shape:** a JSON object with `ip`, required and an IPv4 address, because
+the TFPS block map is IPv4 and TFPS answers `refused: "invalid"` to anything
+else. `ttl_secs` is optional: seconds the ban lasts, `0` for forever, and the
+TFPS default of an hour when absent. The TFPS `ban` command records no
+free-text reason, so the body carries none. Anything else — a missing or malformed
+`ip`, an unknown key, an array — answers `400` and TFPS is never asked. The
+address and the duration reach `tfps_ctl` as arguments and never through a
+shell.
+
+A ban TFPS refuses is `200` with `applied: false` and `refused` saying why in
+the words TFPS uses — `self`, `ignoreip` or `invalid` — even though `tfps_ctl`
+signals the refusal with exit 1. That is the answer TFPS gave, not an error:
+
+```json
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "action": {
+    "ip": "192.0.2.1",
+    "action": "ban",
+    "applied": false,
+    "refused": "self",
+    "expires": null,
+    "source": "operator"
+  }
+}
+```
+
+---
+
+### POST /v1/tfps/unban
+
+Ask TFPS to release one condemned source. The same operator action in the
+other direction, reported as given.
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"ip":"198.51.100.20"}' \
+  http://127.0.0.1:8080/v1/tfps/unban | jq .
+```
+
+```json
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "action": {
+    "ip": "198.51.100.20",
+    "action": "unban",
+    "applied": true,
+    "refused": null,
+    "expires": null,
+    "source": "operator"
+  }
+}
+```
+
+**Body shape:** a JSON object with exactly `ip`. Anything else answers `400`.
+A source that was not blocked comes back `200` with `applied: false` and
+`refused: "not-blocked"`.
+
+All six `/v1/tfps/` routes sit behind the same authentication as every other
+`/v1/` route. What a firewall is dropping is not a public fact, and a route
+that can ask for a ban is not one an unauthenticated caller reaches.
+
+---
+
 ### GET /v1/streams
 
 List all tracked RTP streams with quality metrics.
@@ -4630,6 +4907,7 @@ all three counters.
 | `400` | Malformed request (e.g. invalid SSRC on `/v1/streams/{id}`) |
 | `401` | Missing/invalid/expired/revoked bearer token |
 | `404` | Unknown `call_id` or stream id |
+| `502` | The toll-fraud prevention peer a `/v1/tfps/` route asked exited non-zero, hung, or answered off the contract; `detail` carries its standard error |
 | `503` | Rejected by the rate limiter or the connection cap (**not** 429) |
 
 ## Recipes (curl + jq)
@@ -8860,6 +9138,7 @@ report a healthy network in the middle of an outage.
 | `--reg-flood` | -- | off | Detect registration floods: credentialed REGISTERs the registrar keeps refusing. sipnab reports a source when the REGISTERs it sent with `Authorization` that drew a `401`/`407` on the same transaction exceed `--reg-flood-threshold` inside one second of capture time. A REGISTER on its own is never evidence, so a re-REGISTER storm the registrar accepts after a restart is the customer's SBC and not a flood, and any `2xx` to a REGISTER clears the source's count |
 | `--reg-flood-threshold` | `<N>` | `50` | Challenged failures per second from one source before `--reg-flood` reports a flood: REGISTERs that carried credentials and drew a `401` or `407`. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets. Counted in capture time, so a file replays as the traffic it recorded rather than as fast as the disk reads it. Config: `[security] reg_flood_threshold` |
 | `--digest-leak` | -- | off | Detect digest credential leaks in SIP messages |
+| `--tfps-ctl` | `<PATH>` | -- | Where the toll-fraud prevention system's `tfps_ctl` program is, for the `tfps_*` MCP tools and the `/v1/tfps/` REST routes. TFPS is optional peer software that condemns sources and enforces the decision in the firewall; sipnab asks it and never bans anything itself. Absent: sipnab looks for `tfps_ctl` on `PATH` only the moment a TFPS tool runs, and a machine without one answers `installed: false` rather than failing. Config: `[tfps] ctl`; the database goes in `[tfps] db` |
 | `--recommend-block` | `<DIALECT>` | -- | Print a firewall rule for every source the detectors accused: `fail2ban`, `nftables`, `iptables` or `all`. **sipnab recommends and does not apply** — the rule is text on stdout, and nothing here reaches a firewall or holds a credential. Each block carries its evidence (how many findings named the address, which rules they tripped, and when) and its COUNTER-evidence beside it: a source that also completed a registration or a call is one a block would disconnect, so the address-specific dialects comment their commands out for it and the fail2ban dialect puts it in `ignoreip`. Needs a detector armed beside it; with none, nothing is ever accused and the empty output says which silence that is rather than reading as an all-clear. Requires `-N` |
 | `--findings-history` | `<N>` | `1000` | Security findings kept in memory for later retrieval. `0` keeps none. Config: `[security] findings_history` |
 | `--alert` | `<CHANNEL>` | -- | Alert channels (repeatable): `syslog`, `json`, `exec` |
@@ -8908,6 +9187,8 @@ report a healthy network in the middle of an outage.
 - `sudo sipnab -N -d eth0 --portrange 5060-5090 --report --run-provenance-file /var/log/sipnab-runs.jsonl` — the case the record exists for: the port range decided what this run could see, and without the record a later reader cannot tell a narrow run from a complete one
 - `sipnab -I capture.pcap --tui-audit-file /var/log/sipnab-tui.jsonl` — record which capture the analyst opened, what they filtered it down to and what they exported, for the review that opens with "who exported which calls"
 - `sudo sipnab -d eth0 --tui-audit-file /var/log/sipnab-tui.jsonl --run-provenance-file /var/log/sipnab-runs.jsonl` — both halves on a live capture: one line saying how the session started, and one record per state-changing thing the operator then did
+- `sipnab -N -d eth0 --mcp --tfps-ctl /usr/local/bin/tfps_ctl` — serve the MCP tools with TFPS named outright, so `tfps_status` and `tfps_banned` answer from that installation rather than whatever `PATH` finds
+- `sipnab -N -I trunk.pcap --api 127.0.0.1:8080 --api-key "$SIPNAB_API_KEY" --tfps-ctl /opt/tfps/bin/tfps_ctl` — replay a capture behind the REST API and let `GET /v1/tfps/labels` fetch the verdict log the label harness scores it against
 
 
 ## Event execution
@@ -11673,6 +11954,28 @@ scanner_enumeration_targets = 12
 findings_history = 5000
 alert = ["syslog", "json"]
 alert_exec = "/usr/local/bin/sipnab-alert.sh"
+```
+
+### `[tfps]`
+
+Where the toll-fraud prevention system (TFPS) is, when one runs on this host.
+
+TFPS is optional peer software: it condemns sources and enforces that
+decision in the firewall, and sipnab never bans anything. The `tfps_*` MCP
+tools and the `/v1/tfps/` REST routes ask it through its `tfps_ctl` program,
+and this section says where that program and its database are. Leave the
+section out and sipnab looks for `tfps_ctl` on `PATH` the moment a TFPS tool
+runs, and does nothing about TFPS at any other time.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ctl` | string | -- | Path to `tfps_ctl`. `--tfps-ctl` overrides it. Absent: sipnab looks on `PATH` the moment a TFPS tool runs, and a machine with no `tfps_ctl` anywhere answers `installed: false` on every TFPS surface |
+| `db` | string | -- | The TFPS database, passed to every `tfps_ctl` call as `--db=<path>`. Absent: `tfps_ctl` uses its own default |
+
+```toml
+[tfps]
+ctl = "/usr/local/bin/tfps_ctl"
+db = "/var/lib/tfps/tfps.db"
 ```
 
 ### [diagnosis]
@@ -14996,6 +15299,12 @@ ordinary update.
 |---|---|---|
 | [`security_findings`](#security_findings) | `kinds?`, `since?`, `limit?` | Recent `scanner` / `fraud` / `digest` / `reg_flood` findings, plus the detectors this server runs |
 | [`generate_fail2ban_rule`](#generate_fail2ban_rule) | `finding_id` | A fail2ban filter and jail derived from ONE recorded finding, with that finding attached as the evidence |
+| [`tfps_status`](#tfps_status) | -- | Whether the toll-fraud prevention peer (TFPS) runs on this host, and what it reports: enforcement, mode, interface, sources blocked now, database, version |
+| [`tfps_banned`](#tfps_banned) | -- | Every source TFPS holds condemned right now, with the rule, what it saw, and when the ban began and lapses |
+| [`tfps_dropped`](#tfps_dropped) | -- | Per condemned source, what the enforcement dropped and the last request line the source sent |
+| [`tfps_labels`](#tfps_labels) | `limit?` | The TFPS verdict log -- blocked, would-block, exempt -- the export the label corpus harness scores the scanner detector against |
+| [`tfps_ban`](#tfps_ban) | `ip`, `ttl_secs?` | **Write.** Relays an OPERATOR's decision to condemn a source and reports the TFPS answer as given, refusal included |
+| [`tfps_unban`](#tfps_unban) | `ip` | **Write.** Relays an operator's decision to release a source |
 
 **[Evidence and provenance](#evidence-and-provenance)**
 
@@ -18241,6 +18550,263 @@ before writing it into a regular expression, since a name carrying a
 regular-expression operator would produce a pattern the author never wrote.
 
 
+### `tfps_status`
+
+TFPS is the toll-fraud prevention system an operator may run on the same host
+as sipnab: it condemns sources and enforces that decision in the firewall.
+sipnab never bans anything, so the question an agent reading
+`security_findings` asks next is what TFPS did with the evidence. This tool
+answers whether TFPS is there at all, and what it reports about itself.
+
+**No parameters.**
+
+TFPS is optional peer software. On a machine without it every `tfps_*` tool
+answers the same two fields and nothing else, and that is a result rather than
+an error, because a bare machine is the ordinary case:
+
+```jsonc
+// tfps_status {}
+{
+  "installed": false,
+  "reason": "tfps_ctl not found on PATH; pass --tfps-ctl or [tfps] ctl"
+}
+```
+
+With TFPS installed (`--tfps-ctl /usr/local/bin/tfps_ctl`, or `tfps_ctl` on
+`PATH`), the answer names the executable that answered and carries its status:
+
+```jsonc
+// tfps_status {}
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "status": {
+    "enforcement": "active",
+    "mode": "native",
+    "interface": "eth0",
+    "blocked_now": 3,
+    "db": "/var/lib/tfps/tfps.db",
+    "version": "0.1.0"
+  }
+}
+```
+
+`enforcement` is `inactive` when TFPS could open no block map, and `mode` and
+`interface` are `null` when it could not look — every field is present on
+every answer, `null` when unknown. sipnab looks for `tfps_ctl` only when a
+`tfps_*` tool runs: it probes nothing at startup, and a machine without TFPS
+logs nothing about it. A peer that exits non-zero, hangs past ten
+seconds, or prints something other than the agreed JSON is an `internal_error`
+(-32603) whose message carries `tfps_ctl`'s standard error verbatim.
+
+### `tfps_banned`
+
+Every source TFPS holds condemned right now: the address, the rule that
+condemned it, what that rule saw, when the ban began and lapses, and whether
+the firewall holds it or TFPS is observing only.
+
+**No parameters.** `--mcp-max-rows` bounds the page. `total` is how many rows
+TFPS returned, and `truncated` says whether the cap withheld any.
+
+```jsonc
+// tfps_banned {}
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "rows": [
+    {
+      "ip": "198.51.100.10",
+      "rule": "user-agent",
+      "detail": "⟦untrusted-capture-data⟧pplsip⟦/untrusted-capture-data⟧",
+      "first_seen": "2026-09-03T16:40:00Z",
+      "expires": "2026-09-03T17:40:00Z",
+      "enforced": true
+    },
+    {
+      "ip": "198.51.100.12",
+      "rule": null,
+      "detail": null,
+      "first_seen": null,
+      "expires": null,
+      "enforced": true
+    }
+  ],
+  "total": 2,
+  "returned": 2,
+  "truncated": false
+}
+```
+
+`detail` is the sender's own text — here the `User-Agent` a scanner chose —
+and arrives fenced the way `security_findings` fences its `detail`. Addresses,
+rules and timestamps are verbatim. `rule`, `detail` and `first_seen` are
+`null` for a block that predates any audit row, and `expires` is `null` for a
+ban that does not lapse.
+
+### `tfps_dropped`
+
+Per condemned source, what the enforcement has done: packets dropped, events
+TFPS recorded, when it last saw the source, the rule behind the block, and the
+last request line the source sent.
+
+**No parameters.** Bounded by `--mcp-max-rows` like `tfps_banned`.
+
+```jsonc
+// tfps_dropped {}
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "rows": [
+    {
+      "ip": "198.51.100.10",
+      "dropped": 30,
+      "events": 4,
+      "last_seen": "2026-09-03T16:41:00Z",
+      "rule": "user-agent",
+      "last_request": "⟦untrusted-capture-data⟧OPTIONS sip:100@198.51.100.1 SIP/2.0⟦/untrusted-capture-data⟧"
+    }
+  ],
+  "total": 1,
+  "returned": 1,
+  "truncated": false
+}
+```
+
+`last_request` is a request line the source wrote, and arrives fenced. It and
+`rule` are `null` when TFPS recorded none.
+
+### `tfps_labels`
+
+The TFPS verdict log: one row per decision about a source. This is the export
+the label corpus harness scores sipnab's scanner detector against, reachable
+without a shell on the box.
+
+| Parameter | Type | Legal values | If omitted |
+|---|---|---|---|
+| `limit` | integer | a positive count of rows, newest first. `0` means the default | the whole log, which is the TFPS default for the export |
+
+A positive `limit` passes through to TFPS as `--limit N`. `0` or absent sends
+none, and TFPS answers with every row. `--mcp-max-rows` then bounds the page,
+and `total` and `truncated` say what the cap withheld.
+
+```jsonc
+// tfps_labels { "limit": 250 }
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "rows": [
+    {
+      "ip": "198.51.100.10",
+      "rule": "scanner",
+      "detail": "⟦untrusted-capture-data⟧sipvicious⟦/untrusted-capture-data⟧",
+      "first_seen": 1756800000,
+      "expires": 1756803600,
+      "unbanned_at": null,
+      "enforced": true,
+      "verdict": "blocked"
+    }
+  ],
+  "total": 1,
+  "returned": 1,
+  "truncated": false
+}
+```
+
+`verdict` is `blocked` (condemned and enforced), `would-block` (condemned while
+observing only) or `exempt` (tripped a rule and TFPS trusted it anyway).
+`expires` is Unix seconds: `0` for never, `null` when TFPS blocked nothing.
+`unbanned_at` carries a value only when an operator lifted the block, which is
+the strongest negative in the log. `detail` arrives fenced.
+
+### `tfps_ban`
+
+Ask TFPS to condemn one source. **An operator action relayed through sipnab,
+not a decision sipnab makes**: the address and the duration are the caller's,
+TFPS refuses its host's own addresses and anything in its `ignoreip`, and
+sipnab reports the answer as given, refusal included. The automated path — sipnab's
+own findings reaching TFPS as they happen — is a separate channel, and nothing
+sipnab detects ever comes through this tool.
+
+| Parameter | Type | Legal values | If omitted |
+|---|---|---|---|
+| `ip` | string | an IPv4 address (the TFPS block map is IPv4, so an IPv6 address comes back `refused: "invalid"`) | required. Anything that is not an address is `invalid_params` (-32602) before sipnab asks TFPS |
+| `ttl_secs` | integer | seconds the ban lasts. `0` is forever | the TFPS default of an hour |
+
+The TFPS `ban` command records no free-text reason, so this tool takes none. The
+address and the duration reach `tfps_ctl` as arguments and never through a
+shell.
+
+```jsonc
+// tfps_ban { "ip": "198.51.100.20", "ttl_secs": 3600 }
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "action": {
+    "ip": "198.51.100.20",
+    "action": "ban",
+    "applied": true,
+    "refused": null,
+    "expires": "2026-09-03T17:40:10Z",
+    "source": "operator"
+  }
+}
+```
+
+A ban TFPS refuses is not an error, even though `tfps_ctl` signals it with
+exit 1: `applied` is `false` and `refused` says why in the words TFPS uses — `self`
+for one of the host's own addresses, `ignoreip` for an exempt one, `invalid`
+for input that named no address (and then `ip` is `null`):
+
+```jsonc
+// tfps_ban { "ip": "192.0.2.1" }
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "action": {
+    "ip": "192.0.2.1",
+    "action": "ban",
+    "applied": false,
+    "refused": "self",
+    "expires": null,
+    "source": "operator"
+  }
+}
+```
+
+The tool is `readOnlyHint: false` and `destructiveHint: true`, so a host that
+confirms destructive calls asks before this one. `idempotentHint: true`,
+because banning a banned source changes nothing.
+
+### `tfps_unban`
+
+Ask TFPS to release one condemned source. The same operator action in the
+other direction, reported as given.
+
+| Parameter | Type | Legal values | If omitted |
+|---|---|---|---|
+| `ip` | string | an IPv4 or IPv6 address | required; anything else is `invalid_params` (-32602) |
+
+```jsonc
+// tfps_unban { "ip": "198.51.100.20" }
+{
+  "installed": true,
+  "tfps_ctl": "/usr/local/bin/tfps_ctl",
+  "action": {
+    "ip": "198.51.100.20",
+    "action": "unban",
+    "applied": true,
+    "refused": null,
+    "expires": null,
+    "source": "operator"
+  }
+}
+```
+
+A source that was not blocked comes back `applied: false, refused:
+"not-blocked"` — the answer TFPS gave, not an error. `readOnlyHint: false`,
+`destructiveHint: false` — a release restores rather than destroys — and
+`idempotentHint: true`.
+
 ## Evidence and provenance
 
 Every claim above points back at bytes. These retrieve those bytes, prove which frame they came from, and package them so someone else can check the work.
@@ -19867,11 +20433,14 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 57 carry MCP annotations, so a host
-  can decide what to call without asking. Thirty are `readOnlyHint: true`.
-  [What the write verbs do](#what-the-write-verbs-do) names the five that are
-  not. Every tool sets `openWorldHint` to `false`, because sipnab answers from
-  the loaded capture and contacts no external service.
+- **Every tool declares what it does.** All 63 carry MCP annotations, so a host
+  can decide what to call without asking. Fifty-one are `readOnlyHint: true`.
+  [What the write verbs do](#what-the-write-verbs-do) names the twelve that
+  are not. Every tool but three sets `openWorldHint` to `false`, because
+  sipnab answers from the loaded capture and contacts no external service;
+  the three that reach past this process -- `query_relay`, which transmits,
+  and `tfps_ban` / `tfps_unban`, which change a firewall on this host --
+  say so.
 - **sipnab fences capture-derived free text.** See
   [Untrusted capture text](#untrusted-capture-text) below — sipnab's input is
   written by whoever sent the packets, so sipnab marks the text it hands back.
@@ -20149,7 +20718,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions, where
 
 ## What the write verbs do
 
-Forty-seven of the 57 tools are `readOnlyHint: true`. These ten are not, and
+Fifty-one of the 63 tools are `readOnlyHint: true`. These twelve are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 
@@ -20165,10 +20734,15 @@ confirmation:
 | `build_evidence_package` | false | **false** | Creates a directory of artifacts under `--mcp-file-root`. Additive, and it refuses a name already on disk rather than overwriting, so a second call with the same name fails instead of replacing evidence someone may already have sent. |
 | `compare_captures` | false | true | Reads two capture files into private stores and drops them. It changes no sipnab state a later answer depends on, but reading through the shared pipeline bumps the process-wide undecodable tallies `get_capture_report` reports, and a tool whose effects stay invisible in its own answer should not call itself read-only. |
 | `generate_repro` | false | true | Writes a SIPp scenario when the caller supplies `filename`, through the same confinement and overwrite refusal as `export_capture`. Without `filename` it returns the scenario and writes nothing to disk. |
+| `tfps_ban` | **true** | true | Relays an operator's decision to the toll-fraud prevention peer, which condemns the source in the firewall. Destructive because it cuts a third party off; idempotent because banning a banned source changes nothing. TFPS applies its own exemptions and sipnab reports the answer as given. |
+| `tfps_unban` | false | true | The release. Restores rather than destroys. |
 
-Every tool sets `openWorldHint` to `false`, explicitly rather than by
-omission. sipnab answers from the capture it has loaded and contacts no external
-service, so an agent cannot use a tool here to reach the network.
+Every tool sets `openWorldHint` explicitly rather than by omission, and all
+but three set it to `false`: sipnab answers from the capture it has loaded and
+contacts no external service, so an agent cannot use a tool here to reach the
+network. The three exceptions say so because each reaches past this process:
+`query_relay` transmits to the configured relay, and `tfps_ban` and
+`tfps_unban` change what a firewall on this host does to a third party.
 
 A test walks the registered router and fails if any tool carries no
 `readOnlyHint`, or if the set of non-read-only tools stops matching that table —
@@ -20244,6 +20818,7 @@ provenance note says so rather than leaving the omission to look accidental.
 | `get_dialog` | `dialog.from_user`, `dialog.to_user`, and every `messages[]` entry's `reason`, `from`, `to`, `contact`, `ua`, `sdp`, `malformed` | `call_id`, addresses, ports, `method`, `status_code`, timestamps |
 | `decode_evidence` | `sip.reason`, `sip.start_line`, every `headers[].name` and `headers[].value` | byte offsets, `index`, the frame pointer |
 | `security_findings`, `describe_endpoint` | finding `detail` (it quotes the scanner's own `User-Agent` back) | `rule_name`, `src_ip`, `timestamp` |
+| `tfps_banned`, `tfps_labels`, `tfps_dropped` | `detail` (what the TFPS rule saw, which for `user-agent` is the scanner's own header) and `last_request` (a request line the source wrote) | `ip`, `rule`, `verdict`, timestamps, counts, and the words TFPS itself uses, such as `refused` |
 | `lint_dialog`, `validate_message` | finding `observed` | `rule_id`, `expected`, `explanation`, `rfc`, `section`, `frame_ref` |
 | `get_sdp_timeline`, `check_codec_negotiation` | codec names from `a=rtpmap` | `media_addr`, `media_port`, `mode`, `result` |
 | `aggregate_dialogs`, `group_dialogs`, `compare_captures` | bucket values for `from.user`, `to.user`, `ua`, `rtp.codec` | bucket values for `state`, `method`, `response_code`, addresses |

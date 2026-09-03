@@ -1,0 +1,5 @@
+{"src_ip":"198.51.100.20","rule":"scanner_detected","evidence":"ua=\"pplsip\" detection=ua_pattern","ts":"2026-09-03T16:40:00Z"}
+{"src_ip":"192.0.2.1","rule":"scanner_detected","evidence":"ua=\"friendly-scanner\" detection=ua_pattern","ts":"2026-09-03T16:40:02Z"}
+{"src_ip":"192.0.2.77","rule":"register_scan","evidence":"registers=40 success=0"}
+{"src_ip":"198.51.100.21","rule":"reg
+{"src_ip":"198.51.100.22","rule":"options_flood","evidence":"rate=120/s","ts":"2026-09-03T16:40:09Z"}

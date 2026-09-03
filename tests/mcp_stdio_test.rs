@@ -749,6 +749,12 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         "start_tls_capture",
         "stop_tls_capture",
         "tail_dialogs",
+        "tfps_ban",
+        "tfps_banned",
+        "tfps_dropped",
+        "tfps_labels",
+        "tfps_status",
+        "tfps_unban",
         "timeline",
         "top_talkers",
         "triage_call",
@@ -765,7 +771,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
     }
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    let want = if cfg!(feature = "vcon") { 57 } else { 55 };
+    let want = if cfg!(feature = "vcon") { 63 } else { 61 };
     assert_eq!(names.len(), want, "expected exactly {want} MCP tools");
 
     // find_problems with default kinds (['problems']) → JSON array, no error.

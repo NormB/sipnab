@@ -22,6 +22,7 @@ pub mod expectations;
 pub mod inspect;
 pub mod provenance;
 pub mod relay;
+pub mod tfps;
 // Only where the exporter exists. A tool in `tools/list` that can never run
 // is worse than an absent one: an agent plans around it, calls it, and gets
 // an error no argument it could have chosen would have avoided. What a build

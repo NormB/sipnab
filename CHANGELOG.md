@@ -10,6 +10,35 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **TFPS surfaces: six MCP tools, six REST routes, one locator.** The
+  toll-fraud prevention system (TFPS) that may run beside sipnab condemns
+  sources and enforces the decision in the firewall; sipnab never bans anything,
+  and until now an agent reading `security_findings` could not see what TFPS
+  did with the evidence without a shell on the box. `tfps_status`,
+  `tfps_banned`, `tfps_dropped` and `tfps_labels` read what TFPS knows;
+  `tfps_ban` and `tfps_unban` relay an OPERATOR's decision and report TFPS's
+  answer as given -- a refusal (`self`, `ignoreip`, `not-blocked`,
+  `invalid`), which `tfps_ctl` signals with exit 1 beside the same structured
+  line, is an answer and not an error. `GET /v1/tfps/status`, `/banned`,
+  `/dropped`, `/labels` and `POST /v1/tfps/ban`, `/unban` answer the same
+  shapes, serialized from the same types, so the two doors cannot drift.
+  `--tfps-ctl PATH` and `[tfps] ctl` / `[tfps] db` say where `tfps_ctl` is;
+  absent, sipnab looks on `PATH` only when a TFPS tool is called. TFPS stays
+  optional peer software: a machine without it answers `installed: false` with
+  a reason on every surface -- a result, not an error -- runs unchanged, and
+  logs nothing about TFPS at startup. The `no tfps in the manifest` gate still
+  holds. The contract is pinned by the TFPS emitter's own fixtures, copied byte for
+  byte and held to their SHA-256 (`tfps-status-golden.json`,
+  `tfps-banned-golden.jsonl`, `tfps-dropped-golden.jsonl`,
+  `tfps-ban-golden.jsonl`, `tfps-unban-golden.jsonl`, and the two evidence
+  files the next entry emits and TFPS answers with), each proved to parse --
+  every field present, `null` where TFPS does not know. Every argument sipnab
+  sends follows `tfps_ctl`'s own grammar as separate `argv` elements, never a
+  shell line, and the executable is an input to every test -- a shell script
+  that echoes a fixture, exits 1 with a refusal, exits 3, or is absent.
+
 ### Fixed
 
 - **Nine CodeQL alerts, and the configuration that claimed to suppress them.**

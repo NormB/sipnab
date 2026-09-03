@@ -1,0 +1,2 @@
+{"ip":"198.51.100.10","dropped":30,"events":4,"last_seen":"2026-09-03T16:41:00Z","rule":"user-agent","last_request":"OPTIONS sip:100@198.51.100.1 SIP/2.0"}
+{"ip":"198.51.100.13","dropped":1,"events":1,"last_seen":"2026-09-03T16:42:00Z","rule":null,"last_request":null}

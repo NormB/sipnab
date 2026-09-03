@@ -1428,6 +1428,7 @@ fn constant_time_eq_different_lengths_still_compares() {
         persistence_gate: std::sync::Arc::new(sipnab::output::persistence::PersistenceGate::new(
             false,
         )),
+        tfps: Default::default(),
     };
 
     // Build a request with wrong-length key
@@ -1480,6 +1481,7 @@ fn constant_time_eq_matching_strings() {
         persistence_gate: std::sync::Arc::new(sipnab::output::persistence::PersistenceGate::new(
             false,
         )),
+        tfps: Default::default(),
     };
 
     let app = build_router(state);
@@ -1542,6 +1544,7 @@ fn constant_time_eq_different_strings_same_length() {
         persistence_gate: std::sync::Arc::new(sipnab::output::persistence::PersistenceGate::new(
             false,
         )),
+        tfps: Default::default(),
     };
 
     let app = build_router(state);

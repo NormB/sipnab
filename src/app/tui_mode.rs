@@ -539,6 +539,7 @@ pub fn run_tui_mode(
             max_tracked_peers: cli.tracked_peer_capacity(&config),
             metrics_max_conn: cli.metrics_conn_cap(&config),
             mcp_max_findings: cli.mcp_findings_cap(&config),
+            tfps: cli.tfps_locator(&config),
             api: true,
             mcp: false,
             metrics: true,

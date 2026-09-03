@@ -1,0 +1,3 @@
+{"ip":"198.51.100.20","action":"unban","applied":true,"refused":null,"expires":null,"source":"operator"}
+{"ip":"198.51.100.21","action":"unban","applied":false,"refused":"not-blocked","expires":null,"source":"operator"}
+{"ip":null,"action":"unban","applied":false,"refused":"invalid","expires":null,"source":"operator"}

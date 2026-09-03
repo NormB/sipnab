@@ -53,16 +53,23 @@ impl Wire {
     /// `outputSchema` and a server that refuses it cannot prove the payload
     /// conforms.
     fn start() -> Self {
+        Self::start_with(&[])
+    }
+
+    /// [`Self::start`] with `extra` arguments after the fixed set.
+    fn start_with(extra: &[&str]) -> Self {
+        let mut args = vec![
+            "--mcp",
+            "-N",
+            "-I",
+            PCAP,
+            "--quiet",
+            "--mcp-allow-save-findings",
+        ];
+        args.extend_from_slice(extra);
         let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .args([
-                "--mcp",
-                "-N",
-                "-I",
-                PCAP,
-                "--quiet",
-                "--mcp-allow-save-findings",
-            ])
+            .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -299,7 +306,50 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
         // holds.
         ("export_vcon", json!({"filter": "response_code >= 400"})),
         ("validate_vcon", json!({"call_id": call_id})),
+        // The TFPS peer's tools, answered by the fake `fake_tfps_ctl` writes:
+        // the `installed: true` arm of each schema, which is the one that
+        // carries the contract types. The absent arm is two fields and is
+        // pinned in `src/mcp/tools/tfps.rs`.
+        ("tfps_status", json!({})),
+        ("tfps_banned", json!({})),
+        ("tfps_dropped", json!({})),
+        ("tfps_labels", json!({"limit": 3})),
+        ("tfps_ban", json!({"ip": "198.51.100.20", "ttl_secs": 60})),
+        ("tfps_unban", json!({"ip": "198.51.100.20"})),
     ]
+}
+
+/// A `tfps_ctl` that answers each subcommand with the TFPS emitter's own
+/// fixture, in its own directory.
+///
+/// The probes above MUST be hermetic: on a machine that has TFPS installed a
+/// probe of `tfps_ban` against `PATH` would be a real ban request. Naming
+/// the fake with `--tfps-ctl` is what keeps this test from ever reaching it.
+fn fake_tfps_ctl() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("tfps_ctl");
+    let one = |text: &str| text.lines().next().expect("a line").to_string();
+    let script = format!(
+        "#!/bin/sh\ncase \"$1\" in\n\
+         status) cat <<'SIPNAB_FIXTURE'\n{}\nSIPNAB_FIXTURE\n;;\n\
+         banned) cat <<'SIPNAB_FIXTURE'\n{}\nSIPNAB_FIXTURE\n;;\n\
+         dropped) cat <<'SIPNAB_FIXTURE'\n{}\nSIPNAB_FIXTURE\n;;\n\
+         log) cat <<'SIPNAB_FIXTURE'\n{}\nSIPNAB_FIXTURE\n;;\n\
+         ban) cat <<'SIPNAB_FIXTURE'\n{}\nSIPNAB_FIXTURE\n;;\n\
+         unban) cat <<'SIPNAB_FIXTURE'\n{}\nSIPNAB_FIXTURE\n;;\n\
+         *) echo \"unknown subcommand $1\" >&2; exit 2;;\n\
+         esac\n",
+        include_str!("fixtures/tfps-status-golden.json").trim_end(),
+        include_str!("fixtures/tfps-banned-golden.jsonl").trim_end(),
+        include_str!("fixtures/tfps-dropped-golden.jsonl").trim_end(),
+        include_str!("fixtures/tfps-labels-golden.jsonl").trim_end(),
+        one(include_str!("fixtures/tfps-ban-golden.jsonl")),
+        one(include_str!("fixtures/tfps-unban-golden.jsonl")),
+    );
+    std::fs::write(&path, script).expect("write the fake");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    dir
 }
 
 /// PB1's whole point: the payload arrives parsed, not as a string to re-parse.
@@ -452,7 +502,9 @@ fn timeline_answers_with_a_self_describing_envelope() {
 /// client is entitled to validate against it, so the server has to.
 #[test]
 fn every_declared_output_schema_matches_the_payload_it_describes() {
-    let mut wire = Wire::start();
+    let fake = fake_tfps_ctl();
+    let ctl = fake.path().join("tfps_ctl").display().to_string();
+    let mut wire = Wire::start_with(&["--tfps-ctl", &ctl]);
     let call_id = wire.a_call_id();
     let probes = schema_probes(&call_id);
 

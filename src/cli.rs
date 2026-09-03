@@ -1593,6 +1593,18 @@ pub struct SecurityArgs {
     #[arg(help_heading = "Security", long = "hep-allow-kill")]
     pub hep_allow_kill: bool,
 
+    /// Where the toll-fraud prevention system's `tfps_ctl` program is, for
+    /// the `tfps_*` MCP tools and the `/v1/tfps/` REST routes.
+    ///
+    /// TFPS is optional peer software that condemns sources and enforces
+    /// the decision in the firewall; sipnab asks it and never bans anything
+    /// itself. Absent, sipnab looks for `tfps_ctl` on `PATH` only when a
+    /// TFPS tool is called -- nothing is probed at startup -- and a machine
+    /// without one answers `installed: false` rather than failing. Config:
+    /// `[tfps] ctl`; the database is `[tfps] db`.
+    #[arg(help_heading = "Security", long = "tfps-ctl", value_name = "PATH")]
+    pub tfps_ctl: Option<std::path::PathBuf>,
+
     /// Enable fraud detection heuristics.
     #[arg(help_heading = "Security", long)]
     pub fraud_detect: bool,
@@ -3946,6 +3958,20 @@ impl Cli {
             Some(spec) => crate::config::parse_business_hours(spec).map(Some),
             None => Ok(None),
         }
+    }
+
+    /// Where `tfps_ctl` is: the flag, else `[tfps] ctl`, else `PATH` at call
+    /// time; `[tfps] db` rides along. Nothing is probed here.
+    #[must_use]
+    pub fn tfps_locator(
+        &self,
+        config: &crate::config::Config,
+    ) -> crate::security::tfps::TfpsLocator {
+        crate::security::tfps::TfpsLocator::resolve(
+            self.security_args.tfps_ctl.as_deref(),
+            config.tfps.ctl.as_deref(),
+            config.tfps.db.as_deref(),
+        )
     }
 
     /// The `--fraud-destination` watch list: upper-cased, trimmed, empty entries

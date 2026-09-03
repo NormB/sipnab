@@ -1,0 +1,5 @@
+{"ip":"198.51.100.20","action":"ban","applied":true,"refused":null,"expires":"2026-09-03T17:40:10Z","source":"sipnab"}
+{"ip":"192.0.2.1","action":"ban","applied":false,"refused":"self","expires":null,"source":"sipnab"}
+{"ip":"192.0.2.77","action":"ban","applied":false,"refused":"ignoreip","expires":null,"source":"sipnab"}
+{"ip":null,"action":"ban","applied":false,"refused":"invalid","expires":null,"source":"sipnab"}
+{"ip":"198.51.100.22","action":"ban","applied":true,"refused":null,"expires":"2026-09-03T17:40:10Z","source":"sipnab"}

@@ -128,6 +128,15 @@ pub const SOURCE_INDEPENDENT_TOOLS: &[&str] = &[
     // much of the capture has been read would attach a fact about sipnab's
     // reading to a statement made by another process.
     "query_relay",
+    // Answer from the TFPS peer, not from the capture store, for the
+    // reason `query_relay` gives: how much of the capture has been read
+    // says nothing about what another process holds.
+    "tfps_status",
+    "tfps_banned",
+    "tfps_dropped",
+    "tfps_labels",
+    "tfps_ban",
+    "tfps_unban",
     "list_tls_libraries",
     "server_capabilities",
     "show_evidence",

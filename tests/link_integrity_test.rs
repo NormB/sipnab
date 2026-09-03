@@ -702,7 +702,11 @@ fn wiki_intra_docs_links_resolve() {
     // not walk, so the index rows are the whole delta. The generated site mirror
     // gains the same 31 and is deliberately NOT in this figure -- the extractor
     // reads `docs/` only.
-    const EXPECTED_WIKI_LINKS: usize = 657;
+    // 657 -> 663 by the six `tfps_*` rows in the docs/mcp-tools.md index,
+    // each linking its own section the way every other row does. Six
+    // rows, six same-page links, one page; the site mirror is generated and
+    // this gate reads docs/.
+    const EXPECTED_WIKI_LINKS: usize = 663;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

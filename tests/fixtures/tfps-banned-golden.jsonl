@@ -1,0 +1,3 @@
+{"ip":"198.51.100.10","rule":"user-agent","detail":"pplsip","first_seen":"2026-09-03T16:40:00Z","expires":"2026-09-03T17:40:00Z","enforced":true}
+{"ip":"198.51.100.11","rule":"apiban","detail":"feed","first_seen":null,"expires":null,"enforced":true}
+{"ip":"198.51.100.12","rule":null,"detail":null,"first_seen":null,"expires":null,"enforced":true}

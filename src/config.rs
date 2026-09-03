@@ -39,9 +39,13 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "crash",
             "media",
             "quality",
+            "tfps",
         ]
         .as_slice(),
     );
+    // [tfps] says where optional peer software is, and nothing else: no
+    // threshold, no behavior. Two keys, both paths.
+    m.insert("tfps", ["ctl", "db"].as_slice());
     // [quality] holds the boundaries the COLOR COLUMN paints from, which is a
     // third question again: not "is this traffic hostile" ([security]), not
     // "how much may this run hold" ([limits]), and not "report this call as
@@ -339,6 +343,27 @@ pub struct Config {
     /// Crash handling (panic reports, backtraces, core dumps).
     #[serde(default)]
     pub crash: CrashConfig,
+    /// Where the TFPS peer is, when one runs on this host — see
+    /// [`TfpsConfig`].
+    #[serde(default)]
+    pub tfps: TfpsConfig,
+}
+
+/// Where the toll-fraud prevention system (TFPS) is, when one runs here.
+///
+/// TFPS is optional peer software: it condemns sources and enforces that
+/// decision in the firewall, and sipnab never bans anything. This section
+/// only says where its `tfps_ctl` program and database are, for the `tfps_*`
+/// MCP tools and the `/v1/tfps/` REST routes. Absent, sipnab looks for
+/// `tfps_ctl` on `PATH` when a TFPS tool is called and does nothing about
+/// TFPS at any other time.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct TfpsConfig {
+    /// Path to `tfps_ctl`. `--tfps-ctl` overrides it.
+    pub ctl: Option<PathBuf>,
+    /// TFPS's database, passed to every `tfps_ctl` call as `--db=<path>`.
+    pub db: Option<PathBuf>,
 }
 
 /// SIP protocol handling configuration.

@@ -2857,6 +2857,7 @@ impl BatchRunner {
                 max_tracked_peers: cli.tracked_peer_capacity(config),
                 metrics_max_conn: cli.metrics_conn_cap(config),
                 mcp_max_findings: cli.mcp_findings_cap(config),
+                tfps: cli.tfps_locator(config),
                 api: true,
                 mcp: true,
                 // The whole point of #159: headless is where --metrics is

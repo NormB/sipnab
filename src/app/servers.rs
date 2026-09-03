@@ -67,6 +67,11 @@ pub struct Selection {
     /// here for the same reason `mcp_row_cap` is: this function is handed a
     /// `Cli` and no `Config`, so every resolved ceiling arrives on Selection.
     pub metrics_max_conn: usize,
+    /// Where the TFPS peer's `tfps_ctl` is, for both doors.
+    ///
+    /// Resolved by the caller with `cli.tfps_locator(config)`, and carried
+    /// here for the same reason `mcp_row_cap` is.
+    pub tfps: crate::security::tfps::TfpsLocator,
     /// Start the REST API server when `--api` is configured.
     pub api: bool,
     /// Start the MCP server when `--mcp` is configured.
@@ -405,6 +410,7 @@ pub fn start_servers(
             capture: Some(Arc::clone(&capture_state)),
             source_exhausted: Some(Arc::clone(&exhausted)),
             persistence_gate: Arc::clone(&persistence_gate),
+            tfps: selection.tfps.clone(),
         };
         let config = ApiServerConfig {
             max_conn: cli.listener_args.api_max_conn,
@@ -545,6 +551,7 @@ pub fn start_servers(
             } else {
                 s
             };
+            let s = s.with_tfps(selection.tfps.clone());
             let s = s.with_armed_detections(selection.armed_detections.iter().copied());
             match alerts {
                 Some(a) => s.with_alert_engine(Arc::clone(a)),

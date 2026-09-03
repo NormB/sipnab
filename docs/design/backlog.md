@@ -2634,7 +2634,7 @@ output path.
     `SUPPRESSION_FILENAME` ([`src/sip/lint/mod.rs:70`](https://github.com/NormB/sipnab/blob/main/src/sip/lint/mod.rs#L70)),
     `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
     exist, and the MCP lint tools consume them through `resolve_suppressions`
-    ([`src/mcp/server.rs:894`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L894)), which takes an explicit filename or walks up from
+    ([`src/mcp/server.rs:919`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L919)), which takes an explicit filename or walks up from
     the capture's directory to a project root. **What is still missing is the
     suppression half of the CLI, and the evidence this line cited for that is
     now false too. Corrected 2026-08-06:** it read *"`grep -n lint src/cli.rs`
@@ -3099,7 +3099,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:7888`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7888), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:7915`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7915), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -5378,7 +5378,7 @@ promises an absence is acted on; a missing feature is merely absent.
 
 - [x] **DOC4 (done 2026-08-30) — [`docs/mcp-deploy.md:248`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L248) opens the remote-access section by
   promising no tool mutates the stores.** `open_capture` calls `ds.clear()` and
-  `ss.clear()` ([`src/mcp/server.rs:7221`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7221)). The code already knows: a note at
+  `ss.clear()` ([`src/mcp/server.rs:7096`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7096)). The code already knows: a note at
   `:8377` records that the wire `instructions` string was corrected for exactly
   this. The page was not. [`SECURITY.md:35`](https://github.com/NormB/sipnab/blob/main/SECURITY.md#L35) scopes reports to "any MCP tool that
   mutates dialog/stream/alert state", so a good-faith reporter is told the scope

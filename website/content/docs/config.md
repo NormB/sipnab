@@ -207,6 +207,28 @@ alert = ["syslog", "json"]
 alert_exec = "/usr/local/bin/sipnab-alert.sh"
 ```
 
+### `[tfps]`
+
+Where the toll-fraud prevention system (TFPS) is, when one runs on this host.
+
+TFPS is optional peer software: it condemns sources and enforces that
+decision in the firewall, and sipnab never bans anything. The `tfps_*` MCP
+tools and the `/v1/tfps/` REST routes ask it through its `tfps_ctl` program,
+and this section says where that program and its database are. Leave the
+section out and sipnab looks for `tfps_ctl` on `PATH` the moment a TFPS tool
+runs, and does nothing about TFPS at any other time.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ctl` | string | -- | Path to `tfps_ctl`. `--tfps-ctl` overrides it. Absent: sipnab looks on `PATH` the moment a TFPS tool runs, and a machine with no `tfps_ctl` anywhere answers `installed: false` on every TFPS surface |
+| `db` | string | -- | The TFPS database, passed to every `tfps_ctl` call as `--db=<path>`. Absent: `tfps_ctl` uses its own default |
+
+```toml
+[tfps]
+ctl = "/usr/local/bin/tfps_ctl"
+db = "/var/lib/tfps/tfps.db"
+```
+
 ### [diagnosis]
 
 Thresholds the signaling and media checks compare against. A number here

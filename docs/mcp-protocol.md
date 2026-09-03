@@ -75,11 +75,14 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 57 carry MCP annotations, so a host
-  can decide what to call without asking. Thirty are `readOnlyHint: true`.
-  [What the write verbs do](#what-the-write-verbs-do) names the five that are
-  not. Every tool sets `openWorldHint` to `false`, because sipnab answers from
-  the loaded capture and contacts no external service.
+- **Every tool declares what it does.** All 63 carry MCP annotations, so a host
+  can decide what to call without asking. Fifty-one are `readOnlyHint: true`.
+  [What the write verbs do](#what-the-write-verbs-do) names the twelve that
+  are not. Every tool but three sets `openWorldHint` to `false`, because
+  sipnab answers from the loaded capture and contacts no external service;
+  the three that reach past this process -- `query_relay`, which transmits,
+  and `tfps_ban` / `tfps_unban`, which change a firewall on this host --
+  say so.
 - **sipnab fences capture-derived free text.** See
   [Untrusted capture text](#untrusted-capture-text) below — sipnab's input is
   written by whoever sent the packets, so sipnab marks the text it hands back.
@@ -357,7 +360,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions, where
 
 ## What the write verbs do
 
-Forty-seven of the 57 tools are `readOnlyHint: true`. These ten are not, and
+Fifty-one of the 63 tools are `readOnlyHint: true`. These twelve are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 
@@ -373,10 +376,15 @@ confirmation:
 | `build_evidence_package` | false | **false** | Creates a directory of artifacts under `--mcp-file-root`. Additive, and it refuses a name already on disk rather than overwriting, so a second call with the same name fails instead of replacing evidence someone may already have sent. |
 | `compare_captures` | false | true | Reads two capture files into private stores and drops them. It changes no sipnab state a later answer depends on, but reading through the shared pipeline bumps the process-wide undecodable tallies `get_capture_report` reports, and a tool whose effects stay invisible in its own answer should not call itself read-only. |
 | `generate_repro` | false | true | Writes a SIPp scenario when the caller supplies `filename`, through the same confinement and overwrite refusal as `export_capture`. Without `filename` it returns the scenario and writes nothing to disk. |
+| `tfps_ban` | **true** | true | Relays an operator's decision to the toll-fraud prevention peer, which condemns the source in the firewall. Destructive because it cuts a third party off; idempotent because banning a banned source changes nothing. TFPS applies its own exemptions and sipnab reports the answer as given. |
+| `tfps_unban` | false | true | The release. Restores rather than destroys. |
 
-Every tool sets `openWorldHint` to `false`, explicitly rather than by
-omission. sipnab answers from the capture it has loaded and contacts no external
-service, so an agent cannot use a tool here to reach the network.
+Every tool sets `openWorldHint` explicitly rather than by omission, and all
+but three set it to `false`: sipnab answers from the capture it has loaded and
+contacts no external service, so an agent cannot use a tool here to reach the
+network. The three exceptions say so because each reaches past this process:
+`query_relay` transmits to the configured relay, and `tfps_ban` and
+`tfps_unban` change what a firewall on this host does to a third party.
 
 A test walks the registered router and fails if any tool carries no
 `readOnlyHint`, or if the set of non-read-only tools stops matching that table —
@@ -452,6 +460,7 @@ provenance note says so rather than leaving the omission to look accidental.
 | `get_dialog` | `dialog.from_user`, `dialog.to_user`, and every `messages[]` entry's `reason`, `from`, `to`, `contact`, `ua`, `sdp`, `malformed` | `call_id`, addresses, ports, `method`, `status_code`, timestamps |
 | `decode_evidence` | `sip.reason`, `sip.start_line`, every `headers[].name` and `headers[].value` | byte offsets, `index`, the frame pointer |
 | `security_findings`, `describe_endpoint` | finding `detail` (it quotes the scanner's own `User-Agent` back) | `rule_name`, `src_ip`, `timestamp` |
+| `tfps_banned`, `tfps_labels`, `tfps_dropped` | `detail` (what the TFPS rule saw, which for `user-agent` is the scanner's own header) and `last_request` (a request line the source wrote) | `ip`, `rule`, `verdict`, timestamps, counts, and the words TFPS itself uses, such as `refused` |
 | `lint_dialog`, `validate_message` | finding `observed` | `rule_id`, `expected`, `explanation`, `rfc`, `section`, `frame_ref` |
 | `get_sdp_timeline`, `check_codec_negotiation` | codec names from `a=rtpmap` | `media_addr`, `media_port`, `mode`, `result` |
 | `aggregate_dialogs`, `group_dialogs`, `compare_captures` | bucket values for `from.user`, `to.user`, `ua`, `rtp.codec` | bucket values for `state`, `method`, `response_code`, addresses |

@@ -130,6 +130,7 @@ impl Problem {
             StatusCode::NOT_FOUND => "not-found",
             StatusCode::TOO_MANY_REQUESTS => "rate-limited",
             StatusCode::PAYLOAD_TOO_LARGE => "payload-too-large",
+            StatusCode::BAD_GATEWAY => "bad-gateway",
             StatusCode::SERVICE_UNAVAILABLE => "unavailable",
             StatusCode::INTERNAL_SERVER_ERROR => "internal",
             _ => "error",
@@ -226,6 +227,13 @@ pub struct ApiState {
     /// The same `Arc` the exporter holds, so the socket and the writer cannot
     /// disagree about whether this capture is writing.
     pub persistence_gate: Arc<crate::output::persistence::PersistenceGate>,
+    /// Where the TFPS peer's `tfps_ctl` is, for the `/v1/tfps/` routes.
+    ///
+    /// The same locator the MCP server carries, built once by the caller
+    /// that starts both. Its default looks on `PATH` at call time, so a
+    /// state built without one -- every test in this module -- still
+    /// answers, with `installed: false` on a machine that has no TFPS.
+    pub tfps: crate::security::tfps::TfpsLocator,
 }
 
 /// Rows a list-style response returns when the caller names no `limit`.
@@ -397,6 +405,12 @@ pub fn build_router(state: ApiState) -> Router {
             "/v1/persistence",
             get(get_persistence).post(set_persistence),
         )
+        .route("/v1/tfps/status", get(get_tfps_status))
+        .route("/v1/tfps/banned", get(get_tfps_banned))
+        .route("/v1/tfps/dropped", get(get_tfps_dropped))
+        .route("/v1/tfps/labels", get(get_tfps_labels))
+        .route("/v1/tfps/ban", axum::routing::post(post_tfps_ban))
+        .route("/v1/tfps/unban", axum::routing::post(post_tfps_unban))
         .route("/v1/streams", get(list_streams))
         .route("/v1/streams/{id}", get(get_stream))
         .route("/v1/report", get(get_capture_report))
@@ -1250,6 +1264,280 @@ async fn set_persistence(
     };
     state.persistence_gate.set(req.enabled);
     Ok(persistence_body(&state.persistence_gate))
+}
+
+// ── The TFPS peer ───────────────────────────────────────────────────
+//
+// Six routes over the toll-fraud prevention system on the same host, when
+// there is one. They answer the same shapes the MCP tools of the same names
+// answer, serialized from the same types in `crate::security::tfps`, so the
+// two doors cannot drift. A machine without TFPS answers `200` with
+// `installed: false` and the reason: that is the ordinary case and a result,
+// not a failure of this server. The peer failing IS a failure -- `502` with
+// its standard error verbatim in `detail`.
+
+/// The body `POST /v1/tfps/ban` accepts.
+///
+/// `deny_unknown_fields` for the reason `PersistenceRequest` gives: a caller
+/// who misspells `ttl_secs` is told, rather than getting a ban of the wrong
+/// duration.
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+struct TfpsBanRequest {
+    /// The source to condemn, an IPv4 address (TFPS's block map is IPv4).
+    ip: String,
+    /// How long the ban lasts, in seconds; `0` is forever. Absent takes
+    /// TFPS's default of an hour. TFPS's `ban` takes no reason.
+    ttl_secs: Option<u64>,
+}
+
+/// The body `POST /v1/tfps/unban` accepts.
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+struct TfpsUnbanRequest {
+    /// The source to release.
+    ip: String,
+}
+
+/// Query parameters for `GET /v1/tfps/labels`.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct TfpsLabelsQuery {
+    /// Rows TFPS returns; `0` or absent asks for the whole log. The server's
+    /// `--api-max-rows` then bounds the page.
+    pub limit: Option<u64>,
+}
+
+/// The peer's failure, as the problem a client sees.
+///
+/// `502`: the request was understood and this server is fine; the program it
+/// asked on the client's behalf is what did not answer. `detail` is the
+/// peer's own standard error, verbatim, because that is the diagnosis.
+fn tfps_problem(e: crate::security::tfps::TfpsError) -> Problem {
+    Problem::detailed(StatusCode::BAD_GATEWAY, e.to_string())
+}
+
+/// Ask the peer off the runtime thread.
+///
+/// `tfps_ctl` is a child process waited on synchronously; on the runtime
+/// thread that wait would stall every other request for its duration.
+async fn ask_tfps<T, F>(state: &ApiState, f: F) -> Result<T, Problem>
+where
+    T: Send + 'static,
+    F: FnOnce(&crate::security::tfps::TfpsLocator) -> Result<T, crate::security::tfps::TfpsError>
+        + Send
+        + 'static,
+{
+    let locator = state.tfps.clone();
+    tokio::task::spawn_blocking(move || f(&locator))
+        .await
+        .map_err(|_| Problem::new(StatusCode::INTERNAL_SERVER_ERROR))?
+        .map_err(tfps_problem)
+}
+
+/// Read a request body as a JSON OBJECT of type `T`, or answer `400`.
+///
+/// The same three steps `set_persistence` spells out inline, for the same
+/// reason: a derived `Deserialize` also reads a SEQUENCE, so the body has to
+/// be extracted as a `Value`, checked to be an object, and only then typed.
+fn object_body<T: serde::de::DeserializeOwned>(
+    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Result<T, Problem> {
+    let Ok(Json(raw)) = body else {
+        return Err(Problem::new(StatusCode::BAD_REQUEST));
+    };
+    if !raw.is_object() {
+        return Err(Problem::new(StatusCode::BAD_REQUEST));
+    }
+    serde_json::from_value(raw).map_err(|_| Problem::new(StatusCode::BAD_REQUEST))
+}
+
+/// Parse an address out of a request, refusing anything that is not one.
+///
+/// Refused before the peer is asked, so the positional slot of `tfps_ctl
+/// ban` can only ever hold an address.
+fn tfps_ip(s: &str) -> Result<IpAddr, Problem> {
+    s.trim().parse().map_err(|_| {
+        Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            format!("ip must be an IPv4 or IPv6 address, got {s:?}"),
+        )
+    })
+}
+
+/// `GET /v1/tfps/status` — whether TFPS is installed, and what it reports.
+#[utoipa::path(
+    get,
+    path = "/v1/tfps/status",
+    tag = "tfps",
+    summary = "Read the TFPS peer's status",
+    description = "Whether the toll-fraud prevention system on this host is installed and enforcing, and what it reports: enforcement state, firewall mode, interface, sources blocked right now, its database and version.\n\nA machine without TFPS answers `200` with `installed: false` and a reason. That is a result: TFPS is optional peer software, and its absence is the ordinary case.",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "`installed: false` with `reason`, or `installed: true` with which `tfps_ctl` answered and its `status`.", body = crate::security::tfps::TfpsStatusAnswer),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 502, description = "`tfps_ctl` exited non-zero, hung, or answered something off the contract. `detail` carries its standard error verbatim.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_tfps_status(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let reply = ask_tfps(&state, crate::security::tfps::TfpsLocator::status).await?;
+    Ok(Json(crate::security::tfps::TfpsStatusAnswer::from(reply)))
+}
+
+/// `GET /v1/tfps/banned` — every source TFPS holds condemned right now.
+#[utoipa::path(
+    get,
+    path = "/v1/tfps/banned",
+    tag = "tfps",
+    summary = "List the sources TFPS condemns",
+    description = "The sources TFPS currently condemns: address, the rule that condemned it, what that rule saw, when the ban began and lapses, and whether the firewall holds it. Bounded by `--api-max-rows`; `total` and `truncated` say what was withheld.\n\nA machine without TFPS answers `200` with `installed: false`.",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "`installed: false` with `reason`, or the bounded page under `rows`.", body = crate::security::tfps::TfpsListAnswer<crate::security::tfps::TfpsBanned>),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 502, description = "`tfps_ctl` failed; `detail` carries its standard error verbatim.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_tfps_banned(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let reply = ask_tfps(&state, crate::security::tfps::TfpsLocator::banned).await?;
+    Ok(Json(crate::security::tfps::TfpsListAnswer::bounded(
+        reply,
+        state.max_rows,
+    )))
+}
+
+/// `GET /v1/tfps/dropped` — what the enforcement has dropped, per source.
+#[utoipa::path(
+    get,
+    path = "/v1/tfps/dropped",
+    tag = "tfps",
+    summary = "Read what TFPS's enforcement dropped",
+    description = "Per condemned source, how many packets TFPS's enforcement has dropped, how many events it recorded, when it last saw the source, the rule behind the block and the last request line the source sent. Bounded by `--api-max-rows`.\n\nA machine without TFPS answers `200` with `installed: false`.",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "`installed: false` with `reason`, or the bounded page under `rows`.", body = crate::security::tfps::TfpsListAnswer<crate::security::tfps::TfpsDropped>),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 502, description = "`tfps_ctl` failed; `detail` carries its standard error verbatim.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_tfps_dropped(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let reply = ask_tfps(&state, crate::security::tfps::TfpsLocator::dropped).await?;
+    Ok(Json(crate::security::tfps::TfpsListAnswer::bounded(
+        reply,
+        state.max_rows,
+    )))
+}
+
+/// `GET /v1/tfps/labels` — TFPS's verdict log.
+#[utoipa::path(
+    get,
+    path = "/v1/tfps/labels",
+    tag = "tfps",
+    summary = "Read TFPS's verdict log",
+    description = "One row per decision TFPS reached about a source: `blocked`, `would-block` (observing only) or `exempt`, with the rule, what it saw, when, and whether an operator later lifted the block. The same export the label corpus harness scores sipnab's scanner detector against. `limit` passes through to TFPS (`0` is everything); `--api-max-rows` bounds the page.\n\nA machine without TFPS answers `200` with `installed: false`.",
+    params(TfpsLabelsQuery),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "`installed: false` with `reason`, or the bounded page under `rows`.", body = crate::security::tfps::TfpsListAnswer<crate::security::tfps::TfpsLabel>),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 502, description = "`tfps_ctl` failed; `detail` carries its standard error verbatim.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_tfps_labels(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(query): Query<TfpsLabelsQuery>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    // `0` means the default, as on the MCP door -- and the export's default
+    // is everything, so no `--limit` is sent.
+    let limit = query.limit.filter(|n| *n > 0);
+    let reply = ask_tfps(&state, move |l| l.labels(limit)).await?;
+    Ok(Json(crate::security::tfps::TfpsListAnswer::bounded(
+        reply,
+        state.max_rows,
+    )))
+}
+
+/// `POST /v1/tfps/ban` — relay an operator's decision to condemn a source.
+#[utoipa::path(
+    post,
+    path = "/v1/tfps/ban",
+    tag = "tfps",
+    summary = "Ask TFPS to condemn a source",
+    description = "An operator action relayed through sipnab, not a decision sipnab makes: TFPS refuses its host's own addresses and anything in its `ignoreip`, and answers with what it did -- applied, or refused and why -- which is reported as given. The automated path from sipnab's own findings to TFPS is a separate channel, never this route.\n\nA machine without TFPS answers `200` with `installed: false`.",
+    request_body(content = TfpsBanRequest, description = "The source, and optionally how long. Unknown keys are refused, and so is a JSON array."),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "`installed: false` with `reason`, or `installed: true` with what TFPS did under `action`. A refusal is `applied: false` with `refused` saying why, not an error.", body = crate::security::tfps::TfpsActionAnswer),
+        (status = 400, description = "The body was not a JSON object with an `ip` that is an address, or it carried an unknown key.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 502, description = "`tfps_ctl` failed; `detail` carries its standard error verbatim.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn post_tfps_ban(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let req: TfpsBanRequest = object_body(body)?;
+    let ip = tfps_ip(&req.ip)?;
+    let ttl = req.ttl_secs;
+    let reply = ask_tfps(&state, move |l| l.ban(ip, ttl)).await?;
+    Ok(Json(crate::security::tfps::TfpsActionAnswer::from(reply)))
+}
+
+/// `POST /v1/tfps/unban` — relay an operator's decision to release a source.
+#[utoipa::path(
+    post,
+    path = "/v1/tfps/unban",
+    tag = "tfps",
+    summary = "Ask TFPS to release a source",
+    description = "An operator action relayed through sipnab. TFPS answers with what it did, and the answer is reported as given.\n\nA machine without TFPS answers `200` with `installed: false`.",
+    request_body(content = TfpsUnbanRequest, description = "The source to release. Unknown keys are refused, and so is a JSON array."),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "`installed: false` with `reason`, or `installed: true` with what TFPS did under `action`.", body = crate::security::tfps::TfpsActionAnswer),
+        (status = 400, description = "The body was not a JSON object with an `ip` that is an address, or it carried an unknown key.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 502, description = "`tfps_ctl` failed; `detail` carries its standard error verbatim.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn post_tfps_unban(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let req: TfpsUnbanRequest = object_body(body)?;
+    let ip = tfps_ip(&req.ip)?;
+    let reply = ask_tfps(&state, move |l| l.unban(ip)).await?;
+    Ok(Json(crate::security::tfps::TfpsActionAnswer::from(reply)))
 }
 
 /// `GET /v1/streams` — list RTP streams with optional filtering and pagination.
@@ -2498,8 +2786,10 @@ impl utoipa::Modify for BearerAuth {
         version = "1",
         description = "Read-only HTTP access to the dialogs, RTP streams, \
                        analysis and Prometheus metrics of a running sipnab \
-                       capture, plus the one write the surface has: closing \
-                       the persistence gate.\n\nThe server reads the same \
+                       capture, plus three writes: closing the persistence \
+                       gate, and relaying an operator's ban or release to the \
+                       toll-fraud prevention peer when one is installed.\n\n\
+                       The server reads the same \
                        in-memory stores as the capture pipeline, in the same \
                        process. There is no database and no history: every \
                        answer describes the capture as it stands.",
@@ -2515,6 +2805,12 @@ impl utoipa::Modify for BearerAuth {
         get_dialog_report,
         get_persistence,
         set_persistence,
+        get_tfps_status,
+        get_tfps_banned,
+        get_tfps_dropped,
+        get_tfps_labels,
+        post_tfps_ban,
+        post_tfps_unban,
         list_streams,
         get_stream,
         get_capture_report,
@@ -2530,6 +2826,18 @@ impl utoipa::Modify for BearerAuth {
         schema::StreamSummary,
         schema::PersistenceState,
         PersistenceRequest,
+        TfpsBanRequest,
+        TfpsUnbanRequest,
+        crate::security::tfps::TfpsStatus,
+        crate::security::tfps::TfpsBanned,
+        crate::security::tfps::TfpsDropped,
+        crate::security::tfps::TfpsLabel,
+        crate::security::tfps::TfpsAction,
+        crate::security::tfps::TfpsStatusAnswer,
+        crate::security::tfps::TfpsListAnswer<crate::security::tfps::TfpsBanned>,
+        crate::security::tfps::TfpsListAnswer<crate::security::tfps::TfpsDropped>,
+        crate::security::tfps::TfpsListAnswer<crate::security::tfps::TfpsLabel>,
+        crate::security::tfps::TfpsActionAnswer,
         schema::Stats,
         schema::StatsDialogs,
         schema::StatsStreams,
@@ -2546,7 +2854,8 @@ impl utoipa::Modify for BearerAuth {
         (name = "dialogs", description = "SIP dialogs the capture is tracking"),
         (name = "streams", description = "RTP streams the capture is tracking"),
         (name = "capture", description = "The capture as a whole"),
-        (name = "operations", description = "Liveness, metrics, and the persistence gate")
+        (name = "operations", description = "Liveness, metrics, and the persistence gate"),
+        (name = "tfps", description = "The toll-fraud prevention peer on this host, when one is installed: what it condemns, what it dropped, its verdict log, and an operator's ban or release relayed to it")
     )
 )]
 pub struct ApiDoc;
@@ -2759,6 +3068,7 @@ mod tests {
             // fixture defaulting to an open gate would let a route that
             // forgot to consult it pass.
             persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
+            tfps: Default::default(),
         }
     }
 
@@ -2787,6 +3097,7 @@ mod tests {
             // fixture defaulting to an open gate would let a route that
             // forgot to consult it pass.
             persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
+            tfps: Default::default(),
         }
     }
 
@@ -3247,6 +3558,7 @@ mod tests {
             // fixture defaulting to an open gate would let a route that
             // forgot to consult it pass.
             persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
+            tfps: Default::default(),
         }
     }
 
@@ -4018,6 +4330,7 @@ mod tests {
             // fixture defaulting to an open gate would let a route that
             // forgot to consult it pass.
             persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
+            tfps: Default::default(),
         };
         populate_dialogs(&state);
 
@@ -4981,6 +5294,238 @@ mod tests {
 
     async fn json_of(resp: axum::response::Response) -> Value {
         serde_json::from_str(&body_to_string(resp.into_body()).await).expect("valid JSON")
+    }
+
+    // ── The TFPS routes ──────────────────────────────────────────────
+
+    /// A `tfps_ctl` that prints `text`, in its own directory.
+    fn fake_tfps(text: &str) -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tfps_ctl");
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\ncat <<'SIPNAB_FIXTURE'\n{text}\nSIPNAB_FIXTURE\n"),
+        )
+        .expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        dir
+    }
+
+    /// The key every TFPS test authenticates with.
+    const TFPS_KEY: &str = "tfps-route-test-key";
+    /// Every outcome `ban` can answer with, one per line.
+    const BAN: &str = include_str!("../../tests/fixtures/tfps-ban-golden.jsonl");
+
+    /// State whose locator names the fake in `dir`.
+    fn state_with_tfps(dir: &tempfile::TempDir) -> ApiState {
+        ApiState {
+            tfps: crate::security::tfps::TfpsLocator::new(Some(dir.path().join("tfps_ctl")), None),
+            ..make_state_with_key(TFPS_KEY)
+        }
+    }
+
+    /// State on a machine with no TFPS: the search path is an empty dir.
+    fn state_without_tfps(dir: &tempfile::TempDir) -> ApiState {
+        ApiState {
+            tfps: crate::security::tfps::TfpsLocator::new(None, None)
+                .with_search_path(dir.path().as_os_str()),
+            ..make_state_with_key(TFPS_KEY)
+        }
+    }
+
+    /// The ordinary case: no TFPS, and every route says so with `200`.
+    #[tokio::test]
+    async fn every_tfps_route_answers_installed_false_on_a_bare_machine() {
+        let empty = tempfile::tempdir().expect("tempdir");
+        for (method, uri, body) in [
+            ("GET", "/v1/tfps/status", ""),
+            ("GET", "/v1/tfps/banned", ""),
+            ("GET", "/v1/tfps/dropped", ""),
+            ("GET", "/v1/tfps/labels", ""),
+            ("POST", "/v1/tfps/ban", r#"{"ip":"198.51.100.20"}"#),
+            ("POST", "/v1/tfps/unban", r#"{"ip":"198.51.100.20"}"#),
+        ] {
+            let app = build_router(state_without_tfps(&empty));
+            let req = if method == "GET" {
+                test_get_with_key(uri, TFPS_KEY)
+            } else {
+                test_post_with_key(uri, body, TFPS_KEY)
+            };
+            let resp = app.oneshot(req).await.expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::OK, "{method} {uri}");
+            let v = json_of(resp).await;
+            assert_eq!(
+                v,
+                json!({
+                    "installed": false,
+                    "reason": crate::security::tfps::NOT_INSTALLED_REASON
+                }),
+                "{method} {uri}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_tfps_routes_answer_the_contract_when_the_peer_is_there() {
+        const STATUS: &str = include_str!("../../tests/fixtures/tfps-status-golden.json");
+        const BANNED: &str = include_str!("../../tests/fixtures/tfps-banned-golden.jsonl");
+
+        let dir = fake_tfps(STATUS);
+        let resp = build_router(state_with_tfps(&dir))
+            .oneshot(test_get_with_key("/v1/tfps/status", TFPS_KEY))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = json_of(resp).await;
+        assert_eq!(v["installed"], true);
+        assert_eq!(v["status"]["blocked_now"], 3);
+        assert_eq!(
+            v["tfps_ctl"],
+            dir.path().join("tfps_ctl").display().to_string()
+        );
+
+        let dir = fake_tfps(BANNED);
+        let v = json_of(
+            build_router(state_with_tfps(&dir))
+                .oneshot(test_get_with_key("/v1/tfps/banned", TFPS_KEY))
+                .await
+                .expect("oneshot"),
+        )
+        .await;
+        assert_eq!(v["total"], 3);
+        assert_eq!(v["returned"], 3);
+        assert_eq!(v["truncated"], false);
+        assert_eq!(
+            v["rows"][0]["detail"], "pplsip",
+            "REST returns the sender's text verbatim; fencing is the MCP door's rule"
+        );
+        assert_eq!(
+            v["rows"][2]["rule"],
+            Value::Null,
+            "null survives the round trip"
+        );
+
+        let dir = fake_tfps(BAN.lines().next().expect("a line"));
+        let v = json_of(
+            build_router(state_with_tfps(&dir))
+                .oneshot(test_post_with_key(
+                    "/v1/tfps/ban",
+                    r#"{"ip":"198.51.100.20","ttl_secs":60}"#,
+                    TFPS_KEY,
+                ))
+                .await
+                .expect("oneshot"),
+        )
+        .await;
+        assert_eq!(v["installed"], true);
+        assert_eq!(v["action"]["applied"], true);
+    }
+
+    /// The row cap applies here as it does to every list route.
+    #[tokio::test]
+    async fn a_tfps_list_is_bounded_by_the_api_row_cap() {
+        const LABELS: &str = include_str!("../../tests/fixtures/tfps-labels-golden.jsonl");
+        let dir = fake_tfps(LABELS);
+        let mut state = state_with_tfps(&dir);
+        state.max_rows = 2;
+        let v = json_of(
+            build_router(state)
+                .oneshot(test_get_with_key("/v1/tfps/labels?limit=0", TFPS_KEY))
+                .await
+                .expect("oneshot"),
+        )
+        .await;
+        assert_eq!(v["total"], 5);
+        assert_eq!(v["returned"], 2);
+        assert_eq!(v["truncated"], true);
+    }
+
+    /// A refusal TFPS signals with exit 1 is `200` with `applied: false` and
+    /// the reason: TFPS's answer, reported as given.
+    #[tokio::test]
+    async fn a_refused_ban_is_reported_not_raised() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tfps_ctl");
+        let refused = BAN.lines().nth(2).expect("the self refusal");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\ncat <<'SIPNAB_FIXTURE'\n{refused}\nSIPNAB_FIXTURE\necho 'error: 1 of 1 refused' >&2\nexit 1\n"
+            ),
+        )
+        .expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let resp = build_router(state_with_tfps(&dir))
+            .oneshot(test_post_with_key(
+                "/v1/tfps/ban",
+                r#"{"ip":"192.0.2.1"}"#,
+                TFPS_KEY,
+            ))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = json_of(resp).await;
+        assert_eq!(v["action"]["applied"], false);
+        assert_eq!(v["action"]["refused"], "self");
+    }
+
+    /// An address that is not one, or a body with a key the route does not
+    /// know, is `400` -- and the peer is never asked.
+    #[tokio::test]
+    async fn a_ban_with_a_bad_address_or_an_unknown_key_is_refused() {
+        let dir = fake_tfps(BAN.lines().next().expect("a line"));
+        for body in [
+            r#"{"ip":"not-an-address"}"#,
+            r#"{"ip":"198.51.100.20","ttl":60}"#,
+            r#"{"ip":"198.51.100.20","reason":"tfps has no reason option"}"#,
+            r#"{}"#,
+            r#"{"ip":"198.51.100.20; rm -rf /"}"#,
+        ] {
+            for route in ["/v1/tfps/ban", "/v1/tfps/unban"] {
+                let resp = build_router(state_with_tfps(&dir))
+                    .oneshot(test_post_with_key(route, body, TFPS_KEY))
+                    .await
+                    .expect("oneshot");
+                assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{route} {body}");
+            }
+        }
+    }
+
+    /// The peer failing is `502`, as `application/problem+json`, with its
+    /// standard error verbatim in `detail`.
+    #[tokio::test]
+    async fn a_failing_peer_is_a_502_problem_carrying_its_stderr() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tfps_ctl");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\necho 'tfps.db: database is locked' >&2\nexit 3\n",
+        )
+        .expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let resp = build_router(state_with_tfps(&dir))
+            .oneshot(test_get_with_key("/v1/tfps/status", TFPS_KEY))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/problem+json")
+        );
+        let v = json_of(resp).await;
+        assert_eq!(v["type"], "https://sipnab.com/problems/bad-gateway");
+        assert_eq!(v["status"], 502);
+        assert!(
+            v["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("tfps.db: database is locked")),
+            "{v}"
+        );
     }
 
     /// A control that stops call content reaching disk is not public.

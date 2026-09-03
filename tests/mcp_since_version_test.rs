@@ -95,6 +95,13 @@ fn no_tool_predates_the_mcp_server() {
         let Some(version) = since_version(&tool) else {
             continue; // covered, by name, by the test above
         };
+        // The pending section is newer than every release, not older than the
+        // first: a tool named only under `## [Unreleased]` has shipped in no
+        // release yet, and `owed_bulk_edit_gates_test` already treats that as
+        // the legitimate answer it is.
+        if version == "Unreleased" {
+            continue;
+        }
         let parts = numeric(version);
         assert!(
             parts.len() >= 2 && &parts[0..2] >= FLOOR,

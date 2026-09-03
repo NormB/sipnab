@@ -22,6 +22,11 @@ pub mod reg_flood;
 pub mod scanner_detect;
 pub mod scanner_kill;
 pub mod sources;
+// Runs `tfps_ctl` as a child process, which is a native concern; the
+// contract types it carries are only ever asked for by the MCP and REST
+// doors, and both are native.
+#[cfg(feature = "native")]
+pub mod tfps;
 // Names `capture::CaptureSource`, which exists only in native builds; gated to
 // match `crate::process_isolation`, the module whose sends it guards.
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]

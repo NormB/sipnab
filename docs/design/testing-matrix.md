@@ -49,15 +49,15 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 254 | 130 | 45 | 78 | 1 |
-| HTTP routes | 11 | 11 | -- | 0 | 0 |
-| MCP tools | 57 | 57 | -- | 0 | 0 |
+| CLI flags | 255 | 130 | 45 | 79 | 1 |
+| HTTP routes | 17 | 17 | -- | 0 | 0 |
+| MCP tools | 63 | 63 | -- | 0 | 0 |
 
 **Flags with no occurrence at all:** `--syslog`
 
 ## What a person found that the detector could not
 
-The generator understates. Of the 78 flags it could only call
+The generator understates. Of the 79 flags it could only call
 `referenced`, a read of the tests found 64 with a real behavior test --
 evidence that arrives through a config-file equivalent sharing the flag's
 resolver, through a golden file, or through a library-level test, none of
@@ -138,7 +138,7 @@ behind them.
 | `--short-calls` |  |  | Diagnostic aliases | e2e | `tests/filter_output_paths_test.rs` | **parse-only** | short_calls_filter asserts only count <= 7; the alias-equivalence test is vacuous (0 of 1334 dialogs selected on its fixture) |
 | `--one-way` |  |  | Diagnostic aliases | e2e | `tests/filter_output_paths_test.rs` | **behavior** | one_way_filter plus one_way_output_carries_the_stun_versus_sdp_finding (tests/stun_test.rs); both directions pinned |
 | `--nat-issues` |  |  | Diagnostic aliases | e2e | `tests/filter_output_paths_test.rs` | **behavior** | nat_issues_filter plus the_nat_issues_alias_selects_the_rewritten_call (tests/media_diagnosis_wiring_test.rs) |
-| `--json` |  |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_test.rs` +11 |  |  |
+| `--json` |  |  | Output | e2e | `src/security/tfps.rs`, `tests/cli_flag_behavior_test.rs` +12 |  |  |
 | `--json-pretty` |  |  | Output | e2e | `tests/json_schema_test.rs` |  |  |
 | `--json-dialogs` |  |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_wiring_test.rs` +14 |  |  |
 | `--plugin` |  | `PATH` | Output | e2e | `tests/partial_run_exit_code_test.rs`, `tests/plugin_example_test.rs` |  |  |
@@ -201,6 +201,7 @@ behind them.
 | `--kill-target` | `-K` |  | Security | e2e | `tests/offline_never_transmits_test.rs` |  |  |
 | `--kill-spoof` |  | `MODE` | Security | e2e | `tests/offline_never_transmits_test.rs` |  |  |
 | `--hep-allow-kill` |  |  | Security | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
+| `--tfps-ctl` |  | `PATH` | Security | referenced | `src/security/tfps.rs`, `tests/tfps_contract_test.rs` +1 |  |  |
 | `--fraud-detect` |  |  | Security | parsed | `src/cli.rs` |  |  |
 | `--fraud-destination` |  |  | Security | parsed | `src/cli.rs` |  |  |
 | `--reg-flood` |  |  | Security | e2e | `tests/cli_flag_behavior_test.rs` | **behavior** | reg_flood_threshold_decides_when_a_burst_is_a_flood (tests/threshold_wiring_test.rs); an inert flag fails it |
@@ -239,7 +240,7 @@ behind them.
 | `--metrics-auth` |  |  | Network listeners | referenced | `src/cli.rs`, `src/output/prometheus_server.rs` | **mention-only** | CREDENTIAL. Only whole-token occurrences are comments. It passes flag_coverage_test only because --metrics-auth-file contains the string |
 | `--metrics-auth-file` |  | `FILE` | Network listeners | parsed | `src/cli.rs` |  |  |
 | `--api` |  | `ADDR` | Network listeners | e2e | `tests/parse_path_test.rs`, `tests/support/server.rs` |  |  |
-| `--api-key` |  | `KEY` | Network listeners | referenced | `src/app/bootstrap.rs`, `src/output/api.rs` +4 | **behavior** | auth_accepts_correct_bearer_and_rejects_everything_else (tests/api_test.rs): 200 vs 401 across five shapes |
+| `--api-key` |  | `KEY` | Network listeners | referenced | `src/app/bootstrap.rs`, `src/output/api.rs` +5 | **behavior** | auth_accepts_correct_bearer_and_rejects_everything_else (tests/api_test.rs): 200 vs 401 across five shapes |
 | `--api-signing-key` |  | `KEY` | Network listeners | referenced | `src/app/bootstrap.rs`, `src/app/servers.rs` +4 | **behavior** | seven tests in tests/api_token_test.rs: expiry, forgery, tampering, rotation, scope |
 | `--api-signing-key-file` |  | `FILE` | Network listeners | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--api-revoked-file` |  | `FILE` | Network listeners | referenced | `tests/api_token_test.rs` | **behavior** | revoked_id_is_rejected_via_denylist_file: denylisted 401, fresh 200, both with valid tokens |
@@ -353,6 +354,12 @@ behind them.
 | `/v1/stats` | exercised | `tests/api_test.rs`, `tests/api_token_test.rs` +3 |
 | `/v1/streams` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` +2 |
 | `/v1/streams/{id}` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` |
+| `/v1/tfps/ban` | exercised | `tests/tfps_surfaces_test.rs` |
+| `/v1/tfps/banned` | exercised | `tests/tfps_surfaces_test.rs` |
+| `/v1/tfps/dropped` | exercised | `tests/tfps_surfaces_test.rs` |
+| `/v1/tfps/labels` | exercised | `tests/tfps_surfaces_test.rs` |
+| `/v1/tfps/status` | exercised | `tests/tfps_surfaces_test.rs` |
+| `/v1/tfps/unban` | exercised | `tests/tfps_surfaces_test.rs` |
 
 ## MCP tools
 
@@ -409,6 +416,12 @@ behind them.
 | `start_tls_capture` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
 | `stop_tls_capture` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
 | `tail_dialogs` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_open_capture_test.rs` +3 |
+| `tfps_ban` | exercised | `tests/tfps_surfaces_test.rs` |
+| `tfps_banned` | exercised | `tests/tfps_surfaces_test.rs` |
+| `tfps_dropped` | exercised | `tests/tfps_surfaces_test.rs` |
+| `tfps_labels` | exercised | `tests/tfps_surfaces_test.rs` |
+| `tfps_status` | exercised | `tests/tfps_surfaces_test.rs` |
+| `tfps_unban` | exercised | `tests/tfps_surfaces_test.rs` |
 | `timeline` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |
 | `top_talkers` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `triage_call` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +2 |

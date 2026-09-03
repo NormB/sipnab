@@ -33,6 +33,14 @@ mod markdown;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `tfps_ctl`'s, named by the `[tfps] db` row because that is exactly what
+    // the key becomes: sipnab passes it through as `--db PATH` on every call
+    // to the toll-fraud prevention peer. It is not a sipnab flag and must not
+    // become one by being documented here.
+    (
+        "db",
+        &["docs/config-reference.md", "website/content/docs/config.md"],
+    ),
     // cargo's, quoted by the engineering notes that describe a gate or a
     // build. `--all-features`, `--all-targets`, `--workspace`, `--features`,
     // `--fix` and `--test` are cargo's; `--preserve` is `cp`'s, named while
@@ -1464,15 +1472,21 @@ fn docs_current_version_markers_match_cargo() {
         // Gating only the walkthrough left this one drifting: it still named
         // 0.5.69 after the crate moved to 0.5.70, in the same release that
         // added the gate. Two copies of one sample, one of them watched.
+        //
+        // Anchored on the `features` key that follows it, because this page
+        // also carries the `tfps_status` sample, whose `version` is the
+        // toll-fraud prevention peer's own (0.1.0) and must never track this
+        // crate. The bare pattern read that one as sipnab's and demanded
+        // 0.5.147 of a program that is not sipnab.
         (
             "docs/mcp-tools.md",
             include_str!("../docs/mcp-tools.md"),
-            r#""version":\s*"(\d+\.\d+\.\d+)""#,
+            r#""version":\s*"(\d+\.\d+\.\d+)",\s*"features""#,
         ),
         (
             "website/content/docs/mcp-tools.md",
             include_str!("../website/content/docs/mcp-tools.md"),
-            r#""version":\s*"(\d+\.\d+\.\d+)""#,
+            r#""version":\s*"(\d+\.\d+\.\d+)",\s*"features""#,
         ),
     ];
     for (path, text, pattern) in sources {
@@ -2353,9 +2367,14 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // vendored schema. Read-only and it writes nothing, so the `readOnlyHint`
     // split moves 46-of-56 to 47-of-57 and the ten write-capable tools are
     // unchanged.
+    // 57 -> 63 by the six TFPS tools in src/mcp/tools/tfps.rs: four reads
+    // (`tfps_status`, `tfps_banned`, `tfps_dropped`, `tfps_labels`) and two
+    // operator actions (`tfps_ban`, `tfps_unban`) relayed to the toll-fraud
+    // prevention peer. The `readOnlyHint` split moves 47-of-57 to 51-of-63,
+    // and the write-capable set grows from ten to twelve.
     assert_eq!(
         registered.len(),
-        57,
+        63,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -3048,7 +3067,13 @@ fn no_documentation_table_repeats_a_row() {
     // three "implies non-interactive" flags and their exit codes. RDX1's
     // reproduction beside it is a `text` fence, not a table, so it adds none.
     // The backlog is not mirrored into the site, so this counts once.
-    const EXPECTED_TABLES: usize = 798;
+    // 798 -> 808 by the TFPS surfaces, attributed by measurement before the
+    // number moved: three parameter tables in docs/mcp-tools.md (`tfps_labels`,
+    // `tfps_ban`, `tfps_unban`), the `[tfps]` table in docs/config-reference.md
+    // and the `limit` query table under `GET /v1/tfps/labels` in
+    // docs/rest-api.md -- five written tables, each doubled by its generated
+    // site mirror, so ten counted.
+    const EXPECTED_TABLES: usize = 808;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

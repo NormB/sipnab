@@ -137,6 +137,12 @@ pub struct SipnabMcp {
     /// How captured control messages are decoded, chosen by the composition
     /// root so this layer never names a protocol.
     control_decoder: Option<std::sync::Arc<dyn crate::relay::ControlDecoder>>,
+    /// Where the TFPS peer's `tfps_ctl` is, for the `tfps_*` tools.
+    ///
+    /// The default looks on `PATH` at call time and nowhere else; nothing
+    /// is probed when the server is built, so a machine without TFPS pays
+    /// nothing for this field and logs nothing about it.
+    pub(crate) tfps: crate::security::tfps::TfpsLocator,
     /// Whether `start_tls_capture` may install kernel uprobes.
     ///
     /// Separate from `allow_open_capture` because it is a different act. That
@@ -275,6 +281,7 @@ impl SipnabMcp {
             + Self::compare_router()
             + Self::endpoints_router()
             + Self::relay_router()
+            + Self::tfps_router()
             + Self::await_condition_router();
         // Shadowed rather than a `+ vcon_router()` term, because the module
         // itself is absent without the feature. A mismatch between the two is
@@ -299,6 +306,7 @@ impl SipnabMcp {
             allow_open_capture: false,
             relay_query: None,
             control_decoder: None,
+            tfps: Default::default(),
             allow_tls_capture: false,
             allow_save_findings: false,
             findings: Arc::new(RwLock::new(crate::mcp::findings::FindingsLog::new())),
@@ -663,6 +671,16 @@ impl SipnabMcp {
     #[must_use]
     pub fn with_hep_auth_mode(mut self, mode: crate::cli::HepAuthMode) -> Self {
         self.hep_auth_mode = Some(mode);
+        self
+    }
+
+    /// Where the TFPS peer's `tfps_ctl` is, from `--tfps-ctl` and `[tfps]`.
+    ///
+    /// Built by the composition root, which has the config in scope; this
+    /// layer never reads the environment for it.
+    #[must_use]
+    pub fn with_tfps(mut self, locator: crate::security::tfps::TfpsLocator) -> Self {
+        self.tfps = locator;
         self
     }
 
