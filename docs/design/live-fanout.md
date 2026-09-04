@@ -154,7 +154,7 @@ is what actually helps a burst. Not decidable from the code — it needs §5.
 
 ### 2.2 `--multi-device` composes badly and should stay refused
 
-`start_multi_capture` ([`native.rs:639`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L639)) already
+`start_multi_capture` ([`native.rs:657`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L657)) already
 spawns one capture thread per interface into one shared channel, with a
 coordinator thread and an aggregated readiness signal. That is the same topology
 `capture_live_fanout` builds — which is a good sign for the design and a problem

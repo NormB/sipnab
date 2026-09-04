@@ -10,6 +10,93 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+- **HEP over TCP and TLS, on both sides.** `--hep-send` opened a `UdpSocket`
+  and `--hep-listen` bound one, and there was no other option — so an operator
+  whose Homer agent or collector spoke TCP or TLS, which Homer's own agents and
+  collectors all offer, could not interoperate with sipnab at all. Each side now
+  names its own transport: `--hep-send-transport udp|tcp|tls` and
+  `--hep-listen-transport udp|tcp|tls`, both defaulting to `udp`, so a run that
+  names neither behaves exactly as it did.
+
+  There is deliberately no one flag covering both sides. sipnab is both agent
+  and collector, frequently in one process — recipe 26 in the cookbook is a relay
+  that receives on `-L` and forwards on `-H` — so a bare flag would have no
+  answer to "which half?", and that relay could not ask for TCP in and UDP out.
+
+  HEP v3 declares its own total length, so a stream is packets laid end to end
+  with no framing of sipnab's invention, which is what Homer's agents already
+  send. HEP v2 declares no total length and therefore cannot be delimited on a
+  stream at all; a `tcp` or `tls` listener reads v3 only, and says so rather
+  than guessing. A peer that sends anything else loses its connection instead
+  of being resynchronized, because a stream offers no point to resynchronize
+  at: one byte of slippage makes every later length garbage, and "skip and
+  continue" would silently discard everything that peer sent afterwards.
+
+  The listener serves several agents at once, one thread per connection inside
+  a scope so no reader outlives it, and survives the two things a real estate
+  does to a collector: a peer whose packet arrives in two segments, and a peer
+  that vanishes mid-packet. The sender rebuilds its connection when the
+  collector restarts — one attempt per packet, never a loop, so a collector
+  that is simply down does not turn forwarding into a spin — and sets
+  `TCP_NODELAY`, because these are small packets whose whole value is
+  timeliness.
+- **`--hep-tls-ca`, `--hep-tls-cert` and `--hep-tls-key`.** The sender verifies
+  the collector against `--hep-tls-ca`, or against the host's CA bundle when
+  none is named; a named CA **replaces** the trust store rather than joining it,
+  since a private collector's issuer is the whole of what that sender should
+  accept, and a CA file that cannot be read or holds no certificate is an error
+  rather than an empty store that would refuse everything and read as a broken
+  far end. The listener presents `--hep-tls-cert`/`--hep-tls-key` and refuses a
+  private key any other user on the host can read. The client handshake
+  completes when the connection is dialled rather than on the first packet:
+  rustls is lazy by default, and without that the operator is told forwarding
+  is up and the first SIP message an hour later is what discovers the
+  certificate was never acceptable.
+
+  Authentication (`--hep-auth-file`, `--hep-auth-mode`) and the origin and
+  security semantics (`input_origin: Hep`, `--hep-allow-kill`, `--hep-allow`)
+  are unchanged on every transport — they are one ingest path, not one per
+  socket type. `--hep-allow` still means the source address of the connection
+  under TLS, and it is not made redundant by it: sipnab asks connecting agents
+  for no certificate of their own, so TLS says the path is private and nothing
+  about who is on it.
+- **A transport or TLS flag whose side is not in the run is refused at
+  startup.** `--hep-tls-ca` on a plaintext sender is the worst of the three
+  possible outcomes to accept silently: the operator believes the feed is
+  encrypted, the exit status agrees with them, and the packets are in the clear.
+  Each refusal names the flag value that would make the flag live.
+- **Twenty-one tests that drive the sockets rather than describe them.** Each
+  claim above is held down by a test that runs a real listener and a real
+  sender over loopback: whole packets end to end on TCP and on TLS, a
+  collector restart the sender rebuilds through, several agents at once, a
+  packet split across two writes, a packet whose body has not all arrived
+  yet, a peer that vanishes mid-packet, a stream that is not HEP v3, and the
+  authentication and allowlist refusals on TCP.
+
+  Seventeen of those behaviours were then removed one at a time and each
+  removal turned its test red: in the listener and the sender, the framer's
+  short-buffer check, the HEP3 magic check, the private key's permission
+  refusal, the reconnect, the CA replacement, the accept-time allowlist, the
+  auth refusal and completing the handshake at dial; and on the command line,
+  the transport enum's default, the sender's default, the two refusals of a
+  TLS flag on a plaintext side, the refusal of a TLS listener with nothing to
+  present, and the three `requires` clauses that stop a transport or TLS flag
+  being accepted without the side it governs.
+
+  Two were not caught at first, and both were the test's fault rather than the
+  code's. The split-packet test cut its buffer where a short read and a whole
+  one look alike, so a framer that ignored short buffers passed it; the
+  held-until-it-lands test cuts four bytes into the body, where they do not.
+  And the allowlist test asserted only that no packet reached the pipeline,
+  which `admit`'s own per-packet allowlist guarantees whether or not the
+  connection was ever refused -- it now reads the socket and requires the
+  connection to have ended, which is the part that keeps a rejected source
+  from holding a reader thread open by saying nothing. Its fixture hid the
+  difference a second time: `serve_hep_stream` counts every packet it reads
+  toward `--count`, dropped ones included, so a one-packet budget closed the
+  connection for the wrong reason.
+
 ### Changed
 
 - **Two claims about media-to-leg correlation now have tests that name them.**

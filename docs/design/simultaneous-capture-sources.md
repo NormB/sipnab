@@ -95,7 +95,7 @@ decisions downstream read the source as a scalar:
 ### 2.3 How a packet reaches the pipeline
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:253`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L253)), `capture_files`
-([`src/capture/file.rs:310`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L310)), `capture_hep` ([`src/capture/hep.rs:1856`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1856)), the
+([`src/capture/file.rs:310`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L310)), `capture_hep` ([`src/capture/hep.rs:2477`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L2477)), the
 uprobe reader — builds a `Packet` ([`src/capture/packet.rs:452`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L452)) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
@@ -120,8 +120,8 @@ parser already tells the two kinds of packet apart:
 ### 2.4 The fan-in that already exists
 
 `--multi-device` is the precedent, and it is close to the shape this feature
-needs. `start_multi_capture` ([`src/capture/native.rs:639`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L639)) validates the device
-list, then `run_multi_capture` ([`src/capture/native.rs:735`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L735)) spawns one thread
+needs. `start_multi_capture` ([`src/capture/native.rs:657`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L657)) validates the device
+list, then `run_multi_capture` ([`src/capture/native.rs:753`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L753)) spawns one thread
 per device, hands each a `tx.clone()`, drops its own clone so the channel closes
 when the last reader exits, aggregates a per-device readiness signal, tears every
 sibling down when any one fails to open, and joins them all from a coordinator
@@ -363,7 +363,7 @@ while watching its own NIC is that wedge in its smallest form.
 ### 5.1 Shape
 
 One coordinator thread, one reader thread per member, one `tx.clone()` each —
-`run_multi_capture` ([`src/capture/native.rs:735`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L735)) generalized from a device list
+`run_multi_capture` ([`src/capture/native.rs:753`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L753)) generalized from a device list
 to a source list. No new concurrency primitive, no new channel, no ordering
 guarantee that does not already hold.
 

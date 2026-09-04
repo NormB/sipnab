@@ -39,7 +39,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | r-efi | MIT OR Apache-2.0 OR LGPL-2.1-or-later | **Apache-2.0** |
 | termina | MIT OR MPL-2.0 | **MIT** |
 
-## Rust crates (401)
+## Rust crates (402)
 
 | Crate | Version | License |
 |---|---|---|
@@ -354,6 +354,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | thread_local | 1.1.9 | MIT OR Apache-2.0 |
 | time | 0.3.47 | MIT OR Apache-2.0 |
 | time-core | 0.1.8 | MIT OR Apache-2.0 |
+| time-macros | 0.2.27 | MIT OR Apache-2.0 |
 | tokio | 1.53.1 | MIT |
 | tokio-macros | 2.7.0 | MIT |
 | tokio-stream | 0.1.18 | MIT |

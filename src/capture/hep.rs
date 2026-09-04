@@ -334,7 +334,7 @@ pub fn describe_hep_limiters(global: u64, per_peer: u64) -> String {
 // `HepAuthMode` lives in `crate::cli` (always compiled) so the CLI struct
 // can name it without the `hep` feature; the crypto below is HEP-only.
 
-use crate::cli::HepAuthMode;
+use crate::cli::{HepAuthMode, HepTransport};
 
 /// Wire-format version byte of the HMAC auth token.
 ///
@@ -1779,6 +1779,58 @@ fn is_transient_recv_error(kind: std::io::ErrorKind) -> bool {
     )
 }
 
+/// Where the leading HEP v3 packet in a stream buffer ends, if it has all
+/// arrived.
+///
+/// A datagram socket delivers packet boundaries; a stream does not, and HEP is
+/// the only thing that can supply them here. HEP v3 declares its own total
+/// length in bytes 4..6 of its header, which is precisely what makes "packets
+/// laid end to end" a complete framing — no length prefix of sipnab's
+/// invention, and none of Homer's agents send one.
+///
+/// # Arguments
+///
+/// * `buf` — everything read from this connection and not yet consumed.
+///
+/// # Returns
+///
+/// `Ok(Some(n))` when the first `n` bytes are one whole HEP v3 packet;
+/// `Ok(None)` when more bytes are needed — a header split across segments, or
+/// a declared body still in flight.
+///
+/// # Errors
+///
+/// The buffer does not begin with the `HEP3` magic, or declares a total below
+/// the header it sits in. Both end the connection rather than being skipped: a
+/// stream offers no resynchronization point, so a reader that guessed past bad
+/// bytes would be misaligned for every packet afterwards, and a declared total
+/// of zero would never advance it at all — a hang, not a dropped packet.
+///
+/// HEP v2 fails the magic check, which is correct and not incidental: v2
+/// carries no total length, so it cannot be delimited on a stream by any
+/// means. `--hep-listen-transport tcp` is HEP v3 only, and says so.
+pub(crate) fn hep_stream_frame(buf: &[u8]) -> Result<Option<usize>> {
+    if buf.len() < HEP3_HEADER_LEN {
+        return Ok(None);
+    }
+    ensure!(
+        &buf[..4] == HEP3_MAGIC,
+        "HEP stream does not start with the HEP3 magic (got {:02x?}); HEP v2 \
+         declares no total length and cannot be framed on a stream",
+        &buf[..4]
+    );
+    let total = u16::from_be_bytes([buf[4], buf[5]]) as usize;
+    ensure!(
+        total >= HEP3_HEADER_LEN,
+        "HEP v3 header declares a total of {total} bytes, below its own \
+         {HEP3_HEADER_LEN}-byte header"
+    );
+    if buf.len() < total {
+        return Ok(None);
+    }
+    Ok(Some(total))
+}
+
 /// Options for the HEP listener, grouped so [`capture_hep`] keeps a small
 /// signature. Borrows the allowlist and secret from the caller.
 pub struct HepListenerOpts<'a> {
@@ -1803,9 +1855,565 @@ pub struct HepListenerOpts<'a> {
     /// (`[security] hep_hmac_window_secs`). Ignored in `Plain` mode, which
     /// carries no timestamp at all.
     pub hmac_window_secs: u64,
+    /// Which transport this listener accepts (`--hep-listen-transport`).
+    pub transport: HepTransport,
+    /// Server certificate chain (`--hep-tls-cert`), required by and only used
+    /// by [`HepTransport::Tls`].
+    pub tls_cert: Option<&'a std::path::Path>,
+    /// Private key for [`Self::tls_cert`] (`--hep-tls-key`).
+    pub tls_key: Option<&'a std::path::Path>,
 }
 
-/// HEP listener: binds a UDP socket and receives HEP packets.
+/// How long a stream connection blocks in `read` before the listener rechecks
+/// shutdown, the capture limits, and the clock. The same 100 ms the datagram
+/// listener uses, and for the same reason.
+const HEP_STREAM_READ_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// How long the accept loop sleeps between polls of a non-blocking listener.
+const HEP_ACCEPT_POLL: Duration = Duration::from_millis(20);
+
+/// Bytes read from a stream connection at a time. Comfortably above the 65535
+/// a HEP v3 packet can declare, so the common case is one read per packet.
+const HEP_STREAM_READ_CHUNK: usize = 16 * 1024;
+
+/// Concurrent stream connections one listener will serve.
+///
+/// A bound rather than a configuration knob because it exists to stop an
+/// unauthenticated peer spawning threads, and a knob whose safe value is "the
+/// default" is a knob that gets raised by whoever hits it. Well past any real
+/// estate: a proxy fleet feeding one collector is tens of agents, not hundreds.
+const HEP_MAX_STREAM_CONNECTIONS: usize = 256;
+
+/// The per-packet half of the listener: everything that happens to a HEP
+/// packet between arriving and reaching the pipeline.
+///
+/// Extracted from the datagram loop because a stream listener does exactly the
+/// same work on bytes from a different source, and from several threads at
+/// once. Written twice it would have drifted, and the drift would be silent:
+/// an allowlist honored on UDP and forgotten on TCP is a security hole that no
+/// passing UDP test says anything about.
+struct HepIngest<'a> {
+    /// CIDR allowlist for the outer source address (empty = allow any).
+    allowlist: &'a [CidrRange],
+    /// Receiver-side shared secret, or `None` for an unauthenticated listener.
+    auth_key: Option<&'a str>,
+    /// How the `0x000e` chunk is interpreted.
+    auth_mode: HepAuthMode,
+    /// Seconds either side of now an `Hmac` token's timestamp may fall.
+    hmac_window_secs: u64,
+    /// Global ceiling plus per-peer fairness.
+    rate_limiter: HepRateLimiter,
+    /// Per-SENDER frame numbering.
+    frames: HepFrameOrdinals,
+    /// Per-listener replay cache for HMAC auth mode.
+    hmac_nonce_cache: HmacNonceCache,
+}
+
+impl<'a> HepIngest<'a> {
+    /// The ingest state one listener starts with, from the operator's options.
+    fn new(opts: &HepListenerOpts<'a>) -> Self {
+        Self {
+            allowlist: opts.allowlist,
+            auth_key: opts.auth_key,
+            auth_mode: opts.auth_mode,
+            hmac_window_secs: opts.hmac_window_secs,
+            rate_limiter: HepRateLimiter::new(
+                opts.rate_limit,
+                opts.per_peer_rate_limit,
+                opts.max_tracked_peers,
+            ),
+            frames: HepFrameOrdinals::new(opts.max_tracked_peers),
+            hmac_nonce_cache: HmacNonceCache::new(),
+        }
+    }
+
+    /// Whether `peer` is on the source allowlist (or there is none).
+    ///
+    /// Separate from [`Self::admit`] because a stream listener answers this
+    /// question once, at accept, rather than once per packet: a peer nobody
+    /// allowed must not get a reader thread it can hold open by saying
+    /// nothing.
+    fn peer_allowed(&self, peer: IpAddr) -> bool {
+        self.allowlist.is_empty() || self.allowlist.iter().any(|cidr| cidr.contains(peer))
+    }
+
+    /// One received HEP packet, converted for the pipeline or dropped.
+    ///
+    /// # Arguments
+    ///
+    /// * `datagram` — exactly one HEP packet, however it was delimited.
+    /// * `peer` — the outer source address the bytes came from.
+    ///
+    /// # Returns
+    ///
+    /// The `Packet` to forward, or `None` when the allowlist, the rate
+    /// limiter, the parser or authentication turned it away.
+    ///
+    /// # Side effects
+    ///
+    /// Advances the rate limiter's window, the per-sender frame ordinal and,
+    /// in `Hmac` mode, the replay cache.
+    fn admit(&mut self, datagram: &[u8], peer: IpAddr) -> Option<Packet> {
+        if !self.peer_allowed(peer) {
+            tracing::debug!("Dropping HEP packet from non-allowed source {peer}");
+            return None;
+        }
+        if !self.rate_limiter.allow(peer) {
+            return None;
+        }
+        let hep = match parse_hep(datagram) {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::debug!(
+                    "Skipping malformed HEP packet ({} bytes): {e}",
+                    datagram.len()
+                );
+                return None;
+            }
+        };
+
+        // Receiver-side authentication (SN-01): when a secret is configured,
+        // the sender must prove it via the 0x000e auth-key chunk. This binds
+        // the attacker-asserted inner src/dst metadata to a trusted producer.
+        // Plain mode compares the secret verbatim; Hmac mode verifies a
+        // per-message token (timestamp + nonce + HMAC-SHA256 over the WHOLE
+        // packet), which also resists on-path replay and an observed packet
+        // being re-sent with address chunks appended to it.
+        let auth_pass = match self.auth_mode {
+            HepAuthMode::Plain => hep_auth_ok(self.auth_key, hep.auth_key.as_deref()),
+            HepAuthMode::Hmac => hmac_auth_ok(
+                self.auth_key,
+                datagram,
+                hep.auth_span,
+                self.hmac_window_secs,
+                &mut self.hmac_nonce_cache,
+            ),
+        };
+        if !auth_pass {
+            tracing::debug!(
+                "Dropping HEP packet from {peer}: failed {:?} auth",
+                self.auth_mode
+            );
+            return None;
+        }
+
+        // Provenance is the SENDER, not this listener — see hep_source_label.
+        let source = hep_source_label(hep.capture_id, peer);
+        let mut packet = hep_to_packet(hep, &source);
+        // The other half of the pointer. Stamped from the SENDER's counter,
+        // not the listener's, and before the send for the same reason the
+        // offline readers stamp before theirs: once the packet is on the
+        // shared channel this thread cannot amend it, and the live member of a
+        // composite is interleaving its own packets onto the same channel, so
+        // arrival order says nothing about position.
+        packet.origin = self.frames.next_origin(&source);
+        Some(packet)
+    }
+}
+
+/// The TLS configuration a `--hep-listen-transport tls` listener serves.
+///
+/// Built before the socket is bound, so a certificate sipnab cannot read, or a
+/// key it will not accept, ends the run while the operator is still looking at
+/// the terminal rather than when the first agent connects.
+///
+/// # Arguments
+///
+/// * `cert` — `--hep-tls-cert`, the chain leaf first.
+/// * `key` — `--hep-tls-key`, its private key.
+///
+/// # Errors
+///
+/// Either path is missing, unreadable, world-readable (the key), holds no
+/// certificate or key, or the pair does not match.
+///
+/// # Side effects
+///
+/// Reads and stats both files.
+fn hep_tls_server_config(
+    cert: Option<&std::path::Path>,
+    key: Option<&std::path::Path>,
+) -> Result<std::sync::Arc<rustls::ServerConfig>> {
+    let cert = cert.context("--hep-listen-transport tls needs --hep-tls-cert")?;
+    let key_path = key.context("--hep-listen-transport tls needs --hep-tls-key")?;
+    let chain = pem_certificates(cert)?;
+    let key = pem_private_key(key_path)?;
+    let config = rustls::ServerConfig::builder_with_provider(hep_tls_provider())
+        .with_safe_default_protocol_versions()
+        .context("HEP TLS listener: no usable protocol versions")?
+        .with_no_client_auth()
+        .with_single_cert(chain, key)
+        .with_context(|| {
+            format!(
+                "HEP TLS listener: {} does not go with {}",
+                cert.display(),
+                key_path.display()
+            )
+        })?;
+    Ok(std::sync::Arc::new(config))
+}
+
+/// The state every stream connection of one listener shares.
+///
+/// One copy per listener, borrowed by every reader thread: a rate limiter or a
+/// replay cache kept per connection would be no limit and no cache at all,
+/// since a peer could simply open another socket.
+struct HepStreamShared<'a, 'o> {
+    /// The per-packet half of the listener (allowlist, limits, auth, ordinals).
+    ingest: parking_lot::Mutex<HepIngest<'o>>,
+    /// "No packets for 30s" is a property of the listener, not a connection.
+    idle: parking_lot::Mutex<IdleWatch>,
+    /// Packets RECEIVED across every connection — what `--count` counts.
+    received: std::sync::atomic::AtomicU64,
+    /// Set when the listener is winding down; every reader polls it on its
+    /// read timeout, which is what bounds teardown.
+    stop: std::sync::atomic::AtomicBool,
+    /// Connections currently being served, against
+    /// [`HEP_MAX_STREAM_CONNECTIONS`].
+    live: std::sync::atomic::AtomicUsize,
+    /// The capture limits.
+    config: &'a CaptureConfig,
+    /// When the listener began, for `--duration`.
+    start: Instant,
+}
+
+/// Read one stream connection to its end, handing whole HEP packets to
+/// `ingest` and the pipeline.
+///
+/// Generic over the reader so the TCP and TLS paths are one body: a
+/// `TcpStream` and a `rustls::StreamOwned` over one differ in how bytes are
+/// obtained and in nothing else that matters here.
+///
+/// # Arguments
+///
+/// * `stream` — the connection, with a read timeout already set.
+/// * `peer` — the outer source address, for provenance and the allowlist.
+/// * `shared` — the listener-wide state every connection updates, so the rate
+///   limiter, the replay cache and the idle watch see the whole listener
+///   rather than one peer.
+/// * `tx` — the pipeline channel.
+///
+/// # Side effects
+///
+/// Reads the connection, forwards packets to `tx` (blocking on backpressure),
+/// and sets `stop` if the pipeline's receiving side has gone.
+fn serve_hep_stream<R: std::io::Read>(
+    stream: &mut R,
+    peer: IpAddr,
+    shared: &HepStreamShared<'_, '_>,
+    tx: &PacketTx,
+) {
+    use std::sync::atomic::Ordering;
+    let HepStreamShared {
+        ingest,
+        idle,
+        received,
+        stop,
+        config,
+        start,
+        ..
+    } = shared;
+    let start = *start;
+    let mut buf: Vec<u8> = Vec::with_capacity(HEP_STREAM_READ_CHUNK);
+    let mut chunk = vec![0u8; HEP_STREAM_READ_CHUNK];
+    loop {
+        if stop.load(Ordering::Relaxed) || signals::shutdown_requested() {
+            return;
+        }
+        if let Some(max_count) = config.count
+            && received.load(Ordering::Relaxed) >= max_count
+        {
+            return;
+        }
+        if let Some(duration) = config.duration
+            && start.elapsed() >= duration
+        {
+            return;
+        }
+
+        // Everything whole in the buffer, before asking for more bytes.
+        loop {
+            let total = match hep_stream_frame(&buf) {
+                Ok(Some(total)) => total,
+                Ok(None) => break,
+                Err(e) => {
+                    // No resynchronization point on a stream: once the reader
+                    // is off by a byte every later length is garbage, so the
+                    // connection ends rather than silently discarding the rest
+                    // of what this peer sends.
+                    tracing::debug!("Closing HEP stream from {peer}: {e}");
+                    return;
+                }
+            };
+            // Count every packet received off the connection, not only those
+            // ultimately forwarded: `--count N` means "stop after receiving N
+            // packets", so a run whose packets are dropped by the allowlist,
+            // rate limiter, parser or auth still makes progress toward the
+            // limit rather than appearing to stall.
+            received.fetch_add(1, Ordering::Relaxed);
+            if let Some(outage) = idle.lock().on_packet(Instant::now()) {
+                tracing::info!(
+                    "HEP listener: traffic resumed after {}s idle",
+                    outage.as_secs()
+                );
+            }
+            let packet = ingest.lock().admit(&buf[..total], peer);
+            buf.drain(..total);
+            if let Some(packet) = packet
+                && tx.send(packet).is_err()
+            {
+                tracing::debug!("Receiver dropped, stopping HEP listener");
+                stop.store(true, Ordering::Relaxed);
+                return;
+            }
+            if let Some(max_count) = config.count
+                && received.load(Ordering::Relaxed) >= max_count
+            {
+                return;
+            }
+        }
+
+        match stream.read(&mut chunk) {
+            Ok(0) => {
+                if !buf.is_empty() {
+                    tracing::debug!(
+                        "HEP peer {peer} closed mid-packet; {} buffered bytes discarded",
+                        buf.len()
+                    );
+                }
+                return;
+            }
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(ref e) if is_transient_recv_error(e.kind()) => continue,
+            Err(e) => {
+                tracing::debug!("HEP stream from {peer} ended: {e}");
+                return;
+            }
+        }
+    }
+}
+
+/// Serve HEP over TCP or TLS: accept connections and read each as a stream of
+/// length-prefixed HEP v3 packets.
+///
+/// One thread per connection, inside a [`std::thread::scope`] so no reader can
+/// outlive the listener that spawned it — and so the shared allowlist, secret
+/// and ingest state need no `Arc`. Every reader polls `stop` on its read
+/// timeout, which bounds teardown at [`HEP_STREAM_READ_TIMEOUT`].
+///
+/// # Errors
+///
+/// The socket cannot be bound or configured, or a non-transient accept error
+/// occurs.
+///
+/// # Side effects
+///
+/// Binds and polls a TCP socket; spawns a thread per accepted connection;
+/// forwards packets to `tx`; logs startup, limit, drop and idle events.
+fn capture_hep_stream(
+    bind_addr: &str,
+    config: &CaptureConfig,
+    tx: PacketTx,
+    opts: &HepListenerOpts<'_>,
+    tls: Option<std::sync::Arc<rustls::ServerConfig>>,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+) -> Result<()> {
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+    let listener = match std::net::TcpListener::bind(bind_addr)
+        .with_context(|| format!("Failed to bind HEP listener on '{bind_addr}'"))
+        .and_then(|l| {
+            l.set_nonblocking(true)
+                .context("Failed to put the HEP listener into non-blocking mode")?;
+            Ok(l)
+        }) {
+        Ok(l) => l,
+        Err(e) => {
+            if let Some(ready) = ready_tx {
+                let _ = ready.send(Err(format!("{e:#}")));
+            }
+            return Err(e);
+        }
+    };
+    if let Some(ready) = ready_tx {
+        let _ = ready.send(Ok(()));
+    }
+
+    let actual_addr = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| bind_addr.to_string());
+    tracing::info!("HEP listener started on {actual_addr} ({})", opts.transport);
+
+    let shared = HepStreamShared {
+        ingest: parking_lot::Mutex::new(HepIngest::new(opts)),
+        idle: parking_lot::Mutex::new(IdleWatch::new(HEP_IDLE_WARN_AFTER, Instant::now())),
+        received: AtomicU64::new(0),
+        stop: AtomicBool::new(false),
+        live: AtomicUsize::new(0),
+        config,
+        start: Instant::now(),
+    };
+    let mut fatal: Option<anyhow::Error> = None;
+
+    std::thread::scope(|scope| {
+        loop {
+            if signals::shutdown_requested() {
+                tracing::debug!("Shutdown requested, stopping HEP listener");
+                break;
+            }
+            if let Some(max_count) = config.count
+                && shared.received.load(Ordering::Relaxed) >= max_count
+            {
+                tracing::debug!("Reached packet count limit ({max_count})");
+                break;
+            }
+            if let Some(duration) = config.duration
+                && shared.start.elapsed() >= duration
+            {
+                tracing::debug!("Reached duration limit ({duration:?})");
+                break;
+            }
+
+            let (sock, peer) = match listener.accept() {
+                Ok(pair) => pair,
+                Err(ref e) if is_transient_recv_error(e.kind()) => {
+                    if let Some(gap) = shared.idle.lock().check(Instant::now()) {
+                        tracing::warn!(
+                            "HEP listener on {bind_addr}: no packets for {}s — \
+                             upstream sender may be down; capture is still listening",
+                            gap.as_secs()
+                        );
+                    }
+                    std::thread::sleep(HEP_ACCEPT_POLL);
+                    continue;
+                }
+                Err(e) => {
+                    tracing::error!("HEP accept error: {e}");
+                    fatal = Some(anyhow::Error::new(e).context("Fatal HEP socket error"));
+                    break;
+                }
+            };
+
+            // The allowlist is answered HERE, not per packet: a source nobody
+            // allowed must not get a reader thread it can hold open by saying
+            // nothing at all.
+            if !shared.ingest.lock().peer_allowed(peer.ip()) {
+                tracing::debug!(
+                    "Refusing HEP connection from non-allowed source {}",
+                    peer.ip()
+                );
+                drop(sock);
+                continue;
+            }
+            if shared.live.load(Ordering::Relaxed) >= HEP_MAX_STREAM_CONNECTIONS {
+                tracing::warn!(
+                    "HEP listener on {bind_addr}: refusing {} — already serving \
+                     {HEP_MAX_STREAM_CONNECTIONS} connections",
+                    peer.ip()
+                );
+                drop(sock);
+                continue;
+            }
+            if let Err(e) = sock
+                .set_read_timeout(Some(HEP_STREAM_READ_TIMEOUT))
+                .and_then(|()| sock.set_nodelay(true))
+            {
+                tracing::warn!("Dropping HEP connection from {}: {e}", peer.ip());
+                continue;
+            }
+
+            shared.live.fetch_add(1, Ordering::Relaxed);
+            let conn_tx = tx.clone();
+            let tls = tls.clone();
+            let shared = &shared;
+            scope.spawn(move || {
+                let mut sock = sock;
+                match tls {
+                    None => serve_hep_stream(&mut sock, peer.ip(), shared, &conn_tx),
+                    Some(cfg) => {
+                        if let Some(mut stream) = hep_tls_accept(sock, peer.ip(), cfg, &shared.stop)
+                        {
+                            serve_hep_stream(&mut stream, peer.ip(), shared, &conn_tx);
+                        }
+                    }
+                }
+                shared.live.fetch_sub(1, Ordering::Relaxed);
+            });
+        }
+        // Every reader polls this on its read timeout, so the scope's join
+        // costs at most one HEP_STREAM_READ_TIMEOUT.
+        shared.stop.store(true, Ordering::Relaxed);
+    });
+
+    tracing::info!(
+        "HEP listener on {bind_addr} finished: {} packets received",
+        shared.received.load(Ordering::Relaxed)
+    );
+    match fatal {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Complete the TLS handshake on an accepted connection, or give it up.
+///
+/// Done in the connection's own thread rather than in the accept loop: a peer
+/// that opens a socket and then says nothing would otherwise stall every other
+/// agent behind it. The budget is [`HEP_TLS_HANDSHAKE_TIMEOUT`], because a
+/// stalled handshake still costs a thread.
+///
+/// # Returns
+///
+/// The established stream, or `None` — the handshake failed, timed out, or the
+/// listener is shutting down — in which case it has already been logged.
+///
+/// # Side effects
+///
+/// Reads and writes the socket for as long as the handshake takes.
+fn hep_tls_accept(
+    sock: std::net::TcpStream,
+    peer: IpAddr,
+    cfg: std::sync::Arc<rustls::ServerConfig>,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Option<rustls::StreamOwned<rustls::ServerConnection, std::net::TcpStream>> {
+    use std::sync::atomic::Ordering;
+    let mut conn = match rustls::ServerConnection::new(cfg) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("HEP TLS session for {peer} could not be created: {e}");
+            return None;
+        }
+    };
+    let mut sock = sock;
+    let deadline = Instant::now() + HEP_TLS_HANDSHAKE_TIMEOUT;
+    while conn.is_handshaking() {
+        if stop.load(Ordering::Relaxed) || signals::shutdown_requested() {
+            return None;
+        }
+        if Instant::now() >= deadline {
+            tracing::warn!(
+                "HEP TLS handshake with {peer} did not finish within {HEP_TLS_HANDSHAKE_TIMEOUT:?}"
+            );
+            return None;
+        }
+        match conn.complete_io(&mut sock) {
+            // No bytes moved and still handshaking: the peer has gone.
+            Ok((0, 0)) => return None,
+            Ok(_) => {}
+            // The read timeout ticked while the peer was thinking.
+            Err(ref e) if is_transient_recv_error(e.kind()) => {}
+            Err(e) => {
+                tracing::debug!("HEP TLS handshake with {peer} failed: {e}");
+                return None;
+            }
+        }
+    }
+    tracing::debug!("HEP TLS session established with {peer}");
+    Some(rustls::StreamOwned::new(conn, sock))
+}
+
+/// HEP listener: accept HEP packets over the transport the operator named.
 ///
 /// Each received HEP packet is parsed and converted via `hep_to_packet`
 /// into a [`Packet`] carrying `pre_parsed` metadata (src/dst addr+port and
@@ -1815,23 +2423,34 @@ pub struct HepListenerOpts<'a> {
 /// The listener checks [`signals::shutdown_requested`] each iteration and
 /// respects the `count` and `duration` limits from `config`. Source
 /// filtering, rate limiting, and receiver-side authentication come from
-/// [`HepListenerOpts`].
+/// [`HepListenerOpts`] and are identical on every transport — they are one
+/// [`HepIngest`], not one per socket type.
+///
+/// # Transports
+///
+/// `udp` reads datagrams, which carry their own boundaries. `tcp` and `tls`
+/// accept connections and read each as HEP v3 packets laid end to end,
+/// delimited by the total length in each header ([`hep_stream_frame`]); HEP v2
+/// declares no total length and therefore cannot travel on a stream at all.
 ///
 /// # Default bind address
 ///
 /// Per design decision D18, the default bind address is `127.0.0.1:9060`.
 /// A non-loopback bind is refused unless `opts.auth_key` or a non-empty
-/// `opts.allowlist` is configured (SN-01).
+/// `opts.allowlist` is configured (SN-01), on every transport: TLS encrypts
+/// the path and says nothing about who the peer is, since sipnab asks
+/// connecting agents for no certificate of their own.
 ///
 /// # Arguments
 ///
-/// * `bind_addr` — UDP address to bind (host:port; port 0 = ephemeral).
+/// * `bind_addr` — address to bind (host:port; port 0 = ephemeral).
 /// * `config` — capture limits (`count` = max packets *received*, counted
 ///   before allowlist/rate-limit/auth drops; `duration` = max runtime);
 ///   either being reached stops the listener cleanly.
 /// * `tx` — pipeline channel each converted `Packet` is sent to; the loop
 ///   ends when the receiving side is dropped.
-/// * `opts` — allowlist, rate limits, and receiver-side auth settings.
+/// * `opts` — transport, TLS material, allowlist, rate limits, and
+///   receiver-side auth settings.
 /// * `ready_tx` — optional one-shot channel that receives `Ok(())` once the
 ///   socket is bound (or `Err(reason)` on startup failure), letting the
 ///   spawning thread await readiness.
@@ -1843,16 +2462,18 @@ pub struct HepListenerOpts<'a> {
 ///
 /// # Errors
 ///
-/// Returns an error if the bind policy is violated, the UDP socket cannot
-/// be bound or configured, or a non-transient socket receive error occurs.
+/// Returns an error if the bind policy is violated, the TLS certificate or key
+/// cannot be loaded, the socket cannot be bound or configured, or a
+/// non-transient socket error occurs.
 ///
 /// # Side effects
 ///
-/// Binds and reads a UDP socket (blocking, with a 100 ms read timeout);
-/// logs startup/limit/drop/idle events via `tracing`; sends readiness on
+/// Binds a socket and reads it (blocking, with a 100 ms timeout); for a stream
+/// transport spawns one thread per accepted connection; logs
+/// startup/limit/drop/idle events via `tracing`; sends readiness on
 /// `ready_tx`; forwards accepted packets to `tx` (blocking on channel
-/// backpressure); and maintains internal rate-limiter and HMAC replay-cache
-/// state for the life of the loop.
+/// backpressure); and maintains rate-limiter and HMAC replay-cache state for
+/// the life of the listener.
 pub fn capture_hep(
     bind_addr: &str,
     config: &CaptureConfig,
@@ -1860,26 +2481,99 @@ pub fn capture_hep(
     opts: &HepListenerOpts<'_>,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
-    let HepListenerOpts {
-        allowlist,
-        rate_limit,
-        per_peer_rate_limit,
-        max_tracked_peers,
-        auth_key,
-        auth_mode,
-        hmac_window_secs,
-    } = *opts;
-
     // Fail closed on an unguarded non-loopback bind before touching the
     // socket (SN-01, D18): a routable HEP listener must be constrained by a
-    // shared secret or a source allowlist.
-    if let Err(reason) = enforce_hep_bind_policy(bind_addr, auth_key.is_some(), allowlist.len()) {
+    // shared secret or a source allowlist. Ahead of the transport split
+    // because it is a property of the ADDRESS, and a TLS listener earns no
+    // exemption — encrypting the path says nothing about who is on it.
+    if let Err(reason) =
+        enforce_hep_bind_policy(bind_addr, opts.auth_key.is_some(), opts.allowlist.len())
+    {
         if let Some(ready) = ready_tx {
             let _ = ready.send(Err(reason.clone()));
         }
         return Err(anyhow::anyhow!(reason));
     }
 
+    // Before the bind, so a certificate sipnab cannot read ends the run while
+    // the operator is still looking at the terminal.
+    let tls = match opts.transport {
+        HepTransport::Tls => match hep_tls_server_config(opts.tls_cert, opts.tls_key) {
+            Ok(cfg) => Some(cfg),
+            Err(e) => {
+                if let Some(ready) = ready_tx {
+                    let _ = ready.send(Err(format!("{e:#}")));
+                }
+                return Err(e);
+            }
+        },
+        _ => None,
+    };
+
+    if !opts.allowlist.is_empty() {
+        tracing::info!(
+            "HEP allowlist active: {} CIDR range(s)",
+            opts.allowlist.len()
+        );
+    }
+    tracing::info!(
+        "{}",
+        describe_hep_limiters(opts.rate_limit, opts.per_peer_rate_limit)
+    );
+    // Loopback classification is purely syntactic (no DNS in a security
+    // check), so a hostname bind cannot be verified as loopback and is
+    // treated as routable. enforce_hep_bind_policy already fail-closes it
+    // when no auth or allowlist is set; when it is allowed, warn and suggest a
+    // literal so the operator knows the loopback shortcut did not apply.
+    if !hep_bind_is_ip_literal(bind_addr) {
+        tracing::warn!(
+            "HEP listen address '{bind_addr}' is not a literal IP; sipnab does not resolve \
+             it to decide loopback vs routable (a DNS lookup in a security check could block \
+             or be spoofed) and treats it as non-loopback. Use a literal such as \
+             127.0.0.1:PORT or 0.0.0.0:PORT."
+        );
+    }
+    if opts.auth_key.is_some() {
+        tracing::info!("HEP receiver authentication active: packets must carry a matching key");
+    } else if !hep_bind_is_loopback(bind_addr) {
+        tracing::warn!(
+            "HEP listener on {bind_addr} is non-loopback and unauthenticated — the inner \
+             src/dst addresses a sender asserts are trusted verbatim; prefer --hep-auth."
+        );
+    }
+
+    match opts.transport {
+        HepTransport::Udp => capture_hep_udp(bind_addr, config, tx, opts, ready_tx),
+        HepTransport::Tcp | HepTransport::Tls => {
+            capture_hep_stream(bind_addr, config, tx, opts, tls, ready_tx)
+        }
+    }
+}
+
+/// The datagram half of [`capture_hep`]: bind a UDP socket and read it.
+///
+/// Every datagram carries its own boundary, so there is no framing here — the
+/// bytes off one `recv_from` are one HEP packet, handed straight to
+/// [`HepIngest::admit`]. The policy checks, the readiness signal and the
+/// startup logging all happen in [`capture_hep`] before this is reached.
+///
+/// # Errors
+///
+/// The socket cannot be bound or configured, or a non-transient receive error
+/// occurs.
+///
+/// # Side effects
+///
+/// Binds and reads a UDP socket (blocking, with a 100 ms read timeout); sends
+/// readiness on `ready_tx`; forwards accepted packets to `tx`, blocking on
+/// channel backpressure.
+fn capture_hep_udp(
+    bind_addr: &str,
+    config: &CaptureConfig,
+    tx: PacketTx,
+    opts: &HepListenerOpts<'_>,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+) -> Result<()> {
     let socket = match UdpSocket::bind(bind_addr)
         .with_context(|| format!("Failed to bind HEP listener on '{bind_addr}'"))
     {
@@ -1911,39 +2605,7 @@ pub fn capture_hep(
     let start = Instant::now();
     let mut count: u64 = 0;
     let mut buf = vec![0u8; 65535];
-    let mut rate_limiter = HepRateLimiter::new(rate_limit, per_peer_rate_limit, max_tracked_peers);
-    // Per-SENDER frame numbering. Bounded by the same figure as the rate
-    // limiter's peer table, and for the same reason: the label is built from a
-    // capture-agent id an unauthenticated peer chooses.
-    let mut frames = HepFrameOrdinals::new(max_tracked_peers);
-    // Per-listener replay cache for HMAC auth mode (SN-01 residual).
-    let mut hmac_nonce_cache = HmacNonceCache::new();
-
-    if !allowlist.is_empty() {
-        tracing::info!("HEP allowlist active: {} CIDR range(s)", allowlist.len());
-    }
-    tracing::info!("{}", describe_hep_limiters(rate_limit, per_peer_rate_limit));
-    // Loopback classification is purely syntactic (no DNS in a security
-    // check), so a hostname bind cannot be verified as loopback and is
-    // treated as routable. enforce_hep_bind_policy already fail-closes it
-    // when no auth or allowlist is set; when it is allowed, warn and suggest a
-    // literal so the operator knows the loopback shortcut did not apply.
-    if !hep_bind_is_ip_literal(bind_addr) {
-        tracing::warn!(
-            "HEP listen address '{bind_addr}' is not a literal IP; sipnab does not resolve \
-             it to decide loopback vs routable (a DNS lookup in a security check could block \
-             or be spoofed) and treats it as non-loopback. Use a literal such as \
-             127.0.0.1:PORT or 0.0.0.0:PORT."
-        );
-    }
-    if auth_key.is_some() {
-        tracing::info!("HEP receiver authentication active: packets must carry a matching key");
-    } else if !hep_bind_is_loopback(bind_addr) {
-        tracing::warn!(
-            "HEP listener on {bind_addr} is non-loopback and unauthenticated — the inner \
-             src/dst addresses a sender asserts are trusted verbatim; prefer --hep-auth."
-        );
-    }
+    let mut ingest = HepIngest::new(opts);
 
     // Log the actual bound address: with port 0 the OS assigns an ephemeral
     // port, so logging `bind_addr` would print ":0" (mirrors the REST API).
@@ -2012,73 +2674,12 @@ pub fn capture_hep(
         // toward the limit rather than appearing to stall.
         count += 1;
 
-        // Check allowlist
-        if !allowlist.is_empty() {
-            let peer_ip = peer.ip();
-            if !allowlist.iter().any(|cidr| cidr.contains(peer_ip)) {
-                tracing::debug!("Dropping HEP packet from non-allowed source {peer_ip}");
-                continue;
-            }
-        }
-
-        // Check rate limit (global ceiling + per-peer fairness)
-        if !rate_limiter.allow(peer.ip()) {
-            continue;
-        }
-
-        let hep = match parse_hep(&buf[..n]) {
-            Ok(h) => h,
-            Err(e) => {
-                tracing::debug!("Skipping malformed HEP packet ({n} bytes): {e}");
-                continue;
-            }
-        };
-
-        // Receiver-side authentication (SN-01): when a secret is configured,
-        // the sender must prove it via the 0x000e auth-key chunk. This binds
-        // the attacker-asserted inner src/dst metadata to a trusted producer.
-        // Plain mode compares the secret verbatim; Hmac mode verifies a
-        // per-message token (timestamp + nonce + HMAC over the WHOLE
-        // datagram), which also resists on-path replay and an observed
-        // packet being re-sent with address chunks appended to it.
-        let auth_pass = match auth_mode {
-            HepAuthMode::Plain => hep_auth_ok(auth_key, hep.auth_key.as_deref()),
-            // The DATAGRAM, not the payload: the token authenticates every
-            // byte that reached this socket, so the src/dst chunks feeding
-            // `hep_to_packet` below are inside the signature rather than
-            // beside it.
-            HepAuthMode::Hmac => hmac_auth_ok(
-                auth_key,
-                &buf[..n],
-                hep.auth_span,
-                hmac_window_secs,
-                &mut hmac_nonce_cache,
-            ),
-        };
-        if !auth_pass {
-            tracing::debug!(
-                "Dropping HEP packet from {}: failed {:?} auth",
-                peer.ip(),
-                auth_mode
-            );
-            continue;
-        }
-
-        // Convert to a Packet that the rest of the pipeline can process.
-        // The HEP chunks (src/dst addr+port, IP protocol) flow into
-        // PreParsed so the parser short-circuits the IP-header walk.
-        // Provenance is the SENDER, not this listener — see hep_source_label.
-        let source = hep_source_label(hep.capture_id, peer.ip());
-        let mut packet = hep_to_packet(hep, &source);
-        // The other half of the pointer. Stamped from the SENDER's counter,
-        // not the listener's, and before the send for the same reason the
-        // offline readers stamp before theirs: once the packet is on the
-        // shared channel this thread cannot amend it, and the live member of a
-        // composite is interleaving its own packets onto the same channel, so
-        // arrival order says nothing about position.
-        packet.origin = frames.next_origin(&source);
-
-        if tx.send(packet).is_err() {
+        // The DATAGRAM, not the payload, reaches `admit`: in Hmac mode the
+        // token authenticates every byte that arrived on this socket, so the
+        // src/dst chunks are inside the signature rather than beside it.
+        if let Some(packet) = ingest.admit(&buf[..n], peer.ip())
+            && tx.send(packet).is_err()
+        {
             tracing::debug!("Receiver dropped, stopping HEP listener");
             break;
         }
@@ -2108,6 +2709,261 @@ pub fn capture_hep(
 //
 // See `docs/design/outbound-transmit-capability.md` for the shape these
 // follow, in particular why the two permits must never be interconvertible.
+
+// ── HEP over a stream: the pieces TCP and TLS share ──────────────────
+
+/// Where a [`HepSender`] puts each finished packet.
+///
+/// A boxed closure rather than the socket itself: the three transports have
+/// three unrelated types, only one of which is `Sync`, and the packet path
+/// must not care which one it got.
+type HepSink = Box<dyn FnMut(&[u8]) -> std::io::Result<()> + Send>;
+
+/// TLS handshake budget for one HEP connection, either direction.
+///
+/// A peer that opens a connection and then says nothing would otherwise hold a
+/// listener thread for as long as it liked, and a sender would block startup on
+/// a collector that answers the TCP SYN and nothing else.
+const HEP_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The name a collector's certificate is checked against: the host the
+/// operator dialled, without the port.
+///
+/// Whatever they wrote is what gets verified. A name is offered as a name, so
+/// the certificate's SAN must match it; a bare address is offered as an
+/// address, which is what a certificate for an IP must carry. Deriving this
+/// from anything else — a reverse lookup, the address the name resolved to —
+/// is how a client ends up validating a name nobody asked for.
+///
+/// # Arguments
+///
+/// * `target` — the `--hep-send` value, `host:port` as the operator wrote it.
+///
+/// # Returns
+///
+/// The host part, with a bracketed IPv6 literal unwrapped; `None` when
+/// `target` carries no numeric port, since then the colon was not a host/port
+/// separator and there is nothing to trust.
+fn server_name_of(target: &str) -> Option<String> {
+    let (host, port) = target.rsplit_once(':')?;
+    if port.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(
+        host.trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string(),
+    )
+}
+
+/// Every `-----BEGIN <label>-----` block in a PEM file, as `(label, DER)`.
+///
+/// Written here rather than pulled in as a dependency because it is thirty
+/// lines of base64 between two markers, and because the alternative that also
+/// supplies the public trust roots — `webpki-roots` — is CDLA-Permissive-2.0,
+/// which is not on `deny.toml`'s allow list. See [`hep_tls_roots`] for what
+/// replaces it.
+///
+/// # Arguments
+///
+/// * `pem` — the file's bytes.
+///
+/// # Errors
+///
+/// A block whose base64 body does not decode. A stray `BEGIN` with no `END` is
+/// discarded rather than refused: a CA bundle routinely carries comments and
+/// human-readable certificate dumps between its blocks.
+fn pem_blocks(pem: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+    use base64::Engine;
+    let text = String::from_utf8_lossy(pem);
+    let mut out = Vec::new();
+    let mut label: Option<String> = None;
+    let mut body = String::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("-----BEGIN ") {
+            label = rest.strip_suffix("-----").map(str::to_string);
+            body.clear();
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("-----END ") {
+            let ending = rest.strip_suffix("-----").unwrap_or_default();
+            if let Some(open) = label.take()
+                && open == ending
+            {
+                let der = base64::engine::general_purpose::STANDARD
+                    .decode(body.as_bytes())
+                    .with_context(|| format!("PEM block '{open}' is not valid base64"))?;
+                out.push((open, der));
+            }
+            body.clear();
+            continue;
+        }
+        if label.is_some() {
+            body.push_str(line);
+        }
+    }
+    Ok(out)
+}
+
+/// The certificates in a PEM file, in file order.
+///
+/// # Errors
+///
+/// The file cannot be read, a block does not decode, or it holds no
+/// certificate at all. The last is deliberately an error rather than an empty
+/// list: an empty chain and an empty trust store both "work" and then refuse
+/// every peer, which reads as a broken far end rather than a typo in a path.
+fn pem_certificates(
+    path: &std::path::Path,
+) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
+    let pem = std::fs::read(path).with_context(|| format!("{}", path.display()))?;
+    let certs: Vec<_> = pem_blocks(&pem)
+        .with_context(|| format!("{}", path.display()))?
+        .into_iter()
+        .filter(|(label, _)| label == "CERTIFICATE" || label == "X509 CERTIFICATE")
+        .map(|(_, der)| rustls::pki_types::CertificateDer::from(der))
+        .collect();
+    ensure!(
+        !certs.is_empty(),
+        "{}: no certificate in this file",
+        path.display()
+    );
+    Ok(certs)
+}
+
+/// The first private key in a PEM file, refusing one any other user can read.
+///
+/// A key file the world can read is not a private key, and a tool that loads
+/// it anyway lets the operator believe the HEP listener is authenticated when
+/// any local account can impersonate it. Group-readable is allowed on purpose:
+/// `root:sipnab 0640` is how a key is normally handed to a service account.
+///
+/// # Errors
+///
+/// The file cannot be read or stat'd, it is world-readable, it holds no
+/// private key, or a block does not decode.
+fn pem_private_key(path: &std::path::Path) -> Result<rustls::pki_types::PrivateKeyDer<'static>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(path).with_context(|| format!("{}", path.display()))?;
+        let mode = meta.permissions().mode();
+        ensure!(
+            mode & 0o004 == 0,
+            "{}: the HEP TLS private key is world-readable (mode {:04o}); chmod 600 it",
+            path.display(),
+            mode & 0o7777
+        );
+    }
+    let pem = std::fs::read(path).with_context(|| format!("{}", path.display()))?;
+    for (label, der) in pem_blocks(&pem).with_context(|| format!("{}", path.display()))? {
+        let key = match label.as_str() {
+            "PRIVATE KEY" => rustls::pki_types::PrivateKeyDer::Pkcs8(der.into()),
+            "RSA PRIVATE KEY" => rustls::pki_types::PrivateKeyDer::Pkcs1(der.into()),
+            "EC PRIVATE KEY" => rustls::pki_types::PrivateKeyDer::Sec1(der.into()),
+            _ => continue,
+        };
+        return Ok(key);
+    }
+    bail!(
+        "{}: no PRIVATE KEY, RSA PRIVATE KEY or EC PRIVATE KEY block in this file",
+        path.display()
+    )
+}
+
+/// CA bundles a host may keep, tried in order when no `--hep-tls-ca` is named.
+///
+/// Reading the host's own bundle rather than compiling Mozilla's list in has
+/// two consequences worth stating: an operator who adds their collector's
+/// issuer to the system store does not also have to name it here, and a host
+/// whose bundle sipnab cannot find is told to pass `--hep-tls-ca` rather than
+/// silently trusting nothing.
+const HEP_SYSTEM_CA_BUNDLES: &[&str] = &[
+    // Debian, Ubuntu, Arch
+    "/etc/ssl/certs/ca-certificates.crt",
+    // RHEL, Fedora, CentOS
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    // openSUSE
+    "/etc/ssl/ca-bundle.pem",
+    // Alpine, and the OpenSSL default on the BSDs
+    "/etc/ssl/cert.pem",
+    // Homebrew's OpenSSL on macOS
+    "/opt/homebrew/etc/openssl@3/cert.pem",
+];
+
+/// The roots a collector's certificate is checked against.
+///
+/// With a file named, ONLY that file. A private collector's issuer is the
+/// whole trust store, and quietly adding the host's public roots beside it
+/// would widen what this sender accepts far past what the operator asked for.
+/// A path that cannot be read, or that holds no certificate, is an error
+/// rather than an empty store.
+///
+/// With no file named, the host's CA bundle — `$SSL_CERT_FILE` if set, else
+/// the first of [`HEP_SYSTEM_CA_BUNDLES`] that exists. Individual certificates
+/// a system bundle carries that rustls declines are skipped, because one
+/// unsupported root in a 140-certificate bundle must not take the other 139
+/// with it; a bundle from which nothing at all loads is an error.
+///
+/// # Arguments
+///
+/// * `ca` — the `--hep-tls-ca` path, or `None` for the host's bundle.
+///
+/// # Errors
+///
+/// The named file cannot be read or holds no certificate; or no host bundle
+/// was found, in which case the message names `--hep-tls-ca` as the way out.
+///
+/// # Side effects
+///
+/// Reads `$SSL_CERT_FILE` and stats the candidate bundle paths when `ca` is
+/// `None`.
+fn hep_tls_roots(ca: Option<&std::path::Path>) -> Result<rustls::RootCertStore> {
+    let mut store = rustls::RootCertStore::empty();
+    if let Some(path) = ca {
+        for cert in pem_certificates(path)? {
+            store
+                .add(cert)
+                .with_context(|| format!("{}: rustls rejected a certificate", path.display()))?;
+        }
+        return Ok(store);
+    }
+    let bundle = std::env::var_os("SSL_CERT_FILE")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(|| {
+            HEP_SYSTEM_CA_BUNDLES
+                .iter()
+                .map(std::path::PathBuf::from)
+                .find(|p| p.is_file())
+        })
+        .with_context(
+            || "no system CA bundle found; name the collector's issuer with --hep-tls-ca",
+        )?;
+    let mut added = 0usize;
+    for cert in pem_certificates(&bundle)? {
+        if store.add(cert).is_ok() {
+            added += 1;
+        }
+    }
+    ensure!(
+        added > 0,
+        "{}: the system CA bundle yielded no usable certificate; name the \
+         collector's issuer with --hep-tls-ca",
+        bundle.display()
+    );
+    Ok(store)
+}
+
+/// The crypto provider both HEP TLS sides are built on.
+///
+/// Named explicitly rather than taken from the process default, which
+/// `ClientConfig::builder()` panics on when no provider is installed. A capture
+/// tool must not abort a run inside a builder.
+fn hep_tls_provider() -> std::sync::Arc<rustls::crypto::CryptoProvider> {
+    std::sync::Arc::new(rustls::crypto::ring::default_provider())
+}
 
 /// The flag an operator types to ask for the HEP export, quoted verbatim in
 /// [`file_export_notice`] so the message names what they wrote.
@@ -2285,8 +3141,17 @@ pub fn file_export_notice(
 /// finds two permits, not one, and neither is reachable without proving
 /// something first.
 pub struct HepSender {
-    /// Underlying UDP socket (connected to the destination).
-    socket: UdpSocket,
+    /// Where finished packets go: a connected UDP socket, a TCP stream, or a
+    /// TLS stream over one. Behind a mutex because a stream sink is `&mut` —
+    /// a half-written packet interleaved with another would desynchronize the
+    /// collector's framing for the rest of the connection — while the packet
+    /// path holds only `&self`.
+    sink: parking_lot::Mutex<HepSink>,
+    /// The local address the sink bound, kept because a stream sink rebuilds
+    /// its connection and the original socket is not there to ask.
+    local_addr: std::net::SocketAddr,
+    /// Which transport [`Self::sink`] speaks, for the startup log line.
+    transport: HepTransport,
     /// Capture agent ID included in every HEP packet.
     capture_id: u32,
     /// Optional Homer authenticate key (0x000e chunk) added to every packet.
@@ -2309,14 +3174,198 @@ pub struct HepSender {
     permit: HepExportPermit,
 }
 
+/// Everything a [`HepSender`] needs beyond the destination itself.
+///
+/// A struct rather than five positional arguments: `transport` and `tls_ca`
+/// arrived together and would otherwise have made a seven-argument
+/// constructor whose `None`s a reader has to count.
+#[derive(Debug, Clone, Default)]
+pub struct HepSenderOpts<'a> {
+    /// Capture agent id stamped into every packet (`--hep-id`).
+    pub capture_id: u32,
+    /// Optional shared secret for the `0x000e` chunk.
+    pub auth_key: Option<String>,
+    /// How the secret is presented (`Plain` or `Hmac`).
+    pub auth_mode: HepAuthMode,
+    /// Which transport carries the feed (`--hep-send-transport`).
+    pub transport: HepTransport,
+    /// Certificate authority the collector is verified against under
+    /// [`HepTransport::Tls`] (`--hep-tls-ca`); `None` uses the host's bundle.
+    pub tls_ca: Option<&'a std::path::Path>,
+}
+
+/// A sink writing whole HEP packets to one TCP collector, reconnecting when
+/// the connection goes.
+///
+/// A collector restarts, and a feed that stopped at the first `EPIPE` would
+/// stay stopped for the life of the process while the operator watched a
+/// counter climb — and the collector they just restarted receives nothing,
+/// which reads as a sipnab fault. So the stream is rebuilt on demand: a failed
+/// write drops the connection and the next packet dials again. ONE reconnect
+/// attempt per packet, never a loop, so a collector that is simply down does
+/// not turn the forwarding path into a spin.
+///
+/// The first connection is made here so an unreachable collector is an error
+/// the operator sees at startup, exactly as the connected UDP socket gives
+/// them. `TCP_NODELAY` is set because these are small packets whose whole
+/// value is timeliness; Nagle would hold a SIP message back waiting for
+/// company.
+///
+/// # Arguments
+///
+/// * `dest` — the resolved collector address.
+/// * `dest_addr` — the destination as the operator wrote it, for messages.
+///
+/// # Returns
+///
+/// The sink and the local address it bound.
+///
+/// # Errors
+///
+/// The first connection cannot be made, or `TCP_NODELAY` cannot be set.
+///
+/// # Side effects
+///
+/// Opens a TCP connection to `dest`, and one more per packet that finds the
+/// previous connection broken.
+fn hep_tcp_sink(
+    dest: std::net::SocketAddr,
+    dest_addr: &str,
+) -> Result<(HepSink, std::net::SocketAddr)> {
+    use std::io::Write;
+    use std::net::TcpStream;
+
+    fn dial(dest: std::net::SocketAddr) -> std::io::Result<TcpStream> {
+        let s = TcpStream::connect(dest)?;
+        s.set_nodelay(true)?;
+        Ok(s)
+    }
+
+    let first = dial(dest)
+        .with_context(|| format!("Failed to connect HEP sender to '{dest_addr}' over TCP"))?;
+    let local = first
+        .local_addr()
+        .with_context(|| "Failed to read the local address of the HEP TCP sender")?;
+    let mut conn = Some(first);
+    Ok((
+        Box::new(move |pkt: &[u8]| {
+            if let Some(s) = conn.as_mut() {
+                match s.write_all(pkt) {
+                    Ok(()) => return Ok(()),
+                    Err(_) => conn = None,
+                }
+            }
+            let mut s = dial(dest)?;
+            let r = s.write_all(pkt);
+            conn = Some(s);
+            r
+        }),
+        local,
+    ))
+}
+
+/// A sink writing whole HEP packets to one collector over TLS, reconnecting
+/// exactly as [`hep_tcp_sink`] does.
+///
+/// The handshake is completed here rather than left to the first packet.
+/// rustls is lazy by default: without this the connection "succeeds", the
+/// operator is told forwarding is up, and the first SIP message an hour later
+/// is what discovers the certificate was never acceptable.
+///
+/// # Arguments
+///
+/// * `dest` — the resolved collector address.
+/// * `server_name` — the name the certificate must match, from
+///   [`server_name_of`].
+/// * `ca` — `--hep-tls-ca`, or `None` for the host's bundle.
+///
+/// # Returns
+///
+/// The sink and the local address it bound.
+///
+/// # Errors
+///
+/// The roots cannot be assembled, `server_name` is not a valid certificate
+/// name, the connection cannot be made, or the handshake fails or exceeds
+/// [`HEP_TLS_HANDSHAKE_TIMEOUT`].
+///
+/// # Side effects
+///
+/// Reads the CA file or the host's bundle, opens a TCP connection and
+/// completes a TLS handshake on it — and one more of each per packet that
+/// finds the previous connection broken.
+fn hep_tls_sink(
+    dest: std::net::SocketAddr,
+    server_name: &str,
+    ca: Option<&std::path::Path>,
+) -> Result<(HepSink, std::net::SocketAddr)> {
+    use std::io::Write;
+    use std::net::TcpStream;
+
+    let config = std::sync::Arc::new(
+        rustls::ClientConfig::builder_with_provider(hep_tls_provider())
+            .with_safe_default_protocol_versions()
+            .context("HEP TLS sender: no usable protocol versions")?
+            .with_root_certificates(hep_tls_roots(ca)?)
+            .with_no_client_auth(),
+    );
+    let name = rustls::pki_types::ServerName::try_from(server_name.to_string())
+        .with_context(|| {
+            format!("--hep-send host '{server_name}' is not a valid certificate name")
+        })?
+        .to_owned();
+
+    fn dial(
+        cfg: &std::sync::Arc<rustls::ClientConfig>,
+        name: &rustls::pki_types::ServerName<'static>,
+        dest: std::net::SocketAddr,
+    ) -> std::io::Result<rustls::StreamOwned<rustls::ClientConnection, TcpStream>> {
+        let mut sock = TcpStream::connect(dest)?;
+        sock.set_nodelay(true)?;
+        sock.set_read_timeout(Some(HEP_TLS_HANDSHAKE_TIMEOUT))?;
+        sock.set_write_timeout(Some(HEP_TLS_HANDSHAKE_TIMEOUT))?;
+        let mut conn = rustls::ClientConnection::new(cfg.clone(), name.clone())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        while conn.is_handshaking() {
+            conn.complete_io(&mut sock)?;
+        }
+        sock.set_read_timeout(None)?;
+        Ok(rustls::StreamOwned::new(conn, sock))
+    }
+
+    let first = dial(&config, &name, dest)
+        .with_context(|| format!("Failed to establish a TLS session with '{dest}'"))?;
+    let local = first
+        .sock
+        .local_addr()
+        .with_context(|| "Failed to read the local address of the HEP TLS sender")?;
+    let mut stream = Some(first);
+    Ok((
+        Box::new(move |pkt: &[u8]| {
+            if let Some(s) = stream.as_mut() {
+                match s.write_all(pkt).and_then(|()| s.flush()) {
+                    Ok(()) => return Ok(()),
+                    Err(_) => stream = None,
+                }
+            }
+            let mut s = dial(&config, &name, dest)?;
+            let r = s.write_all(pkt).and_then(|()| s.flush());
+            stream = Some(s);
+            r
+        }),
+        local,
+    ))
+}
+
 impl HepSender {
-    /// Create a new HEP sender targeting `dest_addr` (e.g., `"10.0.0.50:9060"`).
+    /// Create a new HEP sender targeting `dest_addr` (e.g., `"10.0.0.50:9060"`)
+    /// over UDP.
     ///
-    /// The CLI entry point: `dest_addr` is the raw value of the operator's
-    /// `--hep-send` argument, wrapped here into an [`OperatorDestination`].
-    /// Prefer [`Self::for_destination`] anywhere the destination has already
-    /// been through that type — this wrapper exists because the batch wiring
-    /// still passes the flag's string straight through.
+    /// The narrow entry point: `dest_addr` is the raw value of the operator's
+    /// `--hep-send` argument, wrapped here into an [`OperatorDestination`], and
+    /// the transport is the default one. Anything that has a
+    /// [`HepSenderOpts`] to offer — anything that can be asked for TCP or TLS
+    /// — calls [`Self::for_destination`] directly.
     ///
     /// # Arguments
     ///
@@ -2343,45 +3392,59 @@ impl HepSender {
     ) -> Result<Self> {
         Self::for_destination(
             &OperatorDestination::from_cli_flag(HEP_SEND_FLAG, dest_addr),
-            capture_id,
-            auth_key,
-            auth_mode,
+            HepSenderOpts {
+                capture_id,
+                auth_key,
+                auth_mode,
+                transport: HepTransport::Udp,
+                tls_ca: None,
+            },
         )
     }
 
     /// Create a HEP sender for a destination the operator named.
     ///
-    /// Binds an ephemeral local UDP socket, connects it to `destination`, and
-    /// mints the [`HepExportPermit`] every send is checked against. Taking an
+    /// Builds the sink `opts.transport` asks for and mints the
+    /// [`HepExportPermit`] every send is checked against. Taking an
     /// [`OperatorDestination`] rather than a bare address is what stops a
     /// future call site exporting to something it read out of a packet.
+    ///
+    /// Every transport connects HERE, at startup, rather than on the first
+    /// packet: a collector that is unreachable, or whose certificate this
+    /// sender will not accept, is an error the operator sees while they are
+    /// still looking at the terminal.
     ///
     /// # Arguments
     ///
     /// * `destination` — the collector the operator named.
-    /// * `capture_id` — capture agent ID stamped into every packet.
-    /// * `auth_key` — optional shared secret for the `0x000e` chunk.
-    /// * `auth_mode` — how the secret is presented (`Plain` or `Hmac`).
+    /// * `opts` — capture id, authentication, transport and TLS roots.
     ///
     /// # Errors
     ///
-    /// Returns an error if the destination cannot be resolved or the socket
-    /// cannot be created or connected.
+    /// Returns an error if the destination cannot be resolved, the socket or
+    /// connection cannot be created, the TLS roots cannot be assembled, or the
+    /// TLS handshake fails.
     ///
     /// # Side effects
     ///
     /// Resolves the destination (may perform a blocking DNS lookup for a
-    /// hostname), binds a UDP socket on `[::]:0` for an IPv6 destination or
+    /// hostname); binds a UDP socket on `[::]:0` for an IPv6 destination or
     /// `0.0.0.0:0` for IPv4 — the bind family must follow the destination or
-    /// the connect fails with EAFNOSUPPORT — and connects it; reads the
-    /// system clock and process ID to derive the HMAC nonce salt.
+    /// the connect fails with EAFNOSUPPORT — or opens a TCP connection and,
+    /// for TLS, completes a handshake on it; reads the system clock and
+    /// process ID to derive the HMAC nonce salt.
     pub fn for_destination(
         destination: &OperatorDestination,
-        capture_id: u32,
-        auth_key: Option<String>,
-        auth_mode: HepAuthMode,
+        opts: HepSenderOpts<'_>,
     ) -> Result<Self> {
         use std::net::ToSocketAddrs;
+        let HepSenderOpts {
+            capture_id,
+            auth_key,
+            auth_mode,
+            transport,
+            tls_ca,
+        } = opts;
         let permit = HepExportPermit::for_destination(destination);
         let dest_addr = destination.as_str();
         let dest = dest_addr
@@ -2389,24 +3452,44 @@ impl HepSender {
             .with_context(|| format!("Failed to resolve HEP destination '{dest_addr}'"))?
             .next()
             .with_context(|| format!("HEP destination '{dest_addr}' resolved to no addresses"))?;
-        let local = if dest.is_ipv6() {
-            "[::]:0"
-        } else {
-            "0.0.0.0:0"
+        let (sink, local_addr) = match transport {
+            HepTransport::Udp => {
+                let local = if dest.is_ipv6() {
+                    "[::]:0"
+                } else {
+                    "0.0.0.0:0"
+                };
+                let socket = UdpSocket::bind(local).with_context(|| {
+                    format!("Failed to bind ephemeral UDP socket ({local}) for HEP sender")
+                })?;
+                socket
+                    .connect(dest)
+                    .with_context(|| format!("Failed to connect HEP sender to '{dest_addr}'"))?;
+                let bound = socket
+                    .local_addr()
+                    .with_context(|| "Failed to read the local address of the HEP UDP sender")?;
+                let sink: HepSink = Box::new(move |pkt: &[u8]| socket.send(pkt).map(|_| ()));
+                (sink, bound)
+            }
+            HepTransport::Tcp => hep_tcp_sink(dest, dest_addr)?,
+            HepTransport::Tls => {
+                let name = server_name_of(dest_addr).with_context(|| {
+                    format!(
+                        "--hep-send '{dest_addr}' has no host:port to take a certificate name from"
+                    )
+                })?;
+                hep_tls_sink(dest, &name, tls_ca)?
+            }
         };
-        let socket = UdpSocket::bind(local).with_context(|| {
-            format!("Failed to bind ephemeral UDP socket ({local}) for HEP sender")
-        })?;
-        socket
-            .connect(dest)
-            .with_context(|| format!("Failed to connect HEP sender to '{dest_addr}'"))?;
         let nonce_salt = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0)
             ^ (std::process::id() as u64).rotate_left(32);
         Ok(Self {
-            socket,
+            sink: parking_lot::Mutex::new(sink),
+            local_addr,
+            transport,
             capture_id,
             auth_key,
             auth_mode,
@@ -2414,6 +3497,20 @@ impl HepSender {
             nonce_counter: std::sync::atomic::AtomicU64::new(0),
             permit,
         })
+    }
+
+    /// The local address this sender's socket bound.
+    ///
+    /// Recorded at construction rather than read back from the socket: a
+    /// stream sink replaces its connection when the collector restarts, and
+    /// the socket that answered this question is gone by then.
+    pub fn local_addr(&self) -> std::net::SocketAddr {
+        self.local_addr
+    }
+
+    /// Which transport this sender speaks, for the startup log line.
+    pub fn transport(&self) -> HepTransport {
+        self.transport
     }
 
     /// The next token nonce: this sender's salt in the high half, its
@@ -2581,9 +3678,8 @@ impl HepSender {
     ///
     /// Transmits one datagram on the connected UDP socket.
     fn transmit(&self, _permit: &HepExportPermit, pkt: &[u8]) -> Result<()> {
-        self.socket
-            .send(pkt)
-            .with_context(|| "Failed to send HEP v3 packet")?;
+        let mut sink = self.sink.lock();
+        sink(pkt).with_context(|| "Failed to send HEP v3 packet")?;
 
         Ok(())
     }
@@ -2597,6 +3693,918 @@ impl HepSender {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    /// How long a transport test waits for something that must already be on
+    /// its way. Every wire fixture is bounded by it so a mutation that stops
+    /// the bytes moving fails loudly instead of hanging the suite.
+    const MUST_ARRIVE: Duration = Duration::from_secs(10);
+
+    /// Accept one connection within `MUST_ARRIVE`, or fail the test.
+    ///
+    /// A bare blocking `accept()` turns "the sender never reconnected" into a
+    /// hang, and a hung test is not a failing test: a mutation that removes
+    /// the reconnect would look like an infrastructure timeout rather than a
+    /// caught defect.
+    fn accept_within(listener: &std::net::TcpListener, what: &str) -> std::net::TcpStream {
+        listener
+            .set_nonblocking(true)
+            .expect("poll rather than block");
+        let deadline = Instant::now() + MUST_ARRIVE;
+        loop {
+            match listener.accept() {
+                Ok((sock, _)) => {
+                    sock.set_nonblocking(false).expect("back to blocking reads");
+                    return sock;
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "{what}: no connection within {MUST_ARRIVE:?}"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("{what}: accept failed: {e}"),
+            }
+        }
+    }
+
+    /// Read `want` whole HEP v3 packets off a stream, framing them exactly as
+    /// the listener does. Bounded by a read timeout so a mutation that stops
+    /// the sender writing fails the test instead of hanging it.
+    fn read_framed(stream: &mut std::net::TcpStream, want: usize) -> Vec<Vec<u8>> {
+        use std::io::Read;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("bound the read");
+        let mut buf: Vec<u8> = Vec::new();
+        let mut out: Vec<Vec<u8>> = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while out.len() < want {
+            while let Some(total) = hep_stream_frame(&buf).expect("the stream frames") {
+                out.push(buf[..total].to_vec());
+                buf.drain(..total);
+                if out.len() == want {
+                    return out;
+                }
+            }
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                Err(e) => panic!("read: {e}"),
+            }
+        }
+        out
+    }
+
+    /// A TCP sender lays whole HEP v3 packets end to end, and every one of
+    /// them parses back.
+    ///
+    /// The interesting failure is not "nothing arrived" but "one packet
+    /// arrived and the rest were swallowed": a sender that framed the stream
+    /// itself, or a receiver that read one datagram's worth per read, would
+    /// pass a single-packet test and lose traffic in production. Three
+    /// messages in one connection is what distinguishes them.
+    #[test]
+    fn a_tcp_sender_lays_whole_packets_end_to_end() {
+        let collector = std::net::TcpListener::bind("127.0.0.1:0").expect("bind collector");
+        let dest = collector.local_addr().expect("collector addr").to_string();
+
+        let destination = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, &dest);
+        let sender = HepSender::for_destination(
+            &destination,
+            HepSenderOpts {
+                capture_id: 7,
+                transport: HepTransport::Tcp,
+                ..HepSenderOpts::default()
+            },
+        )
+        .expect("a TCP collector that is listening must accept the connection");
+
+        let bodies: [&[u8]; 3] = [
+            b"OPTIONS sip:a@b SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n",
+            b"INVITE sip:a@b SIP/2.0\r\nCSeq: 2 INVITE\r\n\r\n",
+            b"BYE sip:a@b SIP/2.0\r\nCSeq: 3 BYE\r\n\r\n",
+        ];
+        let endpoint = HepEndpoint {
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            src_port: 5060,
+            dst_port: 5060,
+            transport: TransportProto::Udp,
+        };
+        for body in bodies {
+            sender
+                .send_payload(&endpoint, Utc::now(), HepProtocol::Sip, body)
+                .expect("send over TCP");
+        }
+
+        let mut conn = accept_within(&collector, "the TCP sender");
+        let frames = read_framed(&mut conn, bodies.len());
+        assert_eq!(frames.len(), bodies.len(), "every packet must arrive");
+        for (frame, body) in frames.iter().zip(bodies) {
+            let pkt = parse_hep(frame).expect("each frame is a whole HEP v3 packet");
+            assert_eq!(pkt.payload, body, "the payload crosses verbatim");
+            assert_eq!(pkt.capture_id, Some(7));
+        }
+    }
+
+    /// A collector that restarts gets the feed back on the next packet.
+    ///
+    /// Without this the first `EPIPE` stops the feed for the life of the
+    /// process while the operator watches a counter climb — and the collector
+    /// they just restarted receives nothing, which reads as a sipnab fault.
+    /// One reconnect per packet, never a loop: a collector that is simply down
+    /// must not turn the forwarding path into a spin.
+    #[test]
+    fn a_tcp_sender_reconnects_after_the_collector_drops_the_connection() {
+        let collector = std::net::TcpListener::bind("127.0.0.1:0").expect("bind collector");
+        let dest = collector.local_addr().expect("collector addr").to_string();
+        let destination = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, &dest);
+        let sender = HepSender::for_destination(
+            &destination,
+            HepSenderOpts {
+                capture_id: 3,
+                transport: HepTransport::Tcp,
+                ..HepSenderOpts::default()
+            },
+        )
+        .expect("connect");
+
+        let endpoint = HepEndpoint {
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            src_port: 5060,
+            dst_port: 5060,
+            transport: TransportProto::Udp,
+        };
+        sender
+            .send_payload(&endpoint, Utc::now(), HepProtocol::Sip, b"first")
+            .expect("first packet");
+        let mut first = accept_within(&collector, "the first connection");
+        assert_eq!(
+            read_framed(&mut first, 1).len(),
+            1,
+            "the first packet arrives on the first connection"
+        );
+        drop(first);
+
+        // A write into a socket the peer has closed is buffered locally and
+        // only fails once the RST comes back, so the packet that discovers the
+        // break is allowed to be lost. What must not be lost is every packet
+        // after it.
+        for body in [&b"second"[..], b"third", b"fourth"] {
+            let _ = sender.send_payload(&endpoint, Utc::now(), HepProtocol::Sip, body);
+        }
+        let mut second = accept_within(&collector, "the rebuilt connection");
+        let frames = read_framed(&mut second, 1);
+        assert_eq!(
+            frames.len(),
+            1,
+            "a packet must cross the rebuilt connection"
+        );
+        assert!(
+            parse_hep(&frames[0]).expect("parse").payload != b"first",
+            "the rebuilt connection carries a LATER packet, not a replay"
+        );
+    }
+
+    /// The certificate is checked against the host the operator dialled, with
+    /// the port removed and a bracketed IPv6 literal unwrapped.
+    ///
+    /// Deriving it from anything else — the resolved address, a reverse lookup
+    /// — is how a client ends up validating a name nobody asked for.
+    #[test]
+    fn the_verified_name_is_the_host_the_operator_dialled() {
+        assert_eq!(
+            server_name_of("collector.example:9060").as_deref(),
+            Some("collector.example")
+        );
+        assert_eq!(
+            server_name_of("[2001:db8::1]:9060").as_deref(),
+            Some("2001:db8::1")
+        );
+        assert_eq!(
+            server_name_of("192.0.2.10:9060").as_deref(),
+            Some("192.0.2.10")
+        );
+        assert_eq!(
+            server_name_of("collector.example").as_deref(),
+            None,
+            "a target with no port has no host/port split to trust"
+        );
+        assert_eq!(
+            server_name_of("collector.example:sip").as_deref(),
+            None,
+            "a non-numeric port means the colon was not the port separator"
+        );
+    }
+
+    /// A private CA and an end-entity certificate for `127.0.0.1`, written as
+    /// PEM into `dir` and returned as `(ca.pem, cert.pem, key.pem)`.
+    ///
+    /// A real chain, because rustls refuses a self-signed CA certificate
+    /// offered as a server certificate (`CaUsedAsEndEntity`) — so a fixture
+    /// that took the shortcut would prove the TLS path works only for a shape
+    /// no collector actually has. The leaf carries `CA:FALSE`,
+    /// `extendedKeyUsage=serverAuth` and the address the test dials, which is
+    /// exactly what a certificate for a HEP collector needs.
+    fn test_chain(
+        dir: &std::path::Path,
+    ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        use rcgen::{
+            BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer,
+            KeyPair, KeyUsagePurpose, SanType,
+        };
+        let ca_key = KeyPair::generate().expect("CA key");
+        let mut ca_params = CertificateParams::default();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+        ca_params.key_usages = vec![
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::CrlSign,
+        ];
+        ca_params
+            .distinguished_name
+            .push(DnType::CommonName, "sipnab HEP test CA");
+        let ca_cert = ca_params
+            .clone()
+            .self_signed(&ca_key)
+            .expect("self-signed CA");
+        let issuer = Issuer::new(ca_params, &ca_key);
+
+        let ee_key = KeyPair::generate().expect("collector key");
+        let mut ee = CertificateParams::default();
+        ee.is_ca = IsCa::ExplicitNoCa;
+        ee.subject_alt_names = vec![SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST))];
+        ee.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        ee.distinguished_name
+            .push(DnType::CommonName, "sipnab HEP test collector");
+        let ee_cert = ee.signed_by(&ee_key, &issuer).expect("issue the leaf");
+
+        let ca_path = dir.join("ca.pem");
+        let cert_path = dir.join("collector.pem");
+        let key_path = dir.join("collector.key");
+        std::fs::write(&ca_path, ca_cert.pem()).expect("write ca.pem");
+        std::fs::write(&cert_path, ee_cert.pem()).expect("write collector.pem");
+        std::fs::write(&key_path, ee_key.serialize_pem()).expect("write collector.key");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+                .expect("chmod the key");
+        }
+        (ca_path, cert_path, key_path)
+    }
+
+    /// A TLS listener and a TLS sender carry a HEP packet end to end, over a
+    /// handshake that really happened.
+    ///
+    /// The whole transport in one assertion: certificate loading, the server
+    /// handshake, the client's verification against `--hep-tls-ca`, the
+    /// framing inside the encrypted stream, and the packet arriving at the
+    /// pipeline with its payload intact.
+    #[test]
+    fn a_tls_listener_and_sender_carry_a_packet_end_to_end() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ca, cert, key) = test_chain(dir.path());
+        let bind = free_tcp_port();
+        let config = CaptureConfig {
+            count: Some(2),
+            duration: Some(Duration::from_secs(20)),
+            ..CaptureConfig::default()
+        };
+        let (rx, done) = start_listener(
+            &bind,
+            HepTransport::Tls,
+            Some((cert, key)),
+            vec![],
+            None,
+            config,
+        );
+
+        let destination = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, &bind);
+        let sender = HepSender::for_destination(
+            &destination,
+            HepSenderOpts {
+                capture_id: 23,
+                transport: HepTransport::Tls,
+                tls_ca: Some(&ca),
+                ..HepSenderOpts::default()
+            },
+        )
+        .expect("the collector's certificate is issued by the named CA");
+        let endpoint = v4_endpoint();
+        for body in [&b"ENCRYPTED-1"[..], b"ENCRYPTED-2"] {
+            sender
+                .send_payload(&endpoint, Utc::now(), HepProtocol::Sip, body)
+                .expect("send over TLS");
+        }
+
+        let got = drain_payloads(&rx, 2);
+        assert_eq!(got[0].as_slice(), b"ENCRYPTED-1");
+        assert_eq!(got[1].as_slice(), b"ENCRYPTED-2");
+        assert!(
+            matches!(done.recv_timeout(MUST_ARRIVE), Ok(Ok(()))),
+            "the TLS listener stops cleanly once the count is reached"
+        );
+    }
+
+    /// A collector whose certificate this sender will not accept is an error
+    /// at STARTUP, not a counter climbing an hour later.
+    ///
+    /// rustls handshakes lazily: without completing it at construction the
+    /// connection "succeeds", the operator is told forwarding is up, and the
+    /// first SIP message is what discovers the certificate was never
+    /// acceptable.
+    #[test]
+    fn a_collector_the_sender_will_not_trust_fails_at_startup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_ca, cert, key) = test_chain(dir.path());
+        // A second, unrelated CA: the collector's certificate is perfectly
+        // valid and simply not issued by the one the operator named.
+        let stranger = tempfile::tempdir().expect("tempdir");
+        let (other_ca, _, _) = test_chain(stranger.path());
+
+        let bind = free_tcp_port();
+        let config = CaptureConfig {
+            duration: Some(Duration::from_secs(5)),
+            ..CaptureConfig::default()
+        };
+        let (_rx, _done) = start_listener(
+            &bind,
+            HepTransport::Tls,
+            Some((cert, key)),
+            vec![],
+            None,
+            config,
+        );
+
+        let destination = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, &bind);
+        let err = match HepSender::for_destination(
+            &destination,
+            HepSenderOpts {
+                transport: HepTransport::Tls,
+                tls_ca: Some(&other_ca),
+                ..HepSenderOpts::default()
+            },
+        ) {
+            Ok(_) => panic!("a certificate from an unnamed issuer must not be accepted"),
+            Err(e) => e,
+        };
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("TLS session"),
+            "the failure must name the handshake, not something further on: {text}"
+        );
+    }
+
+    /// A named CA is the WHOLE trust store, and a path that names nothing
+    /// usable is an error rather than an empty one.
+    ///
+    /// Quietly adding the host's public roots beside a private collector's
+    /// issuer would widen what this sender accepts far past what the operator
+    /// asked for; quietly accepting an empty store would refuse every
+    /// collector, which reads as a broken far end rather than a typo.
+    #[test]
+    fn a_named_ca_replaces_the_trust_store_rather_than_joining_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ca, _cert, _key) = test_chain(dir.path());
+
+        let only = hep_tls_roots(Some(&ca)).expect("one CA loads");
+        assert_eq!(
+            only.len(),
+            1,
+            "a named CA is the whole store — the host's roots must not join it"
+        );
+
+        let missing = dir.path().join("absent.pem");
+        assert!(
+            hep_tls_roots(Some(&missing)).is_err(),
+            "a CA path that cannot be read is an error, not an empty store"
+        );
+
+        let empty = dir.path().join("empty.pem");
+        std::fs::write(&empty, b"# no certificate here\n").expect("write");
+        let err = hep_tls_roots(Some(&empty)).expect_err("a file with no certificate is an error");
+        assert!(
+            format!("{err:#}").contains("no certificate"),
+            "the refusal must say what was missing: {err:#}"
+        );
+    }
+
+    /// A private key any local account can read is refused.
+    ///
+    /// A tool that loads it anyway lets the operator believe the HEP listener
+    /// is theirs alone while any user on the host can impersonate it.
+    /// Group-readable stays allowed on purpose: `root:sipnab 0640` is how a
+    /// key is normally handed to a service account.
+    #[cfg(unix)]
+    #[test]
+    fn a_world_readable_tls_key_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_ca, cert, key) = test_chain(dir.path());
+
+        hep_tls_server_config(Some(&cert), Some(&key)).expect("mode 600 is acceptable");
+
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        let err = hep_tls_server_config(Some(&cert), Some(&key))
+            .expect_err("a world-readable key must be refused");
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("world-readable"),
+            "the refusal must say what is wrong with the file: {text}"
+        );
+
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o640)).expect("chmod");
+        hep_tls_server_config(Some(&cert), Some(&key))
+            .expect("group-readable is how a key reaches a service account");
+    }
+
+    /// Reserve a free loopback TCP port and give it back as `host:port`.
+    fn free_tcp_port() -> String {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve a port");
+        let addr = probe.local_addr().expect("local_addr");
+        drop(probe);
+        addr.to_string()
+    }
+
+    /// A HEP v3 packet with `body` as its payload and `capture_id` stamped on
+    /// it, ready to be written straight onto a stream.
+    fn hep3_from(capture_id: u32, auth: Option<&str>, body: &[u8]) -> Vec<u8> {
+        build_hep_v3(
+            &v4_endpoint(),
+            Utc.timestamp_opt(1_700_000_000, 0)
+                .single()
+                .unwrap_or_default(),
+            HepProtocol::Sip,
+            capture_id,
+            auth,
+            body,
+        )
+    }
+
+    /// Start a real listener on `bind` and hand back the pipeline it feeds.
+    ///
+    /// Every field the caller does not care about takes the value the CLI
+    /// defaults would give it, so a test that says "TCP, no auth" is reading
+    /// the same listener an operator gets.
+    fn start_listener(
+        bind: &str,
+        transport: HepTransport,
+        tls: Option<(std::path::PathBuf, std::path::PathBuf)>,
+        allowlist: Vec<CidrRange>,
+        auth_key: Option<String>,
+        config: CaptureConfig,
+    ) -> (
+        crate::capture::channel::PacketRx,
+        std::sync::mpsc::Receiver<std::result::Result<(), String>>,
+    ) {
+        use std::sync::mpsc;
+        let (tx, rx) = crate::capture::channel::packet_channel(64);
+        let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
+        let (done_tx, done_rx) = mpsc::channel();
+        let bind_thread = bind.to_string();
+        std::thread::spawn(move || {
+            let opts = HepListenerOpts {
+                allowlist: &allowlist,
+                rate_limit: 1_000_000,
+                per_peer_rate_limit: 0,
+                max_tracked_peers: crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS,
+                auth_key: auth_key.as_deref(),
+                auth_mode: HepAuthMode::Plain,
+                hmac_window_secs: DEFAULT_HMAC_WINDOW_SECS,
+                transport,
+                tls_cert: tls.as_ref().map(|(c, _)| c.as_path()),
+                tls_key: tls.as_ref().map(|(_, k)| k.as_path()),
+            };
+            let r = capture_hep(&bind_thread, &config, tx, &opts, Some(ready_tx));
+            let _ = done_tx.send(r.map_err(|e| format!("{e:#}")));
+        });
+        assert!(
+            matches!(ready_rx.recv_timeout(MUST_ARRIVE), Ok(Ok(()))),
+            "the listener must report a successful bind"
+        );
+        (rx, done_rx)
+    }
+
+    /// The payloads that reached the pipeline, in arrival order.
+    fn drain_payloads(rx: &crate::capture::channel::PacketRx, want: usize) -> Vec<Vec<u8>> {
+        let mut got = Vec::new();
+        for _ in 0..want {
+            match rx.recv_timeout(MUST_ARRIVE) {
+                Ok(p) => got.push(p.data.to_vec()),
+                Err(e) => panic!("expected {want} packets, got {}: {e}", got.len()),
+            }
+        }
+        got
+    }
+
+    /// A TCP listener reads a stream of HEP packets and delivers every one of
+    /// them, from a sender that is the real `--hep-send` code path.
+    ///
+    /// Both halves of the feature in one assertion: a sender that framed the
+    /// stream its own way, or a listener that read one packet per `read()`,
+    /// would each fail here while a single-packet test passed.
+    #[test]
+    fn a_tcp_listener_delivers_every_packet_a_real_sender_writes() {
+        let bind = free_tcp_port();
+        let config = CaptureConfig {
+            count: Some(3),
+            duration: Some(Duration::from_secs(20)),
+            ..CaptureConfig::default()
+        };
+        let (rx, done) = start_listener(&bind, HepTransport::Tcp, None, vec![], None, config);
+
+        let destination = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, &bind);
+        let sender = HepSender::for_destination(
+            &destination,
+            HepSenderOpts {
+                capture_id: 11,
+                transport: HepTransport::Tcp,
+                ..HepSenderOpts::default()
+            },
+        )
+        .expect("the listener is up, so the connection must succeed");
+        let endpoint = v4_endpoint();
+        let bodies: [&[u8]; 3] = [
+            b"OPTIONS sip:a@b SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n",
+            b"INVITE sip:a@b SIP/2.0\r\nCSeq: 2 INVITE\r\n\r\n",
+            b"BYE sip:a@b SIP/2.0\r\nCSeq: 3 BYE\r\n\r\n",
+        ];
+        for body in bodies {
+            sender
+                .send_payload(&endpoint, Utc::now(), HepProtocol::Sip, body)
+                .expect("send over TCP");
+        }
+
+        let got = drain_payloads(&rx, bodies.len());
+        for (payload, body) in got.iter().zip(bodies) {
+            assert_eq!(payload.as_slice(), body, "the payload crosses verbatim");
+        }
+        assert!(
+            matches!(done.recv_timeout(MUST_ARRIVE), Ok(Ok(()))),
+            "the listener stops cleanly once the count is reached"
+        );
+    }
+
+    /// Several agents share one TCP listener, and each keeps its own identity.
+    ///
+    /// A listener that served one connection at a time would pass every
+    /// single-peer test and then, in an estate, silently hold the second proxy
+    /// at the accept queue until the first one restarted.
+    #[test]
+    fn a_tcp_listener_serves_several_agents_at_once() {
+        use std::io::Write;
+        let bind = free_tcp_port();
+        let config = CaptureConfig {
+            count: Some(4),
+            duration: Some(Duration::from_secs(20)),
+            ..CaptureConfig::default()
+        };
+        let (rx, _done) = start_listener(&bind, HepTransport::Tcp, None, vec![], None, config);
+
+        let mut a = std::net::TcpStream::connect(&bind).expect("first agent connects");
+        let mut b = std::net::TcpStream::connect(&bind).expect("second agent connects");
+        // Interleaved on purpose: if the listener finished one connection
+        // before starting the next, `b`'s first packet could not arrive
+        // between `a`'s two.
+        a.write_all(&hep3_from(1, None, b"A1")).expect("a1");
+        b.write_all(&hep3_from(2, None, b"B1")).expect("b1");
+        a.write_all(&hep3_from(1, None, b"A2")).expect("a2");
+        b.write_all(&hep3_from(2, None, b"B2")).expect("b2");
+
+        let mut got: Vec<Vec<u8>> = drain_payloads(&rx, 4);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                b"A1".to_vec(),
+                b"A2".to_vec(),
+                b"B1".to_vec(),
+                b"B2".to_vec()
+            ],
+            "both agents must be served"
+        );
+    }
+
+    /// A packet split across two writes is one packet, not two broken ones.
+    ///
+    /// TCP is free to segment anywhere, so this is not an exotic case: it is
+    /// what a large `INVITE` does on a busy link. The listener must hold the
+    /// fragment and wait rather than parse what it has.
+    #[test]
+    fn a_packet_split_across_two_writes_is_reassembled() {
+        use std::io::Write;
+        let bind = free_tcp_port();
+        let config = CaptureConfig {
+            count: Some(1),
+            duration: Some(Duration::from_secs(20)),
+            ..CaptureConfig::default()
+        };
+        let (rx, _done) = start_listener(&bind, HepTransport::Tcp, None, vec![], None, config);
+
+        let pkt = hep3_from(5, None, b"INVITE sip:split@example SIP/2.0\r\n\r\n");
+        let cut = 4; // mid-magic: even the header is not whole yet
+        let mut peer = std::net::TcpStream::connect(&bind).expect("connect");
+        peer.set_nodelay(true).expect("nodelay");
+        peer.write_all(&pkt[..cut]).expect("first half");
+        assert!(
+            rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "a partial packet must produce nothing at all"
+        );
+        peer.write_all(&pkt[cut..]).expect("second half");
+
+        let got = drain_payloads(&rx, 1);
+        assert_eq!(
+            got[0].as_slice(),
+            b"INVITE sip:split@example SIP/2.0\r\n\r\n"
+        );
+    }
+
+    /// A packet whose header is whole but whose body is still arriving is
+    /// held until the body lands.
+    ///
+    /// The sibling above cuts at byte four, mid-magic, which the "is there
+    /// even a header yet" guard answers before the length is ever read. This
+    /// cuts after the header instead: the total length is known, and the
+    /// listener must compare it against what it holds and wait. Removing that
+    /// comparison leaves the sibling passing and this one failing, which is
+    /// why both exist.
+    #[test]
+    fn a_packet_whose_body_is_still_arriving_is_held_until_it_lands() {
+        use std::io::Write;
+        let bind = free_tcp_port();
+        let config = CaptureConfig {
+            count: Some(1),
+            duration: Some(Duration::from_secs(20)),
+            ..CaptureConfig::default()
+        };
+        let (rx, _done) = start_listener(&bind, HepTransport::Tcp, None, vec![], None, config);
+        let body = b"INVITE sip:body-split@example SIP/2.0\r\n\r\n";
+        let pkt = hep3_from(5, None, body);
+        // Past the six-octet header, so `total` is readable and larger than
+        // what has arrived.
+        let cut = HEP3_HEADER_LEN + 4;
+        assert!(cut < pkt.len(), "the fixture must be longer than the cut");
+        let mut peer = std::net::TcpStream::connect(&bind).expect("connect");
+        peer.set_nodelay(true).expect("nodelay");
+        peer.write_all(&pkt[..cut])
+            .expect("header and a little body");
+        assert!(
+            rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "a packet whose declared length has not arrived must produce nothing"
+        );
+        peer.write_all(&pkt[cut..]).expect("the rest of the body");
+        let got = drain_payloads(&rx, 1);
+        assert_eq!(got[0].as_slice(), body);
+    }
+
+    /// A peer that vanishes mid-packet costs its own connection and nothing
+    /// else.
+    ///
+    /// The fragment is dropped — there is no way to complete it — but the
+    /// listener must keep serving. A collector that exited here would be
+    /// killable by any agent that lost power at the wrong moment.
+    #[test]
+    fn a_peer_that_disconnects_mid_packet_does_not_take_the_listener_with_it() {
+        use std::io::Write;
+        let bind = free_tcp_port();
+        let config = CaptureConfig {
+            count: Some(1),
+            duration: Some(Duration::from_secs(20)),
+            ..CaptureConfig::default()
+        };
+        let (rx, done) = start_listener(&bind, HepTransport::Tcp, None, vec![], None, config);
+
+        {
+            let truncated = hep3_from(9, None, b"INVITE sip:gone@example SIP/2.0\r\n\r\n");
+            let mut doomed = std::net::TcpStream::connect(&bind).expect("connect");
+            doomed
+                .write_all(&truncated[..truncated.len() / 2])
+                .expect("half a packet");
+        }
+
+        let mut survivor = std::net::TcpStream::connect(&bind).expect("a later agent connects");
+        survivor
+            .write_all(&hep3_from(9, None, b"ALIVE"))
+            .expect("a whole packet");
+        assert_eq!(
+            drain_payloads(&rx, 1)[0].as_slice(),
+            b"ALIVE",
+            "the listener must still be serving after the truncated peer"
+        );
+        assert!(
+            matches!(done.recv_timeout(MUST_ARRIVE), Ok(Ok(()))),
+            "and must still stop cleanly"
+        );
+    }
+
+    /// Receiver-side authentication is a property of the listener, not of the
+    /// datagram socket: it must hold over TCP exactly as it does over UDP.
+    #[test]
+    fn a_tcp_peer_without_the_secret_is_dropped() {
+        use std::io::Write;
+        let bind = free_tcp_port();
+        let config = CaptureConfig {
+            count: Some(2),
+            duration: Some(Duration::from_secs(20)),
+            ..CaptureConfig::default()
+        };
+        let (rx, done) = start_listener(
+            &bind,
+            HepTransport::Tcp,
+            None,
+            vec![],
+            Some("s3cr3t".to_string()),
+            config,
+        );
+
+        let mut peer = std::net::TcpStream::connect(&bind).expect("connect");
+        peer.write_all(&hep3_from(1, Some("wrong"), b"IMPOSTOR"))
+            .expect("write the unauthenticated packet");
+        peer.write_all(&hep3_from(1, Some("s3cr3t"), b"GENUINE"))
+            .expect("write the authenticated packet");
+
+        let got = drain_payloads(&rx, 1);
+        assert_eq!(
+            got[0].as_slice(),
+            b"GENUINE",
+            "the packet carrying the wrong key must never reach the pipeline"
+        );
+        assert!(
+            matches!(done.recv_timeout(MUST_ARRIVE), Ok(Ok(()))),
+            "both packets still COUNT toward --count, dropped or not"
+        );
+    }
+
+    /// The source allowlist governs a TCP connection at accept time.
+    ///
+    /// Refusing at accept rather than per packet is what makes it worth
+    /// anything on a stream: a peer outside the allowlist must not be able to
+    /// hold a reader thread open by sending nothing.
+    #[test]
+    fn a_tcp_peer_outside_the_allowlist_is_refused_before_it_can_speak() {
+        use std::io::Write;
+        let bind = free_tcp_port();
+        // Not `count: Some(1)`: serve_hep_stream counts every packet it reads
+        // off the connection toward --count, dropped ones included, so a
+        // one-packet budget ends the reader thread the moment the allowlist
+        // rejects the packet -- and the connection closes for that reason
+        // rather than the one under test. With the budget out of reach, an
+        // accept-time refusal is the only thing that can end this connection.
+        let config = CaptureConfig {
+            count: Some(10),
+            duration: Some(Duration::from_secs(3)),
+            ..CaptureConfig::default()
+        };
+        let (rx, _done) = start_listener(
+            &bind,
+            HepTransport::Tcp,
+            None,
+            vec![CidrRange::parse("10.0.0.0/8").expect("cidr")],
+            None,
+            config,
+        );
+
+        let mut peer = std::net::TcpStream::connect(&bind).expect("the TCP handshake completes");
+        // The write may or may not fail depending on when the reset lands;
+        // what matters is that nothing reaches the pipeline.
+        let _ = peer.write_all(&hep3_from(1, None, b"NOT ALLOWED"));
+        assert!(
+            rx.recv_timeout(Duration::from_secs(1)).is_err(),
+            "a source outside the allowlist must reach no packet to the pipeline"
+        );
+
+        // And that alone proves nothing about WHERE it was refused: `admit`
+        // asks the allowlist again per packet, so dropping the accept-time
+        // check leaves this test green while every refused source still gets
+        // a reader thread it can hold open by saying nothing. Read the socket
+        // instead. Refused at accept, the listener drops it and the peer sees
+        // EOF; admitted and filtered later, the connection stays up until the
+        // stream read timeout and this read times out instead.
+        peer.set_read_timeout(Some(Duration::from_millis(750)))
+            .expect("the peer socket takes a read timeout");
+        let mut buf = [0u8; 1];
+        let seen = std::io::Read::read(&mut peer, &mut buf);
+        // Two endings, both meaning the same thing, and which one arrives is a
+        // race: the listener drops the socket with our write still unread in
+        // its receive queue, and the kernel answers that with RST rather than
+        // FIN. Asserting EOF alone made this test flaky, three runs in four.
+        // The property is that the connection ENDED -- a peer that was
+        // admitted and filtered later would still be there, and this read
+        // would time out instead.
+        let ended = match seen {
+            Ok(0) => true,
+            Err(ref e) if e.kind() == std::io::ErrorKind::ConnectionReset => true,
+            _ => false,
+        };
+        assert!(
+            ended,
+            "a source outside the allowlist must be dropped at accept, before it \
+             is given a reader thread it could hold open by saying nothing; the \
+             read saw {seen:?}"
+        );
+    }
+
+    /// A HEP v3 packet the operator can hand to the framer, with `n` payload
+    /// bytes so a test can vary the declared length.
+    fn hep3_bytes(payload: &[u8]) -> Vec<u8> {
+        let endpoint = HepEndpoint {
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            src_port: 5060,
+            dst_port: 5060,
+            transport: TransportProto::Udp,
+        };
+        build_hep_v3_bytes(&endpoint, Utc::now(), HepProtocol::Sip, 1, None, payload)
+    }
+
+    /// A stream carries no packet boundaries, so the framer takes them from
+    /// the HEP v3 header's own total-length field — and reports "not yet"
+    /// rather than guessing whenever the buffer holds less than that.
+    ///
+    /// The three "not yet" cases are the whole difficulty of reading HEP off
+    /// TCP: a header split across two segments, a header whose declared body
+    /// has not arrived, and a peer that stopped talking mid-packet. Each must
+    /// leave the buffer untouched for the next read.
+    #[test]
+    fn the_stream_framer_takes_each_boundary_from_the_declared_length() {
+        let pkt = hep3_bytes(b"OPTIONS sip:a@b SIP/2.0\r\n\r\n");
+        assert!(pkt.len() > HEP3_HEADER_LEN);
+
+        for short in 0..HEP3_HEADER_LEN {
+            assert_eq!(
+                hep_stream_frame(&pkt[..short]).expect("a short header is not yet an error"),
+                None,
+                "{short} bytes cannot carry the 6-byte HEP v3 header"
+            );
+        }
+        assert_eq!(
+            hep_stream_frame(&pkt[..pkt.len() - 1]).expect("a partial body is not yet an error"),
+            None,
+            "the declared total has not arrived"
+        );
+        assert_eq!(
+            hep_stream_frame(&pkt).expect("a whole packet frames"),
+            Some(pkt.len()),
+            "the frame is exactly the declared total"
+        );
+
+        let mut two = pkt.clone();
+        two.extend_from_slice(&hep3_bytes(b"BYE sip:a@b SIP/2.0\r\n\r\n"));
+        assert_eq!(
+            hep_stream_frame(&two).expect("back-to-back packets frame"),
+            Some(pkt.len()),
+            "the framer must take the FIRST packet, not the whole buffer — a \
+             collector that swallowed both would parse one and lose the other"
+        );
+    }
+
+    /// Anything that is not HEP v3 ends the connection rather than being
+    /// skipped.
+    ///
+    /// A stream has no resynchronization point: once the reader is off by one
+    /// byte every subsequent length is garbage, so "skip and continue" would
+    /// silently discard every packet the peer sends afterwards. HEP v2 is
+    /// refused for the same reason — it declares no total length, so it cannot
+    /// be delimited on a stream at all.
+    #[test]
+    fn a_stream_that_is_not_hep_v3_is_refused_rather_than_resynchronized() {
+        let hep2 = [
+            HEP2_VERSION,
+            HEP2_MIN_HEADER as u8,
+            0x13,
+            0xc4,
+            0x13,
+            0xc4,
+            192,
+            0,
+            2,
+            1,
+            192,
+            0,
+            2,
+            2,
+            0,
+            0,
+        ];
+        let err = hep_stream_frame(&hep2)
+            .expect_err("HEP v2 declares no total length and cannot be framed");
+        assert!(
+            err.to_string().contains("HEP3"),
+            "the refusal must name what the stream had to start with: {err}"
+        );
+
+        let mut truncating = hep3_bytes(b"x");
+        truncating[4] = 0;
+        truncating[5] = 1;
+        assert!(
+            hep_stream_frame(&truncating).is_err(),
+            "a declared total below the header itself would never advance the \
+             reader, and looping on it is a hang, not a drop"
+        );
+    }
 
     /// `send_rtcp` puts protocol type 5 on the wire, and the payload crosses
     /// verbatim.
@@ -3243,7 +5251,7 @@ mod tests {
     fn hep_sender_to_ipv6_dest_binds_ipv6_socket() {
         let sender = HepSender::new("[::1]:9060", 1, None, HepAuthMode::Plain)
             .expect("sender toward an IPv6 collector must construct");
-        let local = sender.socket.local_addr().unwrap();
+        let local = sender.local_addr();
         assert!(
             local.is_ipv6(),
             "local bind family must be IPv6, got {local}"
@@ -3255,7 +5263,7 @@ mod tests {
     fn hep_sender_to_ipv4_dest_binds_ipv4_socket() {
         let sender = HepSender::new("127.0.0.1:9060", 1, None, HepAuthMode::Plain)
             .expect("sender toward an IPv4 collector must construct");
-        let local = sender.socket.local_addr().unwrap();
+        let local = sender.local_addr();
         assert!(
             local.is_ipv4(),
             "local bind family must be IPv4, got {local}"
@@ -3272,7 +5280,7 @@ mod tests {
         assert_eq!(dest.flag(), "--hep-send");
         assert_eq!(dest.as_str(), "127.0.0.1:9060");
 
-        let sender = HepSender::for_destination(&dest, 1, None, HepAuthMode::Plain)
+        let sender = HepSender::for_destination(&dest, HepSenderOpts::default())
             .expect("an operator-named destination must construct a sender");
         // `transmit` is the only path to the socket and it needs the permit;
         // that this compiles is the assertion.
@@ -4675,6 +6683,9 @@ mod tests {
                 auth_key: None,
                 auth_mode: HepAuthMode::Plain,
                 hmac_window_secs: DEFAULT_HMAC_WINDOW_SECS,
+                transport: HepTransport::Udp,
+                tls_cert: None,
+                tls_key: None,
             };
             let r = capture_hep(&bind_thread, &config, tx, &opts, Some(ready_tx));
             let _ = done_tx.send(r.is_ok());
@@ -4755,6 +6766,9 @@ mod tests {
                 auth_key: None,
                 auth_mode: HepAuthMode::Plain,
                 hmac_window_secs: DEFAULT_HMAC_WINDOW_SECS,
+                transport: HepTransport::Udp,
+                tls_cert: None,
+                tls_key: None,
             };
             let r = capture_hep(&bind_thread, &config, tx, &opts, Some(ready_tx));
             let _ = done_tx.send(r.is_ok());

@@ -2363,15 +2363,21 @@ impl BatchRunner {
                     crate::capture::hep::HEP_SEND_FLAG,
                     addr,
                 );
+                let transport = cli.hep_send_transport();
                 match crate::capture::hep::HepSender::for_destination(
                     &destination,
-                    capture_id,
-                    hep_auth,
-                    cli.hep_args.hep_auth_mode,
+                    crate::capture::hep::HepSenderOpts {
+                        capture_id,
+                        auth_key: hep_auth,
+                        auth_mode: cli.hep_args.hep_auth_mode,
+                        transport,
+                        tls_ca: cli.hep_args.hep_tls_ca.as_deref(),
+                    },
                 ) {
                     Ok(sender) => {
                         tracing::info!(
-                            "HEP sender targeting {addr} (capture id {capture_id}{})",
+                            "HEP sender targeting {addr} over {transport} (capture id \
+                             {capture_id}{})",
                             if authenticated { ", authenticated" } else { "" }
                         );
                         Some(sender)

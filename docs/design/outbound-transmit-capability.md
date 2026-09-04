@@ -101,7 +101,7 @@ capture file.
 
 The chain, verified:
 
-- `HepSender::send` ([`hep.rs:2428`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L2428)) builds a HEP v3
+- `HepSender::send` ([`hep.rs:3550`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3550)) builds a HEP v3
   packet around `msg.raw` and calls `self.socket.send(&pkt)`
   ([`:1759`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1759)). No permit parameter.
 - It is constructed unconditionally from `cli.hep_send` inside `BatchRunner::new`

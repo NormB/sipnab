@@ -116,6 +116,68 @@ impl std::str::FromStr for HepAuthMode {
     }
 }
 
+/// Which transport carries HEP on one side of sipnab
+/// (`--hep-send-transport`, `--hep-listen-transport`).
+///
+/// Homer's own agents and collectors offer all three, and the choice is the
+/// operator's. UDP loses a copy rather than blocking when the far end falls
+/// behind; TCP keeps the feed intact across a busy collector and orders it, at
+/// the cost of a connection to maintain; TLS is that same stream encrypted,
+/// for a path the operator does not control.
+///
+/// There is deliberately no single `--hep-transport`. sipnab is both agent and
+/// collector, often in one process — a relay that takes HEP in on `-L` and
+/// forwards it on `-H` — so a bare flag would have no answer to "which half?",
+/// and an operator could not ask for TCP in and UDP out.
+///
+/// Defined here (not in the feature-gated `capture::hep` module) so the
+/// always-compiled CLI struct can name it even without the `hep` feature,
+/// exactly as [`HepAuthMode`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HepTransport {
+    /// One datagram per HEP packet, fire and forget. What both sides of sipnab
+    /// have always spoken, and the default so a run that names no transport is
+    /// unchanged.
+    #[default]
+    Udp,
+    /// One byte stream of HEP packets laid end to end. HEP v3 carries its own
+    /// total length, so the stream needs no framing of sipnab's invention —
+    /// and HEP v2, which does not, cannot travel this way.
+    Tcp,
+    /// The [`Tcp`](Self::Tcp) stream inside TLS.
+    Tls,
+}
+
+impl std::str::FromStr for HepTransport {
+    type Err = String;
+
+    /// Parse a transport value: `udp`, `tcp` or `tls`. Case-insensitive;
+    /// surrounding whitespace is ignored.
+    ///
+    /// # Errors
+    /// Any other string yields a message naming all three accepted transports,
+    /// so a typo does not send the operator to the source to learn the set.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "udp" => Ok(Self::Udp),
+            "tcp" => Ok(Self::Tcp),
+            "tls" => Ok(Self::Tls),
+            other => Err(format!("expected 'udp', 'tcp' or 'tls', got '{other}'")),
+        }
+    }
+}
+
+impl std::fmt::Display for HepTransport {
+    /// The spelling the operator typed, so a log line and a flag value match.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Udp => "udp",
+            Self::Tcp => "tcp",
+            Self::Tls => "tls",
+        })
+    }
+}
+
 /// Build a version string including git commit hash, optional tag,
 /// and the list of compile-time features that were enabled.
 ///
@@ -2853,6 +2915,64 @@ pub struct HepArgs {
     )]
     pub hep_send: Option<String>,
 
+    /// Transport `--hep-send` uses to reach the collector: `udp` (default),
+    /// `tcp` or `tls`. Homer's collectors accept all three. HEP v3 carries its
+    /// own total length, so a TCP or TLS feed is packets laid end to end with
+    /// no extra framing. Refused without `--hep-send`, which is the side it
+    /// governs.
+    #[arg(
+        help_heading = "HEP",
+        long = "hep-send-transport",
+        value_name = "udp|tcp|tls",
+        requires = "hep_send"
+    )]
+    pub hep_send_transport: Option<HepTransport>,
+
+    /// Transport `--hep-listen` accepts: `udp` (default), `tcp` or `tls`.
+    /// A `tcp` or `tls` listener serves several agents at once and reads each
+    /// connection as a stream of length-prefixed HEP v3 packets; HEP v2, which
+    /// carries no total length, is datagram-only. Refused without
+    /// `--hep-listen`, which is the side it governs.
+    #[arg(
+        help_heading = "HEP",
+        long = "hep-listen-transport",
+        value_name = "udp|tcp|tls",
+        requires = "hep_listen"
+    )]
+    pub hep_listen_transport: Option<HepTransport>,
+
+    /// Certificate authority (PEM) the collector's certificate is verified
+    /// against under `--hep-send-transport tls`. A named CA REPLACES the trust
+    /// store rather than joining it, so a private collector's issuer is the
+    /// whole of what this sender accepts. Omit it to use the host's CA bundle.
+    #[arg(
+        help_heading = "HEP",
+        long = "hep-tls-ca",
+        value_name = "FILE",
+        requires = "hep_send_transport"
+    )]
+    pub hep_tls_ca: Option<std::path::PathBuf>,
+
+    /// Server certificate chain (PEM) a `--hep-listen-transport tls` listener
+    /// presents to connecting agents. Leaf first, then any intermediates.
+    #[arg(
+        help_heading = "HEP",
+        long = "hep-tls-cert",
+        value_name = "FILE",
+        requires = "hep_tls_key"
+    )]
+    pub hep_tls_cert: Option<std::path::PathBuf>,
+
+    /// Private key (PEM) for `--hep-tls-cert`. sipnab refuses a key any other
+    /// user on the host can read.
+    #[arg(
+        help_heading = "HEP",
+        long = "hep-tls-key",
+        value_name = "FILE",
+        requires = "hep_tls_cert"
+    )]
+    pub hep_tls_key: Option<std::path::PathBuf>,
+
     /// Capture-agent id (HEP 0x000c chunk) stamped on every packet sent via
     /// `--hep-send`. Distinguishes this agent to the Homer collector. Default 1.
     #[arg(help_heading = "HEP", long = "hep-id", value_name = "ID")]
@@ -4656,6 +4776,40 @@ impl Cli {
             }
         }
 
+        // A TLS flag on a plaintext side configures nothing, and the way it
+        // fails matters: an operator who believes --hep-tls-ca encrypted the
+        // feed gets a clean exit and packets in the clear. Refuse instead, and
+        // name the transport value that would make the flag live.
+        if self.hep_args.hep_tls_ca.is_some() && self.hep_send_transport() != HepTransport::Tls {
+            return Err(crate::Error::CliValidation(
+                "--hep-tls-ca verifies the collector's certificate and does \
+                 nothing without --hep-send-transport tls"
+                    .to_string(),
+            ));
+        }
+        if (self.hep_args.hep_tls_cert.is_some() || self.hep_args.hep_tls_key.is_some())
+            && self.hep_listen_transport() != HepTransport::Tls
+        {
+            return Err(crate::Error::CliValidation(
+                "--hep-tls-cert/--hep-tls-key are what a TLS listener presents \
+                 and do nothing without --hep-listen-transport tls"
+                    .to_string(),
+            ));
+        }
+        // The other direction: a TLS listener with nothing to present cannot
+        // complete a handshake, and the first agent to connect is a bad place
+        // to discover it.
+        if self.hep_listen_transport() == HepTransport::Tls
+            && (self.hep_args.hep_tls_cert.is_none() || self.hep_args.hep_tls_key.is_none())
+        {
+            return Err(crate::Error::CliValidation(
+                "--hep-listen-transport tls needs --hep-tls-cert and \
+                 --hep-tls-key; a TLS server with nothing to present cannot \
+                 complete a handshake"
+                    .to_string(),
+            ));
+        }
+
         // Fail fast on a malformed --kill-target so a typo can't silently leave
         // an attacker unblocked.
         for spec in &self.security_args.kill_target {
@@ -4679,6 +4833,22 @@ impl Cli {
             self.listener_args.metrics_auth_file.as_deref(),
             "--metrics-auth-file",
         )
+    }
+
+    /// The transport `--hep-send` uses, defaulting to UDP.
+    ///
+    /// The flag is an `Option` rather than a clap `default_value` so that
+    /// "the operator named a transport" and "nobody said" stay distinguishable
+    /// — which is what lets clap refuse `--hep-send-transport` on a run that
+    /// has no `--hep-send` to govern.
+    pub fn hep_send_transport(&self) -> HepTransport {
+        self.hep_args.hep_send_transport.unwrap_or_default()
+    }
+
+    /// The transport `--hep-listen` accepts, defaulting to UDP. See
+    /// [`Self::hep_send_transport`] for why it is an `Option`.
+    pub fn hep_listen_transport(&self) -> HepTransport {
+        self.hep_args.hep_listen_transport.unwrap_or_default()
     }
 
     /// Resolve the HEP shared secret, preferring `--hep-auth-file` over the
@@ -5244,6 +5414,167 @@ mod tests {
         assert_eq!(HepAuthMode::from_str("HMAC"), Ok(HepAuthMode::Hmac));
         assert!(HepAuthMode::from_str("sigv4").is_err());
         assert_eq!(HepAuthMode::default(), HepAuthMode::Plain);
+    }
+
+    /// `HepTransport::from_str` names the three transports and nothing else,
+    /// and the error lists every choice so a typo says what was expected.
+    ///
+    /// UDP is the default because it is what both HEP sides of sipnab have
+    /// always spoken: a run that names no transport must behave exactly as it
+    /// did before the flag existed.
+    #[test]
+    fn hep_transport_is_named_by_the_operator_and_defaults_to_udp() {
+        use std::str::FromStr;
+        assert_eq!(HepTransport::from_str("udp"), Ok(HepTransport::Udp));
+        assert_eq!(HepTransport::from_str("tcp"), Ok(HepTransport::Tcp));
+        assert_eq!(HepTransport::from_str("tls"), Ok(HepTransport::Tls));
+        assert_eq!(HepTransport::from_str("  TCP "), Ok(HepTransport::Tcp));
+        assert_eq!(HepTransport::default(), HepTransport::Udp);
+        let err = HepTransport::from_str("sctp").expect_err("sctp is not offered");
+        for choice in ["udp", "tcp", "tls"] {
+            assert!(
+                err.contains(choice),
+                "the refusal must list {choice}, or the operator has to read \
+                 the source to learn what is on offer: {err}"
+            );
+        }
+        assert_eq!(HepTransport::Tls.to_string(), "tls");
+    }
+
+    /// Each transport flag names the side it governs, and the side it does
+    /// not govern is unaffected.
+    ///
+    /// One `--hep-transport` cannot serve a program that both receives and
+    /// sends: a relay taking TCP in and forwarding UDP out has no way to say
+    /// so, and neither does a reader of the command line have a way to tell
+    /// which half a bare `--hep-transport` meant.
+    #[test]
+    fn each_hep_transport_flag_governs_one_side() {
+        let listening = Cli::parse_from_args([
+            "sipnab",
+            "-L",
+            "127.0.0.1:9060",
+            "--hep-listen-transport",
+            "tcp",
+        ]);
+        assert_eq!(listening.hep_listen_transport(), HepTransport::Tcp);
+        assert_eq!(
+            listening.hep_send_transport(),
+            HepTransport::Udp,
+            "naming the listener transport must not move the sender"
+        );
+
+        let sending = Cli::parse_from_args([
+            "sipnab",
+            "-H",
+            "127.0.0.1:9060",
+            "--hep-send-transport",
+            "tcp",
+        ]);
+        assert_eq!(sending.hep_send_transport(), HepTransport::Tcp);
+        assert_eq!(
+            sending.hep_listen_transport(),
+            HepTransport::Udp,
+            "naming the sender transport must not move the listener"
+        );
+
+        let bare = Cli::parse_from_args(["sipnab", "-L", "127.0.0.1:9060"]);
+        assert_eq!(bare.hep_listen_transport(), HepTransport::Udp);
+        assert_eq!(bare.hep_send_transport(), HepTransport::Udp);
+    }
+
+    /// A transport or TLS flag whose side is not in the run configures
+    /// nothing, and is refused rather than ignored.
+    ///
+    /// Silently ignoring `--hep-tls-ca` on a `udp` sender is the worst of the
+    /// three outcomes: the operator believes the feed is encrypted, the exit
+    /// status agrees with them, and the packets are in the clear.
+    #[test]
+    fn the_hep_transport_flags_refuse_to_be_inert() {
+        for lonely in [
+            vec!["--hep-listen-transport", "tcp"],
+            vec!["--hep-send-transport", "tcp"],
+            vec!["--hep-tls-ca", "ca.pem"],
+            vec!["--hep-tls-cert", "c.pem"],
+            vec!["--hep-tls-key", "k.pem"],
+        ] {
+            let mut argv = vec!["sipnab", "-I", "x.pcap"];
+            argv.extend(lonely.iter().copied());
+            assert!(
+                Cli::try_parse_from(&argv).is_err(),
+                "{lonely:?} without the side it governs configures nothing"
+            );
+        }
+    }
+
+    /// `--hep-tls-ca` belongs to the sender and the certificate pair to the
+    /// listener; each is refused on the other side's transport.
+    #[test]
+    fn each_hep_tls_flag_is_refused_on_the_side_it_cannot_reach() {
+        let ca_on_a_plaintext_sender = Cli::try_parse_from([
+            "sipnab",
+            "-N",
+            "-d",
+            "eth0",
+            "-H",
+            "127.0.0.1:9060",
+            "--hep-send-transport",
+            "tcp",
+            "--hep-tls-ca",
+            "ca.pem",
+        ])
+        .expect("clap accepts it; validate must not");
+        let refusal = ca_on_a_plaintext_sender
+            .validate()
+            .expect_err("a CA verifies nothing on a plaintext sender");
+        assert!(
+            refusal.to_string().contains("--hep-send-transport tls"),
+            "the refusal has to name what would make the flag live: {refusal}"
+        );
+
+        let cert_on_a_plaintext_listener = Cli::try_parse_from([
+            "sipnab",
+            "-N",
+            "-L",
+            "127.0.0.1:9060",
+            "--hep-listen-transport",
+            "tcp",
+            "--hep-tls-cert",
+            "c.pem",
+            "--hep-tls-key",
+            "k.pem",
+        ])
+        .expect("clap accepts it; validate must not");
+        let refusal = cert_on_a_plaintext_listener
+            .validate()
+            .expect_err("a certificate serves nothing on a plaintext listener");
+        assert!(
+            refusal.to_string().contains("--hep-listen-transport tls"),
+            "the refusal has to name what would make the flags live: {refusal}"
+        );
+    }
+
+    /// A TLS listener with no certificate cannot serve one, and says so at
+    /// startup rather than at the first connection.
+    #[test]
+    fn a_tls_hep_listener_without_a_certificate_is_refused() {
+        let naked = Cli::try_parse_from([
+            "sipnab",
+            "-N",
+            "-L",
+            "127.0.0.1:9060",
+            "--hep-listen-transport",
+            "tls",
+        ])
+        .expect("clap accepts it; validate must not");
+        let refusal = naked
+            .validate()
+            .expect_err("a TLS server with no certificate cannot complete a handshake");
+        let text = refusal.to_string();
+        assert!(
+            text.contains("--hep-tls-cert") && text.contains("--hep-tls-key"),
+            "the refusal names both halves the listener is missing: {text}"
+        );
     }
 
     /// `--hep-auth-mode hmac` parses; the flag defaults to `plain`.

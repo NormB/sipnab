@@ -1777,6 +1777,64 @@ Homer authoritative.
 - `--hep-auth-mode hmac` signs the **whole datagram** — every chunk, so the signature covers the source and destination the sender asserts, not only the payload. That is what makes `--hep-allow-kill` safe to pair with it: the kill response targets exactly those fields, and an unsigned assertion could aim it at a third party. Earlier builds signed the payload only, so anyone who observed a packet could re-send it with address chunks appended and it still verified. sipnab now **refuses** those version-1 tokens and logs why. There is no compatibility switch, so upgrade both ends together.
 - Give each agent its own `--hep-id`, or the collector cannot tell your nodes apart.
 
+### 26a. Carry the feed over TCP and TLS
+
+
+Both halves of HEP default to UDP, which is what Homer's agents have always
+spoken and what sipnab has always done. Homer's collectors also accept TCP and
+TLS, and each side of sipnab names its own transport so a relay can take one in
+and send another out:
+
+```bash
+sipnab -N \
+  --hep-listen 0.0.0.0:9061 --hep-listen-transport tcp --hep-allow 192.0.2.0/24 \
+  --hep-send homer.example.com:9060 --hep-id 42
+```
+
+There is deliberately no one flag covering both. sipnab is both agent and
+collector, often in one process, so a transport flag that named neither side
+would leave a reader of the command line guessing which half it meant.
+
+Across a path you do not control, wrap the outgoing feed in TLS and name the
+issuer that signs the collector's certificate:
+
+```bash
+sipnab -N -d eth0 \
+  --hep-send collector.example.com:9063 --hep-send-transport tls \
+  --hep-tls-ca /etc/sipnab/collector-ca.pem
+```
+
+The receiving side needs a certificate of its own, and refuses a private key
+any other user on the host can read:
+
+```bash
+# Run all of these, in order.
+chmod 600 /etc/sipnab/collector.key
+sipnab -N \
+  --hep-listen 0.0.0.0:9063 --hep-listen-transport tls \
+  --hep-tls-cert /etc/sipnab/collector.pem --hep-tls-key /etc/sipnab/collector.key \
+  --hep-parse --hep-auth-file /etc/sipnab/hep.key
+```
+
+**Pitfalls:**
+
+- **HEP v2 cannot travel on a stream.** It declares no total length, so nothing
+  can say where one packet ends and the next begins. A `tcp` or `tls` listener
+  reads HEP v3 only; senders that emit v2 must stay on `udp`.
+- **TLS says the path is private, not who is on it.** sipnab asks connecting
+  agents for no certificate of their own, so the identity of a peer still comes
+  from `--hep-auth-file`. `--hep-allow` still applies too, and means the same
+  thing it means on UDP and TCP: the source address of the connection. Keep
+  both — TLS does not lift the bind refusal for a routable
+  `--hep-listen`, for exactly this reason.
+- **A named `--hep-tls-ca` replaces the trust store rather than joining it.**
+  That is what you want for a private collector, and it means a public
+  certificate stops verifying the moment you name a private issuer. Omit the
+  flag to use the host's CA bundle instead.
+- A `tcp` or `tls` sender rebuilds its connection when the collector restarts,
+  one attempt per packet. The packet that discovers the break can vanish;
+  nothing after it does.
+
 ---
 
 ## 27. Compare the same call at two nodes

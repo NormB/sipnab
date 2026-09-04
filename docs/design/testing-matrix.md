@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 256 | 132 | 45 | 78 | 1 |
+| CLI flags | 261 | 132 | 50 | 78 | 1 |
 | HTTP routes | 17 | 17 | -- | 0 | 0 |
 | MCP tools | 63 | 63 | -- | 0 | 0 |
 
@@ -297,6 +297,11 @@ behind them.
 | `--rtt-bad-ms` |  | `MS` | Analysis | referenced | `src/cli.rs` | **behavior** | same test, case rtt_bad_ms |
 | `--hep-listen` | `-L` | `ADDR` | HEP | e2e | `tests/cli_flag_behavior_test.rs`, `tests/config_wiring_test.rs` +3 |  |  |
 | `--hep-send` | `-H` | `ADDR` | HEP | e2e | `tests/hep_send_file_export_test.rs`, `tests/hep_test.rs` |  |  |
+| `--hep-send-transport` |  |  | HEP | parsed | `src/cli.rs` |  |  |
+| `--hep-listen-transport` |  |  | HEP | parsed | `src/cli.rs` |  |  |
+| `--hep-tls-ca` |  | `FILE` | HEP | parsed | `src/cli.rs` |  |  |
+| `--hep-tls-cert` |  | `FILE` | HEP | parsed | `src/cli.rs` |  |  |
+| `--hep-tls-key` |  | `FILE` | HEP | parsed | `src/cli.rs` |  |  |
 | `--hep-id` |  | `ID` | HEP | parsed | `src/cli.rs` |  |  |
 | `--hep-auth` |  | `KEY` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-auth-file` |  | `FILE` | HEP | parsed | `src/cli.rs` |  |  |

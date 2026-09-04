@@ -175,6 +175,15 @@ pub enum CaptureSource {
         /// (`[security] hep_hmac_window_secs`).
         #[cfg(feature = "hep")]
         hmac_window_secs: u64,
+        /// Which transport the listener accepts (`--hep-listen-transport`).
+        #[cfg(feature = "hep")]
+        listen_transport: crate::cli::HepTransport,
+        /// Server certificate chain a TLS listener presents (`--hep-tls-cert`).
+        #[cfg(feature = "hep")]
+        tls_cert: Option<std::path::PathBuf>,
+        /// Private key for `tls_cert` (`--hep-tls-key`).
+        #[cfg(feature = "hep")]
+        tls_key: Option<std::path::PathBuf>,
     },
     /// Several sources feeding ONE pipeline in one process.
     ///
@@ -496,6 +505,9 @@ pub fn start_capture(
             auth_key,
             auth_mode,
             hmac_window_secs,
+            listen_transport,
+            tls_cert,
+            tls_key,
         } => {
             let addr = bind_addr.clone();
             let allow = allowlist.clone();
@@ -505,6 +517,9 @@ pub fn start_capture(
             let auth = auth_key.clone();
             let mode = *auth_mode;
             let window = *hmac_window_secs;
+            let transport = *listen_transport;
+            let tls_cert = tls_cert.clone();
+            let tls_key = tls_key.clone();
             thread::Builder::new()
                 .name("capture-hep".to_string())
                 .spawn(move || {
@@ -516,6 +531,9 @@ pub fn start_capture(
                         auth_key: auth.as_deref(),
                         auth_mode: mode,
                         hmac_window_secs: window,
+                        transport,
+                        tls_cert: tls_cert.as_deref(),
+                        tls_key: tls_key.as_deref(),
                     };
                     hep::capture_hep(&addr, &config, tx, &opts, ready_tx)
                 })
@@ -1153,6 +1171,12 @@ mod tests {
                 auth_mode: crate::cli::HepAuthMode::default(),
                 #[cfg(feature = "hep")]
                 hmac_window_secs: crate::capture::hep::DEFAULT_HMAC_WINDOW_SECS,
+                #[cfg(feature = "hep")]
+                listen_transport: crate::cli::HepTransport::default(),
+                #[cfg(feature = "hep")]
+                tls_cert: None,
+                #[cfg(feature = "hep")]
+                tls_key: None,
             }
         }
 

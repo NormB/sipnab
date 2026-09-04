@@ -306,6 +306,12 @@ fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanErro
         auth_mode: cli.hep_args.hep_auth_mode,
         #[cfg(feature = "hep")]
         hmac_window_secs: cli.hep_hmac_window_secs(config),
+        #[cfg(feature = "hep")]
+        listen_transport: cli.hep_listen_transport(),
+        #[cfg(feature = "hep")]
+        tls_cert: cli.hep_args.hep_tls_cert.clone(),
+        #[cfg(feature = "hep")]
+        tls_key: cli.hep_args.hep_tls_key.clone(),
     })
 }
 
@@ -5327,6 +5333,12 @@ mod tests {
             auth_mode: crate::cli::HepAuthMode::default(),
             #[cfg(feature = "hep")]
             hmac_window_secs: crate::capture::hep::DEFAULT_HMAC_WINDOW_SECS,
+            #[cfg(feature = "hep")]
+            listen_transport: crate::cli::HepTransport::default(),
+            #[cfg(feature = "hep")]
+            tls_cert: None,
+            #[cfg(feature = "hep")]
+            tls_key: None,
         }
     }
 

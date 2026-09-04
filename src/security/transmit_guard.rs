@@ -169,6 +169,12 @@ mod tests {
             auth_mode: crate::cli::HepAuthMode::default(),
             #[cfg(feature = "hep")]
             hmac_window_secs: crate::capture::hep::DEFAULT_HMAC_WINDOW_SECS,
+            #[cfg(feature = "hep")]
+            listen_transport: crate::cli::HepTransport::default(),
+            #[cfg(feature = "hep")]
+            tls_cert: None,
+            #[cfg(feature = "hep")]
+            tls_key: None,
         };
         assert!(
             TransmitPermit::for_source(&hep).is_some(),
@@ -198,6 +204,12 @@ mod tests {
             auth_mode: crate::cli::HepAuthMode::default(),
             #[cfg(feature = "hep")]
             hmac_window_secs: crate::capture::hep::DEFAULT_HMAC_WINDOW_SECS,
+            #[cfg(feature = "hep")]
+            listen_transport: crate::cli::HepTransport::default(),
+            #[cfg(feature = "hep")]
+            tls_cert: None,
+            #[cfg(feature = "hep")]
+            tls_key: None,
         }
     }
 

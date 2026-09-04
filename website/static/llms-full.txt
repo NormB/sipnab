@@ -1775,6 +1775,64 @@ Homer authoritative.
 - `--hep-auth-mode hmac` signs the **whole datagram** — every chunk, so the signature covers the source and destination the sender asserts, not only the payload. That is what makes `--hep-allow-kill` safe to pair with it: the kill response targets exactly those fields, and an unsigned assertion could aim it at a third party. Earlier builds signed the payload only, so anyone who observed a packet could re-send it with address chunks appended and it still verified. sipnab now **refuses** those version-1 tokens and logs why. There is no compatibility switch, so upgrade both ends together.
 - Give each agent its own `--hep-id`, or the collector cannot tell your nodes apart.
 
+### 26a. Carry the feed over TCP and TLS
+
+
+Both halves of HEP default to UDP, which is what Homer's agents have always
+spoken and what sipnab has always done. Homer's collectors also accept TCP and
+TLS, and each side of sipnab names its own transport so a relay can take one in
+and send another out:
+
+```bash
+sipnab -N \
+  --hep-listen 0.0.0.0:9061 --hep-listen-transport tcp --hep-allow 192.0.2.0/24 \
+  --hep-send homer.example.com:9060 --hep-id 42
+```
+
+There is deliberately no one flag covering both. sipnab is both agent and
+collector, often in one process, so a transport flag that named neither side
+would leave a reader of the command line guessing which half it meant.
+
+Across a path you do not control, wrap the outgoing feed in TLS and name the
+issuer that signs the collector's certificate:
+
+```bash
+sipnab -N -d eth0 \
+  --hep-send collector.example.com:9063 --hep-send-transport tls \
+  --hep-tls-ca /etc/sipnab/collector-ca.pem
+```
+
+The receiving side needs a certificate of its own, and refuses a private key
+any other user on the host can read:
+
+```bash
+# Run all of these, in order.
+chmod 600 /etc/sipnab/collector.key
+sipnab -N \
+  --hep-listen 0.0.0.0:9063 --hep-listen-transport tls \
+  --hep-tls-cert /etc/sipnab/collector.pem --hep-tls-key /etc/sipnab/collector.key \
+  --hep-parse --hep-auth-file /etc/sipnab/hep.key
+```
+
+**Pitfalls:**
+
+- **HEP v2 cannot travel on a stream.** It declares no total length, so nothing
+  can say where one packet ends and the next begins. A `tcp` or `tls` listener
+  reads HEP v3 only; senders that emit v2 must stay on `udp`.
+- **TLS says the path is private, not who is on it.** sipnab asks connecting
+  agents for no certificate of their own, so the identity of a peer still comes
+  from `--hep-auth-file`. `--hep-allow` still applies too, and means the same
+  thing it means on UDP and TCP: the source address of the connection. Keep
+  both — TLS does not lift the bind refusal for a routable
+  `--hep-listen`, for exactly this reason.
+- **A named `--hep-tls-ca` replaces the trust store rather than joining it.**
+  That is what you want for a private collector, and it means a public
+  certificate stops verifying the moment you name a private issuer. Omit the
+  flag to use the host's CA bundle instead.
+- A `tcp` or `tls` sender rebuilds its connection when the collector restarts,
+  one attempt per packet. The packet that discovers the break can vanish;
+  nothing after it does.
+
 ---
 
 ## 27. Compare the same call at two nodes
@@ -9264,6 +9322,11 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--metrics-max-conn` | `<N>` | `16` | Metrics scrapes served at once before further ones get `503`. The gate stops a burst of slow clients exhausting threads and taking monitoring down, and sixteen suits one Prometheus; an HA pair, a federating parent, a `remote_write` shard, an alertmanager sidecar and one engineer's `curl` reach it without anything unusual happening. A refused scrape leaves a hole in the series that reads as a capture that died rather than as a busy endpoint. Config: `[limits] metrics_max_conn` Feature: `metrics` |
 | `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. Give that run an explicit media-only BPF expression (`sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"`) — without one the interface gets the auto-generated *signaling* filter, captures no media, and sees every mirrored message a second time. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe 6d](examples.md#6d-take-signaling-from-hep-and-media-off-the-wire-in-one-process). Feature: `hep` |
 | `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector: SIP as protocol type 1 and RTCP as type 5, so the collector can report media quality and not only call setup. RTP is never forwarded. **On `-I <file>` this forwards the file's contents**: every SIP message and RTCP report sipnab reads out of the capture goes to `<ADDR>` as recorded, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what---hep-send-sends). Feature: `hep` |
+| `--hep-send-transport` | `<udp\|tcp\|tls>` | `udp` | Transport `--hep-send` uses to reach the collector. Homer's collectors accept all three. HEP v3 carries its own total length, so a `tcp` or `tls` feed is packets laid end to end with no extra framing, and sipnab sets `TCP_NODELAY` because these are small packets whose value is timeliness. A write that fails drops the connection and the next packet dials again — one reconnect per packet, never a loop, so a collector that is down does not turn forwarding into a spin. Refused without `--hep-send`, which is the side it governs. Feature: `hep` |
+| `--hep-listen-transport` | `<udp\|tcp\|tls>` | `udp` | Transport `--hep-listen` accepts. A `tcp` or `tls` listener serves several agents at once, one connection each, and reads every connection as HEP v3 packets delimited by the total length in each header. **HEP v2 is datagram-only**: it declares no total length, so nothing can delimit it on a stream. A peer that sends bytes that are not HEP v3 loses its connection, because a stream offers no point to resynchronize at. Refused without `--hep-listen`, which is the side it governs. Feature: `hep` |
+| `--hep-tls-ca` | `<FILE>` | -- | Certificate authority (PEM) this sender checks the collector's certificate against under `--hep-send-transport tls`. A named CA **replaces** the trust store rather than joining it, so a private collector's issuer is the whole of what this sender accepts; a file sipnab cannot read, or that holds no certificate, raises an error rather than an empty store. Omit it to use the host's CA bundle (`$SSL_CERT_FILE`, else `/etc/ssl/certs/ca-certificates.crt` and its equivalents). sipnab refuses it unless `--hep-send-transport tls` names the transport. Feature: `hep` |
+| `--hep-tls-cert` | `<FILE>` | -- | Server certificate chain (PEM, leaf first) a `--hep-listen-transport tls` listener presents to connecting agents. It must be an end-entity certificate: rustls refuses a CA certificate offered as a server certificate. sipnab refuses it unless `--hep-listen-transport tls` names the transport, and that transport requires it. Feature: `hep` |
+| `--hep-tls-key` | `<FILE>` | -- | Private key (PEM) for `--hep-tls-cert`. sipnab **refuses a key any other user on the host can read** — `chmod 600` it. Group-readable stays allowed, because `root:sipnab 0640` is how a key is normally handed to a service account. sipnab refuses it unless `--hep-listen-transport tls` names the transport, and that transport requires it. Feature: `hep` |
 | `--hep-id` | `<ID>` | `1` | Capture-agent id (HEP `0x000c` chunk) stamped on packets sent via `--hep-send`. Feature: `hep` |
 | `--hep-auth` | `<KEY>` | -- | Homer authenticate key (HEP `0x000e` chunk). On `--hep-send` sipnab stamps it on every outgoing packet; on `--hep-listen` it **enables receiver-side authentication** — incoming packets must carry a matching key, which sipnab compares in constant time, or it drops them. Also read from `SIPNAB_HEP_AUTH`. **Security note:** the key travels in cleartext inside the HEP datagram, so it defeats blind/off-path spoofing but an on-path sniffer can capture and replay it. Over an untrusted path, tunnel HEP through WireGuard/IPsec/stunnel (the same posture as terminating API TLS in a reverse proxy) rather than relying on the key alone. Feature: `hep` |
 | `--hep-auth-file` | `<FILE>` | -- | Read the HEP shared secret from a file (contents trimmed), keeping it out of the process list. Takes precedence over `--hep-auth`. Feature: `hep` |
@@ -9300,6 +9363,14 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 - `sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --hep-rate-limit 40000 --hep-rate-limit-per-peer 5000` — authenticated HEP collector on a routable address: incoming packets must carry the shared secret, with a 5k/s per-peer fairness cap
 - `sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --hep-allow-kill --kill-scanner` — authenticated HEP collector that may also actively kill scanners seen in the HEP stream (only safe because the feed carries authentication)
 - `sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth s3cr3t-homer-key --hep-rate-limit-per-peer 2000 --hep-allow-kill --kill-target 198.51.100.7` — inline HEP secret (visible in the process list; prefer --hep-auth-file) with a tight per-peer cap for a busy multi-proxy fleet
+- `sudo sipnab -N -d eth0 --hep-send 192.0.2.10:9061 --hep-send-transport tcp --hep-id 42` — forward to a collector that speaks HEP over TCP, so a busy collector orders and keeps the feed instead of losing datagrams
+- `sipnab -N -I archive.pcap --hep-send 127.0.0.1:9061 --hep-send-transport tcp` — replay an archived capture into a local TCP collector; the stream is packets laid end to end, framed by each HEP v3 header's total length
+- `sudo sipnab -N -d eth0 --hep-send collector.example.com:9063 --hep-send-transport tls --hep-tls-ca /etc/sipnab/collector-ca.pem` — encrypted forwarding across a path you do not control, verifying the collector against your own issuer
+- `sudo sipnab -N -d eth0 --hep-send homer.example.net:9063 --hep-send-transport tls --hep-tls-ca /etc/pki/tls/certs/homer-ca.pem --hep-auth-file /etc/sipnab/hep.key` — the same, with the Homer authenticate key inside the session as well as the session around it
+- `sipnab -N -L 0.0.0.0:9061 --hep-listen-transport tcp --hep-parse --hep-auth-file /etc/sipnab/hep.key` — an authenticated TCP HEP collector: several proxies connect at once and sipnab reads each connection as a stream of HEP v3 packets
+- `sipnab -N -L 127.0.0.1:9061 --hep-listen-transport tcp --hep-parse` — the loopback version, for an agent mirroring to a collector on the same host over a connection rather than datagrams
+- `sipnab -N -L 0.0.0.0:9063 --hep-listen-transport tls --hep-tls-cert /etc/sipnab/collector.pem --hep-tls-key /etc/sipnab/collector.key --hep-parse --hep-auth-file /etc/sipnab/hep.key` — a TLS HEP collector: agents reach it over an encrypted stream and still prove who they are with the shared secret
+- `sipnab -N -L 0.0.0.0:9063 --hep-listen-transport tls --hep-tls-cert /etc/sipnab/collector.pem --hep-tls-key /etc/sipnab/collector.key --hep-parse --hep-allow 192.0.2.0/24` — the same listener bounded by source address instead: TLS encrypts the path, and `--hep-allow` is still what says which addresses may speak on it
 - `sipnab -N -I capture.pcap --metrics 127.0.0.1:9090 --metrics-auth-file /etc/sipnab/metrics.cred` — loopback metrics endpoint reading its Basic-auth credential from a file (keeps user:pass out of the process list)
 - `sudo sipnab -d eth0 --metrics 0.0.0.0:9090 --metrics-auth-file /etc/sipnab/metrics.cred` — routable metrics endpoint (non-loopback requires auth) using a file-backed credential; terminate TLS at a reverse proxy
 - `sipnab --mint-token --token-id alice-2026 --api-signing-key-file /etc/sipnab/signing.key --api-token-ttl 3600` — mint a signed bearer token with a fixed id (for later revocation) and a 1-hour TTL, then exit
