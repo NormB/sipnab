@@ -3705,6 +3705,45 @@ mod tests {
     /// hang, and a hung test is not a failing test: a mutation that removes
     /// the reconnect would look like an infrastructure timeout rather than a
     /// caught defect.
+    /// Accept the connection a sender rebuilds, feeding it packets until it
+    /// does.
+    ///
+    /// [`accept_within`] alone cannot express this: the sender only rebuilds
+    /// when a write fails, a write only fails once the peer's RST is back, and
+    /// how many writes that takes is the kernel's business. Sending a fixed
+    /// number first and accepting afterwards encodes one platform's timing as
+    /// if it were the behavior under test.
+    ///
+    /// A sender that never rebuilds still fails here, on the deadline, which
+    /// is what the test is for.
+    fn accept_rebuilt_while_sending(
+        listener: &std::net::TcpListener,
+        mut send_one: impl FnMut(),
+    ) -> std::net::TcpStream {
+        listener
+            .set_nonblocking(true)
+            .expect("poll rather than block");
+        let deadline = Instant::now() + MUST_ARRIVE;
+        loop {
+            send_one();
+            match listener.accept() {
+                Ok((sock, _)) => {
+                    sock.set_nonblocking(false).expect("back to blocking reads");
+                    return sock;
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "the rebuilt connection: the sender offered packets for \
+                         {MUST_ARRIVE:?} and never reconnected"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("the rebuilt connection: accept failed: {e}"),
+            }
+        }
+    }
+
     fn accept_within(listener: &std::net::TcpListener, what: &str) -> std::net::TcpStream {
         listener
             .set_nonblocking(true)
@@ -3852,10 +3891,18 @@ mod tests {
         // only fails once the RST comes back, so the packet that discovers the
         // break is allowed to be lost. What must not be lost is every packet
         // after it.
-        for body in [&b"second"[..], b"third", b"fourth"] {
-            let _ = sender.send_payload(&endpoint, Utc::now(), HepProtocol::Sip, body);
-        }
-        let mut second = accept_within(&collector, "the rebuilt connection");
+        //
+        // How MANY packets it takes to discover the break is the kernel's
+        // business, not this crate's: on Linux the RST is back before the
+        // second write, and on macOS it is not, so a fixed three-packet burst
+        // passed here and failed on the macOS runner with no connection inside
+        // ten seconds. The claim is that the sender rebuilds when the collector
+        // comes back, not that it rebuilds on any particular packet -- so keep
+        // offering it packets until it does, and let the deadline be what
+        // fails.
+        let mut second = accept_rebuilt_while_sending(&collector, || {
+            let _ = sender.send_payload(&endpoint, Utc::now(), HepProtocol::Sip, b"after");
+        });
         let frames = read_framed(&mut second, 1);
         assert_eq!(
             frames.len(),

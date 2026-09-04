@@ -141,6 +141,16 @@ entry that carries them.
   timeout is now set while the socket is plainly healthy, before the write, so
   the assertion no longer depends on which side wins the race.
 
+- **The TCP reconnect test encoded one platform's timing as if it were the
+  behavior.** The sender rebuilds its connection when a write fails, a write
+  fails only once the peer's RST is back, and how many writes that takes is the
+  kernel's business: on Linux the RST beats the second packet, on macOS it does
+  not. Sending a fixed three and then accepting passed everywhere but the macOS
+  runner, where no connection arrived inside ten seconds. The test now offers
+  packets until the sender reconnects, with the deadline as the failure -- the
+  claim being that it rebuilds when the collector comes back, not that it
+  rebuilds on any particular packet. A sender that never rebuilds still fails.
+
 - **Two `rust/cleartext-logging` alerts, dismissed as false positives with the
   dataflow path recorded rather than by assertion.** `hep_tls_sink` returns
   `(HepSink, SocketAddr)`; the certificate material genuinely reaches the sink,
