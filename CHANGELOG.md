@@ -8,6 +8,20 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Two claims about media-to-leg correlation now have tests that name them.**
+  Asked how sipnab ties an RTP quality problem back to the SIP leg causing it,
+  the answer given was that a later pass resolves streams whose packets arrived
+  before their SDP. On one worker that is not what happens: linking the SDP
+  claims an already-seen stream itself, and the later pass exists for the
+  merge case a separate test already covers. A mutation caught the mistake --
+  gutting that pass left the first draft of these tests green. They now assert
+  the real mechanism, and that a rival SDP for the same socket never steals a
+  stream that already belongs to a call.
+
 ## [0.5.149] - 2026-09-03
 
 ### Fixed

@@ -3487,6 +3487,72 @@ a=rtpmap:96 H264/90000\r\n";
         store
     }
 
+    // ── what the correlation claims rest on ────────────────────────────────
+    //
+    // These pin two statements made about how media is tied back to a SIP leg.
+    // The claim was first written as "a later pass resolves it", which is not
+    // what happens on one worker: `link_endpoint` claims already-seen streams
+    // itself, and `reassociate_all` exists for the merge case that
+    // `merge_reassociates_streams_whose_sdp_was_on_another_worker` covers.
+    // A mutation caught the mistake -- gutting `reassociate_all` left the
+    // first draft of these green.
+
+    /// A stream whose packets arrive BEFORE the SDP that explains it is
+    /// claimed the moment that SDP is linked.
+    ///
+    /// This is the offline case: replaying a pcap, the RTP reaches the store
+    /// before the INVITE describing it. If linking only claimed future
+    /// packets, such a stream would stay an orphan and the operator would be
+    /// told media exists for no call.
+    #[test]
+    fn linking_an_sdp_claims_a_stream_that_already_arrived() {
+        let mut store = StreamStore::new(100);
+        store.process_rtp(
+            &make_parsed(20000, 30000, 160),
+            &make_rtp_header(0x00C0_FFEE, 1),
+            ts(0),
+        );
+        assert!(
+            store.iter().all(|s| s.associated_dialog.is_none()),
+            "with no SDP yet, the stream belongs to no call"
+        );
+        store.link_endpoint(b(), 30000, "call-late", &[]);
+        assert_eq!(
+            store
+                .iter()
+                .filter_map(|s| s.associated_dialog.as_deref())
+                .collect::<Vec<_>>(),
+            ["call-late"],
+            "linking the SDP claims the stream that was already there"
+        );
+    }
+
+    /// An association already made is never overwritten by a later SDP for the
+    /// same socket, and re-linking the first one changes nothing.
+    ///
+    /// "Only fills an unset association" is what makes the association safe to
+    /// run inline and again after a merge. If a second SDP could steal a
+    /// stream, the quality figures an operator reads would move between calls
+    /// depending on the order the capture happened to be processed in.
+    #[test]
+    fn a_second_sdp_for_the_same_socket_does_not_steal_the_stream() {
+        let mut store = store_with_one_stream();
+        // Only the rival SDP, and then the re-link pass. Linking "call-1"
+        // again here would restore the value a stolen association overwrote,
+        // and hide exactly the defect this guards -- which is what the first
+        // draft did, and a mutation caught.
+        store.link_endpoint(b(), 30000, "call-2", &[]);
+        store.reassociate_all();
+        assert_eq!(
+            store
+                .iter()
+                .filter_map(|s| s.associated_dialog.as_deref())
+                .collect::<Vec<_>>(),
+            ["call-1"],
+            "the first call keeps its stream through a rival SDP and the re-link pass"
+        );
+    }
+
     /// Tier 1: the quoted 5-tuple is exactly a tracked stream. Strongest tie
     /// available, and it names the call.
     #[test]
