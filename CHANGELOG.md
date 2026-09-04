@@ -11,6 +11,21 @@ entry that carries them.
 ## [Unreleased]
 
 ### Added
+- **The three reasons an RTP stream has no call are now testable, and
+  tested.** `reconcile_orphans` tells an operator why media could not be
+  attached to a dialog: a relay named the endpoint but no captured dialog
+  claims it, an SDP body named it but no dialog holds it, or nothing named it
+  at all. The distinction is the value of the tool -- the first sends someone
+  looking for missing signaling, the last says the capture never saw an
+  explanation -- and it was decided by a match buried in an async handler that
+  needs a server, a store and a live capture to reach. Nothing drove it.
+
+  The mapping is a free function now, for the same reason `classify` beside it
+  is one, and the handler calls it rather than keeping a second copy that would
+  agree today and drift when a variant is added. Two tests cover it: one
+  driving every arm, and one requiring the three explanations to differ from
+  each other, since three identical sentences would satisfy the first while
+  telling a reader nothing.
 - **A gate for public documentation that links to items rustdoc cannot
   reach.** `capture_hep` is `pub`, and the transport documentation added with
   the TCP and TLS work linked `HepIngest` (private) and `hep_stream_frame`

@@ -197,6 +197,23 @@ impl OrphanReason {
     }
 }
 
+/// Which reason an unexplained stream carries, from what named its endpoint.
+///
+/// A free function for the reason [`classify`] is one: the handler that calls
+/// it needs a server, a store and a capture, and none of that is needed to
+/// state which reason belongs to which assertion. Extracted from the match
+/// inside `reconcile_orphans`, so the rule lives in one place -- a second copy
+/// would agree today and drift the first time a variant is added.
+#[must_use]
+pub fn orphan_reason(named: Option<crate::rtp::stream_store::EndpointAssertion>) -> OrphanReason {
+    use crate::rtp::stream_store::EndpointAssertion;
+    match named {
+        Some(EndpointAssertion::MediaRelay) => OrphanReason::RelayAssertedButNoDialog,
+        Some(EndpointAssertion::Signaled) => OrphanReason::SignaledButNoDialog,
+        None => OrphanReason::NeverNamed,
+    }
+}
+
 /// One unexplained stream.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -375,18 +392,15 @@ impl SipnabMcp {
                     ss.sdp_endpoint_provenance(a.ip(), a.port())
                         .map(|p| (a, p.asserted_by))
                 });
-                let (endpoint, asserted, reason) = match named {
-                    Some((a, crate::rtp::stream_store::EndpointAssertion::MediaRelay)) => (
-                        Some(a.to_string()),
-                        Some("media-relay".to_string()),
-                        OrphanReason::RelayAssertedButNoDialog,
-                    ),
-                    Some((a, crate::rtp::stream_store::EndpointAssertion::Signaled)) => (
-                        Some(a.to_string()),
-                        Some("signaled".to_string()),
-                        OrphanReason::SignaledButNoDialog,
-                    ),
-                    None => (None, None, OrphanReason::NeverNamed),
+                let reason = orphan_reason(named.map(|(_, asserted)| asserted));
+                let (endpoint, asserted) = match named {
+                    Some((a, crate::rtp::stream_store::EndpointAssertion::MediaRelay)) => {
+                        (Some(a.to_string()), Some("media-relay".to_string()))
+                    }
+                    Some((a, crate::rtp::stream_store::EndpointAssertion::Signaled)) => {
+                        (Some(a.to_string()), Some("signaled".to_string()))
+                    }
+                    None => (None, None),
                 };
                 // Accumulated over EVERY orphan, not only those that fit under
                 // `limit`. Read off the truncated page, a small limit would
@@ -1347,6 +1361,73 @@ mod query_relay_view_tests {
             tags[1].media_subscriptions,
             vec!["from-tag-a".to_string()],
             "and the agent must still be able to see WHOSE media it receives"
+        );
+    }
+
+    /// Every reason an unexplained stream can carry, driven directly.
+    ///
+    /// The three arms are what `reconcile_orphans` tells an operator when it
+    /// cannot attach media to a call, and the distinction between them is the
+    /// whole value of the tool: "a relay named this endpoint but no dialog
+    /// claims it" sends someone to look for missing signaling, while "nothing
+    /// named it" says the capture never saw an explanation at all. Getting one
+    /// arm wrong points the investigation at the wrong half of the estate.
+    ///
+    /// Driven through a free function rather than through the async handler,
+    /// for the reason `classify` above is free: the handler needs a server, a
+    /// store and a live capture, and none of that is required to state which
+    /// reason belongs to which assertion.
+    #[test]
+    fn each_kind_of_unexplained_stream_gets_its_own_reason() {
+        use crate::rtp::stream_store::EndpointAssertion;
+
+        assert_eq!(
+            orphan_reason(Some(EndpointAssertion::MediaRelay)),
+            OrphanReason::RelayAssertedButNoDialog,
+            "a relay named the endpoint, so the signaling is what is missing"
+        );
+        assert_eq!(
+            orphan_reason(Some(EndpointAssertion::Signaled)),
+            OrphanReason::SignaledButNoDialog,
+            "an SDP body named it, so a dialog was dropped or arrived before \
+             capture started"
+        );
+        assert_eq!(
+            orphan_reason(None),
+            OrphanReason::NeverNamed,
+            "nothing named it: an absence of evidence, which must not be \
+             reported as a relay having answered"
+        );
+    }
+
+    /// Each reason explains itself in terms an operator can act on, and no two
+    /// explanations are the same sentence.
+    ///
+    /// Three identical strings would satisfy the mapping test above while
+    /// telling the reader nothing, which is the failure mode of a classifier
+    /// whose labels were copied.
+    #[test]
+    fn every_orphan_reason_explains_itself_distinctly() {
+        let all = [
+            OrphanReason::RelayAssertedButNoDialog,
+            OrphanReason::SignaledButNoDialog,
+            OrphanReason::NeverNamed,
+        ];
+        let explanations: Vec<&str> = all.iter().map(|r| r.explain()).collect();
+        for (reason, text) in all.iter().zip(&explanations) {
+            assert!(
+                text.len() > 30,
+                "{reason:?} explains itself in {} characters, which is not an \
+                 instruction to anybody",
+                text.len()
+            );
+        }
+        let unique: std::collections::BTreeSet<&&str> = explanations.iter().collect();
+        assert_eq!(
+            unique.len(),
+            explanations.len(),
+            "two reasons share an explanation, so the distinction the caller \
+             was given is not visible to the reader: {explanations:?}"
         );
     }
 }
