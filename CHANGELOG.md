@@ -130,6 +130,28 @@ entry that carries them.
   toward `--count`, dropped ones included, so a one-packet budget closed the
   connection for the wrong reason.
 
+### Fixed
+
+- **A HEP allowlist test failed on macOS for a reason that was not the
+  behavior under test.** It asked the peer socket for a read timeout after
+  writing, and macOS returns `EINVAL` from `setsockopt(SO_RCVTIMEO)` once the
+  peer has reset the connection -- which is exactly what the listener's refusal
+  does, and exactly what the test arranges. Linux tolerates the late call, so
+  it passed locally and on the Linux runners and failed only on macOS. The
+  timeout is now set while the socket is plainly healthy, before the write, so
+  the assertion no longer depends on which side wins the race.
+
+- **Two `rust/cleartext-logging` alerts, dismissed as false positives with the
+  dataflow path recorded rather than by assertion.** `hep_tls_sink` returns
+  `(HepSink, SocketAddr)`; the certificate material genuinely reaches the sink,
+  and CodeQL then loses tuple-element precision and carries that taint onto the
+  address element, which is stored as `HepSender.local_addr` and formatted into
+  an assert message. The reported sink is a `SocketAddr`, which cannot hold PEM
+  bytes; certificates are public material in any case, and the private-key path
+  does not appear in the flow. The alerts are new only because this release
+  introduced `pem_certificates` as a taint source.
+
+
 ### Changed
 
 - **Two claims about media-to-leg correlation now have tests that name them.**

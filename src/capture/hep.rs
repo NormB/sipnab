@@ -4468,6 +4468,15 @@ mod tests {
         );
 
         let mut peer = std::net::TcpStream::connect(&bind).expect("the TCP handshake completes");
+        // Before the write, not after it. macOS returns EINVAL from
+        // setsockopt(SO_RCVTIMEO) once the peer has reset the connection, and
+        // a refusal racing our write is precisely what this test arranges --
+        // so setting the timeout afterwards failed on the macOS runner while
+        // passing everywhere else. Linux tolerates the late call; the ordering
+        // that does not depend on which side wins the race is to ask for the
+        // timeout while the socket is still plainly healthy.
+        peer.set_read_timeout(Some(Duration::from_millis(750)))
+            .expect("the peer socket takes a read timeout");
         // The write may or may not fail depending on when the reset lands;
         // what matters is that nothing reaches the pipeline.
         let _ = peer.write_all(&hep3_from(1, None, b"NOT ALLOWED"));
@@ -4483,8 +4492,6 @@ mod tests {
         // instead. Refused at accept, the listener drops it and the peer sees
         // EOF; admitted and filtered later, the connection stays up until the
         // stream read timeout and this read times out instead.
-        peer.set_read_timeout(Some(Duration::from_millis(750)))
-            .expect("the peer socket takes a read timeout");
         let mut buf = [0u8; 1];
         let seen = std::io::Read::read(&mut peer, &mut buf);
         // Two endings, both meaning the same thing, and which one arrives is a
