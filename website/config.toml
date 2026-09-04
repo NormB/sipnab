@@ -107,7 +107,7 @@ macos_floor_intel = "10.12"
 # `codegen-units = 1`, `strip` and `panic = "abort"`, and the only lever left is
 # `opt-level = "z"`, which trades the throughput the benchmarks page publishes.
 # Raising a claim that is no longer true beats keeping a claim that is.
-binary_size_ceiling_mb = "14"
+binary_size_ceiling_mb = "15"
 github_url = "https://github.com/NormB/sipnab"
 # `owner/repo`, for the places a bare slug is what the command wants rather than
 # a URL: `gh attestation verify --repo`, the releases API path. These were

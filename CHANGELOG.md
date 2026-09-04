@@ -141,6 +141,22 @@ entry that carries them.
   timeout is now set while the socket is plainly healthy, before the write, so
   the assertion no longer depends on which side wins the race.
 
+- **The published binary-size ceiling moves 14 MB to 15 MB, because TLS costs
+  space.** Adding `rustls` to the `hep` feature for the TLS transports took the
+  stripped x86_64 musl binary to 15,481,608 bytes -- 14.76 MiB, over the 14 MB
+  the homepage advertised. The release gate compares the ceiling against the
+  real artifact rather than against another document, so it failed the release
+  rather than letting the claim drift, which is the failure it was written for
+  after the homepage once said 5 MB against a 9.34 MB binary.
+
+  15 rather than 16: it is the tightest bound that is still true, and the
+  claim is worth more than the headroom. That leaves about 247 KB, so the next
+  dependency of any size trips this again -- deliberately, since the gate runs
+  only at release time and a loose ceiling would hide growth until it was
+  large. The number is single-sourced in `website/config.toml` and the gate
+  requires the homepage tile, the feature table and both build documents to
+  quote it.
+
 - **The TCP reconnect test encoded one platform's timing as if it were the
   behavior.** The sender rebuilds its connection when a write fails, a write
   fails only once the peer's RST is back, and how many writes that takes is the
