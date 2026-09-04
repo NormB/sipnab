@@ -2424,13 +2424,13 @@ fn hep_tls_accept(
 /// respects the `count` and `duration` limits from `config`. Source
 /// filtering, rate limiting, and receiver-side authentication come from
 /// [`HepListenerOpts`] and are identical on every transport — they are one
-/// [`HepIngest`], not one per socket type.
+/// ingest path, not one per socket type.
 ///
 /// # Transports
 ///
 /// `udp` reads datagrams, which carry their own boundaries. `tcp` and `tls`
 /// accept connections and read each as HEP v3 packets laid end to end,
-/// delimited by the total length in each header ([`hep_stream_frame`]); HEP v2
+/// delimited by the total length in each header; HEP v2
 /// declares no total length and therefore cannot travel on a stream at all.
 ///
 /// # Default bind address

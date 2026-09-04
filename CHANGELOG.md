@@ -11,6 +11,24 @@ entry that carries them.
 ## [Unreleased]
 
 ### Added
+- **A gate for public documentation that links to items rustdoc cannot
+  reach.** `capture_hep` is `pub`, and the transport documentation added with
+  the TCP and TLS work linked `HepIngest` (private) and `hep_stream_frame`
+  (`pub(crate)`). rustdoc refuses that -- a rendered page would carry a link
+  the reader cannot follow -- but rustdoc runs in the pre-push hook and in CI,
+  not in pre-commit. So the links passed a full green pre-commit run,
+  including its own suite, and the push ten minutes later is what caught them.
+
+  The new gate reads `src/` directly: for every `pub` item, an intra-doc link
+  naming something declared non-public in the same file is an error. It is
+  deliberately narrower than rustdoc -- it never guesses at cross-module
+  resolution, and rustdoc stays the authority -- but it answers the common
+  case in seconds instead of minutes, before the commit rather than after it.
+  `#[doc(hidden)]` items are skipped because rustdoc renders no page for them
+  and resolves none of their links; a gate stricter than its own authority
+  could only be satisfied by damaging documentation. A third test asserts the
+  pre-push hook still runs `cargo doc` with `-D warnings` and `--all-features`,
+  since this gate is worth only as much as the check standing behind it.
 - **HEP over TCP and TLS, on both sides.** `--hep-send` opened a `UdpSocket`
   and `--hep-listen` bound one, and there was no other option — so an operator
   whose Homer agent or collector spoke TCP or TLS, which Homer's own agents and
