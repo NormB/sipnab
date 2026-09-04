@@ -6,39 +6,54 @@
 //! from the application/rs-metadata+xml MIME part.
 
 use anyhow::{Result, bail};
+use serde::Serialize;
 
 /// Parsed SIPREC recording metadata.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
 pub struct SirecMetadata {
     /// Recording session identifier.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Participants captured in the recording metadata.
     pub participants: Vec<SirecParticipant>,
     /// Media streams described by the metadata.
     pub streams: Vec<SirecStream>,
     /// Recording mode (e.g. "complete").
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
 }
 
 /// A participant in a SIPREC-recorded session.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, Serialize)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
 pub struct SirecParticipant {
     /// Participant identifier from the metadata XML.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub participant_id: Option<String>,
     /// Address-of-record (SIP URI) of the participant.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub aor: Option<String>,
     /// Display name of the participant.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
 
 /// A media stream described by SIPREC metadata.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, Serialize)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
 pub struct SirecStream {
     /// Stream identifier from the metadata XML.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_id: Option<String>,
     /// SDP label associating the stream with an m-line.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// Participant this stream belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub participant_id: Option<String>,
 }
 
@@ -176,7 +191,11 @@ fn parse_rs_metadata(xml: &str) -> Result<SirecMetadata> {
     let mut metadata = SirecMetadata {
         session_id: extract_xml_attr(xml, "session_id")
             .or_else(|| extract_xml_content(xml, "sessionid")),
-        mode: extract_xml_content(xml, "mode"),
+        // RFC 7866 §7 names this element `datamode`, and OpenSIPS's siprec
+        // module writes exactly that. `<mode>` is kept as a fallback for any
+        // SRC that emits the shorter spelling; neither pattern can match the
+        // other, since the scan anchors on `<datamode` and `<mode`.
+        mode: extract_xml_content(xml, "datamode").or_else(|| extract_xml_content(xml, "mode")),
         ..SirecMetadata::default()
     };
 
@@ -223,7 +242,55 @@ fn parse_rs_metadata(xml: &str) -> Result<SirecMetadata> {
         }
     }
 
+    // Ownership: which participant each stream belongs to.
+    //
+    // Nothing inside `<stream>` says so. RFC 7866 puts the association in
+    // `<participantstreamassoc participant_id="...">`, whose `<send>` children
+    // name the streams that participant originates and whose `<recv>` children
+    // name the ones it merely hears -- so `send` is ownership and `recv` is
+    // not. Without this the field is None on every stream a real SRC sends,
+    // which is the whole route from a recorded stream back to the person on
+    // it. The in-stream `<participant>` element read below stays as a fallback
+    // for SRCs that write one; the assoc is authoritative where both appear.
+    let mut search_from = 0;
+    while let Some(start) = xml[search_from..].find("<participantstreamassoc") {
+        let abs_start = search_from + start;
+        let Some(end) = xml[abs_start..].find("</participantstreamassoc>") else {
+            break;
+        };
+        let block = &xml[abs_start..abs_start + end];
+        if let Some(owner) = extract_xml_attr(block, "participant_id") {
+            for sent in extract_all_xml_content(block, "send") {
+                for stream in &mut metadata.streams {
+                    if stream.stream_id.as_deref() == Some(sent.as_str()) {
+                        stream.participant_id = Some(owner.clone());
+                    }
+                }
+            }
+        }
+        search_from = abs_start + end + "</participantstreamassoc>".len();
+    }
+
     Ok(metadata)
+}
+
+/// Every `<tag>...</tag>` content in `xml`, in document order.
+///
+/// [`extract_xml_content`] returns only the first, which is right for a field
+/// that appears once and wrong for `<send>`: a participant sending both audio
+/// and video has two, and reading one would leave the other stream unowned.
+fn extract_all_xml_content(xml: &str, tag: &str) -> Vec<String> {
+    let close = format!("</{tag}>");
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(found) = extract_xml_content(rest, tag) {
+        out.push(found);
+        let Some(pos) = rest.find(&close) else {
+            break;
+        };
+        rest = &rest[pos + close.len()..];
+    }
+    out
 }
 
 /// Extract content between `<tag>...</tag>` or `<tag attr="..">...</tag>`.
@@ -374,6 +441,174 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
         assert_eq!(result.participants[0].name.as_deref(), Some("Alice"));
         assert_eq!(result.streams.len(), 1);
         assert_eq!(result.streams[0].label.as_deref(), Some("audio"));
+    }
+
+    /// The metadata OpenSIPS's `siprec` module actually emits.
+    ///
+    /// Built from `modules/siprec/siprec_body.c::srs_build_xml` rather than
+    /// from a reading of RFC 7866, because the packets sipnab has to read are
+    /// the ones a real SRC sends. The earlier fixture in this file was written
+    /// by hand and nests `<participant>` and `<stream>` inside `<session>`
+    /// with `<aor>` as a child element; OpenSIPS emits them as siblings of
+    /// `<session>` with `aor` an attribute of `<nameID>`, and associates a
+    /// stream to a participant only through `<participantstreamassoc>`.
+    ///
+    /// Two participants and three streams, so the audio/video case is present:
+    /// Alice sends two streams whose labels are the `m=` line indices, which
+    /// is the whole reason a label is worth carrying.
+    fn opensips_metadata() -> &'static str {
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
+<recording xmlns='urn:ietf:params:xml:ns:recording:1'>\r\n\t\
+<datamode>complete</datamode>\r\n\t\
+<session session_id=\"sess-1\">\r\n\t\t\
+<sipSessionID>call-abc@example.invalid</sipSessionID>\r\n\t\
+</session>\r\n\
+\t<participant participant_id=\"p-alice\">\r\n\t\t\
+<nameID aor=\"sip:alice@example.invalid\">\r\n\t\t\t\
+<name>Alice</name>\r\n\t\t</nameID>\r\n\t</participant>\r\n\
+\t<participant participant_id=\"p-bob\">\r\n\t\t\
+<nameID aor=\"sip:bob@example.invalid\"/>\r\n\t</participant>\r\n\
+\t<stream stream_id=\"s-alice-audio\" session_id=\"sess-1\">\r\n\t\t\
+<label>0</label>\r\n\t</stream>\r\n\
+\t<stream stream_id=\"s-alice-video\" session_id=\"sess-1\">\r\n\t\t\
+<label>1</label>\r\n\t</stream>\r\n\
+\t<stream stream_id=\"s-bob-audio\" session_id=\"sess-1\">\r\n\t\t\
+<label>2</label>\r\n\t</stream>\r\n\
+\t<sessionrecordingassoc session_id=\"sess-1\">\r\n\t\t\
+<associate-time>2026-09-04T12:00:00-0400</associate-time>\r\n\t\
+</sessionrecordingassoc>\r\n\
+\t<participantsessionassoc participant_id=\"p-alice\" session_id=\"sess-1\">\r\n\t\t\
+<associate-time>2026-09-04T12:00:00-0400</associate-time>\r\n\t\
+</participantsessionassoc>\r\n\
+\t<participantstreamassoc participant_id=\"p-alice\">\r\n\t\t\
+<send>s-alice-audio</send>\r\n\t\t<send>s-alice-video</send>\r\n\t\t\
+<recv>s-bob-audio</recv>\r\n\t</participantstreamassoc>\r\n\
+\t<participantstreamassoc participant_id=\"p-bob\">\r\n\t\t\
+<send>s-bob-audio</send>\r\n\t\t<recv>s-alice-audio</recv>\r\n\t\
+</participantstreamassoc>\r\n\
+</recording>\r\n"
+    }
+
+    /// Wrap metadata in the multipart body OpenSIPS sends it in.
+    fn opensips_body() -> Vec<u8> {
+        format!(
+            "--OSS\r\nContent-Type: application/sdp\r\n\r\nv=0\r\n\
+             --OSS\r\nContent-Type: application/rs-metadata+xml\r\n\r\n{}\r\n--OSS--",
+            opensips_metadata()
+        )
+        .into_bytes()
+    }
+
+    /// The recording mode is in `<datamode>`, which is what RFC 7866 defines
+    /// and what OpenSIPS emits. Looking for `<mode>` finds nothing.
+    #[test]
+    fn the_recording_mode_comes_from_datamode() {
+        let md = parse_siprec_body("multipart/mixed; boundary=OSS", &opensips_body())
+            .expect("OpenSIPS metadata parses");
+        assert_eq!(
+            md.mode.as_deref(),
+            Some("complete"),
+            "the mode an SRC declares is <datamode>, not <mode>"
+        );
+    }
+
+    /// A stream belongs to the participant that SENDS it.
+    ///
+    /// This is the field that makes the metadata worth surfacing: it is the
+    /// only route from a recorded stream back to the person on it. OpenSIPS
+    /// puts nothing inside `<stream>` naming a participant -- the association
+    /// lives in `<participantstreamassoc>`, whose `<send>` children name the
+    /// streams that participant originates.
+    #[test]
+    fn a_stream_is_owned_by_the_participant_that_sends_it() {
+        let md = parse_siprec_body("multipart/mixed; boundary=OSS", &opensips_body())
+            .expect("OpenSIPS metadata parses");
+        let owner = |id: &str| {
+            md.streams
+                .iter()
+                .find(|s| s.stream_id.as_deref() == Some(id))
+                .unwrap_or_else(|| panic!("stream {id} parsed"))
+                .participant_id
+                .clone()
+        };
+        assert_eq!(owner("s-alice-audio").as_deref(), Some("p-alice"));
+        assert_eq!(
+            owner("s-alice-video").as_deref(),
+            Some("p-alice"),
+            "a participant's second stream is theirs too -- this is the audio \
+             and video case, where each label is an m= line index"
+        );
+        assert_eq!(
+            owner("s-bob-audio").as_deref(),
+            Some("p-bob"),
+            "and a stream only Bob sends is Bob's, though Alice receives it"
+        );
+    }
+
+    /// Every participant and stream OpenSIPS emits is found, with its label.
+    #[test]
+    fn every_participant_and_stream_opensips_emits_is_found() {
+        let md = parse_siprec_body("multipart/mixed; boundary=OSS", &opensips_body())
+            .expect("OpenSIPS metadata parses");
+        assert_eq!(md.session_id.as_deref(), Some("sess-1"));
+        assert_eq!(md.participants.len(), 2, "two participants");
+        assert_eq!(md.streams.len(), 3, "three streams");
+        assert_eq!(
+            md.participants[0].aor.as_deref(),
+            Some("sip:alice@example.invalid")
+        );
+        assert_eq!(md.participants[0].name.as_deref(), Some("Alice"));
+        let labels: Vec<_> = md
+            .streams
+            .iter()
+            .filter_map(|s| s.label.as_deref())
+            .collect();
+        assert_eq!(
+            labels,
+            ["0", "1", "2"],
+            "labels are the m= line indices, carried verbatim"
+        );
+    }
+
+    /// A participant whose `<nameID>` is self-closing still yields its AOR.
+    ///
+    /// OpenSIPS writes `<nameID aor="..."/>` when it has no display name for
+    /// the party, which is the common case for the callee.
+    #[test]
+    fn a_self_closing_nameid_still_yields_its_aor() {
+        let md = parse_siprec_body("multipart/mixed; boundary=OSS", &opensips_body())
+            .expect("OpenSIPS metadata parses");
+        let bob = &md.participants[1];
+        assert_eq!(bob.aor.as_deref(), Some("sip:bob@example.invalid"));
+        assert_eq!(
+            bob.name, None,
+            "no display name was sent, so none is invented"
+        );
+    }
+
+    /// `<participantsessionassoc>` and `<participantstreamassoc>` are not
+    /// participants.
+    ///
+    /// Both start with the same eleven characters as `<participant`, and the
+    /// scan that finds participants is a substring search. Counting them as
+    /// participants would double a call's party list.
+    #[test]
+    fn an_assoc_element_is_not_mistaken_for_a_participant() {
+        let md = parse_siprec_body("multipart/mixed; boundary=OSS", &opensips_body())
+            .expect("OpenSIPS metadata parses");
+        assert_eq!(
+            md.participants.len(),
+            2,
+            "exactly the two <participant> elements, not the assoc blocks: {:?}",
+            md.participants
+        );
+        assert!(
+            md.participants
+                .iter()
+                .all(|p| p.aor.is_some() || p.name.is_some()),
+            "an assoc block would parse as a participant with neither: {:?}",
+            md.participants
+        );
     }
 
     /// A multipart body without an rs-metadata part is an error.

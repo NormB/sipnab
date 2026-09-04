@@ -1674,7 +1674,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:992`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L992)) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:723`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L723)) + `expand_alias` ([`src/sip/dsl.rs:510`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L510)) |
 | `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:957`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L957)) + iterate `dialog.messages` + `output::json::message_to_json` |
 | `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:53`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L53)) with `ReportFormat::Json/Markdown/Text` |
-| `get_message` | `output::json::message_to_json` ([`src/output/json.rs:596`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L596)) |
+| `get_message` | `output::json::message_to_json` ([`src/output/json.rs:612`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L612)) |
 | `render_ladder` | `output::generate_call_report` with `ReportFormat::Markdown` (v0.4); rich SVG ladder deferred |
 | `rtp_stats` | `StreamStore::iter` ([`src/rtp/stream_store.rs:1546`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1546)) + `rtp::diagnosis::diagnose_media` + `output::json::stream_to_json` |
 | `search_messages` | Same iteration the `--filter` CLI path uses; `FilterExpr` covers most of it |

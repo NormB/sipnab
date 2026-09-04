@@ -8,6 +8,44 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **SIPREC metadata could not be read from what a real SRC sends.** sipnab has
+  parsed RFC 7866 `application/rs-metadata+xml` for a long time, against a
+  hand-written fixture that nests `<participant>` and `<stream>` inside
+  `<session>` with `<aor>` as a child element. OpenSIPS's `siprec` module --
+  read here from `modules/siprec/siprec_body.c`, since the packets that matter
+  are the ones a real SRC sends -- emits them as siblings of `<session>` with
+  `aor` an attribute of `<nameID>`. Two fields were dead as a result.
+
+  The recording mode is `<datamode>`, which is what RFC 7866 §7 defines and
+  what OpenSIPS writes; sipnab looked for `<mode>` and found nothing, so `mode`
+  was `None` on every recorded call.
+
+  Stream ownership was worse, because it is the reason to carry this metadata
+  at all: nothing inside `<stream>` names a participant. The association lives
+  in `<participantstreamassoc participant_id="...">`, whose `<send>` children
+  name the streams that participant originates and whose `<recv>` children name
+  the ones it only hears. sipnab looked inside the stream block, so
+  `participant_id` was `None` on every stream, and the one route from a
+  recorded stream back to the person on it was closed.
+
+  Five tests now drive OpenSIPS's own output shape, including a participant
+  sending audio and video so the labels are `m=` line indices. Mutation:
+  dropping `datamode`, ignoring the assoc, counting `<recv>` as ownership, or
+  reading only the first `<send>` each turns one red.
+
+### Added
+
+- **SIPREC metadata reaches the JSON surface.** It was parsed and stored on the
+  dialog, and no surface read it -- not JSON, not REST, not MCP, not the TUI. A
+  parser with no reader is indistinguishable from an absent feature to anyone
+  outside this repository. `siprec` now appears on a recorded dialog's JSON,
+  omitted entirely on a call that is not recorded.
+
+
 ## [0.5.150] - 2026-09-04
 
 ### Added

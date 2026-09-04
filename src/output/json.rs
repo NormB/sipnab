@@ -495,6 +495,22 @@ struct DialogJson {
     /// definitions of one thing waiting to disagree.
     #[serde(skip_serializing_if = "Option::is_none")]
     signaling_diagnosis: Option<SignalingDiagnosis>,
+    /// Recording metadata, when this call carried SIPREC (RFC 7866).
+    ///
+    /// Serialized directly rather than projected into a `*Json` twin, for the
+    /// reason `signaling_diagnosis` above is: the parsed type was already the
+    /// shape a reader wants, and a second copy is two definitions of one thing
+    /// waiting to disagree.
+    ///
+    /// The load-bearing field is each stream's `label`. SIPREC describes what
+    /// was recorded, and the label is what ties one recorded stream to an `m=`
+    /// line in the offer -- so on a call with audio and video, it is the only
+    /// route from a stream back to both its media description and the
+    /// participant who owns it. Nothing else in the dialog carries that.
+    ///
+    /// Omitted, never null, on a call that is not recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    siprec: Option<crate::sip::siprec::SirecMetadata>,
     /// What ICMP said about this capture's MEDIA, when it said anything.
     ///
     /// Distinct from `signaling_diagnosis.icmp_unreachable`, which is keyed by
@@ -786,6 +802,7 @@ pub fn dialog_to_json(
         // Computed here rather than taken as a parameter: it is a property of the
         // dialog, which every caller already passes, so threading it through four
         // call sites would only create a way for one of them to forget.
+        siprec: dialog.siprec_metadata.clone(),
         signaling_diagnosis: Some(crate::sip::diagnosis::diagnose_signaling(&dialog.messages))
             .filter(|d| !d.is_empty()),
         // Read from the run's resolved set for the same reason
@@ -1786,6 +1803,84 @@ mod tests {
             parsed.get("signaling_diagnosis").is_none(),
             "a clean dialog must omit signaling_diagnosis, got {:?}",
             parsed.get("signaling_diagnosis")
+        );
+    }
+
+    /// A recorded call carries its SIPREC metadata to the JSON surface.
+    ///
+    /// sipnab has parsed RFC 7866 `application/rs-metadata+xml` since long
+    /// before this test, and stored the result on the dialog, where no surface
+    /// read it: not the JSON output, not the REST API, not MCP, not the TUI.
+    /// A parser with no reader is indistinguishable from an absent feature to
+    /// everyone outside this repository.
+    ///
+    /// What it must carry is the part an operator cannot reconstruct from the
+    /// SIP headers: which participant owns which stream. The `label` ties a
+    /// stream to an `m=` line in the same offer, so a recorded call with two
+    /// media descriptions -- the audio and video case -- can say which
+    /// participant each belongs to.
+    #[test]
+    fn dialog_json_carries_siprec_metadata_when_the_call_is_recorded() {
+        let msg = make_invite();
+        let mut dialog = crate::sip::dialog::SipDialog::new(&msg).expect("should create dialog");
+        dialog.siprec_metadata = Some(crate::sip::siprec::SirecMetadata {
+            session_id: Some("rs-1".to_string()),
+            mode: Some("complete".to_string()),
+            participants: vec![crate::sip::siprec::SirecParticipant {
+                participant_id: Some("p1".to_string()),
+                aor: Some("sip:alice@example.invalid".to_string()),
+                name: Some("Alice".to_string()),
+            }],
+            streams: vec![crate::sip::siprec::SirecStream {
+                stream_id: Some("s1".to_string()),
+                label: Some("1".to_string()),
+                participant_id: Some("p1".to_string()),
+            }],
+        });
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let diagnosis = MediaDiagnosis::default();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&dialog_to_json(&dialog, &streams, &diagnosis))
+                .expect("should be valid JSON");
+
+        let sr = &parsed["siprec"];
+        assert_eq!(sr["session_id"], "rs-1");
+        assert_eq!(sr["mode"], "complete");
+        assert_eq!(
+            sr["participants"][0]["aor"], "sip:alice@example.invalid",
+            "the participant's AOR is what names who was recorded"
+        );
+        assert_eq!(
+            sr["streams"][0]["label"], "1",
+            "the label ties the stream to an m= line, which is the only route \
+             from a recorded stream back to its media description"
+        );
+        assert_eq!(
+            sr["streams"][0]["participant_id"], "p1",
+            "and the participant it belongs to"
+        );
+    }
+
+    /// A call that is not recorded omits the key rather than emitting an empty
+    /// object, matching every other optional block on this surface.
+    #[test]
+    fn dialog_json_omits_siprec_when_the_call_is_not_recorded() {
+        let msg = make_invite();
+        let dialog = crate::sip::dialog::SipDialog::new(&msg).expect("should create dialog");
+        let stream = make_stream();
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let diagnosis = MediaDiagnosis::default();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&dialog_to_json(&dialog, &streams, &diagnosis))
+                .expect("should be valid JSON");
+
+        assert!(
+            parsed.get("siprec").is_none(),
+            "an ordinary call must omit siprec entirely, got {:?}",
+            parsed.get("siprec")
         );
     }
 
