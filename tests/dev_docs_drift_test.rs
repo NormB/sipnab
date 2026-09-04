@@ -629,7 +629,11 @@ fn linked_code_targets_exist() {
     // detectors' per-source caps now evict through.
     // 409 -> 410: one link, `internals/walkthroughs.md` naming
     // `src/security/detectors.rs` as where a new detector's check is run.
-    const EXPECTED_CODE_LINKS: usize = 410;
+    // 410 -> 411: net one, in `internals/threading.md`. The `capture-hep` row
+    // became two -- the accept loop and the per-connection readers a `tcp` or
+    // `tls` listener spawns -- so a link to `src/capture/hep.rs` joined the
+    // `src/capture/native.rs` one the single row already had.
+    const EXPECTED_CODE_LINKS: usize = 411;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

@@ -87,7 +87,8 @@ well as in the TUI. `TUI` and `batch` mean it does not.
 |---|---|---|---|
 | `capture-<device>` | both | [`capture/native.rs`](../../src/capture/native.rs) | One per live device: pcap loop producing `Packet`s. |
 | `capture-file` | both | [`capture/native.rs`](../../src/capture/native.rs) | Offline pcap reader feeding the same channel as live capture. |
-| `capture-hep` | both | [`capture/native.rs`](../../src/capture/native.rs) | HEP/EEP UDP receiver; packets carry asserted addresses and carry a flag HEP-origin. |
+| `capture-hep` | both | [`capture/native.rs`](../../src/capture/native.rs) | HEP/EEP receiver on the transport `--hep-listen-transport` names; packets carry asserted addresses and carry a flag HEP-origin. On `udp` this thread reads the datagrams itself. On `tcp` and `tls` it is the accept loop, and the reading happens in the per-connection threads below. |
+| (unnamed per-connection readers) | both | [`capture/hep.rs`](../../src/capture/hep.rs) | One scoped thread per accepted HEP stream connection under `--hep-listen-transport tcp` or `tls`, up to `HEP_MAX_STREAM_CONNECTIONS`, so the listener serves several agents at once and one silent peer cannot stall the rest. Scoped, so no reader outlives the listener; each polls the stop flag on its read timeout, which is what bounds the scope's join. A TLS connection completes its handshake here rather than in the accept loop, for the same reason. |
 | `capture-multi` | both | [`capture/native.rs`](../../src/capture/native.rs) | Supervisor for a multi-device capture set. |
 | `tui-processor` | TUI | [`app/tui_mode.rs`](../../src/app/tui_mode.rs) | The single store writer in TUI mode: drains the channel and runs the pipeline. |
 | (unnamed workers) | batch | [`parallel.rs`](../../src/parallel.rs) | `--cores N` reconstruction workers, spawned with bare `thread::spawn` — they own thread-local stores, so they show as unnamed in a backtrace. |
