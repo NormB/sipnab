@@ -206,7 +206,7 @@ unicode-width = "0.2"
 parking_lot = "0.12"
 proptest = "1"
 trycmd = "1"
-jsonschema = "0.52"
+jsonschema = "0.53"
 clap = { version = "4", features = ["derive", "env", "string"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3"
