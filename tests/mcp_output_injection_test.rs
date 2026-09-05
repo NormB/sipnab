@@ -279,6 +279,12 @@ impl Server {
     /// Retries only `-32602 ... not found`, which is the ingestion race. Any
     /// other error is a real failure and is returned immediately rather than
     /// waited out.
+    ///
+    /// The only way this file addresses a dialog. A non-waiting sibling used
+    /// to exist beside it, and three call sites reached for it -- each one a
+    /// race that Linux won and the macOS runner lost, reporting `call_id ...
+    /// not found` for a dialog that was merely still being ingested. Removing
+    /// it is what stops the fourth.
     fn call_until_found(&mut self, tool: &str, arguments: serde_json::Value) -> serde_json::Value {
         let deadline = std::time::Instant::now() + test_timeout(20);
         loop {
@@ -301,16 +307,6 @@ impl Server {
             );
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-    }
-
-    /// Call one tool and return the whole `result`.
-    fn call(&mut self, tool: &str, arguments: serde_json::Value) -> serde_json::Value {
-        let resp = self.request(
-            "tools/call",
-            serde_json::json!({"name": tool, "arguments": arguments}),
-        );
-        assert!(resp["result"].is_object(), "{tool} did not succeed: {resp}");
-        resp["result"].clone()
     }
 }
 
@@ -385,7 +381,7 @@ fn get_dialog_fences_the_messages_it_returns() {
     let pcap = hostile_capture(dir.path());
     let mut server = Server::start(&pcap);
 
-    let result = server.call("get_dialog", serde_json::json!({"call_id": CALL_ID}));
+    let result = server.call_until_found("get_dialog", serde_json::json!({"call_id": CALL_ID}));
     let text = flat(&result);
 
     assert!(
@@ -411,7 +407,7 @@ fn get_dialog_explains_the_markers_it_uses() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pcap = hostile_capture(dir.path());
     let mut server = Server::start(&pcap);
-    let result = server.call("get_dialog", serde_json::json!({"call_id": CALL_ID}));
+    let result = server.call_until_found("get_dialog", serde_json::json!({"call_id": CALL_ID}));
 
     let content = result["content"].as_array().expect("content array");
     let note = content
@@ -452,7 +448,7 @@ fn no_tool_result_carries_a_control_character_out_of_a_header() {
             serde_json::json!({"call_id": CALL_ID}),
         ),
     ] {
-        let result = server.call(tool, args);
+        let result = server.call_until_found(tool, args);
         let mut strings = Vec::new();
         all_strings(&result, &mut strings);
         for s in &strings {
@@ -518,7 +514,7 @@ fn an_rtpmap_encoding_name_carrying_a_sentence_is_fenced() {
 
     let mut server = Server::start(&path);
     for tool in ["get_sdp_timeline", "check_codec_negotiation"] {
-        let result = server.call(
+        let result = server.call_until_found(
             tool,
             serde_json::json!({"call_id": "codec-inject@example.com"}),
         );
