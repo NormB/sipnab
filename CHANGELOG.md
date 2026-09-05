@@ -8,18 +8,6 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
-
-### Fixed
-
-- **Three MCP tests raced the ingestion they depended on.** Each addressed a
-  dialog through a non-waiting helper, and each was a race that Linux won and
-  the macOS runner lost -- reporting `call_id ... not found` for a dialog that
-  was still being ingested. A waiting sibling already existed in the same file
-  and two tests used it. The non-waiting one is gone rather than merely
-  avoided, so a fourth call site cannot reach for it.
-
-
 ## [0.5.152] - 2026-09-05
 
 ### Added
