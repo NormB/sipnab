@@ -157,3 +157,87 @@ fn a_call_with_no_siprec_is_reported_as_such_without_overclaiming() {
          the call having gone unrecorded: {reason}"
     );
 }
+
+/// A Call-ID the store does not hold is refused, not answered.
+///
+/// `recorded: false` is the answer for a call sipnab HAS and that carried no
+/// recording. A call it does not have is a different fact, and collapsing the
+/// two would let an agent typo a Call-ID and read the result as "that call was
+/// not recorded".
+#[test]
+fn an_unknown_call_id_is_refused_rather_than_answered() {
+    let msg = call_tool_with_args(
+        SIPREC,
+        &[],
+        "siprec_metadata",
+        serde_json::json!({ "call_id": "no-such-call@nowhere.invalid" }),
+    );
+    assert!(
+        msg["error"].is_object(),
+        "an unknown call must be an error, not a recorded=false answer: {msg}"
+    );
+    let code = msg["error"]["code"].as_i64().unwrap_or_default();
+    assert_eq!(code, -32602, "invalid_params is the JSON-RPC code: {msg}");
+}
+
+/// The answer says how much of the capture stands behind it.
+///
+/// Every capture-derived tool carries this, and an agent reading a recording
+/// off a truncated capture needs to know the capture was truncated. The
+/// completeness gate requires a probe for it; this is the assertion.
+#[test]
+fn the_answer_says_how_much_of_the_capture_it_read() {
+    let v = siprec(SIPREC, SIPREC_CALL);
+    assert_eq!(
+        v["source_exhausted"], true,
+        "a whole pcap was read to the end: {v}"
+    );
+    assert_eq!(
+        v["source_stopped_early"], false,
+        "and nothing stopped it early: {v}"
+    );
+}
+
+/// The answer identifies the capture it came from.
+///
+/// Two runs over different pcaps can return the same recording session id --
+/// a fixture replayed twice does exactly that -- and an agent caching answers
+/// needs to tell them apart.
+#[test]
+fn the_answer_identifies_the_capture_it_came_from() {
+    let v = siprec(SIPREC, SIPREC_CALL);
+    let id = &v["capture_identity"];
+    assert!(
+        id["instance"].is_string(),
+        "the capture identity names the instance: {v}"
+    );
+    assert!(
+        id["dialog_generation"].is_number(),
+        "and the store generation behind the answer: {v}"
+    );
+}
+
+/// A recorded call is an ordinary dialog everywhere else.
+///
+/// SIPREC is a property of a call, not a separate kind of object. If reading
+/// the metadata required a different listing, an agent would have to know to
+/// ask -- and the calls it did not know to ask about are exactly the ones it
+/// would miss.
+#[test]
+fn a_recorded_call_still_appears_in_the_ordinary_dialog_listing() {
+    let msg = call_tool_with_args(
+        SIPREC,
+        &[],
+        "list_dialogs",
+        serde_json::json!({ "limit": 10 }),
+    );
+    let v = ok_payload(&msg);
+    let ids: Vec<&str> = v["dialogs"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|d| d["call_id"].as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        ids.contains(&SIPREC_CALL),
+        "the recording dialog must be listed like any other: {ids:?}"
+    );
+}

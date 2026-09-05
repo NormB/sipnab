@@ -115,6 +115,42 @@ fn a_recorded_dialog_carries_its_siprec_metadata_over_http() {
     );
 }
 
+/// The per-dialog report carries the recording metadata too.
+///
+/// `/report` is a second projection of the same dialog, and an operator
+/// escalating a call reaches for the report rather than the raw object. A
+/// field that reached one and not the other would be found by whoever needed
+/// it least.
+#[test]
+fn the_dialog_report_endpoint_carries_siprec() {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/siprec-opensips-invite.pcap", &[]);
+    let resp = srv.get("/v1/dialogs/4f1c0a2e-siprec@172.28.0.31/report");
+    assert_eq!(resp.status, 200, "body: {}", resp.body);
+    assert!(
+        resp.body.contains("4f1c0a2e"),
+        "the report must name the recording session: {}",
+        resp.body
+    );
+}
+
+/// The recorded dialog is listed like any other over HTTP.
+///
+/// The same claim the MCP surface makes, asserted here because the listing is
+/// a different code path: SIPREC is a property of a call, not a separate kind
+/// of object, and an operator filtering the list must not have to know that a
+/// recorded call needs asking for differently.
+#[test]
+fn a_recorded_dialog_is_listed_like_any_other_over_http() {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/siprec-opensips-invite.pcap", &[]);
+    let resp = srv.get("/v1/dialogs");
+    assert_eq!(resp.status, 200, "body: {}", resp.body);
+    assert!(
+        resp.body.contains("4f1c0a2e-siprec@172.28.0.31"),
+        "the recording dialog must appear in the ordinary listing: {}",
+        resp.body
+    );
+}
+
 /// A call with no SIPREC omits the key over HTTP too.
 #[test]
 fn an_ordinary_dialog_omits_siprec_over_http() {

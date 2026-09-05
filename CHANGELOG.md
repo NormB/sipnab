@@ -8,6 +8,40 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **Eighteen tests over the parts of the SIPREC work nothing was driving.**
+  The surfacing shipped with nine tests, all of them on paths that worked. These
+  cover what happens when the input is not the happy case.
+
+  The parser: an assoc naming a stream the metadata never described owns
+  nothing rather than inventing one; a stream nobody claims stays unowned
+  rather than being handed to the only participant present; two assocs claiming
+  one stream resolve in document order rather than arbitrarily; a body
+  delimited with bare LF still parses, because the XML reading must not be
+  stricter than the framing already is; a `multipart` content type with no
+  boundary is an error rather than empty metadata; and the all-occurrences
+  reader is driven directly, since it is the difference between a participant
+  owning one stream and owning both.
+
+  The store: metadata on the dialog-creating INVITE is kept -- the defect this
+  release fixed, now pinned; a REFER on a creating message still records its
+  target, which guards the refactor that put SDP, REFER and SIPREC behind one
+  function; a later recording body replaces an earlier one, because an SRC
+  re-sends when a party joins; and a `multipart/mixed` body that is not SIPREC
+  leaves the field empty rather than reporting the call as recorded.
+
+  The surfaces: an unknown Call-ID is refused rather than answered
+  `recorded: false`, which are different facts; the answer says how much of the
+  capture stands behind it and which capture that was; a recorded call is
+  listed like any other over both MCP and HTTP, because SIPREC is a property of
+  a call and not a separate kind of object; the report endpoint carries the
+  block as well as the raw object; and the ladder states a missing owner and an
+  unnamed party rather than rendering either blank.
+
+
 ## [0.5.151] - 2026-09-05
 
 ### Added

@@ -4670,6 +4670,174 @@ mod tests {
         );
     }
 
+    /// Build a SIP message with a SIPREC multipart body.
+    ///
+    /// Shared by the tests below so each states only the thing it varies --
+    /// which message carries the metadata, or what the metadata says.
+    fn siprec_msg(call_id: &str, cseq: u32, meta: &str, ts: DateTime<Utc>) -> SipMessage {
+        let body = format!(
+            "--b\r\nContent-Type: application/sdp\r\n\r\nv=0\r\n\
+             --b\r\nContent-Type: application/rs-metadata+xml\r\n\r\n{meta}\r\n--b--"
+        );
+        let raw = build_sip(
+            "INVITE sip:recorder@example.invalid SIP/2.0",
+            &[
+                "From: <sip:alice@example.invalid>;tag=t1",
+                "To: <sip:srs@example.invalid>",
+                &format!("Call-ID: {call_id}"),
+                &format!("CSeq: {cseq} INVITE"),
+                "Content-Type: multipart/mixed; boundary=b",
+                &format!("Content-Length: {}", body.len()),
+            ],
+            body.as_bytes(),
+        );
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("SIPREC message parses")
+    }
+
+    /// Metadata on the message that CREATES the dialog is kept.
+    ///
+    /// This is the shape an SRC actually sends -- the recording INVITE opens
+    /// the dialog and carries the metadata in the same message -- and it is
+    /// the one the creating arm used to drop, leaving the field empty for the
+    /// whole call.
+    #[test]
+    fn siprec_on_the_dialog_creating_invite_is_kept() {
+        let mut store = DialogStore::new(100, false);
+        let meta = "<recording><datamode>complete</datamode>\
+<session session_id=\"first-message\"/></recording>";
+        store.process_message(siprec_msg("creating@test", 1, meta, base_ts()));
+        let d = store.get("creating@test").expect("dialog exists");
+        assert_eq!(
+            d.siprec_metadata
+                .as_ref()
+                .and_then(|m| m.session_id.as_deref()),
+            Some("first-message"),
+            "the creating message's metadata must survive; it is where an SRC \
+             puts it"
+        );
+    }
+
+    /// A REFER on the creating message still records its target.
+    ///
+    /// SDP, REFER and SIPREC share one function now. This is the guard that
+    /// folding them together did not quietly move REFER to the arm it was
+    /// already in and out of the one it was not: before the change, a capture
+    /// whose first message was a REFER recorded no target either.
+    #[test]
+    fn a_refer_on_the_creating_message_records_its_target() {
+        let mut store = DialogStore::new(100, false);
+        let raw = build_sip(
+            "REFER sip:bob@example.invalid SIP/2.0",
+            &[
+                "From: <sip:alice@example.invalid>;tag=t1",
+                "To: <sip:bob@example.invalid>",
+                "Call-ID: refer-first@test",
+                "CSeq: 1 REFER",
+                "Refer-To: <sip:carol@example.invalid>",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = parse_sip(
+            &raw,
+            base_ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("REFER parses");
+        store.process_message(msg);
+        let d = store.get("refer-first@test").expect("dialog exists");
+        assert_eq!(
+            d.refer_to.as_deref(),
+            Some("<sip:carol@example.invalid>"),
+            "a REFER that opens a dialog names its target too"
+        );
+    }
+
+    /// A second recording body replaces the first.
+    ///
+    /// An SRC re-sends metadata when the session changes -- a party joins, a
+    /// stream is added. The dialog must hold the latest description, not the
+    /// one it happened to see first.
+    #[test]
+    fn a_later_siprec_body_replaces_an_earlier_one() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        store.process_message(siprec_msg(
+            "replace@test",
+            1,
+            "<recording><session session_id=\"first\"/></recording>",
+            t0,
+        ));
+        store.process_message(siprec_msg(
+            "replace@test",
+            2,
+            "<recording><session session_id=\"second\"/></recording>",
+            t0 + TimeDelta::seconds(1),
+        ));
+        let d = store.get("replace@test").expect("dialog exists");
+        assert_eq!(
+            d.siprec_metadata
+                .as_ref()
+                .and_then(|m| m.session_id.as_deref()),
+            Some("second"),
+            "the newest description of the recording wins"
+        );
+    }
+
+    /// A multipart body that is not SIPREC leaves the field alone.
+    ///
+    /// `multipart/mixed` carries plenty that is not a recording -- an ISUP
+    /// body beside SDP, a PIDF. Reporting a call as recorded because its body
+    /// had two parts would be a false positive on the one question this field
+    /// answers.
+    #[test]
+    fn a_multipart_body_that_is_not_siprec_leaves_the_field_empty() {
+        let mut store = DialogStore::new(100, false);
+        let body = b"--b\r\nContent-Type: application/sdp\r\n\r\nv=0\r\n\
+--b\r\nContent-Type: application/isup\r\n\r\n\x01\x02\r\n--b--";
+        let raw = build_sip(
+            "INVITE sip:bob@example.invalid SIP/2.0",
+            &[
+                "From: <sip:alice@example.invalid>;tag=t1",
+                "To: <sip:bob@example.invalid>",
+                "Call-ID: notsiprec@test",
+                "CSeq: 1 INVITE",
+                "Content-Type: multipart/mixed; boundary=b",
+                &format!("Content-Length: {}", body.len()),
+            ],
+            body,
+        );
+        let msg = parse_sip(
+            &raw,
+            base_ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parses");
+        store.process_message(msg);
+        let d = store.get("notsiprec@test").expect("dialog exists");
+        assert!(
+            d.siprec_metadata.is_none(),
+            "a multipart body with no rs-metadata part is not a recording"
+        );
+    }
+
     // ── SIPREC metadata parsing test ──────────────────────────────────
 
     /// SIPREC metadata inside a multipart/mixed body is parsed and stored

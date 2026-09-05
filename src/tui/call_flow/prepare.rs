@@ -1874,6 +1874,85 @@ mod tests {
         );
     }
 
+    /// A stream no participant claims says so, rather than rendering blank.
+    ///
+    /// A blank owner column reads as "not applicable". The honest rendering is
+    /// that nobody claimed it, because that is a finding: an SRC that
+    /// described a stream and omitted the assoc has told the operator less
+    /// than it should have.
+    #[test]
+    fn a_stream_no_participant_claims_says_so_in_the_ladder() {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let meta = "<recording><datamode>complete</datamode>\
+<session session_id=\"s\"/>\
+<stream stream_id=\"lonely\"><label>7</label></stream></recording>";
+        let msgs = vec![siprec_invite_with("nobody", 1, meta, t0())];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        let joined: String = prepared[0]
+            .extra_lines
+            .iter()
+            .map(|(s, _)| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            joined.contains("label 7"),
+            "the stream is still shown: {joined}"
+        );
+        assert!(
+            joined.contains("no participant claims it"),
+            "and its missing owner is stated, not left blank: {joined}"
+        );
+    }
+
+    /// A participant the SRC named without an AOR still renders.
+    ///
+    /// `<participant participant_id="x"/>` with nothing inside is legal and an
+    /// SRC that has not yet learned the party's identity sends it. Dropping
+    /// the row would under-report how many parties are on the recording.
+    #[test]
+    fn a_participant_with_no_aor_still_renders() {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let meta = "<recording><session session_id=\"s\"/>\
+<participant participant_id=\"anon\"></participant></recording>";
+        let msgs = vec![siprec_invite_with("anon", 1, meta, t0())];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        let joined: String = prepared[0]
+            .extra_lines
+            .iter()
+            .map(|(s, _)| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            joined.contains("aor not stated"),
+            "an unnamed party is shown as unnamed, not omitted: {joined}"
+        );
+    }
+
+    /// A SIPREC INVITE carrying arbitrary metadata, for the edge cases.
+    fn siprec_invite_with(cid: &str, cseq: u32, meta: &str, ts: DateTime<Utc>) -> SipMessage {
+        let body = format!(
+            "--B\r\nContent-Type: application/sdp\r\n\r\nv=0\r\n\r\n\
+             --B\r\nContent-Type: application/rs-metadata+xml\r\n\r\n{meta}\r\n--B--\r\n"
+        );
+        parse_req(
+            &build_raw(
+                "INVITE sip:srs@10.0.0.9 SIP/2.0",
+                &[
+                    "From: <sip:alice@10.0.0.1>;tag=t1",
+                    "To: <sip:srs@10.0.0.9>",
+                    &format!("Call-ID: {cid}"),
+                    &format!("CSeq: {cseq} INVITE"),
+                    "Content-Type: multipart/mixed;boundary=B",
+                    &format!("Content-Length: {}", body.len()),
+                ],
+                &body,
+            ),
+            ts,
+        )
+    }
+
     /// A SIPREC INVITE carrying the multipart body an SRC sends.
     fn siprec_invite(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
         let meta = concat!(

@@ -611,6 +611,121 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
         );
     }
 
+    /// An assoc naming a stream the metadata never described owns nothing.
+    ///
+    /// The two lists are independent in the XML, and an SRC that renumbers
+    /// mid-session can emit a `<send>` for a stream this snapshot does not
+    /// carry. Inventing a stream to hang the id on would put a row in front of
+    /// an operator that no SRC ever sent.
+    #[test]
+    fn an_assoc_naming_an_unknown_stream_owns_nothing() {
+        let xml = "<recording><datamode>complete</datamode>\
+<stream stream_id=\"known\"><label>0</label></stream>\
+<participantstreamassoc participant_id=\"p1\"><send>never-described</send>\
+</participantstreamassoc></recording>";
+        let md = parse_rs_metadata(xml).expect("parses");
+        assert_eq!(
+            md.streams.len(),
+            1,
+            "no stream is invented: {:?}",
+            md.streams
+        );
+        assert_eq!(
+            md.streams[0].participant_id, None,
+            "and the one real stream stays unowned, because nothing claimed it"
+        );
+    }
+
+    /// A stream no assoc claims has no owner, rather than a guessed one.
+    ///
+    /// One participant in the metadata is not evidence that this stream is
+    /// theirs: a recording with two parties and one described stream is
+    /// exactly the case where guessing picks wrong half the time.
+    #[test]
+    fn a_stream_no_assoc_claims_has_no_owner() {
+        let xml = "<recording>\
+<participant participant_id=\"p1\"><nameID aor=\"sip:a@b\"/></participant>\
+<stream stream_id=\"s1\"><label>0</label></stream></recording>";
+        let md = parse_rs_metadata(xml).expect("parses");
+        assert_eq!(md.streams.len(), 1);
+        assert_eq!(
+            md.streams[0].participant_id, None,
+            "a single participant is not a reason to assign the stream to them"
+        );
+    }
+
+    /// When two participants both send one stream, the last assoc read wins.
+    ///
+    /// RFC 7866 gives one sender per stream, so this is malformed input rather
+    /// than a case with a right answer. What matters is that it is
+    /// deterministic and that neither claim silently disappears into a panic.
+    #[test]
+    fn the_last_assoc_wins_when_two_claim_one_stream() {
+        let xml = "<recording>\
+<stream stream_id=\"s1\"><label>0</label></stream>\
+<participantstreamassoc participant_id=\"p1\"><send>s1</send></participantstreamassoc>\
+<participantstreamassoc participant_id=\"p2\"><send>s1</send></participantstreamassoc>\
+</recording>";
+        let md = parse_rs_metadata(xml).expect("parses");
+        assert_eq!(
+            md.streams[0].participant_id.as_deref(),
+            Some("p2"),
+            "document order decides, so the same input always reads the same way"
+        );
+    }
+
+    /// A metadata part delimited with bare LF parses.
+    ///
+    /// SIP is CRLF on the wire, but a body that has been through a text tool,
+    /// a log, or a test fixture may not be, and the boundary scan already
+    /// tolerates it. The XML reading must not be stricter than the framing.
+    #[test]
+    fn metadata_delimited_with_bare_lf_still_parses() {
+        let ct = "multipart/mixed; boundary=b";
+        let body = b"--b\nContent-Type: application/rs-metadata+xml\n\n\
+<recording><datamode>complete</datamode>\
+<session session_id=\"s\"/></recording>\n--b--";
+        let md = parse_siprec_body(ct, body).expect("bare LF parses");
+        assert_eq!(md.session_id.as_deref(), Some("s"));
+        assert_eq!(md.mode.as_deref(), Some("complete"));
+    }
+
+    /// A multipart Content-Type with no boundary parameter is refused.
+    ///
+    /// Without a boundary there is no way to find the metadata part, and
+    /// guessing one would either find nothing or find the wrong bytes. The
+    /// error is the honest answer.
+    #[test]
+    fn a_multipart_content_type_with_no_boundary_is_refused() {
+        assert!(
+            parse_siprec_body("multipart/mixed", b"--x\r\n\r\n<recording/>\r\n--x--").is_err(),
+            "a body that cannot be split must not report empty metadata"
+        );
+    }
+
+    /// The all-occurrences reader returns every match, in document order.
+    ///
+    /// [`extract_xml_content`] answers with the first, which is right for a
+    /// field that appears once and wrong for `<send>`. This is the difference
+    /// between a participant owning one stream and owning both.
+    #[test]
+    fn extract_all_xml_content_returns_every_occurrence_in_order() {
+        let block = "<a><send>one</send><send>two</send><send>three</send></a>";
+        assert_eq!(
+            extract_all_xml_content(block, "send"),
+            ["one", "two", "three"]
+        );
+        assert!(
+            extract_all_xml_content("<a/>", "send").is_empty(),
+            "no matches is an empty list, not a panic"
+        );
+        assert_eq!(
+            extract_all_xml_content("<a><send>only</send></a>", "send"),
+            ["only"],
+            "and a single match still comes back"
+        );
+    }
+
     /// A multipart body without an rs-metadata part is an error.
     #[test]
     fn test_no_metadata_part() {
