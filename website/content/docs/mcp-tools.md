@@ -75,6 +75,7 @@ ordinary update.
 | [`check_codec_negotiation`](#check-codec-negotiation) | `call_id` | Codecs offered vs answered and whether they intersect — for 488s |
 | [`diagnose_registration`](#diagnose-registration) | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
 | [`media_diagnostics`](#media-diagnostics) | `call_id` | The facts under the MOS: QoS marking, jitter grounding, delay provenance, silence, and what the far end reported |
+| [`siprec_metadata`](#siprec-metadata) | `call_id` | The SIPREC (RFC 7866) recording metadata a call carried: session id, mode, participants with AOR and display name, and the recorded streams, each naming its `m=` line label and the participant that sends it |
 | [`rtp_stats`](#rtp-stats) | `call_id?`, `min_mos?`, `max_mos?`, `limit?`, `cursor?` | One call's RTP quality and diagnosis, or a capture-wide stream sweep |
 
 **[Conformance and rules](#conformance-and-rules)**
@@ -2500,6 +2501,68 @@ against
 `final_status_code` is `null` here even though the registrar answered 403,
 because the dialog never reached a state that records one. Read
 `registration_failure.code` for the status that decided the verdict.
+
+### `siprec_metadata`
+
+"Was this call recorded, and who is on the recording?" A session recording
+client (SRC) — OpenSIPS's `siprec` module, an SBC — sends the recording server
+an INVITE whose body carries an `application/rs-metadata+xml` part describing
+what it is about to record. sipnab reads that part off the wire and returns it.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `call_id` | string | A Call-ID the store holds. | Required — the call fails. |
+
+**Read `recorded` first.** It is `false` when the dialog carried no SIPREC
+metadata, and the response then holds only `call_id`, `reason`,
+`capture_identity` and `schema_version`. The reason says what that does and
+does not mean: sipnab reports what reached the capture point, so a recorder
+signaling on a path it cannot see is indistinguishable here from a call nobody
+recorded. It is not a statement that the call went unrecorded.
+
+Otherwise `siprec` carries:
+
+| Field | Answers |
+|---|---|
+| `session_id` | The recording session the SRC opened, which ties two legs of one recording together |
+| `mode` | What the SRC declared it is recording, from `<datamode>` — `complete` for the whole session |
+| `participants` | Each party, with `participant_id`, `aor` and `name` when the SRC sent one. A missing `name` is absent, not empty: an SRC that has no display name writes a self-closing `<nameID>` |
+| `streams` | Each recorded stream, with `stream_id`, `label` and `participant_id` |
+
+**`label` and `participant_id` are the two that matter.** The label is the SDP
+`a=label` naming the `m=` line the SRC cut the recorded stream from, so on a
+call with audio and video it says which is which. The `participant_id` is the party
+that **sends** that stream, which is the only route from a recorded stream back
+to a person — nothing inside the stream element names one. sipnab reads it from
+`<participantstreamassoc>`, whose `<send>` children mean ownership and whose
+`<recv>` children do not. The party at the other end hears a stream without
+owning it.
+
+```jsonc
+// siprec_metadata { "call_id": "4f1c0a2e-siprec@172.28.0.31" }
+{
+  "schema_version": 1,
+  "call_id": "4f1c0a2e-siprec@172.28.0.31",
+  "recorded": true,
+  "siprec": {
+    "session_id": "4f1c0a2e",
+    "mode": "complete",
+    "participants": [
+      { "participant_id": "9b2d1f00", "aor": "sip:alice@example.invalid", "name": "Alice" },
+      { "participant_id": "c7e40a13", "aor": "sip:bob@example.invalid" }
+    ],
+    "streams": [
+      { "stream_id": "1a2b3c4d", "label": "0", "participant_id": "9b2d1f00" },
+      { "stream_id": "2b3c4d5e", "label": "1", "participant_id": "9b2d1f00" },
+      { "stream_id": "3c4d5e6f", "label": "2", "participant_id": "c7e40a13" }
+    ]
+  }
+}
+```
+
+sipnab reads SIPREC and does not speak it. It is not a session recording
+client and not a recording server — it observes the signaling between them, which is
+the same posture it takes toward every other protocol it reads.
 
 ### `media_diagnostics`
 

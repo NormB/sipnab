@@ -457,6 +457,48 @@ pub fn layout(
             }
         }
 
+        // SIPREC: say who is being recorded, and which m= line each recorded
+        // stream was cut from.
+        //
+        // Unconditional rather than behind `sdp_mode`, because this is not SDP
+        // and an operator who has turned SDP off has not asked to stop being
+        // told a call is being recorded. Rare enough to cost nothing on an
+        // ordinary ladder: the lines appear only on a message that carries an
+        // `application/rs-metadata+xml` part.
+        if let Some(ct) = msg.content_type()
+            && ct.contains("multipart/mixed")
+            && let Ok(md) = crate::sip::siprec::parse_siprec_body(ct, &msg.body)
+        {
+            let ind = " ".repeat(ts_width + 1);
+            let session = md.session_id.as_deref().unwrap_or("?");
+            let mode = md.mode.as_deref().unwrap_or("mode not stated");
+            extra_lines.push(format!("{ind} SIPREC: session {session}, {mode}"));
+            for p in &md.participants {
+                let aor = p.aor.as_deref().unwrap_or("aor not stated");
+                match p.name.as_deref() {
+                    Some(n) => extra_lines.push(format!("{ind}   {aor} ({n})")),
+                    None => extra_lines.push(format!("{ind}   {aor}")),
+                }
+            }
+            for st in &md.streams {
+                // The owner is the participant that SENDS the stream. An
+                // unowned one is shown as such rather than silently blank:
+                // the association is what the metadata is carried for.
+                let owner = st.participant_id.as_deref().map_or_else(
+                    || "no participant claims it".to_string(),
+                    |o| {
+                        md.participants
+                            .iter()
+                            .find(|p| p.participant_id.as_deref() == Some(o))
+                            .and_then(|p| p.aor.clone())
+                            .unwrap_or_else(|| o.to_string())
+                    },
+                );
+                let label = st.label.as_deref().unwrap_or("?");
+                extra_lines.push(format!("{ind}   label {label} -> {owner}"));
+            }
+        }
+
         // RTP-in-flow bar. One bar per INVITE transaction that carries media —
         // the initial call AND each re-INVITE that (re)establishes the stream —
         // so RTP is shown flowing in every media segment, not just the first.
@@ -1762,6 +1804,111 @@ mod tests {
             .expect("codec summary line");
         assert!(codec_line.contains("PCMU"), "got: {codec_line}");
         assert!(codec_line.contains("PCMA"), "got: {codec_line}");
+    }
+
+    /// A SIPREC INVITE is annotated in the ladder with who is recorded.
+    ///
+    /// The ladder is where an operator meets the message, and a
+    /// `multipart/mixed` INVITE otherwise looks like any other INVITE with a
+    /// body it cannot read. The line names the recording session, the mode, and
+    /// each stream's label with the participant that sends it -- the label
+    /// because it is the `m=` line the recorded stream was cut from, and the
+    /// participant because that is the question being asked of a recording.
+    #[test]
+    fn prepare_annotates_a_siprec_invite_with_its_recording() {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let msgs = vec![siprec_invite("srec-1", 1, t0())];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert_eq!(prepared.len(), 1);
+        let lines: Vec<String> = prepared[0]
+            .extra_lines
+            .iter()
+            .map(|(s, _)| s.clone())
+            .collect();
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("SIPREC"),
+            "the ladder must say the call is being recorded: {joined}"
+        );
+        assert!(
+            joined.contains("4f1c0a2e"),
+            "and name the recording session: {joined}"
+        );
+        assert!(
+            joined.contains("complete"),
+            "and the mode the SRC declared: {joined}"
+        );
+        assert!(
+            joined.contains("sip:alice@example.invalid"),
+            "and who is on it: {joined}"
+        );
+        assert!(
+            joined.contains("label 0"),
+            "and which m= line each recorded stream came from: {joined}"
+        );
+    }
+
+    /// An ordinary INVITE gets no SIPREC annotation.
+    #[test]
+    fn prepare_leaves_an_ordinary_invite_unannotated() {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let msgs = vec![invite_with_sdp(
+            "plain",
+            1,
+            "m=audio 20000 RTP/AVP 0",
+            &[],
+            t0(),
+        )];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        let joined: String = prepared[0]
+            .extra_lines
+            .iter()
+            .map(|(s, _)| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !joined.contains("SIPREC"),
+            "a call nobody is recording must not be labeled as recorded: {joined}"
+        );
+    }
+
+    /// A SIPREC INVITE carrying the multipart body an SRC sends.
+    fn siprec_invite(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
+        let meta = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+            "<recording xmlns='urn:ietf:params:xml:ns:recording:1'>\r\n",
+            "<datamode>complete</datamode>\r\n",
+            "<session session_id=\"4f1c0a2e\"/>\r\n",
+            "<participant participant_id=\"9b2d1f00\">\r\n",
+            "<nameID aor=\"sip:alice@example.invalid\"><name>Alice</name></nameID>\r\n",
+            "</participant>\r\n",
+            "<stream stream_id=\"1a2b3c4d\" session_id=\"4f1c0a2e\">\r\n",
+            "<label>0</label>\r\n</stream>\r\n",
+            "<participantstreamassoc participant_id=\"9b2d1f00\">\r\n",
+            "<send>1a2b3c4d</send>\r\n</participantstreamassoc>\r\n",
+            "</recording>\r\n",
+        );
+        let body = format!(
+            "--B\r\nContent-Type: application/sdp\r\n\r\nv=0\r\n\r\n\
+             --B\r\nContent-Type: application/rs-metadata+xml\r\n\r\n{meta}\r\n--B--\r\n"
+        );
+        parse_req(
+            &build_raw(
+                "INVITE sip:srs@10.0.0.9 SIP/2.0",
+                &[
+                    "From: <sip:alice@10.0.0.1>;tag=t1",
+                    "To: <sip:srs@10.0.0.9>",
+                    &format!("Call-ID: {cid}"),
+                    &format!("CSeq: {cseq} INVITE"),
+                    "Content-Type: multipart/mixed;boundary=B",
+                    &format!("Content-Length: {}", body.len()),
+                ],
+                &body,
+            ),
+            ts,
+        )
     }
 
     /// Full SDP mode emits the raw SDP body as indented extra lines.

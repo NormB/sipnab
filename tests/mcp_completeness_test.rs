@@ -952,6 +952,7 @@ const PROBES: &[(&str, &str)] = &[
     ("check_codec_negotiation", r#"{"call_id":"{CALL}"}"#),
     ("diagnose_registration", r#"{"call_id":"{CALL}"}"#),
     ("media_diagnostics", r#"{"call_id":"{CALL}"}"#),
+    ("siprec_metadata", r#"{"call_id":"{CALL}"}"#),
     (
         "compare_dialogs",
         r#"{"call_id_a":"{CALL}","call_id_b":"{CALL}"}"#,

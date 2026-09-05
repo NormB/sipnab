@@ -706,7 +706,9 @@ fn wiki_intra_docs_links_resolve() {
     // each linking its own section the way every other row does. Six
     // rows, six same-page links, one page; the site mirror is generated and
     // this gate reads docs/.
-    const EXPECTED_WIKI_LINKS: usize = 663;
+    // 663 -> 664 by the `siprec_metadata` row in the same index, linking its
+    // own section as every other row does. One row, one same-page link.
+    const EXPECTED_WIKI_LINKS: usize = 664;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

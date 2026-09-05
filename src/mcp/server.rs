@@ -1201,6 +1201,14 @@ pub struct GetCaptureReportParams {
     pub format: Option<String>,
 }
 
+/// Parameters for `siprec_metadata`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct SiprecMetadataParams {
+    /// Call-ID identifying the dialog whose recording metadata to report.
+    pub call_id: String,
+}
+
 /// Parameters for `media_diagnostics`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -4899,6 +4907,78 @@ impl SipnabMcp {
                 "streams": stream_jsons,
                 "diagnosis": diag_json,
             })
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
+    }
+
+    /// Recording metadata for one call, when it carried SIPREC.
+    ///
+    /// # Returns
+    ///
+    /// `recorded: false` plus a `reason` when the dialog carries no SIPREC
+    /// metadata, worded so it cannot be read as "this call was not recorded":
+    /// sipnab sees what reached the capture point, and a recorder whose
+    /// signaling took another path leaves nothing here.
+    ///
+    /// Otherwise the session id, the recording mode, the participants, and the
+    /// streams -- each stream carrying the `label` that names its `m=` line and
+    /// the `participant_id` of whoever sends it.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when `call_id` is not in the active store.
+    #[tool(
+        name = "siprec_metadata",
+        description = "Returns the SIPREC (RFC 7866) recording metadata a call \
+                       carried: recording session id, mode, the participants \
+                       with their AOR and display name, and the recorded \
+                       streams. Each stream names the m= line it belongs to via \
+                       its SDP label and the participant that sends it, which \
+                       is the only route from a recorded stream back to a \
+                       party. Returns recorded=false for a dialog with no \
+                       SIPREC metadata -- which means none reached the capture \
+                       point, not that the call went unrecorded.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn siprec_metadata(
+        &self,
+        Parameters(params): Parameters<SiprecMetadataParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let call_id = params.call_id.as_str();
+        let payload: serde_json::Value = {
+            let state = self.capture.read();
+            let ds = self.dialog_store.read();
+            let Some(dialog) = ds.get(call_id) else {
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!("call_id '{call_id}' not found"),
+                    None,
+                ));
+            };
+            let metadata = dialog.siprec_metadata.clone();
+            let ss = self.stream_store.read();
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
+            drop(ss);
+            drop(ds);
+            drop(state);
+            match metadata {
+                None => serde_json::json!({
+                    "schema_version": 1,
+                    "call_id": call_id,
+                    "recorded": false,
+                    "reason": "this dialog carried no SIPREC metadata. That \
+                               means none reached the capture point -- a \
+                               recorder signaled on a path sipnab does not see \
+                               looks the same here as a call nobody recorded.",
+                    "capture_identity": capture_identity,
+                }),
+                Some(md) => serde_json::json!({
+                    "schema_version": 1,
+                    "call_id": call_id,
+                    "recorded": true,
+                    "siprec": md,
+                    "capture_identity": capture_identity,
+                }),
+            }
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }

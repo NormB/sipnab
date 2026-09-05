@@ -2372,9 +2372,13 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // operator actions (`tfps_ban`, `tfps_unban`) relayed to the toll-fraud
     // prevention peer. The `readOnlyHint` split moves 47-of-57 to 51-of-63,
     // and the write-capable set grows from ten to twelve.
+    // 63 -> 64 by `siprec_metadata`, which returns the SIPREC (RFC 7866)
+    // recording metadata a call carried. Read-only, so the `readOnlyHint`
+    // split moves 51-of-63 to 52-of-64 and the twelve write-capable tools are
+    // unchanged.
     assert_eq!(
         registered.len(),
-        63,
+        64,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -3073,7 +3077,10 @@ fn no_documentation_table_repeats_a_row() {
     // and the `limit` query table under `GET /v1/tfps/labels` in
     // docs/rest-api.md -- five written tables, each doubled by its generated
     // site mirror, so ten counted.
-    const EXPECTED_TABLES: usize = 808;
+    // 808 -> 812 by the `siprec_metadata` section in docs/mcp-tools.md: its
+    // parameter table and its field table, each doubled by the generated site
+    // mirror, so four counted.
+    const EXPECTED_TABLES: usize = 812;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

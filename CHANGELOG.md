@@ -10,6 +10,45 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **SIPREC metadata reaches every surface: MCP, REST, the ladder and the JSON.**
+  It was parsed and stored on the dialog and read by nothing. `siprec_metadata`
+  is a new MCP tool taking a `call_id` and returning the recording session, the
+  mode, the participants with their AOR and display name, and the recorded
+  streams -- each naming the `m=` line it was cut from and the participant that
+  sends it. `GET /v1/dialogs/{id}` carries the same block, inherited rather than
+  reprojected: REST serves `dialog_to_json`, which is the point of having one
+  definition. The call-flow ladder annotates a SIPREC INVITE in place, naming
+  who is recorded and mapping each label to its owner, unconditionally -- an
+  operator who turned SDP display off has not asked to stop being told a call
+  is being recorded.
+
+  A call with no SIPREC answers `recorded: false` with a reason that refuses to
+  overclaim: sipnab reports what reached the capture point, so a recorder
+  signaling on a path it cannot see is indistinguishable from a call nobody
+  recorded.
+
+  sipnab reads SIPREC and does not speak it. Terminating a recording session --
+  acting as an SRC or an SRS -- would put it in the call path, which is the
+  opposite of what it says about itself in its own output.
+
+### Fixed
+
+- **SIPREC metadata on the INVITE that opens a dialog was dropped entirely.**
+  `DialogStore::process_message` has three arms that apply a message's derived
+  state: one for an existing dialog, one that creates a dialog, and the replay
+  a merge performs. Two parsed SIPREC and the creating arm did not -- and an
+  SRC puts its metadata on exactly the INVITE that creates the dialog, so on a
+  live capture the field was never filled. The parser worked, its unit tests
+  passed, and the feature was dead in production.
+
+  The rule is one function now, called from all three arms. A rule written
+  three times is a rule that will be written twice, and this is what that
+  costs. Found by driving a capture end to end rather than a fixture: the unit
+  tests could not see it, because they never went through the store.
+
+
 ### Fixed
 
 - **SIPREC metadata could not be read from what a real SRC sends.** sipnab has

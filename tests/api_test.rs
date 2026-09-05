@@ -93,6 +93,42 @@ fn unknown_dialog_returns_404() {
     assert_eq!(resp.status, 404, "unknown dialog must 404");
 }
 
+/// A recorded call's SIPREC metadata reaches the REST surface.
+///
+/// Not a second projection: `GET /v1/dialogs/{id}` serves `dialog_to_json`, so
+/// this asserts that the one definition really does feed every surface rather
+/// than each having grown its own copy of the dialog shape. If REST ever stops
+/// carrying a field the CLI JSON has, it is because someone forked that
+/// projection, and this is the test that says so.
+#[test]
+fn a_recorded_dialog_carries_its_siprec_metadata_over_http() {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/siprec-opensips-invite.pcap", &[]);
+    let resp = srv.get("/v1/dialogs/4f1c0a2e-siprec@172.28.0.31");
+    assert_eq!(resp.status, 200, "body: {}", resp.body);
+    let v: serde_json::Value = serde_json::from_str(&resp.body).expect("valid JSON");
+    let sr = &v["siprec"];
+    assert_eq!(sr["session_id"], "4f1c0a2e", "body: {}", resp.body);
+    assert_eq!(sr["mode"], "complete");
+    assert_eq!(
+        sr["streams"][0]["participant_id"], "9b2d1f00",
+        "stream ownership must survive the HTTP projection: {sr}"
+    );
+}
+
+/// A call with no SIPREC omits the key over HTTP too.
+#[test]
+fn an_ordinary_dialog_omits_siprec_over_http() {
+    let srv = ApiServer::spawn(&[]);
+    let resp = srv.get(&format!("/v1/dialogs/{CALL_ID}"));
+    assert_eq!(resp.status, 200, "body: {}", resp.body);
+    let v: serde_json::Value = serde_json::from_str(&resp.body).expect("valid JSON");
+    assert!(
+        v.get("siprec").is_none(),
+        "an unrecorded call must omit the key, not send null: {}",
+        resp.body
+    );
+}
+
 /// `GET /v1/dialogs/{call_id}/vcon` is served by the binary that ships, and an
 /// unknown Call-ID is a 404 there too.
 ///

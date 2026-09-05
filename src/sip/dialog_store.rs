@@ -849,24 +849,8 @@ impl DialogStore {
             // Update timing
             update_timing(&mut dialog.timing, &msg, &dialog.method);
 
-            // Track SDP
-            track_sdp(&mut dialog.sdp_timeline, &msg);
-
-            // Track REFER-based transfers
-            if msg.is_request && msg.method.as_ref() == Some(&SipMethod::Refer) {
-                if let Some(refer_to) = msg.header("Refer-To") {
-                    dialog.refer_to = Some(refer_to.to_string());
-                }
-                track_transfer(&mut dialog.sdp_timeline, &msg);
-            }
-
-            // Parse SIPREC metadata from multipart/mixed bodies
-            if let Some(ct) = msg.content_type()
-                && ct.contains("multipart/mixed")
-                && let Ok(metadata) = crate::sip::siprec::parse_siprec_body(ct, &msg.body)
-            {
-                dialog.siprec_metadata = Some(metadata);
-            }
+            // SDP, REFER and SIPREC, in the one place all three arms use.
+            apply_message_derived(dialog, &msg);
 
             // Record the message (move instead of clone, capped per D17)
             let ts = msg.timestamp;
@@ -904,8 +888,10 @@ impl DialogStore {
                 // Update timing for the initial message
                 update_timing(&mut dialog.timing, &msg, &dialog.method);
 
-                // Track SDP for the initial message
-                track_sdp(&mut dialog.sdp_timeline, &msg);
+                // The creating message's own derived state. A SIPREC INVITE
+                // carries its metadata here and nowhere else, so an arm that
+                // only tracked SDP dropped it for the whole dialog.
+                apply_message_derived(&mut dialog, &msg);
 
                 // Insert under the SAME key the lookup used, or the next
                 // message for this unit would miss and create a duplicate.
@@ -1642,6 +1628,37 @@ fn absorb_messages(base: &mut SipDialog, incoming: Vec<SipMessage>) {
 /// transition that could regress a call is guarded on the pre-answer states —
 /// a late 180 cannot un-answer a call, and a re-applied message is idempotent.
 ///
+/// The derived state one message contributes to the dialog it belongs to.
+///
+/// Called from all three places a message reaches a dialog: the arm that
+/// updates an existing one, the arm that creates one, and the replay a merge
+/// performs. One rule in one place, because this is what happens otherwise --
+/// the update arm parsed SIPREC metadata and the creation arm did not, and an
+/// SRC puts that metadata on the INVITE that creates the dialog. The parser
+/// worked, its unit tests passed, and on a live capture the field was never
+/// filled.
+///
+/// `update_state` and `update_timing` are deliberately NOT here: the creating
+/// arm runs them against a dialog `SipDialog::new` has already partly
+/// initialized, and folding them in would change that order.
+fn apply_message_derived(dialog: &mut SipDialog, msg: &SipMessage) {
+    track_sdp(&mut dialog.sdp_timeline, msg);
+
+    if msg.is_request && msg.method.as_ref() == Some(&SipMethod::Refer) {
+        if let Some(refer_to) = msg.header("Refer-To") {
+            dialog.refer_to = Some(refer_to.to_string());
+        }
+        track_transfer(&mut dialog.sdp_timeline, msg);
+    }
+
+    if let Some(ct) = msg.content_type()
+        && ct.contains("multipart/mixed")
+        && let Ok(metadata) = crate::sip::siprec::parse_siprec_body(ct, &msg.body)
+    {
+        dialog.siprec_metadata = Some(metadata);
+    }
+}
+
 /// # Side effects
 ///
 /// Rewrites `dialog.state`, `dialog.to_tag`, `dialog.sdp_timeline`,
@@ -1653,19 +1670,7 @@ fn replay_message_derived_state(dialog: &mut SipDialog) {
     dialog.siprec_metadata = None;
     for msg in &messages {
         update_state(dialog, msg);
-        track_sdp(&mut dialog.sdp_timeline, msg);
-        if msg.is_request && msg.method.as_ref() == Some(&SipMethod::Refer) {
-            if let Some(refer_to) = msg.header("Refer-To") {
-                dialog.refer_to = Some(refer_to.to_string());
-            }
-            track_transfer(&mut dialog.sdp_timeline, msg);
-        }
-        if let Some(ct) = msg.content_type()
-            && ct.contains("multipart/mixed")
-            && let Ok(metadata) = crate::sip::siprec::parse_siprec_body(ct, &msg.body)
-        {
-            dialog.siprec_metadata = Some(metadata);
-        }
+        apply_message_derived(dialog, msg);
     }
     dialog.messages = messages;
 }

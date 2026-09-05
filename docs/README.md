@@ -43,7 +43,7 @@ you want.
   quick-reference of one-liners. Includes cross-checking a HEP mirror against
   the wire, where the DISAGREEMENT between the two is the finding.
 - **[Drive sipnab from an AI agent](mcp.md)** — expose the analysis as
-  63 Model Context Protocol tools over stdio or HTTP, so an agent queries a
+  64 Model Context Protocol tools over stdio or HTTP, so an agent queries a
   capture directly instead of shelling out and parsing text. What the tools
   return, what stays off unless you enable it, and why none of them write
   back. Deployment is a [tutorial of its own](mcp-deploy.md); the
