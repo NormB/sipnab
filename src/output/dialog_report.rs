@@ -171,6 +171,57 @@ pub fn print_dialog_report_as(
         ));
     }
 
+    // ── SIPREC recording metadata ───────────────────────────────────
+    //
+    // The CLI report is the surface an operator reads without an agent or an
+    // HTTP client, and it was the one place the recording metadata did not
+    // reach. It is printed before the stream tables because it says what the
+    // streams below are: on a recorded call, which of them a recorder was told
+    // about and whose they are.
+    for d in dialogs {
+        let Some(md) = d.siprec_metadata.as_ref() else {
+            continue;
+        };
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "SIPREC recording ({}): session {}, {}",
+            d.call_id,
+            md.session_id.as_deref().unwrap_or("id not stated"),
+            md.mode.as_deref().unwrap_or("mode not stated")
+        );
+        for p in &md.participants {
+            let aor = p.aor.as_deref().unwrap_or("aor not stated");
+            match p.name.as_deref() {
+                Some(n) => {
+                    let _ = writeln!(out, "  participant {aor} ({n})");
+                }
+                None => {
+                    let _ = writeln!(out, "  participant {aor}");
+                }
+            }
+        }
+        for st in &md.streams {
+            // Resolve to the AOR when the metadata names one: a participant id
+            // is a UUID, and an operator reading a report wants the party.
+            let owner = st.participant_id.as_deref().map_or_else(
+                || "no participant claims it".to_string(),
+                |o| {
+                    md.participants
+                        .iter()
+                        .find(|p| p.participant_id.as_deref() == Some(o))
+                        .and_then(|p| p.aor.clone())
+                        .unwrap_or_else(|| o.to_string())
+                },
+            );
+            let _ = writeln!(
+                out,
+                "  stream label {} -> {owner}",
+                st.label.as_deref().unwrap_or("?")
+            );
+        }
+    }
+
     // ── Associated RTP streams ──────────────────────────────────────
     let associated: Vec<&&RtpStream> = streams.iter().filter(|s| !s.orphaned()).collect();
     if !associated.is_empty() {
@@ -669,6 +720,61 @@ mod tests {
 
     /// Build an INVITE dialog and drive it with the given follow-up messages
     /// (each: start-line + CSeq), so we can craft Failed/Canceled outcomes.
+    /// A recorded call names its recording in the text report.
+    ///
+    /// The CLI report is what an operator reads with no agent and no HTTP
+    /// client, and it was the one surface the metadata did not reach after
+    /// MCP, REST and the ladder had it. Surface parity is a rule here, and a
+    /// report that omits the recording is the reader who most needs it going
+    /// without.
+    #[test]
+    fn a_recorded_call_names_its_recording_in_the_report() {
+        let mut d = make_dialog("rec@test", &[]);
+        d.siprec_metadata = Some(crate::sip::siprec::SirecMetadata {
+            session_id: Some("sess-9".to_string()),
+            mode: Some("complete".to_string()),
+            participants: vec![crate::sip::siprec::SirecParticipant {
+                participant_id: Some("p1".to_string()),
+                aor: Some("sip:alice@example.invalid".to_string()),
+                name: Some("Alice".to_string()),
+            }],
+            streams: vec![crate::sip::siprec::SirecStream {
+                stream_id: Some("s1".to_string()),
+                label: Some("0".to_string()),
+                participant_id: Some("p1".to_string()),
+            }],
+        });
+        let report = print_dialog_report(&[&d], &[]);
+        assert!(
+            report.contains("SIPREC recording"),
+            "the report must say the call is recorded:\n{report}"
+        );
+        assert!(
+            report.contains("sess-9") && report.contains("complete"),
+            "with the session and the mode:\n{report}"
+        );
+        assert!(
+            report.contains("sip:alice@example.invalid"),
+            "and who is on it:\n{report}"
+        );
+        assert!(
+            report.contains("stream label 0 -> sip:alice@example.invalid"),
+            "and each stream resolved to the party that sends it, by AOR rather \
+             than by the UUID an operator cannot read:\n{report}"
+        );
+    }
+
+    /// An ordinary call raises no recording heading.
+    #[test]
+    fn an_unrecorded_call_raises_no_siprec_heading() {
+        let d = make_dialog("plain@test", &[]);
+        let report = print_dialog_report(&[&d], &[]);
+        assert!(
+            !report.contains("SIPREC"),
+            "a call nobody recorded must not be labeled as recorded:\n{report}"
+        );
+    }
+
     fn make_dialog(call_id: &str, followups: &[(&str, &str, bool)]) -> SipDialog {
         let t0 = base_ts();
         let raw_invite = build_sip(

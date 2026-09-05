@@ -2966,6 +2966,59 @@ The same key reads a capture you already recorded: `sipnab -N -I capture.pcap -k
 
 ---
 
+## 60. See who is on a recorded call
+
+**Problem:** Something is recording a call and you need to know what the recorder learned about it — which parties, and which media stream belongs to which one.
+
+A session recording client (an SBC, or OpenSIPS's `siprec` module) sends the recording server an INVITE whose body carries an `application/rs-metadata+xml` part. sipnab reads that part off the wire like any other body:
+
+```bash
+sipnab -N -I recorded.pcap --call-report "4f1c0a2e-siprec@192.0.2.31"
+```
+
+```text
+SIPREC recording (4f1c0a2e-siprec@192.0.2.31): session 4f1c0a2e, complete
+  participant sip:alice@example.com (Alice)
+  participant sip:bob@example.com
+  stream label 0 -> sip:alice@example.com
+  stream label 1 -> sip:alice@example.com
+  stream label 2 -> sip:bob@example.com
+```
+
+The same facts reach an agent through MCP as `siprec_metadata { "call_id": "..." }`, and the REST API serves them on `GET /v1/dialogs/{call_id}` as a `siprec` block:
+
+```jsonc
+"siprec": {
+  "session_id": "4f1c0a2e",
+  "mode": "complete",
+  "participants": [
+    { "participant_id": "9b2d1f00", "aor": "sip:alice@example.com", "name": "Alice" },
+    { "participant_id": "c7e40a13", "aor": "sip:bob@example.com" }
+  ],
+  "streams": [
+    { "stream_id": "1a2b3c4d", "label": "0", "participant_id": "9b2d1f00" },
+    { "stream_id": "2b3c4d5e", "label": "1", "participant_id": "9b2d1f00" },
+    { "stream_id": "3c4d5e6f", "label": "2", "participant_id": "c7e40a13" }
+  ]
+}
+```
+
+In the TUI the ladder annotates the recording INVITE in place, so you see it without leaving the call flow.
+
+**What to look for:**
+
+- **`label` is the `m=` line.** Alice has two streams here, labels 0 and 1 — the audio and the video of one call. The label ties a recorded stream back to the media description it came from, and on a multi-stream call nothing else does.
+- **`participant_id` is who SENDS the stream.** Bob receives Alice's audio and video, and neither is his. Ownership comes from `<participantstreamassoc>`, whose `<send>` children mean origination and whose `<recv>` children do not.
+- **A missing `name` is missing, not empty.** An SRC that has no display name for a party sends the AOR alone.
+
+**Pitfalls:**
+
+- **`recorded: false` does not mean the call went unrecorded.** It means no SIPREC metadata reached the capture point. A recorder signaling on a path sipnab cannot see looks exactly the same from here, and the tool says so rather than implying the stronger claim.
+- **sipnab reads SIPREC and does not speak it.** It is not a session recording client and not a recording server; putting it in the recording path is not what it is for.
+- Recording metadata rides in the INVITE that opens the recording dialog. A capture that starts mid-call has missed it, and no later message repeats it unless the SRC re-sends.
+
+---
+
 ## Look up a one-liner by task
 
 The recipes above walk through a problem end to end. This section is the
@@ -3056,6 +3109,8 @@ SRTP needs media keys instead:
 
 - `sipnab -N -L 0.0.0.0:9060 --hep-allow 192.0.2.0/24` — receive HEP from Kamailio/OpenSIPS/Asterisk and analyze live. A routable bind needs the allowlist (or `--hep-auth`), or sipnab refuses to start. `-L`/`--hep-listen` decodes HEP on its own; `--hep-parse` is only for unwrapping HEP that arrives inside ordinary UDP capture
 - `sudo sipnab -N -d eth0 -H homer.example.net:9060` — mirror captured traffic to Homer
+- `sudo sipnab -N -d eth0 -H collector:9060 --hep-send-transport tcp` — mirror over TCP instead of UDP, for a collector that wants a stream
+- `sipnab -N -L 0.0.0.0:9060 --hep-listen-transport tls --hep-tls-cert cert.pem --hep-tls-key key.pem --hep-allow 192.0.2.0/24` — receive HEP inside TLS. Each side names its own transport, so a relay can take TCP in and send UDP out
 
 ---
 

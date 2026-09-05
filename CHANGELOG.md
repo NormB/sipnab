@@ -12,6 +12,33 @@ entry that carries them.
 
 ### Added
 
+- **SIPREC reaches the CLI report, which was the surface it had missed.** MCP,
+  REST and the ladder carried it; `--call-report` did not, and that is the one
+  an operator reads with no agent and no HTTP client. The report now names the
+  recording session and mode, the participants, and each stream's label
+  resolved to the party that sends it -- by AOR rather than the participant
+  UUID, which is not a thing anybody can read off a screen.
+
+- **A recipe for reading a recorded call, and HEP transport one-liners.**
+  Recipe 60 shows what `--call-report` prints for a SIPREC call and what the
+  label and participant fields mean. The HEP quick-reference gained the TCP and
+  TLS forms, since both sides have named their own transport since 0.5.150 and
+  the section still showed only UDP.
+
+- **Two notes.** One on the SIPREC arc: a parser with tests, a field on the
+  dialog, and a feature that was dead on every live capture because the fault
+  sat between the parser and the store. One on two macOS-only test failures
+  that were the same mistake twice -- encoding when a kernel reports a peer's
+  disconnect as if it were the behavior under test.
+
+### Fixed
+
+- **The README described HEP as it was two releases ago.** "send/receive Homer
+  Encapsulation Protocol" has been wrong since 0.5.150 added TCP and TLS on
+  both sides, and the feature list said nothing about SIPREC at all.
+
+### Added
+
 - **Eighteen tests over the parts of the SIPREC work nothing was driving.**
   The surfacing shipped with nine tests, all of them on paths that worked. These
   cover what happens when the input is not the happy case.
