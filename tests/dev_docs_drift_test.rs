@@ -633,7 +633,10 @@ fn linked_code_targets_exist() {
     // became two -- the accept loop and the per-connection readers a `tcp` or
     // `tls` listener spawns -- so a link to `src/capture/hep.rs` joined the
     // `src/capture/native.rs` one the single row already had.
-    const EXPECTED_CODE_LINKS: usize = 411;
+    // 411 -> 413: two, in `internals/build-ci-release.md`'s new coverage
+    // section -- `scripts/coverage.sh` and `tests/coverage_gate_test.rs`, the
+    // rehearsal and the gate that keeps it honest.
+    const EXPECTED_CODE_LINKS: usize = 413;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

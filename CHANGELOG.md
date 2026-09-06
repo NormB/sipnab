@@ -8,6 +8,38 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **The coverage floor moves 92 to 93, and there is a way to check it before
+  pushing.** Line coverage measured 93.64% (128472/137200) with functions at
+  94.19% and regions at 93.90%. The workflow's own comment says to raise the
+  floor when the real number rises, so it is raised, with the measurement and
+  the commit it came from recorded beside it.
+
+  `scripts/coverage.sh` reproduces the CI coverage job locally. It reads the
+  floor and the two `--skip` flags out of `quality.yml` rather than repeating
+  them: two copies of a threshold is how a gate and its local rehearsal come to
+  disagree, and the rehearsal is the one that gets trusted because it answers
+  first. `tests/coverage_gate_test.rs` fails if the script grows its own floor,
+  if the two skip different tests, or if the floor is walked backwards.
+
+  It is deliberately not in the pre-push hook, and a test asserts it stays out.
+  An instrumented build plus the full suite is 30-60 minutes against a hook
+  already around fifteen, and a gate nobody waits for is one that gets
+  bypassed.
+
+### Fixed
+
+- **The Dependabot note now covers the case that actually broke `main`.**
+  `docs/internals/build-ci-release.md` already said every Dependabot pull
+  request fails on the generated third-party notices, and gave the one command
+  that fixes it on a branch. It did not say what happens when five are merged
+  together: regenerating on one branch does not help the four merged after it,
+  because each merge changes the graph again. Merging the batch and
+  regenerating once at the end, on `main`, is the shape that works.
+
 ## [0.5.153] - 2026-09-06
 
 ### Fixed

@@ -182,6 +182,49 @@ main went red.
 the version, `vale sync`, then re-run Vale and read the diff in alert counts
 before committing.
 
+### Coverage, and running it before CI does
+
+The `Quality` workflow's coverage job runs `cargo llvm-cov` and enforces a line
+floor with `--fail-under-lines`. The floor sits just under the measured
+figure, so it ratchets against decline without failing on noise. The workflow
+comment carries the measurement and the commit it came from. Raise it when the
+real number rises. Never lower it to make a build pass.
+
+[`scripts/coverage.sh`](https://github.com/NormB/sipnab/blob/main/scripts/coverage.sh) reproduces that job locally, before a push:
+
+Collect, summarize and enforce the floor:
+
+```bash
+scripts/coverage.sh
+```
+
+Report the last collection without re-running it:
+
+```bash
+scripts/coverage.sh --report
+```
+
+It **reads the floor and the skips out of the workflow** rather than repeating
+them. Two copies of a threshold is how a gate and its local rehearsal come to
+disagree, and the rehearsal is the one that gets trusted, because it is the one
+that answered first. [`tests/coverage_gate_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/coverage_gate_test.rs) fails if the script grows
+its own floor, if the two skip different tests, or if someone walks the floor
+backwards.
+
+It is deliberately **not** in the pre-push hook. An instrumented build plus the
+full suite is 30-60 minutes and the hook is already around fifteen. A gate
+nobody waits for is a gate people bypass, and the claim that one exists is
+what stops someone adding a real check later. A test asserts it stays out.
+
+The two `--skip` flags are technical rather than preferences. `cli_goldens`
+spawns the instrumented binary as 13 parallel child processes that collide on
+the llvm-cov merge-pool `.profraw`. `wasm_plugin_` shells out to a wasm32
+build, and wasm32 ships no `profiler_builtins`, so the nested build fails
+`E0463`.
+Both run in full under the plain `cargo test`, so the run loses only their
+coverage contribution — which is why this total falls short of the whole suite
+by design.
+
 ### What actually gates a merge
 
 `ci-success` requires exactly four jobs: **`check`, `features`, `audit`,
@@ -216,6 +259,12 @@ graph, and the `third_party_notices_are_current` gate in [`tests/docs_drift_test
 re-runs [`scripts/build-third-party-notices.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-third-party-notices.py) and fails when the committed file
 differs. Dependabot moves `Cargo.lock` and never regenerates what derives from
 it.
+
+**Merging a batch multiplies this, and the fix moves.** Regenerating on one
+branch does not help the four merged after it: each merge changes the graph
+again, and the file is only correct for the graph that produced it. Merging
+five updates and regenerating once, at the end, on `main`, is the shape that
+works. Doing it per branch and then merging them all leaves `main` red anyway.
 
 The fix is one command on the branch:
 

@@ -193,14 +193,19 @@ jobs:
       # after release with every run staying green: measured, reported,
       # unenforced, the same shape as the glibc floor and the binary-size claim.
       #
-      # 92 is not a round number picked for comfort: line coverage measured
-      # 92.85% (53407/57518) on the aaeb06e report, with functions at 94.29% and
-      # regions at 93.15%. The floor sits just under the real figure so it
-      # ratchets against decline without failing on ordinary noise. Raise it
-      # when the real number rises; never lower it to make a build pass.
+      # The floor is not a round number picked for comfort. It sits just under
+      # the real figure so it ratchets against decline without failing on
+      # ordinary noise. Raise it when the real number rises; never lower it to
+      # make a build pass.
+      #
+      # 92 was set from 92.85% (53407/57518) on the aaeb06e report.
+      # 93 is set from 93.64% (128472/137200) measured on e8bb9e9e, with
+      # functions at 94.19% and regions at 93.90% -- the same `--skip
+      # cli_goldens --skip wasm_plugin_` scope this job collects under, so the
+      # number and the gate describe one run.
       - name: Enforce coverage floor
         run: |
-          cargo llvm-cov report --fail-under-lines 92 \
+          cargo llvm-cov report --fail-under-lines 93 \
             --ignore-filename-regex 'gen_fixture\.rs'
 
       - name: Generate lcov + HTML report

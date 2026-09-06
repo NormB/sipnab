@@ -33,6 +33,25 @@ mod markdown;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `cargo llvm-cov`'s, named by the coverage note that documents the CI
+    // gate and the local rehearsal of it. `--fail-under-lines` is the floor
+    // the workflow enforces and `--skip` names the two test groups the
+    // instrumented run cannot host. Neither is a sipnab flag, and documenting
+    // the gate must not turn them into one.
+    (
+        "fail-under-lines",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "skip",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // `tfps_ctl`'s, named by the `[tfps] db` row because that is exactly what
     // the key becomes: sipnab passes it through as `--db PATH` on every call
     // to the toll-fraud prevention peer. It is not a sipnab flag and must not
