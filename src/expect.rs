@@ -1000,6 +1000,182 @@ mod tests {
         }
     }
 
+    /// A compiled rule around a spec, for the verdict tests below.
+    fn compiled<'a>(spec: &'a ExpectRule, metric: Metric) -> CompiledRule<'a> {
+        CompiledRule {
+            index: 0,
+            spec,
+            metric,
+            scope: Scope::All,
+        }
+    }
+
+    /// A measurement with a value and a sample behind it.
+    fn measured(value: Option<f64>, sample: u64) -> Measured {
+        Measured {
+            value,
+            sample,
+            ungrounded_excluded: None,
+            notes: Vec::new(),
+        }
+    }
+
+    /// A rule whose population is empty FAILS, and says it judged nothing.
+    ///
+    /// This is the defect the module exists to prevent, recorded in its own
+    /// comment: `count == 0` always produces a value, so a check on the value
+    /// alone let a `count == 0` rule report a pass against a capture holding
+    /// no dialogs at all. The test is on the SAMPLE for that reason.
+    #[test]
+    fn a_rule_with_nothing_in_scope_fails_rather_than_passing_on_no_data() {
+        let spec = rule("count", Op::Eq, 0.0);
+        let out = judge(&compiled(&spec, Metric::Count), measured(Some(0.0), 0));
+        assert_eq!(
+            out.verdict,
+            Verdict::Fail,
+            "a gate must not pass on data it never judged: {}",
+            out.reason
+        );
+        assert!(
+            out.reason.contains("unevaluable") && out.reason.contains("rests on"),
+            "and it must say the population was empty: {}",
+            out.reason
+        );
+        assert!(
+            out.reason.contains("min_sample"),
+            "and name the way to accept an empty population deliberately: {}",
+            out.reason
+        );
+    }
+
+    /// A sample below the declared floor is SKIPPED, not failed.
+    ///
+    /// Skipped and failed are different answers: a suite that turned a thin
+    /// capture into a red build would train its readers to ignore red.
+    #[test]
+    fn a_sample_below_min_sample_is_skipped_not_failed() {
+        let mut spec = rule("asr", Op::Ge, 90.0);
+        spec.min_sample = Some(50);
+        let out = judge(&compiled(&spec, Metric::Asr), measured(Some(10.0), 7));
+        assert_eq!(out.verdict, Verdict::Skipped);
+        assert!(
+            out.reason.contains("7") && out.reason.contains("50"),
+            "the reason names both the sample it had and the floor it wanted: {}",
+            out.reason
+        );
+    }
+
+    /// The floor is a minimum, so a sample exactly at it is judged.
+    #[test]
+    fn a_sample_exactly_at_min_sample_is_judged() {
+        let mut spec = rule("asr", Op::Ge, 90.0);
+        spec.min_sample = Some(5);
+        let out = judge(&compiled(&spec, Metric::Asr), measured(Some(95.0), 5));
+        assert_eq!(
+            out.verdict,
+            Verdict::Pass,
+            "min_sample is a minimum, not a threshold to exceed: {}",
+            out.reason
+        );
+    }
+
+    /// A measurement that produced no value is unevaluable, never a pass.
+    #[test]
+    fn a_metric_that_produced_no_value_is_unevaluable() {
+        let spec = rule("mos_p10", Op::Ge, 3.5);
+        let out = judge(
+            &compiled(&spec, Metric::MosPercentile(10)),
+            measured(None, 4),
+        );
+        assert_eq!(out.verdict, Verdict::Fail);
+        assert!(out.reason.contains("unevaluable"), "reason: {}", out.reason);
+    }
+
+    /// A satisfied comparison passes and carries what it observed.
+    #[test]
+    fn a_satisfied_rule_passes_and_reports_the_observation() {
+        let spec = rule("asr", Op::Ge, 90.0);
+        let out = judge(&compiled(&spec, Metric::Asr), measured(Some(97.5), 40));
+        assert_eq!(out.verdict, Verdict::Pass);
+        assert_eq!(out.observed, Some(97.5));
+        assert_eq!(out.sample, 40);
+        assert_eq!(out.threshold, 90.0);
+    }
+
+    /// An unsatisfied comparison fails, and the outcome still carries the
+    /// observation rather than only the verdict.
+    #[test]
+    fn an_unsatisfied_rule_fails_and_still_reports_what_it_saw() {
+        let spec = rule("asr", Op::Ge, 90.0);
+        let out = judge(&compiled(&spec, Metric::Asr), measured(Some(42.0), 40));
+        assert_eq!(out.verdict, Verdict::Fail);
+        assert_eq!(
+            out.observed,
+            Some(42.0),
+            "a failing rule that hid its observation would leave a reader \
+             unable to tell a near miss from a collapse"
+        );
+    }
+
+    /// Notes on the measurement survive into the outcome.
+    ///
+    /// The notes carry what the numbers do not say -- which streams were
+    /// excluded and why. Dropping them at the verdict would leave a percentile
+    /// looking like it covered a population it did not.
+    #[test]
+    fn measurement_notes_reach_the_outcome() {
+        let spec = rule("mos_p10", Op::Ge, 3.0);
+        let m = Measured {
+            value: Some(4.1),
+            sample: 3,
+            ungrounded_excluded: Some(2),
+            notes: vec!["2 stream(s) were excluded".to_string()],
+        };
+        let out = judge(&compiled(&spec, Metric::MosPercentile(10)), m);
+        assert_eq!(out.ungrounded_excluded, Some(2));
+        assert_eq!(out.notes, vec!["2 stream(s) were excluded".to_string()]);
+    }
+
+    /// A whole number prints without a decimal tail; anything else gets four
+    /// places.
+    ///
+    /// A count rendered as `12.0000` reads as a measurement with precision it
+    /// does not have, and a MOS rendered as `4` hides the difference between
+    /// 4.0 and 4.4999.
+    #[test]
+    fn values_print_as_counts_or_as_measurements() {
+        assert_eq!(format_value(12.0), "12");
+        assert_eq!(format_value(0.0), "0");
+        assert_eq!(format_value(-3.0), "-3");
+        assert_eq!(format_value(4.25), "4.2500");
+        assert_eq!(format_value(97.5), "97.5000");
+    }
+
+    /// The nearest rank is a real observation at every percentile, including
+    /// the ends.
+    ///
+    /// Interpolation would answer with a MOS no stream scored, which is the
+    /// wrong thing to fail a build on.
+    #[test]
+    fn nearest_rank_returns_an_observed_value_at_both_ends() {
+        let sorted = [1.0, 2.0, 3.0, 4.0];
+        assert_eq!(nearest_rank(&sorted, 0), Some(1.0), "p0 is the lowest");
+        assert_eq!(nearest_rank(&sorted, 100), Some(4.0), "p100 is the highest");
+        for p in [0, 10, 25, 50, 75, 90, 100] {
+            let v = nearest_rank(&sorted, p).expect("a value at every percentile");
+            assert!(
+                sorted.contains(&v),
+                "p{p} returned {v}, which no observation produced"
+            );
+        }
+        assert_eq!(nearest_rank(&[], 50), None, "no data, no percentile");
+        assert_eq!(
+            nearest_rank(&[7.0], 50),
+            Some(7.0),
+            "one observation is every percentile of itself"
+        );
+    }
+
     /// `mos_p<N>` parses across the whole range and rejects everything else.
     #[test]
     fn percentile_metric_names_parse_only_when_they_are_percentiles() {

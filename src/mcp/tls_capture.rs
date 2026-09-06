@@ -271,6 +271,74 @@ mod tests {
         assert!(!c.finished(), "nothing has run yet");
     }
 
+    /// A capture that cannot attach still finishes, and says why.
+    ///
+    /// `spawn` returns as soon as the thread starts, so an attach failure --
+    /// no permission, no tracefs, an unresolvable symbol -- cannot come back
+    /// as its `Err`. It has to arrive through the outcome, because an agent
+    /// that already saw the capture start will otherwise wait forever on a
+    /// probe that was never installed.
+    ///
+    /// Driven with a library path that cannot exist, so the attach fails for a
+    /// reason that needs no privileges to produce and no kernel state to
+    /// clean up afterwards.
+    #[test]
+    fn a_capture_that_cannot_attach_finishes_and_reports_the_reason() {
+        let dialogs = Arc::new(RwLock::new(DialogStore::new(16, false)));
+        let streams = Arc::new(RwLock::new(StreamStore::new(16)));
+        let target = UprobeTarget {
+            library: "/nonexistent/libssl.so.0".to_string(),
+            symbol: "SSL_write".to_string(),
+        };
+
+        let cap = spawn(vec![target], "cap-fail", dialogs, streams).expect("the thread spawns");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !cap.finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a capture that cannot attach must still finish; an agent \
+                 polling `finished` would otherwise wait forever"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        let outcome = cap.outcome.lock().clone().expect("an outcome is recorded");
+        assert!(
+            outcome.error.is_some(),
+            "the failure must reach the caller through the outcome, since \
+             spawn already returned Ok: {outcome:?}"
+        );
+        assert_eq!(outcome.messages, 0, "nothing was captured");
+    }
+
+    /// The handle describes every target it was given, not just the first.
+    ///
+    /// An agent asked for N libraries and needs to see that N started. A list
+    /// that silently held one would report a narrower capture than the one
+    /// running.
+    #[test]
+    fn the_handle_describes_every_target_it_was_given() {
+        let c = TlsCapture::new(
+            vec![
+                "/usr/lib/libssl.so.3:SSL_write".to_string(),
+                "/usr/lib/libgnutls.so.30:gnutls_record_send".to_string(),
+            ],
+            "cap-many",
+        );
+        assert_eq!(
+            c.targets.len(),
+            2,
+            "both targets are described: {:?}",
+            c.targets
+        );
+        assert!(
+            c.targets.iter().all(|t| t.contains(':')),
+            "each is library:symbol, which is what an agent matches on: {:?}",
+            c.targets
+        );
+    }
+
     /// Stopping is a request, not an act: the worker owns the probes and must
     /// remove them itself, in the one order the kernel accepts.
     #[test]

@@ -1364,6 +1364,150 @@ mod query_relay_view_tests {
         );
     }
 
+    /// Every delivery-trust level explains itself, distinctly and in terms an
+    /// operator can act on.
+    ///
+    /// The ordering is strongest to weakest and an incident review reads it
+    /// that way, so the sentences have to differ: two levels sharing one
+    /// explanation would tell a reviewer that an authenticated assertion and a
+    /// port-gated one are the same fact. `PortGatedOnly` is the one that must
+    /// state its own weakness, because it is the residual sipnab pins rather
+    /// than pretends away.
+    #[test]
+    fn every_delivery_trust_level_explains_itself_distinctly() {
+        let all = [
+            DeliveryTrust::Asked,
+            DeliveryTrust::HmacVerified,
+            DeliveryTrust::PlainSecret,
+            DeliveryTrust::PortGatedOnly,
+            DeliveryTrust::NotRelayAsserted,
+        ];
+        let texts: Vec<&str> = all.iter().map(|t| t.explain()).collect();
+        let unique: std::collections::BTreeSet<&&str> = texts.iter().collect();
+        assert_eq!(
+            unique.len(),
+            texts.len(),
+            "two trust levels share an explanation: {texts:?}"
+        );
+        for (level, text) in all.iter().zip(&texts) {
+            assert!(
+                text.len() > 40,
+                "{level:?} explains itself in {} characters, which is not an \
+                 instruction to anybody",
+                text.len()
+            );
+        }
+        assert!(
+            DeliveryTrust::PortGatedOnly
+                .explain()
+                .contains("NOT authenticated"),
+            "the weakest level must say so in its own sentence: {}",
+            DeliveryTrust::PortGatedOnly.explain()
+        );
+        assert!(
+            DeliveryTrust::NotRelayAsserted.explain().contains("SDP"),
+            "and the one that is not a relay statement must say whose claim it is"
+        );
+    }
+
+    /// A pointer nobody can resolve answers `unresolvable`, with the reason and
+    /// nothing invented around it.
+    ///
+    /// Every optional field stays empty. A decode answer carrying a `command`
+    /// or a `call_id` beside `unresolvable` would read as a partial decode --
+    /// as though sipnab had got some of the message -- when it got none of it.
+    #[test]
+    fn an_unresolvable_pointer_carries_its_reason_and_nothing_else() {
+        let d = ng_unresolvable("capture.pcap#7@deadbeef", "no such frame".to_string());
+        assert_eq!(d.status, "unresolvable");
+        assert_eq!(d.pointer, "capture.pcap#7@deadbeef");
+        assert_eq!(d.reason.as_deref(), Some("no such frame"));
+        assert_eq!(d.schema_version, 1);
+        assert!(d.source.is_none(), "no source is claimed");
+        assert!(d.ordinal.is_none(), "no ordinal is claimed");
+        assert!(d.delivery.is_none(), "no delivery path is claimed");
+        assert!(d.delivery_trust.is_none(), "and no trust in one");
+        assert!(d.command.is_none() && d.call_id.is_none());
+        assert!(!d.has_sdp, "and nothing about a body it never read");
+        assert!(d.sdp_bytes.is_none());
+    }
+
+    /// A decoded control message reports the path it arrived on, and the note
+    /// that says what that path is worth.
+    ///
+    /// The two delivery paths are not interchangeable: HEP-encapsulated came
+    /// from a relay that chose to send it, and a bare datagram was sniffed off
+    /// the wire. An answer that collapsed them would hide which of the two an
+    /// operator is looking at.
+    #[test]
+    fn a_decoded_control_message_reports_its_delivery_and_what_it_is_worth() {
+        let decoded = decoded_control(crate::relay::ControlDelivery::Encapsulated, Some(120));
+        let d = describe_control_message(
+            "cap.pcap#3@abc",
+            "decoded",
+            "cap.pcap",
+            3,
+            DeliveryTrust::HmacVerified,
+            &decoded,
+        );
+        assert_eq!(d.status, "decoded");
+        assert_eq!(d.source.as_deref(), Some("cap.pcap"));
+        assert_eq!(d.ordinal, Some(3));
+        assert!(matches!(d.delivery, Some(NgDelivery::Hep)));
+        assert_eq!(d.delivery_trust, Some(DeliveryTrust::HmacVerified));
+        assert_eq!(
+            d.delivery_note.as_deref(),
+            Some(DeliveryTrust::HmacVerified.explain()),
+            "the note is the trust level's own sentence, not a second wording \
+             of it that could drift"
+        );
+        assert!(d.has_sdp, "120 bytes of SDP is SDP");
+        assert_eq!(d.sdp_bytes, Some(120));
+        assert!(d.reason.is_none(), "a decode that worked states no reason");
+    }
+
+    /// A bare datagram is reported as sniffed, not as something a relay sent.
+    #[test]
+    fn a_bare_datagram_is_reported_as_sniffed_rather_than_sent() {
+        let decoded = decoded_control(crate::relay::ControlDelivery::BareDatagram, None);
+        let d = describe_control_message(
+            "cap.pcap#9@abc",
+            "decoded",
+            "cap.pcap",
+            9,
+            DeliveryTrust::PortGatedOnly,
+            &decoded,
+        );
+        assert!(
+            matches!(d.delivery, Some(NgDelivery::SniffedUdp)),
+            "a datagram sipnab picked up off the wire is not a relay's \
+             statement to it"
+        );
+        assert!(!d.has_sdp, "no SDP bytes means no SDP");
+        assert!(d.sdp_bytes.is_none(), "and no count is invented for it");
+        assert_eq!(
+            d.delivery_note.as_deref(),
+            Some(DeliveryTrust::PortGatedOnly.explain())
+        );
+    }
+
+    /// A decoded control message for the tests above.
+    fn decoded_control(
+        delivery: crate::relay::ControlDelivery,
+        sdp_bytes: Option<usize>,
+    ) -> crate::relay::DecodedControl {
+        crate::relay::DecodedControl {
+            delivery,
+            on_believed_mirror_port: Some(true),
+            correlation_id: Some("corr-1".to_string()),
+            message: crate::relay::ControlMessage {
+                command: Some("offer".to_string()),
+                call_id: Some("call-1@example.invalid".to_string()),
+                sdp_bytes,
+            },
+        }
+    }
+
     /// Every reason an unexplained stream can carry, driven directly.
     ///
     /// The three arms are what `reconcile_orphans` tells an operator when it
