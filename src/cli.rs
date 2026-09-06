@@ -4901,7 +4901,36 @@ pub fn resolve_file_or_inline_secret(
         }
         return Ok(Some(trimmed.to_string()));
     }
-    Ok(inline.map(str::to_string))
+
+    // The inline value gets the same treatment, and for the same reason. It
+    // used to pass through untouched, which made an empty one worse than no
+    // secret at all: `Some("")` satisfies the SN-01 bind policy, so a
+    // non-loopback listener is permitted on the strength of "authentication is
+    // configured" -- and then the constant-time comparison finds an empty
+    // expected value equal to an empty presented one, so any peer sending an
+    // empty auth chunk is authenticated. The operator believes the listener is
+    // guarded; it admits whoever asks.
+    //
+    // Trimming matches too, so the same bytes resolve the same way from either
+    // source. Somebody moving a secret off the command line and into a file --
+    // which is the advice -- would otherwise be authenticating with different
+    // bytes afterwards, and the symptom is every agent failing auth at once
+    // with nothing to point at.
+    match inline {
+        None => Ok(None),
+        Some(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Err(format!(
+                    "{flag}: the value is empty. An empty secret authenticates \
+                     any peer that presents an empty one, and satisfies the \
+                     bind policy while doing it -- set a real secret or unset \
+                     the flag"
+                ));
+            }
+            Ok(Some(trimmed.to_string()))
+        }
+    }
 }
 
 /// Unit tests for CLI parsing, flag defaults, argument validation, and
@@ -5222,6 +5251,66 @@ mod tests {
         assert!(
             err.contains("empty"),
             "error explains emptiness, got: {err}"
+        );
+    }
+
+    /// An empty inline secret is refused, exactly as an empty file is.
+    ///
+    /// `--hep-auth ""` used to resolve to `Some("")`, and that is worse than
+    /// no secret at all. It satisfies the SN-01 bind policy, so a non-loopback
+    /// listener is permitted on the strength of "authentication is
+    /// configured" — and then `hep_auth_ok` compares the empty expected value
+    /// against an empty presented one and returns true, so any peer that sends
+    /// an empty auth chunk is authenticated. The operator believes the
+    /// listener is guarded. It admits anyone who asks.
+    ///
+    /// The file path has always refused this. The two sources are one rule.
+    #[test]
+    fn an_empty_inline_secret_is_refused_like_an_empty_file() {
+        let err = resolve_file_or_inline_secret(Some(""), None, "--hep-auth")
+            .expect_err("an empty inline secret must be refused");
+        assert!(
+            err.contains("--hep-auth"),
+            "the refusal names the flag the operator set: {err}"
+        );
+        assert!(
+            err.contains("empty"),
+            "and says what was wrong with it: {err}"
+        );
+    }
+
+    /// A whitespace-only inline secret is refused too.
+    ///
+    /// The file path trims before testing for empty, so `"   "` in a file is
+    /// an empty secret and refused. Accepting it inline would mean the same
+    /// bytes are a fatal error from one source and a valid secret from the
+    /// other.
+    #[test]
+    fn a_whitespace_only_inline_secret_is_refused() {
+        for candidate in ["   ", "\t", "\n", " \r\n "] {
+            assert!(
+                resolve_file_or_inline_secret(Some(candidate), None, "--hep-auth").is_err(),
+                "a secret of only whitespace ({candidate:?}) is empty once \
+                 trimmed, and a file holding it is refused"
+            );
+        }
+    }
+
+    /// An inline secret is trimmed, so moving it into a file does not change
+    /// it.
+    ///
+    /// A file's contents are trimmed. Somebody following the documented advice
+    /// to move a secret out of the command line and into a file would
+    /// otherwise be authenticating with different bytes afterwards, and the
+    /// symptom is every agent failing auth with nothing to point at.
+    #[test]
+    fn an_inline_secret_is_trimmed_like_a_file_one() {
+        let resolved = resolve_file_or_inline_secret(Some("  s3cret  "), None, "--hep-auth")
+            .expect("a real secret resolves");
+        assert_eq!(
+            resolved.as_deref(),
+            Some("s3cret"),
+            "the same bytes must resolve the same way from either source"
         );
     }
 

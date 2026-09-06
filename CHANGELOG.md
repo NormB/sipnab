@@ -8,6 +8,31 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **An empty inline secret authenticated any peer that presented an empty
+  one.** `--hep-auth ""` resolved to `Some("")` and that is worse than no
+  secret at all: it satisfies the SN-01 bind policy, so a non-loopback listener
+  is permitted on the strength of "authentication is configured", and then the
+  constant-time comparison finds an empty expected value equal to an empty
+  presented one. The operator believes the listener is guarded. It admits
+  whoever asks.
+
+  The file path had always refused this — an empty or whitespace-only file is a
+  hard error naming the flag. The inline path passed its value through
+  untouched, so the same bytes were fatal from one source and a valid secret
+  from the other. Both are one rule now.
+
+  Inline values are trimmed to match, too. Moving a secret off the command line
+  into a file is the documented advice, and the file's contents are trimmed;
+  without this, following that advice changed the secret, and the symptom is
+  every agent failing auth at once with nothing to point at.
+
+  The resolver is shared, so `--metrics-auth` had the same hole and the same
+  fix.
+
 ## [0.5.154] - 2026-09-06
 
 ### Fixed
