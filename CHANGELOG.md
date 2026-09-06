@@ -10,6 +10,17 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **Three tests pinning each media asymmetry to the leg it was measured on.**
+  `collect_media` has four arms of one `if let` chain, each pulling two fields
+  off a struct whose members differ only by an `a_`/`b_` prefix — the shape a
+  copy-paste swap survives, because the finding still appears with both numbers
+  present and an operator reads the A leg's packetization as the B leg's.
+  Distinct values per leg make a swap visible; swapping either pair now turns a
+  test red. A negative late-media delay is also pinned: it clamps to zero
+  rather than wrapping through the cast into billions of milliseconds.
+
 ### Fixed
 
 - **An empty inline secret authenticated any peer that presented an empty

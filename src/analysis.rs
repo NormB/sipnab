@@ -1419,6 +1419,198 @@ mod tests {
         }
     }
 
+    /// A dialog with one INVITE, for the media-finding tests.
+    fn media_dialog() -> SipDialog {
+        let raw = "INVITE sip:bob@example.invalid SIP/2.0\r\n\
+                   Via: SIP/2.0/UDP 198.51.100.1:5060;branch=z9hG4bK1\r\n\
+                   From: <sip:alice@example.invalid>;tag=a1\r\n\
+                   To: <sip:bob@example.invalid>\r\n\
+                   Call-ID: media-findings@example.invalid\r\n\
+                   CSeq: 1 INVITE\r\n\
+                   Content-Length: 0\r\n\r\n";
+        let msg = crate::sip::parser::parse_sip_bytes(
+            &bytes::Bytes::from_static(raw.as_bytes()),
+            chrono::Utc::now(),
+            "198.51.100.1".parse().unwrap(),
+            "198.51.100.2".parse().unwrap(),
+            5060,
+            5060,
+            crate::capture::parse::TransportProto::Udp,
+        )
+        .expect("the fixture INVITE parses");
+        SipDialog::new(&msg).expect("it opens a dialog")
+    }
+
+    /// Run `collect_media` over one diagnosis and return what it accumulated.
+    fn media_findings(diag: crate::rtp::diagnosis::MediaDiagnosis) -> Vec<Finding> {
+        let dialog = media_dialog();
+        let mut acc = Accumulator::default();
+        collect_media(&mut acc, &dialog, &[], &diag);
+        acc.into_findings()
+    }
+
+    /// Each asymmetry keeps the leg it was measured on.
+    ///
+    /// Four arms of one `if let` chain, each pulling two fields off a struct
+    /// whose members differ only by an `a_`/`b_` prefix. That is the shape a
+    /// copy-paste swap survives in: the finding still appears, the numbers are
+    /// still both present, and an operator reads the A leg's packetization as
+    /// the B leg's. Distinct values per leg are what makes a swap visible.
+    #[test]
+    fn each_asymmetry_finding_keeps_the_leg_it_was_measured_on() {
+        use crate::rtp::diagnosis::{
+            CodecAsymmetry, DurationAsymmetry, MediaDiagnosis, PayloadTypeAsymmetry, PtimeAsymmetry,
+        };
+        let diag = MediaDiagnosis {
+            codec_asymmetry: Some(CodecAsymmetry {
+                a_codec: "PCMU".to_string(),
+                b_codec: "G729".to_string(),
+            }),
+            ptime_asymmetry: Some(PtimeAsymmetry {
+                a_ptime_ms: 20,
+                b_ptime_ms: 30,
+            }),
+            payload_type_asymmetry: Some(PayloadTypeAsymmetry { a_pt: 0, b_pt: 18 }),
+            duration_asymmetry: Some(DurationAsymmetry {
+                a_duration_sec: 12.5,
+                b_duration_sec: 3.25,
+                delta_sec: 9.25,
+            }),
+            ..MediaDiagnosis::default()
+        };
+        let found = media_findings(diag);
+        let of = |k: FindingKind| {
+            found
+                .iter()
+                .find(|f| f.kind == k)
+                .unwrap_or_else(|| panic!("{k:?} was not reported"))
+        };
+        let counts = |f: &Finding| -> Vec<(String, u64)> {
+            f.evidence
+                .iter()
+                .flat_map(|e| e.counts.iter().map(|(k, v)| ((*k).to_string(), *v)))
+                .collect()
+        };
+
+        let ptime = counts(of(FindingKind::PtimeAsymmetry));
+        assert!(
+            ptime.contains(&("a_ptime_ms".to_string(), 20)),
+            "the A leg's 20ms must be reported as the A leg's: {ptime:?}"
+        );
+        assert!(
+            ptime.contains(&("b_ptime_ms".to_string(), 30)),
+            "and the B leg's 30ms as the B leg's: {ptime:?}"
+        );
+
+        let pt = counts(of(FindingKind::PayloadTypeAsymmetry));
+        assert!(
+            pt.contains(&("a_payload_type".to_string(), 0)),
+            "payload type 0 was on the A leg: {pt:?}"
+        );
+        assert!(
+            pt.contains(&("b_payload_type".to_string(), 18)),
+            "and 18 on the B leg: {pt:?}"
+        );
+
+        let codec_notes: Vec<&str> = of(FindingKind::CodecAsymmetry)
+            .evidence
+            .iter()
+            .filter_map(|e| e.note.as_deref())
+            .collect();
+        assert!(
+            codec_notes
+                .iter()
+                .any(|n| n.contains("A leg PCMU") && n.contains("B leg G729")),
+            "each codec must be named against its own leg: {codec_notes:?}"
+        );
+
+        let dur_notes: Vec<&str> = of(FindingKind::DurationAsymmetry)
+            .evidence
+            .iter()
+            .filter_map(|e| e.note.as_deref())
+            .collect();
+        assert!(
+            dur_notes
+                .iter()
+                .any(|n| n.contains("A leg 12.5s") && n.contains("B leg 3.2")),
+            "the longer leg is the A leg here, and must read that way: {dur_notes:?}"
+        );
+    }
+
+    /// Late media names the leg that started late and how late it was.
+    ///
+    /// The delay is clamped with `.max(0)` before the cast to `u64`. A
+    /// negative delay is nonsense the clamp exists to absorb — without it the
+    /// cast wraps and an operator reads billions of milliseconds.
+    #[test]
+    fn late_media_reports_the_leg_and_survives_a_negative_delay() {
+        use crate::rtp::diagnosis::{LateMedia, MediaDiagnosis};
+        let found = media_findings(MediaDiagnosis {
+            late_media: Some(LateMedia {
+                leg: "b".to_string(),
+                delay_after_200_ok_ms: 4200,
+            }),
+            ..MediaDiagnosis::default()
+        });
+        let f = found
+            .iter()
+            .find(|f| f.kind == FindingKind::LateMedia)
+            .expect("late media is reported");
+        assert!(
+            f.evidence.iter().any(|e| e
+                .counts
+                .iter()
+                .any(|(k, v)| *k == "delay_after_200_ok_ms" && *v == 4200)),
+            "the delay is carried as measured"
+        );
+        assert!(
+            f.evidence
+                .iter()
+                .filter_map(|e| e.note.as_deref())
+                .any(|n| n.contains("b leg")),
+            "and names the leg that was late"
+        );
+
+        // A negative delay must clamp to zero rather than wrap through the
+        // cast into an enormous positive number.
+        let found = media_findings(MediaDiagnosis {
+            late_media: Some(LateMedia {
+                leg: "a".to_string(),
+                delay_after_200_ok_ms: -1,
+            }),
+            ..MediaDiagnosis::default()
+        });
+        let delay = found
+            .iter()
+            .find(|f| f.kind == FindingKind::LateMedia)
+            .and_then(|f| {
+                f.evidence
+                    .iter()
+                    .flat_map(|e| e.counts.iter())
+                    .find(|(k, _)| **k == "delay_after_200_ok_ms")
+                    .map(|(_, v)| *v)
+            })
+            .expect("a delay is reported");
+        assert_eq!(
+            delay, 0,
+            "a negative delay clamps to zero; wrapping would report {delay}ms"
+        );
+    }
+
+    /// A diagnosis with nothing wrong produces no media findings.
+    ///
+    /// The paired half: a chain of `if let Some` arms that fired on a default
+    /// diagnosis would put a fault in front of an operator on every clean call.
+    #[test]
+    fn a_clean_diagnosis_produces_no_media_findings() {
+        let found = media_findings(crate::rtp::diagnosis::MediaDiagnosis::default());
+        assert!(
+            found.is_empty(),
+            "a clean call must raise nothing: {:?}",
+            found.iter().map(|f| f.kind).collect::<Vec<_>>()
+        );
+    }
+
     /// The ladder is the declared order, and nothing else. A change to it is a
     /// change to what the tool tells an operator to look at first, so it has
     /// to be deliberate enough to break a test.
