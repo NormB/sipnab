@@ -2599,6 +2599,19 @@ pub struct DialogPage {
     /// Dialogs matching the query across the WHOLE store, independent of
     /// `limit` and `cursor`. This is the number that answers "how many".
     pub total_matched: usize,
+    /// `total_matched` split by the method that opened each dialog, over the
+    /// same whole-store population — not just the rows on this page.
+    ///
+    /// A triage page is dominated by whatever the fleet does most, and on a
+    /// real capture that is the keepalive plane: 98 of 110 problem rows were
+    /// OPTIONS, 89 of them tripping the alias solely on `retransmits > 3`.
+    /// Those are dead qualify peers, not call faults, and an agent reading the
+    /// first page had no way to know its own composition without already
+    /// knowing to ask `method != "OPTIONS"`.
+    ///
+    /// Sorted by descending count, then by method, so the dominant class is
+    /// first and the order is stable across runs. Empty when nothing matched.
+    pub by_method: Vec<MethodCount>,
     /// True when matches remain after this page. Pass `next_cursor` back to
     /// continue.
     pub truncated: bool,
@@ -2611,6 +2624,20 @@ pub struct DialogPage {
     /// replace the whole dialog set between two pages, and without this the
     /// second page would look like an ordinary continuation of the first.
     pub capture_identity: crate::provenance::CaptureEtag,
+}
+
+/// One method and how many matched dialogs it opened.
+///
+/// A list of pairs rather than a map: JSON object key order is not guaranteed,
+/// and the useful reading of this field is "what dominates", which only a
+/// sorted sequence can carry.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct MethodCount {
+    /// Canonical method name, e.g. `INVITE`, `OPTIONS`, `REGISTER`.
+    pub method: String,
+    /// Matched dialogs opened by that method.
+    pub count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -4044,6 +4071,18 @@ impl SipnabMcp {
             })
             .collect();
         let total_matched = matched.len();
+        // Counted over every match, for the same reason `total_matched` is:
+        // a breakdown of the page would describe the page, and the question
+        // being answered is what the whole result set is made of.
+        //
+        // Derived by `method_breakdown` rather than tallied here, because
+        // `GET /v1/dialogs` answers the same question from the same store and
+        // the two must not be able to disagree. The ordering rule and the
+        // reason for the tie-break live with it.
+        let by_method = crate::sip::dialog::method_breakdown(matched.iter().copied())
+            .into_iter()
+            .map(|(method, count)| MethodCount { method, count })
+            .collect();
 
         crate::sort::sort_by_dyn(&mut matched, &mut |a, b| {
             a.created_at
@@ -4081,6 +4120,7 @@ impl SipnabMcp {
             returned: dialogs.len(),
             dialogs,
             total_matched,
+            by_method,
             truncated,
             next_cursor,
             capture_identity,

@@ -708,7 +708,16 @@ fn wiki_intra_docs_links_resolve() {
     // this gate reads docs/.
     // 663 -> 664 by the `siprec_metadata` row in the same index, linking its
     // own section as every other row does. One row, one same-page link.
-    const EXPECTED_WIKI_LINKS: usize = 664;
+    // 664 -> 667 by the MCP Inspector section in docs/mcp.md, attributed per
+    // file against the working tree before the number moved: that section is
+    // the only place either of the three targets is newly named, and it links
+    // each once -- `rest-api.md` for the Scalar rendering it is the MCP
+    // counterpart of, `mcp-deploy.md` for the HTTP transport a reader must
+    // start before pointing Inspector at a URL, and `mcp-tools.md` for what a
+    // dumped schema does NOT tell them. Its other links are absolute
+    // `github.com` URLs and one `sipnab.com` autolink, which this extractor
+    // does not walk, and the generated site mirror is not in this figure.
+    const EXPECTED_WIKI_LINKS: usize = 667;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

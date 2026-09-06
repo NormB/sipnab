@@ -692,6 +692,7 @@ Returns one page of dialog summaries from the live capture store.
 | `dialogs` | `DialogSummary[]` | This page, oldest first (ties broken by Call-ID). |
 | `returned` | usize | Rows in `dialogs`, so counting the array is never necessary. |
 | `total_matched` | usize | Dialogs matching the filter across the **whole store**, whatever `limit` and `cursor` say. This is the number that answers "how many". |
+| `by_method` | `{method, count}[]` | `total_matched` split by the method that opened each dialog, dominant class first. Covers the whole match set, not this page. |
 | `truncated` | bool | `true` when matches remain after this page. Absent while the answer is not whole — see the sixth rule above. |
 | `source_exhausted` | bool | `true` once sipnab has read the capture source to its end. |
 | `source_stopped_early` | bool | `true` when a source's read ended before the source did. |
@@ -753,6 +754,9 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
   ],
   "returned": 2,
   "total_matched": 1334,
+  "by_method": [
+    { "method": "REGISTER", "count": 1334 }
+  ],
   "truncated": true,
   "next_cursor": "2016-11-17T21:52:35.403349+00:00|call-2-synth@192.0.2.10",
   "capture_identity": {
@@ -763,6 +767,12 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
   }
 }
 ```
+
+`by_method` is why this fixture is a fair example rather than a flattering one:
+the page shows two dialogs and the breakdown shows that all 1334 are REGISTER.
+Nothing in the rows could have told a caller that, and a client that reasoned
+about "the calls in this capture" from the page would have been reasoning about
+a registration flood.
 
 Two fields in there catch people writing a client from this page. `from_user`
 reads `⟦untrusted-capture-data⟧ua-a⟦/untrusted-capture-data⟧`, not `ua-a`, so a
@@ -1180,9 +1190,15 @@ the optional `filter`.
 | `cursor` | string? | The previous response's `next_cursor`, verbatim. | Starts at the oldest match. |
 
 Returns the same page object as [`list_dialogs`](#list_dialogs) — `dialogs`,
-`returned`, `total_matched`, `truncated`, `next_cursor`, `schema_version` and
-`capture_identity` — with the same meanings and the same fenced `from_user` and
-`to_user`.
+`returned`, `total_matched`, `by_method`, `truncated`, `next_cursor`,
+`schema_version` and `capture_identity` — with the same meanings and the same
+fenced `from_user` and `to_user`.
+
+**Read `by_method` first on this tool especially.** Whatever the deployment does
+most dominates a problems page, and that is rarely the calls: on one real
+capture 98 of 110 rows carried OPTIONS, and 89 of those tripped an alias solely
+on `retransmits > 3` — dead qualify peers, not call faults. Without the
+breakdown an agent had to already suspect the keepalive plane to exclude it.
 
 `filter` is what makes this the triage entry point rather than a firehose. The
 aliases answer "is this call interesting". The filter answers "is it one of
@@ -1219,6 +1235,9 @@ invalid_params (-32602) naming the offending value.
   ],
   "returned": 1,
   "total_matched": 6,
+  "by_method": [
+    { "method": "REGISTER", "count": 6 }
+  ],
   "truncated": true,
   "next_cursor": "2016-11-17T21:54:34.903349+00:00|call-1197-synth@192.0.2.10",
   "capture_identity": {

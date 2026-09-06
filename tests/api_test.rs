@@ -637,3 +637,65 @@ fn metrics_endpoint_serves_prometheus_text() {
     // Detailed Prometheus parsing lives in T3.4; here just prove it serves.
     assert!(resp.body.contains("# TYPE sipnab_dialogs_total counter"));
 }
+
+/// `GET /v1/dialogs` reports what its `total` is made of, split by the method
+/// that opened each dialog.
+///
+/// The MCP `DialogPage` gained this in AS4 because a triage page is dominated
+/// by whatever the fleet does most — on a real capture, 98 of 110 rows were
+/// OPTIONS — and a caller reading the first page could not tell. REST answers
+/// the same question from the same store and must not answer it differently:
+/// a statistic reachable over one surface and not the other is the parity
+/// defect this project has already fixed twice.
+///
+/// `b2bua-asterisk.pcapng` is used rather than the default fixture because the
+/// default holds one dialog, and a breakdown over a single method cannot
+/// distinguish a correct implementation from one that emits the first row it
+/// sees.
+#[test]
+fn dialog_list_says_what_its_total_is_made_of() {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/b2bua-asterisk.pcapng", &[]);
+    let body = srv.get("/v1/dialogs").json();
+
+    let rows = body["by_method"]
+        .as_array()
+        .unwrap_or_else(|| panic!("by_method must be an array, got: {}", body["by_method"]));
+    assert!(
+        !rows.is_empty(),
+        "a capture with dialogs must report at least one method"
+    );
+
+    // The breakdown covers the FILTERED set, which is what `total` counts —
+    // not the page. Summing to `returned` instead would make the field agree
+    // with itself while describing a different population.
+    let summed: u64 = rows.iter().map(|r| r["count"].as_u64().unwrap()).sum();
+    assert_eq!(
+        summed,
+        body["total"].as_u64().unwrap(),
+        "by_method must account for every dialog in total, got {rows:?}"
+    );
+
+    // Descending count, then method name, so the dominant class is first and
+    // two runs over the same capture cannot disagree about the order.
+    let mut expected = rows.clone();
+    expected.sort_by(|a, b| {
+        b["count"]
+            .as_u64()
+            .unwrap()
+            .cmp(&a["count"].as_u64().unwrap())
+            .then_with(|| {
+                a["method"]
+                    .as_str()
+                    .unwrap()
+                    .cmp(b["method"].as_str().unwrap())
+            })
+    });
+    assert_eq!(rows, &expected, "by_method must be ordered, got {rows:?}");
+
+    // More than one method, or the ordering assertion above is vacuous.
+    assert!(
+        rows.len() > 1,
+        "fixture must hold more than one opening method for this test to \
+         discriminate, got {rows:?}"
+    );
+}

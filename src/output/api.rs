@@ -873,6 +873,15 @@ async fn list_dialogs(
         .collect();
 
     let total = filtered.len();
+    // Over the FILTERED set, which is what `total` counts — not over the page.
+    // A breakdown of the page would describe the page, and the question this
+    // answers is what `total` is made of. Same derivation the MCP `DialogPage`
+    // uses, so the two surfaces cannot report different compositions of the
+    // same store.
+    let by_method: Vec<Value> = crate::sip::dialog::method_breakdown(filtered.iter().copied())
+        .into_iter()
+        .map(|(method, count)| json!({ "method": method, "count": count }))
+        .collect();
     let dialogs: Vec<Value> = filtered
         .iter()
         .skip(offset)
@@ -884,6 +893,7 @@ async fn list_dialogs(
     Ok(Json(json!({
         "schema_version": 1,
         "total": total,
+        "by_method": by_method,
         "offset": offset,
         "limit": limit,
         "dialogs": dialogs,
@@ -2399,6 +2409,22 @@ pub mod schema {
         pub dialog_origin: Option<String>,
     }
 
+    /// One opening method and how many dialogs in the filtered set it opened.
+    ///
+    /// A list of pairs rather than an object: JSON object key order is not
+    /// guaranteed, and the useful reading of this field is "what dominates",
+    /// which only an ordered sequence can carry.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct MethodCount {
+        /// The method that opened the dialogs — `INVITE`, `REGISTER`, and so
+        /// on.
+        #[schema(example = "OPTIONS")]
+        pub method: String,
+        /// How many dialogs in the filtered set it opened.
+        #[schema(example = 98)]
+        pub count: usize,
+    }
+
     /// `GET /v1/dialogs` — one page of dialog summaries.
     #[derive(Debug, Clone, ToSchema)]
     pub struct DialogList {
@@ -2408,6 +2434,15 @@ pub mod schema {
         /// Size of the FILTERED result set — the count the rows are drawn
         /// from, so paging by `total` terminates.
         pub total: usize,
+        /// What `total` is made of, split by the method that opened each
+        /// dialog and ordered dominant-first.
+        ///
+        /// Over the filtered set, not over this page: a breakdown of the page
+        /// would describe the page. A dialog list is dominated by whatever the
+        /// deployment does most, which in the field is usually the keepalive
+        /// plane rather than the calls, and without this a client cannot tell
+        /// that from the rows it was handed.
+        pub by_method: Vec<MethodCount>,
         /// The `offset` this page was taken at.
         pub offset: usize,
         /// The `limit` actually applied, after clamping to `--api-max-rows`.

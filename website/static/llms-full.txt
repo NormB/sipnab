@@ -3528,6 +3528,39 @@ The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). Al
 
 `--api-max-conn` (default `100`) caps concurrent API connections to prevent resource exhaustion. Requests are additionally rate-limited to 100 per second per source IP. Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
 
+## OpenAPI specification
+
+sipnab publishes an OpenAPI 3.1 document covering every endpoint on this page:
+
+- The machine-readable document, at <https://sipnab.com/openapi.json>. This repository carries the same file at [`website/static/openapi.json`](https://github.com/NormB/sipnab/blob/main/website/static/openapi.json).
+- An interactive rendering of it, at <https://sipnab.com/api-reference/>.
+
+Nobody writes that document by hand. A test step derives it from the `#[utoipa::path]` annotations on the request handlers in [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs), so the routes the server serves and the routes the document describes are one list by construction. The same step splices in the shared JSON Schemas under [`tests/schemas/`](https://github.com/NormB/sipnab/tree/main/tests/schemas) rather than describing those response bodies a second time.
+
+[`tests/openapi_contract_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/openapi_contract_test.rs) then compares three things -- the document, the live router, and the `### METHOD /path` headings below -- and fails the build when any of them disagree. Regenerate the document after changing a handler:
+
+```bash
+SIPNAB_BLESS_OPENAPI=1 cargo test --features full --test openapi_contract_test
+```
+
+Two things to know before you point a tool at it. The document describes a **full build**: a route appears only when the feature behind it compiles, so a build without the vCon exporter serves no `/v1/dialogs/{call_id}/vcon` and generates a document listing none. Read the published file as the ceiling rather than as a promise about the binary you are running.
+
+And `info.version` is `1` -- the version in the `/v1` path prefix, which moves when the wire contract does. It is not the sipnab release version, because a patch release that changes no endpoint must not invalidate a contract a client already cached.
+
+### Reading the document locally
+
+Any OpenAPI tool takes the file as-is. To render it in a browser, or to check it:
+
+```bash
+npx --yes @redocly/cli preview-docs website/static/openapi.json
+```
+
+```bash
+npx --yes @redocly/cli lint website/static/openapi.json
+```
+
+You can also paste it into <https://editor.swagger.io/>, or feed it to a client generator -- which is the point of publishing it.
+
 ## Endpoint reference
 
 The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). Data endpoints use a `/v1/` prefix. Utility endpoints (`/health`, `/metrics`) have no prefix.
@@ -3638,6 +3671,10 @@ dialogs.forEach(d => console.log(`${d.call_id}: ${d.state}`));
 {
   "schema_version": 1,
   "total": 47,
+  "by_method": [
+    { "method": "INVITE", "count": 41 },
+    { "method": "REGISTER", "count": 6 }
+  ],
   "offset": 0,
   "limit": 10,
   "dialogs": [
@@ -3661,6 +3698,15 @@ dialogs.forEach(d => console.log(`${d.call_id}: ${d.state}`));
   ]
 }
 ```
+
+**`by_method` splits `total` by the method that opened each dialog.** It covers
+the filtered set rather than the page, and leads with the dominant class.
+Whatever the deployment does most dominates a dialog list, and in the field that
+is usually the keepalive plane rather than the calls -- on one real capture 98 of
+110 rows carried OPTIONS. Read it before you read the rows, or the page's
+composition passes for the deployment's. The MCP `list_dialogs` and
+`find_problems` tools return the same breakdown beside their own
+`total_matched`, from the same derivation.
 
 `frame` identifies the frame the dialog opened in, as
 `<source>#<ordinal>@<digest>`: the capture it came from, the frame's position
@@ -5208,6 +5254,89 @@ surface pays no binary size for it. `sipnab --version` prints the features of
 the binary.
 
 </details>
+
+## Explore the tools with MCP Inspector
+
+[MCP Inspector](https://github.com/modelcontextprotocol/inspector) is the
+reference client of the Model Context Protocol project. Point it at sipnab and
+it lists every tool the binary registers, shows the JSON Schema of each tool's
+arguments, and calls one by hand so you can read the answer — what
+<https://sipnab.com/api-reference/> does for the [REST API](rest-api.md), for
+this surface instead. sipnab registers 64 MCP tools, which is more than anyone
+reads in a table, and the Tools tab is the fastest way to find the one you
+want. Inspector belongs to the protocol rather than to sipnab, so it also
+settles whose bug you are looking at.
+
+Inspector needs Node 22.19 or newer. `npx` fetches it on demand, so there is
+nothing to install first.
+
+### Browse a capture file over stdio
+
+This spawns the same stdio server your agent would spawn:
+
+```bash
+npx @modelcontextprotocol/inspector sipnab -- --mcp -N -I capture.pcap
+```
+
+The `--` is load-bearing. Everything after it becomes sipnab's own command
+line. Leave it out and Inspector reads `--mcp` as one of its own flags, spawns
+a bare `sipnab`, and hands you a live-capture permission error instead of a
+tool list.
+
+The command prints a URL on `http://127.0.0.1:6274` carrying a one-time token.
+Open that URL, click **Connect**, then open the **Tools** tab.
+
+### Browse a listening server over HTTP
+
+Start sipnab with the HTTP transport as [MCP deployment](mcp-deploy.md)
+describes, then give Inspector the URL rather than a command:
+
+```bash
+npx @modelcontextprotocol/inspector --server-url http://127.0.0.1:8731/mcp --transport http
+```
+
+A bind that is not loopback demands a bearer token, so send the header the
+server expects:
+
+```bash
+npx @modelcontextprotocol/inspector --server-url https://capture.example.com/mcp --transport http --header "Authorization: Bearer $(cat ~/.config/sipnab/prod01.token)"
+```
+
+### Dump every schema without a browser
+
+Inspector ships a scriptable client as well as the browser one, so the tool
+list is something a shell pipeline or a coding agent can read. `--cli` selects
+it, and each run performs one request and exits:
+
+```bash
+npx @modelcontextprotocol/inspector --cli sipnab --mcp -N -I capture.pcap -- --method tools/list --format json
+```
+
+**The `--` separator means the opposite thing in the two clients**, which is
+the one detail that catches people out. The browser client takes sipnab's
+flags after `--`. The `--cli` client takes the server command first and its
+own flags after `--`. Copy the fences above as written.
+
+Calling a tool by hand works the same way:
+
+```bash
+npx @modelcontextprotocol/inspector --cli sipnab --mcp -N -I capture.pcap -- --method tools/call --tool-name triage_call --tool-arg call_id=busy-3a2b1c@192.0.2.30 --format json
+```
+
+[`scripts/mcp-schema-dump.sh`](https://github.com/NormB/sipnab/blob/main/scripts/mcp-schema-dump.sh)
+wraps the `tools/list` form and accepts either a capture file or an HTTP URL:
+
+```bash
+./scripts/mcp-schema-dump.sh capture.pcap
+```
+
+Read that dump as a description of the binary you ran it against, not of this
+project. A feature-reduced build registers fewer tools than the tree defines,
+and an older binary registers fewer still. The [MCP tool
+reference](mcp-tools.md) remains the page that says what each tool means, and
+`mcp_tool_table_lists_every_registered_tool` in
+[`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs)
+already fails the build when that page stops naming every registered tool.
 
 ## Where to go next
 
@@ -14654,7 +14783,7 @@ the page object:
     "content": [
       {
         "type": "text",
-        "text": "{\"schema_version\":1,\"dialogs\":[{\"call_id\":\"abc123@host\",\"state\":\"InCall\",\"method\":\"INVITE\",\"from_user\":\"1001\",\"to_user\":\"1002\",\"msg_count\":5,\"duration_sec\":12.4,\"created_at\":\"2026-06-12T14:03:21+00:00\",\"updated_at\":\"2026-06-12T14:03:33+00:00\",\"timing\":{\"pdd_ms\":180,\"setup_ms\":2134,\"retransmits\":0,\"duration_ms\":null},\"frame\":\"capture.pcap#0@a57665bcdb62f03a\"}],\"returned\":1,\"total_matched\":1,\"truncated\":false,\"next_cursor\":null,\"capture_identity\":{\"node\":\"capture01\",\"instance\":\"1f4a17c8e2b91d40-1\",\"dialog_generation\":412,\"stream_generation\":96}}"
+        "text": "{\"schema_version\":1,\"dialogs\":[{\"call_id\":\"abc123@host\",\"state\":\"InCall\",\"method\":\"INVITE\",\"from_user\":\"1001\",\"to_user\":\"1002\",\"msg_count\":5,\"duration_sec\":12.4,\"created_at\":\"2026-06-12T14:03:21+00:00\",\"updated_at\":\"2026-06-12T14:03:33+00:00\",\"timing\":{\"pdd_ms\":180,\"setup_ms\":2134,\"retransmits\":0,\"duration_ms\":null},\"frame\":\"capture.pcap#0@a57665bcdb62f03a\"}],\"returned\":1,\"total_matched\":1,\"by_method\":[{\"method\":\"INVITE\",\"count\":1}],\"truncated\":false,\"next_cursor\":null,\"capture_identity\":{\"node\":\"capture01\",\"instance\":\"1f4a17c8e2b91d40-1\",\"dialog_generation\":412,\"stream_generation\":96}}"
       }
     ],
     "isError": false
@@ -14664,7 +14793,8 @@ the page object:
 
 **That inner text parses to an object, not to a bare array.** The rows live
 under `dialogs`, so a client indexes `parsed.dialogs[0]` and reads
-`total_matched` beside it. Each row is a dialog summary (`call_id`, `state`,
+`total_matched` beside it, and `by_method` for the methods behind that total.
+Each row is a dialog summary (`call_id`, `state`,
 `method`, `from_user`, `to_user`, `msg_count`, `duration_sec`, `created_at`,
 `updated_at`, `timing`, `frame`) — the compact projection. The full aggregated
 dialog document is what `get_dialog_report` returns (the
@@ -16042,6 +16172,7 @@ Returns one page of dialog summaries from the live capture store.
 | `dialogs` | `DialogSummary[]` | This page, oldest first (ties broken by Call-ID). |
 | `returned` | usize | Rows in `dialogs`, so counting the array is never necessary. |
 | `total_matched` | usize | Dialogs matching the filter across the **whole store**, whatever `limit` and `cursor` say. This is the number that answers "how many". |
+| `by_method` | `{method, count}[]` | `total_matched` split by the method that opened each dialog, dominant class first. Covers the whole match set, not this page. |
 | `truncated` | bool | `true` when matches remain after this page. Absent while the answer is not whole — see the sixth rule above. |
 | `source_exhausted` | bool | `true` once sipnab has read the capture source to its end. |
 | `source_stopped_early` | bool | `true` when a source's read ended before the source did. |
@@ -16103,6 +16234,9 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
   ],
   "returned": 2,
   "total_matched": 1334,
+  "by_method": [
+    { "method": "REGISTER", "count": 1334 }
+  ],
   "truncated": true,
   "next_cursor": "2016-11-17T21:52:35.403349+00:00|call-2-synth@192.0.2.10",
   "capture_identity": {
@@ -16113,6 +16247,12 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
   }
 }
 ```
+
+`by_method` is why this fixture is a fair example rather than a flattering one:
+the page shows two dialogs and the breakdown shows that all 1334 are REGISTER.
+Nothing in the rows could have told a caller that, and a client that reasoned
+about "the calls in this capture" from the page would have been reasoning about
+a registration flood.
 
 Two fields in there catch people writing a client from this page. `from_user`
 reads `⟦untrusted-capture-data⟧ua-a⟦/untrusted-capture-data⟧`, not `ua-a`, so a
@@ -16530,9 +16670,15 @@ the optional `filter`.
 | `cursor` | string? | The previous response's `next_cursor`, verbatim. | Starts at the oldest match. |
 
 Returns the same page object as [`list_dialogs`](#list_dialogs) — `dialogs`,
-`returned`, `total_matched`, `truncated`, `next_cursor`, `schema_version` and
-`capture_identity` — with the same meanings and the same fenced `from_user` and
-`to_user`.
+`returned`, `total_matched`, `by_method`, `truncated`, `next_cursor`,
+`schema_version` and `capture_identity` — with the same meanings and the same
+fenced `from_user` and `to_user`.
+
+**Read `by_method` first on this tool especially.** Whatever the deployment does
+most dominates a problems page, and that is rarely the calls: on one real
+capture 98 of 110 rows carried OPTIONS, and 89 of those tripped an alias solely
+on `retransmits > 3` — dead qualify peers, not call faults. Without the
+breakdown an agent had to already suspect the keepalive plane to exclude it.
 
 `filter` is what makes this the triage entry point rather than a firehose. The
 aliases answer "is this call interesting". The filter answers "is it one of
@@ -16569,6 +16715,9 @@ invalid_params (-32602) naming the offending value.
   ],
   "returned": 1,
   "total_matched": 6,
+  "by_method": [
+    { "method": "REGISTER", "count": 6 }
+  ],
   "truncated": true,
   "next_cursor": "2016-11-17T21:54:34.903349+00:00|call-1197-synth@192.0.2.10",
   "capture_identity": {

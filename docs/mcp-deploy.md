@@ -1818,7 +1818,7 @@ the page object:
     "content": [
       {
         "type": "text",
-        "text": "{\"schema_version\":1,\"dialogs\":[{\"call_id\":\"abc123@host\",\"state\":\"InCall\",\"method\":\"INVITE\",\"from_user\":\"1001\",\"to_user\":\"1002\",\"msg_count\":5,\"duration_sec\":12.4,\"created_at\":\"2026-06-12T14:03:21+00:00\",\"updated_at\":\"2026-06-12T14:03:33+00:00\",\"timing\":{\"pdd_ms\":180,\"setup_ms\":2134,\"retransmits\":0,\"duration_ms\":null},\"frame\":\"capture.pcap#0@a57665bcdb62f03a\"}],\"returned\":1,\"total_matched\":1,\"truncated\":false,\"next_cursor\":null,\"capture_identity\":{\"node\":\"capture01\",\"instance\":\"1f4a17c8e2b91d40-1\",\"dialog_generation\":412,\"stream_generation\":96}}"
+        "text": "{\"schema_version\":1,\"dialogs\":[{\"call_id\":\"abc123@host\",\"state\":\"InCall\",\"method\":\"INVITE\",\"from_user\":\"1001\",\"to_user\":\"1002\",\"msg_count\":5,\"duration_sec\":12.4,\"created_at\":\"2026-06-12T14:03:21+00:00\",\"updated_at\":\"2026-06-12T14:03:33+00:00\",\"timing\":{\"pdd_ms\":180,\"setup_ms\":2134,\"retransmits\":0,\"duration_ms\":null},\"frame\":\"capture.pcap#0@a57665bcdb62f03a\"}],\"returned\":1,\"total_matched\":1,\"by_method\":[{\"method\":\"INVITE\",\"count\":1}],\"truncated\":false,\"next_cursor\":null,\"capture_identity\":{\"node\":\"capture01\",\"instance\":\"1f4a17c8e2b91d40-1\",\"dialog_generation\":412,\"stream_generation\":96}}"
       }
     ],
     "isError": false
@@ -1828,7 +1828,8 @@ the page object:
 
 **That inner text parses to an object, not to a bare array.** The rows live
 under `dialogs`, so a client indexes `parsed.dialogs[0]` and reads
-`total_matched` beside it. Each row is a dialog summary (`call_id`, `state`,
+`total_matched` beside it, and `by_method` for the methods behind that total.
+Each row is a dialog summary (`call_id`, `state`,
 `method`, `from_user`, `to_user`, `msg_count`, `duration_sec`, `created_at`,
 `updated_at`, `timing`, `frame`) — the compact projection. The full aggregated
 dialog document is what `get_dialog_report` returns (the

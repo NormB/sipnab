@@ -781,6 +781,165 @@ fn find_problems_reports_the_total_behind_a_truncated_page() {
     assert!(v["next_cursor"].is_string(), "{v}");
 }
 
+/// The first page says what the whole result set is made of.
+///
+/// A triage page is dominated by whatever the fleet does most, and on a real
+/// capture that is the keepalive plane: 98 of 110 problem rows were OPTIONS,
+/// 89 of them tripping the alias solely on `retransmits > 3` -- dead qualify
+/// peers, not call faults. The capability to exclude them already existed
+/// (`filter='method != "OPTIONS"'`); what was missing was any way to know they
+/// were there without already knowing to ask.
+///
+/// `by_method` is counted over every match, not over the page, for the same
+/// reason `total_matched` is. A breakdown of four returned rows would describe
+/// the page rather than the answer.
+#[test]
+fn find_problems_says_what_its_matches_are_made_of() {
+    let v = call_tool(BRANCH, "find_problems", serde_json::json!({"limit": 4}));
+    let rows = v["by_method"].as_array().expect("by_method is present");
+    assert!(!rows.is_empty(), "127 matches are made of something: {v}");
+
+    let total: u64 = rows.iter().map(|r| r["count"].as_u64().unwrap_or(0)).sum();
+    assert_eq!(
+        total,
+        v["total_matched"].as_u64().unwrap_or(0),
+        "the breakdown must account for every match, not for the four rows on \
+         this page: {rows:?}"
+    );
+
+    // Descending count, so the dominant class is the first thing read.
+    let counts: Vec<u64> = rows
+        .iter()
+        .map(|r| r["count"].as_u64().unwrap_or(0))
+        .collect();
+    let mut sorted = counts.clone();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    assert_eq!(
+        counts, sorted,
+        "the dominant method must come first, or the field answers a question \
+         nobody asked: {rows:?}"
+    );
+
+    for r in rows {
+        assert!(
+            r["method"].as_str().is_some_and(|m| !m.is_empty()),
+            "every row names a method: {r}"
+        );
+    }
+}
+
+/// The breakdown describes the FILTERED population, not the store.
+///
+/// A breakdown that ignored the filter would tell an agent its narrowed query
+/// still contained everything it had just excluded, which is the opposite of
+/// what the field is for.
+///
+/// This fixture is itself the argument for the field. All 127 of its problem
+/// rows are REGISTER -- one method, no calls at all -- and before `by_method`
+/// nothing in the answer said so. An agent reading "127 problems" would
+/// reasonably have thought some of them were calls.
+#[test]
+fn the_method_breakdown_follows_the_filter() {
+    let mut session = McpSession::start(BRANCH, &[]);
+
+    let all = session.ok("find_problems", serde_json::json!({"limit": 1}));
+    let rows = all["by_method"].as_array().expect("by_method present");
+    assert_eq!(
+        rows.len(),
+        1,
+        "every problem row in this fixture is one method; if that changes, \
+         this test should assert the narrowing directly: {rows:?}"
+    );
+    let present = rows[0]["method"].as_str().expect("a method").to_string();
+
+    // Filtering TO the method that is there leaves the population intact and
+    // the breakdown naming it.
+    let kept = session.ok(
+        "find_problems",
+        serde_json::json!({"filter": format!("method == \"{present}\""), "limit": 1}),
+    );
+    let kept_methods: Vec<&str> = kept["by_method"]
+        .as_array()
+        .expect("by_method present")
+        .iter()
+        .filter_map(|r| r["method"].as_str())
+        .collect();
+    assert_eq!(kept_methods, vec![present.as_str()], "{kept}");
+    assert_eq!(
+        kept["total_matched"], all["total_matched"],
+        "filtering to the only method present removes nothing: {kept}"
+    );
+
+    // Filtering AWAY from it empties both the population and the breakdown.
+    // A breakdown that survived its own filter would be describing the store.
+    let gone = session.ok(
+        "find_problems",
+        serde_json::json!({"filter": format!("method != \"{present}\""), "limit": 1}),
+    );
+    assert_eq!(gone["total_matched"], 0, "{gone}");
+    assert_eq!(
+        gone["by_method"].as_array().map(Vec::len),
+        Some(0),
+        "an empty population is made of nothing, and must not still report \
+         {present}: {gone}"
+    );
+}
+
+/// The dominant method comes first, and ties break by name.
+///
+/// `by_method` rides on the shared dialog page, so `list_dialogs` carries it
+/// too. Ordering can only be tested where there is an order to get wrong: the
+/// branch fixture is REGISTER from end to end, and on a single-method
+/// population every arrangement is sorted, so a mutation that dropped the
+/// count ordering entirely went unnoticed against it.
+///
+/// `b2bua-asterisk.pcapng` holds four methods at 5, 3, 2 and 2 — a dominant
+/// one and a genuine tie. The tie is what pins the second half of the rule:
+/// without a name tie-break the two 2s could swap between runs over one
+/// capture, and a field an agent diffs across runs must not do that.
+#[test]
+fn the_method_breakdown_puts_the_dominant_method_first() {
+    const MIXED: &str = "tests/pcap-samples/b2bua-asterisk.pcapng";
+    let v = call_tool(MIXED, "list_dialogs", serde_json::json!({"limit": 1}));
+    let rows = v["by_method"].as_array().expect("by_method present");
+    assert!(
+        rows.len() > 2,
+        "this fixture must hold several methods, or the test proves nothing \
+         about ordering: {rows:?}"
+    );
+
+    let pairs: Vec<(String, u64)> = rows
+        .iter()
+        .map(|r| {
+            (
+                r["method"].as_str().unwrap_or_default().to_string(),
+                r["count"].as_u64().unwrap_or(0),
+            )
+        })
+        .collect();
+
+    let mut expected = pairs.clone();
+    expected.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    assert_eq!(
+        pairs, expected,
+        "descending count, then method name: the dominant class first, and a \
+         stable order for the tie so two runs over one capture agree: {pairs:?}"
+    );
+
+    assert!(
+        pairs.windows(2).any(|w| w[0].1 == w[1].1),
+        "this fixture is chosen for its tie; without one the name tie-break is \
+         untested: {pairs:?}"
+    );
+
+    let total: u64 = pairs.iter().map(|(_, c)| c).sum();
+    assert_eq!(
+        total,
+        v["total_matched"].as_u64().unwrap_or(0),
+        "and every dialog is accounted for exactly once: {pairs:?}"
+    );
+}
+
 // ── filters where the triage actually starts ─────────────────────────
 
 /// `find_problems` must accept a filter, and it must narrow rather than widen.

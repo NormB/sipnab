@@ -1181,6 +1181,13 @@
       "DialogList": {
         "description": "`GET /v1/dialogs` — one page of dialog summaries.",
         "properties": {
+          "by_method": {
+            "description": "What `total` is made of, split by the method that opened each\ndialog and ordered dominant-first.\n\nOver the filtered set, not over this page: a breakdown of the page\nwould describe the page. A dialog list is dominated by whatever the\ndeployment does most, which in the field is usually the keepalive\nplane rather than the calls, and without this a client cannot tell\nthat from the rows it was handed.",
+            "items": {
+              "$ref": "#/components/schemas/MethodCount"
+            },
+            "type": "array"
+          },
           "dialogs": {
             "description": "The page.",
             "items": {
@@ -1214,6 +1221,7 @@
         "required": [
           "schema_version",
           "total",
+          "by_method",
           "offset",
           "limit",
           "dialogs"
@@ -1313,6 +1321,27 @@
           "created_at",
           "updated_at",
           "timing"
+        ],
+        "type": "object"
+      },
+      "MethodCount": {
+        "description": "One opening method and how many dialogs in the filtered set it opened.\n\nA list of pairs rather than an object: JSON object key order is not\nguaranteed, and the useful reading of this field is \"what dominates\",\nwhich only an ordered sequence can carry.",
+        "properties": {
+          "count": {
+            "description": "How many dialogs in the filtered set it opened.",
+            "example": 98,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "method": {
+            "description": "The method that opened the dialogs — `INVITE`, `REGISTER`, and so\non.",
+            "example": "OPTIONS",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method",
+          "count"
         ],
         "type": "object"
       },

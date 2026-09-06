@@ -88,10 +88,24 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/notes/the-tool-list-that-promised-what-the-build-lacked.md",
         ],
     ),
+    // `--test` is cargo's, named twice more by the REST reference and its
+    // mirror: `SIPNAB_BLESS_OPENAPI=1 cargo test --features full --test
+    // openapi_contract_test` is the one command that regenerates
+    // `website/static/openapi.json`, so the page cannot state the rule without
+    // naming cargo's flag.
     (
         "test",
-        &["website/content/notes/seventy-five-percent-of-a-test-binary.md"],
+        &[
+            "website/content/notes/seventy-five-percent-of-a-test-binary.md",
+            "docs/rest-api.md",
+            "website/content/docs/api.md",
+        ],
     ),
+    // `--yes` is npx's. The REST reference shows `npx --yes @redocly/cli` for
+    // rendering and linting the published OpenAPI document; without `--yes`
+    // the command stops on an interactive install prompt, so dropping it to
+    // satisfy this gate would leave a fence that does not run unattended.
+    ("yes", &["docs/rest-api.md", "website/content/docs/api.md"]),
     (
         "preserve",
         &["website/content/notes/the-fixture-was-what-broke.md"],
@@ -876,7 +890,9 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/mcp-estate.md",
         ],
     ),
-    // claude mcp add (http-transport client wiring)
+    // claude mcp add (http-transport client wiring), and the MCP Inspector,
+    // which spells the same two flags the same way. `docs/mcp.md` shows both
+    // clients being pointed at a listening sipnab, so it needs them too.
     (
         "transport",
         &[
@@ -884,6 +900,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/mcp-deploy.md",
             "docs/mcp-estate.md",
             "website/content/docs/mcp-estate.md",
+            "docs/mcp.md",
+            "website/content/docs/mcp.md",
         ],
     ),
     (
@@ -893,7 +911,30 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/mcp-deploy.md",
             "docs/mcp-estate.md",
             "website/content/docs/mcp-estate.md",
+            "docs/mcp.md",
+            "website/content/docs/mcp.md",
         ],
+    ),
+    // The MCP Inspector's own flags, named by the one page that tells an
+    // operator to point it at sipnab. Inspector is the protocol project's
+    // reference client -- the MCP counterpart of the Scalar rendering the REST
+    // page links -- so `docs/mcp.md` has to print its command lines verbatim
+    // for them to be runnable. None of these is a sipnab flag, and scoping
+    // them to that one page (plus its generated mirror) keeps the same
+    // spellings failing this guard anywhere else.
+    //
+    // `--cli` selects Inspector's scriptable client; `--method`, `--tool-name`
+    // and `--tool-arg` are the request it makes; `--format` chooses JSON over
+    // the human rendering; `--server-url` names an HTTP target instead of a
+    // command to spawn.
+    ("cli", &["docs/mcp.md", "website/content/docs/mcp.md"]),
+    ("method", &["docs/mcp.md", "website/content/docs/mcp.md"]),
+    ("format", &["docs/mcp.md", "website/content/docs/mcp.md"]),
+    ("tool-name", &["docs/mcp.md", "website/content/docs/mcp.md"]),
+    ("tool-arg", &["docs/mcp.md", "website/content/docs/mcp.md"]),
+    (
+        "server-url",
+        &["docs/mcp.md", "website/content/docs/mcp.md"],
     ),
 ];
 
@@ -4111,6 +4152,13 @@ fn prose_mcp_tool_counts_match_the_server() {
             include_str!("../docs/design/mcp-write-back.md"),
         ),
         ("docs/README.md", include_str!("../docs/README.md")),
+        // The MCP page's Inspector section tells a reader how many tools the
+        // Tools tab will show them. That sentence is the reason to open
+        // Inspector at all, and it was the only count on the surface with
+        // nothing holding it to the registry -- the page a reader reaches
+        // FIRST for this feature, checked last. Added when it was written,
+        // rather than after it drifted.
+        ("docs/mcp.md", include_str!("../docs/mcp.md")),
     ] {
         for cap in stale.captures_iter(text) {
             let claimed: usize = cap[1].parse().unwrap();

@@ -258,6 +258,39 @@ The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). Al
 
 `--api-max-conn` (default `100`) caps concurrent API connections to prevent resource exhaustion. Requests are additionally rate-limited to 100 per second per source IP. Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
 
+## OpenAPI specification
+
+sipnab publishes an OpenAPI 3.1 document covering every endpoint on this page:
+
+- The machine-readable document, at <https://sipnab.com/openapi.json>. This repository carries the same file at [`website/static/openapi.json`](https://github.com/NormB/sipnab/blob/main/website/static/openapi.json).
+- An interactive rendering of it, at <https://sipnab.com/api-reference/>.
+
+Nobody writes that document by hand. A test step derives it from the `#[utoipa::path]` annotations on the request handlers in [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs), so the routes the server serves and the routes the document describes are one list by construction. The same step splices in the shared JSON Schemas under [`tests/schemas/`](https://github.com/NormB/sipnab/tree/main/tests/schemas) rather than describing those response bodies a second time.
+
+[`tests/openapi_contract_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/openapi_contract_test.rs) then compares three things -- the document, the live router, and the `### METHOD /path` headings below -- and fails the build when any of them disagree. Regenerate the document after changing a handler:
+
+```bash
+SIPNAB_BLESS_OPENAPI=1 cargo test --features full --test openapi_contract_test
+```
+
+Two things to know before you point a tool at it. The document describes a **full build**: a route appears only when the feature behind it compiles, so a build without the vCon exporter serves no `/v1/dialogs/{call_id}/vcon` and generates a document listing none. Read the published file as the ceiling rather than as a promise about the binary you are running.
+
+And `info.version` is `1` -- the version in the `/v1` path prefix, which moves when the wire contract does. It is not the sipnab release version, because a patch release that changes no endpoint must not invalidate a contract a client already cached.
+
+### Reading the document locally
+
+Any OpenAPI tool takes the file as-is. To render it in a browser, or to check it:
+
+```bash
+npx --yes @redocly/cli preview-docs website/static/openapi.json
+```
+
+```bash
+npx --yes @redocly/cli lint website/static/openapi.json
+```
+
+You can also paste it into <https://editor.swagger.io/>, or feed it to a client generator -- which is the point of publishing it.
+
 ## Endpoint reference
 
 The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). Data endpoints use a `/v1/` prefix. Utility endpoints (`/health`, `/metrics`) have no prefix.
@@ -368,6 +401,10 @@ dialogs.forEach(d => console.log(`${d.call_id}: ${d.state}`));
 {
   "schema_version": 1,
   "total": 47,
+  "by_method": [
+    { "method": "INVITE", "count": 41 },
+    { "method": "REGISTER", "count": 6 }
+  ],
   "offset": 0,
   "limit": 10,
   "dialogs": [
@@ -391,6 +428,15 @@ dialogs.forEach(d => console.log(`${d.call_id}: ${d.state}`));
   ]
 }
 ```
+
+**`by_method` splits `total` by the method that opened each dialog.** It covers
+the filtered set rather than the page, and leads with the dominant class.
+Whatever the deployment does most dominates a dialog list, and in the field that
+is usually the keepalive plane rather than the calls -- on one real capture 98 of
+110 rows carried OPTIONS. Read it before you read the rows, or the page's
+composition passes for the deployment's. The MCP `list_dialogs` and
+`find_problems` tools return the same breakdown beside their own
+`total_matched`, from the same derivation.
 
 `frame` identifies the frame the dialog opened in, as
 `<source>#<ordinal>@<digest>`: the capture it came from, the frame's position

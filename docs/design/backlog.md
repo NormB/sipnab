@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**25 open, 424 done** across 28 sections.
+**37 open, 425 done** across 30 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -54,7 +54,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | PV | 0 | 13 | `##########` |
 | P2 | 0 | 109 | `##########` |
 | P3 | 0 | 64 | `##########` |
-| P4 | 0 | 39 | `##########` |
+| P4 | 1 | 39 | `##########` |
 | PA | 1 | 12 | `#########.` |
 | PB | 0 | 20 | `##########` |
 | TK | 3 | 7 | `#######...` |
@@ -64,12 +64,14 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | RV | 0 | 8 | `##########` |
 | RP | 3 | 1 | `##........` |
 | HX | 1 | 2 | `#######...` |
-| AS | 6 | 1 | `#.........` |
+| AS | 5 | 2 | `###.......` |
 | DOC | 0 | 16 | `##########` |
 | RDX | 0 | 2 | `##########` |
 | FLT | 0 | 1 | `##########` |
 | SPELL | 1 | 0 | `..........` |
 | MCPX | 1 | 6 | `#########.` |
+| OBS | 7 | 0 | `..........` |
+| LIVE | 5 | 0 | `..........` |
 | P5 | 7 | 13 | `######....` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
 
@@ -847,8 +849,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   entry rested on. It is also the mechanism
   behind CT2 — a stalled reader is what overflows the ring. **Latent deadlock:**
   the ordering `stores → alerts` exists only on this path and is written down
-  nowhere; `security_findings` ([`src/mcp/server.rs:5368`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5368)) currently takes
-  nowhere; `security_findings` ([`src/mcp/server.rs:5368`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5368)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5408`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5408)) currently takes
+  nowhere; `security_findings` ([`src/mcp/server.rs:5408`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5408)) currently takes
   `alerts.read()` and no store lock, so there is no cycle *today*, and nothing
   stops the next MCP tool from creating one. **Do:** queue exec requests and
   per-message output during the locked section, drain them after the guards
@@ -1626,8 +1628,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   `sipnab_capture_invalid_timestamps_total` (the field is declared at
   [`src/output/prometheus.rs:119`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L119), read from the atomic at `:149`, rendered at
   `:523`, and named in [`tests/metrics_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_test.rs) so a rename cannot silently drop
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5483`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5483),
-  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5483`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5483),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5523`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5523),
+  it); the MCP `capture_status` tool carries the field ([`src/mcp/server.rs:5523`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5523),
   populated at `:1356`) and reports it as a delta between two calls (`:1676`);
   and the batch summary explains it in prose
   ([`src/app/batch.rs:905-925`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L905-L925), the doc comment on `report_capture_quality`). The
@@ -2375,6 +2377,28 @@ holds anything to it.
   **The bodies stay separate, deliberately.** Merging them was started and abandoned when the files' own comments turned out to have already answered it: each `mutate` defines the byte stream its corpus was generated against, so sharing one implementation changes what the seeds produce and silently breaks that file's reproducibility. That is a regression a green test run would not show — the fuzz suite would keep passing while exercising different inputs than the recorded corpus. The backlog called this unfinished consolidation; the code refuted the backlog.
 - [x] tests/mockup_alignment_test.rs — [heuristic-limit] lifeline reference = most-pipes line; misaligned reference flags everything else. **Done (P4 test-quality wave, 2026-07-24).**
 
+- [ ] **MCP tool schemas have never been linted for portability (added 2026-09-06).**
+  The MCP Inspector CLI ships a `--strict` mode that lints a server's advertised
+  tool schemas and exits non-zero on error-severity findings. Run against
+  sipnab 0.5.149 while writing the Inspector documentation, it reported
+  **0 errors and 166 warnings across 45 tools**, and nothing in this repository
+  has ever read that output.
+
+  Zero errors is the reassuring half and the warnings are the interesting half:
+  a schema no error-level rule rejects can still be one a strict client refuses
+  to render, and sipnab's whole agent surface is schemas a client renders.
+
+  **Do:** read the 166 before deciding anything. A gate wired on today's number
+  would ratchet in whatever those warnings are, which is how a gate comes to
+  demand output nothing will produce. Classify them first, fix or waive each
+  class with the reason written down, then wire `--strict` into the quality
+  workflow beside the OpenAPI contract test — the REST surface's equivalent, and
+  the precedent for how the MCP surface should be gated.
+
+  **The count above is quoted from one run against one installed binary**
+  (0.5.149, which serves 63 tools where the tree registers 64) and has not been
+  re-measured since. Re-run it before acting on the figure.
+
 ## PA — agent-surface program (added 2026-08-03)
 
 A single coherent program rather than scattered feature requests, so it gets
@@ -2473,7 +2497,7 @@ output path.
     2026-08-06, verified against the tree).** Shipped: `FrameRef`
     ([`src/capture/packet.rs:377`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L377)) and `capture::resolve::resolve`
     ([`src/capture/resolve.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/resolve.rs#L191)); the `show_evidence` MCP tool
-    (`#[tool(` at [`src/mcp/server.rs:6806`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6806), handler at `:3866`), confined to
+    (`#[tool(` at [`src/mcp/server.rs:6846`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6846), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
@@ -3099,7 +3123,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:7995`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7995), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:8056`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8056), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -5259,7 +5283,7 @@ behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
   is one string.** That is how to be Asterisk-aware without becoming
   Asterisk-specific.
 
-- [ ] **AS4 — make the keepalive plane visible in `find_problems`.** 98 of 110
+- [x] **AS4 (done 2026-09-06) — make the keepalive plane visible in `find_problems`.** 98 of 110
   problem rows on a real capture are OPTIONS, and 89 of those trip the alias
   solely through `retransmits > 3` — dead qualify peers, not call faults. The
   hints themselves are excellent (*"No response to OPTIONS: 7 transmissions
@@ -5270,10 +5294,19 @@ behind a Kamailio proxy. On one 100 MB slice sipnab found 507 dialogs, of which
   (`filter='method != "OPTIONS"'` returns 12). **The gap is discoverability**:
   the agent must already know that OPTIONS means qualify.
 
-  **Do:** return a `by_method` breakdown beside `total_matched`, so
-  `{"OPTIONS": 98, "INVITE": 11, "REGISTER": 1}` arrives with the first page.
-  Zero new scope — it makes an existing answer honest about its own
-  composition.
+  **Done:** `list_dialogs` and `find_problems` return `by_method` beside
+  `total_matched`, and `GET /v1/dialogs` returns it beside `total`. Both derive
+  it from `method_breakdown` in [`src/sip/dialog.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs) rather than tallying their
+  own, so the two surfaces cannot report different compositions of one store.
+
+  **A list of `{method, count}` pairs, not an object.** JSON object key order is
+  not guaranteed and the useful reading of this field is *what dominates*, which
+  only an ordered sequence carries. Sorted by descending count, then by method
+  name so ties are stable across runs.
+
+  **Counted over the whole match set, not over the page** — for the same reason
+  `total_matched` is. A breakdown of the page would describe the page, which is
+  the question nobody asked.
 
 - [ ] **AS5 — contact-rewrite finding on `diagnose_registration`, gated on a
   conjunction.** 75% and 79% of REGISTERs in two captures carry a private
@@ -5378,7 +5411,7 @@ promises an absence is acted on; a missing feature is merely absent.
 
 - [x] **DOC4 (done 2026-08-30) — [`docs/mcp-deploy.md:248`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L248) opens the remote-access section by
   promising no tool mutates the stores.** `open_capture` calls `ds.clear()` and
-  `ss.clear()` ([`src/mcp/server.rs:7176`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7176)). The code already knows: a note at
+  `ss.clear()` ([`src/mcp/server.rs:7216`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7216)). The code already knows: a note at
   `:8377` records that the wire `instructions` string was corrected for exactly
   this. The page was not. [`SECURITY.md:35`](https://github.com/NormB/sipnab/blob/main/SECURITY.md#L35) scopes reports to "any MCP tool that
   mutates dialog/stream/alert state", so a good-faith reporter is told the scope
@@ -5801,6 +5834,208 @@ ones that fit an analysis tool.
   context win on the surface, and it adds no data and no risk.
 
   **Do:** `fields: string[]` on the four page-returning dialog tools.
+
+## OBS — runtime statistics an operator expects from a server (added 2026-09-06)
+
+sipnab exports 42 Prometheus metrics and none of them are reachable over MCP or
+REST. An agent asked "is this server healthy" can read `capture_status` (live or
+file, uptime) and `capture_health` (capture-path counters), and then has no way
+to see queue depth, backpressure, store occupancy, tool-call volume, or anything
+about the process itself. Prometheus is the right home for a time series; it is
+the wrong home for one question asked once by an agent that has no scrape
+endpoint configured.
+
+Some of these are new measurements. The rest is parity: the number already
+exists and is unreachable from the surfaces an operator and an agent actually
+use.
+
+- [ ] **OBS1 — `runtime_stats` over MCP and `GET /v1/runtime` over REST.**
+  One read, returning what the 42 metrics already hold, grouped: capture
+  (`packets_total`, `queue_depth_packets`, `backpressure_blocks_total`,
+  `kernel_dropped_packets_total`, `interface_dropped_packets_total`,
+  `undecoded_fraction`), stores (`dialogs_active`, `dialogs_total`,
+  `rtp_streams_active`, `calls_active`, `messages_total`), and server
+  (`mcp_tool_calls_total`, `mcp_tool_response_bytes_total`, uptime).
+
+  **Why not just point them at `/metrics`:** the metrics server is optional and
+  off by default (`--metrics`), so on most deployments the numbers exist in
+  process and nothing can read them. An agent cannot enable a listener to answer
+  a question.
+
+- [ ] **OBS2 — process resource facts: none of these exist yet.**
+  Resident set size, virtual size, thread count, open file descriptors, and CPU
+  time. sipnab holds a bounded dialog store, a bounded stream store and a capped
+  channel, so "how close am I to the caps" is answerable — but RSS is the number
+  an operator reaches for first when a capture box slows down, and sipnab cannot
+  currently state it at all.
+
+  **Do:** read `/proc/self/status` and `/proc/self/stat` on Linux, `task_info`
+  on macOS. Report the platform's absence rather than a zero: a field that says
+  `0 MB` on a platform where it was never read is worse than a field that says
+  it does not know.
+
+- [ ] **OBS3 — occupancy against the caps, not just the counts.**
+  `dialogs_active` is a number; `dialogs_active` beside `max_dialogs` is a
+  decision. The same for the stream store, the per-dialog message cap (D17), the
+  HEP rate limiter's tracked-peer table (`max_tracked_peers`), and the orphan
+  buffer. An operator who cannot see occupancy learns about eviction by noticing
+  calls have gone missing.
+
+  **Include the eviction and rotation counters.** A store at 100% that is
+  evicting is a different fault from one at 100% that is merely full, and the
+  two have different fixes.
+
+- [ ] **OBS4 — rates, not just totals: calls and messages per interval.**
+  Every counter above is cumulative. "1,284,301 messages" answers nothing an
+  operator asked; "312 messages/second, of which 190 are OPTIONS" answers the
+  question they actually have. `capture_health` already demonstrates the shape —
+  it reads its counters twice across a `sample_seconds` window and reports the
+  delta — so this is that pattern applied to volume rather than to capture-path
+  errors.
+
+  **Do:** calls per second (dialog creations per interval) and messages per
+  second **broken down by method**, over a caller-named window with a documented
+  default. Report the window that was actually used, not the one requested: a
+  rate over a window shorter than the sample is a number with no population
+  behind it, which is the same failure `min_sample` exists to prevent in
+  `expect.rs`.
+
+  **The breakdown is the point.** A message rate that does not separate INVITE
+  from OPTIONS hides the keepalive plane exactly as `find_problems` did before
+  AS4, and for the same reason: fleet traffic dominates by volume, so an
+  undifferentiated total describes the fleet rather than the calls.
+
+- [ ] **OBS5 — interface statistics, from the interface and not only from the handle.**
+  sipnab reads `pcap::Stat` — `ps_recv`, `ps_drop`, `ps_ifdrop` — in
+  [`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs). Those three numbers are scoped to sipnab's own capture
+  handle: what sipnab saw, and what was discarded on the way to it. They say
+  nothing about the interface — link state, negotiated speed, MTU, rx/tx packets
+  and bytes, `rx_errors`, `rx_missed_errors`, `rx_fifo_errors`, per-queue
+  counters.
+
+  **Why both halves are needed:** `ps_ifdrop` climbing together with
+  `rx_missed_errors` is a NIC that cannot keep up, and the fix is ring size,
+  coalescing or RSS. `ps_drop` climbing alone is sipnab's own read loop falling
+  behind, and the fix is `--buffer-size` or a tighter BPF filter. Those are
+  opposite remedies, and the counter sipnab reports today cannot tell them
+  apart.
+
+  **Do:** read `/sys/class/net/<iface>/statistics/*` plus `operstate`, `speed`
+  and `mtu` on Linux, report them per capture interface beside the handle
+  counters, and label the two as the different populations they are. Include the
+  BPF filter actually installed and the snaplen actually negotiated: a truncated
+  snaplen is silent loss *inside* packets that were never dropped, so it appears
+  in no drop counter at all.
+
+- [ ] **OBS6 — sipnab's own impact on the host it is capturing on.**
+  sipnab runs on the same machine as the thing being diagnosed. A capture that
+  is itself the reason the proxy started dropping calls is the worst failure
+  this tool can have, and it is currently invisible: sipnab reports nothing
+  about its own cost and nothing about the machine's remaining headroom.
+  Self-numbers alone do not answer it either — 4 GB resident is unremarkable on
+  a 128 GB host and fatal on an 8 GB one.
+
+  **Do:** report sipnab's consumption *beside the host's total*, so the fraction
+  is computable and is actually stated — process RSS against `MemTotal` and
+  `MemAvailable`; process CPU time against wall clock and core count; bytes
+  written and current write rate against free space on the output filesystem (a
+  rotating capture fills a disk, and a full `/var` takes the proxy down with
+  it); and the ring memory sipnab asked the kernel for (`--buffer-size` per
+  handle) against the host's locked-memory limit.
+
+  **Surface it as a judgment, not only as a table.** The deliverable is a field
+  an operator and an agent can read directly: whether sipnab is a load-bearing
+  consumer on this host right now, and the specific number that says so.
+  `capture_health` is the precedent — it already turns counters into a verdict
+  instead of leaving the arithmetic to the reader.
+
+  **Degrade honestly.** Inside a container the real denominators are the
+  cgroup's limits, not the machine's: read `memory.max` and `cpu.max` under
+  `/sys/fs/cgroup` where they exist and name which denominator was used. A
+  percentage computed against the wrong total is worse than no percentage,
+  because it will be believed.
+
+- [ ] **OBS7 — surface parity for all of the above.**
+  Whatever OBS1-OBS6 land as, they land on MCP **and** REST, with the same field
+  names and the same shapes, documented in [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) and
+  [`docs/rest-api.md`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md), and covered by the OpenAPI document that
+  [`tests/openapi_contract_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/openapi_contract_test.rs) already diffs against the router. A statistic
+  reachable from one surface and not the other is the parity defect this project
+  has already fixed twice.
+
+## LIVE — validation against running servers, and the captures it produces (added 2026-09-06)
+
+Everything in this repository is currently proved by fixtures and by the
+docker-compose harness. Both are worth having and neither is a substitute for
+running the new code against a real proxy, a real vCon backend and a real kernel:
+a fixture encodes what the author believed the wire looked like, which is exactly
+the belief a live run exists to falsify. Three concrete gaps follow, plus the one
+that matters most — the harness already produces captures and then throws all of
+them away.
+
+- [ ] **LIVE1 — newly implemented surfaces are exercised against the running lab
+  before they are called done.** SIPREC decoding, HEP ingest over UDP/TCP/TLS,
+  the relay control decoders and every new MCP or REST read should be driven at
+  least once against a live OpenSIPS with the siprec module loaded, rather than
+  only against a `.pcapng` in `tests/pcap-samples/`.
+
+  **Why fixtures cannot close this:** a fixture is a recording of what some
+  implementation once emitted. When sipnab's parser and sipnab's fixture were
+  written from the same reading of the RFC, they agree with each other and
+  disagree with the proxy — which is the shape of all three SIPREC defects
+  already recorded in this file. The proxy is the only party that can contradict
+  the reading.
+
+  **Record what could not be driven live and why**, in the test that covers it.
+  "Live-tested" and "fixture-only" are different confidence levels, and a reader
+  who cannot tell them apart will trust the second as though it were the first.
+
+- [ ] **LIVE2 — the harness writes captures to `harness/captures/` and
+  [`harness/.gitignore`](https://github.com/NormB/sipnab/blob/main/harness/.gitignore) discards every one of them.**
+  `captures/*.pcap` is ignored; only `.gitkeep` is tracked. So each harness run
+  reproduces traffic that no test will ever see again, and the fixture shortage
+  HX1 describes persists on a machine that is generating the cure and deleting
+  it.
+
+  **Do:** promote selected harness runs into `tests/pcap-samples/` as named,
+  documented fixtures — the scenario that produced them, the anchor and
+  direction in force, and the finding they are meant to pin. Not all of them:
+  an unexplained capture in a fixture directory is a liability, because the next
+  person to change a parser cannot tell whether its assertion is load-bearing.
+
+- [ ] **LIVE3 — the uprobe/BPF path cannot be exercised by the test suite at all.**
+  [`src/capture/uprobe/bpf.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/uprobe/bpf.rs) loads an eBPF program, which needs privileges the
+  suite does not have and must not acquire. Building the object is covered;
+  loading, attaching and reading from it are not, and those are where the
+  failures live — a verifier rejection, a BTF mismatch, a probe that attaches to
+  the wrong symbol version.
+
+  **Do:** run the load-and-attach half on the privileged VM that already builds
+  the object, as a job that is allowed to be manual and out-of-band, and record
+  its result somewhere a reader can find. **State the split in the docs**: an
+  unqualified coverage number over a file whose interesting half is structurally
+  unreachable reads as reassurance it has not earned. This is the same rule as
+  the "test the CONVERSION when the wire is unreachable" note under P4.
+
+- [ ] **LIVE4 — a live capture is only useful once, unless it enters the corpus.**
+  Every live validation run under LIVE1 produces exactly the artifact the
+  project is short of. Decide per capture, at the time it is taken, which of
+  three homes it gets: a committed fixture under `tests/pcap-samples/` (lab
+  traffic only, PII-free, with the finding it pins written down), the private
+  corpus reached through `SIPNAB_CORPUS` (real traffic, never committed, gated
+  by the existing corpus tests), or deletion.
+
+  **The default must be deletion, not "decide later".** A capture with no
+  recorded provenance cannot be safely promoted afterwards, because nobody can
+  later establish whether it contains real subscriber identifiers — and a
+  capture that sits undecided is one `git add -A` away from being the wrong
+  answer permanently.
+
+- [ ] **LIVE5 — vCon export is validated against a running backend, not only
+  against the schema.** The PV entries already record cases where sipnab's
+  output satisfied the vendored schema and the backend still would not store it
+  — a 204 that is not storage. Schema conformance and acceptance are two
+  different assertions and only one of them is currently automated.
 
 ## P5 — features & long-term / exploratory
 

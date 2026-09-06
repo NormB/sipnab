@@ -420,6 +420,59 @@ pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
     }
 }
 
+/// How many dialogs each opening method accounts for, dominant class first.
+///
+/// # One rule, one implementation
+///
+/// `list_dialogs` and `find_problems` report this beside `total_matched` over
+/// MCP; `GET /v1/dialogs` reports it beside `total` over REST. Both derive it
+/// here rather than tallying their own. Two copies of a count agree today and
+/// drift the first time one of them learns about a method the other does not —
+/// and a breakdown that disagrees with itself across surfaces is worse than
+/// none, because each surface looks internally consistent.
+///
+/// # Why any surface needs it
+///
+/// A dialog page is dominated by whatever the deployment does most, and in the
+/// field that is the keepalive plane rather than the calls. On a real capture,
+/// 98 of 110 rows returned by `find_problems` were OPTIONS, 89 of them tripping
+/// the alias solely on `retransmits > 3` — dead qualify peers, not call faults.
+/// A caller reading the first page had no way to learn that without already
+/// suspecting it.
+///
+/// # Ordering
+///
+/// Descending count, then method name: the dominant class first, and a stable
+/// order for ties so two runs over one capture cannot disagree. An agent that
+/// diffs this field between runs must not see rows swap for no reason.
+///
+/// # Arguments
+///
+/// * `dialogs` — the dialogs to tally, whatever population the caller's own
+///   total counts. Passing a page rather than the whole match set would
+///   describe the page, which is not the question either surface is answering.
+///
+/// # Returns
+///
+/// `(method, count)` pairs, ordered as above. Empty when `dialogs` is empty.
+pub fn method_breakdown<'a>(
+    dialogs: impl IntoIterator<Item = &'a SipDialog>,
+) -> Vec<(String, usize)> {
+    let mut tally: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for d in dialogs {
+        *tally.entry(d.method.as_str()).or_default() += 1;
+    }
+    let mut rows: Vec<(String, usize)> = tally
+        .into_iter()
+        .map(|(method, count)| (method.to_string(), count))
+        .collect();
+    crate::sort::sort_by_dyn(
+        &mut rows,
+        &mut |a: &(String, usize), b: &(String, usize)| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)),
+    );
+    rows
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 /// Unit tests for dialog creation and the per-method state machines
