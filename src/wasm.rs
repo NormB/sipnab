@@ -311,18 +311,21 @@ impl SipnabSession {
                     .replace('.', "_")
                     .replace(':', "_");
                 let arrow = if msg.is_request { "->>" } else { "-->>" };
+                // Both arms are sender-written: an unknown method parses to
+                // `Custom(String)` and a reason phrase is free text. Escaped
+                // through the one shared rule in `crate::mermaid`, because this
+                // generator having its own was how the fix reached the TUI
+                // exporter and not this file.
                 let label = if msg.is_request {
-                    msg.method
-                        .as_ref()
-                        .map(|m| m.as_str())
-                        .unwrap_or("?")
-                        .to_string()
+                    crate::mermaid::escape_mermaid_label(
+                        msg.method.as_ref().map_or("?", |m| m.as_str()),
+                    )
                 } else {
-                    format!(
+                    crate::mermaid::escape_mermaid_label(&format!(
                         "{} {}",
                         msg.status_code.unwrap_or(0),
                         msg.reason.as_deref().unwrap_or("")
-                    )
+                    ))
                 };
                 out.push_str(&format!("    {}{}{}: {}\n", from, arrow, to, label));
             }

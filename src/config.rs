@@ -117,6 +117,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "kill_scanner",
             "kill_response",
             "fraud_detect",
+            "fraud_destination",
             "alert",
             "alert_exec",
             "reg_flood_threshold",
@@ -219,6 +220,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "bad",
             "muted",
             "border",
+            "status_bg",
         ]
         .as_slice(),
     );
@@ -2794,6 +2796,156 @@ column_selector = "F10"
                 "the refusal must name {key}, got: {err}"
             );
         }
+    }
+
+    /// `[security] fraud_destination` parses, is registered, and reaches the
+    /// field.
+    ///
+    /// It was unregistered until 2026-09-06: the field existed,
+    /// `Cli::fraud_destinations` read it, and setting it worked while logging
+    /// `Unknown config key: security.fraud_destination` on every start. All
+    /// three halves are asserted here, because registration alone would pass
+    /// with a field nothing reads and parsing alone would pass with the warning
+    /// still firing.
+    #[test]
+    fn fraud_destination_parses_is_registered_and_reaches_the_field() {
+        let set = "[security]\nfraud_destination = \"CU,KP\"\n";
+        let cfg: Config = toml::from_str(set).expect("valid");
+        assert_eq!(
+            cfg.security.fraud_destination.as_deref(),
+            Some("CU,KP"),
+            "the value must reach the field a consumer reads"
+        );
+        assert!(
+            Config::unknown_keys(set).expect("scan").is_empty(),
+            "an unregistered key warns on every start"
+        );
+    }
+
+    /// `[theme] status_bg` parses, is registered, and reaches the field.
+    ///
+    /// The second key the derived gate found. A different section and a
+    /// different consumer — `tui::theme::apply_color` rather than the CLI — so
+    /// it is not the same test twice.
+    #[test]
+    fn theme_status_bg_parses_is_registered_and_reaches_the_field() {
+        let set = "[theme]\nstatus_bg = \"blue\"\n";
+        let cfg: Config = toml::from_str(set).expect("valid");
+        assert_eq!(cfg.theme.status_bg.as_deref(), Some("blue"));
+        assert!(
+            Config::unknown_keys(set).expect("scan").is_empty(),
+            "an unregistered key warns on every start"
+        );
+    }
+
+    /// Every section named in `KNOWN_KEYS` is a real section of `Config`.
+    ///
+    /// The section-level phantom check, complementing the field-level one.
+    /// A section registered under a name `Config` does not carry accepts keys
+    /// that deserialize into nothing: the file parses, no warning fires, and
+    /// every value in it is silently dropped — which is worse than the warning,
+    /// because the operator gets no signal at all.
+    ///
+    /// The `""` entry is not a section. It is the list of legal top-level
+    /// SECTION NAMES, which `collect_unknown_keys` checks the root against, and
+    /// [`the_root_section_list_matches_the_config`] gates it separately. This
+    /// test's first run reported `""` as a phantom, which was this test being
+    /// wrong rather than the table.
+    #[test]
+    fn every_registered_section_exists_on_the_config() {
+        let all = serde_json::to_value(Config::default()).expect("Config serializes");
+        let sections = all.as_object().expect("a table of sections");
+        let phantom: Vec<&str> = KNOWN_KEYS
+            .keys()
+            .filter(|name| !name.is_empty())
+            .filter(|name| !sections.contains_key(**name))
+            .copied()
+            .collect();
+        assert!(
+            phantom.is_empty(),
+            "KNOWN_KEYS names sections Config does not have, so a file setting \
+             them parses to nothing with no warning: {phantom:?}"
+        );
+    }
+
+    /// The root entry lists exactly the sections `Config` carries.
+    ///
+    /// `KNOWN_KEYS[""]` is what decides whether a `[section]` header is known
+    /// at all, and it is written by hand beside a struct that is not. The two
+    /// fail in opposite directions and both are silent: a section on `Config`
+    /// and missing from the list warns `Unknown config key` on a file that is
+    /// entirely correct, and a name in the list with no section behind it
+    /// accepts a whole block of settings and drops every one without a word.
+    #[test]
+    fn the_root_section_list_matches_the_config() {
+        let all = serde_json::to_value(Config::default()).expect("Config serializes");
+        let mut actual: Vec<&str> = all
+            .as_object()
+            .expect("a table of sections")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        actual.sort_unstable();
+
+        let listed = KNOWN_KEYS
+            .get("")
+            .expect("the root entry names the legal section headers");
+        let mut listed: Vec<&str> = listed.to_vec();
+        listed.sort_unstable();
+
+        assert_eq!(
+            listed, actual,
+            "the root section list and Config's sections must agree"
+        );
+    }
+
+    /// Every field of every config section is registered in `KNOWN_KEYS`.
+    ///
+    /// The per-key tests around this one each enumerate their own list by hand,
+    /// so a field added to a struct without a matching entry passes all of them
+    /// and warns `Unknown config key` on every start — which is how an operator
+    /// learns to ignore the warning that matters. Two arrived that way:
+    /// `security.fraud_destination` and `theme.status_bg`, both read by working
+    /// code and both unregistered.
+    ///
+    /// This one derives the field set from the structs instead of restating it,
+    /// so the enumeration cannot fall behind the code. No section uses
+    /// `skip_serializing_if`, so serializing the default value yields every
+    /// field, `Option::None` included.
+    #[test]
+    fn every_config_field_is_registered() {
+        let all = serde_json::to_value(Config::default()).expect("Config serializes");
+        let sections = all.as_object().expect("Config is a table of sections");
+
+        let mut unregistered: Vec<String> = Vec::new();
+        let mut phantom: Vec<String> = Vec::new();
+        for (section, body) in sections {
+            let fields = body
+                .as_object()
+                .unwrap_or_else(|| panic!("[{section}] must be a table"));
+            let registered = KNOWN_KEYS
+                .get(section.as_str())
+                .unwrap_or_else(|| panic!("[{section}] is a section with no KNOWN_KEYS entry"));
+            for key in fields.keys() {
+                if !registered.contains(&key.as_str()) {
+                    unregistered.push(format!("{section}.{key}"));
+                }
+            }
+            // The other direction: a registered name no field answers to means
+            // a rename landed on one side only, and the config file that sets
+            // the old name goes on parsing to a default nobody reads.
+            for key in registered.iter() {
+                if !fields.contains_key(*key) {
+                    phantom.push(format!("{section}.{key}"));
+                }
+            }
+        }
+        assert!(
+            unregistered.is_empty() && phantom.is_empty(),
+            "KNOWN_KEYS and the config structs disagree.\n  \
+             fields with no registration (warn on every start): {unregistered:?}\n  \
+             registrations with no field (silently ignored):    {phantom:?}"
+        );
     }
 
     /// Every `[security] scanner_*` trigger point parses, is REGISTERED, and

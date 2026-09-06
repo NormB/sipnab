@@ -228,9 +228,14 @@ pub struct TopTalkersParams {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct TopTalker {
-    /// The address, banner or prefix this row is about. Fenced for `ua` and
-    /// `prefix`, which carry text the packet's sender wrote; an address is a
-    /// value sipnab derived and is returned as it is.
+    /// The address, banner or prefix this row is about. Fenced for `ua` alone,
+    /// which is the only dimension carrying text the packet's sender wrote.
+    ///
+    /// An address is a value sipnab derived. So is a prefix, and structurally
+    /// so: `prefix_key` collects `take_while(char::is_ascii_digit)` or returns
+    /// one of two sipnab-authored literals, so a prefix key cannot carry a
+    /// sender's bytes even in principle. `render_key` fences `Ua` and nothing
+    /// else, and this comment said otherwise until 2026-09-06.
     pub key: String,
     /// Dialogs this talker took part in.
     pub dialogs: usize,

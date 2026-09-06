@@ -30,6 +30,14 @@ still running. No tool mutates the analysis. For the write-back question and
 why it stays closed, see
 [`design/mcp-write-back.md`](design/mcp-write-back.md).
 
+Two surfaces answering one question derive the answer once. `GET /v1/dialogs`
+and the MCP `list_dialogs` page each report which methods their match set
+holds, and both call `method_breakdown` in [`src/sip/dialog.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs) rather than
+tallying separately, so the ordering rule and its tie-break cannot drift apart
+between them. Each tallies the whole match set rather than the page it returns,
+because the composition of one page answers a different question. A fact two
+surfaces state is a fact one function derives.
+
 The core is synchronous. Async (tokio) exists only at the edges, on one shared
 runtime ([`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs)), for the optional API and
 MCP servers.
@@ -81,6 +89,10 @@ src/
 ├── pipeline.rs           # THE shared per-packet protocol router (all four paths)
 ├── parallel.rs           # --cores N: shard-by-host-pair offline reconstruction
 ├── auth.rs / crypto.rs   # HMAC bearer tokens for api/mcp
+├── analysis.rs           # capture-level verdict behind --analyze / find_problems
+├── expect.rs             # capture thresholds as a pass/fail gate (MCP only)
+├── provenance.rs         # capture identity + store generation (frame pointers)
+├── stun.rs               # STUN/TURN parse and the request that never came back
 ├── error.rs              # typed error enums: Error (config/CLI), ParseError (parse_sip/_bytes/_rtp_header/_sdp), CaptureError (parse_packet/PcapReader) — all re-exported at the crate root
 ├── names.rs              # name resolution + [names.manual] persistence
 ├── privilege.rs          # setuid drop, chroot (drop early, drop hard)
@@ -95,6 +107,9 @@ src/
 │   ├── hep.rs            # HEP v2/v3 in/out (Homer)
 │   ├── tls.rs / decrypt.rs / dtls.rs / rsa_key.rs   # TLS record decryption (tls feature)
 │   ├── websocket.rs      # WS frame unwrap (SIP over WebSocket)
+│   ├── tunnel/           # MPLS/PPPoE/GTP-U/VXLAN/NSH decap → one offset each
+│   ├── uprobe/           # eBPF uprobe TLS plaintext source (bpf feature)
+│   ├── merged.rs / mapped.rs / native.rs   # merged-pcapng probe, mmap reader, AF_PACKET
 │   └── writer.rs / atomic.rs / pcapng_meta.rs       # pcap/pcapng export
 ├── sip/
 │   ├── parser.rs         # zero-copy-spine SIP parser (DoS caps on headers/line length)
@@ -104,6 +119,7 @@ src/
 │   ├── sdp.rs / sdp_timeline.rs   # SDP parse; offer/answer timeline (hold/resume/T.38)
 │   ├── dsl.rs            # --filter expression language (nom); regexes compiled at parse
 │   ├── matcher.rs        # header/payload regex matching
+│   ├── lint/             # RFC conformance rules (message/dialog/media)
 │   └── method.rs / response_codes.rs / timing.rs / stir_shaken.rs / siprec.rs
 ├── rtp/                  # first-class peer of sip/ (streams exist without dialogs)
 │   ├── stream.rs / stream_store.rs   # RtpStream; SSRC-indexed capped store
@@ -113,10 +129,12 @@ src/
 │   ├── diagnosis.rs      # one-way audio, NAT mismatch
 │   ├── srtp.rs           # SRTP auth+decrypt (tls feature)
 │   ├── dtmf.rs           # RFC 4733 events
+│   ├── loss_map.rs       # per-interval loss/jitter map behind the TUI's `L` view
 │   └── g711.rs / opus_decode.rs / wav.rs / audio_export.rs / playback.rs
 ├── security/             # passive-first detection
 │   ├── scanner_detect.rs / fraud_detect.rs / digest_leak.rs / reg_flood.rs
 │   ├── scanner_kill.rs   # active response (via process_isolation)
+│   ├── tfps.rs           # optional TFPS peer: find tfps_ctl, ask it, read the answer
 │   └── alerting.rs       # rule engine + event-exec hooks
 ├── output/
 │   ├── model.rs            # canonical DialogSummary/StreamSummary (one JSON+MCP wire shape)
@@ -124,8 +142,15 @@ src/
 │   ├── dialog_report.rs / call_report.rs / synthetic.rs
 │   ├── api.rs            # axum REST (api feature)
 │   ├── prometheus.rs / prometheus_server.rs
+│   ├── vcon.rs / vcon_schema.rs   # vCon container export (vcon feature)
+│   ├── redact.rs         # --redact rewriting, with the reversible map
 │   └── event_exec.rs     # external command hooks
 ├── mcp/                  # MCP server (mcp feature): server.rs, transport.rs, shape.rs
+│   └── tools/            # tool bodies split out of server.rs, one module per group
+├── rtpengine/            # rtpengine ng control-plane decode (bencode, ng, control)
+├── relay/                # the media-relay seam: what sipnab needs from ANY relay
+├── plugin/               # WASM plugin host (plugins feature; no interpreter without it)
+├── llmnr/                # LLMNR (RFC 4795) decode + name store
 ├── tui/
 │   ├── mod.rs            # App state + event loop
 │   ├── state.rs          # per-view state structs + derived-data caches (LadderCache/DisplayedCache), refreshed by App::sync_caches()
@@ -180,7 +205,7 @@ EOF.
   runtime thread ([`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs)), all in one address space alongside the
   parsers, the stores, TLS key material and bearer tokens. Treat the API bind
   address and key accordingly — and note that `panic = "abort"`
-  ([`Cargo.toml:262`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L262)) means a panic on any thread ends the whole process, so
+  ([`Cargo.toml:328`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L328)) means a panic on any thread ends the whole process, so
   threads buy no fault containment either. The analysis of whether to close this
   gap, and why most of it should stay open, is in
   [`docs/design/process-isolation-and-hot-path-cost.md`](https://github.com/NormB/sipnab/blob/main/docs/design/process-isolation-and-hot-path-cost.md).
@@ -196,7 +221,7 @@ EOF.
 | Add an output format | `output/` + dispatch in `app/batch.rs` |
 | Add a TUI view/keybinding | `tui/mod.rs` (App/Popup) + `tui/state.rs` + `tui/controllers/` + `render/` + keybinding drift test |
 | Add a detection | `security/` + wiring in `app/batch.rs` |
-| Add an MCP tool | `mcp/server.rs` (`#[tool]`) + `mcp/shape.rs` |
+| Add an MCP tool | `mcp/tools/` for a new group, else `mcp/server.rs` (`#[tool]`) + `mcp/shape.rs` |
 | Add a CLI flag | `cli.rs` + `flag_coverage_test.rs` forces a test |
 
 This table names the files. It does not name the order, the tests each change

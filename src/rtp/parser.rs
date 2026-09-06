@@ -37,6 +37,52 @@ pub struct RtpHeader {
     pub payload_offset: usize,
 }
 
+impl RtpHeader {
+    /// The packet's payload, with RFC 3550 padding removed.
+    ///
+    /// # Why this exists
+    ///
+    /// RFC 3550 §5.1: "If the padding bit is set, the packet contains one or
+    /// more additional padding octets at the end which are not part of the
+    /// payload. The last octet of the padding contains a count of how many
+    /// padding octets should be ignored, including itself."
+    ///
+    /// The `padding` flag was parsed and then read by nothing, so padding was
+    /// counted as payload — inflating the octet total an operator reads as a
+    /// bitrate, and being pushed into the audio buffer, where it became
+    /// samples in every exported WAV and vCon.
+    ///
+    /// # Arguments
+    ///
+    /// * `packet` — the whole RTP packet these fields were parsed from.
+    ///
+    /// # Returns
+    ///
+    /// The payload slice. Empty when the packet is shorter than its own
+    /// header, or when the padding count is impossible — it is wire-supplied,
+    /// so a corrupt or hostile packet may claim more padding than there is
+    /// payload, and the arithmetic must saturate rather than wrap.
+    #[must_use]
+    pub fn payload<'a>(&self, packet: &'a [u8]) -> &'a [u8] {
+        let Some(body) = packet.get(self.payload_offset..) else {
+            return &[];
+        };
+        if !self.padding {
+            return body;
+        }
+        // §5.1 counts the length octet itself, so the minimum legal value is
+        // 1; zero is malformed and yields nothing rather than a wrapped span.
+        let Some(&pad) = body.last() else {
+            return &[];
+        };
+        let pad = pad as usize;
+        if pad == 0 || pad > body.len() {
+            return &[];
+        }
+        &body[..body.len() - pad]
+    }
+}
+
 /// Minimum RTP header size: V/P/X/CC(1) + M/PT(1) + seq(2) + ts(4) + SSRC(4).
 const RTP_FIXED_HEADER_LEN: usize = 12;
 
@@ -156,6 +202,76 @@ pub fn parse_rtp_header(data: &[u8]) -> Result<RtpHeader, ParseError> {
 /// extensions, marker bit, and truncation/version error handling.
 #[cfg(test)]
 mod tests {
+    /// Padding octets are not payload.
+    ///
+    /// RFC 3550 §5.1: "If the padding bit is set, the packet contains one or
+    /// more additional padding octets at the end which are not part of the
+    /// payload. The last octet of the padding contains a count of how many
+    /// padding octets should be ignored, including itself."
+    ///
+    /// The `padding` flag was decoded and never read. Nothing stripped the
+    /// octets, so they were counted into the octet total an operator reads as
+    /// a bitrate, and — worse — pushed into the audio buffer, becoming samples
+    /// in every exported WAV and vCon.
+    #[test]
+    fn padding_octets_are_excluded_from_the_payload() {
+        // V=2, P=1, PT=0, 160 octets of G.711 then 4 octets of padding whose
+        // last byte is the count, per §5.1.
+        let mut pkt = vec![0xA0, 0x00, 0x03, 0xE8, 0, 0, 0, 0, 0x11, 0x22, 0x33, 0x44];
+        pkt.extend(std::iter::repeat_n(0xD5u8, 160));
+        pkt.extend_from_slice(&[0, 0, 0, 4]);
+
+        let hdr = parse_rtp_header(&pkt).expect("parses");
+        assert!(hdr.padding, "the P bit is set");
+        assert_eq!(
+            hdr.payload(&pkt).len(),
+            160,
+            "164 octets arrived; 160 are payload"
+        );
+        assert!(
+            hdr.payload(&pkt).iter().all(|b| *b == 0xD5),
+            "no padding octet reaches the payload"
+        );
+    }
+
+    /// With no padding bit the whole tail is payload.
+    ///
+    /// The regression guard: almost every RTP packet is this, and a stripper
+    /// that ran unconditionally would eat a real audio octet from each one.
+    #[test]
+    fn without_the_padding_bit_the_whole_tail_is_payload() {
+        let mut pkt = vec![0x80, 0x00, 0x03, 0xE8, 0, 0, 0, 0, 0x11, 0x22, 0x33, 0x44];
+        pkt.extend(std::iter::repeat_n(0xD5u8, 160));
+        let hdr = parse_rtp_header(&pkt).expect("parses");
+        assert!(!hdr.padding);
+        assert_eq!(hdr.payload(&pkt).len(), 160);
+    }
+
+    /// A padding count larger than the packet cannot underflow.
+    ///
+    /// The count is wire-supplied, so a malicious or corrupt packet can claim
+    /// more padding than there is payload. That must yield an empty payload,
+    /// never a panic and never a wrapped length.
+    #[test]
+    fn an_impossible_padding_count_yields_an_empty_payload() {
+        let mut pkt = vec![0xA0, 0x00, 0x03, 0xE8, 0, 0, 0, 0, 0x11, 0x22, 0x33, 0x44];
+        pkt.extend_from_slice(&[0x00, 0xFF]); // claims 255 octets of padding
+        let hdr = parse_rtp_header(&pkt).expect("parses");
+        assert!(hdr.payload(&pkt).is_empty());
+    }
+
+    /// A padding count of zero is impossible and is treated as no payload.
+    ///
+    /// §5.1 counts the length octet itself, so the minimum legal value is 1.
+    /// Zero is malformed; refusing to trust it keeps the arithmetic total.
+    #[test]
+    fn a_zero_padding_count_is_malformed_and_yields_nothing() {
+        let mut pkt = vec![0xA0, 0x00, 0x03, 0xE8, 0, 0, 0, 0, 0x11, 0x22, 0x33, 0x44];
+        pkt.extend_from_slice(&[0xD5, 0x00]);
+        let hdr = parse_rtp_header(&pkt).expect("parses");
+        assert!(hdr.payload(&pkt).is_empty());
+    }
+
     use super::*;
 
     /// Build a minimal valid RTP packet (12-byte header + payload).

@@ -283,6 +283,68 @@ pub fn channel_data_payload(payload: &[u8]) -> Option<&[u8]> {
     channel_data_payload_framed(payload, ChannelDataFraming::Datagram)
 }
 
+/// GTP-C, 3GPP TS 29.274 §4.1: "The UDP Destination Port number for GTPv2
+/// messages shall be 2123."
+const PORT_GTP_C: u16 = 2123;
+/// GTP-U, 3GPP TS 29.281 §4.4.2.3: "The UDP Destination Port number shall be
+/// 2152." Named here for the same reason as GTP-C, not because a G-PDU is
+/// currently mistakable for a relay frame.
+const PORT_GTP_U: u16 = 2152;
+
+/// [`channel_data_payload`], refusing ports that belong to another protocol.
+///
+/// # The confusion this exists to stop
+///
+/// A GTPv2-C control message and a TURN ChannelData frame have the same header
+/// shape, field for field:
+///
+/// | bytes | ChannelData (RFC 5766 §11.4) | GTPv2-C (TS 29.274 §5.5)       |
+/// |-------|------------------------------|--------------------------------|
+/// | 0..2  | channel number, `0x4000..=0x4FFF` | flags then message type   |
+/// | 2..4  | length of the application data | message length, likewise excluding the first four octets |
+///
+/// GTPv2's first octet is `0x48` whenever the TEID flag is set, which lands
+/// every such message inside the channel-number window; and because both
+/// specifications define Length as "the octets after the first four", the
+/// whole-datagram length check in [`is_channel_data_framed`] passes as well.
+/// **Nothing in the four bytes separates them.**
+///
+/// Found on a real LTE capture, not reasoned about in the abstract: sipnab
+/// reported a four-packet RTP stream, SSRC `0x02000200`, codec PCMU, `mos:
+/// 1.0`, `mos_grounded: true`, between two hosts on port 2123. The packets were
+/// GTPv2-C Create Session Response and Modify Bearer Response. An operator
+/// reading that sees a media stream that does not exist, scored as unusable.
+///
+/// # Why the port, and why both ends
+///
+/// The port is the only thing left to distinguish them. Both ends are checked
+/// because a GTP-C response has 2123 at both ends while a request may come from
+/// an ephemeral port — refusing on the destination alone would unwrap one
+/// direction of a control exchange and fabricate a one-way stream.
+///
+/// TURN's own ports (3478, 5349) are not in this list and must not be: relayed
+/// media arrives on the ephemeral port an Allocate handed out, so a port
+/// allowlist would refuse the real thing. This is a denylist of ports that
+/// provably belong to something else.
+///
+/// # Arguments
+///
+/// * `payload` — the UDP payload.
+/// * `src_port`, `dst_port` — the ports the datagram was seen on.
+///
+/// # Returns
+///
+/// The application data inside the wrapper, or `None` when this is not a
+/// ChannelData frame or the flow belongs to a protocol that merely resembles
+/// one.
+pub fn channel_data_payload_on_port(payload: &[u8], src_port: u16, dst_port: u16) -> Option<&[u8]> {
+    let is_gtp = |p: u16| p == PORT_GTP_C || p == PORT_GTP_U;
+    if is_gtp(src_port) || is_gtp(dst_port) {
+        return None;
+    }
+    channel_data_payload(payload)
+}
+
 /// How the enclosing transport delimits a ChannelData frame.
 ///
 /// The distinction is not cosmetic: it is the whole of what separates a real
@@ -327,7 +389,7 @@ pub fn is_channel_data(payload: &[u8]) -> bool {
 ///
 /// It is still identifiable, and worth identifying, because the three
 /// multiplexed protocols occupy disjoint high bits: STUN's top two bits are
-/// `00`, a ChannelData channel number is `0x4000..=0x7FFF` (`01`), and RTP's
+/// `00`, a ChannelData channel number is `0x4000..=0x4FFF` (`01`), and RTP's
 /// version field is `10`. So media relayed through TURN can be told apart from
 /// media sent directly, which is otherwise indistinguishable from a capture
 /// holding no media at all.
@@ -361,7 +423,15 @@ pub fn is_channel_data_framed(payload: &[u8], framing: ChannelDataFraming) -> bo
         return false;
     }
     let channel = u16::from_be_bytes([payload[0], payload[1]]);
-    if !(0x4000..=0x7FFF).contains(&channel) {
+    // RFC 8656 Table 3 narrowed this from RFC 5766's `0x4000-0x7FFF`:
+    // `0x4000-0x4FFF` is allowed and `0x5000-0xFFFF` is Reserved, so that
+    // ChannelData cannot collide with DTLS-SRTP multiplexing (RFC 7983). §12.6
+    // requires a reserved-range message be silently discarded.
+    //
+    // It also quarters the accidental-match rate — 4,096 of 65,536 first
+    // two-byte values rather than 16,384 — which matters because this check is
+    // what mistook GTPv2-C control messages for relayed media.
+    if !(0x4000..=0x4FFF).contains(&channel) {
         return false;
     }
     let declared = u16::from_be_bytes([payload[2], payload[3]]) as usize;
@@ -453,7 +523,12 @@ pub fn parse(payload: &[u8]) -> Option<StunMessage> {
     while body.len() >= 4 {
         // Where this attribute starts within the whole message, which is what
         // FINGERPRINT's CRC span is defined against.
-        let attr_start = payload.len() - body.len();
+        // Measured against the MESSAGE, not the datagram. `body` is clamped to
+        // the declared length, so on a datagram carrying trailing octets
+        // `payload.len() - body.len()` overshot by exactly those octets and
+        // every offset below it shifted — making a byte-identical message
+        // report a BAD fingerprint purely because something followed it.
+        let attr_start = body_end - body.len();
         let attr_type = u16::from_be_bytes([body[0], body[1]]);
         let attr_len = u16::from_be_bytes([body[2], body[3]]) as usize;
         let value_end = 4usize.saturating_add(attr_len);
@@ -559,7 +634,12 @@ pub fn parse(payload: &[u8]) -> Option<StunMessage> {
                 let class_digit = u16::from(value[2] & 0x07);
                 msg.error_code = Some(class_digit * 100 + u16::from(value[3]));
             }
-            0x8022 => {
+            // RFC 8489 §14: "Any attribute type MAY appear more than once...
+            // only the first occurrence needs to be processed by a receiver."
+            // Last-wins was attacker-reachable — MESSAGE-INTEGRITY covers only
+            // the bytes preceding it, so an attribute appended after it is
+            // unauthenticated and was the one sipnab reported.
+            0x8022 if msg.software.is_none() => {
                 // Trailing NULs, not just whitespace. Real phones declare a
                 // SOFTWARE length that includes their own NUL padding — seen on
                 // a field capture where a 20-byte value held an 18-byte string
@@ -666,6 +746,282 @@ fn xor_mapped_address(value: &[u8], transaction_id: &[u8; 12]) -> Option<SocketA
 
 #[cfg(test)]
 mod tests {
+    /// A channel number RFC 8656 reserves is not ChannelData.
+    ///
+    /// RFC 8656 (which obsoletes RFC 5766) Table 3 narrows the window:
+    /// `0x4000-0x4FFF` is allowed, `0x5000-0xFFFF` is **Reserved**, and §12.6
+    /// says of the reserved range "the message is silently discarded". The
+    /// reservation exists so ChannelData cannot collide with DTLS-SRTP
+    /// multiplexing (RFC 7983).
+    ///
+    /// sipnab still accepted RFC 5766's `0x4000-0x7FFF`, so a reserved-range
+    /// datagram was unwrapped and a media stream was built from it. Narrowing
+    /// also cuts the accidental-match rate fourfold — the window goes from
+    /// 16,384 of 65,536 first-two-byte values to 4,096 — which matters because
+    /// this check is the one that mistook GTPv2-C for relayed media.
+    #[test]
+    fn a_reserved_channel_number_is_not_channel_data() {
+        // 4-byte header plus 12 bytes of payload, correctly framed.
+        let mut frame = vec![0x50, 0x00, 0x00, 0x0c];
+        frame.extend_from_slice(&[0x80, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0xDE, 0xAD, 0xBE, 0xEF]);
+        assert!(
+            !is_channel_data_framed(&frame, ChannelDataFraming::Datagram),
+            "0x5000 is Reserved by RFC 8656 Table 3"
+        );
+        assert_eq!(channel_data_payload(&frame), None);
+    }
+
+    /// The allowed range still is allowed, at both ends.
+    ///
+    /// The regression guard: narrowing the window must not refuse real
+    /// relayed media. `0x4000` and `0x4FFF` are the boundaries RFC 8656 keeps.
+    #[test]
+    fn the_rfc_8656_channel_range_is_still_accepted_at_both_ends() {
+        for channel in [0x4000u16, 0x4001, 0x4FFF] {
+            let mut frame = channel.to_be_bytes().to_vec();
+            frame.extend_from_slice(&12u16.to_be_bytes());
+            frame.extend_from_slice(&[0x80, 0, 0, 1, 0, 0, 0, 0, 0xDE, 0xAD, 0xBE, 0xEF]);
+            assert!(
+                is_channel_data_framed(&frame, ChannelDataFraming::Datagram),
+                "channel {channel:#06x} is inside RFC 8656's allowed range"
+            );
+        }
+    }
+
+    /// The first number past the allowed range is refused.
+    ///
+    /// The boundary that separates the two RFCs: `0x5000` is the first
+    /// reserved value, and an off-by-one in the range would let it through.
+    #[test]
+    fn the_first_reserved_channel_number_is_refused() {
+        let mut frame = 0x5000u16.to_be_bytes().to_vec();
+        frame.extend_from_slice(&12u16.to_be_bytes());
+        frame.extend_from_slice(&[0x80, 0, 0, 1, 0, 0, 0, 0, 0xDE, 0xAD, 0xBE, 0xEF]);
+        assert!(!is_channel_data_framed(
+            &frame,
+            ChannelDataFraming::Datagram
+        ));
+    }
+
+    /// FINGERPRINT still verifies when the datagram carries trailing octets.
+    ///
+    /// RFC 8489 §14.7 defines the CRC over "the STUN message up to (but
+    /// excluding) the FINGERPRINT attribute itself", so the span is measured
+    /// from the message, not from the datagram. `attr_start` was computed as
+    /// `payload.len() - body.len()`, and the body is clamped to the DECLARED
+    /// length — so whenever the datagram was longer than the message the two
+    /// differed by exactly the trailing bytes and every offset was shifted.
+    ///
+    /// The visible result was a byte-identical message reporting `BAD`
+    /// fingerprint in `--stun` purely because something followed it in the
+    /// datagram: a false accusation of corruption or tampering.
+    #[test]
+    fn a_trailing_octet_does_not_invalidate_the_fingerprint() {
+        let clean = binding_request_with_fingerprint();
+        let mut padded = clean.clone();
+        padded.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+        let a = parse(&clean).expect("the clean datagram parses");
+        let b = parse(&padded).expect("the padded datagram parses");
+        assert_eq!(a.fingerprint_valid, Some(true), "control: the CRC is right");
+        assert_eq!(
+            b.fingerprint_valid,
+            Some(true),
+            "the same message plus trailing octets is the same message"
+        );
+    }
+
+    /// The FIRST occurrence of a repeated attribute wins.
+    ///
+    /// RFC 8489 §14: "Any attribute type MAY appear more than once... only the
+    /// first occurrence needs to be processed by a receiver." Taking the last
+    /// is attacker-reachable: MESSAGE-INTEGRITY covers only the bytes before
+    /// it, so an attribute appended AFTER it is unauthenticated — and that was
+    /// the one sipnab reported.
+    #[test]
+    fn a_repeated_attribute_takes_the_first_occurrence() {
+        // Two SOFTWARE attributes; the second is what an appender would add.
+        let mut body = Vec::new();
+        body.extend_from_slice(&0x8022u16.to_be_bytes()); // SOFTWARE
+        body.extend_from_slice(&4u16.to_be_bytes());
+        body.extend_from_slice(b"real");
+        body.extend_from_slice(&0x8022u16.to_be_bytes());
+        body.extend_from_slice(&4u16.to_be_bytes());
+        body.extend_from_slice(b"fake");
+
+        let msg = parse(&binding_request(&body)).expect("parses");
+        assert_eq!(
+            msg.software.as_deref(),
+            Some("real"),
+            "RFC 8489 14: only the first occurrence needs processing"
+        );
+    }
+
+    /// A single attribute is unaffected by the first-wins rule.
+    ///
+    /// The regression guard: almost every real message has one of each, and
+    /// the fix touches the assignment for all of them.
+    #[test]
+    fn a_single_occurrence_is_still_read() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&0x8022u16.to_be_bytes());
+        body.extend_from_slice(&4u16.to_be_bytes());
+        body.extend_from_slice(b"only");
+        let msg = parse(&binding_request(&body)).expect("parses");
+        assert_eq!(msg.software.as_deref(), Some("only"));
+    }
+
+    /// A STUN Binding Request wrapping `body`, with a correct header length.
+    fn binding_request(body: &[u8]) -> Vec<u8> {
+        let mut m = vec![0x00, 0x01];
+        m.extend_from_slice(&u16::try_from(body.len()).expect("fits").to_be_bytes());
+        m.extend_from_slice(&0x2112_A442u32.to_be_bytes());
+        m.extend_from_slice(&[0xA0; 12]); // transaction id
+        m.extend_from_slice(body);
+        m
+    }
+
+    /// A Binding Request carrying a correct FINGERPRINT.
+    fn binding_request_with_fingerprint() -> Vec<u8> {
+        // Build the message with the FINGERPRINT attribute's 8 bytes counted
+        // in the header length, then compute the CRC over everything before
+        // the attribute, per RFC 8489 §14.7.
+        let mut m = vec![0x00, 0x01];
+        m.extend_from_slice(&8u16.to_be_bytes());
+        m.extend_from_slice(&0x2112_A442u32.to_be_bytes());
+        m.extend_from_slice(&[0xA0; 12]);
+        let crc = crc32_ieee(&m) ^ 0x5354_554e;
+        m.extend_from_slice(&0x8028u16.to_be_bytes());
+        m.extend_from_slice(&4u16.to_be_bytes());
+        m.extend_from_slice(&crc.to_be_bytes());
+        m
+    }
+
+    /// A GTPv2-C control message is not a TURN ChannelData frame.
+    ///
+    /// # Why this is not a hypothetical
+    ///
+    /// Found on a real LTE capture: sipnab reported a four-packet RTP stream
+    /// with SSRC `0x02000200`, codec PCMU and a confident `mos: 1.0` between
+    /// `127.0.0.3:2123` and `127.0.0.2:2123`. Port 2123 is GTP-C. The four
+    /// packets were Create Session Response and Modify Bearer Response.
+    ///
+    /// # Why the existing framing test cannot separate them
+    ///
+    /// The two headers are the same shape, field for field:
+    ///
+    /// | bytes | ChannelData      | GTPv2-C                                |
+    /// |-------|------------------|----------------------------------------|
+    /// | 0..2  | channel number   | flags `0x48` then message type         |
+    /// | 2..4  | length of data   | message length, also excluding these 4 |
+    ///
+    /// GTPv2's first octet is `0x48` whenever the TEID flag is set, which puts
+    /// every such message inside the `0x4000..=0x4FFF` channel window. And
+    /// GTPv2 §5.5 defines Length the same way RFC 5766 §11.4 does — the octets
+    /// after the first four — so the whole-datagram length check passes too.
+    /// Nothing in the four bytes distinguishes them, which is why the port has
+    /// to.
+    ///
+    /// The bytes below are frame 24 of a real capture, truncated to the header
+    /// and first information element; the full message is 111 bytes.
+    #[test]
+    fn a_gtpv2_c_message_is_not_channel_data() {
+        let mut msg = vec![
+            0x48, 0x21, 0x00, 0x6b, 0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00,
+        ];
+        msg.extend(std::iter::repeat_n(0u8, 111 - msg.len()));
+        assert_eq!(
+            msg.len(),
+            4 + 0x6b,
+            "the fixture must be a well-formed GTPv2-C length"
+        );
+
+        assert!(
+            is_channel_data_framed(&msg, ChannelDataFraming::Datagram),
+            "the four-byte framing check cannot tell them apart -- if this ever \
+             fails, the header shapes diverged and this test's premise is gone"
+        );
+        assert_eq!(
+            channel_data_payload_on_port(&msg, 2123, 2123),
+            None,
+            "GTP-C traffic must never be unwrapped as relayed media"
+        );
+    }
+
+    /// GTP-U is refused on the same grounds.
+    ///
+    /// 2152 carries the user plane, and a G-PDU's first octet is `0x30`, which
+    /// falls outside the channel window — so this one is refused twice over.
+    /// It is asserted anyway: the port rule must not depend on the byte rule
+    /// happening to agree, because a future GTP-U extension header could move
+    /// the first octet.
+    #[test]
+    fn gtp_u_is_not_channel_data_either() {
+        let mut msg = vec![
+            0x48, 0x21, 0x00, 0x6b, 0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00,
+        ];
+        msg.extend(std::iter::repeat_n(0u8, 111 - msg.len()));
+        assert_eq!(channel_data_payload_on_port(&msg, 2152, 2152), None);
+    }
+
+    /// The port rule looks at BOTH ends.
+    ///
+    /// A GTP-C response has 2123 as its source and its destination, but a
+    /// request from an ephemeral port does not. Checking only the destination
+    /// would unwrap exactly half of a bidirectional control exchange, which is
+    /// the shape that produces a one-way phantom stream.
+    #[test]
+    fn either_end_on_the_gtp_c_port_is_enough_to_refuse() {
+        let mut msg = vec![
+            0x48, 0x21, 0x00, 0x6b, 0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00,
+        ];
+        msg.extend(std::iter::repeat_n(0u8, 111 - msg.len()));
+        assert_eq!(
+            channel_data_payload_on_port(&msg, 54321, 2123),
+            None,
+            "dst is GTP-C"
+        );
+        assert_eq!(
+            channel_data_payload_on_port(&msg, 2123, 54321),
+            None,
+            "src is GTP-C"
+        );
+    }
+
+    /// Real relayed media still unwraps.
+    ///
+    /// The regression this fix must not cause. A TURN relay hands media to an
+    /// ephemeral port, and NAT4 exists because a call whose audio went through
+    /// a relay reported as a call with NO MEDIA. Narrowing the unwrap must not
+    /// put that back.
+    #[test]
+    fn relayed_media_on_an_ephemeral_port_still_unwraps() {
+        let mut frame = vec![0x40, 0x01, 0x00, 0x0c];
+        frame.extend_from_slice(&[0x80, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(frame.len(), 16, "4 header + 12 payload");
+
+        let inner = channel_data_payload_on_port(&frame, 49152, 50000)
+            .expect("a relay frame on ephemeral ports is still a relay frame");
+        assert_eq!(inner.len(), 12);
+        assert_eq!(
+            inner[0], 0x80,
+            "the unwrapped payload is the inner RTP header"
+        );
+    }
+
+    /// The unported entry point is unchanged.
+    ///
+    /// [`channel_data_payload`] has callers that legitimately have no ports to
+    /// offer. It must keep answering the pure framing question, so that the
+    /// port rule lives in exactly one place rather than being re-derived by
+    /// each caller.
+    #[test]
+    fn the_portless_entry_point_still_answers_the_framing_question() {
+        let mut frame = vec![0x40, 0x01, 0x00, 0x0c];
+        frame.extend_from_slice(&[0x80, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef]);
+        assert!(channel_data_payload(&frame).is_some());
+    }
+
     use super::*;
 
     /// A Binding Request in the shape field captures actually carry, including
@@ -955,7 +1311,7 @@ impl StunTransaction {
 /// anywhere also had no evidence attached to it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RelayChannel {
-    /// The channel number, always within `0x4000..=0x7FFF`.
+    /// The channel number, always within `0x4000..=0x4FFF` (RFC 8656 Table 3).
     pub channel: u16,
     /// The peer this channel was bound to, when a ChannelBind for it was seen
     /// to succeed.

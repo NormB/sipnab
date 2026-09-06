@@ -276,10 +276,18 @@ pub fn answer_is_whole(source_exhausted: bool, stopped_early: bool) -> bool {
 ///
 /// # What it does to an array payload
 ///
-/// `timeline` answers with a top-level array, which has no key to carry a
-/// field. The envelope is APPENDED as a further content block rather than
-/// wrapped around the array, because wrapping would change the payload's
-/// published shape; appending leaves the first block exactly as it was.
+/// A top-level array has no key to carry a field, so the envelope is APPENDED
+/// as a further content block rather than wrapped around it: wrapping would
+/// change the payload's published shape, and appending leaves the first block
+/// exactly as it was.
+///
+/// **No registered tool takes this branch today.** `timeline` did until VAL16
+/// gave it the `TimelinePage` envelope, and
+/// `no_tool_answers_with_a_top_level_array` in
+/// `tests/mcp_protocol_features_test.rs` now drives every drivable tool and
+/// refuses one that answers with an array. The branch is kept because that gate
+/// is what makes it unreachable, and a payload shape is a thing a tool author
+/// can change in one line.
 ///
 /// # What it does to a rendered document
 ///
@@ -558,7 +566,10 @@ mod tests {
         }
     }
 
-    /// `timeline` answers with an array; the envelope is appended, not wrapped.
+    /// An array payload gets the envelope appended, not wrapped.
+    ///
+    /// Driven from a synthetic array rather than from a tool: no registered
+    /// tool answers with one any more, and a gate refuses any that starts.
     #[test]
     fn an_array_payload_gets_the_envelope_as_a_further_block() {
         let mut result = json_result(r#"[{"start":"2026-01-01T00:00:00Z","dialogs":2}]"#);

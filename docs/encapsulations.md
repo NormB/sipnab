@@ -80,13 +80,23 @@ misses the tunnel. A miss stays visible. A fabrication does not.
 | 1 | Ethernet | decoded |
 | 0 | BSD loopback (`DLT_NULL`) | decoded — address family in host byte order |
 | 108 | OpenBSD loopback (`DLT_LOOP`) | decoded — address family always big-endian |
-| 12 | Raw IP | decoded |
+| 12 | Raw IP (`DLT_RAW`) | decoded — the version nibble picks v4 or v6 |
 | 113 | Linux cooked v1 (`SLL`) | decoded |
 | 276 | Linux cooked v2 (`SLL2`) | decoded |
+| 9 | PPP (`DLT_PPP`) | decoded — with or without RFC 1662 HDLC-like framing |
+| 50 | PPP in HDLC-like framing (`DLT_PPP_SERIAL`) | decoded |
+| 51 | PPPoE session (`DLT_PPP_ETHER`) | decoded |
+| 228 | bare IPv4 (`DLT_IPV4`) | decoded — sipnab checks the version nibble against the link type and rejects a mismatch |
+| 229 | bare IPv6 (`DLT_IPV6`) | decoded — same check, the other way |
 | any other | — | **counted and named** as `unsupported link type N` |
 
 Loopback is `DLT_EN10MB` on Linux but `DLT_NULL` on macOS and BSD, which is why
 0 and 108 matter for the common "SIP server listening on loopback" case.
+
+The parser dispatches on that closed set rather than on the raw number, and the
+cheap `--cores` shard key dispatches on the same one. Adding a link type is a
+compile error in both until each has an arm, so the two walks cannot come to
+know different sets.
 
 ## EtherTypes
 
@@ -98,7 +108,7 @@ Loopback is `DLT_EN10MB` on Linux but `DLT_NULL` on macOS and BSD, which is why
 | `0x88A8` | S-VLAN tag | IEEE 802.1Q | skipped to reach IP |
 | `0x9100` | legacy QinQ | **unregistered** | skipped to reach IP |
 | `0x8864` | PPPoE Session | [RFC 2516](https://www.rfc-editor.org/rfc/rfc2516) | decapsulated |
-| `0x8863` | PPPoE Discovery | RFC 2516 | recognized, never decapsulated |
+| `0x8863` | PPPoE Discovery | RFC 2516 | never decapsulated — counted and named like any EtherType sipnab does not walk |
 | `0x8847` | MPLS unicast | RFC 5332 | decapsulated |
 | `0x8848` | MPLS upstream-assigned | RFC 5332 | decapsulated |
 | `0x894F` | NSH | RFC 8300 | decapsulated |
@@ -126,6 +136,34 @@ recoverable calls.
 IEEE 802.1AE's own Annex C conformance vectors settled those bit positions,
 because Figure 9-4 of the 2018 standard is defective — it labels two bits with
 names appearing nowhere else in the document.
+
+### A cooked capture reaches fewer of them
+
+The table above describes the **Ethernet** walk. A Linux cooked capture — `SLL`
+or `SLL2` — runs a shorter one: VLAN tags, then IPv4, IPv6 or PPPoE Session, and
+nothing else. That matters more than it sounds, because `SLL2` is what the `any`
+pseudo-device produces, and `any` is what sipnab opens on Linux when no `-d`
+names an interface.
+
+| EtherType | Ethernet (`-d eth0`) | Cooked (`any`, `-i any` files) |
+|---|---|---|
+| `0x8100` / `0x88A8` / `0x9100` VLAN | skipped to reach IP | skipped to reach IP |
+| `0x0800` / `0x86DD` IP | decoded | decoded |
+| `0x8864` PPPoE Session | decapsulated | decapsulated |
+| `0x8847` / `0x8848` MPLS | decapsulated | **not walked** |
+| `0x894F` NSH | decapsulated | **not walked** |
+| `0x88E7` PBB I-TAG | decapsulated | **not walked** |
+| `0x88E5` MACsec | decoded, or named as encrypted | **not walked** |
+
+So SIP inside an MPLS label stack reaches the parser from `-d eth0` and does not
+from the default device. A frame the cooked walk declines invents nothing — it
+fails to decode and joins the undecodable count with its own reason — but the
+remedy is the capture device rather than the filter. **Name the interface when
+the link carries any of the bottom four.**
+
+The same asymmetry applies to a saved file: a capture somebody took with
+`tcpdump -i any` carries the cooked link type, and no sipnab flag can put back
+what the walk does not follow.
 
 ## Tunnels above the link layer
 
@@ -163,18 +201,29 @@ rather than following it.
 
 ## Live capture needs the tunnel-aware filter
 
-With no explicit `--filter`, sipnab generates a BPF filter that matches SIP
-inside VLAN, QinQ, PPPoE and MPLS as well as untagged traffic. **UDP-tunneled
-SIP is not covered by default**: BPF cannot parse a variable-length GTP-U header
-to reach the inner port, so covering those means capturing every packet on those
-ports. Use `--capture-tunnels` to opt in — see the
-[CLI reference](cli-reference.md#capture).
+Give sipnab no BPF expression of your own — the trailing argument, or a file
+named by `--bpf-file` — and it generates one that matches SIP inside VLAN, QinQ,
+PPPoE Session and MPLS as well as untagged traffic. Do not confuse that with
+`--filter`, which is sipnab's own matching language over messages sipnab already
+decoded, long after the kernel has made its decision.
 
-The tunnel-aware arm covers `SLL` and `SLL2` — what sipnab opens on Linux when
-you name no interface — as well as Ethernet, so omitting `-d` costs no
-encapsulation coverage. It selects the encapsulation through libpcap's
-`ether proto`, which libpcap resolves to the right offset for each link type
-while compiling.
+**UDP-tunneled SIP is not covered by default**: BPF cannot parse a
+variable-length GTP-U header to reach the inner port, so covering those means
+capturing every packet on those ports. Use `--capture-tunnels` to opt in — see
+the [CLI reference](cli-reference.md#capture).
+
+The encapsulated arm compiles on `SLL` and `SLL2` as well as on Ethernet,
+because it selects the encapsulation through libpcap's `ether proto`, which
+libpcap resolves to the right offset for each link type while compiling. So the
+kernel hands those frames up whichever device you opened. What sipnab makes of
+them afterwards still depends on the link type — an MPLS frame arrives on the
+default device and the cooked walk does not follow it, as the table above says.
+
+Writing your own expression replaces the generated one whole. sipnab never edits
+it, so the encapsulated arm goes away and `--capture-tunnels` turns inert. Two
+warnings cover that: one when a port-based expression shows no sign of handling
+encapsulation, and one naming `--capture-tunnels` as ignored when you passed it
+alongside a filter of your own.
 
 One limit worth knowing before you rely on a live capture: on the encapsulated
 arm, an IPv4 header carrying **options** stays unmatched, because a BPF index

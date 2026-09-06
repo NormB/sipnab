@@ -119,6 +119,23 @@ unmarked:
 `schema_version` increments on breaking field changes — pin your
 consumers to it.
 
+### Pretty-printed JSON (`--json-pretty`)
+
+`--json-pretty` emits the identical message record, indented across several
+lines instead of packed onto one. Reach for it when a person reads the output:
+
+```bash
+sipnab -N -I capture.pcap --json-pretty
+```
+
+It costs you the NDJSON property, and that matters to anything downstream: a
+line no longer holds a whole record, so a tolerant concatenated-JSON parser
+still reads the stream and a tool that splits on newlines no longer does.
+Anything a pipeline consumes wants `--json`. Both flags need `-N` /
+`--no-tui`, and passing both gives the indented form — `--json-pretty` wins
+the branch. Both fall silent under `--no-cli-print`, which suppresses the
+per-message stream whatever shape it takes.
+
 ### jq recipes
 
 One recipe per question, each a complete pipeline — run the one you want, not
@@ -192,9 +209,10 @@ sipnab -N -I capture.pcap --call-report 'abc123@192.0.2.1' --no-cli-print
 
 The richer aggregated dialog object — `state`, `timing` (PDD / setup /
 ring / teardown milliseconds, retransmit counts), `sdp_timeline`,
-`streams` with jitter and loss, and the `diagnosis` flags (`one_way_audio`,
-`nat_mismatch`, `no_media`) plus `hints` — is one shape produced by a single
-serializer. One place documents it, with a full worked example, under
+`streams` with jitter and loss, and the four `diagnosis` flags
+(`one_way_audio`, `nat_mismatch`, `no_media`, `private_media_address`) plus
+`hints` — is one shape produced by a single serializer. One place documents
+it, with a full worked example, under
 [`GET /v1/dialogs/{call_id}` in the REST API reference](@/docs/api.md#get-v1-dialogs-call-id).
 
 ### One object per dialog

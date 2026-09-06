@@ -2345,8 +2345,6 @@ pub mod schema {
         /// Final INVITE response code, once the call reached one. Absent —
         /// never zero — while the call is still in progress.
         pub final_status_code: Option<u16>,
-        /// Reason phrase that came with `final_status_code`.
-        pub final_status_reason: Option<String>,
         /// First to last message, seconds. `0` for a single-message dialog.
         pub duration_sec: f64,
         /// RFC 3339 timestamp of the first message.

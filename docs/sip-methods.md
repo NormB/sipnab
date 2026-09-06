@@ -32,12 +32,18 @@ So a `200 OK` in an INVITE dialog means the callee picked up only when that
 `CSeq` says `INVITE`. The same code answering a `CANCEL` means the cancellation
 arrived, and nothing more.
 
-| Machine | Methods | Terminal states |
+Every dialog opens in `Trying`. From there each machine reaches only its own
+states, and a state no machine reaches is a state no filter can select:
+
+| Machine | Methods | States it reaches |
 |---|---|---|
-| INVITE | `INVITE`, `ACK`, `BYE`, `CANCEL`, `PRACK` | `InCall`, `Completed`, `Canceled`, `Failed` |
-| REGISTER | `REGISTER` | `Registered`, `Failed` |
-| SUBSCRIBE | `SUBSCRIBE` | `Active`, `Terminated` |
-| generic | the other seven | `Completed`, `Failed` |
+| INVITE | `INVITE`, `ACK`, `BYE`, `CANCEL`, `PRACK` | `Ringing`, `InCall`, `Transferring`, `Completed`, `Canceled`, `Redirected`, `Failed` |
+| REGISTER | `REGISTER` | `Registered`, `Expired`, `Redirected`, `Failed` |
+| SUBSCRIBE | `SUBSCRIBE` | `Pending`, `Active`, `Terminated`, `Redirected` |
+| generic | the other seven | `Completed`, `Redirected`, `Failed` |
+
+`Expired` is a de-registration: a 2xx to a `REGISTER` whose `Contact` granted
+zero seconds. `Redirected` is a 3xx, which every machine can draw.
 
 <!-- vale off -->
 

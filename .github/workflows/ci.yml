@@ -599,7 +599,7 @@ jobs:
 
   ci-success:
     # Bounds how long this job can hold the main-branch concurrency
-    # group, which never supersedes. Observed: 0.0 min, but it waits on 9 needs.
+    # group, which never supersedes. Observed: 0.0 min, but it waits on 11 needs.
     timeout-minutes: 10
     name: CI success
     if: always()

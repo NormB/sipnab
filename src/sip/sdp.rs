@@ -35,6 +35,14 @@ pub struct SdpMedia {
     pub media_type: String,
     /// Transport port number.
     pub port: u16,
+    /// Number of consecutive port PAIRS, from the `m=` line's `/count` form.
+    ///
+    /// RFC 8866 §5.14: `m=video 49170/2 RTP/AVP 31` means ports 49170 and
+    /// 49171 form one RTP/RTCP pair and 49172 and 49173 form the second.
+    /// `None` when the offer used the plain form — which is a different fact
+    /// from an explicit count of one, and is kept distinguishable for that
+    /// reason.
+    pub port_count: Option<u16>,
     /// Transport protocol: `"RTP/AVP"`, `"RTP/SAVP"`, `"udptl"`, etc.
     pub proto: String,
     /// Payload type numbers or format strings.
@@ -227,6 +235,15 @@ pub fn parse_sdp(body: &[u8]) -> Result<SdpSession, ParseError> {
 
     // Track whether we are inside a media section
     let mut in_media = false;
+    // True only while the most recent `m=` produced a media description. A
+    // malformed one leaves it false so its attributes are dropped rather than
+    // applied to the section before it.
+    let mut media_open = false;
+    // Session-level direction, applied to every media description that
+    // declares none (RFC 8866 §6.7).
+    let mut session_direction: Option<SdpDirection> = None;
+    let mut explicit_direction: std::collections::BTreeSet<usize> =
+        std::collections::BTreeSet::new();
 
     for line in text.lines() {
         let line = line.trim_end_matches('\r');
@@ -255,7 +272,11 @@ pub fn parse_sdp(body: &[u8]) -> Result<SdpSession, ParseError> {
             b'c' => {
                 let conn = parse_connection(value);
                 if in_media {
-                    if let Some(media) = session.media.last_mut() {
+                    // Only when the CURRENT `m=` produced a section. An
+                    // unparseable media line leaves `media_open` false, and its
+                    // lines are dropped rather than credited to the section
+                    // before it.
+                    if media_open && let Some(media) = session.media.last_mut() {
                         media.connection = conn;
                     }
                 } else {
@@ -264,17 +285,47 @@ pub fn parse_sdp(body: &[u8]) -> Result<SdpSession, ParseError> {
             }
             b'm' => {
                 in_media = true;
+                media_open = false;
                 if let Some(media) = parse_media_line(value) {
                     session.media.push(media);
+                    media_open = true;
                 }
             }
             b'a' if in_media => {
-                if let Some(media) = session.media.last_mut() {
-                    parse_attribute(value, media);
+                if media_open {
+                    // Remember that this section spoke for itself, so the
+                    // session-level default below does not overwrite it.
+                    // Taken before the mutable borrow, not inside it.
+                    let index = session.media.len().saturating_sub(1);
+                    if parse_direction(value).is_some() {
+                        explicit_direction.insert(index);
+                    }
+                    if let Some(media) = session.media.last_mut() {
+                        parse_attribute(value, media);
+                    }
+                }
+            }
+            // A session-level attribute: before the first `m=`. RFC 8866 §6.7
+            // makes a direction here the default for every media description
+            // that declares none, and dropping these lines meant a call held
+            // at session level read as `sendrecv` on every stream.
+            b'a' => {
+                if let Some(dir) = parse_direction(value) {
+                    session_direction = Some(dir);
                 }
             }
             _ => {
                 // Ignore unknown or session-level lines we don't need
+            }
+        }
+    }
+
+    // RFC 8866 §6.7: "If none appears in a media description, then the one
+    // from session level, if any, applies to that media description."
+    if let Some(dir) = session_direction {
+        for (i, media) in session.media.iter_mut().enumerate() {
+            if !explicit_direction.contains(&i) {
+                media.direction = dir;
             }
         }
     }
@@ -373,13 +424,27 @@ fn parse_media_line(value: &str) -> Option<SdpMedia> {
     }
 
     let media_type = parts[0].to_string();
-    let port: u16 = parts[1].parse().ok()?;
+    // RFC 8866 §9: `port ["/" integer]`. Splitting first is what makes the
+    // conformant `49170/2` parse; before this it failed `u16::from_str`, the
+    // whole media description was dropped, and every attribute that belonged
+    // to it was applied to the PREVIOUS section instead.
+    let (port_text, count_text) = parts[1]
+        .split_once('/')
+        .map_or((parts[1], None), |(p, c)| (p, Some(c)));
+    let port: u16 = port_text.parse().ok()?;
+    let port_count: Option<u16> = match count_text {
+        // A count that will not parse makes the whole `m=` line malformed,
+        // rather than a section with a silently forgotten count.
+        Some(c) => Some(c.parse().ok()?),
+        None => None,
+    };
     let proto = parts[2].to_string();
     let formats: Vec<String> = parts[3..].iter().map(|s| (*s).to_string()).collect();
 
     Some(SdpMedia {
         media_type,
         port,
+        port_count,
         proto,
         formats,
         connection: None,
@@ -407,32 +472,47 @@ fn parse_media_line(value: &str) -> Option<SdpMedia> {
 /// and appends to `rtpmap`, `fmtp`, `crypto`, or `ice_candidates` (or sets
 /// `ptime`) for the corresponding `name:value` attributes. Unrecognized
 /// attributes are ignored.
-fn parse_attribute(value: &str, media: &mut SdpMedia) {
-    // Direction attributes (no colon)
+/// The direction an `a=` attribute names, or `None` if it names something else.
+///
+/// One rule in one place: the media-level parser and the session-level default
+/// both ask this, so a direction that one recognizes cannot be a direction the
+/// other misses.
+///
+/// # Arguments
+///
+/// * `value` — the text after `a=`.
+///
+/// # Returns
+///
+/// The direction, or `None` for any other attribute.
+fn parse_direction(value: &str) -> Option<SdpDirection> {
     match value {
-        "sendrecv" => {
-            media.direction = SdpDirection::SendRecv;
-            return;
-        }
-        "sendonly" => {
-            media.direction = SdpDirection::SendOnly;
-            return;
-        }
-        "recvonly" => {
-            media.direction = SdpDirection::RecvOnly;
-            return;
-        }
-        "inactive" => {
-            media.direction = SdpDirection::Inactive;
-            return;
-        }
-        // RFC 5761 §5.1.1: a flag attribute, no value. In an offer it asks for
-        // RTP and RTCP on one port, in an answer it agrees.
-        "rtcp-mux" => {
-            media.rtcp_mux = true;
-            return;
-        }
-        _ => {}
+        "sendrecv" => Some(SdpDirection::SendRecv),
+        "sendonly" => Some(SdpDirection::SendOnly),
+        "recvonly" => Some(SdpDirection::RecvOnly),
+        "inactive" => Some(SdpDirection::Inactive),
+        _ => None,
+    }
+}
+
+/// Parse a single `a=` attribute value and apply it to the current media
+/// section.
+///
+/// # Arguments
+///
+/// * `value` — the text after `a=`.
+/// * `media` — the media description the attribute belongs to.
+fn parse_attribute(value: &str, media: &mut SdpMedia) {
+    // Direction attributes (no colon), resolved by the shared rule.
+    if let Some(dir) = parse_direction(value) {
+        media.direction = dir;
+        return;
+    }
+    // RFC 5761 §5.1.1: a flag attribute, no value. In an offer it asks for
+    // RTP and RTCP on one port, in an answer it agrees.
+    if value == "rtcp-mux" {
+        media.rtcp_mux = true;
+        return;
     }
 
     // Attributes with values (name:value)
@@ -507,6 +587,179 @@ fn parse_crypto(value: &str) -> Option<SdpCrypto> {
 /// Tests for SDP session/media/attribute parsing and error handling.
 #[cfg(test)]
 mod tests {
+    // ── RFC 8866 §5.14: the `m=` port-count form ─────────────────────────
+
+    /// `m=video 49170/2 RTP/AVP 31` is conformant and must parse.
+    ///
+    /// RFC 8866 §9: `media-field = %s"m" "=" media SP port ["/" integer] SP
+    /// proto 1*(SP fmt) CRLF`. §5.14 works the example through: ports 49170
+    /// and 49171 form one RTP/RTCP pair, 49172 and 49173 the second.
+    #[test]
+    fn the_media_port_count_form_parses() {
+        let sdp = parse_sdp(b"v=0\r\nm=video 49170/2 RTP/AVP 31\r\n").expect("parses");
+        assert_eq!(sdp.media.len(), 1, "the section must not be dropped");
+        assert_eq!(sdp.media[0].port, 49170);
+        assert_eq!(sdp.media[0].port_count, Some(2));
+        assert_eq!(sdp.media[0].media_type, "video");
+    }
+
+    /// The plain form reports no count rather than a fabricated 1.
+    ///
+    /// The negative half: `None` says "the offer did not use the form", which
+    /// is a different fact from "the offer asked for one port pair".
+    #[test]
+    fn the_plain_media_form_reports_no_port_count() {
+        let sdp = parse_sdp(b"v=0\r\nm=audio 20000 RTP/AVP 0\r\n").expect("parses");
+        assert_eq!(sdp.media[0].port_count, None);
+    }
+
+    /// Attributes after a port-count `m=` land on the NEW section.
+    ///
+    /// This is the defect as it actually harmed: the `m=` was dropped, the
+    /// parser stayed "in media", and every following attribute was applied to
+    /// the PREVIOUS section. The audio stream was reported sendonly, anchored
+    /// to the video's address, and carrying the video's codec — three facts
+    /// about a stream that had none of them.
+    #[test]
+    fn a_port_count_section_does_not_bleed_into_the_previous_one() {
+        let sdp = parse_sdp(
+            concat!(
+                "v=0\r\n",
+                "c=IN IP4 192.0.2.1\r\n",
+                "m=audio 20000 RTP/AVP 0\r\n",
+                "a=rtpmap:0 PCMU/8000\r\n",
+                "m=video 30000/2 RTP/AVP 96\r\n",
+                "c=IN IP4 198.51.100.9\r\n",
+                "a=rtpmap:96 H264/90000\r\n",
+                "a=sendonly\r\n",
+            )
+            .as_bytes(),
+        )
+        .expect("parses");
+
+        assert_eq!(sdp.media.len(), 2, "two media descriptions, not one");
+        let audio = &sdp.media[0];
+        assert_eq!(audio.media_type, "audio");
+        assert_eq!(
+            audio.direction,
+            SdpDirection::SendRecv,
+            "audio was never held"
+        );
+        assert!(audio.connection.is_none(), "audio uses the session address");
+        assert_eq!(audio.rtpmap.len(), 1, "audio carries only its own codec");
+        assert_eq!(audio.rtpmap[0].encoding, "PCMU");
+
+        let video = &sdp.media[1];
+        assert_eq!(video.port, 30000);
+        assert_eq!(video.direction, SdpDirection::SendOnly);
+        assert_eq!(
+            video.connection.as_ref().map(|c| c.addr.as_str()),
+            Some("198.51.100.9")
+        );
+        assert_eq!(video.rtpmap[0].encoding, "H264");
+    }
+
+    /// An `m=` line sipnab cannot parse discards its attributes rather than
+    /// crediting them to the previous section.
+    ///
+    /// The general form of the same fault. A port outside `u16` is malformed
+    /// rather than conformant, so the section is legitimately not built — but
+    /// what follows still belongs to it, and must not be attributed elsewhere.
+    #[test]
+    fn an_unparseable_media_line_does_not_bleed_either() {
+        let sdp = parse_sdp(
+            concat!(
+                "v=0\r\n",
+                "m=audio 20000 RTP/AVP 0\r\n",
+                "m=video 99999999 RTP/AVP 96\r\n",
+                "a=sendonly\r\n",
+                "a=rtpmap:96 H264/90000\r\n",
+            )
+            .as_bytes(),
+        )
+        .expect("parses");
+        assert_eq!(sdp.media.len(), 1, "the malformed section is not built");
+        assert_eq!(
+            sdp.media[0].direction,
+            SdpDirection::SendRecv,
+            "and its attributes are not credited to the audio stream"
+        );
+        assert!(sdp.media[0].rtpmap.is_empty());
+    }
+
+    // ── RFC 8866 §6.7: session-level direction ───────────────────────────
+
+    /// A session-level direction applies to a media section that declares none.
+    ///
+    /// RFC 8866 §6.7: "If none appears in a media description, then the one
+    /// from session level, if any, applies to that media description."
+    #[test]
+    fn a_session_level_direction_applies_to_media_that_declares_none() {
+        let sdp = parse_sdp(
+            concat!("v=0\r\n", "a=inactive\r\n", "m=audio 49180 RTP/AVP 0\r\n",).as_bytes(),
+        )
+        .expect("parses");
+        assert_eq!(sdp.media[0].direction, SdpDirection::Inactive);
+    }
+
+    /// A media-level direction wins over the session-level one.
+    #[test]
+    fn a_media_level_direction_overrides_the_session_level_one() {
+        let sdp = parse_sdp(
+            concat!(
+                "v=0\r\n",
+                "a=inactive\r\n",
+                "m=audio 49170 RTP/AVP 0\r\n",
+                "a=sendrecv\r\n",
+            )
+            .as_bytes(),
+        )
+        .expect("parses");
+        assert_eq!(sdp.media[0].direction, SdpDirection::SendRecv);
+    }
+
+    /// RFC 8866 §6.7's own worked example, verbatim.
+    ///
+    /// The RFC states the expected result in prose immediately below it:
+    /// the first stream is sendrecv, the other two inherit `inactive`. Using
+    /// the specification's own example is the strongest available check that
+    /// the reading is the RFC's rather than sipnab's.
+    #[test]
+    fn the_rfc_8866_worked_example_resolves_as_the_rfc_says() {
+        let sdp = parse_sdp(
+            concat!(
+                "v=0\r\n",
+                "o=jdoe 3724395000 3724395001 IN IP6 2001:db8::1\r\n",
+                "s=-\r\n",
+                "c=IN IP6 2001:db8::1\r\n",
+                "t=0 0\r\n",
+                "a=inactive\r\n",
+                "m=audio 49170 RTP/AVP 0\r\n",
+                "a=sendrecv\r\n",
+                "m=audio 49180 RTP/AVP 0\r\n",
+                "m=video 51372 RTP/AVP 99\r\n",
+                "a=rtpmap:99 h263-1998/90000\r\n",
+            )
+            .as_bytes(),
+        )
+        .expect("parses");
+        assert_eq!(sdp.media.len(), 3);
+        assert_eq!(sdp.media[0].direction, SdpDirection::SendRecv);
+        assert_eq!(sdp.media[1].direction, SdpDirection::Inactive);
+        assert_eq!(sdp.media[2].direction, SdpDirection::Inactive);
+    }
+
+    /// With no session-level attribute the default stays `sendrecv`.
+    ///
+    /// The negative case: the session-level rule must not change what an
+    /// ordinary offer means. RFC 8866 §6.7 makes `sendrecv` the default when
+    /// nothing is said at either level.
+    #[test]
+    fn absent_direction_at_both_levels_is_still_sendrecv() {
+        let sdp = parse_sdp(b"v=0\r\nm=audio 49170 RTP/AVP 0\r\n").expect("parses");
+        assert_eq!(sdp.media[0].direction, SdpDirection::SendRecv);
+    }
+
     use super::SdpOriginKey;
 
     const ORIGIN_A: &str = "alice 2890844526 2890842807 IN IP4 198.51.100.7";

@@ -25,8 +25,6 @@ here ran against a real build. The addresses belong to a private lab bridge,
 and the arrangement is deliberately more separated than a real one needs, so
 each half can prove itself on its own.
 
-OpenSIPS routes the call, rtpengine carries the media, sipnab watches both without taking part, and a conserver keeps what comes out. Here is how to build that, operate it, prove it works, and recognize the failure modes that look like success.
-
 ## Why two capture points
 
 A proxy and a media relay see different halves of a call. `sipnab-proxy` shares the OpenSIPS network namespace and sees INVITE, 200 OK, ACK, BYE — and no media at all. `sipnab-relay` shares the rtpengine namespace and sees RTP — and never a SIP message.
@@ -218,7 +216,7 @@ an `@`, which a URL parser otherwise treats as the start of a host. `jq -rR
 @uri` does it without a helper script:
 
 ```bash
-KEY=$(cat secrets/api.key) CID='1-133@172.28.0.21' ENC=$(jq -rR @uri <<<'1-133@172.28.0.21')
+KEY=$(cat secrets/api.key) ENC=$(jq -rR @uri <<<'1-133@172.28.0.21')
 ```
 
 Ask the node that holds both the Call-ID and the audio for the container:
@@ -416,11 +414,82 @@ sequenceDiagram
 
 From a clone to a running stack. Docker and Docker Compose are the only prerequisites, and the repository builds everything else.
 
-1. Mint the credentials Two secrets: a long-lived HMAC key that mints rotating MCP bearer tokens, and a REST API key. Both land in `harness/secrets/`, which is git-ignored by pattern. `cd harness make signing-key make api-key`
-1. Generate the two voices The caller and callee must play *different* media, or the two legs are indistinguishable. Real speech rather than a tone, because nobody can tell a well-recorded sine from a badly recorded one — a male caller counting up and a female callee counting down make a captured call audible as a call. `[./scripts/make-speech-pcaps.sh](https://github.com/NormB/sipnab/blob/main/harness/scripts/make-speech-pcaps.sh) # caller: en_US-ryan (male) ssrc=0x0CA11E12 # callee: en_US-amy (female) ssrc=0x5AFE1234`
-1. Build and start The sipnab image must carry `vcon`, `audio` and `hep`. Without `hep` the relay cannot decode the control plane at all. `docker compose build docker compose up -d docker compose ps`
-1. Confirm both nodes answer Different `capture_identity.node` values are the proof that they are two capture points and not one reached twice. `KEY=$(cat secrets/api.key) curl -s -H "Authorization: Bearer $KEY" \ http://127.0.0.1:8080/v1/stats | jq .capture_identity curl -s -H "Authorization: Bearer $KEY" \ http://127.0.0.1:8081/v1/stats | jq .capture_identity`
-1. Run the test Places calls, waits for the relay to name the media, queries both nodes over REST and MCP, and writes a timestamped report. `CALLS=3 [./scripts/run-e2e.sh](https://github.com/NormB/sipnab/blob/main/harness/scripts/run-e2e.sh) # → results/e2e-<UTC>.md`
+Every command below runs from the `harness` directory.
+
+```bash
+cd harness
+```
+
+### Step 1 — mint the credentials
+
+Two secrets: a long-lived HMAC key that mints rotating MCP bearer tokens, and a
+REST API key. Both land in the harness `secrets/` directory, which the
+repository ignores by pattern. Both targets are idempotent.
+
+```bash
+make signing-key
+```
+
+```bash
+make api-key
+```
+
+### Step 2 — generate the two voices
+
+The caller and callee must play *different* media, or the two legs are
+indistinguishable. Real speech rather than a tone, because nobody can tell a
+well-recorded sine from a badly recorded one — a male caller counting up and a
+female callee counting down make a captured call audible as a call. The script
+defaults to `en_US-ryan-medium` with SSRC `0x0CA11E12` for the caller and
+`en_US-amy-medium` with SSRC `0x5AFE1234` for the callee.
+
+```bash
+./scripts/make-speech-pcaps.sh
+```
+
+### Step 3 — build and start
+
+The sipnab image must carry `vcon`, `audio` and `hep`. Without `hep` the relay
+cannot decode the control plane at all.
+
+```bash
+docker compose build
+```
+
+```bash
+docker compose up -d
+```
+
+```bash
+docker compose ps
+```
+
+### Step 4 — confirm both nodes answer
+
+Different `capture_identity.node` values are the proof that they are two
+capture points and not one reached twice.
+
+```bash
+KEY=$(cat secrets/api.key)
+```
+
+```bash
+curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:8080/v1/stats | jq .capture_identity
+```
+
+```bash
+curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:8081/v1/stats | jq .capture_identity
+```
+
+### Step 5 — run the test
+
+It places calls, waits for the relay to name the media, queries both nodes over
+REST and MCP, and writes a timestamped report to `results/e2e-<UTC>.md`. `CALLS`
+sets how many calls to place, and defaults to 3.
+
+```bash
+CALLS=3 ./scripts/run-e2e.sh
+```
 
 ## What a good run looks like
 
@@ -467,7 +536,7 @@ The proxy reports **zero streams** and the relay **zero dialogs**. That asymmetr
 
 Four stream records for two audio streams is correct, not duplication: a relay sees each direction arriving and leaving. Two SSRCs is the number of voices.
 
-## The two clients
+## The three clients
 
 Both run on the host, outside the containers. Read-only.
 
@@ -477,7 +546,7 @@ Both run on the host, outside the containers. Read-only.
 | [`clients/mcp_probe.py`](https://github.com/NormB/sipnab/blob/main/harness/clients/mcp_probe.py) | MCP 8731 / 8732 | Drives the door an agent uses; compares both nodes' answers |
 | [`clients/vcon_view.py`](https://github.com/NormB/sipnab/blob/main/harness/clients/vcon_view.py) | conserver 8000 | Lists stored vCons, renders one, extracts its audio as WAV |
 
-Both capture clients refuse to report on one node reached twice — `leg_correlate.py` compares capture instances, `mcp_probe.py` compares `capture_identity.instance`. Point them both at the same URL and they exit rather than present a node agreeing with itself as corroboration.
+The two capture clients refuse to report on one node reached twice — `leg_correlate.py` compares capture instances, `mcp_probe.py` compares `capture_identity.instance`. Point them both at the same URL and they exit rather than present a node agreeing with itself as corroboration. `vcon_view.py` reads the conserver instead, so the check does not apply to it.
 
 ## Traps
 
@@ -527,11 +596,13 @@ Both ends replayed the same pcap, SSRC included, so the legs carried byte-identi
 
 A background call loop keeps dialing during a measurement, so every figure is the calls under test plus whatever the loop fit in the same window.
 
-## Known limitation
+## The stereo trap, and where it now stands
 
-The exported WAV is stereo, but on a relay capture **both channels can carry the same leg**. The relay sees each direction twice, arriving and leaving, so four stream records exist for two audio streams. Stereo export selects the first two exportable streams, which may be two copies of one SSRC.
+A relay capture makes it easy to export one leg twice. The relay sees each direction arriving and leaving, so four stream records exist for two audio streams, and an exporter that simply takes the first two it finds picks the same voice twice. The result is a stereo file whose channels are byte-identical: it claims a conversation and carries one side of it.
 
-The stored audio is real and provably intact. It is simply one side of the conversation duplicated across both channels. Selecting two streams with *distinct SSRCs* is the fix, and it belongs in sipnab rather than in the harness.
+sipnab closed that in its own exporter. It walks the exportable streams in first-seen order, keeps one per SSRC, takes two, and falls back to mono when only one source is present — so a two-source call exports as two voices and a one-source capture says so by being mono rather than by faking a second channel. The omission caveat counts SOURCES rather than records for the same reason: counting records would report two of four streams missing on a call where sipnab captured both parties.
+
+The trap still applies to anything building containers by another route. Apply the same rule there. To check a file you already hold, compare the channels — identical RMS across a whole recording means one leg, not a quiet line.
 
 ## Reference
 
@@ -594,6 +665,8 @@ Captured from a running stack, not written by hand. A synthetic sample teaches y
 ```
 
 `instance` is what tells two nodes apart. Compare it before trusting any answer that claims to join them — two clients pointed at one sipnab otherwise agree with each other perfectly.
+
+Read that `capture_quality` block as the keys this page uses rather than as the whole object. Current builds also report `invalid_timestamps`, the unanswered STUN/TURN counters and `ice_role_conflicts` there. The REST reference carries the full list.
 
 ```
 1-141@172.28.0.21  172.28.0.20:6000  -> 172.28.0.11:30006  PCMA  4500p  jitter=0.00ms  mos=4.36

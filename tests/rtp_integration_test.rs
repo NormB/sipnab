@@ -136,6 +136,7 @@ fn make_sdp(addr: &str, port: u16) -> SdpSession {
         media: vec![SdpMedia {
             media_type: "audio".to_string(),
             port,
+            port_count: None,
             proto: "RTP/AVP".to_string(),
             formats: vec!["0".to_string()],
             connection: None,

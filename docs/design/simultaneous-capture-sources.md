@@ -147,7 +147,7 @@ sipnab does not correlate a dialog to a stream by capture source. It correlates
 by SDP media endpoint, and the key is a bare `(IpAddr, u16)`.
 
 `extract_sdp_links` ([`src/pipeline.rs:1677`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1677)) resolves each `m=` section's address
-through `effective_address` ([`src/sip/sdp.rs:289`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L289)) — media-level `c=` when
+through `effective_address` ([`src/sip/sdp.rs:340`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L340)) — media-level `c=` when
 present, session-level otherwise — and yields `(ip, port, call_id, media)`
 tuples. `process_packet` ([`src/pipeline.rs:2331`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2331)) feeds each one to `link_to_dialog_with_sdp`
 ([`src/rtp/stream_store.rs:1105`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1105)), which lands in `link_endpoint_with_ptime`

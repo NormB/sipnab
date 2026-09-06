@@ -372,23 +372,33 @@ struct FirstLine {
 /// `ParseError::InvalidStatusCode` when the status code is not a `u16`, and
 /// `ParseError::NotSip` when the line is neither form.
 fn parse_first_line(line: &str) -> Result<FirstLine, ParseError> {
-    let line = line.trim();
+    // Trailing whitespace is significant on a status-line and must not be
+    // trimmed away before the reason phrase is located: RFC 3261 §25.1 gives
+    // `Reason-Phrase = *(...)`, which permits ZERO characters, so
+    // `SIP/2.0 100 ` — with the required SP and nothing after it — is a
+    // well-formed response. RFC 4475 §3.1.1.13 states it outright: "This
+    // well-formed response contains no reason phrase. A parser must accept
+    // this message." Trimming first destroyed that SP, `find(' ')` then failed,
+    // and the whole response was dropped with only a debug-level line to say
+    // so. Leading whitespace is still removed, and the rest of the function
+    // keeps its deliberate tolerance for sloppy spacing.
+    let line = line.trim_start();
+    let line = line.strip_suffix(['\r', '\n']).unwrap_or(line);
 
     if let Some(after_version) = line.strip_prefix("SIP/2.0 ") {
-        // Response: "SIP/2.0 200 OK"
-        let space_pos = after_version
-            .find(' ')
-            .ok_or_else(|| ParseError::InvalidFirstLine {
-                line: line.to_string(),
-                reason: "no space after status code",
-            })?;
+        // Response: "SIP/2.0 200 OK", or "SIP/2.0 100 " with an empty phrase.
+        let space_pos = after_version.find(' ').unwrap_or(after_version.len());
         let code_str = &after_version[..space_pos];
         let code: u16 = code_str
             .parse()
             .map_err(|_| ParseError::InvalidStatusCode {
                 code: code_str.to_string(),
             })?;
-        let reason = after_version[space_pos + 1..].trim().to_string();
+        let reason = after_version
+            .get(space_pos + 1..)
+            .unwrap_or("")
+            .trim()
+            .to_string();
 
         Ok(FirstLine {
             is_request: false,
@@ -845,6 +855,68 @@ mod find_crlf_tests {
 /// security caps on header size/count.
 #[cfg(test)]
 mod tests {
+    /// A response with an empty Reason-Phrase parses.
+    ///
+    /// RFC 3261 §25.1: `Status-Line = SIP-Version SP Status-Code SP
+    /// Reason-Phrase CRLF` and `Reason-Phrase = *(reserved / unreserved /
+    /// escaped / UTF8-NONASCII / UTF8-CONT / SP / HTAB)` — the `*` permits
+    /// zero characters. RFC 4475 §3.1.1.13 leaves nothing to interpretation:
+    /// "This well-formed response contains no reason phrase. A parser must
+    /// accept this message. The space character after the reason code is
+    /// required."
+    ///
+    /// The defect: `parse_first_line` opened with `line.trim()`, which removed
+    /// that required trailing SP; `find(' ')` then failed and the entire
+    /// response was discarded. At the default log level nothing was printed, so
+    /// a capture simply lost every such response.
+    #[test]
+    fn a_response_with_an_empty_reason_phrase_is_accepted() {
+        let parsed = parse_first_line("SIP/2.0 100 ").expect("RFC 4475 3.1.1.13 must parse");
+        assert!(!parsed.is_request);
+        assert_eq!(parsed.status_code, Some(100));
+        assert_eq!(
+            parsed.reason.as_deref(),
+            Some(""),
+            "an empty phrase, not a missing one"
+        );
+    }
+
+    /// A status-line with no SP after the code at all still parses.
+    ///
+    /// Stricter reading: `SIP/2.0 100` omits the SP the RFC requires, so it is
+    /// malformed. sipnab is a passive analyzer and its documented posture is to
+    /// report what was on the wire rather than to refuse it — the same
+    /// tolerance `parse_first_line` already applies to multiple spaces in a
+    /// request-line. Pinned so the choice is deliberate rather than accidental.
+    #[test]
+    fn a_status_line_missing_the_required_space_is_still_read() {
+        let parsed = parse_first_line("SIP/2.0 486").expect("tolerated");
+        assert_eq!(parsed.status_code, Some(486));
+        assert_eq!(parsed.reason.as_deref(), Some(""));
+    }
+
+    /// An ordinary response is unchanged.
+    ///
+    /// The regression guard: every capture is mostly these, and the fix
+    /// touched the line that parses all of them.
+    #[test]
+    fn an_ordinary_reason_phrase_still_parses() {
+        let parsed = parse_first_line("SIP/2.0 486 Busy Here").expect("parses");
+        assert_eq!(parsed.status_code, Some(486));
+        assert_eq!(parsed.reason.as_deref(), Some("Busy Here"));
+    }
+
+    /// A UTF-8 reason phrase survives, empty-phrase handling notwithstanding.
+    ///
+    /// RFC 4475 §3.1.1.12 (`unreason`) carries a Cyrillic phrase, and
+    /// `Reason-Phrase` admits `UTF8-NONASCII`. Slicing by byte index near a
+    /// multi-byte character is exactly where a fix like this goes wrong.
+    #[test]
+    fn a_utf8_reason_phrase_survives() {
+        let parsed = parse_first_line("SIP/2.0 200 Всё хорошо").expect("parses");
+        assert_eq!(parsed.reason.as_deref(), Some("Всё хорошо"));
+    }
+
     /// `COMPACT_HEADERS` matches the IANA registry exactly.
     ///
     /// Nineteen header fields have a registered single-letter alias, and RFC

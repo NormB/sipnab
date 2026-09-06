@@ -832,3 +832,65 @@ fn every_documented_response_matches_what_the_server_sends() {
         );
     }
 }
+
+/// The published `DialogSummary` component declares exactly the keys the
+/// projection serializes — no more, no less.
+///
+/// `every_documented_response_matches_what_the_server_sends` validates a live
+/// body against the schema, which catches a MISSING property and cannot catch
+/// an EXTRA one: an optional property the server never emits satisfies every
+/// validator and still tells a client author to write a branch that never runs.
+/// That is what happened here — the component declared `final_status_reason`,
+/// which `crate::output::model::DialogSummary` has no field for and no dialog
+/// list row has ever carried.
+///
+/// Driven from a value with every `Option` populated, so a field that is merely
+/// absent on the fixture of the day cannot read as an undeclared one.
+#[test]
+fn the_dialog_summary_component_declares_exactly_what_the_projection_emits() {
+    let every_field_present = sipnab::output::model::DialogSummary {
+        call_id: "c@203.0.113.1".to_string(),
+        state: "Failed".to_string(),
+        method: "INVITE".to_string(),
+        from_user: Some("alice".to_string()),
+        to_user: Some("bob".to_string()),
+        msg_count: 4,
+        final_status_code: Some(486),
+        duration_sec: 1.5,
+        created_at: "2026-09-06T00:00:00Z".to_string(),
+        updated_at: "2026-09-06T00:00:01Z".to_string(),
+        timing: sipnab::output::model::TimingSummary {
+            pdd_ms: Some(180),
+            setup_ms: Some(2134),
+            retransmits: 0,
+            duration_ms: Some(1200),
+        },
+        frame: Some("capture.pcap#41@6f3a1c02b8d4e795".to_string()),
+        input_origin: Some("wire".to_string()),
+    };
+    let emitted: BTreeSet<String> = serde_json::to_value(&every_field_present)
+        .expect("the projection serializes")
+        .as_object()
+        .expect("into an object")
+        .keys()
+        .cloned()
+        .collect();
+
+    let doc = document();
+    let declared: BTreeSet<String> = doc
+        .pointer("/components/schemas/DialogSummary/properties")
+        .and_then(Value::as_object)
+        .unwrap_or_else(|| panic!("the document must carry a DialogSummary component"))
+        .keys()
+        .cloned()
+        .collect();
+
+    let phantom: Vec<&String> = declared.difference(&emitted).collect();
+    let undeclared: Vec<&String> = emitted.difference(&declared).collect();
+    assert!(
+        phantom.is_empty() && undeclared.is_empty(),
+        "the published DialogSummary does not match the projection.\n  \
+         declared but never emitted: {phantom:?}\n  \
+         emitted but not declared:   {undeclared:?}"
+    );
+}

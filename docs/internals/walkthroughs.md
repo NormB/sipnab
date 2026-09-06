@@ -117,8 +117,10 @@ touching the help failed two assertions in `keybinding_drift_test`.
    cited a `scripts/check-tool-descriptions.sh` that does not exist. Both halves
    are now wrong — `server.rs` no longer carries the citation, and the rule shipped
    as a Rust test rather than the shell script the plan named. That test also
-   carries `the_cited_description_gate_actually_exists`, which fails if the
-   dangling citation ever comes back.)**
+   carries `every_cited_script_exists`, which fails if the dangling citation
+   ever comes back. It now scans every tracked `.rs` file whole, not the first
+   40 lines of one, because the narrow version asserted nothing once the
+   citation went away.)**
 3. Take the store guard, project what you need into owned data, **drop the
    guard**, and only then `.await`.
 4. Bound the response with

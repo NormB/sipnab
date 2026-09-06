@@ -147,7 +147,13 @@ impl SipMessage {
     /// same Call-ID/CSeq but different top-Via branches belong to distinct
     /// transactions. An empty `branch=` value is treated as absent.
     pub fn top_via_branch(&self) -> Option<&str> {
-        let via = *self.via_headers().first()?;
+        let row = *self.via_headers().first()?;
+        // The TOP Via is the first via-parm, not the first ROW. RFC 3261
+        // §20.42 makes `Via` a comma-separated list and §7.3.1 lets any number
+        // of rows be combined into one, so a single row may hold several hops
+        // — and reading the whole row returned a later hop's branch, or a
+        // slice running from one branch through the next hop.
+        let via = row.split(',').next()?;
         for param in via.split(';').skip(1) {
             let param = param.trim();
             let (name, value) = match param.split_once('=') {
@@ -459,30 +465,200 @@ fn extract_display_name(header_value: &str) -> Option<String> {
 /// angle brackets are not mistaken for the header-level tag. Returns a
 /// borrow of the tag value, or `None` when no non-empty `;tag=` follows.
 fn extract_tag(header_value: &str) -> Option<&str> {
-    // The tag parameter appears after a semicolon outside angle brackets.
-    // Find the closing '>' first (if present), then look for ";tag=".
-    let search_from = header_value.find('>').unwrap_or(0);
-    let remainder = &header_value[search_from..];
+    // Step over a quoted display name FIRST. RFC 3261 §25.1 puts `>` (%x3E)
+    // and `;` (%x3B) inside `qdtext`, so both are legal inside one and neither
+    // ends it. Anchoring on the first `>` in the raw value let a sender put
+    // `"A>;tag=decoy"` in the display name and choose the tag — and the From
+    // tag is half the dialog identifier (§12.1.1), so that is a correlation
+    // spoofing primitive rather than a cosmetic miss.
+    let after_display = skip_quoted_display_name(header_value);
+    // Header parameters begin after the addr-spec. Everything between `<` and
+    // `>` is URI parameters (§25.1 `SIP-URI = ... uri-parameters [headers]`),
+    // which are not header parameters and must not be searched.
+    let remainder = match after_display.find('>') {
+        Some(close) => &after_display[close + 1..],
+        None => after_display,
+    };
 
-    let tag_prefix = ";tag=";
-    let tag_start = remainder.find(tag_prefix)?;
-    let value_start = tag_start + tag_prefix.len();
-    let value = &remainder[value_start..];
-
-    // Tag value ends at next ';', ',', or end of string
-    let end = value.find([';', ',']).unwrap_or(value.len());
-    let tag = value[..end].trim();
-
-    if tag.is_empty() {
-        return None;
+    // `SEMI = SWS ";" SWS` and `EQUAL = SWS "=" SWS`, and §7.3.1 makes the
+    // parameter NAME case-insensitive — so the literal `";tag="` this used to
+    // search for matched only one of the conformant spellings.
+    for param in remainder.split(';').skip(1) {
+        let Some((name, value)) = param.split_once('=') else {
+            continue;
+        };
+        if !name.trim().eq_ignore_ascii_case("tag") {
+            continue;
+        }
+        // A value ends at the next COMMA, which separates header values.
+        let end = value.find(',').unwrap_or(value.len());
+        let tag = value[..end].trim();
+        if tag.is_empty() {
+            return None;
+        }
+        return Some(tag);
     }
-    Some(tag)
+    None
 }
 
 /// Tests for malformation detection, URI user/host/tag/display extraction,
 /// and top-Via branch parsing.
 #[cfg(test)]
 mod tests {
+    /// The TOP Via value is the first via-parm, not the first Via row.
+    ///
+    /// RFC 3261 §20.42: `Via = ( "Via" / "v" ) HCOLON via-parm *(COMMA
+    /// via-parm)`, and §7.3.1 permits multiple rows to be combined into one
+    /// comma-separated row without changing the message. So the topmost Via
+    /// VALUE may be the first of several inside one row.
+    ///
+    /// The defect: `top_via_branch` took the whole first row and split it on
+    /// `;` only, so on a comma-combined header it returned the SECOND
+    /// via-parm's branch — or, when the first carried one, a string running
+    /// from the branch through the next via-parm. Everything keyed on the
+    /// transaction read that: retransmission detection, scanner and
+    /// registration-flood detection, digest-leak detection and three lint
+    /// rules.
+    #[test]
+    fn the_top_via_branch_comes_from_the_first_via_parm() {
+        // The top via-parm carries no branch; the second one does. Reading the
+        // row instead of the value silently borrowed the second's.
+        let msg = msg_with_vias(&[
+            "Via: SIP/2.0/UDP first.example.com, SIP/2.0/UDP second.example.com;branch=z9hG4bKsecond",
+        ]);
+        assert_eq!(
+            msg.top_via_branch(),
+            None,
+            "the top via-parm has no branch, so there is none to report"
+        );
+    }
+
+    /// With a branch on the top via-parm, that one is returned whole.
+    ///
+    /// The other half: splitting on `;` alone also let the returned slice run
+    /// past the COMMA into the next via-parm, so the "branch" was not even a
+    /// branch value.
+    #[test]
+    fn the_top_via_branch_stops_at_the_comma() {
+        let msg = msg_with_vias(&[
+            "Via: SIP/2.0/UDP a.example.com;branch=z9hG4bKfirst, SIP/2.0/UDP b.example.com;branch=z9hG4bKsecond",
+        ]);
+        assert_eq!(msg.top_via_branch(), Some("z9hG4bKfirst"));
+    }
+
+    /// Separate Via rows are unaffected.
+    ///
+    /// The regression guard: the ordinary shape, where each hop adds its own
+    /// row, must keep returning the first row's branch.
+    #[test]
+    fn separate_via_rows_still_report_the_first_rows_branch() {
+        let msg = msg_with_vias(&[
+            "Via: SIP/2.0/UDP a.example.com;branch=z9hG4bKtop",
+            "Via: SIP/2.0/UDP b.example.com;branch=z9hG4bKnext",
+        ]);
+        assert_eq!(msg.top_via_branch(), Some("z9hG4bKtop"));
+    }
+
+    // ── RFC 3261 §7.3.1 / §25.1: the tag parameter ──────────────────────
+
+    /// `; tag = x` is conformant and must yield the tag.
+    ///
+    /// RFC 3261 §25.1: `SEMI = SWS ";" SWS`, `EQUAL = SWS "=" SWS`,
+    /// `SWS = [LWS]` — whitespace on either side of both separators is legal
+    /// and may be a fold. RFC 4475 §3.1.1.1 (`wsinv`) carries exactly this
+    /// shape and says "All elements should treat this as a well-formed
+    /// request".
+    ///
+    /// The defect: `extract_tag` searched for the byte literal `";tag="`, so
+    /// any conformant spacing lost the tag entirely — and the dialog
+    /// identifier is Call-ID plus both tags (§12.1.1).
+    #[test]
+    fn a_tag_with_conformant_whitespace_is_found() {
+        for value in [
+            "<sip:alice@example.com>;tag=1928301774",
+            "<sip:alice@example.com> ; tag = 1928301774",
+            "<sip:alice@example.com>;  tag  =  1928301774",
+            "<sip:alice@example.com>;\ttag\t=\t1928301774",
+            "<sip:alice@example.com> ;tag= 1928301774",
+        ] {
+            assert_eq!(
+                extract_tag(value),
+                Some("1928301774"),
+                "SEMI and EQUAL admit SWS: {value:?}"
+            );
+        }
+    }
+
+    /// The parameter name is case-insensitive.
+    ///
+    /// RFC 3261 §7.3.1: "field values, parameter names, and parameter values
+    /// are case-insensitive", with `ExPiReS` given as the worked example.
+    #[test]
+    fn the_tag_parameter_name_is_case_insensitive() {
+        for value in [
+            "<sip:alice@example.com>;TAG=abc",
+            "<sip:alice@example.com>;Tag=abc",
+            "<sip:alice@example.com>;tAg=abc",
+        ] {
+            assert_eq!(extract_tag(value), Some("abc"), "{value:?}");
+        }
+    }
+
+    /// A decoy inside a quoted display name does not become the tag.
+    ///
+    /// RFC 3261 §25.1 puts `>` (%x3E) and `;` (%x3B) inside `qdtext`, so both
+    /// are legal within a display name and neither ends it. `extract_tag`
+    /// anchored on the first `>` anywhere in the value, including one the
+    /// sender wrote inside the quotes — so the caller chose the From tag, and
+    /// the From tag is half the dialog identifier. That is a correlation
+    /// spoofing primitive, not a cosmetic parse miss.
+    ///
+    /// `skip_quoted_display_name` already existed for exactly this attack and
+    /// was used by `addr_spec`; this function never got it.
+    #[test]
+    fn a_decoy_in_a_quoted_display_name_is_not_the_tag() {
+        assert_eq!(
+            extract_tag("\"A>;tag=decoy\" <sip:alice@example.com>;tag=realtag"),
+            Some("realtag"),
+            "the tag after the real addr-spec wins"
+        );
+    }
+
+    /// An escaped DQUOTE does not end the display name.
+    ///
+    /// `quoted-pair = "\\" (%x00-09 / %x0B-0C / %x0E-7F)`, so `\"` is a
+    /// literal quote inside the string. RFC 4475 §3.1.1.1 uses this too.
+    #[test]
+    fn an_escaped_quote_does_not_end_the_display_name() {
+        assert_eq!(
+            extract_tag("\"J Rosenberg \\\" >;tag=decoy\" <sip:jdrosen@example.com>;tag=98asjd8"),
+            Some("98asjd8")
+        );
+    }
+
+    /// A parameter merely ENDING in `tag` is not the tag.
+    ///
+    /// The negative case a substring search gets wrong in the other direction:
+    /// `;ttag=` and `;xtag=` contain `tag=` but are different parameters.
+    #[test]
+    fn a_parameter_whose_name_merely_ends_in_tag_is_not_the_tag() {
+        assert_eq!(extract_tag("<sip:a@b>;ttag=no"), None);
+        assert_eq!(extract_tag("<sip:a@b>;xtag=no;tag=yes"), Some("yes"));
+    }
+
+    /// A bare addr-spec with no angle brackets still yields its tag.
+    #[test]
+    fn a_bare_addr_spec_still_yields_its_tag() {
+        assert_eq!(extract_tag("sip:alice@example.com;tag=abc"), Some("abc"));
+    }
+
+    /// No tag means None, not an empty string.
+    #[test]
+    fn a_header_with_no_tag_has_no_tag() {
+        assert_eq!(extract_tag("<sip:alice@example.com>"), None);
+        assert_eq!(extract_tag("<sip:alice@example.com>;tag="), None);
+    }
+
     use super::*;
 
     // ── malformation detection (SNB-0003, spec §5.2) ───────────────────

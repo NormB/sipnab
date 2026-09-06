@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**37 open, 425 done** across 30 sections.
+**56 open, 440 done** across 34 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -54,7 +54,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | PV | 0 | 13 | `##########` |
 | P2 | 0 | 109 | `##########` |
 | P3 | 0 | 64 | `##########` |
-| P4 | 1 | 39 | `##########` |
+| P4 | 4 | 39 | `#########.` |
 | PA | 1 | 12 | `#########.` |
 | PB | 0 | 20 | `##########` |
 | TK | 3 | 7 | `#######...` |
@@ -71,7 +71,11 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | SPELL | 1 | 0 | `..........` |
 | MCPX | 1 | 6 | `#########.` |
 | OBS | 7 | 0 | `..........` |
-| LIVE | 5 | 0 | `..........` |
+| REQ | 4 | 13 | `########..` |
+| CMP | 5 | 0 | `..........` |
+| GTP | 2 | 1 | `###.......` |
+| MER | 4 | 1 | `##........` |
+| LIVE | 6 | 0 | `..........` |
 | P5 | 7 | 13 | `######....` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
 
@@ -1850,7 +1854,7 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
   conditions a `BYE`/`CANCEL`-seeded dialog does not meet (chiefly
   `cseq_method == "INVITE"`), so routing to it leaves cells unmodelled rather
   than filled. Five successive narrowings — dispatch-only rather than
-  relabelling the user-visible `dialog.method`, then `BYE|CANCEL` only, then a
+  relabeling the user-visible `dialog.method`, then `BYE|CANCEL` only, then a
   rewritten spec matrix — each had
   `every_method_and_class_has_a_declared_transition` find a *different*
   uncovered cell (the last: a BYE dialog in `Trying` receiving `300` stayed
@@ -2300,7 +2304,7 @@ holds anything to it.
   **The figure that motivated this item was wrong.** It read "230 unlabeled, 132
   command-looking"; the real number was **28**. The measuring script used
   `^```$ … ^```$`, which matches a *labeled* fence's closing ``` as an
-  unlabelled opener — the same fence-parsing bug [`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs)
+  unlabeled opener — the same fence-parsing bug [`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs)
   documents when it warns against reusing `fenced_blocks`, made in the script
   written to find it. A proper open/close walk gives 28. Recorded because the
   wrong number reached this file, two commits and a release-cycle decision
@@ -2398,6 +2402,65 @@ holds anything to it.
   **The count above is quoted from one run against one installed binary**
   (0.5.149, which serves 63 tools where the tree registers 64) and has not been
   re-measured since. Re-run it before acting on the figure.
+
+- [ ] **The performance baseline is stale for the third recorded time
+  (added 2026-09-06).** [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json) records 0.5.122 at 3.25M pkt/s on
+  four cores with an 80% floor of 2.60M. PERF1 in this file measured the tool
+  at **3.56M** on the same four cores after the retained-frame-digest change
+  landed on 2026-08-28. A 27% regression from today's real throughput would
+  still clear that floor, so the gate is watching a number the tool passed
+  weeks ago.
+
+  [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json)'s own `_comment` says a raise on the benchmarks page and
+  a raise in that file are the SAME event. They have come apart three times.
+
+  **Do:** re-measure on the documented host and method, raise both together, and
+  then make them one event rather than a convention — a baseline that can be
+  raised without the page, or a page raised without the baseline, will separate
+  again for the same reason it already has.
+
+- [ ] **[`docs/benchmarks.md`](https://github.com/NormB/sipnab/blob/main/docs/benchmarks.md) carries figures with no recoverable provenance
+  (added 2026-09-06).** A documentation sweep traced every number on the page.
+  Most resolve to [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json), [`bench/carrier.py`](https://github.com/NormB/sipnab/blob/main/bench/carrier.py) defaults, PERF1's
+  tables or arithmetic over those. These do not resolve to anything:
+  the 0.5.108 "~1% spread ... 39 and 53 times larger" comparison (its table is
+  not on the page), the "2.14M to 3.09M at 20k calls" claim against an 0.5.104
+  sweep that is likewise absent, the 128 MB / 129 MB / 96-143-99 MiB memory
+  figures, 3.30M and ~3.26M, the carrier-scale sweep's pkts/s and RSS columns,
+  and "0.5.18 measured 1.06M against the 1.20M this page once published".
+
+  The page now carries a banner saying its tables describe 0.5.122 and predate
+  the 2026-08-28 change. That is honest and it is not a fix.
+
+  **Do:** re-run the sweep and replace each figure with one that has a committed
+  record, or delete the claim. **A number is the most dangerous thing to
+  repeat**, because it looks measured even when nothing measured it.
+
+  **One that cannot be reconciled and is small enough to be worse for it:** the
+  page's headline 4-core 0.5.122 figure is **3.23M**; [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json)
+  records `3250000` with replicates `[3250000, 3290000, 3290000]` and a note
+  that the baseline is the lowest replicate. 3.23M is none of the three. The
+  0.6% gap sits inside the page's own noise floor, which is exactly why it
+  survived — and the same cell is pinned by
+  `homepage_throughput_tiles_match_the_benchmarks_page`, so the homepage
+  inherits it.
+
+- [ ] **The WASM plugin ABI documents four exports and the host resolves three
+  (added 2026-09-06).** [`docs/plugins.md`](https://github.com/NormB/sipnab/blob/main/docs/plugins.md) and
+  [`docs/design/wasm-plugin-api.md`](wasm-plugin-api.md) both require
+  `sipnab_dealloc`. Nothing in [`src/plugin/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs) ever looks it up: the host
+  resolves `sipnab_plugin_abi_version`, `sipnab_alloc` and `sipnab_analyze`, and
+  a plugin that omits the fourth loads and runs.
+
+  **It is not a leak.** `analyze` calls `instantiate` per dialog and drops the
+  `wasmi::Store` when it returns, so the guest's whole linear memory goes with
+  it and there is nothing for a deallocator to reclaim.
+
+  **Do:** decide which half is wrong, then make the other half enforce it —
+  either resolve `sipnab_dealloc` at load and refuse a plugin without it, or
+  drop the requirement from both documents. A requirement nothing checks is a
+  requirement that is already optional; the only question is whether the next
+  plugin author finds that out from the spec or from a load failure.
 
 ## PA — agent-surface program (added 2026-08-03)
 
@@ -5639,7 +5702,7 @@ class recur:
   speaks", and [`docs/mcp-tools.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools.md) described the two as taking one vocabulary.
   They do not: `--filter` runs `expand_alias` first
   ([`src/app/bootstrap.rs:2157`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2157)) and `vcon_selection`
-  ([`src/app/batch.rs:5513`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5513)) parses raw. The doc claim is corrected;
+  ([`src/app/batch.rs:5530`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5530)) parses raw. The doc claim is corrected;
   the behavior is not, and the flag is the one that is wrong -- reusing the
   filter language is the stated design, and ten `DIAGNOSTIC_ALIASES` are part
   of that language.
@@ -5698,7 +5761,7 @@ doubled `-lled` inside a token, invisible to both gates.
   is a rename, which is cheap; the care is in the two that are not internal.
   `cancelled_count` in [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs)
   is a published key and must be treated as the `unanalysed_*` family was — a
-  wire contract with a deprecation window, not a sweep. `aria-labelledby` in
+  wire contract with a deprecation window, not a sweep. `aria-labeledby` in
   the templates is the HTML spec's own attribute and must never be touched;
   the existing gate already says so in a comment, and a token-aware rule needs
   that exemption made explicit rather than implied by a word-boundary
@@ -5963,6 +6026,293 @@ use.
   reachable from one surface and not the other is the parity defect this project
   has already fixed twice.
 
+## REQ — request ledger, 2026-09-06 (added 2026-09-06)
+
+Every request made during the 2026-09-06 working session, so none is lost, with
+its state. Items marked done here are done in the tree, not merely started; each
+points at the topical entry that carries the detail. This section is a ledger,
+not a second place to write requirements — when a request needs design, it gets
+an entry in its own section and this row links to it.
+
+**Landed**
+
+- [x] Runtime statistics over MCP and REST — memory, volume counts, diagnostics.
+  See OBS1-OBS3.
+- [x] Calls and messages per interval, broken down by method. See OBS4.
+- [x] Interface statistics. See OBS5 — the distinction between handle-scoped
+  `pcap::Stat` counters and the interface's own is the substance of it.
+- [x] Surface sipnab's impact on the host it captures on. See OBS6.
+- [x] Live testing against the running lab, and the captures it produces. See
+  the LIVE section.
+- [x] Keep the REST documentation and the OpenAPI document in sync, and
+  regenerate the document when the API changes. The contract test diffs the
+  published artifact against the live router and has a bless path.
+- [x] MCP Inspector documented as the agent surface's counterpart to Swagger,
+  with a schema-dump script. The published Inspector documentation is wrong
+  about the `--` separator for its CLI client, and the section says so.
+- [x] Use the existing capture corpus for testing — 17 corpus binaries, 84
+  tests, 121 captures, 14,200,071 packets, run green.
+- [x] Add the new capture set to the corpus. See GTP3, which also records why
+  those five files must never be committed.
+- [x] Documentation sweep across every page, by subtask. Seven agents over
+  disjoint file sets; findings folded in, ratchets moved with per-file
+  attribution.
+- [x] `by_method` on the dialog page, over MCP and REST alike. See AS4.
+- [x] Prove sipnab solves hard problems on real traffic — it found GTP1 on the
+  new captures, a defect no synthetic fixture would have produced.
+- [x] Comprehensive positive and negative tests for all new code, each proved to
+  discriminate by mutation.
+
+**Open**
+
+- [ ] Annotated Mermaid sequence diagrams for the UI and for reporting output.
+  See MER2-MER5. MER1 landed because it was a live defect rather than a feature.
+- [ ] Gaps found by reading a commercial competitor. See CMP1-CMP5.
+- [ ] A committed GTP-U fixture from a real core. See GTP2.
+- [ ] Conformance audit of every parser against the ABNF or wire format of the
+  RFC that defines it, not only RFC 3261. In flight; findings will land as their
+  own entries rather than here.
+
+**Standing instructions recorded so they are not re-litigated**
+
+- Every defect owes twice the number of related tests, positive and negative.
+- A test written after the code proves nothing until a mutation shows it
+  discriminating. Say so plainly when a mutation comes back blind — one did on
+  2026-09-06, and the gate it exposed could never have failed.
+- Fixing problems outranks adding features.
+
+## CMP — gaps found by reading a commercial competitor (added 2026-09-06)
+
+A survey of a commercial pcap analyzer sold into the same triage job. Most of
+its feature list sipnab already covers or beats — reach, encrypted signaling,
+conformance linting, security detection and evidence are all categories the
+competitor does not compete in. Three things it does that sipnab cannot, and two
+cheap gaps its page made obvious.
+
+- [ ] **CMP1 — sipnab computes an R-factor and throws it away.**
+  [`src/rtp/quality.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs) computes `r = 93.2 - id - ie_eff` and converts it, and no
+  surface publishes it. The only `r_factor` anywhere is the FAR END's RTCP XR
+  value in [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs), which is a different measurement of a different
+  path segment. Carriers write thresholds and SLAs in R, and R is the linear
+  scale: the difference between MOS 4.35 and 4.20 reads as noise while the eight
+  R-points behind it do not.
+
+  **Do:** carry `r_factor` on `StreamSummary` so REST and MCP get it from one
+  derivation; give it the same `mos_grounded`/`mos_grounding` keys, because an
+  ungrounded R is exactly as meaningless as an ungrounded MOS; name the scale,
+  since a wideband R and a narrowband R are not the same axis; add
+  `rtp.r_factor` to the filter DSL with the never-select-ungrounded rule
+  `rtp.mos` already has.
+
+- [ ] **CMP2 — the quality timeline records how the call was going, never how
+  good it was.** `QualityInterval` carries `timestamp`, `jitter_ms`, `loss_pct`
+  and `packets` — no score, no verdict — sampled every five seconds. It is
+  already surfaced on `rtp_stats`, `GET /v1/streams`, the TUI and the WASM
+  analyzer, so the plumbing exists and only the number is missing. Five seconds
+  is also the wrong resolution for a failure this project has already recorded:
+  a 90% loss figure that turned out to be three bursts of half a second vanishes
+  into a five-second mean.
+
+  **Do:** compute a MOS per interval through the same grounding path, so an
+  interval on an unpublished codec is refused exactly as the stream-level score
+  is; add a three-state verdict where "not scorable" is the only answer for an
+  ungrounded codec and never a color on the good/poor scale; make the interval
+  configurable, moving the retention cap with it so a shorter interval cannot
+  silently shorten the history.
+
+- [ ] **CMP3 — a subnet is not a regex.** The filter DSL's only subnet answer is
+  a regex on the dotted string. That is wrong for every prefix that is not
+  octet-aligned — a `/22` cannot be written at all — it matches neighbours if
+  the anchor is dropped, and it is unusable for IPv6, where one address has many
+  textual forms. `group_dialogs` has the matching hole: its dimensions take
+  `src.ip` as an exact value, so "which access network" cannot be asked.
+
+  **Do:** add a CIDR literal and an `in_subnet` operator evaluating on the
+  parsed address rather than its string form, so v4 and v6 behave identically;
+  add `src.subnet/N` as a grouping dimension with the prefix length in the
+  dimension name, so the answer states its own granularity; replace the regex
+  recipe rather than leaving two ways that disagree at the edges.
+
+- [ ] **CMP4 — silence in the packets is not silence in the audio.** The only
+  quiet-call signal is Comfort Noise frame counting. A gateway sending full-rate
+  frames of digital silence — the ordinary shape of a dead-air complaint —
+  produces perfect packet statistics, a grounded MOS of 4.36, and no finding.
+  `--retain-audio` already decodes the payload to PCM for WAV export, so the
+  samples are in hand and nothing looks at them.
+
+  **Do:** on that existing PCM, report two measurements with their thresholds
+  stated in the output — dead-air spans below a named RMS floor, and hard-clip
+  runs at full scale — as diagnosis flags beside `one_way` and `no_media`.
+  **Name it an amplitude measurement and keep it out of anything called a MOS**,
+  or it becomes the ungrounded confident number this project refuses everywhere
+  else.
+
+- [ ] **CMP5 — decide the VoLTE codec question rather than drifting into it.**
+  Audio export admits `PCMU`, `PCMA` and `opus`, so it refuses on every VoLTE
+  stream, and any future PCM work is dead on mobile traffic before it starts.
+  The blocker is not engineering — reference decoders exist — it is patent and
+  license exposure on an MIT-OR-Apache-2.0 project, which is the ground PF_RING
+  was declined on.
+
+  **Do:** write the decision up the way the other declines were written, naming
+  the licenses and pools for AMR-NB, AMR-WB and EVS and what each means for the
+  `.deb`, the image and the static tarballs, which differ. **Do the unencumbered
+  half first regardless:** parsing the AMR/AMR-WB payload header for the frame
+  mode needs no decoder and no license, and it is what pins an `Ie,WB` that
+  otherwise spans a full MOS point.
+
+  **Declined outright: a perceptual MOS.** It needs a subjectively-labeled
+  corpus that does not exist here, cannot be reproduced from the pcap by a
+  reader who doubts it, and would ship as a versioned model artifact beside the
+  binary — the objection that already closed the ML anomaly entry.
+
+## GTP — mobile-core traffic sipnab now meets (added 2026-09-06)
+
+Running sipnab over an LTE capture found a defect nothing synthetic would have:
+four GTPv2-C control messages were reported as an RTP stream with a confident
+`mos: 1.0`. The cause is a genuine collision — a TURN ChannelData header and a
+GTPv2-C header are the same shape, and both define Length as "the octets after
+the first four", so the whole-datagram check passes. That is fixed. What the
+episode exposed is that sipnab's mobile-core coverage rests on fixtures sipnab
+wrote for itself.
+
+- [x] **GTP1 (done 2026-09-06) — GTPv2-C reported as relayed media.** Found on a
+  real capture: SSRC `0x02000200`, codec PCMU, `mos: 1.0`, `mos_grounded: true`,
+  between two hosts on UDP 2123. GTPv2's first octet is `0x48` whenever the TEID
+  flag is set, which lands every such message inside ChannelData's
+  `0x4000..=0x7FFF` channel window. **Fixed** by refusing the unwrap on the GTP
+  ports, checking both ends — a response has 2123 at both while a request may
+  come from an ephemeral port, so a destination-only rule would unwrap one
+  direction and fabricate a one-way stream.
+
+  **A port denylist, deliberately not a TURN allowlist.** Relayed media arrives
+  on whatever ephemeral port an Allocate handed out, so an allowlist would
+  refuse the real thing — which is the regression NAT4 exists to prevent.
+
+- [ ] **GTP2 — the GTP-U decapsulator has never seen a real GTP-U header.**
+  [`tests/tunnel_integration_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/tunnel_integration_test.rs) exercises SIP-in-GTP-U through
+  `fn gtpu_header(payload_len: usize) -> Vec<u8>`, a header the test builds
+  itself, and no committed fixture under `tests/pcap-samples/` carries GTP-U at
+  all. sipnab's decapsulator and sipnab's fixture were written from the same
+  reading of TS 29.281, so they agree with each other; only a real core can
+  contradict that reading. A real capture examined on 2026-09-06 does carry a
+  SIP REGISTER inside a G-PDU, and sipnab decoded it — but that capture cannot
+  be committed (GTP3).
+
+  **Do:** produce one in the lab rather than importing one. The harness already
+  stands up OpenSIPS; putting a GTP-U tunnel in front of it yields a PII-free,
+  license-clean fixture of exactly this path, promotable under LIVE4.
+
+- [ ] **GTP3 — the LTE captures now in the corpus must never be committed.**
+  Five captures from a public community-LTE library were added to the private
+  corpus on 2026-09-06 and are the reason GTP1 was found. They stay private, for
+  two independent reasons, either sufficient:
+
+  **No license.** The page states no terms — no copyright line, no reuse
+  statement, and the project's own repository ships none of these files, so its
+  MIT grant does not reach them. Absence of terms is "all rights reserved", not
+  permission.
+
+  **Real device identity.** They carry a real IMEI in a `+sip.instance` URN, an
+  IMSI-derived subscriber identity, and in two of the five roughly 19 MB of a
+  real person's DNS queries and TLS SNI. LIVE4's rule already disqualifies those
+  two on their face.
+
+  **Do:** leave them under `SIPNAB_CORPUS` where the corpus gates read them and
+  nothing publishes them. If a committed equivalent is ever wanted, ask the
+  author to state a license — and even then redact before promoting, because the
+  privacy question is separate from the licensing one.
+
+## MER — annotated sequence diagrams (added 2026-09-06)
+
+sipnab renders Mermaid from two places today and neither is reachable from a
+shell, which is how one of them rotted unnoticed. The TUI exporter escapes its
+labels; the browser analyzer did not, and interpolated the sender-written reason
+phrase raw into diagram source the website hands out as a `.mmd` download. That
+half is fixed — the escaper now lives in [`src/mermaid.rs`](https://github.com/NormB/sipnab/blob/main/src/mermaid.rs), ungated so every
+target can reach it, with a gate asserting one definition. What remains is that
+the diagram throws away everything the ladder already knows.
+
+- [x] **MER1 (done 2026-09-06) — one escaper, reachable from every target.**
+  `src/output/` is gated on `feature = "native"` and [`src/wasm.rs`](https://github.com/NormB/sipnab/blob/main/src/wasm.rs) compiles only
+  for `wasm32`, where `native` is off, so the two generators could not share
+  code and the escaping fix reached only one of them. [`src/mermaid.rs`](https://github.com/NormB/sipnab/blob/main/src/mermaid.rs) is
+  ungated and holds the single rule; [`tests/mermaid_one_escaper_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/mermaid_one_escaper_test.rs) gates
+  both the "no unescaped interpolation" property and the "exactly one
+  definition" property.
+
+  **`%` was missing from the escape set.** `%%` opens a Mermaid comment, so an
+  unescaped one truncates the label — a quiet wrong answer, which is worse than
+  a parse error.
+
+  **The gate's first version was vacuous and a mutation caught it.** Splitting
+  the function body on `;` treated `let label = if .. { escaped } else { raw };`
+  as one statement, so the escaped arm satisfied the check for both arms and the
+  restored defect stayed green. It now matches the argument SPAN of each
+  escaper call by paren balance.
+
+- [ ] **MER2 — the Mermaid export drops every annotation the ladder computed.**
+  Measured against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap): the on-screen
+  ladder carried `+0.847s`, `Codecs: PCMU, PCMA` under both SDP-bearing
+  messages, and the PDD; the export of the same rows in the same session emitted
+  seven bare arrows. `export_mermaid` reads only `msg.label`, while
+  `FormattedMessage` also carries `timestamp`, `pdd_note`, `extra_lines`
+  (including SIPREC session, mode and stream ownership), `sdp_badge`
+  (`HOLD`/`UNHOLD`/`+G.722`), `is_retransmission`, `fold_label` and
+  `diagnosis_note`. The annotations are the reason to draw the diagram.
+
+  **Do:** emit `autonumber` — the number is the index `get_message` takes, which
+  is how a reader drills in — then a `Note right of <dst>` per row composed from
+  the timestamp, the PDD note, the SDP badge and the diagnosis tag expanded to a
+  sentence, and `Note over` for RTP segments and retransmit folds.
+
+  **Reject `alt`, `opt`, `loop`, `activate` and `deactivate`.** The first three
+  assert design-time branching; sipnab renders one observed history, so drawing
+  a branch claims a choice that never existed. `activate` draws an activation
+  bar, and SIP transactions overlap in ways that do not stack — a mismatched
+  pair is a parse error rather than a wrong picture.
+
+- [ ] **MER3 — the export has no size bound and the renderer's ceiling is known.**
+  `save_to_mermaid_path` flattens every message of every selected dialog into
+  one diagram, and from the Call List with nothing selected that is the whole
+  capture. The bundle sipnab itself ships sets `maxTextSize: 5e4` and
+  `maxEdges: 500`; past either, the renderer refuses the diagram outright rather
+  than degrading. A 1334-dialog capture produces a file that opens in nothing,
+  with no line in it saying why.
+
+  **Do:** cap participants, arrows and characters, truncating only at a dialog
+  or phase boundary — a diagram ending between an INVITE and its 200 misstates
+  the call. Say so inside the diagram, in sipnab's own voice, naming the flag
+  that widens it.
+
+- [ ] **MER4 — `render_ladder` does not render a ladder.** It calls
+  `generate_call_report`, which emits tables. Its own description says the
+  output is byte-identical to `--call-report --markdown`, which is true and is
+  the problem: an agent asking for a ladder gets tables. The `text` arm is also
+  strictly richer than the `markdown` one — `SIP Transactions:` is written only
+  for text — so the format an agent is likeliest to request loses the one
+  sequence-shaped section that exists.
+
+  **Do:** add `format: "mermaid"`, fence the whole diagram once as a single
+  content block rather than per note (`⟦`/`⟧` are visible glyphs that would
+  render inside the picture, and nesting flattens them), add the transactions
+  section to the markdown arm, and correct the description.
+
+- [ ] **MER5 — participant identity is ambiguous for IPv6.** The address is
+  formatted `{ip}:{port}` with no brackets, so an IPv6 endpoint reads
+  `2001:db8::1:5060` — not parseable back into an address — and the id derivation
+  maps both `:` and `.` to `_`, so two distinct IPv6 endpoints can collide on
+  one participant id and silently merge into one lifeline.
+
+  **Do:** bracket IPv6 in the address, and make ids positional
+  (`crate::mermaid::participant_id`) with the address carried only in the label
+  — unambiguous by construction and unable to carry a payload.
+
+  **Reject role labels.** EventHelix writes `P-CSCF` / `S-CSCF` because it
+  diagrams a specification. sipnab observes a wire and has no role inference;
+  labeling a host `Proxy` because it forwarded a message puts a verdict in a
+  picture the capture cannot support.
+
 ## LIVE — validation against running servers, and the captures it produces (added 2026-09-06)
 
 Everything in this repository is currently proved by fixtures and by the
@@ -6036,6 +6386,44 @@ them away.
   output satisfied the vendored schema and the backend still would not store it
   — a 204 that is not storage. Schema conformance and acceptance are two
   different assertions and only one of them is currently automated.
+
+- [ ] **LIVE6 — two correlation strategies have never seen a real header
+  (added 2026-09-06).** `corpus_charging_vector_population_test` printed this
+  on a full corpus run today:
+
+  > `NOTICE: no message in the corpus carries P-Charging-Vector (148964 SIP
+  > messages across 62 captures). The correlation strategies
+  > charging_vector_related_icid and charging_vector_icid are exercised by
+  > SYNTHETIC fixtures ONLY; this suite being green is not evidence that they
+  > work on real traffic.`
+
+  The same run read 121 captures and 14,200,071 packets with none unread, and
+  **two instruments outside sipnab agree**: `tshark -Y 'frame matches
+  "(?i)p-charging-vector"'` over every corpus file, and a parser-free
+  `grep -ril -a` over the same files plus the one gzipped capture. Both return
+  zero, and both were run with a positive control on the same command shape --
+  tshark counted 160,780 `Call-ID` frame matches across the same 62 captures the
+  notice names, and the byte grep found `Call-ID` in 64 files. `icid-value` and
+  `P-Charging-Function-Addresses` are likewise absent, which rules out the
+  header arriving under a different spelling.
+
+  **The tshark pass alone would not have been evidence.** It failed to open 30
+  of the 138 files -- a `.zip`, an `.html`, a shell script, a log, and
+  `direct-01.pcap4`, which it rejects as cut short while sipnab reads it -- and
+  a tool that never opened a file reports the same zero as one that read it and
+  found nothing. The byte grep is what closes that, because it parses nothing
+  and so has no file it cannot read. PB17 built both strategies and the fixtures that drive them; what
+  neither PB17 nor the corpus can supply is a real IMS-adjacent capture.
+
+  **Do:** get one. `P-Charging-Vector` is an IMS header, and the lab already
+  runs OpenSIPS — a scenario that inserts a realistic `icid-value` plus
+  `related-icid` across two hops produces exactly the missing evidence, and it
+  is PII-free lab traffic that can enter `tests/pcap-samples/` under LIVE4.
+
+  **Until then the notice stays and stays loud.** A test suite that goes green
+  over a strategy no real message has exercised is the failure that notice
+  exists to prevent, and removing it to tidy the output would be removing the
+  only thing saying so.
 
 ## P5 — features & long-term / exploratory
 

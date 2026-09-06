@@ -574,6 +574,168 @@ mod tests {
         .expect("should parse request")
     }
 
+    /// Build `n` dialogs whose opening method is `method`.
+    ///
+    /// `method_breakdown` reads `d.method` and nothing else, so the rest of the
+    /// dialog is irrelevant to it — but the dialogs are built through
+    /// `SipDialog::new` rather than by struct literal, so a change to how the
+    /// opening method is derived reaches these tests instead of being masked
+    /// by a hand-set field.
+    fn dialogs_of(method: &str, n: usize) -> Vec<SipDialog> {
+        (0..n)
+            .map(|_| SipDialog::new(&make_request(method)).expect("a request opens a dialog"))
+            .collect()
+    }
+
+    /// No dialogs means no rows — not a row saying zero.
+    ///
+    /// The negative case the surfaces actually hit: `find_problems` on a clean
+    /// capture matches nothing, and a caller that trusts `by_method[0]` must
+    /// find an empty array rather than a fabricated bucket.
+    #[test]
+    fn method_breakdown_of_nothing_is_empty() {
+        assert!(method_breakdown(std::iter::empty()).is_empty());
+    }
+
+    /// One method, many dialogs: one row carrying the whole population.
+    #[test]
+    fn method_breakdown_counts_every_dialog_in_one_bucket() {
+        let dialogs = dialogs_of("REGISTER", 7);
+        assert_eq!(
+            method_breakdown(dialogs.iter()),
+            vec![("REGISTER".to_string(), 7)]
+        );
+    }
+
+    /// The dominant method comes first, whatever order the dialogs arrive in.
+    ///
+    /// Built deliberately with the SMALLEST group first, because insertion
+    /// order is the ordering a broken implementation would fall back to and
+    /// this is the case that separates the two.
+    #[test]
+    fn method_breakdown_ranks_by_count_not_by_arrival() {
+        let mut dialogs = dialogs_of("MESSAGE", 1);
+        dialogs.extend(dialogs_of("REGISTER", 2));
+        dialogs.extend(dialogs_of("INVITE", 5));
+
+        assert_eq!(
+            method_breakdown(dialogs.iter()),
+            vec![
+                ("INVITE".to_string(), 5),
+                ("REGISTER".to_string(), 2),
+                ("MESSAGE".to_string(), 1),
+            ]
+        );
+    }
+
+    /// Equal counts are ordered by method name, so two runs cannot disagree.
+    ///
+    /// This pins the CONTRACT rather than today's mechanism. The tally is a
+    /// `BTreeMap` and the sort is stable, so ties already emerge in name order
+    /// and removing the comparator's name tie-break changes no output — a
+    /// mutation confirmed that. The assertion still belongs here: it is what
+    /// keeps the observable order fixed if the tally ever becomes a `HashMap`,
+    /// which is the change that would silently make two runs over one capture
+    /// return rows in different orders.
+    ///
+    /// The methods are added in reverse alphabetical order so insertion order
+    /// and name order disagree.
+    #[test]
+    fn method_breakdown_breaks_ties_by_name() {
+        let mut dialogs = dialogs_of("SUBSCRIBE", 3);
+        dialogs.extend(dialogs_of("REGISTER", 3));
+        dialogs.extend(dialogs_of("INVITE", 3));
+
+        let rows = method_breakdown(dialogs.iter());
+        let names: Vec<&str> = rows.iter().map(|(m, _)| m.as_str()).collect();
+        assert_eq!(names, vec!["INVITE", "REGISTER", "SUBSCRIBE"]);
+        assert!(rows.iter().all(|(_, c)| *c == 3), "got {rows:?}");
+    }
+
+    /// A method sipnab has no variant for still gets its own bucket.
+    ///
+    /// The negative case for the METHOD side: `SipMethod::parse` maps an
+    /// unknown token to `Custom`, and if `as_str` collapsed those to one label
+    /// then two unrelated methods would share a row. An operator reading a
+    /// breakdown of a capture full of vendor methods would see one meaningless
+    /// bucket.
+    #[test]
+    fn method_breakdown_keeps_unknown_methods_apart() {
+        let mut dialogs = dialogs_of("FROBNICATE", 2);
+        dialogs.extend(dialogs_of("WIDGET", 1));
+
+        assert_eq!(
+            method_breakdown(dialogs.iter()),
+            vec![("FROBNICATE".to_string(), 2), ("WIDGET".to_string(), 1)]
+        );
+    }
+
+    /// One dialog is one row of one — the smallest population that is not empty.
+    #[test]
+    fn method_breakdown_of_a_single_dialog_is_one_row() {
+        let dialogs = dialogs_of("INVITE", 1);
+        assert_eq!(
+            method_breakdown(dialogs.iter()),
+            vec![("INVITE".to_string(), 1)]
+        );
+    }
+
+    /// Every dialog lands in exactly one bucket: the counts sum to the input.
+    ///
+    /// The invariant both surfaces publish. REST asserts `by_method` sums to
+    /// `total` and MCP to `total_matched`, and both of those go through a store
+    /// and a filter; this checks the arithmetic itself, so a failure here says
+    /// the tally is wrong rather than that the filter is.
+    #[test]
+    fn method_breakdown_counts_sum_to_the_population() {
+        let mut dialogs = dialogs_of("INVITE", 4);
+        dialogs.extend(dialogs_of("REGISTER", 3));
+        dialogs.extend(dialogs_of("OPTIONS", 9));
+
+        let total: usize = method_breakdown(dialogs.iter())
+            .iter()
+            .map(|(_, c)| c)
+            .sum();
+        assert_eq!(total, dialogs.len());
+    }
+
+    /// Two runs over one population return byte-identical rows.
+    ///
+    /// An agent diffing this field between polls must not see rows move for no
+    /// reason. The tally is a `BTreeMap` today so this holds trivially; it stops
+    /// holding the moment that becomes a `HashMap`, whose iteration order is
+    /// randomized per process — and the failure would be intermittent, which is
+    /// the kind nobody reproduces.
+    #[test]
+    fn method_breakdown_is_deterministic_across_runs() {
+        let mut dialogs = dialogs_of("INVITE", 2);
+        dialogs.extend(dialogs_of("REGISTER", 2));
+        dialogs.extend(dialogs_of("OPTIONS", 2));
+        dialogs.extend(dialogs_of("SUBSCRIBE", 2));
+
+        assert_eq!(
+            method_breakdown(dialogs.iter()),
+            method_breakdown(dialogs.iter())
+        );
+    }
+
+    /// A dialog opened by a RESPONSE is bucketed by its CSeq method.
+    ///
+    /// `SipDialog::new` takes the method from the request line for a request
+    /// and from CSeq for a response, and a capture that starts mid-call carries
+    /// only the latter. The two are different code paths, and a breakdown that
+    /// saw only request-opened dialogs would silently under-count exactly the
+    /// captures an operator takes during an incident.
+    #[test]
+    fn method_breakdown_buckets_a_response_opened_dialog_by_its_cseq() {
+        let dialog = SipDialog::new(&make_response(200, "OK", "INVITE"))
+            .expect("a response opens a dialog through its CSeq");
+        assert_eq!(
+            method_breakdown(std::iter::once(&dialog)),
+            vec![("INVITE".to_string(), 1)]
+        );
+    }
+
     /// Full INVITE lifecycle: Trying → (100) Trying → (180) Ringing →
     /// (200) InCall → (BYE) Completed, with identity fields populated.
     #[test]

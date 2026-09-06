@@ -251,7 +251,7 @@ Finally, inspect the actual RTP streams for that call in the TUI:
 
 ```bash
 sipnab -I capture.pcap
-#   → press '/' to filter, type 'abc123', Enter
+#   → press '/' to search, type 'abc123', Enter
 #   → Tab to switch to RTP streams view
 #   → Enter on each stream to see packet count, jitter, loss
 ```
@@ -623,7 +623,7 @@ automatically) and x86_64 (Debian 13, OpenSSL 3.5.6, BTF present).
 
 **Pitfalls:**
 
-- `tls` is a **build-time** feature, not a runtime flag. There is no `sipnab --features tls` invocation; pass `--features` to `cargo build` and use the resulting binary. `sipnab --version` only prints the version string and a commit hash — it does *not* enumerate the features in the build. To verify support, `sipnab --help | grep -E '\-\-keylog|\-\-tls-key'` — if the flags appear, the build has `tls`.
+- `tls` is a **build-time** feature, not a runtime flag. There is no `sipnab --features tls` invocation; pass `--features` to `cargo build` and use the resulting binary. To check what a binary carries, run `sipnab --version`: it prints the version, the commit, and the compiled feature list, so `tls` in that list means the build decrypts. `sipnab --help | grep -E '\-\-keylog|\-\-tls-key'` answers the same question from the flag surface — if the flags appear, the build has `tls`.
 - The keylog format is the standard NSS `SSLKEYLOGFILE` (one line per session). Same format Firefox/Chrome/curl produce.
 - TLS 1.3 + ECDH ephemeral handshakes are fully supported via the `ring` backend.
 - eCapture is a separate program under Apache-2.0; sipnab neither bundles nor links it. It needs `CAP_BPF`/`CAP_PERFMON` or root, and Linux 4.18+ on x86_64 or 5.5+ on aarch64.
@@ -691,7 +691,7 @@ capture is worth starting:
 sudo sipnab --uprobe-list
 ```
 
-```
+```text
 FLAVOR        INODE  PIDS  LIBRARY
 OpenSSL     14166752     1  /proc/982690/root/usr/lib/aarch64-linux-gnu/libssl.so.3
 wolfSSL     17433084     1  /proc/982702/root/usr/lib/aarch64-linux-gnu/libwolfssl.so.42.2.0
@@ -1325,10 +1325,10 @@ sipnab -N -I capture.pcap --filter "state == 'Failed'" --json 2>/dev/null \
 ```bash
 sipnab -I capture.pcap
 #   → select the call in the call list (Up/Down)
-#   → press 'r' or Tab to switch to the RTP stream view
+#   → press Tab to switch to the RTP stream view
 #   → highlight a stream
 #   → F2 to open the Save dialog
-#   → cycle the format (Left/Right) until you reach "WAV — Decoded G.711 audio per RTP stream"
+#   → cycle the format (Tab or Up/Down) until you reach "WAV — Decoded G.711 audio per RTP stream"
 #   → Enter to save
 ```
 
@@ -1336,7 +1336,7 @@ A timestamped `.wav` lands at the path you choose. The Save dialog also exposes 
 
 ### Live audio playback (TUI)
 
-If you've built with the `audio` feature (in default), `P` in the RTP stream view plays the highlighted stream through your local audio device.
+If you've built with the `audio` feature (in default), press `Enter` on a stream to open Stream Detail, then `P` plays that stream through your local audio device. Only Stream Detail binds that key — the stream list ignores it.
 
 ### Check whether the file holds the whole call
 
@@ -3046,12 +3046,7 @@ you want and just need the invocation. Every flag used here appears in
 NDJSON to jq, counting failures by status code:
 
 ```bash
-sipnab -N -I capture.pcap --json \
-  | jq -s 'map(select(.status_code >= 400)) | group_by(.status_code)
-```
-
-```bash
-           | map({code: .[0].status_code, n: length})'
+sipnab -N -I capture.pcap --json | jq -s 'map(select(.status_code >= 400)) | group_by(.status_code) | map({code: .[0].status_code, n: length})'
 ```
 
 Every Call-ID seen on the wire, ready to feed back into `--call-report`:

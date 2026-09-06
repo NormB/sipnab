@@ -352,6 +352,39 @@ pub struct Redactor<'a> {
     mappings: RefCell<Vec<(String, String)>>,
 }
 
+/// Split a header value at COMMAs that separate values, not at commas inside a
+/// quoted string or inside a `<...>` addr-spec.
+///
+/// RFC 3261 §25.1: `qdtext` includes `,` (%x2C), and `quoted-pair` lets a
+/// backslash escape the closing DQUOTE. A URI inside angle brackets may also
+/// carry a comma in a header parameter. Both are commas that must not split.
+fn split_top_level_commas(value: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut in_quotes = false;
+    let mut escaped = false;
+    let mut angle_depth = 0i32;
+    for (i, b) in value.bytes().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match b {
+            b'\\' if in_quotes => escaped = true,
+            b'"' => in_quotes = !in_quotes,
+            b'<' if !in_quotes => angle_depth += 1,
+            b'>' if !in_quotes => angle_depth -= 1,
+            b',' if !in_quotes && angle_depth <= 0 => {
+                parts.push(&value[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&value[start..]);
+    parts
+}
+
 impl<'a> Redactor<'a> {
     /// The policy this redactor applies.
     #[must_use]
@@ -672,8 +705,58 @@ impl<'a> Redactor<'a> {
     /// dropped: it is frequently the *only* identity in the header when the
     /// user part is an anonymous extension, and keeping it as a stable token
     /// preserves "the same person appears on these forty calls".
+    /// Rewrite every value of a header whose grammar is a COMMA-separated
+    /// list of `name-addr`.
+    ///
+    /// # The defect this exists for
+    ///
+    /// [`Self::name_addr`] parses exactly ONE value and returns whatever
+    /// follows it untouched. Every header in the identity and routing families
+    /// is `value *(COMMA value)` — RFC 3325 §9.1 for `P-Asserted-Identity`,
+    /// where two values, one `sip:` and one `tel:`, is the ordinary IMS shape;
+    /// RFC 3327 §4 for `Path`; RFC 7044 §5 for `History-Info`; RFC 3261
+    /// §20.10/§20.30 for `Contact` and `Record-Route`. So a two-value header
+    /// came out of `--redact` with its first value pseudonymized and its
+    /// second **verbatim**: a real E.164 subscriber number, a display name, or
+    /// an operator's core hostname, sitting in a container the tool calls
+    /// redacted.
+    ///
+    /// # Why splitting is not simply `split(',')`
+    ///
+    /// RFC 3261 §25.1 puts `,` (%x2C) inside `qdtext`, so `"Doe, John"` is one
+    /// display name rather than two header values, and a URI header parameter
+    /// inside `<...>` may carry one too. The scan tracks the quoted string —
+    /// honoring `quoted-pair` so a `\` does not let the DQUOTE close — and the
+    /// angle brackets, and splits only outside both.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` — the whole header value, one or more `name-addr`s.
+    ///
+    /// # Returns
+    ///
+    /// The values rewritten and rejoined with `", "`. A single-value header
+    /// comes back exactly as [`Self::name_addr`] would return it.
     #[must_use]
     pub fn name_addr(&self, value: &str) -> String {
+        let parts = split_top_level_commas(value);
+        let mut out = String::with_capacity(value.len());
+        for (i, part) in parts.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&self.name_addr_one(part.trim()));
+        }
+        out
+    }
+
+    /// Rewrite exactly ONE `name-addr`.
+    ///
+    /// Split out from [`Self::name_addr`] so the list handling lives in one
+    /// place. It is deliberately private: the leak this fixes happened because
+    /// a single-value rewriter was reachable as the public entry point and
+    /// every caller handed it a whole header value.
+    fn name_addr_one(&self, value: &str) -> String {
         let mut out = String::with_capacity(value.len());
         let mut rest = value;
 
@@ -757,15 +840,27 @@ impl<'a> Redactor<'a> {
     /// a proxy's hostname.
     #[must_use]
     pub fn charging_vector(&self, value: &str) -> String {
-        value
-            .split(';')
+        // The quote-aware walker from `sip::charging_vector`, not a second
+        // `split(';')`. `gen-value` may be a `quoted-string` and RFC 3261
+        // §25.1 puts `;` inside `qdtext`, so a naive split tore
+        // `icid-value="aaa;SECRET"` in half and emitted the tail in clear —
+        // out of the redactor, which is the one place that must not leak.
+        // Two parsers for one RFC production is what let the fix reach only
+        // one of them.
+        crate::sip::charging_vector::params(value)
             .map(|param| {
                 let Some((name, raw)) = param.split_once('=') else {
                     return param.to_string();
                 };
                 let key = name.trim().to_ascii_lowercase();
-                let quoted = raw.starts_with('"');
-                let inner = raw.trim().trim_matches('"');
+                // Trim BEFORE testing for quotes: `EQUAL = SWS "=" SWS`, so
+                // `transit-ioi = "a.1, b.2"` is conformant and the untrimmed
+                // test read it as unquoted — dropping the DQUOTEs that
+                // RFC 7315 §5.6 makes mandatory for `transit-ioi-list` and
+                // leaving its embedded COMMAs to read as value separators.
+                let raw_trimmed = raw.trim();
+                let quoted = raw_trimmed.starts_with('"');
+                let inner = raw_trimmed.trim_matches('"');
                 let mapped = match key.as_str() {
                     "icid-value" => self.opaque(inner),
                     "icid-generated-at" | "related-icid-generated-at" => self.host(inner),
@@ -1411,6 +1506,63 @@ mod tests {
         }
     }
 
+    /// A quoted `icid-value` containing a `;` is not split.
+    ///
+    /// RFC 7315 §5.6 gives `icid-value = "icid-value" EQUAL gen-value`, and
+    /// RFC 3261 §25.1 makes `gen-value` admit a `quoted-string` whose `qdtext`
+    /// includes `;` (%x3B). The redactor had its OWN `split(';')` — a second
+    /// P-Charging-Vector parser beside `src/sip/charging_vector.rs`, which
+    /// gets this right and whose module docs describe this exact attack.
+    ///
+    /// The consequence was a leak: the tail of the icid emerged in clear, and
+    /// the rewritten header was syntactically broken as well.
+    #[test]
+    fn a_quoted_icid_value_containing_a_semicolon_is_not_split() {
+        let p = policy();
+        let out = p
+            .redactor()
+            .charging_vector("icid-value=\"aaa;SECRETICID\";icid-generated-at=proxy.example.com");
+        assert!(
+            !out.contains("SECRETICID"),
+            "the second half of the icid must not survive: {out}"
+        );
+        assert!(
+            !out.contains("proxy.example.com"),
+            "and the generating proxy is still rewritten: {out}"
+        );
+    }
+
+    /// Whitespace before a quoted value does not strip its quotes.
+    ///
+    /// `EQUAL = SWS "=" SWS`, so `transit-ioi = "a.1, b.2"` is conformant.
+    /// The quoted-ness test read the UNTRIMMED value, so a leading space made
+    /// it read as unquoted and the mandatory DQUOTEs of RFC 7315 §5.6's
+    /// `transit-ioi-list` were dropped — leaving embedded COMMAs that any
+    /// downstream parser reads as a header-value separator.
+    #[test]
+    fn whitespace_before_a_quoted_value_keeps_its_quotes() {
+        let p = policy();
+        let out = p
+            .redactor()
+            .charging_vector("icid-value=abc ; transit-ioi = \"opa.1, opb.2\"");
+        // The property, not a spelling: the emitted value is quoted. `EQUAL`
+        // admits SWS on either side, so the name may keep a trailing space and
+        // an assertion pinned to one spacing would fail on conformant output.
+        let ti = out
+            .split(';')
+            .find(|p| p.trim_start().starts_with("transit-ioi"))
+            .expect("the parameter survives");
+        let value = ti.split_once('=').expect("it has a value").1.trim();
+        assert!(
+            value.starts_with('"') && value.ends_with('"'),
+            "RFC 7315 5.6 makes the DQUOTEs mandatory on transit-ioi-list: {out}"
+        );
+        assert!(
+            !out.contains("opa"),
+            "the operator is still rewritten: {out}"
+        );
+    }
+
     /// Every `P-Charging-Vector` parameter is rewritten, `void` excepted.
     #[test]
     fn every_charging_vector_parameter_is_rewritten() {
@@ -1444,6 +1596,175 @@ mod tests {
         assert!(!out.contains("pbx.internal.example"), "{out}");
         assert!(!out.contains("a84b4c76e66710"), "{out}");
         assert!(out.contains('@'), "the shape a parser expects: {out}");
+    }
+
+    /// A two-value `P-Asserted-Identity` redacts BOTH values.
+    ///
+    /// RFC 3325 §9.1: `PAssertedID = "P-Asserted-Identity" HCOLON
+    /// PAssertedID-value *(COMMA PAssertedID-value)`, and the same section says
+    /// that when there are two, one MUST be a sip/sips URI and the other a tel
+    /// URI. That two-value form is the ordinary shape in an IMS core, not an
+    /// exotic one.
+    ///
+    /// The defect this pins: `name_addr` parsed exactly one value and returned
+    /// everything after the comma **verbatim**, so a container the tool calls
+    /// redacted carried a real E.164 subscriber number in clear.
+    #[test]
+    fn both_values_of_a_two_value_identity_header_are_redacted() {
+        let p = policy();
+        let out = p
+            .redactor()
+            .name_addr("\"Doe, John\" <sip:15551230001@example.com>, <tel:+15551230002>");
+        assert!(
+            !out.contains("15551230001"),
+            "the first identity must not survive: {out}"
+        );
+        assert!(
+            !out.contains("15551230002"),
+            "and neither must the second: {out}"
+        );
+        assert!(out.contains(','), "the list shape survives: {out}");
+    }
+
+    /// Order does not matter: a `tel:` first still redacts the `sip:` second.
+    ///
+    /// The leak was order-independent, so the test must be too — checking only
+    /// one order would pass against a fix that handled only one.
+    #[test]
+    fn the_second_value_is_redacted_whichever_scheme_comes_first() {
+        let p = policy();
+        let out = p
+            .redactor()
+            .name_addr("<tel:+15559990001>, \"Smith, Jane\" <sip:jsmith@secret.example.com>");
+        assert!(!out.contains("15559990001"), "{out}");
+        assert!(!out.contains("jsmith"), "{out}");
+        assert!(!out.contains("secret.example.com"), "{out}");
+    }
+
+    /// The splitter separates values and nothing else.
+    ///
+    /// Asserted on `split_top_level_commas` directly, because the property is
+    /// the SPLIT COUNT and nothing downstream exposes it. An earlier version of
+    /// these tests asserted `out.matches("sip:").count() == 1` on the redacted
+    /// string, and a mutation proved it vacuous: splitting on every comma tears
+    /// `"Doe, John" <sip:a@b>` into `"Doe` and `John" <sip:a@b>`, and the
+    /// second piece still contains exactly one `sip:`. The assertion could not
+    /// fail, so it was measuring nothing.
+    #[test]
+    fn the_splitter_separates_values_and_nothing_else() {
+        // RFC 3261 25.1 puts `,` inside qdtext: one display name, one value.
+        assert_eq!(
+            split_top_level_commas("\"Doe, John\" <sip:alice@example.com>").len(),
+            1,
+            "a comma inside a quoted display name is not a separator"
+        );
+        // A URI header parameter may carry one, inside the angle brackets.
+        assert_eq!(
+            split_top_level_commas("<sip:alice@example.com?X-H=a,b>").len(),
+            1,
+            "a comma inside <...> is not a separator"
+        );
+        // quoted-pair: the backslash escapes the DQUOTE, so the string is
+        // still open and the comma after it is still inside it.
+        assert_eq!(
+            split_top_level_commas("\"Quote \\\" and, comma\" <sip:a@b>").len(),
+            1,
+            "an escaped DQUOTE does not close the quoted string"
+        );
+        // And the real separator does separate.
+        assert_eq!(
+            split_top_level_commas("<sip:a@b>, <tel:+15551230002>").len(),
+            2
+        );
+        assert_eq!(
+            split_top_level_commas("<sip:a@b>,<sip:c@d>,<sip:e@f>").len(),
+            3,
+            "COMMA = SWS \",\" SWS, so the spaces are optional"
+        );
+    }
+
+    /// A single value with no comma comes back as exactly one part.
+    ///
+    /// The boundary the whole fix must not disturb: `From` and `To` are
+    /// single-value and appear in every message in every capture.
+    #[test]
+    fn a_value_with_no_comma_is_one_part() {
+        assert_eq!(split_top_level_commas("<sip:alice@example.com>").len(), 1);
+        assert_eq!(split_top_level_commas("").len(), 1, "even an empty value");
+    }
+
+    /// Every routing header that carries a list redacts every element.
+    ///
+    /// `Path`, `Route`, `Record-Route` and `Service-Route` all have
+    /// `*(COMMA value)` grammars and all carry core hostnames. The leak hit
+    /// each of them identically, so the fix is asserted on each rather than on
+    /// one representative — a per-header dispatch is exactly where a fix
+    /// reaches some and not others.
+    #[test]
+    fn every_list_valued_routing_header_redacts_every_element() {
+        let p = policy();
+        let r = p.redactor();
+        for header in ["path", "route", "record-route", "service-route"] {
+            let action = r.header(
+                header,
+                "<sip:p1@edge1.secret.example.com;lr>, <sip:p2@edge2.secret.example.com;lr>",
+            );
+            let HeaderAction::Replace(out) = action else {
+                panic!("{header} must be rewritten, got {action:?}");
+            };
+            assert!(!out.contains("edge1.secret"), "{header}: {out}");
+            assert!(
+                !out.contains("edge2.secret"),
+                "{header} leaked its second hop: {out}"
+            );
+            assert!(out.contains(";lr"), "{header} keeps routing params: {out}");
+        }
+    }
+
+    /// Every identity-family header that carries a list redacts every element.
+    #[test]
+    fn every_list_valued_identity_header_redacts_every_element() {
+        let p = policy();
+        let r = p.redactor();
+        for header in [
+            "contact",
+            "p-asserted-identity",
+            "p-preferred-identity",
+            "diversion",
+            "history-info",
+        ] {
+            let action = r.header(
+                header,
+                "<sip:one@first.secret.example.com>, <sip:two@second.secret.example.com>",
+            );
+            let HeaderAction::Replace(out) = action else {
+                panic!("{header} must be rewritten, got {action:?}");
+            };
+            assert!(!out.contains("first.secret"), "{header}: {out}");
+            assert!(
+                !out.contains("second.secret"),
+                "{header} leaked its second value: {out}"
+            );
+        }
+    }
+
+    /// A single-value header is unchanged by the list handling.
+    ///
+    /// The regression guard: `From` and `To` are single-value, and the
+    /// splitter must be a no-op on them rather than a new way to mangle the
+    /// commonest headers in every capture.
+    #[test]
+    fn a_single_value_header_is_unaffected_by_list_handling() {
+        let p = policy();
+        let out = p.redactor().name_addr(
+            "\"Alice Smith\" <sip:+15551234567@pbx.example;transport=tcp>;tag=1928301774",
+        );
+        assert!(out.starts_with('"'), "{out}");
+        assert!(out.contains(";tag=1928301774"), "{out}");
+        assert!(
+            !out.contains(','),
+            "no comma was there to begin with: {out}"
+        );
     }
 
     /// A `From` header keeps its grammar and loses its identity.

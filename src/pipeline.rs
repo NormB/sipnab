@@ -2232,7 +2232,9 @@ pub fn classify_packet(
     //
     // Recursion terminates because the inner payload is strictly shorter than
     // the wrapper that carried it.
-    if let Some(inner) = crate::stun::channel_data_payload(&pp.payload) {
+    if let Some(inner) =
+        crate::stun::channel_data_payload_on_port(&pp.payload, pp.src_port, pp.dst_port)
+    {
         // Recorded before the recursion, and only against an allocation that
         // was actually granted: relayed media IS the traffic that kept flowing
         // past an allocation's expiry, and an activity clock that only ever

@@ -132,9 +132,15 @@ sudo sipnab -N --uprobe-tls --uprobe-backend bpf --portrange 0-65535
 
 Adds a kernel probe on `tcp_sendmsg` and pairs it with the write by thread, so
 dialogs carry the real 5-tuple. Needs a kernel with `CONFIG_DEBUG_INFO_BTF=y`
-and a sipnab built with `--features bpf`. sipnab **refuses** rather than
-falling back in silence, because a silent downgrade would leave you with no
-peers and no reason given.
+and a sipnab that actually holds the kernel programs — `--features bpf` compiles
+the loader, and the programs themselves need a nightly toolchain and
+`bpf-linker` on the build host. A build missing either still succeeds and
+produces a binary that lists `bpf` and refuses at attach time. The uprobe
+walkthrough linked at the foot of this page carries the message and the
+build-time switch that turns that gap into a build failure.
+
+sipnab **refuses** rather than falling back in silence, because a silent
+downgrade would leave you with no peers and no reason given.
 
 Widen `--portrange`. The port a uprobe reports is whatever the socket used,
 which is usually ephemeral rather than 5061.
@@ -170,6 +176,12 @@ version:
   search costs one AEAD tag check per candidate and runs once per direction per
   session, so it is a one-off of about a second, not a per-record cost. Past
   that, the keys are right and the records still do not open.
+  `--tls-lockon-window` moves that ceiling. Raising it costs nothing on a
+  connection captured from its handshake, because the search widens only as
+  records fail to open, so raise it for a carrier trunk held open for days. A
+  separate per-run trial budget — four full windows — stops one session whose
+  keys belong to some other connection from spending a window on every record
+  it gets offered.
 - **TLS 1.2** ([RFC 5246](https://www.rfc-editor.org/rfc/rfc5246)) is worse: a `CLIENT_RANDOM` line gives the master secret, and the
   server random and cipher suite that expand it into record keys are in the
   ServerHello. Miss the handshake and there is no way to use the secret at all,
@@ -201,8 +213,13 @@ SRTP keys arrive two ways, and sipnab reads both:
 
 - **SDES** — keys travel in the SDP, so decrypting the signaling decrypts the
   media with it. Nothing extra to do.
-- **DTLS-SRTP** — a DTLS handshake carries the keys, so supply the keylog
-  the same way, cookbook [§7d](examples.md#7d-decrypt-srtp-from-a-dtls-keylog).
+- **DTLS-SRTP** — a DTLS handshake carries the keys. Point `--dtls-keylog` at an
+  NSS-format key log and sipnab runs the RFC 5764 exporter over it to reach the
+  SRTP keys, cookbook [§7d](examples.md#7d-decrypt-srtp-from-a-dtls-keylog).
+
+`--dtls-keylog` is a separate flag from `--keylog` because the two name
+different handshakes. If you already hold SRTP master keys rather than a
+handshake, `--srtp-keys` takes them directly.
 
 ## When the keys arrive after the call starts
 
@@ -274,14 +291,15 @@ Stated plainly, because time spent here is time people lose:
 
 | Symptom | Likely cause |
 |---|---|
-| `--uprobe-list` prints nothing | Not root — it can only read your own processes. Re-run with `sudo` |
+| `--uprobe-list` finds no TLS library | It reads `/proc/<pid>/maps`, and an unprivileged run sees only its own processes. Re-run with `sudo` |
+| `--uprobe-list` marks a library `(UNREACHABLE)` | The path lives in another mount namespace, almost always a container. Run as root |
 | Attaches, reports 0 messages | Wrong symbol — try `--uprobe-symbol SSL_write_ex` (see method 3) |
 | `needs this kernel's BTF` | No `CONFIG_DEBUG_INFO_BTF`; use `--uprobe-backend tracefs` |
-| `no kernel programs` | Binary lacks the `bpf` feature; use `tracefs`, or rebuild |
+| `no kernel programs` | Binary carries the `bpf` feature and not the programs — the build host had no `bpf-linker`. Use `tracefs`, or rebuild somewhere that has it |
 | Keylog present, still encrypted | Keys minted after start — add `--keylog-watch` |
 | Call decodes, but its INVITE is missing and sipnab reports a media or NAT problem | The keys arrived after the INVITE did. sipnab retries records held from before the key, within the bounds above; start the key source before the capture |
 | Keylog stays empty | eCapture attached to a TLS library the daemon never calls — pass `--libssl` with the path from `/proc/<daemon-pid>/maps` |
-| Keys load, sessions listed, nothing decrypts | The capture joined TLS 1.3 connections already running, past the record numbers sipnab searches. Restart the connection while capturing |
+| Keys load, sessions listed, nothing decrypts | The capture joined TLS 1.3 connections already running, past the record numbers sipnab searches. Restart the connection while capturing, or raise `--tls-lockon-window` |
 | Keys load, no sessions listed | TLS 1.2 without the handshake — the ServerHello never got captured, and the master secret alone cannot make record keys. Restart the connection while capturing |
 | TLS 1.2, right keys, still nothing | A CBC suite. sipnab refuses to emit record plaintext it cannot MAC-verify, so a forged capture cannot inject "decrypted" SIP. Configure an AES-GCM suite |
 | Addresses show `0.0.0.0:0` | Expected on the tracefs backend; use method 4 for peers |

@@ -85,10 +85,20 @@ Read on for what the container means once you hold one.
 
 ## The spool contract, for a bridge that consumes it
 
-`--export-vcon-dir` is a queue. Nothing in sipnab ships the containers
-anywhere — the export path writes files and makes no outbound connection — so
-whatever forwards them to a store is a separate program watching that
-directory. These are the guarantees it may rely on.
+`--export-vcon-dir` is a queue, and it never runs alone. It pairs with
+`--export-vcon-when`, which names the dialogs to emit in the same expression
+language `--filter` speaks. Each flag requires the other, and
+`--export-vcon-when` conflicts with the single-call `--export-vcon`, because one
+writes a container per matching dialog and the other writes exactly one.
+
+```bash
+sipnab -N -d eth0 --export-vcon-when "state == 'Failed'" --export-vcon-dir /var/spool/vcon
+```
+
+Nothing in sipnab ships the containers anywhere — the export path writes files
+and makes no outbound connection — so whatever forwards them to a store is a
+separate program watching that directory. These are the guarantees it may rely
+on.
 
 **A name resolves to a whole container, or to nothing.** Every write stages the
 bytes under a dot-prefixed sibling, flushes them to the filesystem, and renames
@@ -118,6 +128,13 @@ lock file and no sentinel to wait for. Read it, forward it, delete it.
 
 **Deleting is the consumer's job.** sipnab never removes a container it wrote,
 so a spool nobody drains grows without bound.
+
+**`--vcon-digest` gives you something to reconcile against.** It prints a
+SHA-256 of every container written, in `sha256sum` format, so
+`sipnab ... --vcon-digest > SHA256SUMS` and a later `sha256sum -c SHA256SUMS`
+both work with no glue. Deliberately not a signature and deliberately outside
+the container: a store adds fields on ingest, so a signature over sipnab's bytes
+would fail against the object the store holds and tell an operator nothing.
 
 ## Walk through one, end to end
 
@@ -438,6 +455,14 @@ reader who cannot tell them apart goes looking for a fault that does not exist.
 | `gate_closed_during_run` | An operator stopped this run writing content partway through, over `POST /v1/persistence`. Containers are absent on one side of a hole this capture does not otherwise record. |
 | `dialogs_suppressed_by_deny` | How many dialogs carried the `--content-deny-header` name and produced no container. |
 
+`--content-deny-header` suppresses the whole dialog, not merely its content, and
+the default is the conservative reading: a denied dialog leaves this process
+entirely. `--content-deny-tombstone` makes the narrower reading available — an
+identity-only container carrying a §4.1 `redacted` object, with no message
+trace, no media and no bodies. The trade is explicit, because a tombstone
+reveals that the call existed. Leave it off when the header means "this call
+must leave no trace".
+
 Both are always present, including as `false` and `0`. A missing key and
 "nothing happened" are the same fact here, and there is no reason to make a
 consumer distinguish them.
@@ -570,7 +595,14 @@ Stated here rather than discovered later.
   Object with a `sha512-` content hash; when it did not, the container says so
   in words and carries none. There is never a `url`, because sipnab hosts
   nothing and cannot promise where a file lives tomorrow. Audio over the inline
-  budget draws an out-loud refusal rather than a silent truncation.
+  budget draws an out-loud refusal rather than a silent truncation, and
+  `--vcon-max-inline-media` sets that budget in MiB. It defaults to 5, a figure
+  measured against a real vCon store that answered `204` for a container of
+  roughly 12 MB, wrote it to its database, and had its own file spool refuse the
+  payload with neither side reporting the partial write. `0` refuses every
+  inline body without turning the exporter off. Every door — batch export, REST
+  and MCP — reads the one value, so the same call cannot come back carrying
+  audio through one and a refusal through another.
 - **It does not tie the two halves of a B2BUA call together.** Two Call-IDs
   produce two containers, and nothing in either one links them.
 - **It does not assemble a call across hops.** One container describes one

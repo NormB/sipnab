@@ -265,6 +265,34 @@ impl SipMessage {
         let identity = self.header("Identity")?;
         Some(parse_identity_header(identity, self.timestamp.timestamp()))
     }
+
+    /// Every `Identity` header, parsed, in the order they appear.
+    ///
+    /// # Why more than one
+    ///
+    /// RFC 8224 §4: "Note that unlike the prior specification in [RFC4474],
+    /// the Identity header field is now allowed to appear more than one time
+    /// in a SIP request." A diverted call under RFC 8946 carries two — a
+    /// `ppt=shaken` PASSporT and a `ppt=div` one — and reading only the first
+    /// made the second invisible to every surface.
+    ///
+    /// # Why the errors are kept
+    ///
+    /// An unparseable token is returned as `Err` rather than skipped. It was
+    /// previously logged at `debug!` and nowhere else, which made a forged or
+    /// corrupted `Identity` indistinguishable from a message carrying none.
+    ///
+    /// # Returns
+    ///
+    /// One entry per `Identity` header. Empty when there are none.
+    #[must_use]
+    pub fn stir_shaken_all(&self) -> Vec<Result<StirShakenInfo>> {
+        let at = self.timestamp.timestamp();
+        self.headers_by_name("Identity")
+            .into_iter()
+            .map(|v| parse_identity_header(v, at))
+            .collect()
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -273,6 +301,100 @@ impl SipMessage {
 /// iat freshness, and SipMessage integration (including the compact form).
 #[cfg(test)]
 mod tests {
+    /// Every `Identity` header is read, not just the first.
+    ///
+    /// RFC 8224 §4, first paragraph: "Note that unlike the prior
+    /// specification in [RFC4474], the Identity header field is now allowed to
+    /// appear more than one time in a SIP request." The diverted-call shape of
+    /// RFC 8946 is exactly that — a `ppt=shaken` PASSporT plus a `ppt=div`
+    /// one — and sipnab saw only the first, so the second was invisible to
+    /// `--stir-shaken`, to the vCon `parties[].stir` field, and to everything
+    /// else.
+    #[test]
+    fn every_identity_header_is_read() {
+        let msg = invite_with_identities(&[
+            &build_identity_header(&format!(
+                r#"{{"attest":"A","dest":{{"tn":["12125550002"]}},"iat":{FIXED_IAT},"orig":{{"tn":"12125550001"}},"origid":"a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d"}}"#
+            )),
+            &build_identity_header(&format!(
+                r#"{{"attest":"C","dest":{{"tn":["12125550002"]}},"iat":{FIXED_IAT},"orig":{{"tn":"12125559999"}},"origid":"a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d"}}"#
+            )),
+        ]);
+        let all = msg.stir_shaken_all();
+        assert_eq!(all.len(), 2, "RFC 8224 4 permits more than one");
+        let attestations: Vec<Option<Attestation>> = all
+            .iter()
+            .map(|r| r.as_ref().ok().map(|i| i.attestation.clone()))
+            .collect();
+        assert!(
+            attestations.contains(&Some(Attestation::A))
+                && attestations.contains(&Some(Attestation::C)),
+            "both PASSporTs are reported: {attestations:?}"
+        );
+    }
+
+    /// A single header still yields exactly one result.
+    ///
+    /// The regression guard — one `Identity` is the ordinary case and must not
+    /// become a list of zero or two.
+    #[test]
+    fn a_single_identity_header_yields_one_result() {
+        let msg = invite_with_identities(&[&build_identity_header(&format!(
+            r#"{{"attest":"A","dest":{{"tn":["12125550002"]}},"iat":{FIXED_IAT},"orig":{{"tn":"12125550001"}},"origid":"a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d"}}"#
+        ))]);
+        assert_eq!(msg.stir_shaken_all().len(), 1);
+        assert!(
+            msg.stir_shaken().is_some(),
+            "the single-value accessor still works"
+        );
+    }
+
+    /// No `Identity` header yields nothing, not an empty-token error.
+    #[test]
+    fn no_identity_header_yields_no_results() {
+        let msg = invite_with_identities(&[]);
+        assert!(msg.stir_shaken_all().is_empty());
+        assert!(msg.stir_shaken().is_none());
+    }
+
+    /// An unparseable token is REPORTED, not dropped.
+    ///
+    /// The parse error was logged at `debug!` and nowhere else, so a forged or
+    /// corrupted `Identity` was indistinguishable from a message carrying
+    /// none — measured across four verbosity levels, none of which printed it.
+    /// Returning `Err` keeps the failure in the data rather than in a log line
+    /// nobody sees.
+    #[test]
+    fn an_unparseable_identity_is_reported_rather_than_dropped() {
+        let msg =
+            invite_with_identities(&["this-is-not-a-passport;info=<https://c.example/c.pem>"]);
+        let all = msg.stir_shaken_all();
+        assert_eq!(all.len(), 1, "the header was present, so there is a result");
+        assert!(
+            all[0].is_err(),
+            "and that result says it could not be parsed"
+        );
+    }
+
+    /// A good token beside a bad one: both are accounted for.
+    ///
+    /// The mixed case is what a real diverted call with one corrupted hop looks
+    /// like, and it is where "report the first" and "drop the unparseable" both
+    /// lose information silently.
+    #[test]
+    fn a_good_token_beside_a_bad_one_reports_both() {
+        let msg = invite_with_identities(&[
+            &build_identity_header(&format!(
+                r#"{{"attest":"A","dest":{{"tn":["12125550002"]}},"iat":{FIXED_IAT},"orig":{{"tn":"12125550001"}},"origid":"a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d"}}"#
+            )),
+            "garbage-token",
+        ]);
+        let all = msg.stir_shaken_all();
+        assert_eq!(all.len(), 2);
+        assert!(all[0].is_ok(), "the good one parses");
+        assert!(all[1].is_err(), "the bad one is reported as bad");
+    }
+
     use super::*;
     use crate::net::TransportProto;
 
@@ -284,6 +406,23 @@ mod tests {
     /// than `Utc::now()`, so no test in this module can pass or fail because of
     /// when the suite ran.
     const LONG_AFTER_IAT: i64 = FIXED_IAT + 3600;
+
+    /// An INVITE carrying zero or more `Identity` headers.
+    fn invite_with_identities(identities: &[&str]) -> SipMessage {
+        let mut raw = String::from("INVITE sip:bob@example.com SIP/2.0\r\n");
+        raw.push_str("From: <sip:alice@example.com>;tag=t1\r\n");
+        raw.push_str("To: <sip:bob@example.com>\r\n");
+        raw.push_str("Call-ID: stir-test@example.com\r\n");
+        raw.push_str("CSeq: 1 INVITE\r\n");
+        for id in identities {
+            raw.push_str(&format!("Identity: {id}\r\n"));
+        }
+        raw.push_str("Content-Length: 0\r\n\r\n");
+        let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
+        let ts = chrono::DateTime::from_timestamp(FIXED_IAT, 0).expect("valid");
+        crate::sip::parser::parse_sip(raw.as_bytes(), ts, ip, ip, 5060, 5060, TransportProto::Udp)
+            .expect("the fixture must parse")
+    }
 
     /// Build a minimal SHAKEN JWT with the given claims.
     ///

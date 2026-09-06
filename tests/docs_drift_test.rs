@@ -67,7 +67,11 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // name written as if it were a sipnab flag anywhere else still fails.
     (
         "all-features",
-        &["website/content/notes/the-assumption-nobody-timed.md"],
+        &[
+            "website/content/notes/the-assumption-nobody-timed.md",
+            "docs/uprobe-walkthrough.md",
+            "website/content/docs/uprobe-walkthrough.md",
+        ],
     ),
     (
         "all-targets",
@@ -109,6 +113,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     (
         "preserve",
         &["website/content/notes/the-fixture-was-what-broke.md"],
+    ),
+    // `--release` is cargo's. The uprobe walkthrough shows
+    // `SIPNAB_BPF_REQUIRED=1 cargo build --release --features bpf`, which is
+    // the build that carries the kernel programs rather than the placeholder,
+    // so the page cannot state the rule without naming cargo's flag.
+    (
+        "release",
+        &[
+            "docs/uprobe-walkthrough.md",
+            "website/content/docs/uprobe-walkthrough.md",
+        ],
     ),
     // `--git` is cargo's. The build-and-release page carries the
     // `cargo install --git ... --tag` line the site-build gate prints when zola
@@ -1016,7 +1031,7 @@ fn extract_long_flags(text: &str) -> BTreeSet<String> {
 /// corrupts them.
 ///
 /// `docs/internals/` is in scope because it is PUBLISHED: `build-wiki.py` maps
-/// all ten pages to `Internals-*` wiki pages and the site nav links the
+/// all fourteen pages to `Internals-*` wiki pages and the site nav links the
 /// mirrors. An earlier version of this excluded it, with a comment claiming it
 /// was covered because "its own drift gates live in dev_docs_drift_test" —
 /// true for links, symbols and mermaid, and false for flags, which that file
@@ -3144,7 +3159,18 @@ fn no_documentation_table_repeats_a_row() {
     // 808 -> 812 by the `siprec_metadata` section in docs/mcp-tools.md: its
     // parameter table and its field table, each doubled by the generated site
     // mirror, so four counted.
-    const EXPECTED_TABLES: usize = 812;
+    // 812 -> 828 by the 2026-09-06 documentation sweep, attributed per file by
+    // measuring each against HEAD before the number moved: docs/mcp-tools.md
+    // +4 (Returns tables for `timeline` and `top_talkers`, whose documented
+    // shapes were wrong, plus the `get_capture_report` findings-row table and
+    // the `rtp_stats` sweep table); docs/rest-api.md +1 (the four NAT keys
+    // under /v1/stats); docs/prometheus-metrics.md +1 (which server fills which
+    // series, after three families turned out to be `--api`-only);
+    // docs/encapsulations.md +1 (Ethernet versus SLL walking, the difference
+    // the default `any` device makes); docs/mcp-protocol.md +1 (the result
+    // envelope, which `structuredContent` had never been documented in). Eight
+    // written tables, each doubled by its generated site mirror, so sixteen.
+    const EXPECTED_TABLES: usize = 828;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

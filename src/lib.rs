@@ -69,6 +69,7 @@ pub use error::{CaptureError, Error, ParseError};
 pub mod clock;
 #[cfg(feature = "mcp")]
 pub mod mcp;
+pub mod mermaid;
 #[cfg(feature = "native")]
 pub mod output;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]

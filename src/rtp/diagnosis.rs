@@ -1477,6 +1477,7 @@ mod tests {
             media: vec![SdpMedia {
                 media_type: "audio".to_string(),
                 port,
+                port_count: None,
                 proto: "RTP/AVP".to_string(),
                 formats: vec!["0".to_string()],
                 connection: None,
@@ -1499,6 +1500,7 @@ mod tests {
         let mk_media = |mtype: &str, port: u16, conn: Option<&str>| SdpMedia {
             media_type: mtype.to_string(),
             port,
+            port_count: None,
             proto: "RTP/AVP".to_string(),
             formats: vec!["0".to_string()],
             connection: conn.map(|a| SdpConnection {
@@ -2479,6 +2481,7 @@ mod stun_sdp_mismatch_tests {
             media: vec![SdpMedia {
                 media_type: "audio".to_string(),
                 port: 40000,
+                port_count: None,
                 proto: "RTP/AVP".to_string(),
                 formats: vec!["0".to_string()],
                 connection: None,

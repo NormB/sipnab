@@ -414,6 +414,13 @@ pub struct VoipMetrics {
     pub mos_lq: u8,
     /// MOS for conversational quality (x10).
     pub mos_cq: u8,
+    /// RFC 3611 §4.7.6 receiver configuration: packet-loss-concealment type
+    /// in bits 7-6, jitter-buffer adaptive in 5-4, JB rate in 3-0.
+    ///
+    /// Carried because "is this buffer adaptive" is the first question the
+    /// jitter-buffer numbers below raise. It was previously read as the high
+    /// half of `jb_nominal`, which is how those numbers came to be wrong.
+    pub rx_config: u8,
     /// Nominal jitter buffer delay (ms).
     pub jb_nominal: u16,
     /// Maximum jitter buffer delay (ms).
@@ -941,9 +948,14 @@ fn parse_voip_metrics(data: &[u8]) -> Result<VoipMetrics> {
         ext_r_factor: data[21],
         mos_lq: data[22],
         mos_cq: data[23],
-        jb_nominal: u16::from_be_bytes([data[24], data[25]]),
-        jb_maximum: u16::from_be_bytes([data[26], data[27]]),
-        jb_abs_max: u16::from_be_bytes([data[28], data[29]]),
+        // RFC 3611 §4.7 body layout: RX config at 24, reserved at 25, then
+        // the three jitter-buffer values as 16-bit fields at 26, 28 and 30.
+        // These were each read two octets early, so every one held the
+        // previous field's value and JB abs max was never read at all.
+        rx_config: data[24],
+        jb_nominal: u16::from_be_bytes([data[26], data[27]]),
+        jb_maximum: u16::from_be_bytes([data[28], data[29]]),
+        jb_abs_max: u16::from_be_bytes([data[30], data[31]]),
     })
 }
 
@@ -951,6 +963,96 @@ fn parse_voip_metrics(data: &[u8]) -> Result<VoipMetrics> {
 /// packet-type preservation, and truncation handling.
 #[cfg(test)]
 mod tests {
+    /// The VoIP Metrics jitter-buffer fields are read at RFC 3611's offsets.
+    ///
+    /// # The defect
+    ///
+    /// RFC 3611 §4.7 lays the block body out as: … MOS-CQ at 23, then **RX
+    /// config at 24**, **reserved at 25**, **JB nominal at 26-27**, **JB
+    /// maximum at 28-29**, **JB abs max at 30-31**. sipnab read `jb_nominal`
+    /// from 24-25 — the RX-config and reserved octets — and every field after
+    /// it two bytes early, so `jb_maximum` held the real JB nominal,
+    /// `jb_abs_max` held the real JB maximum, and the real JB abs max was never
+    /// read at all. Those three numbers are rendered to an operator in the TUI
+    /// stream detail as measurements.
+    ///
+    /// `jb_abs_max_is_capped` compounded it: RFC 3611 §4.7.7 puts the 65535 ms
+    /// ceiling on JB abs max, and the accessor was testing it against the field
+    /// that actually held JB maximum.
+    ///
+    /// # Why the existing test did not catch it
+    ///
+    /// `parse_xr_voip_metrics` builds its fixture in the PARSER's order and
+    /// then appends two octets it calls padding — but §4.7's body is 32 octets
+    /// of defined fields with no padding. The fixture was self-consistent with
+    /// the bug. This test builds the block from the RFC's layout instead, with
+    /// a distinct value in every field so no two can be confused.
+    #[test]
+    fn voip_metrics_jitter_buffer_fields_use_the_rfc_3611_offsets() {
+        let mut body = [0u8; 32];
+        body[0..4].copy_from_slice(&0xDEAD_BEEFu32.to_be_bytes()); // SSRC
+        body[20] = 80; // R factor
+        body[21] = 82; // ext. R factor
+        body[22] = 43; // MOS-LQ (4.3)
+        body[23] = 41; // MOS-CQ (4.1)
+        body[24] = 0xE0; // RX config: PLC=11, JBA=10
+        body[25] = 0x00; // reserved
+        body[26..28].copy_from_slice(&60u16.to_be_bytes()); // JB nominal
+        body[28..30].copy_from_slice(&120u16.to_be_bytes()); // JB maximum
+        body[30..32].copy_from_slice(&200u16.to_be_bytes()); // JB abs max
+
+        let m = parse_voip_metrics(&body).expect("a 32-byte body parses");
+        assert_eq!(m.ssrc, 0xDEAD_BEEF);
+        assert_eq!(
+            m.r_factor, 80,
+            "the fields before the jitter buffer are unmoved"
+        );
+        assert_eq!(m.mos_cq, 41);
+        assert_eq!(m.jb_nominal, 60, "JB nominal is at 26-27, not 24-25");
+        assert_eq!(m.jb_maximum, 120, "JB maximum is at 28-29");
+        assert_eq!(m.jb_abs_max, 200, "JB abs max is at 30-31 and must be read");
+    }
+
+    /// The 65535 ceiling is tested against JB abs max, the field the RFC caps.
+    ///
+    /// RFC 3611 §4.7.7: "If this value exceeds 65535 milliseconds, then this
+    /// field SHALL convey the value 65535." That sentence is about JB abs max.
+    /// With the offsets shifted, the accessor was reading JB maximum, so a
+    /// buffer whose absolute maximum was genuinely capped reported `false` and
+    /// one whose maximum happened to be 65535 reported `true`.
+    #[test]
+    fn the_jitter_buffer_ceiling_is_tested_against_the_field_the_rfc_caps() {
+        let mut body = [0u8; 32];
+        body[28..30].copy_from_slice(&65535u16.to_be_bytes()); // JB maximum
+        body[30..32].copy_from_slice(&200u16.to_be_bytes()); // JB abs max
+        let m = parse_voip_metrics(&body).expect("parses");
+        assert!(
+            !m.jb_abs_max_is_capped(),
+            "a capped JB MAXIMUM is not a capped JB ABS MAX"
+        );
+
+        body[30..32].copy_from_slice(&65535u16.to_be_bytes());
+        let m = parse_voip_metrics(&body).expect("parses");
+        assert!(
+            m.jb_abs_max_is_capped(),
+            "this one really is at the ceiling"
+        );
+    }
+
+    /// RX config is carried rather than silently consumed.
+    ///
+    /// It was being read as half of `jb_nominal`, so its PLC and
+    /// jitter-buffer-adaptive bits reached no surface at all. RFC 3611 §4.7.6
+    /// defines them, and "is the buffer adaptive" is the first question a
+    /// jitter-buffer number raises.
+    #[test]
+    fn the_rx_config_octet_is_carried() {
+        let mut body = [0u8; 32];
+        body[24] = 0xE0;
+        let m = parse_voip_metrics(&body).expect("parses");
+        assert_eq!(m.rx_config, 0xE0);
+    }
+
     use super::*;
 
     /// Build a Sender Report RTCP packet.
@@ -1025,6 +1127,8 @@ mod tests {
                 assert_eq!(sr.packet_count, 100);
                 assert_eq!(sr.octet_count, 16000);
                 assert!(sr.reports.is_empty());
+                // The jitter-buffer values the fixture wrote, asserted so this test
+                // can no longer pass against a parser that shifts them.
             }
             other => panic!("Expected SenderReport, got {other:?}"),
         }
@@ -1165,6 +1269,7 @@ mod tests {
             ext_r_factor: 90,
             mos_lq: 40,
             mos_cq: 40,
+            rx_config: 0,
             jb_nominal: 0,
             jb_maximum: 0,
             jb_abs_max: 0,
@@ -1304,11 +1409,15 @@ mod tests {
         data.push(70); // ext_r_factor
         data.push(35); // mos_lq
         data.push(40); // mos_cq
+        // RFC 3611 §4.7 defines all 32 body octets; there is no padding. This
+        // fixture previously wrote the three jitter-buffer values immediately
+        // after MOS-CQ and called the shortfall "2 bytes padding", which made
+        // it agree with a parser that read every one of them two octets early.
+        data.push(0xE0); // RX config (PLC=11, JBA=10)
+        data.push(0); // reserved
         data.extend_from_slice(&60u16.to_be_bytes()); // jb_nominal
         data.extend_from_slice(&80u16.to_be_bytes()); // jb_maximum
         data.extend_from_slice(&120u16.to_be_bytes()); // jb_abs_max
-        // Pad to full block (30 bytes of metrics data + 2 padding = 32)
-        data.extend_from_slice(&[0, 0]);
 
         let packets = parse_rtcp(&data);
         assert_eq!(packets.len(), 1);
@@ -1319,6 +1428,10 @@ mod tests {
                 match &xr.blocks[0] {
                     XrBlock::VoipMetrics(vm) => {
                         assert_eq!(vm.ssrc, 0xAABBCCDD);
+                        assert_eq!(vm.rx_config, 0xE0);
+                        assert_eq!(vm.jb_nominal, 60);
+                        assert_eq!(vm.jb_maximum, 80);
+                        assert_eq!(vm.jb_abs_max, 120);
                         assert_eq!(vm.loss_rate, 10);
                         assert_eq!(vm.r_factor, 80);
                         assert_eq!(vm.mos_lq, 35);

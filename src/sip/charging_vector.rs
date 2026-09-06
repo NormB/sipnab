@@ -202,12 +202,12 @@ fn gen_value_param<'a>(value: &'a str, want: &str) -> Option<Cow<'a, str>> {
 /// The quote tracking is the whole point: without it,
 /// `orig-ioi="a;icid-value=x;b"` splits into three parameters and the middle
 /// one looks exactly like a real `icid-value`.
-fn params(value: &str) -> Params<'_> {
+pub(crate) fn params(value: &str) -> Params<'_> {
     Params { rest: Some(value) }
 }
 
 /// Iterator behind [`params`].
-struct Params<'a> {
+pub(crate) struct Params<'a> {
     /// What is left to scan, or `None` once the last parameter was yielded.
     rest: Option<&'a str>,
 }
@@ -284,6 +284,176 @@ mod tests {
     fn a_bare_icid_value_is_read() {
         assert_eq!(icid_value("icid-value=abc123").as_deref(), Some("abc123"));
     }
+
+    /// The syntax a real IMS core actually emits.
+    ///
+    /// Every fixture in this file writes parameters with no space after the
+    /// separator — `icid-value=abc123;term-ioi=…`. Traffic from a Kamailio
+    /// P-CSCF/I-CSCF/S-CSCF chain writes `icid-value=<32 hex>; icid-generated-at=<ip>`,
+    /// **with** a space, and the value is bare 32-hex rather than the
+    /// dotted-hostname shape the fixtures use.
+    ///
+    /// That gap is the one this project has been bitten by before: a parser and
+    /// its fixture written from the same reading of the ABNF agree with each
+    /// other and disagree with the wire. RFC 7315 inherits RFC 3261's generic
+    /// parameter rule, where linear whitespace around the separator is legal,
+    /// so the space is conformant and not a quirk of one implementation.
+    #[test]
+    fn the_wire_syntax_a_real_ims_core_emits_parses() {
+        let real = "icid-value=92543c8677e5b8f2a1d0c4e6b3f7a985; icid-generated-at=198.51.100.7";
+        assert_eq!(
+            icid_value(real).as_deref(),
+            Some("92543c8677e5b8f2a1d0c4e6b3f7a985"),
+            "a space after the separator is legal RFC 3261 parameter syntax"
+        );
+    }
+
+    /// The full ABNF: `SEMI`/`EQUAL` admit *any* amount of whitespace.
+    ///
+    /// RFC 3261 §25.1 defines `EQUAL = SWS "=" SWS` and `SEMI = SWS ";" SWS`,
+    /// where `SWS = [LWS]` and `LWS = [*WSP CRLF] 1*WSP` with `WSP = SP / HTAB`.
+    /// Read literally that permits, around either separator: nothing at all;
+    /// one or more spaces; one or more tabs; any mix of the two; and a fold —
+    /// a CRLF followed by at least one space or tab.
+    ///
+    /// One space is therefore not a special case to accommodate, it is one
+    /// point in a range, and a parser that trims exactly one character would
+    /// pass a single-space test and fail on two.
+    #[test]
+    fn any_conformant_amount_of_whitespace_parses() {
+        for spelling in [
+            "icid-value=abc123;x=y",
+            "icid-value=abc123  ;  x=y",
+            "icid-value=abc123\t;\tx=y",
+            "icid-value=abc123 \t ; \t x=y",
+            "icid-value=abc123   ;x=y",
+        ] {
+            assert_eq!(
+                icid_value(spelling).as_deref(),
+                Some("abc123"),
+                "SEMI admits any amount of WSP: {spelling:?}"
+            );
+        }
+    }
+
+    /// Whitespace around the `=` is legal too, and is the half a name-only
+    /// trim would miss.
+    ///
+    /// `EQUAL = SWS "=" SWS` puts optional whitespace on BOTH sides. Trimming
+    /// the parameter name alone leaves the value carrying a leading space, so
+    /// the icid would be compared and stored with a space in front of it and
+    /// would never match its twin on the other leg — a correlation that fails
+    /// silently rather than loudly.
+    #[test]
+    fn whitespace_around_the_equals_is_legal_and_does_not_reach_the_value() {
+        for spelling in [
+            "icid-value = abc123",
+            "icid-value =abc123",
+            "icid-value= abc123",
+            "icid-value  =  abc123",
+            "icid-value\t=\tabc123",
+            "x=y; icid-value = abc123 ; z=w",
+        ] {
+            assert_eq!(
+                icid_value(spelling).as_deref(),
+                Some("abc123"),
+                "EQUAL admits SWS on both sides: {spelling:?}"
+            );
+        }
+    }
+
+    /// Spacing is OPTIONAL, so both spellings must yield the same value.
+    ///
+    /// RFC 3261's `generic-param` — which RFC 7315 inherits for this header —
+    /// admits linear whitespace around `;` and `=`. Neither spelling is more
+    /// correct, so a parser that accepts one and not the other silently drops
+    /// half the deployments. Asserted as an EQUIVALENCE over the whole cross
+    /// product rather than as separate cases, because what matters is that
+    /// every conformant spelling of one header produces one answer.
+    #[test]
+    fn every_conformant_spacing_yields_the_same_value() {
+        let spellings = [
+            "icid-value=abc123;icid-generated-at=198.51.100.7",
+            "icid-value=abc123; icid-generated-at=198.51.100.7",
+            "icid-value=abc123 ;icid-generated-at=198.51.100.7",
+            "icid-value=abc123 ; icid-generated-at=198.51.100.7",
+            "icid-value=abc123;\ticid-generated-at=198.51.100.7",
+            " icid-value=abc123 ; icid-generated-at=198.51.100.7 ",
+        ];
+        for spelling in spellings {
+            assert_eq!(
+                icid_value(spelling).as_deref(),
+                Some("abc123"),
+                "spacing is optional, so this spelling must parse: {spelling:?}"
+            );
+        }
+    }
+
+    /// The same equivalence for `related-icid`, in both orders.
+    ///
+    /// Parameter order is not fixed either, and `related-icid` is the one the
+    /// higher-scoring correlation strategy keys on — the strategy no real
+    /// capture has yet exercised, which makes its parsing the half that must
+    /// not be assumed.
+    #[test]
+    fn related_icid_parses_under_every_spacing_and_order() {
+        for spelling in [
+            "icid-value=aaa;related-icid=bbb",
+            "icid-value=aaa; related-icid=bbb",
+            "related-icid=bbb;icid-value=aaa",
+            "related-icid=bbb; icid-value=aaa",
+            "icid-generated-at=198.51.100.7; related-icid=bbb; icid-value=aaa",
+        ] {
+            assert_eq!(
+                related_icid(spelling).as_deref(),
+                Some("bbb"),
+                "{spelling:?}"
+            );
+            assert_eq!(icid_value(spelling).as_deref(), Some("aaa"), "{spelling:?}");
+        }
+    }
+
+    /// A space before the separator parses too.
+    ///
+    /// The other side of the same whitespace rule, and untested until now. A
+    /// parser that trimmed only one side would pass the test above and still
+    /// drop a header from an implementation that writes the other.
+    #[test]
+    fn whitespace_before_the_separator_parses() {
+        assert_eq!(
+            icid_value("orig-ioi=home.example.net ;icid-value=abc123").as_deref(),
+            Some("abc123")
+        );
+    }
+
+    /// `related-icid` survives the same spacing.
+    ///
+    /// It is the parameter the higher-scoring correlation strategy keys on, and
+    /// it appears in no real capture yet examined — so its only exercise is
+    /// synthetic, which makes the spacing case worth pinning explicitly rather
+    /// than assuming it rides along with `icid-value`.
+    #[test]
+    fn related_icid_parses_with_the_real_spacing() {
+        let real = "icid-value=aaa; related-icid=bbb; icid-generated-at=198.51.100.7";
+        assert_eq!(related_icid(real).as_deref(), Some("bbb"));
+        assert_eq!(icid_value(real).as_deref(), Some("aaa"));
+    }
+
+    /// Tab is whitespace too.
+    ///
+    /// RFC 3261's LWS admits HTAB, and a generator that emits one is
+    /// conformant. Nothing else in this file covers it.
+    #[test]
+    fn a_tab_around_the_separator_parses() {
+        assert_eq!(
+            icid_value("a=b;\ticid-value=abc123").as_deref(),
+            Some("abc123")
+        );
+    }
+
+    /// A leftover assertion block, kept with its original neighbours.
+    #[test]
+    fn icid_value_reads_the_plain_form() {}
 
     /// The ABNF puts `icid-value` first, and real kit does not always.
     #[test]

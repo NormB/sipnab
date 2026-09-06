@@ -546,6 +546,11 @@ done
 # binaries already built:
 #
 #   all eleven, ONE `cargo test` invocation, --profile profiling ......  87 s
+#
+# Eleven was the count ON THE DAY THAT WAS MEASURED. Seventeen binaries read
+# SIPNAB_CORPUS today, fourteen of them with "corpus" in the name, so the 87 s
+# is a floor rather than a current figure -- which is the reason the list below
+# is derived from the tree and not from this comment.
 #   the same eleven, one invocation EACH, --profile profiling ......... 379 s
 #   the nine `*corpus*` binaries, one invocation, DEV profile ......... 460 s
 #
@@ -575,11 +580,12 @@ done
 # Dropping any one leaves that class of real-capture regression with nothing
 # watching it -- which is exactly how the failure above survived for weeks.
 #
-# Eleven and not the nine whose names contain "corpus": input_set_accounting_test
-# and rtp_quality_provenance_test read SIPNAB_CORPUS too, and cost 17 s of the
-# 87. "100% of the corpus tests" has to mean all of the ones that read it, which
-# is also why the list below comes from the tree instead of from this comment --
-# eleven is what it measured, not what it is fixed at.
+# More than the ones whose names contain "corpus": input_set_accounting_test,
+# rtp_quality_provenance_test and vacuous_success_test read SIPNAB_CORPUS too,
+# and the first two cost 17 s of the 87. "100% of the corpus tests" has to mean
+# all of the ones that read it, which is also why the list below comes from the
+# tree instead of from this comment -- eleven is what it measured, not what it
+# is fixed at.
 #
 # The BUILD is the real cost, not the run, and it is the one number worth
 # knowing before this gate surprises anyone:

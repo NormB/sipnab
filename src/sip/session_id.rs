@@ -179,7 +179,13 @@ impl SessionId {
         if value.is_empty() {
             return None;
         }
-        let mut parts = value.split(';');
+        // The quote-aware walker from `charging_vector`, not `split(';')`.
+        // RFC 7989 §5 admits `generic-param` beside `remote`, and RFC 3261
+        // §25.1 puts `;` (%x3B) inside `qdtext` — so a quoted value may carry
+        // one. Splitting naively let anyone on the signaling path append
+        // `foo="x;remote=<32 hex>"` and overwrite the genuine remote half,
+        // killing B2BUA correlation silently. One rule, one walker.
+        let mut parts = super::charging_vector::params(value);
         let local = parse_half(parts.next().unwrap_or_default().trim());
 
         let mut remote = None;
@@ -187,11 +193,20 @@ impl SessionId {
             let param = param.trim();
             // `generic-param` is permitted alongside `remote`, so anything that
             // is not `remote=` is skipped rather than treated as an error.
-            if let Some(rest) = param.strip_prefix("remote") {
-                let rest = rest.trim_start();
-                if let Some(v) = rest.strip_prefix('=') {
-                    remote = Some(parse_half(v.trim()));
-                }
+            let Some((name, v)) = param.split_once('=') else {
+                continue;
+            };
+            // RFC 3261 §7.3.1 makes the parameter NAME case-insensitive, and
+            // RFC 7989 states no exception — `Remote=` is the same parameter.
+            if !name.trim().eq_ignore_ascii_case("remote") {
+                continue;
+            }
+            // FIRST wins. RFC 7989 §5: "The Session-ID header field MUST NOT
+            // have more than one 'remote' parameter." Taking the last let a
+            // later parameter override an earlier one, which is the half an
+            // attacker can append to.
+            if remote.is_none() {
+                remote = Some(parse_half(v.trim()));
             }
         }
         let legacy_rfc7329_form = remote.is_none();
@@ -259,6 +274,113 @@ impl SessionId {
 
 #[cfg(test)]
 mod tests {
+    /// The `remote` parameter name is case-insensitive.
+    ///
+    /// RFC 3261 §7.3.1: "field values, parameter names, and parameter values
+    /// are case-insensitive", and RFC 7989 §5 states no exception. ABNF string
+    /// literals are case-insensitive by RFC 5234 §2.3, so `remote-param =
+    /// "remote" EQUAL remote-uuid` matches `Remote=` too.
+    ///
+    /// The defect: `strip_prefix("remote")` matched one spelling. A conformant
+    /// peer writing `Remote=` was reported as an obsolete RFC 7329 stack AND
+    /// lost its remote half from correlation — the identifier that exists
+    /// precisely to survive a B2BUA.
+    #[test]
+    fn the_remote_parameter_name_is_case_insensitive() {
+        for spelling in ["remote", "Remote", "REMOTE", "ReMoTe"] {
+            let v = format!(
+                "ab30317f1a784dc48ff824d0d3715d86;{spelling}=47755a9de7794ba387653f2099600ef2"
+            );
+            let sid = SessionId::parse(&v).expect("parses");
+            assert!(
+                !sid.legacy_rfc7329_form,
+                "{spelling}= is a remote parameter, so this is not the legacy form"
+            );
+            assert_eq!(
+                sid.correlatable().len(),
+                2,
+                "both halves correlate: {spelling}"
+            );
+        }
+    }
+
+    /// A `;` inside a quoted generic-param does not split the parameter list.
+    ///
+    /// RFC 7989 §5: `sess-id-param = remote-param / generic-param`, and
+    /// RFC 3261 §25.1 puts `;` (%x3B) inside `qdtext`. So a quoted value may
+    /// contain one and it must not be read as a separator.
+    ///
+    /// The defect was remotely triggerable: anyone on the signaling path could
+    /// append one conformant generic-param and overwrite the genuine remote
+    /// half with a fabricated one, killing B2BUA correlation silently.
+    #[test]
+    fn a_semicolon_inside_a_quoted_parameter_does_not_split_the_list() {
+        // The decoy comes FIRST, deliberately. With it second, the
+        // first-wins rule alone would defeat it and this test would pass
+        // against a naive `split(';')` — a mutation proved exactly that. Only
+        // quote-awareness saves the genuine half when the decoy precedes it.
+        let sid = SessionId::parse(
+            "ab30317f1a784dc48ff824d0d3715d86;\
+             foo=\"x;remote=deadbeefdeadbeefdeadbeefdeadbeef\";\
+             remote=47755a9de7794ba387653f2099600ef2",
+        )
+        .expect("parses");
+        let correlatable = sid.correlatable();
+        assert_eq!(
+            correlatable.len(),
+            2,
+            "both real halves survive: {correlatable:?}"
+        );
+        assert!(
+            correlatable.contains(&"47755a9de7794ba387653f2099600ef2"),
+            "the genuine remote half must not be overwritten: {correlatable:?}"
+        );
+        assert!(
+            !correlatable.iter().any(|h| h.contains("deadbeef")),
+            "the decoy must not become the remote half: {correlatable:?}"
+        );
+    }
+
+    /// A duplicate `remote` takes the FIRST, and the RFC forbids the second.
+    ///
+    /// RFC 7989 §5: "The Session-ID header field MUST NOT have more than one
+    /// 'remote' parameter." RFC 3261 §7.3.1 says the same generally. Taking
+    /// the last let a later parameter override an earlier one; taking the
+    /// first at least matches RFC 8489's rule for the analogous case and is
+    /// the half an attacker cannot append to.
+    #[test]
+    fn a_duplicate_remote_parameter_takes_the_first() {
+        let sid = SessionId::parse(
+            "ab30317f1a784dc48ff824d0d3715d86;remote=47755a9de7794ba387653f2099600ef2;\
+             remote=11111111111111111111111111111111",
+        )
+        .expect("parses");
+        assert!(
+            sid.correlatable()
+                .contains(&"47755a9de7794ba387653f2099600ef2"),
+            "the first remote wins: {:?}",
+            sid.correlatable()
+        );
+        assert!(
+            !sid.correlatable().iter().any(|h| h.starts_with("1111")),
+            "the second must not override it"
+        );
+    }
+
+    /// Whitespace around the separators is legal and must not lose the half.
+    ///
+    /// `SEMI = SWS ";" SWS` and `EQUAL = SWS "=" SWS`.
+    #[test]
+    fn conformant_whitespace_still_yields_both_halves() {
+        for v in [
+            "ab30317f1a784dc48ff824d0d3715d86 ; remote = 47755a9de7794ba387653f2099600ef2",
+            "ab30317f1a784dc48ff824d0d3715d86;\tremote\t=\t47755a9de7794ba387653f2099600ef2",
+        ] {
+            let sid = SessionId::parse(v).expect("parses");
+            assert_eq!(sid.correlatable().len(), 2, "{v:?}");
+        }
+    }
+
     use super::*;
 
     const A: &str = "ab30317f1a784dc48ff824d0d3715d86";

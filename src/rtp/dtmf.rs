@@ -52,6 +52,80 @@ pub struct DtmfEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Remembers which telephone-event end packets have already been reported.
+///
+/// # Why this is needed
+///
+/// RFC 4733 §2.5.1.4 requires a sender to transmit the final packet of an
+/// event **three times**, and to keep the E bit set on every one of them. A
+/// reader that reports an event per E-bit packet therefore counts one keypress
+/// three times — which it did, visibly, on every capture carrying DTMF.
+///
+/// # Why this key
+///
+/// The RFC guarantees the retransmissions are identical in the three fields
+/// that matter: same SSRC, same RTP timestamp (the event's START, which does
+/// not advance across the retransmissions), same event code. Nothing else
+/// distinguishes them, and nothing else is needed.
+///
+/// # Bounded on purpose
+///
+/// The key is capture-derived, so an unbounded set is a growth path a sender
+/// controls. Forgetting the oldest key can only re-report a keypress far in
+/// the past, which is the harmless direction of the trade.
+#[derive(Debug, Default)]
+pub struct DtmfDedupe {
+    /// Recent keys, oldest first.
+    seen: std::collections::VecDeque<(u32, u32, u8)>,
+}
+
+impl DtmfDedupe {
+    /// How many recent end-events are remembered.
+    ///
+    /// A keypress is three packets, so this holds well over a hundred distinct
+    /// digits — far more than any real dialing sequence — while staying a
+    /// fixed, tiny cost.
+    pub const CAPACITY: usize = 512;
+
+    /// Whether this end packet has already been reported.
+    ///
+    /// # Arguments
+    ///
+    /// * `ssrc` — the stream's synchronization source.
+    /// * `rtp_timestamp` — the packet's RTP timestamp, which for a
+    ///   telephone-event is the event's start and is identical across the
+    ///   RFC 4733 §2.5.1.4 retransmissions.
+    /// * `event` — the event code from the payload's first octet.
+    ///
+    /// # Returns
+    ///
+    /// `true` when this exact end packet was seen before, and the caller
+    /// should not count it again.
+    pub fn is_duplicate(&mut self, ssrc: u32, rtp_timestamp: u32, event: u8) -> bool {
+        let key = (ssrc, rtp_timestamp, event);
+        if self.seen.contains(&key) {
+            return true;
+        }
+        if self.seen.len() >= Self::CAPACITY {
+            self.seen.pop_front();
+        }
+        self.seen.push_back(key);
+        false
+    }
+
+    /// How many keys are remembered. Test and diagnostic use.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.seen.len()
+    }
+
+    /// Whether nothing has been seen yet.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.seen.is_empty()
+    }
+}
+
 // ── Public API ───────────────────────────────────────────────────────
 
 /// Extract a DTMF event from an RTP telephone-event payload, using the
@@ -172,6 +246,80 @@ fn event_to_digit(event: u8) -> Option<char> {
 /// Unit tests for RFC 4733 telephone-event (DTMF) extraction.
 #[cfg(test)]
 mod tests {
+    /// One keypress reports one event, not three.
+    ///
+    /// RFC 4733 §2.5.1.4: "The final packet for each event and for each
+    /// segment SHOULD be sent a total of three times at the interval used by
+    /// the source for updates", and "Once the sender has set the E bit for a
+    /// packet, it MUST continue to set the E bit for any further
+    /// retransmissions of that packet." So a conformant sender emits three
+    /// E=1 packets per keypress and sipnab counted a digit for each.
+    ///
+    /// The retransmissions carry the SAME SSRC, the same RTP timestamp (the
+    /// event's start) and the same event code — the RFC guarantees it, which
+    /// is what makes those three a usable key.
+    #[test]
+    fn a_retransmitted_end_packet_is_not_a_second_keypress() {
+        let mut seen = DtmfDedupe::default();
+        // Digit 7, E=1, 2400 timestamp units — sent three times per §2.5.1.4.
+        assert!(!seen.is_duplicate(0xCAFE_BABE, 160_000, 7));
+        assert!(seen.is_duplicate(0xCAFE_BABE, 160_000, 7));
+        assert!(seen.is_duplicate(0xCAFE_BABE, 160_000, 7));
+    }
+
+    /// A different digit at the same instant is a different event.
+    ///
+    /// The negative case for the event half of the key: two keys pressed in
+    /// the same RTP timestamp window are two keypresses, and collapsing them
+    /// would lose one.
+    #[test]
+    fn a_different_event_code_is_a_different_keypress() {
+        let mut seen = DtmfDedupe::default();
+        assert!(!seen.is_duplicate(0xCAFE_BABE, 160_000, 7));
+        assert!(!seen.is_duplicate(0xCAFE_BABE, 160_000, 1));
+    }
+
+    /// The same digit later in the call is a new keypress.
+    ///
+    /// The negative case for the timestamp half. Pressing `7` twice must count
+    /// twice; a deduper keyed on the digit alone would report one.
+    #[test]
+    fn the_same_digit_pressed_again_counts_again() {
+        let mut seen = DtmfDedupe::default();
+        assert!(!seen.is_duplicate(0xCAFE_BABE, 160_000, 7));
+        assert!(!seen.is_duplicate(0xCAFE_BABE, 176_000, 7));
+    }
+
+    /// Two streams pressing the same digit at the same offset are distinct.
+    ///
+    /// The negative case for the SSRC half — both directions of one call, or
+    /// two calls in one capture, would otherwise collapse into one.
+    #[test]
+    fn the_same_digit_on_another_stream_is_a_separate_keypress() {
+        let mut seen = DtmfDedupe::default();
+        assert!(!seen.is_duplicate(0xCAFE_BABE, 160_000, 7));
+        assert!(!seen.is_duplicate(0x0BAD_F00D, 160_000, 7));
+    }
+
+    /// The memory is bounded, and forgetting is safe.
+    ///
+    /// An unbounded set keyed on capture data is a memory-growth path an
+    /// attacker controls. Forgetting an old key can only ever re-report a
+    /// keypress that is far in the past, which is the harmless direction — so
+    /// the bound is deliberately small and this test states the trade.
+    #[test]
+    fn the_dedupe_memory_is_bounded() {
+        let mut seen = DtmfDedupe::default();
+        for i in 0..(DtmfDedupe::CAPACITY as u32 * 4) {
+            assert!(!seen.is_duplicate(0xCAFE_BABE, i * 1000, 7));
+        }
+        assert!(
+            seen.len() <= DtmfDedupe::CAPACITY,
+            "the set must not grow without bound: {}",
+            seen.len()
+        );
+    }
+
     use super::*;
 
     /// A fixed capture timestamp for the extracted events.

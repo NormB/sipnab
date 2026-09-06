@@ -3,17 +3,26 @@
 How fast sipnab is, measured honestly — and what that speed is for. The number
 is not a race against the local capture tools. It is the headroom that decides
 how much of an estate one binary can take at once, and therefore whether you
-stand up a collector tier at all. **Every table on this page comes from one
-session on 2026-08-21.**
+stand up a collector tier at all. **Every table on this page names the session
+that measured it.** The multi-core tables come from one session on 2026-08-21.
+The version A/B further down is 2026-08-10, and its continuation 2026-08-17,
+each carrying a control of its own.
 
 Every number here is reproducible, and has been a checked claim rather than an
 asserted one since 0.5.47 — the release that put the corpus generator and the
 timing harness in [`bench/`](../bench/), so you can regenerate the corpus and
 re-run every table below. 0.5.47 dates the recipe, not this run.
 
-> **Measured against 0.5.122, on 2026-08-21.** Every table below is that
-> measurement. No number here stands in for a release it did not measure, and
-> none carries forward from a run nobody repeated.
+> **Measured against 0.5.122, on 2026-08-21.** The multi-core tables below are
+> that measurement. No number here stands in for a release it did not measure,
+> and none carries forward from a run nobody repeated.
+>
+> **These figures predate the 2026-08-28 change that stopped hashing every
+> frame.** PERF1 in [`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) closed a week after this session
+> and records its own measurement on the same harness and corpus — 2.70M at two
+> cores against 2.10M, and 3.56M at four against 3.21M. Nothing on this page
+> carries a re-measurement since 2026-08-21, so every table here describes
+> 0.5.122 and not the current release.
 >
 > **0.5.118 through 0.5.121 ran 27% slower than 0.5.117, and 0.5.122
 > repairs it.** The cause was [`is_merged`](https://github.com/NormB/sipnab/blob/main/src/capture/merged.rs),
@@ -194,14 +203,21 @@ regression** — 2.32M against 0.5.47's 2.02M. The second change even beat its
 own predicted ceiling, because frames sharing a block are also sequential in
 memory, which a diagnostic that scattered them into an arena could not show.
 
-**What is still wrong, stated rather than left for the next re-run to find.**
-sipnab hashes every frame when only a *retained* pointer needs a digest — a dialog's `first_frame`, a stream's `first_frame`, a finding's
-`frame_ref` — which on this corpus is about 35,000 of 535,000 frames. A
-diagnostic build with the digest removed entirely measures 2.05M at two cores
-against 0.5.83's 2.33M, so roughly 12% of the original regression is *not* the
-digest at all and remains unidentified. Both are PERF1 in
-[`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md), together with the two obvious fixes and the tests
-that already reject each.
+**What the tables above still carried, and what closed after them.** Every
+build these tables measure hashes every frame, when only a *retained* pointer
+needs a digest — a dialog's `first_frame`, a stream's `first_frame`, a
+finding's `frame_ref` — about 35,000 of 535,000 frames on this corpus. PERF1 in
+[`docs/design/backlog.md`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md) closed that on 2026-08-28, seven days after the
+2026-08-21 session, and records the measurement it closed on: two release
+builds off one tree differing only in this change, same harness and corpus,
+2.70M at two cores against 2.10M and 3.56M at four against 3.21M. No table on
+this page reflects it.
+
+**What stays open.** A diagnostic build with the digest removed entirely
+measures 2.05M at two cores against 0.5.83's 2.33M, so roughly 12% of the
+original regression was never the digest at all and remains unidentified. The
+same PERF1 entry carries that residue, together with the two obvious fixes and
+the tests that already reject each.
 
 **Scope.** The table above spans 0.5.47 → 0.5.91, measured on 2026-08-10, and
 its columns say nothing about anything released after. The continuation below
@@ -299,8 +315,8 @@ python3 bench/carrier.py --calls 5000 --out corpus.pcap
 bench/scaling.sh "$BIN" corpus.pcap 535000 --cores 1,2,4,8 --runs 5
 ```
 
-sipnab 0.5.104 at four cores, with the per-message stream suppressed so only the
-end-of-run report prints:
+A single timed run at four cores, with the per-message stream suppressed so
+only the end-of-run report prints:
 
 ```sh
 sipnab -N -I corpus.pcap --cores 4 --report --no-cli-print

@@ -38,23 +38,33 @@ demos/mcp-stdio.sh tests/pcap-samples/sip-problem-call.pcap \
   "final_status_code": 486,
   "media": {
     "hints": [],
+    "nat_mismatch": false,
+    "no_media": false,
     "one_way_audio": false,
     "problem": false,
     "stream_count": 0
   },
+  "schema_version": 1,
   "signaling": {
     "hints": [
       "Call failed: 486 Busy Here."
     ],
     "problem": true
   },
+  "source_exhausted": true,
+  "source_stopped_early": false,
   "state": "Failed",
   "verdict": "signaling"
 }
 ```
 
 A verdict, not a packet list: signaling rather than media, the 486 that ended
-it, and media explicitly ruled out rather than merely absent.
+it, and media explicitly ruled out rather than merely absent — `one_way_audio`,
+`nat_mismatch` and `no_media` each say `false` rather than going unmentioned.
+
+`source_exhausted` and `source_stopped_early` ride on every answer this server
+gives from the capture. Together they say the verdict rests on the whole file
+rather than on however much had loaded when the question arrived.
 
 ## Add it to your client
 

@@ -29,9 +29,9 @@
 //! # What does NOT get one, and why that is not a gap
 //!
 //! The MCP schema types `structuredContent` as a JSON **object**. A payload
-//! that is a top-level array (`timeline`) or a rendered document
-//! (`render_ladder`, and `get_capture_report` in its `markdown` and `text`
-//! formats) has no object to publish, and wrapping one in a synthetic key
+//! that is a top-level array or a rendered document (`render_ladder`, and
+//! `get_capture_report` in its `markdown` and `text` formats) has no object to
+//! publish, and wrapping one in a synthetic key
 //! would put a shape in `structuredContent` that the text block does not have —
 //! reintroducing the disagreement this exists to prevent. Those results are
 //! left exactly as they were.
@@ -125,7 +125,7 @@ mod tests {
         );
     }
 
-    /// `timeline` returns a top-level array, which the MCP schema cannot carry
+    /// A top-level array is a shape the MCP schema cannot carry
     /// in `structuredContent`. Wrapping it would invent a shape the text block
     /// does not have.
     #[test]

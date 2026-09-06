@@ -23,8 +23,9 @@ The short version:
 | **EVS** | Fullband only, SWB mode | Placeholder, flagged |
 | G.722, G.726, iLBC, everything else | Not implemented | Placeholder, flagged |
 
-Anything in the last three rows scores **4.216 at 10 ms jitter — the same value
-an unidentified stream gets.** That is a placeholder, not a measurement.
+Anything in the last three rows scores **4.216 at 10 ms jitter, no loss and the
+assumed 100 ms one-way delay — the same value an unidentified stream gets.**
+That is a placeholder, not a measurement.
 
 Every door that publishes the number publishes what it is worth, in the same
 words:
@@ -34,7 +35,7 @@ words:
 | MCP `rtp_stats` | `mos_grounded: false`, `mos_grounding: "unpublished"`, `mos_note` |
 | `GET /v1/streams` | the same three keys on every row |
 | `GET /v1/streams?mos_below=` | **never selects an ungrounded stream**, and reports `ungrounded_excluded` |
-| MCP `search_streams` with `min_mos`/`max_mos` | the same refusal, and the same count |
+| MCP `rtp_stats` with `min_mos`/`max_mos` | the same refusal, and the same count |
 | TUI stream detail | the score renders muted rather than in a quality band, annotated `no published Ie` |
 | The in-browser analyzer on sipnab.com | the score renders dimmed and italic, outside the good/fair/poor scale entirely, and the summary counts what it could not score |
 
@@ -281,5 +282,8 @@ assert!((mos.unwrap() - 4.3371).abs() < 5e-4);
 assert_eq!(amr_wb_mos(kbps, ListeningContext::Monotic, 1.0), None);
 ```
 
-Every function returns `Option` and returns `None` wherever G.113 publishes
-nothing, rather than interpolating into the gap.
+Every lookup in that module — `amr_wb_ie`, `amr_wb_bpl`, `amr_wb_mos` and
+`amr_wb_kbps_from_fmtp` — returns `Option`, and returns `None` wherever G.113
+publishes nothing rather than interpolating into the gap. The three arithmetic
+steps beside them (`ie_eff_wb`, `r_wb`, `r_wb_to_mos`) take numbers you already
+have and return an `f64`.

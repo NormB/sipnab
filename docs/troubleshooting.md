@@ -372,7 +372,14 @@ Find the calls whose post-dial delay crossed the 3-second perceptibility line:
 sipnab -N -I capture.pcap --filter "pdd > 3.0" --json
 ```
 
-The `--slow-setup` alias carries that same threshold. Pair it with `--report` for a summary instead of per-message records:
+The `--slow-setup` alias asks a looser question than that filter. It expands to
+`pdd > 11.0`, sipnab's own post-dial-delay threshold, which comes from ITU-T
+E.721's target for an international connection — a capture does not say what
+kind of call it holds, so the shipped figure is the most generous one. A network
+that knows its traffic is local or toll wants a tighter one: pass
+`--pdd-threshold 6.0` (or set `[diagnosis] post_dial_delay_secs`) and both
+`--slow-setup` and `--problems` move with it. Pair the alias with `--report` for
+a summary instead of per-message records:
 
 ```bash
 sipnab -N -I capture.pcap --slow-setup --report
@@ -458,7 +465,7 @@ rather than an observation of this call.
 sipnab reads STUN and TURN, and reports transactions that went out and never
 came back:
 
-```
+```text
 STUN/TURN: 192.0.2.10:5060 sent Binding to 198.51.100.1:3478 2 time(s) and got
 no reply. An endpoint that cannot learn its reflexive address falls back to
 advertising its PRIVATE address in SDP ...
@@ -701,7 +708,7 @@ Check what sipnab asked the kernel for. Run with `SIPNAB_LOG=info` and read the
 `Auto-generated BPF filter:` line. Then take that exact expression to tcpdump
 against the same interface, or against a capture from it:
 
-```
+```bash
 tcpdump -r sample.pcap -nn 'portrange 5060-5061' | wc -l
 ```
 
@@ -712,11 +719,12 @@ empty result reads as "there were no calls".
 
 The usual cause is encapsulation. A port filter matches the outer headers
 only, so SIP inside a VLAN tag, QinQ, PPPoE or MPLS never matches one.
-Confirm by comparing:
+Confirm by comparing. Against the repository's 32-frame PPPoE sample the plain
+filter above counts `0`, and the same filter behind the PPPoE keyword counts
+all 32:
 
-```
-tcpdump -r sample.pcap -nn 'portrange 5060-5061'            | wc -l   # 0
-tcpdump -r sample.pcap -nn 'pppoes and portrange 5060-5061' | wc -l   # 32
+```bash
+tcpdump -r sample.pcap -nn 'pppoes and portrange 5060-5061' | wc -l
 ```
 
 **If you passed your own filter (a positional expression or `--bpf-file`),

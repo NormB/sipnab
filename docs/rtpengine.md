@@ -463,8 +463,9 @@ traffic the capture carries:
 - A per-run ceiling caps control transactions at 66 — one `list` plus a
   `query` per call at rtpengine's own list limit of 32, twice over. Enough
   for a full startup snapshot and one comparable refresh, and no more.
-- The queue handing sockets from the capture path to the asking thread is
-  bounded, so a slow relay cannot grow it.
+- The queue handing sockets from the capture path to the asking thread stops
+  at 4096 entries — two per stream, so 2048 unexplained streams — and counts
+  what it turned away rather than letting a slow relay grow it without end.
 
 When a bound bites, sipnab counts it and says so. The asking runs on its
 own thread, so the packet path offers a socket and moves on rather than
@@ -480,7 +481,9 @@ than collapsing them into one shrug:
 - **The relay named calls sipnab could not read.** The port may belong to
   one of those.
 - **The relay capped its own enumeration.** The list came back partial, so
-  the port may belong to a call the relay never named.
+  the port may belong to a call the relay never named. sipnab does not accept
+  that quietly: a capped first answer earns one wider ask, for up to 1024
+  Call-IDs, and the summary says whether that wider ask landed or failed.
 - **The run spent its transaction ceiling.** sipnab never asked about the
   port at all.
 - **The relay does not hold the port.** This one, and only this one, says

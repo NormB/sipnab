@@ -84,7 +84,26 @@ pub fn is_sip_message(data: &[u8]) -> bool {
 /// default for bindings that do not carry one.
 pub(crate) fn registration_expiry(msg: &SipMessage) -> Option<u32> {
     if let Some(contact) = msg.contact() {
-        for param in contact.split(';').skip(1) {
+        // Header parameters begin AFTER the addr-spec. RFC 3261 §25.1:
+        // `SIP-URI = "sip:" [userinfo] hostport uri-parameters [headers]` and
+        // `contact-param = (name-addr / addr-spec) *(SEMI contact-params)` —
+        // so everything between `<` and `>` is URI parameters and belongs to
+        // the URI, not to the Contact.
+        //
+        // Reading the raw value meant a conformant
+        // `<sip:alice@host;expires=60>;expires=3600` took the URI's 60 and
+        // reported "Registration granted 60s against 3600s requested" — a
+        // finding manufactured out of a parameter that says nothing about the
+        // binding. §10.2.1.1 puts the binding lifetime on the HEADER
+        // parameter.
+        let params = match contact.find('>') {
+            Some(close) => &contact[close + 1..],
+            // A bare addr-spec has no brackets; RFC 3261 §20.10 then forbids
+            // it from carrying URI parameters at all, so every `;` is a header
+            // parameter and the whole value is the right thing to scan.
+            None => contact,
+        };
+        for param in params.split(';').skip(1) {
             // A Contact carries valueless parameters as often as not -- `;ob`
             // from an outbound registration, `;lr`, `;isfocus`. This used `?`,
             // which returned None from the WHOLE function on the first one, so
@@ -104,6 +123,99 @@ pub(crate) fn registration_expiry(msg: &SipMessage) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+    use crate::net::TransportProto;
+    use crate::sip::parser::parse_sip;
+    use chrono::Utc;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    /// A REGISTER carrying `contact` and no `Expires` header.
+    fn contact_msg(contact: &str) -> SipMessage {
+        build(contact, None)
+    }
+
+    /// A REGISTER carrying `contact` and an `Expires` header.
+    fn contact_msg_with_expires(contact: &str, expires: &str) -> SipMessage {
+        build(contact, Some(expires))
+    }
+
+    /// Parse a minimal REGISTER so the tests exercise the real accessors
+    /// rather than a hand-built struct.
+    fn build(contact: &str, expires: Option<&str>) -> SipMessage {
+        let mut raw = String::from("REGISTER sip:example.com SIP/2.0\r\n");
+        raw.push_str("From: <sip:alice@example.com>;tag=t1\r\n");
+        raw.push_str("To: <sip:alice@example.com>\r\n");
+        raw.push_str("Call-ID: reg-test@example.com\r\n");
+        raw.push_str("CSeq: 1 REGISTER\r\n");
+        raw.push_str(&format!("Contact: {contact}\r\n"));
+        if let Some(e) = expires {
+            raw.push_str(&format!("Expires: {e}\r\n"));
+        }
+        raw.push_str("Content-Length: 0\r\n\r\n");
+        let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        parse_sip(
+            raw.as_bytes(),
+            Utc::now(),
+            ip,
+            ip,
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("the fixture must parse")
+    }
+
+    /// A URI parameter is not the binding lifetime.
+    ///
+    /// RFC 3261 §25.1 puts everything between `<` and `>` in
+    /// `uri-parameters`; §10.2.1.1 puts the binding lifetime on the Contact
+    /// HEADER parameter. Reading the raw value took the URI's `expires` and
+    /// reported a registration granted for 60s against 3600s requested — a
+    /// finding fabricated from a parameter about the URI.
+    #[test]
+    fn a_uri_expires_parameter_is_not_the_binding_lifetime() {
+        let msg = contact_msg("<sip:alice@10.0.0.1;expires=60;transport=udp>;expires=3600");
+        assert_eq!(registration_expiry(&msg), Some(3600));
+    }
+
+    /// A URI parameter alone leaves the header fallback reachable.
+    ///
+    /// The shape that lost the expiry entirely: `expires=0>` failed to parse,
+    /// the function returned early, and the `Expires:` header beneath it was
+    /// never consulted — so an unregister read as no expiry at all.
+    #[test]
+    fn a_uri_expires_alone_falls_through_to_the_expires_header() {
+        let msg = contact_msg_with_expires("<sip:alice@10.0.0.1;expires=0>", "3600");
+        assert_eq!(registration_expiry(&msg), Some(3600));
+    }
+
+    /// The header parameter still wins over the `Expires` header.
+    ///
+    /// The regression guard for §10.2.1.1's precedence rule, which the fix
+    /// must not invert.
+    #[test]
+    fn the_contact_header_parameter_still_beats_the_expires_header() {
+        let msg = contact_msg_with_expires("<sip:alice@10.0.0.1>;expires=60", "3600");
+        assert_eq!(registration_expiry(&msg), Some(60));
+    }
+
+    /// A bare addr-spec carries header parameters directly.
+    ///
+    /// RFC 3261 §20.10 forbids a Contact without angle brackets from carrying
+    /// URI parameters, so every `;` in it is a header parameter. Skipping to
+    /// after a `>` that is not there must not skip the whole value.
+    #[test]
+    fn a_bare_addr_spec_contact_still_yields_its_expires() {
+        let msg = contact_msg("sip:alice@10.0.0.1;expires=120");
+        assert_eq!(registration_expiry(&msg), Some(120));
+    }
+
+    /// An unregister is still an unregister.
+    #[test]
+    fn a_zero_expiry_is_read_as_zero() {
+        let msg = contact_msg("<sip:alice@10.0.0.1>;expires=0");
+        assert_eq!(registration_expiry(&msg), Some(0));
+    }
+
     use super::*;
 
     /// An extension method is SIP here too, because this is now the same

@@ -33,7 +33,7 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 | Key | Action |
 |-----|--------|
 | Ctrl+C | Force quit |
-| Ctrl+L | Clear calls (same as F5) |
+| Ctrl+L | Clear calls — Call List only, same as F5 there |
 | v | Show version (with git commit) in the status line |
 | n | Cycle name resolution (Off / Static / DNS) |
 | N | Name the selected address (map IP → host/FQDN) |
@@ -108,7 +108,7 @@ active filter.
 
 | Key | Action |
 |-----|--------|
-| Tab | Switch focus between the ladder (left) and detail (right) panes |
+| Tab / Shift+Tab | Switch focus between the ladder (left) and detail (right) panes |
 | Up / k | Previous message or RTP bar — or scroll detail up when the detail pane has focus |
 | Down / j | Next message or RTP bar — or scroll detail down when the detail pane has focus |
 | PgUp | Page up (ladder, or detail when focused) |
@@ -117,6 +117,7 @@ active filter.
 | End | Jump to last message (or bottom of detail when focused) |
 | Enter | Open full-screen raw message view — or, with the cursor on an RTP bar, the Stream Detail view (MOS, jitter, quality intervals, burst/gap analysis, silence detection, sparklines) |
 | Space | Select message for diff (press on two messages to compare) |
+| q | Quit **(configurable: `quit`)** |
 | Esc | Back to call list |
 | d | Cycle SDP display mode (none / summary / full) |
 | t | Cycle timestamp mode (absolute / delta-prev / delta-first / scaled) |
@@ -169,6 +170,7 @@ detail pane regardless of focus.
 | y | Copy the displayed message's raw text to the clipboard (OSC 52, works over SSH — see [Copying text](#copying-text)) |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
+| q | Quit **(configurable: `quit`)** |
 | Esc | Back to the view you came from (call flow or call list) |
 
 ## Message diff
@@ -195,6 +197,7 @@ message of the selection rendered as one scrollable document.
 | Home / End | Jump to top/bottom |
 | h | Cycle header-name display (as captured / expanded / compact) |
 | F1 / ? | Help **(configurable: `help`)** |
+| q | Quit **(configurable: `quit`)** |
 | Esc | Back to call flow |
 
 ## RTP streams
@@ -211,6 +214,7 @@ message of the selection rendered as one scrollable document.
 | D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | Tab | Switch to Call List |
 | Esc | Back to Call List |
+| q | Quit **(configurable: `quit`)** |
 | N | Name the selected stream's source address (map IP → host/FQDN) |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save the selected stream's audio as WAV **(configurable: `save`)** |
@@ -225,9 +229,10 @@ message of the selection rendered as one scrollable document.
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
 | Shift+P | Play / stop the stream's audio (G.711; requires the `audio` build) |
-| L | Open the packet loss map (RTP loss pattern) |
+| L | Open the packet loss map (RTP loss pattern) — a single screen with nothing to scroll, so `Esc` or `q` is the only key it takes, and either returns here |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save the stream's audio as WAV **(configurable: `save`)** |
+| q | Quit **(configurable: `quit`)** |
 | Esc | Back to the view you came from (RTP Streams, Call Flow, or Quality Dashboard) |
 
 The Stream Detail view shows comprehensive per-stream quality data: MOS score, jitter statistics, quality intervals, burst/gap analysis ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611)), silence detection, and sparkline graphs for MOS and jitter trends over the stream's lifetime.
@@ -258,9 +263,14 @@ the Call List or RTP Streams view.
 
 ## Help
 
+The help text can run past the screen, so it scrolls.
+
 | Key | Action |
 |-----|--------|
 | Esc / F1 / q | Close help |
+| Up / k, Down / j | Scroll one line |
+| PgUp / PgDn | Scroll ten lines |
+| Home / End | Jump to top/bottom |
 
 ## Save popup
 
@@ -310,14 +320,22 @@ Settings items: Color mode, Timestamp mode, Autoscroll, Raw preview, SDP display
 
 ## File open popup
 
+The popup opens on the file browser. `Tab` switches to typing a path instead,
+and `Tab` again returns to the browser.
+
 | Key | Action |
 |-----|--------|
 | Esc | Cancel and close |
-| Enter | Open the specified pcap file |
-| Left / Right | Move cursor |
-| Home / End | Jump to start/end of path |
-| Backspace | Delete character before cursor |
-| (any char) | Insert character |
+| Tab | Switch between the browser and typing a path, in either direction |
+| Up / Down | Browser: move the selection |
+| PgUp / PgDn | Browser: page through the listing |
+| Home / End | Browser: jump to the first or last entry |
+| Enter | Browser: descend into the selected directory, or load the selected capture. Typed path: load that path |
+| (any char) | Browser: extend the name filter, which narrows the listing. Typed path: insert the character |
+| Backspace | Browser: trim the name filter, then climb to the parent directory once the filter is empty. Typed path: delete the character before the cursor |
+| Left / Right | Typed path: move the cursor |
+| Home / End (typed path) | Jump to the start or end of the path |
+| Delete | Typed path: delete the character under the cursor |
 
 The browser lists `.pcap`, `.pcapng`, and `.cap` files, plus their
 gzip-compressed forms (`*.pcap.gz`, …), which sipnab decompresses on the fly.

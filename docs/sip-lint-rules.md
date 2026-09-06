@@ -58,7 +58,9 @@ both, and the MUST is the one worth acting on.
 
 ## Rulesets
 
-Select a named subset by name:
+Run a named subset instead of the whole catalog. Name it in the `rulesets`
+parameter of the MCP [`lint_dialog`](mcp-tools.md#lint_dialog) tool, or in
+`LintConfig::with_ruleset` when you drive the linter from Rust:
 
 | Name | Contents |
 |---|---|
@@ -66,7 +68,7 @@ Select a named subset by name:
 | `must` | Only MUST violations. Defensible in a carrier ticket without argument. |
 | `rfc` | MUST and SHOULD. Excludes the vendor heuristics and the media rules. |
 | `interop` | Only the "this breaks real equipment" heuristics. |
-| `observation` | Only the declaration-versus-observation rules. |
+| `observation` | Only the declaration-versus-observation rules. `obs` is the same name, shortened. |
 | `syntax` | Only the rules that read a single message with no dialog context. |
 
 ## Suppression
@@ -84,7 +86,7 @@ OBS-*
 Patterns separate on commas, spaces or newlines, and `#` starts a comment.
 
 Put them in a `.sipnablint` and check it in beside the config it belongs to.
-Both surfaces read the same file: the MCP lint tools take a `suppress_file`
+Both surfaces read the same file: the MCP lint tools take a `suppression_file`
 parameter, and the binary takes `--lint-suppress-file`. In the ordinary case you
 need not tell either one where the file is — see the discovery rule below.
 
@@ -127,7 +129,9 @@ list always says why it is short — the
 One further guard rail keeps CI readable: a single rule reports at most 25
 findings per dialog by default. A dialog retransmitting an `INVITE` eleven
 times trips a message rule eleven times, and every one of them is true, but
-printing all eleven buries the other rules.
+printing all eleven buries the other rules. Change the cap with
+`--lint-max-per-rule N`, or with `[limits] lint_max_per_rule` in the config
+file.
 
 ## Observation rules
 
@@ -136,7 +140,7 @@ RTCP that sipnab attributed to the dialog.
 
 | Rule | Severity | Cites | Fires when |
 |---|---|---|---|
-| `OBS-3264-6.1-PT-UNDECLARED` | error | [RFC 3264 §6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | The wire carries an RTP payload type that no offer or answer in the dialog declared. Comfort noise on payload type 13 stays exempt, because equipment sends it without ever listing it. |
+| `OBS-3264-6.1-PT-UNDECLARED` | error | [RFC 3264 §6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | The wire carries an RTP payload type that no offer or answer in the dialog declared. Comfort noise stays exempt on payload type 13 ([RFC 3389](https://www.rfc-editor.org/rfc/rfc3389)) and on the reserved payload type 19 that earlier profiles used for it, because equipment sends both without ever listing them. |
 | `OBS-4566-5.14-MEDIA-PORT-MISMATCH` | warning | [RFC 4566 §5.14](https://www.rfc-editor.org/rfc/rfc4566#section-5.14) | RTP arrives at a declared media address on a port nobody advertised. The RTCP port one higher stays exempt. |
 | `OBS-3264-6.1-DIRECTION-UNMET` | warning | [RFC 3264 §6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) | Both ends negotiated `sendrecv`, media flowed, and one negotiated endpoint received none of it. |
 | `OBS-4566-6-PTIME-MISMATCH` | notice | [RFC 4566 §6](https://www.rfc-editor.org/rfc/rfc4566#section-6) | The packetization on the wire differs from `a=ptime` by more than half. |

@@ -16,7 +16,10 @@ were, so the tables move when IANA does rather than when someone remembers.
 
 **Three parameters, deliberately stated conservatively.** `branch` (top `Via`),
 `tag` (`From`/`To`) and `expires` (`Contact` parameter, falling back to the
-`Expires` header).
+`Expires` header). The `expires` parameter on `Subscription-State` is a
+different registration and sipnab does not read it: a `NOTIFY` contributes its
+`Subscription-State` **value token** — `active`, `pending`, `terminated` — and
+the parameters after the `;` go unread.
 
 An earlier draft of this page computed the column by grepping the source for
 each parameter name, which reported 41 of 204. That number was wrong and
@@ -250,7 +253,7 @@ registration.
 | `Session-ID` | `logme` | No (no values are allowed) | [RFC 8497](https://www.rfc-editor.org/rfc/rfc8497) | — |
 | `Session-ID` | `remote` | No | [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) | — |
 | `Subscription-State` | `adaptive-min-rate` | No | [RFC 6446](https://www.rfc-editor.org/rfc/rfc6446) | — |
-| `Subscription-State` | `expires` | No | [RFC 6665](https://www.rfc-editor.org/rfc/rfc6665) | **yes** |
+| `Subscription-State` | `expires` | No | [RFC 6665](https://www.rfc-editor.org/rfc/rfc6665) | — |
 | `Subscription-State` | `max-rate` | No | [RFC 6446](https://www.rfc-editor.org/rfc/rfc6446) | — |
 | `Subscription-State` | `min-rate` | No | [RFC 6446](https://www.rfc-editor.org/rfc/rfc6446) | — |
 | `Subscription-State` | `reason` | Yes | [RFC 6665](https://www.rfc-editor.org/rfc/rfc6665) | — |

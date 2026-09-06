@@ -463,14 +463,21 @@ fn corpus_xr_never_becomes_the_local_measurement() {
 
 /// A synthesized XR on an odd port, for the case where no corpus is available.
 ///
-/// Pins the two halves of the classification hazard side by side: the payload
-/// is unambiguously RTCP by content, and the RTP pre-filter — which looks only
-/// at the version bits and `byte1 & 0x7F` — cannot tell. Classification must
-/// therefore ask the RTCP module first; a port-parity test that also narrows
-/// the accepted packet types answers "not RTCP" for every type it does not
-/// list.
+/// Pins the classification hazard and the guard that now closes it. The
+/// payload is unambiguously RTCP by content, and `parse_rtp_header` — which
+/// checks only the version bits — still parses it happily, reading the XR's
+/// first block header as an SSRC. What stops that becoming a phantom media
+/// stream is the pre-filter's payload-type band.
+///
+/// **This test asserted the opposite until 2026-09-06**, recording that the
+/// pre-filter "admits it" as the reason classification must ask the RTCP
+/// question first. That reason still holds — the length framing is the
+/// authoritative signal and the band is a heuristic — but the factual claim
+/// was fixed: only RTCP types 200-204 were rejected, so a truncated XR (207)
+/// fell through and was reported as media. RFC 3551 §6 leaves payload types
+/// 64-95 unassigned precisely so RTCP types 192-223 stay distinguishable.
 #[test]
-fn an_xr_datagram_is_rtcp_and_the_rtp_prefilter_cannot_tell() {
+fn an_xr_datagram_is_rtcp_and_the_prefilter_now_rejects_it() {
     // V=2, PT=207, length 0xF8 words → (0xF8 + 1) * 4 = 996 bytes, then the
     // originator SSRC and a Receiver Reference Time block (BT=4, 2 words).
     let mut xr = vec![0x80u8, 207, 0x00, 0xF8];
@@ -484,15 +491,19 @@ fn an_xr_datagram_is_rtcp_and_the_rtp_prefilter_cannot_tell() {
         "and it decodes, so nothing is lost by routing it to the RTCP path"
     );
     assert!(
-        sipnab::rtp::is_rtp_packet(&xr),
-        "the RTP pre-filter admits it — this is why the RTCP question must be \
-         asked first, and asked about the whole RFC 5761 packet-type range"
+        !sipnab::rtp::is_rtp_packet(&xr),
+        "the pre-filter rejects the whole reserved band, so a truncated XR \
+         cannot fall through to the media path"
     );
+
+    // The header parser is unchanged and still reads it, which is exactly why
+    // the pre-filter has to be the guard: without it these two values are the
+    // phantom stream an operator saw.
     let hdr = sipnab::rtp::parser::parse_rtp_header(&xr).expect("parses as a 12-byte header");
     assert_eq!(hdr.payload_type, 79, "207 & 0x7F");
     assert_eq!(
         hdr.ssrc, 0x0400_0002,
-        "the XR's first block header read as an SSRC — the phantom stream's identity"
+        "the XR's first block header would have been the phantom stream's identity"
     );
 }
 
@@ -624,6 +635,7 @@ fn the_sdp_ptime_reaches_the_stream_in_both_orderings() {
     let media = SdpMedia {
         media_type: "audio".into(),
         port: 20000,
+        port_count: None,
         proto: "RTP/AVP".into(),
         formats: vec!["8".into()],
         connection: None,

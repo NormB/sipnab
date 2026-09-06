@@ -1,10 +1,11 @@
 # MCP protocol
 
 What an MCP client must honor, and what an auditor needs: the security model,
-what the write verbs may do, how sipnab treats untrusted capture text, the
-stdio invariant, and the error and bounding semantics.
+the resources and subscriptions this server serves, what the write verbs may
+do, how sipnab treats untrusted capture text, and the stdio invariant.
 
-For the tools themselves see [MCP tool reference](mcp-tools.md).
+For the tools themselves — and for the error codes and response bounds — see
+[MCP tool reference](mcp-tools.md).
 
 ## Security model
 
@@ -76,7 +77,7 @@ For the tools themselves see [MCP tool reference](mcp-tools.md).
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.
 - **Every tool declares what it does.** All 64 carry MCP annotations, so a host
-  can decide what to call without asking. Fifty-one are `readOnlyHint: true`.
+  can decide what to call without asking. Fifty-two are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the twelve that
   are not. Every tool but three sets `openWorldHint` to `false`, because
   sipnab answers from the loaded capture and contacts no external service;
@@ -200,7 +201,7 @@ next reader to rediscover.
 
 sipnab exposes the files under `--mcp-file-root` as MCP **resources**.
 `resources/list` enumerates them and `resources/read` fetches one at
-`sipnab:///<filename>`. Three further URI spaces answer from the binary and
+`sipnab:///<filename>`. Four further URI spaces answer from the binary and
 from the loaded capture rather than from disk — see
 [Live views](#live-views-of-the-loaded-capture) below.
 
@@ -231,9 +232,10 @@ something the file does not contain.
 
 ### Live views of the loaded capture
 
-Three URI spaces exist alongside the capture files, and all three answer with no
-`--mcp-file-root` at all — that flag gates access to OTHER captures on disk, not
-to the one this run is already answering questions about:
+Four URI spaces exist alongside the capture files — `sipnab://reference/`,
+`sipnab://live/`, `sipnab://lint/` and `sipnab://filter/` — and all four answer
+with no `--mcp-file-root` at all. That flag gates access to OTHER captures on
+disk, not to the one this run is already answering questions about:
 
 | URI | What it returns |
 |---|---|
@@ -459,11 +461,12 @@ provenance note says so rather than leaving the omission to look accidental.
 | `list_dialogs`, `find_problems`, `tail_dialogs` | `from_user`, `to_user` | `call_id`, `state`, `method`, `frame`, counts, timestamps |
 | `get_dialog` | `dialog.from_user`, `dialog.to_user`, and every `messages[]` entry's `reason`, `from`, `to`, `contact`, `ua`, `sdp`, `malformed` | `call_id`, addresses, ports, `method`, `status_code`, timestamps |
 | `decode_evidence` | `sip.reason`, `sip.start_line`, every `headers[].name` and `headers[].value` | byte offsets, `index`, the frame pointer |
-| `security_findings`, `describe_endpoint` | finding `detail` (it quotes the scanner's own `User-Agent` back) | `rule_name`, `src_ip`, `timestamp` |
+| `security_findings`, `describe_endpoint` | finding `detail` (it quotes the scanner's own `User-Agent` back), and on `describe_endpoint` also every `user_agents[].value` banner and every `streams.codecs` name | `rule_name`, `src_ip`, `timestamp`, `endpoint`, the counts, `user_agents[].header` |
 | `tfps_banned`, `tfps_labels`, `tfps_dropped` | `detail` (what the TFPS rule saw, which for `user-agent` is the scanner's own header) and `last_request` (a request line the source wrote) | `ip`, `rule`, `verdict`, timestamps, counts, and the words TFPS itself uses, such as `refused` |
 | `lint_dialog`, `validate_message` | finding `observed` | `rule_id`, `expected`, `explanation`, `rfc`, `section`, `frame_ref` |
 | `get_sdp_timeline`, `check_codec_negotiation` | codec names from `a=rtpmap` | `media_addr`, `media_port`, `mode`, `result` |
 | `aggregate_dialogs`, `group_dialogs`, `compare_captures` | bucket values for `from.user`, `to.user`, `ua`, `rtp.codec` | bucket values for `state`, `method`, `response_code`, addresses |
+| `top_talkers` | the row `key` under `by: "ua"`, which is a banner a stranger typed | the row `key` under `by: "ip"` and `by: "prefix"` — an address sipnab read off the headers, and a bucket of digits it extracted — plus every count |
 | `get_dialog_report`, `render_ladder` | note only — see below | — |
 
 `get_dialog` used to be the odd one: it fenced its `dialog` summary while its
@@ -556,6 +559,35 @@ so `content[0]` is still the payload and existing clients keep working. That
 ordering is deliberate — the note explains the markers, but the markers
 themselves are inline, so placing it after the data costs nothing, and
 putting it first would have broken every client that indexes block 0.
+
+## The result envelope
+
+A tool result carries its payload twice, and a client should read the second
+one:
+
+| Field | What it holds |
+|---|---|
+| `content[0].text` | the payload **as a JSON string**, which the client parses a second time |
+| `content[1].text` | the provenance note, on the tools that return capture text |
+| `structuredContent` | the same payload **as JSON**, ready to read |
+| `isError` | `false` on a success |
+
+`structuredContent` arrived with MCP 2025-06-18, the revision this server
+negotiates, for exactly the double-parse above. sipnab attaches it centrally, on
+the way out of every tool call, rather than in each tool: fifty-odd tools build
+their results in fifty-odd places, and a per-tool helper is a rule the next
+author has to remember. It is **parsed from the text block** rather than
+serialized a second time from the same value, so a client reading the text and
+a client reading the structure are reading one document, and there is no second
+serialization to drift.
+
+Two results carry no `structuredContent`, and the reason is the schema rather
+than an omission. MCP types the field as a JSON **object**, so a payload that is
+a rendered document — `render_ladder`, and `get_capture_report` /
+`get_dialog_report` asked for `markdown` or `text` — has no object to publish.
+Wrapping one in an invented key would put a shape in `structuredContent` that
+the text block does not have, which is the disagreement the field exists to
+prevent. Branch on the field's presence rather than assuming it.
 
 ## stdio invariant
 

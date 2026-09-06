@@ -1218,6 +1218,7 @@ mod tests {
                     ext_r_factor: 127, // unavailable
                     mos_lq,
                     mos_cq: 13,
+                    rx_config: 0,
                     jb_nominal: 40,
                     jb_maximum: 120,
                     jb_abs_max: 65_535,

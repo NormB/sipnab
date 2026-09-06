@@ -4259,8 +4259,8 @@ impl SipnabMcp {
     /// # Returns
     ///
     /// A `DialogPage`: this page of `DialogSummary` rows, the `total_matched`
-    /// across the whole store, a `truncated` flag, and a `next_cursor` (null on
-    /// the final page).
+    /// across the whole store, the `by_method` split of that total, a
+    /// `truncated` flag, and a `next_cursor` (null on the final page).
     ///
     /// # Errors
     ///

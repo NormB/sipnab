@@ -237,5 +237,8 @@ stateless model.)
 - Static secrets carry no audience. If you set the same static
   `--api-key` and `--mcp-token`, that one secret opens both surfaces. Audience
   binding applies to signed tokens only.
-- TLS for the REST API is **not yet built in**; terminate TLS at a reverse proxy
-  for non-loopback deployments.
+- TLS for the REST API is **not yet built in**. `--api-tls-cert` and
+  `--api-tls-key` exist as flags, and passing both makes sipnab refuse to
+  start — the listener errors out rather than quietly serving plaintext on a
+  port whose flags promised otherwise. Terminate TLS at a reverse proxy for
+  non-loopback deployments.

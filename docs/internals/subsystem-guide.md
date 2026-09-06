@@ -36,7 +36,8 @@ sequenceDiagram
     end
 ```
 
-`main()` is deliberately thin — eleven numbered steps in 141 lines of
+`main()` is deliberately thin — ten numbered steps plus four lettered
+sub-steps, across 171 lines of
 [`main.rs`](../../src/main.rs), each delegating to
 [`app/bootstrap.rs`](../../src/app/bootstrap.rs). The order matters: logging
 before anything can log, immediate commands (`--setup-caps`,

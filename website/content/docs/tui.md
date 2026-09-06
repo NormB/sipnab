@@ -56,7 +56,7 @@ host it touched (UAC → proxy → UAS), with a detail panel beside it.
 
 - `j` / `k` walk message-to-message; the detail panel updates to show the parsed message under the cursor.
 - `d` cycles how the detail panel shows SDP (none / summary / full).
-- `w` toggles line wrapping in the detail panel; with wrap off, long lines truncate and a horizontal scrollbar appears (`Left` / `Right` scroll it).
+- `w` toggles line wrapping in the detail panel. With wrap off, long lines truncate and a horizontal scrollbar appears. Press `Tab` to put the cursor in the detail panel, and `Left` / `Right` then scroll it sideways. Without that focus the same two keys resize the split instead.
 - `Enter` on a message opens the full-screen **Raw Message** view (`/` searches within it, `n` / `N` jump between matches, `Esc` returns).
 - `c` recolors the ladder by method, Call-ID, or CSeq; `t` shares the timestamp mode with the Call List.
 
@@ -98,7 +98,8 @@ sent RTCP XR gains a **Reported by Far End (RTCP XR)** section at the bottom,
 holding that endpoint's own R-factor, MOS-LQ, MOS-CQ, delays and discard rate.
 Everything above that section is what sipnab measured, and nothing in it moves
 those numbers. With an `audio` build,
-`Shift+P` plays the stream (G.711). `Tab` switches back to the Call List.
+`Shift+P` plays the stream (G.711). `Esc` returns to the RTP Streams list, and
+`Tab` there switches back to the Call List.
 
 ## 8. Trace a call through proxies (multi-leg)
 
@@ -110,9 +111,10 @@ so you can follow the call end-to-end through the middle boxes.
 
 Select the dialogs you want with `Space` in the Call List (they show a `▸`),
 then press `F2`. In the Save dialog, `Tab` cycles the format -- PCAP, PCAP-NG,
-TXT, JSON, NDJSON, CSV, **Mermaid** (a sequence diagram for your ticket/wiki),
-Markdown, WAV, SIPp XML, RTP JSON -- and `Enter` writes the file. With nothing
-selected, it saves everything.
+TXT, JSON, NDJSON, CSV, **HTML** (a self-contained ladder diagram, drawn with
+Mermaid, for your ticket or wiki), Markdown, WAV, SIPp XML, RTP JSON -- and
+`Enter` writes the file. `Shift+Tab` or `Up` / `Down` cycle the same list. With
+nothing selected, it saves everything.
 
 ## Where to go next
 

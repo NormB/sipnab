@@ -9,6 +9,7 @@
 //! result to disk is the caller's job.
 
 use super::{FormattedMessage, Participant};
+use crate::mermaid::escape_mermaid_label;
 
 /// Generate a fully self-contained HTML page holding a Mermaid sequence diagram.
 ///
@@ -127,28 +128,6 @@ pub fn export_mermaid(participants: &[Participant], messages: &[FormattedMessage
 /// replacing `:` and `.` with `_` (e.g. `10.0.0.1:5060` → `10_0_0_1_5060`).
 fn sanitize_id(s: &str) -> String {
     s.replace([':', '.'], "_")
-}
-
-/// Neutralize untrusted text (a SIP-derived message or participant label) for
-/// embedding in Mermaid source. Newlines and carriage returns — which would
-/// otherwise end the statement and let following text be parsed as diagram
-/// syntax — become spaces, and the characters Mermaid treats specially are
-/// replaced with its numeric entity codes (rendered back to the literal
-/// glyph). Removing raw `<`/`>` here also means the HTML wrapper can never
-/// receive label-injected markup.
-fn escape_mermaid_label(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '\n' | '\r' => out.push(' '),
-            '#' => out.push_str("#35;"),
-            ';' => out.push_str("#59;"),
-            '<' => out.push_str("#60;"),
-            '>' => out.push_str("#62;"),
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 /// Minimal HTML text-context escaping (`&`, `<`, `>`) for embedding generated

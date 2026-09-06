@@ -66,7 +66,7 @@ compiles, which is exactly why CI has a feature matrix.
 |---|---|---|
 | `ci.yml` | push, PR | The merge gate. See below. |
 | `quality.yml` | push to main, PR | Coverage (`cargo-llvm-cov`), clippy SARIF upload, and the prose gates below. Not required by `ci-success`. |
-| `codeql.yml` | push to main, PR | GitHub's static analysis. |
+| `codeql.yml` | push to main, PR, weekly cron (Tuesdays 02:34 UTC) | GitHub's static analysis. |
 | `fuzz.yml` | weekly cron (Mondays 05:17 UTC) + manual | Coverage-guided `cargo-fuzz` runs; crash reproducers upload as artifacts. |
 | `docker.yml` | push to main, `v*` tags | Builds and pushes the image to GHCR with sigstore provenance. |
 | `pages.yml` | push to main (path-filtered) | Builds and deploys the Zola website. |
@@ -85,8 +85,11 @@ compiles, which is exactly why CI has a feature matrix.
 see a data race: the tests exercise the capture thread, the channel, and the
 processing thread, but a test that passes and a test that raced are
 indistinguishable to `cargo test`. The borrow checker does not help here either
-— it stops at `unsafe`, and 41 of this crate's 49 `unsafe` blocks are libc FFI
-for privilege dropping and capture setup.
+— it stops at `unsafe`, and most of this crate's 92 `unsafe` blocks are libc
+FFI, concentrated in privilege dropping ([`privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs)
+and [`process_isolation.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs)) and capture setup.
+Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure — this
+sentence said 49 until 2026-09-06, when the tree held 92.
 
 Three things about it are deliberate.
 
@@ -227,8 +230,15 @@ by design.
 
 ### What actually gates a merge
 
-`ci-success` requires exactly four jobs: **`check`, `features`, `audit`,
-`fuzz-check`**.
+`ci-success` requires every other job in `ci.yml` — eleven of them: **`check`,
+`install-sh`, `deb-package`, `rpm-packaging`, `homebrew-formula`,
+`tsan-verdict`, `bench-scripts`, `features`, `audit`, `fuzz-check`,
+`code-scanning-clean`**. `ci_success_gates_every_job` in
+[`site_journey_test`](https://github.com/NormB/sipnab/blob/main/tests/site_journey_test.rs) holds the list to that,
+because it once named only the four below while the comment above it claimed
+"every other job" — so `install-sh` and `deb-package` could both fail with the
+one required check on main still green. The four the rest of this section
+describes are the ones whose contents are worth spelling out.
 
 - **`check`** (per-OS matrix) — `cargo build --all-features`, `cargo test
   --all-features`, `cargo clippy --workspace --all-features --all-targets -D warnings`,
@@ -302,17 +312,23 @@ logs yourself. Nothing else makes you.
 
 Activate once per clone: `git config core.hooksPath .githooks`.
 
-[`pre-commit`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-commit) runs eleven numbered gates, starting
-at 0, in order:
-<!-- The eleven pre-commit gates as one list. Several items carry their own
+[`pre-commit`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-commit) runs thirteen numbered gates,
+starting at 0, in order:
+<!-- The thirteen pre-commit gates as one list. Several items carry their own
 commas and parentheses ("clippy (`--features full`, `-D warnings`)"), so
-semicolons are the separator; periods would make eleven sentences out of one
+semicolons are the separator; periods would make thirteen sentences out of one
 enumeration. -->
 <!-- vale Google.Semicolons = NO -->
 
 `cargo fmt --all -- --check`; vale and codespell over the paths CI gives them;
 clippy (`--features full`, `-D warnings`); the
-full test suite; no `unwrap()`/`expect()` in production code; the privilege-drop
+full test suite; no `unwrap()`, `expect()` or abort macro (`panic!`,
+`unreachable!`, `todo!`, `unimplemented!`) in production code, as
+[`scripts/check-unwrap.py`](https://github.com/NormB/sipnab/blob/main/scripts/check-unwrap.py) reads it — a
+`// gate: <macro> because <reason>` line above an abort macro excuses that one
+site, and the four macro names are the only ones that marker takes; a generated
+file staged with the inputs it derives from; every feature
+declaring what its own modules import; the privilege-drop
 path still dropping privileges; WASM exports in
 sync with the site's JS; the homepage test count matching the run it just did —
 plus the site version matching `Cargo.toml`; no TODO
@@ -354,12 +370,12 @@ the script existed, or a `git bisect` across the commit that added it, got
 `No such file or directory` and could not commit at all — found the first time
 the hook met a branch two commits behind.
 
-Two of the eleven cannot fail the commit. Gate 6 prints
+Two of the thirteen cannot fail the commit. Gate 6 prints
 `WARN: N TODO/FIXME comments` and falls through — a count, not a veto. Gate 8
 prints `REVIEW` and a list and returns zero, a reminder to check the developer
 pages still read true, not a claim that they don't. The gate that *does* fail
 is [`dev_docs_drift_test`](https://github.com/NormB/sipnab/blob/main/tests/dev_docs_drift_test.rs) in gate 2's test
-run, and it is broader than dead links: sixteen tests covering cited paths that
+run, and it is broader than dead links: twenty-six tests covering cited paths that
 no longer exist, a `()`-suffixed symbol in link text with no matching `fn` left
 in the workspace, an absolute GitHub URL where a relative path belongs, a page
 missing from `build-wiki.py` (which would silently never publish), and three
@@ -391,11 +407,13 @@ That means **every commit runs clippy and the whole test suite** and takes
 minutes. It is not optional theatre: the homepage-count gate alone means adding
 a test obliges you to update [`website/templates/index.html`](https://github.com/NormB/sipnab/blob/main/website/templates/index.html) in the same commit.
 
-Three checks stay out of the PRE-COMMIT hook on purpose: the feature matrix,
-Vale prose linting, and rustdoc. That hook already costs minutes and each of
-those adds more. [`pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) picks all three up
-before anything leaves the machine. Moving them into the pre-commit hook buys
-nothing — it is the same wait, on every commit instead of every push.
+Two checks stay out of the PRE-COMMIT hook on purpose: the feature matrix and
+rustdoc. That hook already costs minutes and each of those adds more.
+[`pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) picks both up before anything leaves the
+machine. Moving them into the pre-commit hook buys nothing — it is the same
+wait, on every commit instead of every push. The prose pair used to sit here
+too, and moved: Vale and codespell cost about a second each, so gate 0b runs
+them at the commit and `pre-push` keeps its copies.
 
 The matrix used to be the exception: pre-push checked three of the thirteen
 combinations and CI ran the rest, which left a class of break with a
@@ -503,12 +521,13 @@ CI cannot close that gap. Nobody commits, uploads, or caches those captures, and
 they never leave the machine that recorded them, so a hosted runner has nothing
 to validate against. The moment before a push is the only enforcement point that
 remains, which is why this one gate lives in a hook and has no CI counterpart
-anywhere in the ten workflows above.
+anywhere in the thirteen workflows above.
 
 **What runs.** One `cargo test` invocation, all features, under the `profiling`
-profile, covering every top-level `tests/*.rs` that names `SIPNAB_CORPUS` — twelve
-targets today, and the ones with `corpus` in the name are not all of them:
-`input_set_accounting_test` and `rtp_quality_provenance_test` read the corpus
+profile, covering every top-level `tests/*.rs` that names `SIPNAB_CORPUS` —
+seventeen targets today, and the ones with `corpus` in the name are not all of
+them: `input_set_accounting_test`, `rtp_quality_provenance_test` and
+`vacuous_success_test` read the corpus
 too. The hook greps the tree for that list instead of carrying its own copy,
 because a hand-kept list cannot catch a *new* corpus binary, which is the one
 thing this gate exists for. The first draft did hand-keep the list, and it went
@@ -630,8 +649,12 @@ comment** — which makes that comment load-bearing rather than decorative.
 nothing to the comparison instead of failing it. The Dockerfiles keep the tag
 beside the digest for the same reason — that gate parses `FROM rust:X.Y`.
 
-There is **no `rust-toolchain.toml`**, so your local `rustup default` is
-whatever you last set — nothing in the repo corrects it. This is not
+There is **no `rust-toolchain.toml` governing the crate**, so your local
+`rustup default` is whatever you last set — nothing in the repo corrects it.
+[`bpf/rust-toolchain.toml`](https://github.com/NormB/sipnab/blob/main/bpf/rust-toolchain.toml) is the one
+exception, and it selects `nightly` rather than the pin above: the kernel half
+needs `-Z build-std`. It sits inside `bpf/` so it governs that directory alone
+and cannot reach a host build. This is not
 hypothetical: the changelog records CI pinned at 1.94.1 while local development
 ran 1.97.1, and clippy consequently validated against a different compiler than
 the one gating merges. If you add a `rust-toolchain.toml`, update every row

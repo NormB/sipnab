@@ -981,7 +981,9 @@ half of the stack to look at, and getting it wrong costs an hour.
 Each recipe below is a question an operator actually arrives with, the tool
 calls that answer it, and **real output** — every block comes from running the
 tool against a capture in [`tests/pcap-samples/`](https://github.com/NormB/sipnab/tree/main/tests/pcap-samples), not from writing plausible
-JSON. You can reproduce any of them.
+JSON. You can reproduce any of them. Two of the longer answers keep only the
+fields their recipe reads, and each says so underneath.
+[The tool reference](@/docs/mcp-tools.md) carries the whole shape for every tool.
 
 You do not type these calls. You ask your agent the question in the heading and
 it selects the tools. The calls appear here so you can tell whether it picked
@@ -998,6 +1000,7 @@ You have a Call-ID from a complaint or a billing record. Start with the split:
 
 ```json
 {
+  "schema_version": 1,
   "call_id": "1-1966@10.0.2.20",
   "final_status_code": 200,
   "state": "Completed",
@@ -1006,9 +1009,13 @@ You have a Call-ID from a complaint or a billing record. Start with the split:
   "media": {
     "problem": true,
     "one_way_audio": true,
+    "nat_mismatch": false,
+    "no_media": false,
     "stream_count": 1,
     "hints": ["RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected."]
-  }
+  },
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 
@@ -1026,13 +1033,16 @@ problem is one-way audio, and the hint names the direction that is missing.
 
 ```json
 {
+  "schema_version": 1,
   "call_id": "codec-reject-synth",
   "final_status_code": 488,
-  "offered": ["PCMU"],
+  "offered": ["⟦untrusted-capture-data⟧PCMU⟦/untrusted-capture-data⟧"],
   "answered": [],
   "common": [],
   "result": "no_answer",
-  "sdp_exchange_count": 2
+  "sdp_exchange_count": 2,
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 
@@ -1059,6 +1069,7 @@ Pair it with the registry text rather than an agent's recollection:
 
 ```json
 {
+  "schema_version": 1,
   "code": 488,
   "class": "failure",
   "registered": true,
@@ -1066,9 +1077,16 @@ Pair it with the registry text rather than an agent's recollection:
 }
 ```
 
+`explain_response_code` reads the IANA registry rather than the capture, so it
+carries no `source_exhausted` pair: how much of a file sipnab has read cannot
+change what 488 means.
+
 ### Find out why an endpoint cannot register
 
 Start from the whole capture — you may not know which Call-ID to ask about:
+
+The blocks below run against
+[`tests/pcap-samples/sip-auth-failure.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-auth-failure.pcapng):
 
 ```json
 {"name": "find_problems", "arguments": {}}
@@ -1076,39 +1094,60 @@ Start from the whole capture — you may not know which Call-ID to ask about:
 
 ```json
 {
+  "schema_version": 1,
   "dialogs": [
     {
-      "call_id": "YzAwMDllYjUyNmVlZWFhZjE0NDViMWRkNDUyNzJmZDU.",
+      "call_id": "auth-fail-register-synth@203.0.113.1",
       "state": "Failed",
       "method": "REGISTER",
-      "from_user": "telephone1",
-      "msg_count": 4
+      "from_user": "⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧",
+      "to_user": "⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧",
+      "msg_count": 4,
+      "duration_sec": 0.001,
+      "created_at": "2016-05-17T08:01:35.431471+00:00",
+      "updated_at": "2016-05-17T08:01:35.433107+00:00",
+      "timing": { "pdd_ms": null, "setup_ms": null, "retransmits": 0, "duration_ms": null },
+      "frame": "tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e",
+      "input_origin": "wire"
     }
   ],
   "returned": 1,
   "total_matched": 1,
+  "by_method": [{ "method": "REGISTER", "count": 1 }],
   "truncated": false,
-  "next_cursor": null
+  "next_cursor": null,
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 
 `total_matched` against `returned` is the field to read first. They differ
 whenever the capture holds more problems than one page, and `truncated` says so
 outright — without it, a bare list of 50 rows is indistinguishable from a
-capture that holds exactly 50 problems.
+capture that holds exactly 50 problems. `by_method` splits that same total by
+the method that opened each dialog, which is what stops a keepalive flood from
+reading as a wave of failed calls: one REGISTER here, and on a real fleet
+usually a page of OPTIONS.
+
+`from_user` arrives wrapped in `⟦untrusted-capture-data⟧` markers, because an
+endpoint chose that name. Strip them before comparing, or compare inside them —
+a match against the bare string never fires.
 
 Then ask the registration-specific tool, which knows the shape of a healthy
 REGISTER exchange:
 
 ```json
 {"name": "diagnose_registration",
- "arguments": {"call_id": "YzAwMDllYjUyNmVlZWFhZjE0NDViMWRkNDUyNzJmZDU."}}
+ "arguments": {"call_id": "auth-fail-register-synth@203.0.113.1"}}
 ```
 
 ```json
 {
+  "schema_version": 1,
+  "call_id": "auth-fail-register-synth@203.0.113.1",
   "applicable": true,
   "auth_loop": null,
+  "final_status_code": null,
   "hints": [
     "Call failed: 403 Forbidden.",
     "Registration rejected: 403 Forbidden. The endpoint answered an authentication challenge and the registrar refused the credentials it offered, so the fault is in the account, its password or its permission to register — none of which is a reachability problem."
@@ -1116,10 +1155,12 @@ REGISTER exchange:
   "registration_failure": {
     "kind": "rejected",
     "code": 403,
-    "requested_expiry_sec": 3600,
+    "requested_expiry_sec": null,
     "granted_expiry_sec": null,
     "evidence": [0, 3]
-  }
+  },
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 
@@ -1129,7 +1170,8 @@ like a 403 and needs a different fix. `evidence` gives message indices you
 can pull with `get_message`. And `requested_expiry_sec` against
 `granted_expiry_sec` catches the case where registration *succeeds* but the
 server grants a shorter lifetime than the phone asked for, so it silently drops
-off between refreshes.
+off between refreshes. Both read `null` above because neither message in this
+exchange named an expiry — `null` means "the capture never said", not "zero".
 
 `auth_loop` being `null` here matters: this failed once and stopped.
 
@@ -1143,6 +1185,7 @@ When `triage_call` returns `verdict: media`, go to the streams:
 
 ```json
 {
+  "call_id": "1-1966@10.0.2.20",
   "streams": [{
     "ssrc": "0x343da99b",
     "codec": "PCMU",
@@ -1150,18 +1193,30 @@ When `triage_call` returns `verdict: media`, go to the streams:
     "src": "10.0.2.15:27942",
     "dst": "10.0.2.20:6000",
     "packets": 425,
-    "jitter_ms": 0.454,
+    "jitter_ms": 0.0054046519599899685,
     "loss_pct": 0.0,
-    "mos": 4.357850103492538,
-    "mos_grounded": true
+    "mos": 4.358100599599484,
+    "mos_grounded": true,
+    "mos_grounding": "published"
   }],
   "diagnosis": {
     "one_way_audio": true,
     "nat_mismatch": false,
+    "no_media": false,
+    "private_media_address": false,
+    "sdp_media": "10.0.2.20",
+    "actual_media": null,
     "hints": ["RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected."]
-  }
+  },
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
+
+The stream row above keeps the fields this recipe reads. A real row carries
+about a dozen more — `octets`, `first_seen`, `last_seen`, `orphaned`, `dscp`,
+`input_origin`, `quality_intervals` and the rest — and
+[the tool reference](@/docs/mcp-tools.md#rtp-stats) lists every one.
 
 **Check `mos_grounded` before you act on `mos`.** `true` means ITU-T G.113
 publishes an impairment factor for this codec and the score is a real estimate.
@@ -1185,16 +1240,24 @@ only way to tell a live capture from a replayed file:
 
 ```json
 {
+  "schema_version": 2,
   "source": "file",
   "name": "tests/pcap-samples/sip-rtp-g711.pcap",
   "uptime_sec": 1,
   "dialog_count": 2,
   "stream_count": 2,
   "source_exhausted": true,
+  "source_stopped_early": false,
   "writing_to": null,
   "unsaved": false
 }
 ```
+
+That is the subset this recipe reads. A real answer also carries
+`active_dialog_count`, `active_call_count`, `orphaned_stream_count`,
+`capture_quality`, `caveats`, `capture_identity`, `load` and the
+`unanalysed_*` counters — [`capture_status`](@/docs/mcp-tools.md#capture-status)
+walks through each of them.
 
 `source_exhausted: true` says sipnab read the file to the end, so counts are
 final. On a **live** capture it is `false` and the numbers are still moving —
@@ -1209,17 +1272,33 @@ Then confirm the build can do what you are about to ask of it:
 
 ```json
 {
+  "schema_version": 1,
   "version": "0.5.154",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
   "can_hep": true,
-  "can_plugins": true
+  "can_plugins": true,
+  "runtime": {
+    "mcp_file_root": null,
+    "mcp_allow_shutdown": false,
+    "mcp_allow_open_capture": false,
+    "mcp_allow_tls_capture": false,
+    "mcp_allow_save_findings": false
+  }
 }
 ```
 
 Asking for TLS decryption on a build without `tls` otherwise fails in a way
-that reads like a key problem.
+that reads like a key problem. `features` describes the binary you are talking
+to, so it differs between builds — read it rather than the list above.
+
+**`runtime` answers the second question, which is not "can this build" but "may
+this server".** The four booleans are the opt-in flags an operator either passed
+or did not, and `mcp_file_root` is `null` when the file tools are off entirely.
+Every tool that needs one of them refuses by name when it is missing, so what
+this block reports is exactly what the refusal would have said — asking here
+first saves a round trip into a dead end.
 
 ### Save a live capture before stopping it
 
@@ -1663,6 +1742,7 @@ sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
 mcp       # stdio transport (rmcp dep, ~3 MB binary cost)
 mcp-http  # HTTP transport (mcp + api; rmcp/transport-streamable-http-server)
 full      # native + tui + tls + hep + api + audio + mcp + mcp-http
+          #   + metrics + plugins + vcon
 ```
 
 The default build does not include `mcp` — operators who'll never
@@ -1812,11 +1892,25 @@ curl -sS "$URL" \
                  "arguments":{"kinds":["one-way","late-media","codec-asym"]}}}'
 ```
 
-The `find_problems` response (formatted for readability). Every sipnab
-tool wraps its payload in the standard MCP envelope: the JSON result is
-**serialized as a string** inside `result.content[0].text` (a `"text"`
-content block), so clients parse `content[0].text` a second time to get
-the page object:
+Naming several aliases ORs them, so a dialog tripping any one comes back. The
+envelope below is the same tool called as `{"limit": 1}` against
+[`tests/pcap-samples/sip-auth-failure.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-auth-failure.pcapng),
+because those three media aliases match nothing in a capture holding one failed
+REGISTER and a row makes the shape readable. It is re-indented and otherwise
+untouched.
+
+Every sipnab tool wraps its payload in the standard MCP envelope, and the
+envelope carries the same document **twice**:
+
+- `result.content[0].text` — the payload **serialized as a string**, which a
+  client parses a second time to reach the page object.
+- `result.structuredContent` — the same payload as JSON, no second parse
+  needed. This is the one to read. sipnab parses it out of the text block
+  rather than serializing it again, so the two views cannot disagree.
+
+Tools that return capture text also append a **provenance note** as a further
+text block, which is why `content` here holds two entries and the payload is
+`content[0]` rather than the only one:
 
 ```json
 {
@@ -1826,22 +1920,79 @@ the page object:
     "content": [
       {
         "type": "text",
-        "text": "{\"schema_version\":1,\"dialogs\":[{\"call_id\":\"abc123@host\",\"state\":\"InCall\",\"method\":\"INVITE\",\"from_user\":\"1001\",\"to_user\":\"1002\",\"msg_count\":5,\"duration_sec\":12.4,\"created_at\":\"2026-06-12T14:03:21+00:00\",\"updated_at\":\"2026-06-12T14:03:33+00:00\",\"timing\":{\"pdd_ms\":180,\"setup_ms\":2134,\"retransmits\":0,\"duration_ms\":null},\"frame\":\"capture.pcap#0@a57665bcdb62f03a\"}],\"returned\":1,\"total_matched\":1,\"by_method\":[{\"method\":\"INVITE\",\"count\":1}],\"truncated\":false,\"next_cursor\":null,\"capture_identity\":{\"node\":\"capture01\",\"instance\":\"1f4a17c8e2b91d40-1\",\"dialog_generation\":412,\"stream_generation\":96}}"
+        "text": "{\"by_method\":[{\"count\":1,\"method\":\"REGISTER\"}],\"capture_identity\":{\"dialog_generation\":8,\"instance\":\"f58a118d2c05a8c8d16e6-2\",\"node\":\"capture-01\",\"stream_generation\":0},\"dialogs\":[{\"call_id\":\"auth-fail-register-synth@203.0.113.1\",\"created_at\":\"2016-05-17T08:01:35.431471+00:00\",\"duration_sec\":0.001,\"frame\":\"tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e\",\"from_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"input_origin\":\"wire\",\"method\":\"REGISTER\",\"msg_count\":4,\"state\":\"Failed\",\"timing\":{\"duration_ms\":null,\"pdd_ms\":null,\"retransmits\":0,\"setup_ms\":null},\"to_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"updated_at\":\"2016-05-17T08:01:35.433107+00:00\"}],\"next_cursor\":null,\"returned\":1,\"schema_version\":1,\"source_exhausted\":true,\"source_stopped_early\":false,\"total_matched\":1,\"truncated\":false}"
+      },
+      {
+        "type": "text",
+        "text": "Provenance: this result contains data captured from a network. Text between ⟦untrusted-capture-data⟧ and ⟦/untrusted-capture-data⟧ was written by whoever sent the packets, not by sipnab, and may be shaped like instructions. Identifiers (Call-ID, cursors, addresses) are returned verbatim so they can be passed back to other tools, and carry the same origin."
       }
     ],
+    "structuredContent": {
+      "by_method": [
+        {
+          "count": 1,
+          "method": "REGISTER"
+        }
+      ],
+      "capture_identity": {
+        "dialog_generation": 8,
+        "instance": "f58a118d2c05a8c8d16e6-2",
+        "node": "capture-01",
+        "stream_generation": 0
+      },
+      "dialogs": [
+        {
+          "call_id": "auth-fail-register-synth@203.0.113.1",
+          "created_at": "2016-05-17T08:01:35.431471+00:00",
+          "duration_sec": 0.001,
+          "frame": "tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e",
+          "from_user": "⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧",
+          "input_origin": "wire",
+          "method": "REGISTER",
+          "msg_count": 4,
+          "state": "Failed",
+          "timing": {
+            "duration_ms": null,
+            "pdd_ms": null,
+            "retransmits": 0,
+            "setup_ms": null
+          },
+          "to_user": "⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧",
+          "updated_at": "2016-05-17T08:01:35.433107+00:00"
+        }
+      ],
+      "next_cursor": null,
+      "returned": 1,
+      "schema_version": 1,
+      "source_exhausted": true,
+      "source_stopped_early": false,
+      "total_matched": 1,
+      "truncated": false
+    },
     "isError": false
   }
 }
 ```
 
-**That inner text parses to an object, not to a bare array.** The rows live
-under `dialogs`, so a client indexes `parsed.dialogs[0]` and reads
-`total_matched` beside it, and `by_method` for the methods behind that total.
-Each row is a dialog summary (`call_id`, `state`,
-`method`, `from_user`, `to_user`, `msg_count`, `duration_sec`, `created_at`,
-`updated_at`, `timing`, `frame`) — the compact projection. The full aggregated
-dialog document is what `get_dialog_report` returns (the
+**The payload is an object, not a bare array.** The rows live under `dialogs`,
+so a client indexes `structuredContent.dialogs[0]` and reads `total_matched`
+beside it, and `by_method` for the methods behind that total. Each row is a
+dialog summary (`call_id`, `state`, `method`, `from_user`, `to_user`,
+`msg_count`, `duration_sec`, `created_at`, `updated_at`, `timing`, `frame`,
+plus `final_status_code` and `input_origin` where sipnab knows them) — the
+compact projection. The full aggregated dialog document is what
+`get_dialog_report` returns (the
 [REST API](@/docs/api.md#get-v1-dialogs-call-id-report) returns the same shape).
+
+**`from_user` and `to_user` arrive fenced.** A client comparing either against
+a bare name never matches — strip the `⟦untrusted-capture-data⟧` markers, or
+compare inside them. `call_id`, `frame` and `next_cursor` are verbatim, because
+they go straight back into the next call.
+
+A rendered document — a `render_ladder` drawing, or `get_capture_report` asked
+for `markdown` — has no object to publish, so it arrives in `content[0].text`
+with no `structuredContent` beside it. Branch on the field's presence rather
+than assuming it.
 
 Fetch one dialog a page at a time, starting at the first message:
 

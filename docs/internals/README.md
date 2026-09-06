@@ -141,7 +141,8 @@ followed symlinks.
 
 **The gate suite** — the self-enforcing checks that run without anyone asking:
 the numbered gates in [`.githooks/pre-commit`](../../.githooks/pre-commit)
-(clippy, the full test suite, no `unwrap()`/`expect()` or abort macro in
+(formatting, Vale and codespell, clippy, the full test suite, no
+`unwrap()`/`expect()` or abort macro in
 production, WASM
 exports in sync, the homepage *test count*, sub-gate 5b for the site version —
 a different claim from the crate version — no TODO stubs, and an
@@ -150,12 +151,13 @@ that notice are the two advisory gates, printing `WARN`/`REVIEW` and letting the
 commit through). Version markers are not in that list: one Rust test asserts
 them and runs here *and* in CI, because two implementations of one rule
 diverge — as the shell copy the hook once carried did. Also
-eight in [`.githooks/pre-push`](../../.githooks/pre-push), each marked
+ten in [`.githooks/pre-push`](../../.githooks/pre-push), each marked
 `# -- Hard gate` in the hook: `fmt`,
 `clippy --workspace --all-features --all-targets`, `cargo doc` with `-D warnings`,
-a `fuzz` workspace check, the reduced feature combinations, the non-Linux arm of
+a `fuzz` workspace check, the reduced feature combinations, CI's full
+thirteen-combination feature matrix, the non-Linux arm of
 every platform cfg, the refusal to tag `v*` at a commit whose CI is not green,
-and the prose linters. Plus the conditional corpus gate, and the CI jobs behind
+the prose linters, and a `zola build` of the website. Plus the conditional corpus gate, and the CI jobs behind
 them.
 
 **The drift tests** — the subset of the gate suite that compares documentation

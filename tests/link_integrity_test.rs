@@ -717,7 +717,21 @@ fn wiki_intra_docs_links_resolve() {
     // dumped schema does NOT tell them. Its other links are absolute
     // `github.com` URLs and one `sipnab.com` autolink, which this extractor
     // does not walk, and the generated site mirror is not in this figure.
-    const EXPECTED_WIKI_LINKS: usize = 667;
+    // 667 -> 693 by the 2026-09-06 documentation sweep. Attributed per file by
+    // re-implementing this extractor's rules -- docs/ only, code fences and
+    // code spans stripped, `.md` targets and same-page anchors counted -- and
+    // measuring each page against HEAD before the number moved:
+    // docs/mcp-tools.md +15 (index rows and cross-references for the tools
+    // whose documented response shapes turned out to be wrong, chiefly
+    // `timeline` and `top_talkers`); docs/mcp-deploy.md +3; docs/library.md +2
+    // (the `export_vcon` example and the three missing crate-root re-exports);
+    // docs/prometheus-metrics.md +2; docs/rest-api.md +2; and one each in
+    // docs/benchmarks.md, docs/cli-reference.md and docs/sip-lint-rules.md.
+    // The re-implementation totals 27 against this gate's 26, so it agrees to
+    // within one link and the constant records THIS gate's count rather than
+    // the approximation's. Generated site mirrors are not in the figure: the
+    // extractor reads docs/.
+    const EXPECTED_WIKI_LINKS: usize = 693;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

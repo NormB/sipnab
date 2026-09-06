@@ -206,6 +206,7 @@ fn relay_media(port: u16) -> sipnab::sip::sdp::SdpMedia {
     sipnab::sip::sdp::SdpMedia {
         media_type: "audio".to_string(),
         port,
+        port_count: None,
         proto: "RTP/AVP".to_string(),
         formats: vec!["0".to_string()],
         connection: None,

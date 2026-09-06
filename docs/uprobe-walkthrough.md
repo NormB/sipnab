@@ -115,8 +115,19 @@ OpenSSL        21143    12  /proc/954/root/usr/lib/x86_64-linux-gnu/libssl.so.3
 wolfSSL     17433084     1  /proc/982702/root/usr/lib/libwolfssl.so.42.2.0
 ```
 
-An empty list from an **unprivileged** run means only that sipnab could not see
-other processes. Run it as root before concluding the host uses no TLS.
+There is no silent empty answer. When nothing matches, `--uprobe-list` says so
+and names both readings:
+
+```text
+No TLS library is mapped by any process sipnab can see.
+Either nothing here uses OpenSSL or wolfSSL, or sipnab cannot read
+/proc/<pid>/maps — try again as root.
+```
+
+An unprivileged run sees only its own processes, so run it as root before
+concluding the host uses no TLS. A library sipnab can see but cannot reach from
+its own mount namespace — almost always one inside a container — lists as
+`(UNREACHABLE)` with a count of how many, rather than quietly dropping out.
 
 ## Walkthrough: the tracefs backend
 
@@ -191,13 +202,48 @@ Adds the one thing tracefs cannot: **who the peer was**.
 
 ### What it needs beyond the above
 
-- a sipnab built with `--features bpf`, which needs a nightly toolchain and
-  `cargo install bpf-linker` at build time;
+- a sipnab whose build produced the kernel programs, which takes `--features bpf`
+  **and** a nightly toolchain **and** `cargo install bpf-linker` on the build
+  host;
 - `CONFIG_DEBUG_INFO_BTF=y` at run time.
 
 Without either, sipnab **refuses** rather than falling back to `tracefs`. The
 addresses are the only reason to choose this backend, so a silent downgrade
 would leave you with the worst outcome: a capture with no peers and no reason given.
+
+### `--features bpf` alone is not enough, and the build says so quietly
+
+Read this before trusting a binary you built yourself.
+
+The feature compiles the loader. The kernel programs come from a second,
+nightly build that the main build runs for you, and that inner build needs
+`bpf-linker` and a nightly toolchain. **When either is missing the outer build
+still succeeds.** It prints a `cargo:warning`, embeds an empty placeholder
+object, and carries on — so the binary advertises `bpf` in `--version` and has
+no programs to load.
+
+sipnab catches that at attach time and refuses by name rather than attaching to
+nothing:
+
+```text
+this binary carries the `bpf` feature but no kernel programs: it was built on a
+machine without bpf-linker. Rebuild where `cargo install bpf-linker` has run, or
+use --uprobe-backend tracefs, which needs neither it nor BTF
+```
+
+Degrading is the right trade for a contributor's laptop, because
+`--all-features` sweeps this feature into every clippy and rustdoc run. It is
+the wrong trade for an artifact other people install. Set `SIPNAB_BPF_REQUIRED=1`
+in the build environment and the same missing prerequisite becomes a hard build
+failure instead:
+
+```bash
+SIPNAB_BPF_REQUIRED=1 cargo build --release --features bpf
+```
+
+The release workflow sets it on exactly the targets that ship the feature — the
+Linux glibc builds — so a published binary advertising `bpf` carries the
+programs. The static musl and macOS artifacts do not carry the feature at all.
 
 ### Run it
 
@@ -249,7 +295,8 @@ sipnab exits.
 
 | What you see | What it means | What to do |
 |---|---|---|
-| `--uprobe-list` prints nothing | Unprivileged, so `/proc/<pid>/maps` is readable only for your own processes | Re-run as root before concluding the host uses no TLS |
+| `--uprobe-list` finds no TLS library | Unprivileged, so `/proc/<pid>/maps` opens only for your own processes | Re-run as root before concluding the host uses no TLS |
+| `no kernel programs` from a binary you built | `--features bpf` compiled the loader, and the inner nightly build found no `bpf-linker` | Rebuild on a host carrying `bpf-linker`, with `SIPNAB_BPF_REQUIRED=1` so the gap fails the build |
 | Capture attaches, reports 0 messages | Almost always the wrong symbol | `nm -D --undefined-only <binary> \| grep -i ssl_write`, then `--uprobe-symbol` |
 | `needs this kernel's BTF ... could not read it` | No `CONFIG_DEBUG_INFO_BTF` | Use `--uprobe-backend tracefs`; no privilege fixes this |
 | `no kernel programs: built on a machine without bpf-linker` | The binary carries the feature but not the programs | Rebuild where `cargo install bpf-linker` has run, or use `tracefs` |

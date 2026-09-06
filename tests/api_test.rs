@@ -699,3 +699,157 @@ fn dialog_list_says_what_its_total_is_made_of() {
          discriminate, got {rows:?}"
     );
 }
+
+/// `by_method` follows the `state` filter rather than describing the store.
+///
+/// The field's whole contract is that it covers the FILTERED set. Nothing
+/// exercised that: the one existing test asks for the unfiltered list, where a
+/// breakdown of the store and a breakdown of the filter are the same answer.
+#[test]
+fn dialog_list_by_method_follows_the_state_filter() {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/b2bua-asterisk.pcapng", &[]);
+    let all = srv.get("/v1/dialogs?limit=1000").json();
+    let state = all["dialogs"][0]["state"]
+        .as_str()
+        .expect("the fixture must produce a dialog")
+        .to_string();
+
+    let filtered = srv.get(&format!("/v1/dialogs?state={state}")).json();
+    let f_total = filtered["total"].as_u64().expect("total");
+    assert!(
+        f_total >= 1,
+        "the state taken from a real row must match it"
+    );
+    assert!(
+        f_total < all["total"].as_u64().expect("total"),
+        "the fixture must hold more than one state, or this proves nothing"
+    );
+
+    let summed: u64 = filtered["by_method"]
+        .as_array()
+        .expect("by_method")
+        .iter()
+        .map(|r| r["count"].as_u64().expect("count"))
+        .sum();
+    assert_eq!(
+        summed, f_total,
+        "by_method must describe the filtered set: {}",
+        filtered["by_method"]
+    );
+}
+
+/// `by_method` follows the `from` regex filter too.
+///
+/// A second filter, because `state` and `from` are applied by different code —
+/// a string compare and a compiled regex — and a breakdown wired to only one
+/// of them would still pass the test above.
+#[test]
+fn dialog_list_by_method_follows_the_from_filter() {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/b2bua-asterisk.pcapng", &[]);
+    let all = srv.get("/v1/dialogs?limit=1000").json();
+    let from = all["dialogs"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find_map(|d| d["from_user"].as_str())
+        .expect("some dialog carries a From user")
+        .to_string();
+
+    let filtered = srv.get(&format!("/v1/dialogs?from=^{from}$")).json();
+    let f_total = filtered["total"].as_u64().expect("total");
+    assert!(
+        f_total >= 1,
+        "an anchored match on a real From user must match"
+    );
+
+    let summed: u64 = filtered["by_method"]
+        .as_array()
+        .expect("by_method")
+        .iter()
+        .map(|r| r["count"].as_u64().expect("count"))
+        .sum();
+    assert_eq!(summed, f_total, "got {}", filtered["by_method"]);
+}
+
+/// The page bounds do not touch `by_method`.
+///
+/// The other half of the contract, and the one a naive implementation gets
+/// wrong: tallying the rows it is about to return is the obvious thing to
+/// write, and it produces a breakdown that shrinks as `limit` shrinks. An
+/// operator would read the composition of a page and believe it was the
+/// composition of the capture.
+#[test]
+fn dialog_list_by_method_ignores_the_page_bounds() {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/b2bua-asterisk.pcapng", &[]);
+    let whole = srv.get("/v1/dialogs?limit=1000").json();
+    let one_row = srv.get("/v1/dialogs?limit=1").json();
+
+    assert_eq!(
+        one_row["dialogs"].as_array().expect("rows").len(),
+        1,
+        "the page really is bounded"
+    );
+    assert!(
+        whole["dialogs"].as_array().expect("rows").len() > 1,
+        "and the unbounded page really is bigger, or this proves nothing"
+    );
+    assert_eq!(
+        one_row["by_method"], whole["by_method"],
+        "by_method describes the filtered set, not the page"
+    );
+    assert_eq!(one_row["total"], whole["total"]);
+}
+
+/// A filter matching nothing gives an empty breakdown, not the whole store.
+///
+/// The negative case. A tally computed before the filter, or one that fell back
+/// to the unfiltered set when the filter matched nothing, would answer here
+/// with the store's composition beside a `total` of zero — two fields
+/// contradicting each other in the same response.
+#[test]
+fn dialog_list_by_method_is_empty_when_nothing_matches() {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/b2bua-asterisk.pcapng", &[]);
+    let none = srv.get("/v1/dialogs?from=^definitely-no-such-user$").json();
+
+    assert_eq!(
+        none["total"].as_u64(),
+        Some(0),
+        "the filter matches nothing"
+    );
+    assert_eq!(
+        none["by_method"].as_array().map(Vec::len),
+        Some(0),
+        "an empty result set has an empty breakdown, got {}",
+        none["by_method"]
+    );
+}
+
+/// Each method appears once, and no row claims zero.
+///
+/// A tally keyed on something other than the method — or one that pushed a row
+/// per dialog instead of per bucket — still sums to `total`, so the sum
+/// assertions above cannot see it. This is the shape check they need beside
+/// them.
+#[test]
+fn dialog_list_by_method_has_one_row_per_method() {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/b2bua-asterisk.pcapng", &[]);
+    let body = srv.get("/v1/dialogs?limit=1000").json();
+    let rows = body["by_method"].as_array().expect("by_method");
+
+    let mut names: Vec<&str> = rows
+        .iter()
+        .map(|r| r["method"].as_str().expect("method is a string"))
+        .collect();
+    let before = names.len();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(
+        before,
+        names.len(),
+        "a method must not get two rows: {rows:?}"
+    );
+    assert!(
+        rows.iter().all(|r| r["count"].as_u64().unwrap_or(0) >= 1),
+        "a bucket with nothing in it must not be reported: {rows:?}"
+    );
+}

@@ -22,6 +22,8 @@ sipnab = { version = "0.5", default-features = false, features = ["native"] }
 | `sip::sdp::parse_sdp` | Parse an SDP body |
 | `DialogStore` / `StreamStore` | Capped, indexed dialog / RTP-stream stores (both `Debug`) |
 | `SipMessage`, `SipDialog`, `RtpStream` | Core value types |
+| `SipMethod`, `DialogState` | The method and dialog-state enums those types report in. Both `#[non_exhaustive]` — see [Error handling](#error-handling) |
+| `StreamKey` | What a `StreamStore` indexes by: SSRC plus the source and destination sockets, so one SSRC arriving on two paths stays two streams |
 | `FilterExpr` | Compiled filter-DSL expression |
 | `estimate_mos` | E-model MOS from jitter/loss/codec |
 
@@ -109,13 +111,15 @@ match parse_rtp_header(&[0x80, 0x00]) {
 
 Because every one of these enums is `#[non_exhaustive]`, a downstream
 `match` **must** include a wildcard arm — sipnab can add a variant in a
-minor release without it being a breaking change. Sixteen other public
-enums (`TransportProto`, `RtcpPacket`, `FraudType`, `CipherSuite`, …) are
-`#[non_exhaustive]` for the same reason.
+minor release without it being a breaking change. Twenty-four other public
+enums (`TransportProto`, `RtcpPacket`, `FraudType`, `CipherSuite`, …) carry
+`#[non_exhaustive]` for the same reason, as do three public structs
+(`BurstGapAnalysis`, `RemoteReceptionReport`, `RemoteVoipMetrics`), which a
+downstream literal therefore cannot construct.
 
 ## Worked examples
 
-Three of the programs in [`examples/`](../examples/) take the library path:
+Four of the six programs in [`examples/`](../examples/) take the library path:
 they run against a real capture and print a real answer. Each exists because
 it demonstrates something a doctest on this page structurally cannot — state
 accumulated across a whole file. (The other two, `uprobe_discover` and
@@ -126,6 +130,7 @@ accumulated across a whole file. (The other two, `uprobe_discover` and
 | [`call_summary.rs`](../examples/call_summary.rs) | any capture with SIP | The path above carried to its end: file → frame → message → **call**. Dialog state is what you learn from every packet in order, so one INVITE in a doctest can only ever print `Trying`. |
 | [`rtp_quality.rs`](../examples/rtp_quality.rs) | `rtp-protocol.pcap`, then `invite-opus-bye.pcap` | Jitter, loss and MOS per stream — none of which exist in a packet. The second capture shows `StreamStore` **declining to score** a stream whose clock rate no `a=rtpmap` grounded. |
 | [`filter_dialogs.rs`](../examples/filter_dialogs.rs) | any capture, plus an expression | `FilterExpr::parse` once, then `select_dialogs` — the join across both stores that `--report` and `--json-dialogs` also go through, and the reason those two never disagree about a capture. |
+| [`export_vcon.rs`](../examples/export_vcon.rs) | any capture with SIP | The same four steps plus a fifth: one reconstructed call out as a [vCon](vcon.md) container a conserver accepts. Needs `--features vcon`, which the default build omits. |
 
 ```sh
 cargo run --features native --example call_summary -- tests/pcap-samples/register-invite-reinvite-bye.pcap

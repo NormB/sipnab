@@ -419,12 +419,14 @@ dialogs.forEach(d => console.log(`${d.call_id}: ${d.state}`));
       "to_user": "bob",
       "state": "Failed",
       "method": "INVITE",
+      "final_status_code": 486,
       "duration_sec": 0.0,
       "msg_count": 4,
       "timing": {
         "pdd_ms": 847,
         "setup_ms": null,
-        "retransmits": 2
+        "retransmits": 2,
+        "duration_ms": null
       },
       "created_at": "2026-04-13T10:30:00Z",
       "updated_at": "2026-04-13T10:30:03Z",
@@ -467,6 +469,21 @@ it against.
 The key is absent, not null, when the dialog has no frame: live capture has no
 file to point back into. Absent means unknown, and a `frame` that is present is
 always a real pointer.
+
+A list row's `timing` carries exactly four keys, always all four. `pdd_ms`,
+`setup_ms` and `duration_ms` read **`null`** where the dialog never reached the
+message that sets them, and `retransmits` is a plain count. That inverts a page
+down: the single-dialog document's `timing` carries six keys and drops the ones
+it has no value for, so the same idea reads as `null` here and as an absent key
+there.
+
+Three list-row keys drop out rather than reading null: `frame` (above),
+`final_status_code` (absent, never a zero, while the call has no final INVITE
+response), and `input_origin` — `wire`, `hep` or `uprobe`, naming the capture
+source that delivered the message that OPENED the dialog. First and never
+latest, matching `frame`: one process can capture from an interface and a HEP
+mirror at once, so a field reassigned per message would report whichever spoke
+last.
 
 The list rows carry `from_user`/`to_user`, not the `from`/`to` used by the
 single-dialog and report endpoints below. The two shapes come from different
@@ -576,6 +593,7 @@ console.log(`State: ${dialog.state}`);
     "one_way_audio": false,
     "nat_mismatch": false,
     "no_media": false,
+    "private_media_address": false,
     "hints": [
       "Asymmetric media may be due to comfort noise (42% CN frames)."
     ]
@@ -682,6 +700,7 @@ and the detection threshold behind each.
 **Additional dialog fields:**
 
 - **`final_status_code` / `final_status_reason`** -- read INVITE transactions only. A `REGISTER`, `OPTIONS` or `SUBSCRIBE` dialog omits both however it ended; `signaling_diagnosis.final_failure.code` carries the status for any dialog.
+- **`diagnosis`** -- Four booleans and a `hints` array, all five always present. `one_way_audio`, `nat_mismatch` and `no_media` each name a media fault. `private_media_address` is a warning rather than a fault: the SDP `c=` line offered an [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) or link-local address to a peer that is not itself private, which stays correct inside one LAN and correct behind an SBC or media proxy that rewrites the SDP downstream. Two further keys drop out rather than reading null -- `stun_sdp_mismatch`, the STUN evidence that settles `private_media_address`, absent on a capture holding no STUN, and `media_relay`, the TURN relay this call's media crossed, absent on a capture holding no relay. [Output Formats](@/docs/output-formats.md#stun-evidence-inside-the-media-diagnosis) covers both field by field.
 - **`diagnosis.hints`** -- Free-text diagnostic strings from the media analyzer: one-way audio, NAT mismatch (SDP `c=` address vs. actual RTP source), comfort-noise asymmetry (shown in the example above), codec / payload-type / ptime / duration asymmetry, and late media. Empty array when the analyzer found nothing.
 - **STIR/SHAKEN** -- With `--stir-shaken` active (requires the `tls` build feature), sipnab writes the attestation level, orig/dest TNs, and verification status to the capture log. That status is `NotChecked` or `Expired` and never anything stronger: sipnab decodes the PASSporT but does not fetch the referenced certificate, so it checks no signature and the attestation remains the originator's claim rather than a confirmed fact. They are **not** part of the REST dialog JSON: there is no `stir_shaken` field, and the results do not appear in `diagnosis.hints`. sipnab marks a token `Expired` per [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224) Section 4.4 when its `iat` (issued-at) claim sits more than 60 seconds from the **capture timestamp of the packet that carried it** -- not from the time you run the analysis. A capture you read a year later still reports which tokens were fresh on the wire.
 
@@ -712,7 +731,7 @@ resp = requests.get(
     headers={"Authorization": "Bearer my-secret-token"},
 )
 report = resp.json()
-# `diagnosis` carries three booleans plus `hints` — there is no `summary` field.
+# `diagnosis` carries four booleans plus `hints` — there is no `summary` field.
 hints = report["diagnosis"]["hints"]
 print(f"Diagnosis: {'; '.join(hints) if hints else 'no issues detected'}")
 ```
@@ -774,6 +793,7 @@ available via the MCP `get_dialog_report` tool and the CLI `--call-report`.
     "one_way_audio": false,
     "nat_mismatch": false,
     "no_media": false,
+    "private_media_address": false,
     "hints": []
   },
   "streams": []
@@ -1624,6 +1644,11 @@ console.log(`PDD p50: ${timing.pdd_p50_ms}ms, p95: ${timing.pdd_p95_ms}ms`);
     "interface_dropped_packets": 0,
     "invalid_timestamps": 0,
     "undecodable_frames": 0,
+    "snapped_frames": 0,
+    "unanswered_nat_requests": 0,
+    "lapsed_turn_allocations": 0,
+    "lapsed_turn_allocation_streams": 0,
+    "ice_role_conflicts": 0,
     "degraded": false
   }
 }
@@ -1761,8 +1786,8 @@ MCP `capture_status` carries all four under the same names.
 
 `capture_quality` says how much of the wire the rest of the response draws
 from. Read it before the counts, not after: with `degraded` true, every number
-above it is a floor rather than a total, and the `timing` percentiles may have
-may rest on substituted clock readings.
+above it is a floor rather than a total, and the `timing` percentiles may rest
+on substituted clock readings.
 
 The three counters stay apart because their remedies disagree:
 
@@ -1791,6 +1816,33 @@ It is **not** part of `degraded`, on purpose: ARP is an undecodable frame by
 definition and is present on nearly every Ethernet capture, so a flag that
 included it would be true always and useful never.
 
+`snapped_frames` is a fifth channel, and neither loss nor a decode failure: the
+frames arrived, most of them decoded, and what is missing is payload — which is
+exactly what a signaling-only capture sets out to discard. It matters because
+the `--snaplen` warnings fire once per run and cannot say how MUCH of a capture
+came in truncated. A run that decoded every packet and snapped 94% of them is
+not a clean capture, and no other key here says so. Raise `--snaplen` when you
+need RTP payload, audio export, or a faithful `-O` re-emit.
+
+The last four keys are the only ones in this block about the **network** rather
+than about the capture. Those frames arrived perfectly, and what each key
+describes went wrong on the wire:
+
+| Key | What it counts, and what to do about it |
+|---|---|
+| `unanswered_nat_requests` | STUN and TURN transactions that went out and never came back — the signal behind a one-way-audio complaint. An endpoint that cannot learn its reflexive address (the public `address:port` a NAT gives it, which STUN exists to discover) advertises its private address in SDP, and the far end then sends media somewhere the internet cannot route, while the signaling looks healthy. Silence rather than a refusal points at something in the path discarding UDP it does not recognize, most often a firewall, IPS or secure web gateway. A refusal counts as answered: the server was reachable and said no, which is a different fault |
+| `lapsed_turn_allocations` | TURN allocations still carrying traffic past the lifetime the server last granted them, with no Refresh seen in between. The one fault here with no other symptom anywhere — the relay tears the allocation down the moment its lifetime lapses, the relayed media stops with it mid-call, and no SIP message says why. A deliberate release (a Refresh with `LIFETIME` 0) never counts, because the client asked for the teardown |
+| `lapsed_turn_allocation_streams` | Media streams crossing an allocation that had already lapsed. The scale beside the key above, and the reason that key is worth paging on: an allocation that lapsed with nothing on it cost nobody a call, and one carrying four streams cut off four conversations mid-sentence |
+| `ice_role_conflicts` | Candidate pairs where both ICE agents claimed the same role, or where one answered `487 Role Conflict` ([RFC 8445](https://www.rfc-editor.org/rfc/rfc8445) §7.3.1.1). ICE resolves this itself, so a single conflict is not always fatal — which is why it belongs on a dashboard rather than only in an alert. Where no pair between the two ever won nomination, the conflict is a candidate cause of media that never started |
+
+All four fall as well as rise. A late answer, a Refresh that arrives afterwards
+or a later nomination each removes one, so read them as current readings rather
+than as running totals. [Prometheus Metrics](@/docs/metrics.md) publishes
+the same four numbers as gauges for a scrape.
+
+Neither `snapped_frames` nor any of those four counts toward `degraded`, which
+stays a statement about packets this host lost.
+
 `degraded` is `true` when any of the three is non-zero. `false` means nothing
 was *observed* to go wrong — not that the capture provably saw every packet.
 Loss upstream of the capture point (an oversubscribed SPAN port, a tap
@@ -1806,7 +1858,9 @@ all three counters.
 | `200` | Success |
 | `400` | Malformed request (e.g. invalid SSRC on `/v1/streams/{id}`) |
 | `401` | Missing/invalid/expired/revoked bearer token |
-| `404` | Unknown `call_id` or stream id |
+| `404` | Unknown `call_id` or stream id — and every `call_id` on `/v1/dialogs/{call_id}/vcon` in a build without the `vcon` feature, which registers no route at that path |
+| `408` | The handler ran past the 30-second per-request cap. Every route sits behind it, so no slow client holds a connection slot open |
+| `500` | The answer would not serialize. Documented on `/v1/dialogs/{call_id}`, its `/report` and `/vcon` variants, `/v1/streams/{id}` and `/v1/report` |
 | `502` | The toll-fraud prevention peer a `/v1/tfps/` route asked exited non-zero, hung, or answered off the contract; `detail` carries its standard error |
 | `503` | Rejected by the rate limiter or the connection cap (**not** 429) |
 

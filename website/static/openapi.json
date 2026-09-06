@@ -1254,13 +1254,6 @@
               "null"
             ]
           },
-          "final_status_reason": {
-            "description": "Reason phrase that came with `final_status_code`.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "frame": {
             "description": "`<source>#<ordinal>` pointer to the frame this dialog opened in.",
             "type": [

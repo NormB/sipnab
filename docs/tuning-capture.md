@@ -44,6 +44,25 @@ That distinction is the single most useful thing on this page. Operators
 routinely respond to *any* drop by raising `-B`, which does nothing at all for
 interface drops and wastes memory while the real problem goes unaddressed.
 
+### Both numbers describe a capture handle, not an interface
+
+sipnab polls `pcap_stats` on each open capture handle — the socket this run
+opened — and libpcap keeps those counters per handle. A *handle* is one
+capture socket. An *interface* is the NIC every process on the host shares.
+The difference changes what a zero means and what a total covers.
+
+- **Zero drops means this run missed nothing.** It says nothing about the
+  interface. Another sniffer on the same NIC keeps its own counters, and
+  neither run can read the other's.
+- **One run can hold several handles.** `--multi-device` opens one per named
+  interface, and `--cores N` on a live device opens N sockets on one interface
+  (§8). sipnab adds each handle's increment to one process-wide pair, so the
+  totals cover the whole run rather than any single socket. The first-drop
+  warning names the device that dropped, which is what tells you where to act.
+- **The packet count beside them is sipnab's own tally**, not a libpcap
+  counter. It counts frames sipnab read. The drop pair is what says how many
+  more the wire carried.
+
 ### Where the two numbers appear
 
 sipnab reports both counters on four surfaces and keeps them apart on every
@@ -130,6 +149,32 @@ drop counters, and set -B/--buffer explicitly to pin a size.
 sipnab honors an explicit small `-B` exactly and never promotes it upward: `-B 1` on a
 constrained box means 1 MiB.
 
+### And it caps at 2047 MiB
+
+`pcap_set_buffer_size` takes a C `int`, so 2047 MiB is the last whole MiB whose
+byte count fits. sipnab clamps anything larger and says so:
+
+```text
+-B/--buffer 5000 MiB exceeds the 2047 MiB ceiling (pcap_set_buffer_size takes a
+C int); capturing with 2047 MiB instead.
+```
+
+The clamp matters because the arithmetic underneath used to wrap: `--buffer 2148`
+once handed libpcap a negative byte count. Read the warning as a real limit
+rather than as advice — no `-B` above 2047 buys anything.
+
+### `--buffer-budget` is a different buffer
+
+Two settings carry the word, and they sit on opposite sides of the kernel
+boundary. `-B` sizes the kernel ring. `--buffer-budget` sizes the in-process
+queue between the capture thread and the processing loop, in MiB, and it
+defaults to 64. sipnab turns that budget into a packet count at an assumed
+2 KiB average, then clamps the result to between 10,000 and 5,000,000 packets.
+
+Raise it when processing lags behind a bursty capture the ring is already
+absorbing. It does nothing for a ring that overflows: the kernel discards those
+packets before this queue ever sees them.
+
 ---
 
 ## 3. Capture less: BPF filters
@@ -138,7 +183,24 @@ The cheapest packet is the one the kernel never gives you. A BPF filter runs
 **in the kernel**, before the ring, so filtered traffic costs no buffer space, no
 copy, and no parse.
 
-Only SIP signaling:
+**A live capture already has one.** Give sipnab no expression of your own and it
+compiles one from `--portrange` (default 5060-5061), then adds an arm that
+reaches SIP inside one VLAN tag, QinQ, a PPPoE Session header or an MPLS label
+stack. It logs the expression it installed, so `-v` shows you exactly what the
+kernel is running. The baseline is therefore signaling-only already, and this
+section is about narrowing further or about letting media back in.
+
+**Your expression replaces that one entirely.** sipnab never edits what you
+typed, so an expression of your own drops the encapsulation arm and makes
+`--capture-tunnels` inert. Two warnings cover that: one when a port-based
+expression shows no sign of handling encapsulation, and one naming
+`--capture-tunnels` as ignored when you passed it beside a filter of your own.
+
+Careful with the flag name: `--filter` is sipnab's own matching language, applied
+to messages after capture. The BPF expression is the trailing argument, or a file
+named by `--bpf-file`.
+
+Only SIP signaling, and nothing tagged:
 
 ```bash
 sudo sipnab -N -d eth0 "port 5060 or port 5061"
@@ -243,6 +305,17 @@ Three ways out, and they compose:
    fidelity, because GRO/LRO hand you reassembled super-frames that were never
    on the wire.
 
+**`--capture-profile` picks the number for you.** `signaling` asks for a snaplen
+of 1500 — one MTU, which keeps a whole INVITE carrying a long `Record-Route`
+set, ISUP encapsulation or a fat SDP offer, while dropping the bulk of every RTP
+packet. `full` is 65535, the default. An explicit `--snaplen` wins over the
+profile, because someone who typed a number has already answered the question
+the profile asks.
+
+```bash
+sudo sipnab -N -d eth0 --capture-profile signaling
+```
+
 > **Truncation is lossy, and not everything survives it.** A small `--snaplen`
 > breaks audio reconstruction — the TUI's WAV save and the MCP `export_audio`
 > tool both need whole RTP payloads — and it degrades `-O` capture re-emit to
@@ -318,7 +391,7 @@ performance one. `find_default_device()` returns `"any"` on Linux
 ([`src/capture/device.rs:35-40`](https://github.com/NormB/sipnab/blob/main/src/capture/device.rs#L35-L40)), for the reason written beside it:
 
 ```text
-// On Linux, "any" captures all interfaces — this is what the terminal viewer does.
+// On Linux, "any" captures all interfaces, which is what we want.
 // SIP servers often listen on loopback, so capturing only eth0 misses traffic.
 ```
 
@@ -346,7 +419,7 @@ link type, not the offloads. At the 64 MiB default that is ~1,000 slots against
 ~41,000 for a named Ethernet interface with offloads off. Before the default
 buffer still defaulted to 2 MiB, the same arithmetic gave `any` just **31 slots**.
 
-**2. It cannot go promiscuous.** `capture_live()` in [`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs)
+**2. It cannot go promiscuous.** The capture loop in [`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs)
 computes `let use_promisc = config.promisc && device != "any"` — the
 pseudo-device does not support promiscuous mode, so sipnab does not ask for it. Promisc is on by default for a named
 device and `--no-promisc` turns it off. On `any` there is nothing to turn off.
@@ -357,10 +430,12 @@ correctness cost, and it points the opposite way from the loopback argument —
 `any` sees every interface but only the host's own traffic on them.
 
 **3. It runs one capture thread.** Naming devices unlocks `--multi-device`,
-which spawns **one capture thread per interface** (`start_multi_capture()` and
-`spawn_live_device()` in [`src/capture/native.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs)), each with its own ring and
+which spawns one coordinator thread plus **one capture thread per interface**
+(`start_multi_capture()` in [`src/capture/native.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs)), each with its own ring and
 its own drain loop. `any` is one device, so it is one thread and one ring no
-matter how many interfaces the traffic actually arrives on.
+matter how many interfaces the traffic actually arrives on. `--cores N` (§8) is
+the other way to get more than one socket, and it works on a single device
+rather than on a list.
 
 **4. It sweeps interfaces you never wanted.** `any` also picks up loopback,
 `docker0`, veth pairs, tunnels and management interfaces. Every one of those
@@ -470,7 +545,12 @@ irrelevant. Look outside sipnab:
 
 ## 8. Offline: `--cores`
 
-`--cores N` parallelizes **offline** reconstruction (`-I`), not live capture.
+`--cores N` names a different resource on each source, so read the one that
+matches your run.
+
+Reading files (`-I`), it is N parallel reconstruction workers, sharded by host
+pair, each with its own dialog and RTP-stream stores. That is the case this
+section measures.
 
 ```bash
 sipnab -N -I /var/captures/ --cores 4 --report
@@ -490,7 +570,32 @@ The workers compute the frame-provenance digest rather than the sequential
 reader, so that cost scales with the core count instead of capping every count
 at once.
 
-`--cores` is silently ignored on live capture — it requires `-I`.
+### On a live device it means capture sockets, not workers
+
+`--cores N` on `-d <device>` asks the kernel to spread that interface across N
+`AF_PACKET` sockets through `PACKET_FANOUT`. Each socket gets its own ring and
+its own drain loop, which is the thing a ring that keeps overflowing actually
+needs — a bigger `-B` buys a deeper ring and still leaves one thread emptying
+it. Linux only: elsewhere sipnab captures on one socket and logs the reason.
+
+Three things to know before reaching for it.
+
+- **It widens capture, not analysis.** Every socket feeds the same channel and
+  the same processing loop, so `--cores 8` is not eight cores of reconstruction.
+- **`-B` is per socket.** N sockets ask the kernel for N rings of that size, so
+  `--cores 8` at the 64 MiB default reserves half a gigabyte. sipnab states the
+  total out loud when it opens the group.
+- **sipnab probes first, then commits.** A kernel that refuses `PACKET_FANOUT`
+  refuses it for every socket, so sipnab tests one throwaway handle, warns, and
+  falls back to a single socket rather than letting N threads each discover it.
+
+```bash
+sudo sipnab -N -d eth0 --cores 4 -B 32 "port 5060 or port 5061"
+```
+
+Reach for it when §1 shows sustained `kernel buffer` drops on ONE busy
+interface and §2 through §5 have not cleared them. Several interfaces is
+`--multi-device` (§5) instead.
 
 ---
 

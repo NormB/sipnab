@@ -1222,3 +1222,73 @@ fn the_ungrounded_mos_note_has_no_stray_whitespace() {
          {note:?}"
     );
 }
+
+/// `by_method` accounts for every dialog `total_matched` counts.
+///
+/// The arithmetic contract on the MCP side. `the_method_breakdown_follows_the_filter`
+/// proves the field moves with a filter; this proves it adds up, which is the
+/// property a caller doing its own percentages depends on.
+#[test]
+fn the_method_breakdown_sums_to_total_matched() {
+    let page = call_tool(BRANCH, "list_dialogs", serde_json::json!({ "limit": 5 }));
+    let summed: u64 = page["by_method"]
+        .as_array()
+        .expect("by_method is an array")
+        .iter()
+        .map(|r| r["count"].as_u64().expect("count is a number"))
+        .sum();
+    assert_eq!(
+        summed,
+        page["total_matched"].as_u64().expect("total_matched"),
+        "got {}",
+        page["by_method"]
+    );
+}
+
+/// The breakdown is identical on page two.
+///
+/// `by_method` describes the whole match set, so paging must not change it.
+/// A tally built from the rows about to be returned would shrink to whatever
+/// the page holds, and an agent walking a cursor would watch the capture's
+/// apparent composition drift page by page — while every individual response
+/// looked internally consistent.
+#[test]
+fn the_method_breakdown_does_not_move_between_pages() {
+    let mut session = McpSession::start(BRANCH, &[]);
+    let first = ok_payload(&session.call("list_dialogs", serde_json::json!({ "limit": 2 })));
+    let cursor = first["next_cursor"]
+        .as_str()
+        .expect("1334 dialogs do not fit in one page of 2")
+        .to_string();
+    let second = ok_payload(&session.call(
+        "list_dialogs",
+        serde_json::json!({ "limit": 2, "cursor": cursor }),
+    ));
+
+    assert_eq!(
+        first["by_method"], second["by_method"],
+        "the breakdown describes the match set, not the page"
+    );
+    assert_eq!(first["total_matched"], second["total_matched"]);
+}
+
+/// A filter matching nothing returns an empty breakdown.
+///
+/// The negative case on the MCP side: `total_matched` of zero and a populated
+/// `by_method` would be one response contradicting itself, and it is what a
+/// tally computed before the filter would produce.
+#[test]
+fn the_method_breakdown_is_empty_when_the_filter_matches_nothing() {
+    let page = call_tool(
+        BRANCH,
+        "list_dialogs",
+        serde_json::json!({ "filter": "from.user == 'no-such-user-anywhere'" }),
+    );
+    assert_eq!(page["total_matched"].as_u64(), Some(0), "{page}");
+    assert_eq!(
+        page["by_method"].as_array().map(Vec::len),
+        Some(0),
+        "got {}",
+        page["by_method"]
+    );
+}

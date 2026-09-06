@@ -269,6 +269,12 @@ struct PacketCounters {
     /// Completed RFC 4733 telephone-event (DTMF) digits decoded so far
     /// (`--telephone-event`).
     dtmf_count: u64,
+    /// Which telephone-event end packets have already been counted.
+    ///
+    /// RFC 4733 §2.5.1.4 makes a sender transmit the final packet of an event
+    /// three times, so one keypress arrived as three events and was counted
+    /// three times.
+    dtmf_seen: rtp::dtmf::DtmfDedupe,
 }
 
 /// Owned batch-mode processing components, built by the binary's
@@ -3106,6 +3112,7 @@ impl BatchRunner {
             trailing_remaining: 0,
             followed_dialogs: std::collections::HashSet::new(),
             dtmf_count: 0,
+            dtmf_seen: rtp::dtmf::DtmfDedupe::default(),
         };
 
         loop {
@@ -4157,21 +4164,30 @@ fn process_parsed_packet(
 
             // STIR/SHAKEN extraction (I1)
             #[cfg(feature = "tls")]
-            if cli.security_args.stir_shaken
-                && let Some(result) = sip_msg.stir_shaken()
-            {
-                match result {
-                    Ok(info) => {
-                        tracing::info!(
-                            "STIR/SHAKEN: attest={:?} orig={} dest={} verified={:?}",
-                            info.attestation,
-                            info.orig_tn.as_deref().unwrap_or("-"),
-                            info.dest_display(),
-                            info.verified,
-                        );
-                    }
-                    Err(e) => {
-                        tracing::debug!("STIR/SHAKEN parse error: {e}");
+            if cli.security_args.stir_shaken {
+                // EVERY Identity header. RFC 8224 §4 permits more than one,
+                // and a diverted call under RFC 8946 carries a `ppt=shaken`
+                // PASSporT plus a `ppt=div` one — reading only the first made
+                // the second invisible on every surface.
+                for result in sip_msg.stir_shaken_all() {
+                    match result {
+                        Ok(info) => {
+                            tracing::info!(
+                                "STIR/SHAKEN: attest={:?} orig={} dest={} verified={:?}",
+                                info.attestation,
+                                info.orig_tn.as_deref().unwrap_or("-"),
+                                info.dest_display(),
+                                info.verified,
+                            );
+                        }
+                        // WARN, not debug. An Identity header that will not
+                        // parse is a forged or corrupted token, and at debug
+                        // it was indistinguishable from a message carrying
+                        // none — measured across four verbosity levels, and
+                        // none of them printed it.
+                        Err(e) => {
+                            tracing::warn!("STIR/SHAKEN: unparseable Identity header: {e}");
+                        }
                     }
                 }
             }
@@ -4290,6 +4306,10 @@ fn process_parsed_packet(
                     expected_pt,
                     clock_rate,
                     pp.timestamp,
+                ) && !counters.dtmf_seen.is_duplicate(
+                    rtp_hdr.ssrc,
+                    rtp_hdr.timestamp,
+                    rtp_payload.first().copied().unwrap_or(0),
                 ) {
                     *dtmf_count += 1;
                     // The always-on line is masked. A decoded digit is the
@@ -9521,6 +9541,7 @@ mod tests {
             trailing_remaining: 0,
             followed_dialogs: std::collections::HashSet::new(),
             dtmf_count: 0,
+            dtmf_seen: rtp::dtmf::DtmfDedupe::default(),
         };
         let ctx = BatchContext {
             matcher: &matcher,
@@ -9898,6 +9919,7 @@ mod tests {
             trailing_remaining: 0,
             followed_dialogs: std::collections::HashSet::new(),
             dtmf_count: 0,
+            dtmf_seen: rtp::dtmf::DtmfDedupe::default(),
         };
         let mut effects = DeferredEffects::new();
         let mut sink = output::BatchSink::new(Vec::new(), false);
@@ -10254,6 +10276,7 @@ mod tests {
             trailing_remaining: 0,
             followed_dialogs: std::collections::HashSet::new(),
             dtmf_count: 0,
+            dtmf_seen: rtp::dtmf::DtmfDedupe::default(),
         };
 
         let ctx = BatchContext {
@@ -10335,6 +10358,7 @@ mod tests {
             trailing_remaining: 0,
             followed_dialogs: std::collections::HashSet::new(),
             dtmf_count: 0,
+            dtmf_seen: rtp::dtmf::DtmfDedupe::default(),
         };
         let ctx = BatchContext {
             matcher: &matcher,
@@ -10514,6 +10538,7 @@ mod tests {
             trailing_remaining: 0,
             followed_dialogs: std::collections::HashSet::new(),
             dtmf_count: 0,
+            dtmf_seen: rtp::dtmf::DtmfDedupe::default(),
         };
         let mut effects = DeferredEffects::new();
         let pp = parsed_sip_packet(invite_bytes("lk1@example.com"), 5075, 5060);
@@ -10708,6 +10733,7 @@ mod tests {
             trailing_remaining: 0,
             followed_dialogs: std::collections::HashSet::new(),
             dtmf_count: 0,
+            dtmf_seen: rtp::dtmf::DtmfDedupe::default(),
         };
         let mut effects = DeferredEffects::new();
         let mut sink = output::BatchSink::new(Vec::new(), cli.output_args.line_buffer);
@@ -10857,6 +10883,7 @@ mod tests {
             trailing_remaining: 0,
             followed_dialogs: std::collections::HashSet::new(),
             dtmf_count: 0,
+            dtmf_seen: rtp::dtmf::DtmfDedupe::default(),
         };
         let ctx = BatchContext {
             matcher: &matcher,

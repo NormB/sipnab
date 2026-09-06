@@ -636,7 +636,19 @@ fn linked_code_targets_exist() {
     // 411 -> 413: two, in `internals/build-ci-release.md`'s new coverage
     // section -- `scripts/coverage.sh` and `tests/coverage_gate_test.rs`, the
     // rehearsal and the gate that keeps it honest.
-    const EXPECTED_CODE_LINKS: usize = 413;
+    // 413 -> 418: net five, all in `docs/internals/build-ci-release.md`,
+    // attributed by measuring every page under `docs/internals/` against HEAD
+    // before the number moved -- no other page changed. The 2026-09-06 sweep
+    // rewrote that file's CI section after finding it described a `ci-success`
+    // job gating four jobs where the workflow gates eleven, and the corrections
+    // name what they assert: `.githooks/pre-commit` and `.githooks/pre-push`
+    // for the gate lists, `scripts/check-unwrap.py` for the macro ban it
+    // actually enforces, `bpf/rust-toolchain.toml` for the nightly pin the page
+    // had claimed did not exist, `tests/site_journey_test.rs` for
+    // `ci_success_gates_every_job`, and `src/privilege.rs` /
+    // `src/process_isolation.rs` beside the `unsafe` count. Seven added links
+    // against two the rewrite removed.
+    const EXPECTED_CODE_LINKS: usize = 418;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

@@ -272,8 +272,9 @@ pub fn explain_response_code(code: u16) -> Option<&'static str> {
              or dereferences to an unusable document.",
         ),
         437 => Some(
-            "437 Unsupported Certificate — The certificate referenced by \
-             Identity-Info cannot be validated.",
+            "437 Unsupported Credential — The verification service holds the \
+             credential named by an Identity header but cannot use it: an \
+             untrusted issuing CA, or an unsupported signing algorithm.",
         ),
         438 => Some(
             "438 Invalid Identity Header — The Identity header signature \
@@ -420,6 +421,35 @@ pub fn explain_response_code(code: u16) -> Option<&'static str> {
 
 /// Tests pinning the response-code explanation table: spot checks per class
 /// plus an exhaustive sweep against the implemented-code list.
+#[cfg(test)]
+mod rfc_8224_naming_tests {
+    use super::explain_response_code;
+
+    /// 437's reason phrase is `Unsupported Credential`.
+    ///
+    /// RFC 8224 §6.2.2 renamed it: *"The 437 'Unsupported Credential' response
+    /// (previously 'Unsupported Certificate'; see Section 13.2)"*. The old name
+    /// survived here while `docs/sip-response-codes.md` carried the new one, so
+    /// the reference page and the running program disagreed about what an
+    /// operator sees — and the page was the one that was right.
+    ///
+    /// The explanation body matters as much as the title: 437 is about a
+    /// CREDENTIAL the verification service holds and cannot use, not about a
+    /// certificate that failed to validate, which is 438's neighbourhood.
+    #[test]
+    fn four_thirty_seven_uses_the_current_rfc_8224_name() {
+        let text = explain_response_code(437).expect("437 is explained");
+        assert!(
+            text.starts_with("437 Unsupported Credential"),
+            "RFC 8224 6.2.2 renamed 437; got: {text}"
+        );
+        assert!(
+            !text.contains("Unsupported Certificate"),
+            "the superseded name must not survive anywhere in the text: {text}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

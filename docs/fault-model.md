@@ -138,9 +138,13 @@ Audited, found sound (true-positive findings: none):
   (slow-loris), connection cap via semaphore (503 over limit).
 - **Shutdown**: atomic-flag signal handlers (`signals.rs`, tested);
   `parking_lot` locks cannot poison; closed-channel sends checked.
-- **`unsafe`** (16 blocks, all in `privilege.rs` / `signals.rs` /
-  `playback.rs` / `alerting.rs` / `cli_print.rs`): libc syscalls with no
-  attacker-controlled pointer/length; RAII/Drop-guarded fd ops.
+- **`unsafe`** (77 blocks outside `#[cfg(test)]`, across 20 files, the
+  largest groups in [`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs) (16), [`src/rtp/playback.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/playback.rs) (10) and
+  [`src/capture/uprobe/perf.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/uprobe/perf.rs) (9)): libc and other FFI calls, with
+  RAII/Drop-guarded fd ops. Every block states its own soundness argument —
+  [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml) sets clippy's `undocumented_unsafe_blocks` to `warn`, and both
+  the pre-push hook and CI run clippy with `-D warnings`, so a block with no
+  adjacent `// SAFETY:` comment fails the build.
 
 ## 5. Known gaps (deliberate / lower priority)
 

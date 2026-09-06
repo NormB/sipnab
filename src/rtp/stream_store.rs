@@ -662,7 +662,10 @@ impl StreamStore {
             dst: SocketAddr::new(parsed.dst_addr, parsed.dst_port),
         };
 
-        let payload_len = parsed.payload.len().saturating_sub(rtp.payload_offset);
+        // RFC 3550 §5.1 padding is not payload. Counting it inflated the
+        // octet total that becomes the reported bitrate, and put padding
+        // octets into the audio buffer where they became exported samples.
+        let payload_len = rtp.payload(&parsed.payload).len();
 
         if let Some(stream) = self.streams.get_mut(&key) {
             stream.update(rtp, timestamp, payload_len);
@@ -676,9 +679,9 @@ impl StreamStore {
             }
             // Capture G.711 payload for audio export (ring buffer, capped)
             if self.audio_capture && is_audio_capturable(stream.codec.as_deref()) {
-                let payload_start = rtp.payload_offset;
-                if payload_start < parsed.payload.len() {
-                    let audio = parsed.payload[payload_start..].to_vec();
+                let audio_slice = rtp.payload(&parsed.payload);
+                if !audio_slice.is_empty() {
+                    let audio = audio_slice.to_vec();
                     if stream.payload_buffer.len() >= self.max_audio_frames {
                         stream.payload_buffer.pop_front();
                         // Counted, so the export can say the ring wrapped
@@ -753,9 +756,9 @@ impl StreamStore {
             }
             // Capture G.711 payload for audio export (first packet)
             if self.audio_capture && is_audio_capturable(stream.codec.as_deref()) {
-                let payload_start = rtp.payload_offset;
-                if payload_start < parsed.payload.len() {
-                    let audio = parsed.payload[payload_start..].to_vec();
+                let audio_slice = rtp.payload(&parsed.payload);
+                if !audio_slice.is_empty() {
+                    let audio = audio_slice.to_vec();
                     stream.payload_buffer.push_back((rtp.timestamp, audio));
                 }
             }
@@ -2823,6 +2826,7 @@ a=rtpmap:96 H264/90000\r\n";
             ext_r_factor: 127, // unavailable
             mos_lq: 15,        // 1.5
             mos_cq: 13,        // 1.3
+            rx_config: 0,
             jb_nominal: 40,
             jb_maximum: 120,
             jb_abs_max: 65_535,

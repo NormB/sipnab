@@ -110,19 +110,19 @@ class. Ask by number or by the registry's own name — they mean the same thing:
 | Class | Number | Name |
 |---|---|---|
 | Provisional | `1xx` | `provisional` |
-| Successful | `2xx` | `successful` |
-| Redirection | `3xx` | `redirection` |
-| Request Failure | `4xx` | `request failure` |
+| Successful | `2xx` | `successful`, `success` |
+| Redirection | `3xx` | `redirection`, `redirect` |
+| Request Failure | `4xx` | `request failure`, `client failure` |
 | Server Failure | `5xx` | `server failure` |
-| Global Failures | `6xx` | `global failures` |
+| Global Failures | `6xx` | `global failures`, `global failure` |
 
 ```bash
 sipnab -N -I capture.pcap --filter "response_class == 'server failure'"
 ```
 
 **`failure` means all three failure classes** — 4xx, 5xx and 6xx together —
-because that is what the word means at a console. Naming one class is how you
-ask for one class:
+because that is what the word means at a console. `failures` and `failed` are
+the same question. Naming one class is how you ask for one class:
 
 ```bash
 sipnab -N -I capture.pcap --filter "response_class == 'failure'"
@@ -357,7 +357,7 @@ The DSL has no comment syntax, so this page labels each query in prose — a `#`
 line handed to `--filter` is a parse error, not a note.
 
 - Find calls with poor quality from a specific extension: `from.user =~ '^1001' AND rtp.mos < 3.0`
-- Find failed registrations from a subnet: `method == 'REGISTER' AND state == 'Failed' AND src.ip =~ '^10\.0\.1\.'`
+- Find failed registrations from a subnet: `method == 'REGISTER' AND state == 'Failed' AND src.ip =~ '^198\.51\.100\.'`
 - Find short calls that completed (possible robocalls): `duration < 5.0 AND state == 'Completed' AND method == 'INVITE'`
 - Find calls with audio issues: `one_way == true OR no_media == true OR rtp.jitter > 100.0`
 - Find scanner activity by User-Agent: `ua =~ 'sipvicious|friendly-scanner|sipcli'`
@@ -523,14 +523,16 @@ two disagreeing is the finding rather than a conflict to resolve. This is the
 same rule the reception-report figures follow -- see
 [mos-and-codecs.md](@/docs/mos-and-codecs.md#mos-comes-from-what-sipnab-measured-never-from-what-the-far-end-claimed).
 
-RFC 3611 reserves the value 127 for "this parameter is unavailable" on the
-R-factor, both MOS fields, the signal and noise levels and the echo return loss.
-sipnab renders each of those as `n/a`. A raw render would put an R-factor of 127
+RFC 3611 reserves the value 127 for "this parameter is unavailable" on all
+seven of its single-byte quality fields: the R-factor and the external
+R-factor, both MOS fields, the signal and noise levels, and the residual echo
+return loss. sipnab renders each of those as `n/a`. A raw render would put an R-factor of 127
 on a scale that stops at 100, and a MOS of 12.7 on a scale that stops at 5.0.
 
-The other XR block types -- Loss RLE, Duplicate RLE, Packet Receipt Times,
-Receiver Reference Time, DLRR and Statistics Summary -- reach the parser, and no
-surface reads them yet.
+No surface reads any other XR block type yet. The parser turns three of them
+into typed values -- Loss RLE, Duplicate RLE and Receiver Reference Time -- and
+records Packet Receipt Times, DLRR and Statistics Summary by block-type number
+alone.
 
 `--json`, `--report`, the REST API and the Prometheus exporter carry sipnab's own
 measurements only. No filter DSL field matches an XR value.
