@@ -213,12 +213,12 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         continue-on-error: true
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
 
       - name: Deploy to GitHub Pages (retry after a stalled promotion)
         id: deployment_retry
         if: steps.deployment.outcome == 'failure'
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
   # The production CSP is a Cloudflare transform rule pinning inline-script
   # hashes (GitHub Pages cannot set response headers). A deploy that changes
   # an inline <script> without refreshing the rule ships pages whose scripts
