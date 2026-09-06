@@ -10,6 +10,31 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A HEP allowlist refused every legitimate agent reaching a dual-stack
+  listener.** `--hep-listen [::]:9060` accepts IPv4 connections, and Linux
+  reports those peers as `::ffff:a.b.c.d`. `CidrRange::contains` treated any
+  IPv6 address as a family mismatch against an IPv4 range, so
+  `--hep-allow 198.51.100.0/24` matched nothing at all.
+
+  That is the strict direction, but it does not end safely. An allowlist that
+  refuses everyone gets widened or switched off, and SN-01 pushes operators
+  toward exactly this pairing by requiring an allowlist or auth for any
+  non-loopback bind. The failure is silent from the operator's side: agents
+  simply never appear.
+
+  An IPv4-mapped address now matches an IPv4 range, because the operator named
+  a host rather than a socket family. A range written in the mapped form stays
+  IPv6 and keeps matching as one.
+
+  Found by writing a test for the case rather than for the code. Two companion
+  tests drive every IPv4 and IPv6 prefix length -- 161 of them -- against the
+  network address of the range they build, because the prefix mask is computed
+  in two places and two copies of one rule on an allowlist is how a host nobody
+  named gets admitted. Those two passed, so the duplication is at least
+  consistent today.
+
 ### Added
 
 - **The coverage floor moves 92 to 93, and there is a way to check it before

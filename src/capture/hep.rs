@@ -1580,8 +1580,24 @@ impl CidrRange {
     }
 
     /// Check whether an IP address falls within this CIDR range.
+    ///
     /// Returns `false` for an address-family mismatch (an IPv4 range never
-    /// contains an IPv6 address, and vice versa).
+    /// contains a genuine IPv6 address, and vice versa) — with one exception
+    /// that is not a mismatch at all.
+    ///
+    /// **An IPv4-mapped IPv6 address is matched against an IPv4 range.** A
+    /// listener bound to `[::]` accepts IPv4 connections on Linux, and the
+    /// kernel reports those peers as `::ffff:a.b.c.d`. An operator who wrote
+    /// `--hep-allow 198.51.100.0/24` named a host, not a socket family, and before
+    /// this every legitimate agent reaching a dual-stack listener was refused.
+    /// That is the strict direction, but it does not end safely: an allowlist
+    /// that refuses everyone gets widened or switched off, and SN-01 pushes
+    /// operators toward exactly this pairing by requiring an allowlist for any
+    /// non-loopback bind.
+    ///
+    /// A range written in the mapped form itself stays IPv6 and keeps matching
+    /// as one, so an operator who deliberately wrote `::ffff:0:0/96` gets what
+    /// they asked for.
     pub fn contains(&self, addr: IpAddr) -> bool {
         let ip_bits = match addr {
             IpAddr::V4(v4) => {
@@ -1590,12 +1606,16 @@ impl CidrRange {
                 }
                 (u32::from(v4) as u128) << 96
             }
-            IpAddr::V6(v6) => {
-                if self.is_v4 {
-                    return false;
+            IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+                // The same host, arriving over a dual-stack socket.
+                Some(v4) if self.is_v4 => (u32::from(v4) as u128) << 96,
+                _ => {
+                    if self.is_v4 {
+                        return false;
+                    }
+                    u128::from(v6)
                 }
-                u128::from(v6)
-            }
+            },
         };
 
         let max_prefix = if self.is_v4 { 32u8 } else { 128u8 };
@@ -3803,6 +3823,86 @@ mod tests {
     /// itself, or a receiver that read one datagram's worth per read, would
     /// pass a single-packet test and lose traffic in production. Three
     /// messages in one connection is what distinguishes them.
+    /// A dual-stack listener sees an IPv4 peer as `::ffff:a.b.c.d`, and an
+    /// IPv4 allowlist must still admit it.
+    ///
+    /// `--hep-listen [::]:9060` accepts IPv4 connections, and the kernel
+    /// reports the peer as an IPv4-mapped IPv6 address. An operator who wrote
+    /// `--hep-allow 10.0.0.0/8` means the host at 10.0.0.40 regardless of
+    /// which socket family carried it. If the mapped form does not match, the
+    /// allowlist rejects every legitimate agent and the operator's next move
+    /// is to widen it or turn it off -- an allowlist that is wrong in the
+    /// strict direction still ends in a weaker configuration.
+    #[test]
+    fn an_ipv4_allowlist_admits_the_mapped_form_a_dual_stack_socket_reports() {
+        let range = CidrRange::parse("10.0.0.0/8").expect("cidr parses");
+        let plain: IpAddr = "10.0.0.40".parse().unwrap();
+        let mapped: IpAddr = "::ffff:10.0.0.40".parse().unwrap();
+
+        assert!(range.contains(plain), "the plain form matches");
+        assert!(
+            range.contains(mapped),
+            "and so must the mapped form: a dual-stack listener reports the \
+             same host this way, and the operator named the host, not the \
+             socket family"
+        );
+    }
+
+    /// A mapped address outside the range is still outside it.
+    ///
+    /// The paired half of the test above: admitting the mapped form must not
+    /// admit mapped addresses generally.
+    #[test]
+    fn a_mapped_address_outside_the_range_is_still_refused() {
+        let range = CidrRange::parse("10.0.0.0/8").expect("cidr parses");
+        assert!(
+            !range.contains("::ffff:192.0.2.5".parse::<IpAddr>().unwrap()),
+            "192.0.2.5 is not in 10.0.0.0/8 in either form"
+        );
+        assert!(
+            !range.contains("2001:db8::1".parse::<IpAddr>().unwrap()),
+            "and a genuine IPv6 address is not in an IPv4 range"
+        );
+    }
+
+    /// The mask a range is built with is the mask it matches with.
+    ///
+    /// `parse_inner` and `contains` each compute the prefix mask, from the
+    /// same rule written twice. Two copies of one rule on an allowlist is the
+    /// shape that admits a host nobody named. Driven across every prefix
+    /// length rather than a sample, because the disagreement would be at one
+    /// boundary and a sample is how a boundary gets missed.
+    #[test]
+    fn every_ipv4_prefix_length_matches_its_own_network_address() {
+        for prefix in 0u8..=32 {
+            let range = CidrRange::parse(&format!("10.20.30.40/{prefix}"))
+                .unwrap_or_else(|e| panic!("/{prefix} parses: {e}"));
+            // The network address of the range must be inside the range: if
+            // the two mask computations disagree, this is where it shows.
+            let net_v4 = std::net::Ipv4Addr::from(((range.network >> 96) & 0xFFFF_FFFF) as u32);
+            assert!(
+                range.contains(IpAddr::V4(net_v4)),
+                "/{prefix}: the network address {net_v4} is not inside its own \
+                 range -- the mask used to build it and the mask used to match \
+                 it disagree"
+            );
+        }
+    }
+
+    /// Every IPv6 prefix length matches its own network address, too.
+    #[test]
+    fn every_ipv6_prefix_length_matches_its_own_network_address() {
+        for prefix in 0u8..=128 {
+            let range = CidrRange::parse(&format!("2001:db8:1234:5678::1/{prefix}"))
+                .unwrap_or_else(|e| panic!("/{prefix} parses: {e}"));
+            let net_v6 = std::net::Ipv6Addr::from(range.network);
+            assert!(
+                range.contains(IpAddr::V6(net_v6)),
+                "/{prefix}: the network address {net_v6} is not inside its own range"
+            );
+        }
+    }
+
     #[test]
     fn a_tcp_sender_lays_whole_packets_end_to_end() {
         let collector = std::net::TcpListener::bind("127.0.0.1:0").expect("bind collector");

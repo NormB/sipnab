@@ -48,7 +48,7 @@ to leave the box and Homer never tried to avoid the database.
 | Single binary, no database | — | ships |
 | Receives HEP from Kamailio/OpenSIPS/Asterisk | `-L`/`--hep-listen`, [`hep.rs`](../../src/capture/hep.rs) | ships — **nothing need be installed on production** |
 | Sender-side HEP | `--hep-send`, [`batch.rs:3281`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3281) (SIP) and [`batch.rs:3297`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3297) (RTCP) | ships — SIP as protocol type 1 and RTCP as type 5 since 0.5.92; RTP is never forwarded |
-| RTCP understood on the wire | `CHUNK_PROTO_TYPE` ([`hep.rs:61`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L61)) — `1=SIP, 5=RTCP, 32=RTP` | ships — the receiver decodes type 5 and `HepSender::send_rtcp` ([`hep.rs:3581`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3581)) emits it, pinned by `send_rtcp_puts_protocol_type_5_on_the_wire` ([`hep.rs:4672`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L4672)) |
+| RTCP understood on the wire | `CHUNK_PROTO_TYPE` ([`hep.rs:61`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L61)) — `1=SIP, 5=RTCP, 32=RTP` | ships — the receiver decodes type 5 and `HepSender::send_rtcp` ([`hep.rs:3601`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3601)) emits it, pinned by `send_rtcp_puts_protocol_type_5_on_the_wire` ([`hep.rs:4772`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L4772)) |
 | Bounded memory | `--limit` (100k dialogs, oldest-first), `--max-streams` (50k) | ships |
 | Conformance lint with RFC citations, triage, MOS diagnosis | — | ships |
 | Frame pointers with verifiable digests | `--show-frame` | ships |
