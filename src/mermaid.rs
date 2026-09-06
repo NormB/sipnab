@@ -6,7 +6,7 @@
 //!
 //! sipnab renders Mermaid from two places that cannot share a feature: the TUI
 //! exporter under `feature = "tui"`, and the browser analyzer in
-//! [`crate::wasm`], which compiles only for `target_arch = "wasm32"` where
+//! `crate::wasm`, which compiles only for `target_arch = "wasm32"` where
 //! `native` is off. `crate::output` is gated on `native`, so it cannot hold a
 //! rule the wasm build needs. That gap is not academic — it is why the escaping
 //! fix reached one generator and not the other, and why `msg.reason`, the

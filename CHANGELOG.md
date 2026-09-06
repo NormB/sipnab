@@ -8,7 +8,105 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.155] - 2026-09-06
+
+### Fixed
+
+- **`--redact` returned everything after the first comma verbatim.** Every
+  header in the identity and routing families is `value *(COMMA value)` —
+  RFC 3325 §9.1, RFC 3327 §4, RFC 7044 §5, RFC 3261 §20.10 and §20.30 — and a
+  two-value `P-Asserted-Identity`, which is the ordinary IMS shape, came out of
+  a container the tool calls redacted carrying a real E.164 subscriber number,
+  a display name, and the operator's own core hostnames. Splitting is now quote
+  and bracket aware, because §25.1 puts `,` inside `qdtext`.
+
+- **The redactor had a second `P-Charging-Vector` parser** beside the correct
+  one, and it tore `icid-value="aaa;SECRET"` in half and emitted the tail in
+  clear. It now uses the shared walker. A quoted value preceded by legal
+  whitespace also lost its mandatory quotes.
+
+- **A conformant `m=video 49170/2` fabricated facts about another stream.**
+  RFC 8866 §5.14's port-count form failed to parse and the parser stayed "in
+  media", so every following attribute landed on the previous section — an
+  audio stream reported as sendonly, anchored to the video's address, carrying
+  the video's codec.
+
+- **Session-level SDP direction attributes were dropped**, which silently
+  disarmed a lint rule: the same RFC 3264 §6.1 violation fired when written at
+  media level and not at session level. RFC 8866 §6.7 makes the session-level
+  value the default for any media description that declares none.
+
+- **A `Contact` URI parameter was read as the binding lifetime.**
+  `<sip:alice@host;expires=60>;expires=3600` reported "Registration granted 60s
+  against 3600s requested". Everything inside the angle brackets is URI
+  parameters (§25.1); §10.2.1.1 puts the lifetime on the header parameter.
+
+- **A caller could choose the dialog identifier.** `extract_tag` anchored on the
+  first `>` in the raw value, so a display name of `"A>;tag=decoy"` supplied the
+  From tag — half the dialog ID under §12.1.1. It also missed `; tag = x` and
+  `;TAG=`, both conformant.
+
+- **A response with an empty Reason-Phrase was discarded.** RFC 4475 §3.1.1.13:
+  "A parser must accept this message." `line.trim()` destroyed the required
+  trailing space and the whole response vanished with only a debug line.
+
+- **A comma-combined `Via` returned a later hop's branch.** Everything keyed on
+  the transaction read that: retransmission detection, scanner and
+  registration-flood detection, digest-leak detection, three lint rules.
+
+- **`Session-ID` was remotely spoofable.** The `remote` parameter name was
+  matched case-sensitively, and parameters were split without quote awareness —
+  so one appended `generic-param` overwrote the genuine remote half and killed
+  B2BUA correlation silently. A duplicate now takes the first, per RFC 7989 §5.
+
+- **Only the first `Identity` header was read.** RFC 8224 §4 permits more than
+  one, and an RFC 8946 diverted call carries two — the second PASSporT was
+  invisible everywhere. An unparseable token was logged at debug and nowhere
+  else; it is now a warning and is carried in the result.
+
+- **RFC 3611 §4.7 jitter-buffer fields were read two octets early**, so
+  `jb_nominal` held the RX-config bits, each later field held its predecessor's
+  value, and JB abs max was never read at all. The 65535 ceiling was tested
+  against the wrong field. The existing test built its fixture in the parser's
+  order and called the shortfall "2 bytes padding"; §4.7's body is 32 octets of
+  defined fields.
+
+- **RFC 3550 §5.1 padding was decoded and never stripped**, so padding octets
+  were counted into the reported bitrate and exported as audio samples.
+
+- **A truncated RTCP packet became a phantom RTP stream.** Only types 200-204
+  were rejected, so a snaplen-truncated XR (207) fell through and its block
+  header was reported as an SSRC. RFC 3551 §6 leaves payload types 64-95
+  unassigned precisely so RTCP types 192-223 stay distinguishable.
+
+- **Every DTMF keypress was counted three times.** RFC 4733 §2.5.1.4 requires
+  the final packet be sent three times with the E bit set; the retransmissions
+  share SSRC, RTP timestamp and event code, which is now the dedupe key.
+
+- **A STUN message reported a bad fingerprint because of trailing octets.**
+  `attr_start` was measured against the datagram rather than the message.
+  Duplicate attributes took the last where RFC 8489 §14 says the first — and
+  MESSAGE-INTEGRITY covers only what precedes it.
+
+- **TURN channel numbers used RFC 5766's range.** RFC 8656 Table 3 reserves
+  `0x5000-0xFFFF`; narrowing also quarters the accidental-match rate, which is
+  what previously let GTPv2-C control messages be unwrapped as relayed media.
+
+- **GTPv2-C control traffic was reported as an RTP stream** with a confident
+  MOS. A ChannelData header and a GTPv2-C header are the same shape and both
+  define Length identically, so only the port can separate them.
+
+- **The browser analyzer's Mermaid export escaped nothing**, interpolating the
+  sender-written reason phrase straight into diagram source. The escaper now
+  lives in one ungated module both targets reach, and gained `%` — `%%` opens a
+  Mermaid comment and silently truncated a label.
+
+- **`security.fraud_destination` and `theme.status_bg` warned on every start.**
+  Both are real fields read by working code and neither was registered, so
+  setting them worked and logged `Unknown config key`.
+
+- **437's reason phrase was superseded.** RFC 8224 §6.2.2 renamed it to
+  Unsupported Credential.
 
 ### Added
 

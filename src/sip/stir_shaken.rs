@@ -270,7 +270,7 @@ impl SipMessage {
     ///
     /// # Why more than one
     ///
-    /// RFC 8224 §4: "Note that unlike the prior specification in [RFC4474],
+    /// RFC 8224 §4: "Note that unlike the prior specification in RFC 4474,
     /// the Identity header field is now allowed to appear more than one time
     /// in a SIP request." A diverted call under RFC 8946 carries two — a
     /// `ppt=shaken` PASSporT and a `ppt=div` one — and reading only the first
