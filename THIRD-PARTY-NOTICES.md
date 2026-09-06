@@ -44,7 +44,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | Crate | Version | License |
 |---|---|---|
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 |
-| aes | 0.9.2 | MIT OR Apache-2.0 |
+| aes | 0.9.3 | MIT OR Apache-2.0 |
 | ahash | 0.8.12 | MIT OR Apache-2.0 |
 | aho-corasick | 1.1.4 | Unlicense OR MIT |
 | allocator-api2 | 0.2.21 | MIT OR Apache-2.0 |
@@ -189,7 +189,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | iana-time-zone | 0.1.65 | MIT OR Apache-2.0 |
 | iana-time-zone-haiku | 0.1.2 | MIT OR Apache-2.0 |
 | ident_case | 1.0.1 | MIT/Apache-2.0 |
-| indexmap | 2.14.0 | Apache-2.0 OR MIT |
+| indexmap | 2.14.1 | Apache-2.0 OR MIT |
 | indoc | 2.0.7 | MIT OR Apache-2.0 |
 | inout | 0.2.2 | MIT OR Apache-2.0 |
 | instability | 0.3.12 | MIT |
@@ -293,8 +293,8 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | regex-automata | 0.4.16 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
-| rmcp | 3.1.4 | Apache-2.0 |
-| rmcp-macros | 3.1.4 | Apache-2.0 |
+| rmcp | 3.2.0 | Apache-2.0 |
+| rmcp-macros | 3.2.0 | Apache-2.0 |
 | rsa | 0.9.10 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
@@ -327,7 +327,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | simd-adler32 | 0.3.9 | MIT |
 | siphasher | 1.0.2 | MIT/Apache-2.0 |
 | slab | 0.4.12 | MIT |
-| smallvec | 1.15.2 | MIT OR Apache-2.0 |
+| smallvec | 1.16.0 | MIT OR Apache-2.0 |
 | socket2 | 0.6.3 | MIT OR Apache-2.0 |
 | spin | 0.9.8 | MIT |
 | spki | 0.7.3 | Apache-2.0 OR MIT |
@@ -359,7 +359,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | tokio-macros | 2.7.0 | MIT |
 | tokio-stream | 0.1.18 | MIT |
 | tokio-util | 0.7.18 | MIT |
-| toml | 1.1.4+spec-1.1.0 | MIT OR Apache-2.0 |
+| toml | 1.1.5+spec-1.1.0 | MIT OR Apache-2.0 |
 | toml_datetime | 1.1.1+spec-1.1.0 | MIT OR Apache-2.0 |
 | toml_edit | 0.25.13+spec-1.1.0 | MIT OR Apache-2.0 |
 | toml_parser | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 |

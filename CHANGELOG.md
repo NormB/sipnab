@@ -8,6 +8,37 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A `<send>` list could lose every entry after an empty one, and a
+  self-closing entry could report markup as a stream id.** Both in
+  `extract_all_xml_content`, which resolves SIPREC stream ownership, and both
+  introduced with that feature earlier in this release cycle.
+
+  The scan called the single-value reader in a loop. That reader answers `None`
+  for an element with no content, and the loop read `None` as "no more" -- so
+  one `<send></send>` anywhere in a participant's list silently discarded every
+  stream after it. The participant then owned fewer streams than the SRC said,
+  which is worse than owning none: the answer looks plausible with a stream
+  missing from it.
+
+  Worse, the loop advanced by searching for the next closing tag from the start
+  of the remainder. A self-closing `<send/>` has no closing tag, so it consumed
+  the following element's -- returning the literal string `<send>s1` as a
+  stream identifier.
+
+  The scan now walks the elements itself, skipping empty and self-closing ones
+  and continuing rather than stopping. Neither names a stream, and neither is a
+  reason to stop reading the ones that do. A third defect surfaced under
+  mutation: the guard that stops `<sendonly>` matching `<send>` had no test at
+  all, and removing it left every test green.
+
+  Found by writing tests intended to fail rather than tests intended to pass.
+  The fifteen tests added for coverage immediately before these found nothing;
+  these three found three defects in code written the same day.
+
 ## [0.5.152] - 2026-09-05
 
 ### Added

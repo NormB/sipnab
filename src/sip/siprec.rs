@@ -279,16 +279,51 @@ fn parse_rs_metadata(xml: &str) -> Result<SirecMetadata> {
 /// [`extract_xml_content`] returns only the first, which is right for a field
 /// that appears once and wrong for `<send>`: a participant sending both audio
 /// and video has two, and reading one would leave the other stream unowned.
+///
+/// Walks the elements itself rather than calling the single-value reader in a
+/// loop. That loop had two defects, both of which lost associations silently:
+/// it stopped at the first element with empty content, because the reader
+/// answers `None` for one and the loop read `None` as "no more"; and it
+/// advanced by searching for the next closing tag from the start of the
+/// remainder, so a self-closing `<send/>` -- which has no closing tag --
+/// consumed the following element's and reported `<send>s1` as a stream id.
+///
+/// Empty and self-closing elements are skipped and the scan continues. Neither
+/// names a stream, and neither is a reason to stop reading the ones that do.
 fn extract_all_xml_content(xml: &str, tag: &str) -> Vec<String> {
+    let open = format!("<{tag}");
     let close = format!("</{tag}>");
     let mut out = Vec::new();
-    let mut rest = xml;
-    while let Some(found) = extract_xml_content(rest, tag) {
-        out.push(found);
-        let Some(pos) = rest.find(&close) else {
+    let mut i = 0usize;
+
+    while let Some(rel) = xml[i..].find(&open) {
+        let start = i + rel;
+        let after = start + open.len();
+        // Exact tag name, not a prefix: `<sendmode>` is not a `<send>`.
+        let delim = xml.as_bytes().get(after).copied();
+        if !matches!(delim, Some(b'>' | b' ' | b'\t' | b'\r' | b'\n' | b'/')) {
+            i = after;
+            continue;
+        }
+        let Some(gt_rel) = xml[start..].find('>') else {
             break;
         };
-        rest = &rest[pos + close.len()..];
+        let gt = start + gt_rel;
+        if xml[start..gt].ends_with('/') {
+            // Self-closing: no content and no closing tag. Step over it.
+            i = gt + 1;
+            continue;
+        }
+        let content_start = gt + 1;
+        let Some(close_rel) = xml[content_start..].find(&close) else {
+            break;
+        };
+        let content_end = content_start + close_rel;
+        let content = xml[content_start..content_end].trim();
+        if !content.is_empty() {
+            out.push(content.to_string());
+        }
+        i = content_end + close.len();
     }
     out
 }
@@ -723,6 +758,98 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             extract_all_xml_content("<a><send>only</send></a>", "send"),
             ["only"],
             "and a single match still comes back"
+        );
+    }
+
+    /// An empty element must not end the scan.
+    ///
+    /// `extract_xml_content` answers `None` for an element with no content,
+    /// and the all-occurrences loop treats `None` as "no more". So one
+    /// `<send></send>` anywhere in the list silently discards every stream
+    /// after it, and the participant is reported owning fewer streams than the
+    /// SRC said. Losing an association is worse than reporting none: the
+    /// operator sees a plausible answer with a stream missing from it.
+    #[test]
+    fn an_empty_element_does_not_end_the_scan() {
+        assert_eq!(
+            extract_all_xml_content("<a><send></send><send>s1</send></a>", "send"),
+            ["s1"],
+            "an empty first element must be skipped, not treated as the end"
+        );
+        assert_eq!(
+            extract_all_xml_content("<a><send>s1</send><send></send><send>s2</send></a>", "send"),
+            ["s1", "s2"],
+            "and an empty one in the middle must not drop what follows"
+        );
+        assert_eq!(
+            extract_all_xml_content("<a><send>   </send><send>s3</send></a>", "send"),
+            ["s3"],
+            "whitespace-only content is empty too, and just as fatal to the scan"
+        );
+    }
+
+    /// A longer tag that starts with this one's name is a different tag.
+    ///
+    /// `<sendonly>` shares four characters with `<send>`, and a scan that
+    /// matched on the prefix would read its content as a stream id -- then
+    /// look for `</send>`, not find one there, and run on into the next real
+    /// element. The guard is one `matches!` on the delimiter, and nothing
+    /// tested it until a mutation removed it and every test stayed green.
+    #[test]
+    fn a_tag_whose_name_merely_starts_the_same_is_not_matched() {
+        assert_eq!(
+            extract_all_xml_content("<a><sendonly>no</sendonly><send>s1</send></a>", "send"),
+            ["s1"],
+            "<sendonly> is not a <send>"
+        );
+        assert_eq!(
+            extract_all_xml_content("<a><sendonly>no</sendonly></a>", "send"),
+            Vec::<String>::new(),
+            "and with no real <send> present the answer is none, not the \
+             longer tag's content"
+        );
+    }
+
+    /// A self-closing element must not swallow the next one's content.
+    ///
+    /// `<send/>` has no closing tag. The scan looks for `</send>` and finds
+    /// the NEXT element's, so a self-closing entry can consume the following
+    /// stream id and report it as the first one's.
+    #[test]
+    fn a_self_closing_element_does_not_swallow_the_next() {
+        assert_eq!(
+            extract_all_xml_content("<a><send/><send>s1</send></a>", "send"),
+            ["s1"],
+            "a self-closing element carries no id, and must not be credited \
+             with the following one's"
+        );
+    }
+
+    /// A participant that sends one stream after an empty entry still owns it.
+    ///
+    /// The end-to-end shape of the bug above: ownership is resolved from the
+    /// `<send>` list, so a dropped entry leaves a real stream unowned while
+    /// every other field looks right.
+    #[test]
+    fn an_empty_send_does_not_orphan_the_streams_after_it() {
+        let xml = "<recording>\
+<stream stream_id=\"s1\"><label>0</label></stream>\
+<stream stream_id=\"s2\"><label>1</label></stream>\
+<participantstreamassoc participant_id=\"p1\">\
+<send></send><send>s1</send><send>s2</send>\
+</participantstreamassoc></recording>";
+        let md = parse_rs_metadata(xml).expect("parses");
+        let owner = |id: &str| {
+            md.streams
+                .iter()
+                .find(|s| s.stream_id.as_deref() == Some(id))
+                .and_then(|s| s.participant_id.clone())
+        };
+        assert_eq!(owner("s1").as_deref(), Some("p1"));
+        assert_eq!(
+            owner("s2").as_deref(),
+            Some("p1"),
+            "both streams are p1's; an empty <send> must not orphan them"
         );
     }
 
