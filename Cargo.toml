@@ -139,7 +139,7 @@ libloading = { version = "0.9", optional = true }
 # WASM plugin host (feature `plugins`). wasmi is a pure-safe-Rust interpreter:
 # no JIT, so no W^X pages, which is most of why WASM answers D7 where Lua did
 # not. See docs/design/wasm-plugin-api.md.
-wasmi = { version = "1.1", optional = true }
+wasmi = { version = "2.0", optional = true }
 
 # Opus codec (pure Rust, no FFI — always available for WAV export)
 opus-decoder = "0.1"
