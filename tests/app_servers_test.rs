@@ -67,7 +67,6 @@ fn nothing_enabled_spawns_nothing() {
         // No transmit permit: none of these cases opens a live source.
         #[cfg(feature = "mcp")]
         None,
-        #[cfg(feature = "metrics")]
         None,
     )
     .expect("no servers requested must succeed");
@@ -107,7 +106,6 @@ fn selection_gates_configured_servers() {
         // No transmit permit: none of these cases opens a live source.
         #[cfg(feature = "mcp")]
         None,
-        #[cfg(feature = "metrics")]
         None,
     )
     .expect("must succeed");
@@ -148,7 +146,6 @@ fn invalid_api_addr_is_an_error() {
         // No transmit permit: none of these cases opens a live source.
         #[cfg(feature = "mcp")]
         None,
-        #[cfg(feature = "metrics")]
         None,
     );
     assert!(err.is_err(), "junk --api address must be a startup error");
@@ -186,7 +183,6 @@ fn api_on_ephemeral_port_starts_servers_thread() {
         // No transmit permit: none of these cases opens a live source.
         #[cfg(feature = "mcp")]
         None,
-        #[cfg(feature = "metrics")]
         None,
     )
     .expect("valid --api must start");
@@ -231,7 +227,6 @@ fn api_port_in_use_is_a_startup_error() {
         // No transmit permit: none of these cases opens a live source.
         #[cfg(feature = "mcp")]
         None,
-        #[cfg(feature = "metrics")]
         None,
     )
     .err()
@@ -277,7 +272,6 @@ fn api_non_loopback_without_auth_is_a_startup_error() {
         // No transmit permit: none of these cases opens a live source.
         #[cfg(feature = "mcp")]
         None,
-        #[cfg(feature = "metrics")]
         None,
     )
     .err()
@@ -324,7 +318,6 @@ fn api_tls_flags_are_a_startup_error() {
         // No transmit permit: none of these cases opens a live source.
         #[cfg(feature = "mcp")]
         None,
-        #[cfg(feature = "metrics")]
         None,
     )
     .err()
@@ -371,7 +364,6 @@ fn mcp_http_transport_without_feature_is_a_startup_error() {
         // No transmit permit: none of these cases opens a live source.
         #[cfg(feature = "mcp")]
         None,
-        #[cfg(feature = "metrics")]
         None,
     )
     .err()
@@ -416,7 +408,6 @@ fn unknown_mcp_transport_is_a_startup_error() {
         // No transmit permit: none of these cases opens a live source.
         #[cfg(feature = "mcp")]
         None,
-        #[cfg(feature = "metrics")]
         None,
     )
     .err()
@@ -462,7 +453,6 @@ fn invalid_mcp_bind_is_a_startup_error() {
         // No transmit permit: none of these cases opens a live source.
         #[cfg(feature = "mcp")]
         None,
-        #[cfg(feature = "metrics")]
         None,
     );
     assert!(

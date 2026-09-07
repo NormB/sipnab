@@ -266,6 +266,14 @@ pub fn start_servers(
     // is compiled.
     capture_meter: Option<crate::capture::channel::CaptureMeter>,
 ) -> anyhow::Result<Option<ServerHandles>> {
+    // Every reader of the meter sits behind a feature. With none of `metrics`,
+    // `api` or `mcp` compiled there is no door to hand it to, and the binding
+    // is genuinely unused rather than accidentally so -- named here rather
+    // than renamed to `_capture_meter`, which would hide a real unused warning
+    // in the builds that DO have a reader.
+    #[cfg(not(any(feature = "metrics", feature = "api", feature = "mcp")))]
+    let _ = &capture_meter;
+
     // Metrics first, and on its OWN thread rather than the shared async
     // runtime below: `start_metrics_server` spawns a blocking accept loop, and
     // it must come up whether or not any async server was selected.

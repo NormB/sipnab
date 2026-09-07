@@ -333,7 +333,10 @@ pub fn run_tui_mode(
     // Taken BEFORE `rx` moves into the thread below. The meter is a cheap
     // shared handle; `PacketRx` is not `Clone`, so reading it afterwards would
     // be a borrow of a moved value.
-    #[cfg(feature = "metrics")]
+    //
+    // No longer gated on `metrics`: `runtime_stats` and `GET /v1/runtime` read
+    // the queue depth too, and with this behind that feature both published a
+    // confident `0` for a queue they could not see.
     let capture_meter = Some(rx.meter());
 
     // Spawn packet processing thread

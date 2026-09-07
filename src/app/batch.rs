@@ -2186,7 +2186,11 @@ pub fn run(
         // Taken before `rx` is moved into `run_loop`: the meter is a cheap
         // clonable view of the same queue, so the metrics thread can read the
         // depth while the receive loop owns the receiver.
-        #[cfg(feature = "metrics")]
+        //
+        // No longer gated on `metrics`. The scrape endpoint was the first
+        // reader but not the only one — `runtime_stats` and `GET /v1/runtime`
+        // report queue depth and backpressure too, and both published a
+        // confident `0` for them while this stayed behind that feature.
         rx.meter(),
     ) {
         Ok(runner) => runner,
