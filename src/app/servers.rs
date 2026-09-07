@@ -257,7 +257,14 @@ pub fn start_servers(
     #[cfg(feature = "mcp")] relay_query_permit: Option<
         crate::security::transmit_guard::TransmitPermit,
     >,
-    #[cfg(feature = "metrics")] capture_meter: Option<crate::capture::channel::CaptureMeter>,
+    // No longer gated on `metrics`. The scrape endpoint was the first consumer
+    // but it is not the only one: `runtime_stats` and `GET /v1/runtime` report
+    // queue depth and backpressure too, and both published a confident `0` for
+    // them while this stayed behind the metrics feature -- the same defect the
+    // comment at the batch.rs call site describes, one layer up. `api` and
+    // `mcp` both imply `native`, so the type is available wherever either door
+    // is compiled.
+    capture_meter: Option<crate::capture::channel::CaptureMeter>,
 ) -> anyhow::Result<Option<ServerHandles>> {
     // Metrics first, and on its OWN thread rather than the shared async
     // runtime below: `start_metrics_server` spawns a blocking accept loop, and
@@ -289,7 +296,9 @@ pub fn start_servers(
             Arc::clone(dialog_store),
             Arc::clone(stream_store),
             auth,
-            capture_meter,
+            // Cloned, not moved: the API and MCP doors below read the same
+            // meter, and one capture has one queue.
+            capture_meter.clone(),
             selection.metrics_max_conn,
         )
         .map_err(|e| anyhow::anyhow!("Failed to start metrics server: {e}"))?;
@@ -395,6 +404,9 @@ pub fn start_servers(
         let state = ApiState {
             dialog_store: Arc::clone(dialog_store),
             stream_store: Arc::clone(stream_store),
+            // The same meter the scrape endpoint reads, so /metrics and
+            // /v1/runtime cannot disagree about one queue.
+            capture_meter: capture_meter.clone(),
             verifier,
             rate_limiter: Arc::new(parking_lot::Mutex::new(RateLimiter::new(
                 selection.api_rate_limit_per_peer,
@@ -474,6 +486,7 @@ pub fn start_servers(
                 // The interfaces REST also names, so `runtime_stats` and
                 // `GET /v1/runtime` read the same NICs.
                 .with_capture_interfaces(cli.capture_args.device.clone().into_iter().collect())
+                .with_capture_meter(capture_meter.clone())
                 .with_protected_inputs(protected_inputs.clone())
                 .with_max_concurrent(cli.mcp_args.mcp_max_concurrent as usize)
                 // Clap has already refused any spelling but `core` and

@@ -552,7 +552,6 @@ pub fn run_tui_mode(
         // stays with the reconciler.
         #[cfg(feature = "mcp")]
         None,
-        #[cfg(feature = "metrics")]
         capture_meter,
     )
     .unwrap_or_else(|e| {

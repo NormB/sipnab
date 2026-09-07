@@ -88,7 +88,7 @@ misses the tunnel. A miss stays visible. A fabrication does not.
 | 12 | Raw IP (`DLT_RAW`) | decoded — the version nibble picks v4 or v6 |
 | 113 | Linux cooked v1 (`SLL`) | decoded |
 | 276 | Linux cooked v2 (`SLL2`) | decoded |
-| 9 | PPP (`DLT_PPP`) | decoded — with or without RFC 1662 HDLC-like framing |
+| 9 | PPP (`DLT_PPP`) | decoded — with or without [RFC 1662](https://www.rfc-editor.org/rfc/rfc1662) HDLC-like framing |
 | 50 | PPP in HDLC-like framing (`DLT_PPP_SERIAL`) | decoded |
 | 51 | PPPoE session (`DLT_PPP_ETHER`) | decoded |
 | 228 | bare IPv4 (`DLT_IPV4`) | decoded — sipnab checks the version nibble against the link type and rejects a mismatch |

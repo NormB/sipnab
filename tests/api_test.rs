@@ -1067,7 +1067,21 @@ fn runtime_reports_cumulative_counters_without_a_sampling_wait() {
     let body = srv.get("/v1/runtime").json();
 
     assert!(body["capture_packets_total"].is_u64(), "a cumulative total");
-    assert!(body["capture_queue_depth_packets"].is_u64());
+    // Present because `start_servers` hands this process's capture meter to
+    // the API door. It used to be present because the field was a `u64`
+    // hardcoded to `meter.map_or(0, ..)` with `None` always passed — a
+    // confident "the queue is clear" on a box whose queue was full. The unit
+    // test `without_a_meter_the_queue_counters_are_absent_rather_than_zero`
+    // holds the other half: no meter, no number.
+    assert!(
+        body["capture_queue_depth_packets"].is_u64(),
+        "the capture meter must reach the API door, or this field would be \
+         absent: {body}"
+    );
+    assert!(
+        body["capture_backpressure_blocks_total"].is_u64(),
+        "and its sibling, from the same meter: {body}"
+    );
     assert!(body["uptime_seconds"].is_u64());
     assert!(
         body.get("rates").is_none() || body["rates"].is_null(),

@@ -4905,6 +4905,13 @@ cannot keep up, and the fix is ring size, coalescing or RSS. `ps_drop` climbing
 alone is sipnab's read loop falling behind, and the fix is `--buffer` or a
 tighter filter. The handle counter on its own cannot tell you which.
 
+**The capture-queue fields are absent without a capture.** A run replaying a
+file through the API owns no capture meter, so `capture_queue_depth_packets`
+and `capture_backpressure_blocks_total` do not appear at all, rather than
+appearing as `0`.
+Zero there would read as "the queue is clear", which is the one thing a
+saturated pipeline must never say.
+
 **Occupancy, not just counts.** `dialogs.used` alone is a number. Beside
 `capacity` it is a decision. An operator who cannot see occupancy learns about
 eviction by noticing that calls have gone missing.
@@ -16032,7 +16039,7 @@ ordinary update.
 | [`check_codec_negotiation`](#check_codec_negotiation) | `call_id` | Codecs offered vs answered and whether they intersect — for 488s |
 | [`diagnose_registration`](#diagnose_registration) | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
 | [`media_diagnostics`](#media_diagnostics) | `call_id` | The facts under the MOS: QoS marking, jitter grounding, delay provenance, silence, and what the far end reported |
-| [`siprec_metadata`](#siprec_metadata) | `call_id` | The SIPREC (RFC 7866) recording metadata a call carried: session id, mode, participants with AOR and display name, and the recorded streams, each naming its `m=` line label and the participant that sends it |
+| [`siprec_metadata`](#siprec_metadata) | `call_id` | The SIPREC ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866)) recording metadata a call carried: session id, mode, participants with AOR and display name, and the recorded streams, each naming its `m=` line label and the participant that sends it |
 | [`rtp_stats`](#rtp_stats) | `call_id?`, `min_mos?`, `max_mos?`, `limit?`, `cursor?` | One call's RTP quality and diagnosis, or a capture-wide stream sweep |
 
 **[Conformance and rules](#conformance-and-rules)**
@@ -16420,6 +16427,13 @@ is hardware that cannot keep up, and the fix is ring size, coalescing or RSS.
 `ps_drop` climbing alone is sipnab's read loop falling behind, and the fix is
 `--buffer` or a tighter filter. The handle counter alone cannot tell you
 which.
+
+**The capture-queue fields are absent without a capture.** A run replaying a
+file through the API owns no capture meter, so `capture_queue_depth_packets`
+and `capture_backpressure_blocks_total` do not appear at all, rather than
+appearing as `0`.
+Zero there would read as "the queue is clear", which is the one thing a
+saturated pipeline must never say.
 
 **Occupancy, not just counts.** `dialogs.used` alone is a number. Beside
 `capacity` it is a decision. An operator who cannot see occupancy learns about
@@ -24844,7 +24858,7 @@ misses the tunnel. A miss stays visible. A fabrication does not.
 | 12 | Raw IP (`DLT_RAW`) | decoded — the version nibble picks v4 or v6 |
 | 113 | Linux cooked v1 (`SLL`) | decoded |
 | 276 | Linux cooked v2 (`SLL2`) | decoded |
-| 9 | PPP (`DLT_PPP`) | decoded — with or without RFC 1662 HDLC-like framing |
+| 9 | PPP (`DLT_PPP`) | decoded — with or without [RFC 1662](https://www.rfc-editor.org/rfc/rfc1662) HDLC-like framing |
 | 50 | PPP in HDLC-like framing (`DLT_PPP_SERIAL`) | decoded |
 | 51 | PPPoE session (`DLT_PPP_ETHER`) | decoded |
 | 228 | bare IPv4 (`DLT_IPV4`) | decoded — sipnab checks the version nibble against the link type and rejects a mismatch |

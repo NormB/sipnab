@@ -45,6 +45,7 @@ fn state_with(gate: &Arc<PersistenceGate>) -> ApiState {
         capture: None,
         source_exhausted: None,
         capture_interfaces: Vec::new(),
+        capture_meter: None,
         started_at: std::time::Instant::now(),
         persistence_gate: Arc::clone(gate),
         tfps: Default::default(),

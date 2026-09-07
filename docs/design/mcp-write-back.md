@@ -132,7 +132,7 @@ because the incident is over.
 **The operator's screen is the tool's output.** sipnab has no other product. Every
 mutating verb proposed so far — tag a dialog, acknowledge a finding, name a host
 — edits the thing the operator is reading, and does so with no signal that it
-happened. `DialogStore::generation` ([`dialog_store.rs:573`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L573))
+happened. `DialogStore::generation` ([`dialog_store.rs:637`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L637))
 is bumped by every mutating method and exposed on no wire format: not in
 `DialogSummary` ([`model.rs:54-56`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L54-L56)), not in any REST
 response (`build_router`, [`api.rs:204-213`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L204-L213) — eight
@@ -205,7 +205,7 @@ states the reasoning, and `:21-29` states why the fix is a type:
 > remembering.
 
 Both fixes reached MCP, and how they reached it is the point. `resolve_in_root`
-([`server.rs:804`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L804)) accepts a bare filename and rejects
+([`server.rs:827`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L827)) accepts a bare filename and rejects
 any separator, `..`, root prefix or drive letter *before* touching the
 filesystem — its doc comment (`:163-173`) argues that requiring one component
 has no middle ground, where "every clever normaliser eventually meets a symlink,
@@ -323,7 +323,7 @@ touching the analysis at all.
   Call-IDs, a verdict per call, free text — to a bare filename under
   `--mcp-file-root`.
 - It reaches the filesystem through `resolve_in_root`
-  ([`server.rs:804`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L804)) exactly as `export_capture` and
+  ([`server.rs:827`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L827)) exactly as `export_capture` and
   `export_audio` do, and therefore inherits `ProtectedInputs::check` and cannot
   land on a capture.
 - **Nothing reads it back.** No tool, no report, no REST route, no diagnosis.
@@ -344,7 +344,7 @@ store, no schema migration and no wire-visible generation counter.
 **What would change this.** Both of the following, not either:
 
 1. A wire-visible store identity — `generation`
-   ([`dialog_store.rs:573`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L573)) surfaced on REST and
+   ([`dialog_store.rs:637`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L637)) surfaced on REST and
    MCP responses — so a consumer can detect that what it is reading changed
    underneath it.
 2. A demonstrated need that `save_findings` does not meet, from someone who has

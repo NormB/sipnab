@@ -44,7 +44,7 @@ Tiers:
 
 ## Status
 
-**46 open, 450 done** across 34 sections.
+**58 open, 450 done** across 36 sections.
 Regenerate with `python3 scripts/backlog-status.py --apply`.
 
 | Section | Open | Done | Progress |
@@ -78,6 +78,8 @@ Regenerate with `python3 scripts/backlog-status.py --apply`.
 | LIVE | 6 | 0 | `..........` |
 | P5 | 7 | 13 | `######....` |
 | Shipped (audit-period features, kept for context) | 0 | 6 | `##########` |
+| DUP | 8 | 0 | `..........` |
+| OBS-FOLLOWUP | 4 | 0 | `..........` |
 
 <!-- /BACKLOG-STATUS -->
 
@@ -2564,12 +2566,12 @@ output path.
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1772`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1772)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1795`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1795)), which attaches `frame_ref`
     (`#[tool(` at [`src/mcp/server.rs:4528`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4528), handler at `:3866`), confined to
     the file root and honest about
     itself with three states — `verified` / `unverified` / `unresolvable` —
     rather than resolving a foreign ref against the wrong file; and
-    `findings_with_refs` ([`src/mcp/server.rs:1772`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1772)), which attaches `frame_ref`
+    `findings_with_refs` ([`src/mcp/server.rs:1795`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1795)), which attaches `frame_ref`
     to `lint_dialog`
     findings and OMITS the key when no pointer exists, because `""` and
     frame 0 both read as real pointers. Capture identity binding
@@ -2721,7 +2723,7 @@ output path.
     `SUPPRESSION_FILENAME` ([`src/sip/lint/mod.rs:70`](https://github.com/NormB/sipnab/blob/main/src/sip/lint/mod.rs#L70)),
     `SuppressionFile::load` (`:103`) and `SuppressionFile::discover` (`:120`)
     exist, and the MCP lint tools consume them through `resolve_suppressions`
-    ([`src/mcp/server.rs:942`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L942)), which takes an explicit filename or walks up from
+    ([`src/mcp/server.rs:965`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L965)), which takes an explicit filename or walks up from
     the capture's directory to a project root. **What is still missing is the
     suppression half of the CLI, and the evidence this line cited for that is
     now false too. Corrected 2026-08-06:** it read *"`grep -n lint src/cli.rs`
@@ -3186,7 +3188,7 @@ implementation.
   `value_parser = ["full", "metrics", "read"]`) rather than the
   `--mcp-token-scope` proposed above, with the help text drawing the
   audience line ("REST API tokens only" / "MCP tokens only"). Enforcement is
-  `scope_of` ([`src/mcp/server.rs:8210`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8210), the `mcp-http` arm), reading the scope out of the
+  `scope_of` ([`src/mcp/server.rs:8228`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8228), the `mcp-http` arm), reading the scope out of the
   `McpAuth::BearerVerified` admission record, and `scope_refusal` (`:4872`),
   which is called from the hand-written `call_tool` (`:4951`). The
   no-second-list requirement held literally: `scope_refusal` decides from the
@@ -7027,6 +7029,117 @@ hot-ish read path that deserves its own argument rather than riding along.
 The honest state is therefore: known, understood, and not started. A reader
 comparing MCP and REST should expect this one difference and should not read it
 as an oversight.
+
+## DUP — one rule written twice (added 2026-09-07)
+
+Found by auditing the tree for the defect class that produced the
+`P-Charging-Vector` leak: the same rule encoded in two places, where nothing
+makes the copies agree. Each item names both sites and what a divergence costs.
+The three that were already wrong — the redaction scanners, the runtime rate,
+and the capture meter — are fixed in 0.5.156; these are the rest.
+
+- [ ] **DUP1 — `is_unconfigured` is answered twice, and one copy gates a
+  security bypass.** `VerifierConfig` and `TokenVerifier` each compute
+  `signing_keys.is_empty() && static_keys.is_empty()`. The first gates the MCP
+  non-loopback bind refusal; the second gates the REST bind refusal, the MCP
+  auth layer, **and** the per-request bypass in `guard()`. Add a third
+  credential source and update only the first: the bind is allowed while every
+  request still short-circuits to `Ok(())` — unauthenticated REST and MCP on a
+  public interface. One `is_unconfigured`, delegated to.
+
+- [ ] **DUP2 — the Prometheus exposition is assembled twice and the two
+  already disagree.** [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) lowercases the dialog-state label;
+  [`src/output/prometheus_server.rs`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs) does not, so `--api /metrics` emits
+  `state="completed"` and `--metrics` emits `state="Completed"`. The shipped
+  dashboards query the lowercase form, so their "Active Dialogs" panel reads
+  empty against the standalone metrics server — indistinguishable from an idle
+  switch. `sipnab_rtp_streams_active` is worse: one gauge name over two
+  different populations, `established` on one door and `is_active()` (a 30 s
+  window) on the other. One assembler, and a gate that reads the dashboard
+  JSON.
+
+- [ ] **DUP3 — REST carries a private third rate limiter.** `rate_limit.rs`
+  exists because the rule was written twice before, and says so. MCP and HEP
+  use it; REST has its own `RateLimiter` with per-IP window anchoring rather
+  than one shared window, and `start_servers` never passes
+  `max_tracked_peers` to it — so that knob is inert on REST and the bucket map
+  has no capacity bound a spoofed-source flood must respect.
+
+- [ ] **DUP4 — the fail2ban filter and the line that feeds it are ungated.**
+  [`contrib/fail2ban/sipnab-scanner.conf`](https://github.com/NormB/sipnab/blob/main/contrib/fail2ban/sipnab-scanner.conf) pins the field order of
+  `fail2ban.rs`'s log lines. Rename `scanner_detected`, reorder `ua=` and
+  `method=`, or insert a field, and the jail runs and bans nothing, which looks
+  exactly like a quiet network. `recommend.rs` already proves this property for
+  the GENERATED failregex by compiling it against a real alert line; the
+  shipped filter needs the same test.
+
+- [ ] **DUP5 — shipped alert thresholds disagree with sipnab's own
+  diagnosis.** [`contrib/prometheus/sipnab-alerts.yml`](https://github.com/NormB/sipnab/blob/main/contrib/prometheus/sipnab-alerts.yml) pages at PDD > 5 s;
+  `diagnosis.rs` calls a call healthy until 11 s. An operator importing the
+  shipped rules is paged for a condition sipnab itself reports as fine. The MOS
+  pair agrees today with nothing keeping it so.
+
+- [ ] **DUP6 — `DialogState` spellings are written five times.** `Display`,
+  the filter DSL's `state_to_str`, the report writer, and two TUI tables.
+  Adding a variant is compiler-caught; changing a spelling is not, and
+  `Redirected` is asserted in none of the five — rename it in the DSL alone and
+  `--filter "state == 'Redirected'"` silently returns zero rows.
+
+- [ ] **DUP7 — [`contrib/sipnabrc.example`](https://github.com/NormB/sipnab/blob/main/contrib/sipnabrc.example) documents a search order sipnab does
+  not use.** It advertises `./sipnab.toml`, which `default_config_paths()`
+  never probes, and omits `/etc/sipnab/sipnab.toml`, which it does. The starter
+  config tells operators to copy it where sipnab will not look, and the lenient
+  loader says nothing.
+
+- [ ] **DUP8 — smaller pairs, same class.** The `mos_grounded` predicate and
+  the `RttSource` wire-string map (`output/model.rs` vs `mcp/server.rs`); the
+  `capture_quality` key set written three times, where the `From` impl is
+  exhaustive on the destination so a new counter compiles clean and is silently
+  absent from both wires; `limit=0` meaning "default page" on MCP and "empty
+  page" on REST, with `api.rs` inconsistent with itself; `--lint-max-per-rule`
+  reaching batch but not MCP or `expect`; the private-address classifier in
+  `rtp/diagnosis.rs` vs `security/recommend.rs`, the second naming the first in
+  prose and calling nothing; [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224) `Identity` split with different
+  empty-part rules in `stir_shaken.rs` and `vcon.rs`; and two stale defaults in
+  [`man/sipnab.1`](https://github.com/NormB/sipnab/blob/main/man/sipnab.1), which ships to every installed user.
+
+## OBS-FOLLOWUP — gaps in the runtime answer (added 2026-09-07)
+
+- [ ] **RTF1 — `in_subnet` refuses an address the HEP allowlist accepts.**
+  `hep.rs` maps an IPv4-mapped IPv6 address to its v4 form before comparing
+  ([RFC 4291 §2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291#section-2.5.5.2) makes `::ffff:0:0/96` the representation of a v4 address,
+  not a different family) and reads a bare address as a `/32` host route.
+  `dsl.rs`'s `ip_in_cidr` does neither. So `--hep-allow 198.51.100.0/24` admits
+  an agent whose packets `src.ip in_subnet '198.51.100.0/24'` then selects
+  none of — the uprobe backend hands over `IpAddr::V6` verbatim, so a proxy
+  bound to `[::]` produces exactly this.
+
+- [ ] **RTF2 — the cgroup basis misses v1 and every systemd slice.**
+  `host_stats()` reads `/sys/fs/cgroup/memory.max` at the mount root. That is
+  cgroup v2 only, and a v2 process in a non-root cgroup — any unit with
+  `MemoryMax=` — must resolve its own path from `/proc/self/cgroup` first. Both
+  cases fall back to the machine's total, so sipnab at 1.5 GiB inside a 2 GiB
+  limit reports 1.2% of a 128 GiB box and `significant: false` while it is
+  about to be OOM-killed. Separately, `memory_available_bytes` still comes from
+  `/proc/meminfo` when the basis says `cgroup`, so available can exceed total.
+
+- [ ] **RTF3 — two more Mermaid generators, neither capped.** [`src/wasm.rs`](https://github.com/NormB/sipnab/blob/main/src/wasm.rs) and
+  [`src/tui/call_flow/export.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/call_flow/export.rs) each build a `sequenceDiagram` themselves
+  rather than through [`src/mermaid.rs`](https://github.com/NormB/sipnab/blob/main/src/mermaid.rs). The browser one is the one that
+  matters: the vendored renderer refuses a diagram over `maxEdges: 500`
+  outright, and the WASM export has no cap, so a long SUBSCRIBE/NOTIFY dialog
+  renders as nothing at all. It also declares participants from the first
+  message only, so at a proxy — four endpoints under one Call-ID — every
+  further lifeline is auto-created by Mermaid with the mangled id as its
+  visible label.
+
+- [ ] **RTF4 — `estimate_r_with_delay` guards two of its three inputs.**
+  `one_way_delay_ms` and `jitter_ms` are checked for finite and non-negative;
+  `loss_pct` is not, and G.107's `Ie_eff` has a pole at `-10.0`. Every in-crate
+  caller derives it from `lost/(recv+lost)`, so this is not reachable from
+  inside sipnab — but the function is `pub`, and `estimate_mos` is re-exported
+  at the crate root, where a `NaN` propagates through `clamp` to a `NaN` MOS
+  against a documented `[1.0, 4.5]`.
 
 ## Standing decisions
 

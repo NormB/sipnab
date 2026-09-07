@@ -220,6 +220,14 @@ pub struct ApiState {
     pub capture_interfaces: Vec<String>,
     /// When this server started, for the uptime the runtime answer reports.
     pub started_at: std::time::Instant,
+    /// The capture queue's meter, when this run owns a capture.
+    ///
+    /// `None` on a run with no capture path — a replayed file served through
+    /// the API, or any test harness — and the queue-depth and backpressure
+    /// fields then report absent rather than zero. That distinction is the
+    /// point: a confident `0` reads as "the capture path is healthy", which is
+    /// the one answer a saturated pipeline must never give.
+    pub capture_meter: Option<crate::capture::channel::CaptureMeter>,
     /// Whether content may still reach disk on this run.
     ///
     /// Not an `Option`, unlike the two flags above. Those describe a subsystem
@@ -1956,7 +1964,7 @@ async fn get_runtime(
     let mut stats = crate::output::runtime::collect(
         &ds,
         &ss,
-        None,
+        state.capture_meter.as_ref(),
         &state.capture_interfaces,
         state.started_at.elapsed().as_secs(),
         crate::output::runtime::SIGNIFICANT_MEMORY_PCT,
@@ -2676,12 +2684,31 @@ pub mod schema {
         pub streams: RuntimeOccupancy,
         /// Packets the capture path has seen.
         pub capture_packets_total: u64,
-        /// Packets waiting in the capture queue.
-        pub capture_queue_depth_packets: u64,
-        /// Times the capture path blocked on a full queue.
-        pub capture_backpressure_blocks_total: u64,
+        /// Packets waiting in the capture queue. Absent when this run owns no
+        /// capture meter — never zero, which would read as a clear queue.
+        pub capture_queue_depth_packets: Option<u64>,
+        /// Times the capture path blocked on a full queue. Absent for the
+        /// reason above.
+        pub capture_backpressure_blocks_total: Option<u64>,
         /// Seconds this process has been serving.
         pub uptime_seconds: u64,
+        /// Rates across the sampled window. Present only when the caller sent
+        /// `sample_seconds`.
+        pub rates: Option<RuntimeRates>,
+    }
+
+    /// Rates measured across a sampling window.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct RuntimeRates {
+        /// The window actually sampled, seconds — not the one requested.
+        pub window_seconds: u64,
+        /// Packets per second across the window.
+        pub packets_per_second: f64,
+        /// Dialogs opened per second across the window.
+        pub calls_per_second: f64,
+        /// Dialogs opened per second, split by the method that opened them,
+        /// most-opened first. `[["OPTIONS", 2.8], ["INVITE", 0.6]]`.
+        pub calls_per_second_by_method: Vec<(String, f64)>,
     }
 
     /// `GET /v1/dialogs` — one page of dialog summaries.
@@ -3359,6 +3386,7 @@ mod tests {
             capture: None,
             source_exhausted: None,
             capture_interfaces: Vec::new(),
+            capture_meter: None,
             started_at: std::time::Instant::now(),
             // Fixtures build a run the command line never authorized, which
             // is the state a test has to opt OUT of rather than into: a
@@ -3390,6 +3418,7 @@ mod tests {
             capture: None,
             source_exhausted: None,
             capture_interfaces: Vec::new(),
+            capture_meter: None,
             started_at: std::time::Instant::now(),
             // Fixtures build a run the command line never authorized, which
             // is the state a test has to opt OUT of rather than into: a
@@ -3853,6 +3882,7 @@ mod tests {
             capture: None,
             source_exhausted: None,
             capture_interfaces: Vec::new(),
+            capture_meter: None,
             started_at: std::time::Instant::now(),
             // Fixtures build a run the command line never authorized, which
             // is the state a test has to opt OUT of rather than into: a
@@ -4627,6 +4657,7 @@ mod tests {
             capture: None,
             source_exhausted: None,
             capture_interfaces: Vec::new(),
+            capture_meter: None,
             started_at: std::time::Instant::now(),
             // Fixtures build a run the command line never authorized, which
             // is the state a test has to opt OUT of rather than into: a

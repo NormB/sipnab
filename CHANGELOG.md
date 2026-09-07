@@ -8,7 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [0.5.156] - 2026-09-06
+## [0.5.156] - 2026-09-07
 
 ### Added
 
@@ -85,6 +85,59 @@ entry that carries them.
   surface that states a count against the same scan the documentation-drift
   gate uses, so adding a metric moves the number rather than quietly
   invalidating six sentences.
+
+- **`--redact` leaked the real URI when a display name ended in an escaped
+  quote.** RFC 3261 §25.1 lets `quoted-pair` escape the closing DQUOTE, so
+  `\"` does not end a quoted string. `split_top_level_commas` honored that;
+  `name_addr_one` scanned for the first bare `"` and did not. A sender who
+  closes the quote early — the display name is theirs to choose — moved every
+  following byte past the rewriter, and `From`/`To`/`Contact` emerged from a
+  container the tool calls redacted carrying a real E.164 number and the
+  operator's own hostname in clear. There was no backstop: `header()` returns
+  `HeaderAction::Replace`, and the free-text sweep runs only for `Keep`.
+
+  The same file's `header_params` and `uri_params` split on every `;`,
+  including ones inside a quoted value, so a `+sip.instance` or `maddr`
+  carrying one was torn in half and its tail emitted verbatim. All three now
+  go through one scanner. Two of the three copies were wrong, which is the
+  argument against having had three.
+
+- **`calls_per_second` measured store occupancy, not calls.** The rate was
+  built from `DialogStore::len()`, which is how many dialogs are HELD. At the
+  store's cap that number is pinned while calls arrive and leave, so the
+  headline rate of this release answered `0.0/s` on exactly the saturated
+  server an operator was asking about — and below the cap it cancelled to zero
+  whenever completions matched arrivals. The store now carries a cumulative
+  opened-per-method counter, and the total is its sum rather than a second
+  counter that could drift from it. A method whose dialogs have all gone keeps
+  its row, so a fall to zero reads as a fall rather than as a disappearance.
+
+- **The capture queue depth and backpressure count were hardcoded zero on both
+  new surfaces.** `runtime_stats` and `GET /v1/runtime` both passed `None` for
+  the meter, and both fields were `u64` — so a saturated pipeline reported
+  `capture_queue_depth_packets: 0`, which reads as "the queue is clear", while
+  `/metrics` on the same process reported the truth. The meter now reaches
+  both doors from the same place the scrape endpoint gets it, and the two
+  fields are optional: absent where no meter is held, never zero. `batch.rs`
+  already carried a comment describing this exact trap one layer down.
+
+- **The published OpenAPI schema for `GET /v1/runtime` omitted `rates`.**
+  `schema::Runtime` is a hand-written mirror with no `Serialize`, so nothing
+  compared it to the type the route actually sends and a generated client
+  dropped the field the route's own description tells callers to ask for.
+  `the_runtime_schema_names_every_field_the_route_sends` now compares the two
+  in both directions.
+
+- **A capture-channel test measured the OS scheduler rather than the meter.**
+  `instant_recovery_cap_hit_is_not_a_genuine_block` raced two threads for
+  10,000 iterations and asserted a ratio between genuine blocks and raw
+  capacity hits. It failed the macOS runner twice while the code was correct —
+  once at 0.5.122, once here — because whether a fall-back send returns within
+  the same instant depends on whether the consumer thread happens to be on a
+  core. The rule it was reaching for is a comparison against a 1 ms threshold
+  with no scheduler in it, so that rule is now a function and the tests drive
+  it directly, at zero, just under the threshold, at it, and past it. The
+  end-to-end test keeps only what a scheduler cannot change.
 
 - **`render_ladder` returned tables.** The tool named for a ladder produced a
   call report; its own description said so. It now emits a Mermaid

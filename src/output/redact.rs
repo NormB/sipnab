@@ -359,6 +359,28 @@ pub struct Redactor<'a> {
 /// backslash escape the closing DQUOTE. A URI inside angle brackets may also
 /// carry a comma in a header parameter. Both are commas that must not split.
 fn split_top_level_commas(value: &str) -> Vec<&str> {
+    split_top_level(value, b',')
+}
+
+/// Split a parameter list at SEMICOLONs that separate parameters, not at ones
+/// inside a quoted value or inside a `<...>` addr-spec.
+///
+/// `;` is as legal inside `quoted-string` as `,` is — RFC 3261 §25.1 puts both
+/// in `qdtext` — and a `+sip.instance` or `icid-value` that carries one was
+/// torn in half by a bare `split(';')`, with the tail emitted verbatim.
+fn split_top_level_semicolons(value: &str) -> Vec<&str> {
+    split_top_level(value, b';')
+}
+
+/// Split at `delim`, skipping any that falls inside a quoted string or inside
+/// angle brackets.
+///
+/// The single scanner behind [`split_top_level_commas`],
+/// [`split_top_level_semicolons`] and [`quoted_string_end`]. It used to exist
+/// three times over: this one, a `find('"')` in `name_addr_one` that did not
+/// honor `quoted-pair`, and a `split(';')` in each of `header_params` and
+/// `uri_params`. Two of the three were wrong, and the sender picks the input.
+fn split_top_level(value: &str, delim: u8) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut start = 0usize;
     let mut in_quotes = false;
@@ -374,7 +396,7 @@ fn split_top_level_commas(value: &str) -> Vec<&str> {
             b'"' => in_quotes = !in_quotes,
             b'<' if !in_quotes => angle_depth += 1,
             b'>' if !in_quotes => angle_depth -= 1,
-            b',' if !in_quotes && angle_depth <= 0 => {
+            _ if b == delim && !in_quotes && angle_depth <= 0 => {
                 parts.push(&value[start..i]);
                 start = i + 1;
             }
@@ -383,6 +405,29 @@ fn split_top_level_commas(value: &str) -> Vec<&str> {
     }
     parts.push(&value[start..]);
     parts
+}
+
+/// Byte offset of the DQUOTE that closes a quoted string, given the text that
+/// follows the opening one.
+///
+/// RFC 3261 §25.1: `quoted-pair = "\\" (%x00-09 / %x0B-0C / %x0E-7F)`, so a
+/// backslash escapes the next byte and `\\"` does NOT close the string. Scanning
+/// for the first bare `"` let a sender end the display name early and carry
+/// every following byte — the real URI included — past the rewriter.
+fn quoted_string_end(after_open_quote: &str) -> Option<usize> {
+    let mut escaped = false;
+    for (i, b) in after_open_quote.bytes().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match b {
+            b'\\' => escaped = true,
+            b'"' => return Some(i),
+            _ => {}
+        }
+    }
+    None
 }
 
 impl<'a> Redactor<'a> {
@@ -685,8 +730,8 @@ impl<'a> Redactor<'a> {
 
     /// Rewrite the address-bearing URI parameters and leave the rest alone.
     fn uri_params(&self, params: &str) -> String {
-        params
-            .split(';')
+        split_top_level_semicolons(params)
+            .into_iter()
             .map(|param| match param.split_once('=') {
                 Some((name, value)) if name.eq_ignore_ascii_case("maddr") => {
                     format!("{name}={}", self.host(value))
@@ -762,7 +807,7 @@ impl<'a> Redactor<'a> {
 
         // A quoted display name, if there is one.
         if let Some(after) = rest.strip_prefix('"')
-            && let Some(end) = after.find('"')
+            && let Some(end) = quoted_string_end(after)
         {
             out.push('"');
             out.push_str(&self.identity(&after[..end]));
@@ -816,8 +861,8 @@ impl<'a> Redactor<'a> {
     /// it is a device UUID that follows a subscriber across registrations,
     /// which is an identity by any useful definition.
     fn header_params(&self, params: &str) -> String {
-        params
-            .split(';')
+        split_top_level_semicolons(params)
+            .into_iter()
             .map(|param| match param.split_once('=') {
                 Some((name, value)) if name.trim().eq_ignore_ascii_case("+sip.instance") => {
                     format!("{name}=\"{}\"", self.opaque(value.trim_matches('"')))
@@ -1624,6 +1669,54 @@ mod tests {
             "and neither must the second: {out}"
         );
         assert!(out.contains(','), "the list shape survives: {out}");
+    }
+
+    /// A display name may end in an ESCAPED quote, and the URI after it must
+    /// still be redacted.
+    ///
+    /// RFC 3261 §25.1: `quoted-string = DQUOTE *(qdtext / quoted-pair) DQUOTE`
+    /// and `quoted-pair = "\\" (%x00-09 / %x0B-0C / %x0E-7F)`, so `\"` inside a
+    /// quoted string does not close it. `split_top_level_commas` in this file
+    /// already honors that; `name_addr_one` scanned for the first bare `"` and
+    /// did not — two scanners for one production, which is precisely the
+    /// defect the `P-Charging-Vector` comment below documents.
+    ///
+    /// The sender controls the display name, so this is remotely triggerable:
+    /// close the quote early and every byte after it lands past the rewriter.
+    /// There is no backstop — `header()` returns `HeaderAction::Replace`, and
+    /// `redact_field` sweeps free text only for `Keep`.
+    #[test]
+    fn an_escaped_quote_in_a_display_name_does_not_expose_the_real_uri() {
+        let p = policy();
+        let out = p.redactor().name_addr(
+            "\"Doe\\\" <sip:decoy@attacker.example>\" <sip:15551230009@carrier.example>;tag=1",
+        );
+        assert!(
+            !out.contains("15551230009"),
+            "the real subscriber number must not survive an escaped quote: {out}"
+        );
+        assert!(
+            !out.contains("carrier.example"),
+            "nor the operator's own host: {out}"
+        );
+    }
+
+    /// A semicolon inside a quoted parameter value does not split it.
+    ///
+    /// `header_params` split on every `;`, so a `+sip.instance` whose value
+    /// contains one was torn in half and the tail emitted verbatim — the same
+    /// shape as the duplicate `P-Charging-Vector` splitter that tore a quoted
+    /// `icid-value` and leaked its tail.
+    #[test]
+    fn a_semicolon_inside_a_quoted_parameter_does_not_split_it() {
+        let p = policy();
+        let out = p
+            .redactor()
+            .name_addr("<sip:bob@example.com>;+sip.instance=\"urn:uuid:aaa;15551230008\"");
+        assert!(
+            !out.contains("15551230008"),
+            "the whole quoted device id is opaque, tail included: {out}"
+        );
     }
 
     /// Order does not matter: a `tel:` first still redacts the `sip:` second.

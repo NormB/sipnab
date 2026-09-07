@@ -347,10 +347,18 @@ pub struct RuntimeStats {
     pub streams: Occupancy,
     /// Packets the capture path has seen.
     pub capture_packets_total: u64,
-    /// Packets waiting in the capture queue.
-    pub capture_queue_depth_packets: u64,
-    /// Times the capture path blocked because the queue was full.
-    pub capture_backpressure_blocks_total: u64,
+    /// Packets waiting in the capture queue, when this run owns a meter.
+    ///
+    /// Absent, not zero, on a run with no capture path. A confident `0` here
+    /// reads as "the queue is clear", which is the one thing a saturated
+    /// pipeline must never say — and it is the same rule every `process` and
+    /// `host` field above follows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_queue_depth_packets: Option<u64>,
+    /// Times the capture path blocked because the queue was full, when this
+    /// run owns a meter. Absent rather than zero, for the reason above.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_backpressure_blocks_total: Option<u64>,
     /// Seconds since this process started serving.
     pub uptime_seconds: u64,
     /// Rates across a sampling window, when one was asked for.
@@ -428,10 +436,15 @@ pub fn resolve_sample_seconds(requested: u32) -> Result<u32, &'static str> {
 pub struct RateSample {
     /// Packets the capture path had seen.
     packets: u64,
-    /// Dialogs held, by opening method.
-    by_method: Vec<(String, usize)>,
-    /// Dialogs held in total.
-    dialogs: usize,
+    /// Dialogs OPENED, by the method that opened them, cumulative.
+    by_method: Vec<(String, u64)>,
+    /// Dialogs OPENED in total, cumulative.
+    ///
+    /// Not `len()`. Occupancy is pinned at the cap on exactly the busy server
+    /// an operator is asking about, and below the cap it cancels out whenever
+    /// completions match arrivals — either way the rate reads zero while calls
+    /// are flowing.
+    dialogs: u64,
     /// When this was taken.
     at: std::time::Instant,
 }
@@ -442,8 +455,8 @@ impl RateSample {
     pub fn read(dialogs: &crate::sip::dialog_store::DialogStore) -> Self {
         Self {
             packets: crate::capture::captured_packets(),
-            by_method: crate::sip::dialog::method_breakdown(dialogs.iter()),
-            dialogs: dialogs.len(),
+            by_method: dialogs.dialogs_opened_by_method(),
+            dialogs: dialogs.total_dialogs_opened(),
             at: std::time::Instant::now(),
         }
     }
@@ -474,6 +487,9 @@ pub fn rates(before: &RateSample, after: &RateSample) -> Rates {
             .iter()
             .find(|(m, _)| m == method)
             .map_or(0, |(_, c)| *c);
+        // Both ends are cumulative, so this can only ever be a real gain. The
+        // saturation is a floor against a store that was replaced between the
+        // two reads, not a mask over a fall.
         let delta = count.saturating_sub(was) as f64 / secs;
         by_method.push((method.clone(), delta));
     }
@@ -533,8 +549,8 @@ pub fn collect(
         dialogs: Occupancy::new(dialogs.len() as u64, dialogs.max_dialogs() as u64),
         streams: Occupancy::new(streams.len() as u64, streams.max_streams() as u64),
         capture_packets_total: crate::capture::captured_packets(),
-        capture_queue_depth_packets: meter.map_or(0, |m| m.in_flight() as u64),
-        capture_backpressure_blocks_total: meter.map_or(0, CaptureMeterExt::blocks),
+        capture_queue_depth_packets: meter.map(|m| m.in_flight() as u64),
+        capture_backpressure_blocks_total: meter.map(CaptureMeterExt::blocks),
         uptime_seconds,
         rates: None,
     }
@@ -626,10 +642,109 @@ mod tests {
         assert!(r.calls_per_second == 0.0);
     }
 
+    /// Without a meter the queue counters are absent, never zero.
+    ///
+    /// The defect this replaced: both were `u64`, so a run with no meter
+    /// wired published `capture_queue_depth_packets: 0` — which an operator
+    /// reads as "the queue is clear" on a box whose queue is full. The repo
+    /// already documents this exact trap one layer down, at the metrics
+    /// server's call site in `batch.rs`.
+    #[test]
+    fn without_a_meter_the_queue_counters_are_absent_rather_than_zero() {
+        let ds = crate::sip::dialog_store::DialogStore::new(10, true);
+        let ss = crate::rtp::stream_store::StreamStore::new(10);
+        let stats = collect(&ds, &ss, None, &[], 0, SIGNIFICANT_MEMORY_PCT);
+        assert!(
+            stats.capture_queue_depth_packets.is_none(),
+            "no meter means no answer, not a clear queue"
+        );
+        assert!(stats.capture_backpressure_blocks_total.is_none());
+
+        let json = serde_json::to_value(&stats).expect("serializes");
+        assert!(
+            json.get("capture_queue_depth_packets").is_none(),
+            "and the field is omitted on the wire rather than sent as null or \
+             zero: {json}"
+        );
+    }
+
+    /// One INVITE, enough of it to open a dialog.
+    #[cfg(test)]
+    fn invite(call_id: &str) -> crate::sip::message::SipMessage {
+        let raw = format!(
+            "INVITE sip:bob@example.com SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK{call_id}\r\n\
+             From: <sip:alice@example.com>;tag=t1\r\n\
+             To: <sip:bob@example.com>\r\n\
+             Call-ID: {call_id}\r\n\
+             CSeq: 1 INVITE\r\n\
+             Content-Length: 0\r\n\r\n"
+        );
+        crate::sip::parse_sip(
+            raw.as_bytes(),
+            chrono::Utc::now(),
+            "10.0.0.1".parse().expect("literal"),
+            "10.0.0.2".parse().expect("literal"),
+            5060,
+            5060,
+            crate::net::TransportProto::Udp,
+        )
+        .expect("a well-formed INVITE parses")
+    }
+
+    /// A store pinned at its cap still reports the calls flowing through it.
+    ///
+    /// The end-to-end assertion the cumulative counter exists for. Occupancy
+    /// never moves here — the store is full before the traffic starts and full
+    /// after it — so a rate built on `len()` answers 0.0/s for twenty calls,
+    /// which is indistinguishable from a dead switch.
+    #[test]
+    fn a_store_pinned_at_its_cap_still_reports_the_calls_flowing_through_it() {
+        use crate::sip::dialog_store::DialogStore;
+        let mut ds = DialogStore::new(2, true);
+        let t0 = std::time::Instant::now();
+        for n in 0..2 {
+            ds.process_message(invite(&format!("warm-{n}")));
+        }
+        let before = RateSample {
+            at: t0,
+            ..RateSample::read(&ds)
+        };
+        assert_eq!(ds.len(), 2, "the store starts full");
+
+        for n in 0..20 {
+            ds.process_message(invite(&format!("flow-{n}")));
+        }
+        assert_eq!(ds.len(), 2, "and stays full: occupancy never moved");
+
+        let after = RateSample {
+            at: t0 + std::time::Duration::from_secs(2),
+            ..RateSample::read(&ds)
+        };
+        let r = rates(&before, &after);
+        assert!(
+            (r.calls_per_second - 10.0).abs() < 0.01,
+            "twenty calls opened across two seconds is 10/s; a rate built on \
+             occupancy would say 0.0, which is what a dead switch looks like. \
+             Got {}",
+            r.calls_per_second
+        );
+        assert_eq!(
+            r.calls_per_second_by_method
+                .iter()
+                .find(|(m, _)| m == "INVITE")
+                .map(|(_, v)| (*v - 10.0).abs() < 0.01),
+            Some(true),
+            "the split moves with the total: {:?}",
+            r.calls_per_second_by_method
+        );
+    }
+
     /// A counter that went backwards does not produce a negative rate.
     ///
-    /// A store that evicted between the two reads holds fewer dialogs at the
-    /// end than at the start. That is eviction, not negative traffic.
+    /// Both ends are cumulative now, so this cannot arise from eviction. It
+    /// still can from a store replaced between the two reads — `open_capture`
+    /// swaps one in — and a negative rate is not the honest answer to that.
     #[test]
     fn an_evicting_store_does_not_report_a_negative_rate() {
         let t0 = std::time::Instant::now();

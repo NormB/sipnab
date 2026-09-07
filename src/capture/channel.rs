@@ -54,6 +54,29 @@ use super::packet::Packet;
 /// parked behind a saturated pipeline.
 const GENUINE_BLOCK_THRESHOLD: Duration = Duration::from_millis(1);
 
+/// Was a fall-back send that waited `elapsed` a genuine block, or a cap hit
+/// that recovered within the same instant?
+///
+/// Extracted from `send_item` so the counting rule can be driven directly.
+/// The end-to-end version of this question races two threads and measures the
+/// OS scheduler as much as the meter: it blocked the 0.5.122 release at 149
+/// blocks and the 0.5.156 release at a 7.3x ratio, both times while the code
+/// was correct. The rule itself is a comparison against
+/// [`GENUINE_BLOCK_THRESHOLD`] and has no scheduler in it.
+///
+/// # Arguments
+///
+/// * `elapsed` — how long the fall-back blocking send actually waited.
+///
+/// # Returns
+/// `true` when the wait reached the threshold, which is what increments
+/// `backpressure_blocks`.
+const fn is_genuine_block(elapsed: Duration) -> bool {
+    // `>=`, not `>`: a wait of exactly the threshold has reached it. The
+    // boundary is pinned by `the_threshold_itself_counts_as_a_block`.
+    elapsed.as_nanos() >= GENUINE_BLOCK_THRESHOLD.as_nanos()
+}
+
 /// Lock-free, cheaply-clonable view of the channel's load, for metrics. Read it
 /// off the hot path (e.g. from the metrics thread); never gated on a lock.
 #[derive(Clone)]
@@ -278,7 +301,7 @@ impl PacketTx {
                 if self.slot_tx.send(()).is_err() {
                     return Err(Closed);
                 }
-                if wait_start.elapsed() >= GENUINE_BLOCK_THRESHOLD {
+                if is_genuine_block(wait_start.elapsed()) {
                     self.meter
                         .backpressure_blocks
                         .fetch_add(1, Ordering::Relaxed);
@@ -569,14 +592,83 @@ mod tests {
         assert!(rx.is_empty(), "disconnected channel reads as empty");
     }
 
-    /// A failed `try_send` whose fall-back blocking send completes almost
-    /// immediately (the receiver freed a slot within the same instant) is a
-    /// capacity hit, not a genuine block. With cap=1 and an eagerly-draining
-    /// receiver the sender trips the cap constantly but essentially never
-    /// waits, so `backpressure_blocks` must stay (near) zero — one count per
-    /// cap hit would overstate blocking by orders of magnitude.
+    /// An instant recovery is not a block, at every boundary of the rule.
+    ///
+    /// This is the assertion the ping-pong test below used to make with a
+    /// ratio, and could not make reliably: the ratio measured the OS
+    /// scheduler. The defect it guards against — counting one block per cap
+    /// hit — makes `is_genuine_block` return `true` for every wait, including
+    /// a zero one, and that is checked here in microseconds with nothing
+    /// racing.
     #[test]
-    fn instant_recovery_cap_hit_is_not_a_genuine_block() {
+    fn an_instant_recovery_is_not_a_genuine_block() {
+        for instant in [
+            Duration::ZERO,
+            Duration::from_nanos(1),
+            Duration::from_micros(1),
+            GENUINE_BLOCK_THRESHOLD - Duration::from_nanos(1),
+        ] {
+            assert!(
+                !is_genuine_block(instant),
+                "a {instant:?} wait recovered within the instant and must not \
+                 count as a block"
+            );
+        }
+    }
+
+    /// A wait at or past the threshold is a block.
+    ///
+    /// The other half: a rule that answered `false` for everything would pass
+    /// the test above while reporting a saturated pipeline as healthy.
+    #[test]
+    fn a_wait_at_or_past_the_threshold_is_a_block() {
+        for waited in [
+            GENUINE_BLOCK_THRESHOLD,
+            GENUINE_BLOCK_THRESHOLD + Duration::from_nanos(1),
+            Duration::from_secs(1),
+        ] {
+            assert!(
+                is_genuine_block(waited),
+                "a {waited:?} wait was genuinely parked behind a saturated \
+                 pipeline"
+            );
+        }
+    }
+
+    /// The threshold is far enough above an uncontended handoff to mean
+    /// something.
+    ///
+    /// A threshold of zero would satisfy both tests above by making every wait
+    /// a block, which is exactly the defect. One that is a full second would
+    /// hide real backpressure. The bound is asserted so the constant cannot
+    /// drift to either.
+    #[test]
+    fn the_threshold_sits_between_a_handoff_and_the_poll_granularity() {
+        assert!(
+            GENUINE_BLOCK_THRESHOLD >= Duration::from_micros(100),
+            "an uncontended crossbeam handoff is sub-microsecond; a threshold \
+             of {GENUINE_BLOCK_THRESHOLD:?} would count those races as blocks"
+        );
+        assert!(
+            GENUINE_BLOCK_THRESHOLD < Duration::from_millis(100),
+            "the capture loop's idle poll is 100ms; a threshold at or above it \
+             would never fire and backpressure would read as zero forever"
+        );
+    }
+
+    /// The end-to-end shape still runs, asserting what a scheduler cannot
+    /// change.
+    ///
+    /// With cap=1 and an eagerly-draining receiver the sender trips the cap
+    /// constantly. What that proves is that the cap-hit path is reached at
+    /// all, and that a block is never counted without one — both structural.
+    /// The ratio this used to assert is gone on purpose: `blocks * 10 < hits`
+    /// passed on an idle machine and failed the macOS runner twice while the
+    /// code was correct (149 blocks at 0.5.122, a 7.3x ratio at 0.5.156). It
+    /// was measuring how often the consumer thread happened to be on a core.
+    /// The rule it was reaching for is asserted directly above.
+    #[test]
+    fn the_cap_hit_path_is_reached_and_never_counts_a_block_without_a_hit() {
         const N: u64 = 10_000;
         let (tx, rx) = packet_channel(1);
         let consumer = std::thread::spawn(move || {
@@ -591,25 +683,16 @@ mod tests {
         let blocks = tx.meter().backpressure_blocks();
         let hits = tx.meter().capacity_hits();
         assert!(hits > 0, "a cap-1 ping-pong must hit the cap");
-        // The bound is a RATIO, not a count. This measures the OS scheduler as
-        // much as the meter: whether a fall-back send returns within the same
-        // instant depends on whether the consumer thread happens to be on a
-        // core. An absolute `blocks < 100` passed on an idle machine and failed
-        // the macOS runner at 149 while the code was correct, which blocked the
-        // 0.5.122 release for a scheduling artifact.
-        //
-        // Loosening a red assertion is normally the wrong move, so be precise
-        // about why this one is not: the invariant under test is the doc
-        // comment above -- instant recoveries must not be counted one-for-one
-        // with cap hits, which would overstate blocking "by orders of
-        // magnitude". A ratio states exactly that and this one is TIGHTER than
-        // the 2x it replaces. The bug it guards against makes blocks == hits,
-        // which fails at any multiplier.
+        // Structural, not statistical: `backpressure_blocks` is incremented
+        // only inside the branch that already incremented `capacity_hits`, so
+        // this holds on any scheduler, on any machine, under any load. A
+        // refactor that moved the block count out of that branch — which is
+        // how the meter would start counting waits that never hit the cap —
+        // breaks it.
         assert!(
-            blocks * 10 < hits,
-            "genuine blocks ({blocks}) must be an order of magnitude rarer than \
-             raw capacity hits ({hits}); one count per cap hit is the defect \
-             this guards"
+            blocks <= hits,
+            "every block is a cap hit that waited, so blocks ({blocks}) can \
+             never exceed hits ({hits})"
         );
     }
 

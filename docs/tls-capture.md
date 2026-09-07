@@ -214,7 +214,7 @@ SRTP keys arrive two ways, and sipnab reads both:
 - **SDES** — keys travel in the SDP, so decrypting the signaling decrypts the
   media with it. Nothing extra to do.
 - **DTLS-SRTP** — a DTLS handshake carries the keys. Point `--dtls-keylog` at an
-  NSS-format key log and sipnab runs the RFC 5764 exporter over it to reach the
+  NSS-format key log and sipnab runs the [RFC 5764](https://www.rfc-editor.org/rfc/rfc5764) exporter over it to reach the
   SRTP keys, cookbook [§7d](examples.md#7d-decrypt-srtp-from-a-dtls-keylog).
 
 `--dtls-keylog` is a separate flag from `--keylog` because the two name

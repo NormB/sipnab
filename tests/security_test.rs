@@ -1423,6 +1423,7 @@ fn constant_time_eq_different_lengths_still_compares() {
         capture: None,
         source_exhausted: None,
         capture_interfaces: Vec::new(),
+        capture_meter: None,
         started_at: std::time::Instant::now(),
         // A run the command line never authorized to persist, which is
         // what these fixtures are: bare stores behind a router. A route
@@ -1478,6 +1479,7 @@ fn constant_time_eq_matching_strings() {
         capture: None,
         source_exhausted: None,
         capture_interfaces: Vec::new(),
+        capture_meter: None,
         started_at: std::time::Instant::now(),
         // A run the command line never authorized to persist, which is
         // what these fixtures are: bare stores behind a router. A route
@@ -1543,6 +1545,7 @@ fn constant_time_eq_different_strings_same_length() {
         capture: None,
         source_exhausted: None,
         capture_interfaces: Vec::new(),
+        capture_meter: None,
         started_at: std::time::Instant::now(),
         // A run the command line never authorized to persist, which is
         // what these fixtures are: bare stores behind a router. A route

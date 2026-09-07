@@ -206,7 +206,7 @@ That is the correct fix for a drainer-bound capture, and it is the only thing
 `PACKET_FANOUT` is for.
 
 **It buys nothing if the consumer is the limit.** `packet_channel`
-([`channel.rs:181`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L181)) is an unbounded data queue
+([`channel.rs:204`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L204)) is an unbounded data queue
 plus a bounded slot semaphore, so `send` blocks once `capacity` packets are in
 flight. When the processing loop cannot keep up, the channel saturates and the
 capture threads block in `send` — and a blocked capture thread is a thread not

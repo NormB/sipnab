@@ -249,6 +249,16 @@ pub struct DialogStore {
     max_dialogs: usize,
     /// Whether to evict the oldest dialog when at capacity.
     rotate: bool,
+    /// Lifetime count of dialogs OPENED, split by the method that opened
+    /// them. Only ever rises; nothing removes from it.
+    ///
+    /// `dialogs.len()` is occupancy, and a rate built on occupancy reads zero
+    /// on exactly the server an operator is asking about: at the cap, `len()`
+    /// is pinned while calls arrive and leave, and below the cap it cancels
+    /// out whenever completions match arrivals. The split is stored rather
+    /// than a bare total because the total is its sum — two counters for one
+    /// fact is how the two come to disagree.
+    dialogs_opened_by_method: std::collections::BTreeMap<String, u64>,
     /// Lifetime count of messages dropped by [`compact_idle`]
     /// (DialogStore::compact_idle) — observability for long-run memory
     /// behavior.
@@ -589,6 +599,7 @@ impl DialogStore {
             max_dialogs,
             rotate,
             tracking: DialogTracking::default(),
+            dialogs_opened_by_method: std::collections::BTreeMap::new(),
             idle_messages_evicted: 0,
             capacity_dialogs_dropped: 0,
             capacity_dialogs_evicted: 0,
@@ -729,6 +740,39 @@ impl DialogStore {
     /// Lifetime count of messages evicted by [`DialogStore::compact_idle`].
     pub fn total_idle_messages_evicted(&self) -> u64 {
         self.idle_messages_evicted
+    }
+
+    /// Lifetime count of dialogs opened, across every method.
+    ///
+    /// The sum of [`dialogs_opened_by_method`](Self::dialogs_opened_by_method)
+    /// rather than a second counter beside it, so the two cannot drift.
+    #[must_use]
+    pub fn total_dialogs_opened(&self) -> u64 {
+        self.dialogs_opened_by_method.values().sum()
+    }
+
+    /// Lifetime count of dialogs opened, split by the method that opened them.
+    ///
+    /// Cumulative, so a method whose dialogs have all completed or been
+    /// evicted keeps its row. Built from the dialogs HELD instead, that method
+    /// vanishes from the breakdown, and a fall to zero reads as a fall off the
+    /// list.
+    ///
+    /// # Returns
+    /// `(method, opened)` pairs, most-opened first then by name — the ordering
+    /// [`crate::sip::dialog::method_breakdown`] uses, so a reader comparing
+    /// the two sees one order.
+    #[must_use]
+    pub fn dialogs_opened_by_method(&self) -> Vec<(String, u64)> {
+        let mut rows: Vec<(String, u64)> = self
+            .dialogs_opened_by_method
+            .iter()
+            .map(|(m, c)| (m.clone(), *c))
+            .collect();
+        crate::sort::sort_by_dyn(&mut rows, &mut |a: &(String, u64), b: &(String, u64)| {
+            b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0))
+        });
+        rows
     }
 
     /// Lifetime count of new dialogs REJECTED at capacity in no-rotate mode.
@@ -902,6 +946,13 @@ impl DialogStore {
                         None => return, // unreachable: checked at function entry
                     },
                 };
+                // Counted here, at the single site where a live message
+                // creates a dialog -- not per message, which would turn one
+                // call's own 200 OK into a second "call opened".
+                *self
+                    .dialogs_opened_by_method
+                    .entry(dialog.method.as_str().to_string())
+                    .or_insert(0) += 1;
                 self.dialogs.insert(key, dialog);
             }
         }
@@ -1054,6 +1105,13 @@ impl DialogStore {
                     self.dialogs.insert(cid, dialog);
                 }
             }
+        }
+        // Summed from the source, exactly like the counters below. Counting
+        // the inserts above as well would double every dialog that survived
+        // the merge; counting nothing would lose every one the target's cap
+        // rejected.
+        for (method, count) in other.dialogs_opened_by_method {
+            *self.dialogs_opened_by_method.entry(method).or_insert(0) += count;
         }
         self.idle_messages_evicted += other.idle_messages_evicted;
         self.capacity_dialogs_dropped += other.capacity_dialogs_dropped;
@@ -4947,5 +5005,101 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
 
         store.clear();
         assert!(store.generation() > g3, "clear must bump the generation");
+    }
+    /// Opens are counted cumulatively, so a full store still reports a rate.
+    ///
+    /// `len()` is occupancy. A store pinned at its cap has a constant `len()`
+    /// while calls arrive and leave at hundreds per second, so a rate built
+    /// from `len()` reads zero on exactly the busy server an operator is
+    /// asking about. This counter only ever rises.
+    #[test]
+    fn opens_are_counted_cumulatively_not_as_occupancy() {
+        let mut store = DialogStore::new(2, true);
+        for n in 0..6 {
+            store.process_message(make_invite_msg(&format!("open-{n}"), base_ts()));
+        }
+        assert_eq!(store.len(), 2, "the cap holds occupancy down");
+        assert_eq!(
+            store.total_dialogs_opened(),
+            6,
+            "but all six were opened, and the rate is built on this"
+        );
+    }
+
+    /// Repeat messages for a dialog already held are not new opens.
+    ///
+    /// A counter incremented per message rather than per dialog would turn a
+    /// call's own 200 OK into a second "call opened", inflating the rate by
+    /// whatever the message-per-dialog ratio happens to be.
+    #[test]
+    fn a_further_message_for_a_held_dialog_is_not_a_new_open() {
+        let mut store = DialogStore::new(10, true);
+        store.process_message(make_invite_msg("repeat-1", base_ts()));
+        assert_eq!(store.total_dialogs_opened(), 1);
+        store.process_message(make_200_ok("repeat-1", base_ts()));
+        store.process_message(make_bye_msg("repeat-1", base_ts()));
+        assert_eq!(
+            store.total_dialogs_opened(),
+            1,
+            "one call, however many messages it carries"
+        );
+    }
+
+    /// The per-method split is cumulative, so a method never vanishes.
+    ///
+    /// Built from the dialogs HELD, a method whose calls have all completed or
+    /// been evicted disappears from the breakdown entirely — so "OPTIONS fell
+    /// from 98/s to 0/s" renders as no OPTIONS row rather than as the drop.
+    #[test]
+    fn the_opened_split_keeps_a_method_whose_dialogs_have_all_gone() {
+        let mut store = DialogStore::new(1, true);
+        store.process_message(make_subscribe_msg("gone-sub", base_ts()));
+        store.process_message(make_invite_msg("stays-inv", base_ts()));
+        assert_eq!(store.len(), 1, "rotation kept only the newest");
+
+        let opened = store.dialogs_opened_by_method();
+        assert_eq!(
+            opened
+                .iter()
+                .find(|(m, _)| m == "SUBSCRIBE")
+                .map(|(_, c)| *c),
+            Some(1),
+            "the SUBSCRIBE dialog was evicted, but it was still opened: {opened:?}"
+        );
+        assert_eq!(
+            opened.iter().find(|(m, _)| m == "INVITE").map(|(_, c)| *c),
+            Some(1),
+            "{opened:?}"
+        );
+        assert_eq!(
+            store.total_dialogs_opened(),
+            opened.iter().map(|(_, c)| *c).sum::<u64>(),
+            "the total is the sum of the split, not a second counter that can \
+             drift from it"
+        );
+    }
+
+    /// A merge carries the source's opens, and does not recount them.
+    ///
+    /// The other cumulative counters are summed from the source at merge time.
+    /// Counting an insert here as well would double every dialog that survived
+    /// the merge, and counting nothing would lose every dialog the target's
+    /// cap rejected.
+    #[test]
+    fn a_merge_adds_the_sources_opens_exactly_once() {
+        let mut store = DialogStore::new(1, false);
+        store.process_message(make_invite_msg("t-1", base_ts()));
+
+        let mut other = DialogStore::new(4, true);
+        other.process_message(make_invite_msg("s-1", base_ts()));
+        other.process_message(make_invite_msg("s-2", base_ts()));
+        assert_eq!(other.total_dialogs_opened(), 2);
+
+        store.merge(other);
+        assert_eq!(
+            store.total_dialogs_opened(),
+            3,
+            "one of its own plus the source's two, however many the cap kept"
+        );
     }
 }

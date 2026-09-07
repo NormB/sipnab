@@ -263,7 +263,22 @@ fn undocumented_numeric_ceilings_do_not_increase() {
 /// directions, which is the check `additionalProperties` would have given.
 /// Extending that test to the runtime envelope is the way to bring this back
 /// down rather than to keep raising it.
-const PERMISSIVE_SCHEMA_COMPONENTS: usize = 23;
+///
+/// 23 -> 24 by exactly one component: `RuntimeRates`, the `rates` object the
+/// route returns when the caller sends `sample_seconds`. Attributed by
+/// counting `ToSchema` derives against HEAD — no other component was added.
+///
+/// The extension the paragraph above asks for now EXISTS:
+/// `the_runtime_schema_names_every_field_the_route_sends` compares `Runtime`
+/// against the serialized envelope in both directions, and each of
+/// `RuntimeProcess`, `RuntimeHost`, `RuntimeImpact`, `RuntimeOccupancy` and
+/// `RuntimeRates` in the direction that matters — an undocumented field
+/// reaching a client. The number does not fall because this ratchet counts
+/// `deny_unknown_fields` TEXTUALLY, and adding an attribute that is inert on a
+/// response-only type to satisfy a counter is the dishonest version of fixing
+/// this. Six of the twenty-four are now covered by a real check; the ratchet
+/// cannot see that, and this note is where that fact lives.
+const PERMISSIVE_SCHEMA_COMPONENTS: usize = 24;
 
 #[test]
 fn permissive_rest_schema_components_do_not_increase() {

@@ -61,6 +61,13 @@ pub struct SipnabMcp {
     pub capture_interfaces: Vec<String>,
     /// When this server started, for the uptime `runtime_stats` reports.
     pub started_at: std::time::Instant,
+    /// The capture queue's meter, when this run owns a capture.
+    ///
+    /// `None` on a run with no capture path, and the queue-depth and
+    /// backpressure fields then report absent rather than zero — a confident
+    /// `0` reads as "the capture path is healthy", which is the one answer a
+    /// saturated pipeline must never give.
+    pub capture_meter: Option<crate::capture::channel::CaptureMeter>,
     /// The detectors this run armed, by the rule name each files findings
     /// under, sorted. Empty when none is armed.
     ///
@@ -303,6 +310,7 @@ impl SipnabMcp {
             stream_store,
             alert_engine: None,
             capture_interfaces: Vec::new(),
+            capture_meter: None,
             started_at: std::time::Instant::now(),
             armed_detections: Vec::new(),
             source_exhausted: None,
@@ -347,6 +355,21 @@ impl SipnabMcp {
     #[must_use]
     pub fn with_capture_interfaces(mut self, interfaces: Vec<String>) -> Self {
         self.capture_interfaces = interfaces;
+        self
+    }
+
+    /// Hand this server the capture queue's meter.
+    ///
+    /// Without it `runtime_stats` reports queue depth and backpressure as
+    /// absent. With it they are the same numbers the Prometheus scrape and
+    /// `GET /v1/runtime` read, from one meter, so no two surfaces can disagree
+    /// about one queue.
+    #[must_use]
+    pub fn with_capture_meter(
+        mut self,
+        meter: Option<crate::capture::channel::CaptureMeter>,
+    ) -> Self {
+        self.capture_meter = meter;
         self
     }
 
@@ -7933,7 +7956,7 @@ impl SipnabMcp {
         let stats = crate::output::runtime::collect(
             &ds,
             &ss,
-            None,
+            self.capture_meter.as_ref(),
             &self.capture_interfaces,
             self.started_at.elapsed().as_secs(),
             crate::output::runtime::SIGNIFICANT_MEMORY_PCT,

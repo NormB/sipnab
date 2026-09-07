@@ -894,3 +894,115 @@ fn the_dialog_summary_component_declares_exactly_what_the_projection_emits() {
          emitted but not declared:   {undeclared:?}"
     );
 }
+
+/// The published `Runtime` schema names every field the route actually sends.
+///
+/// `schema::Runtime` is a hand-written `ToSchema`-only mirror of
+/// `output::runtime::RuntimeStats`: it carries no `Serialize`, so the compiler
+/// never compares the two and nothing else did either. `rates` was added to
+/// the real type and to the route's own description, and the published
+/// contract kept saying the field does not exist — a generated client drops
+/// what the docs tell the caller to ask for.
+///
+/// Driven from a serialized value rather than from the source text, so a field
+/// renamed by `#[serde(rename)]` is compared as it appears on the wire.
+#[test]
+fn the_runtime_schema_names_every_field_the_route_sends() {
+    let doc = document();
+    let declared: BTreeSet<String> = doc
+        .pointer("/components/schemas/Runtime/properties")
+        .and_then(Value::as_object)
+        .expect("the document declares a Runtime schema with properties")
+        .keys()
+        .cloned()
+        .collect();
+
+    // Every optional field populated, so none is skipped by
+    // `skip_serializing_if` and absent from the comparison.
+    let mut stats = sipnab::output::runtime::collect(
+        &sipnab::sip::dialog_store::DialogStore::new(4, true),
+        &sipnab::rtp::stream_store::StreamStore::new(4),
+        None,
+        &[],
+        0,
+        sipnab::output::runtime::SIGNIFICANT_MEMORY_PCT,
+    );
+    stats.rates = Some(sipnab::output::runtime::Rates::default());
+    stats.capture_queue_depth_packets = Some(0);
+    stats.capture_backpressure_blocks_total = Some(0);
+    let sent: BTreeSet<String> = serde_json::to_value(&stats)
+        .expect("RuntimeStats serializes")
+        .as_object()
+        .expect("into an object")
+        .keys()
+        .cloned()
+        .collect();
+
+    assert!(
+        sent.len() >= 8,
+        "only {} field(s) came back from a populated RuntimeStats — the \
+         fixture stopped populating them and this gate is comparing almost \
+         nothing",
+        sent.len()
+    );
+    let missing: Vec<&String> = sent.difference(&declared).collect();
+    assert!(
+        missing.is_empty(),
+        "GET /v1/runtime sends {missing:?}, which the published Runtime \
+         schema does not declare. A generated client drops them."
+    );
+    let phantom: Vec<&String> = declared.difference(&sent).collect();
+    assert!(
+        phantom.is_empty(),
+        "the published Runtime schema declares {phantom:?}, which the route \
+         never sends. A client is told to expect a field that never arrives."
+    );
+
+    // The nested components too. `permissive_rest_schema_components_do_not_increase`
+    // counts these as accepting unknown fields, because `deny_unknown_fields`
+    // is a deserialization attribute and these types derive no `Deserialize`
+    // — so this comparison IS the check `additionalProperties` would have
+    // given, and the ratchet's own note names extending it here as the way to
+    // stop raising the number.
+    //
+    // One direction only, deliberately: a field absent on this platform (every
+    // `process` and `host` value is optional by design) would read as a
+    // phantom, while an UNDOCUMENTED field reaching a client is the exposure
+    // that matters.
+    let value = serde_json::to_value(&stats).expect("serializes");
+    let mut checked_nested = 0usize;
+    for (component, pointer) in [
+        ("RuntimeProcess", "/process"),
+        ("RuntimeHost", "/host"),
+        ("RuntimeImpact", "/impact"),
+        ("RuntimeOccupancy", "/dialogs"),
+        ("RuntimeRates", "/rates"),
+    ] {
+        let Some(obj) = value.pointer(pointer).and_then(Value::as_object) else {
+            continue;
+        };
+        let declared: BTreeSet<String> = doc
+            .pointer(&format!("/components/schemas/{component}/properties"))
+            .and_then(Value::as_object)
+            .unwrap_or_else(|| panic!("the document declares a {component} schema"))
+            .keys()
+            .cloned()
+            .collect();
+        let undocumented: Vec<&String> = obj
+            .keys()
+            .filter(|k| !declared.contains(k.as_str()))
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "{pointer} sends {undocumented:?}, which the published \
+             {component} schema does not declare"
+        );
+        checked_nested += 1;
+    }
+    assert!(
+        checked_nested >= 4,
+        "only {checked_nested} nested component(s) were reachable in the \
+         serialized value; the envelope was reshaped and this gate is now \
+         checking almost nothing"
+    );
+}

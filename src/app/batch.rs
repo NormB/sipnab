@@ -2327,7 +2327,7 @@ impl BatchRunner {
         policy: CapturePolicy,
         raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
         transmit_permit: Option<crate::security::transmit_guard::TransmitPermit>,
-        #[cfg(feature = "metrics")] capture_meter: crate::capture::channel::CaptureMeter,
+        capture_meter: crate::capture::channel::CaptureMeter,
     ) -> Result<Self, crate::app::bootstrap::PlanError> {
         let matcher = batch.matcher;
         // Moved here with its siblings rather than taken later from a `mut`
@@ -2899,7 +2899,6 @@ impl BatchRunner {
             // — that gauge is written unconditionally — it would publish a
             // confident `0` for the queue depth on every headless deployment,
             // which is the same defect this ticket is fixing, one layer down.
-            #[cfg(feature = "metrics")]
             Some(capture_meter),
         )
         .map_err(|e| crate::app::bootstrap::PlanError {

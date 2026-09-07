@@ -1618,6 +1618,13 @@ cannot keep up, and the fix is ring size, coalescing or RSS. `ps_drop` climbing
 alone is sipnab's read loop falling behind, and the fix is `--buffer` or a
 tighter filter. The handle counter on its own cannot tell you which.
 
+**The capture-queue fields are absent without a capture.** A run replaying a
+file through the API owns no capture meter, so `capture_queue_depth_packets`
+and `capture_backpressure_blocks_total` do not appear at all, rather than
+appearing as `0`.
+Zero there would read as "the queue is clear", which is the one thing a
+saturated pipeline must never say.
+
 **Occupancy, not just counts.** `dialogs.used` alone is a number. Beside
 `capacity` it is a decision. An operator who cannot see occupancy learns about
 eviction by noticing that calls have gone missing.

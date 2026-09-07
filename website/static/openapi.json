@@ -1590,10 +1590,13 @@
         "description": "`GET /v1/runtime` — runtime statistics.",
         "properties": {
           "capture_backpressure_blocks_total": {
-            "description": "Times the capture path blocked on a full queue.",
+            "description": "Times the capture path blocked on a full queue. Absent for the\nreason above.",
             "format": "int64",
             "minimum": 0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "capture_packets_total": {
             "description": "Packets the capture path has seen.",
@@ -1602,10 +1605,13 @@
             "type": "integer"
           },
           "capture_queue_depth_packets": {
-            "description": "Packets waiting in the capture queue.",
+            "description": "Packets waiting in the capture queue. Absent when this run owns no\ncapture meter — never zero, which would read as a clear queue.",
             "format": "int64",
             "minimum": 0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "dialogs": {
             "$ref": "#/components/schemas/RuntimeOccupancy",
@@ -1629,6 +1635,17 @@
           "process": {
             "$ref": "#/components/schemas/RuntimeProcess",
             "description": "sipnab's own process."
+          },
+          "rates": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuntimeRates",
+                "description": "Rates across the sampled window. Present only when the caller sent\n`sample_seconds`."
+              }
+            ]
           },
           "schema_version": {
             "description": "Wire-format version of this envelope.",
@@ -1657,8 +1674,6 @@
           "dialogs",
           "streams",
           "capture_packets_total",
-          "capture_queue_depth_packets",
-          "capture_backpressure_blocks_total",
           "uptime_seconds"
         ],
         "type": "object"
@@ -1893,6 +1908,51 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "RuntimeRates": {
+        "description": "Rates measured across a sampling window.",
+        "properties": {
+          "calls_per_second": {
+            "description": "Dialogs opened per second across the window.",
+            "format": "double",
+            "type": "number"
+          },
+          "calls_per_second_by_method": {
+            "description": "Dialogs opened per second, split by the method that opened them,\nmost-opened first. `[[\"OPTIONS\", 2.8], [\"INVITE\", 0.6]]`.",
+            "items": {
+              "items": false,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "format": "double",
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "packets_per_second": {
+            "description": "Packets per second across the window.",
+            "format": "double",
+            "type": "number"
+          },
+          "window_seconds": {
+            "description": "The window actually sampled, seconds — not the one requested.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "window_seconds",
+          "packets_per_second",
+          "calls_per_second",
+          "calls_per_second_by_method"
+        ],
         "type": "object"
       },
       "SkippedPort": {
